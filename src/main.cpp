@@ -16,22 +16,23 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
+#include "imgui_internal.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <format>
 #include <stdexcept>
-#include <stdio.h> // printf, fprintf
-#include <stdlib.h> // abort
 #include <vulkan/vulkan.h>
 
-// #include <vulkan/vulkan_beta.h>
+#include "Window.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 #ifdef _DEBUG
 #define IMGUI_VULKAN_DEBUG_REPORT
 #endif
 
-// Data
+static WindowsState Windows;
+
+// Vulkan data.
 static VkAllocationCallbacks *g_Allocator = nullptr;
 static VkInstance g_Instance = VK_NULL_HANDLE;
 static VkPhysicalDevice g_PhysicalDevice = VK_NULL_HANDLE;
@@ -338,6 +339,8 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->ImageCount; // Now we can use the next set of semaphores
 }
 
+using namespace ImGui;
+
 // Main code
 int main(int, char **) {
     // Setup SDL
@@ -374,14 +377,18 @@ int main(int, char **) {
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO &io = ImGui::GetIO();
-    (void)io;
+
+    ImGuiIO &io = GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
+    // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
+
+    io.IniFilename = nullptr; // Disable ImGui's .ini file saving
 
     // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
-    // ImGui::StyleColorsLight();
+    StyleColorsDark();
+    // StyleColorsLight();
 
     // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(Window);
@@ -402,7 +409,7 @@ int main(int, char **) {
     ImGui_ImplVulkan_Init(&init_info, wd->RenderPass);
 
     // Load Fonts
-    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
+    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use PushFont()/PopFont() to select them.
     // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
     // - If the file cannot be loaded, the function will return a nullptr. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
     // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
@@ -443,8 +450,6 @@ int main(int, char **) {
     }
 
     // Our state
-    bool show_demo_window = true;
-    bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
@@ -479,47 +484,51 @@ int main(int, char **) {
         // Start the Dear ImGui frame
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
-        ImGui::NewFrame();
+        NewFrame();
 
-        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-        if (show_demo_window)
-            ImGui::ShowDemoWindow(&show_demo_window);
-
-        // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
-        {
-            static float f = 0.0f;
-            static int counter = 0;
-
-            ImGui::Begin("Hello, world!"); // Create a window called "Hello, world!" and append into it.
-
-            ImGui::Text("This is some useful text."); // Display some text (you can use a format strings too)
-            ImGui::Checkbox("Demo Window", &show_demo_window); // Edit bools storing our window open/close state
-            ImGui::Checkbox("Another Window", &show_another_window);
-
-            ImGui::SliderFloat("float", &f, 0.0f, 1.0f); // Edit 1 float using a slider from 0.0f to 1.0f
-            ImGui::ColorEdit3("clear color", (float *)&clear_color); // Edit 3 floats representing a color
-
-            if (ImGui::Button("Button")) // Buttons return true when clicked (most widgets return true when edited/activated)
-                counter++;
-            ImGui::SameLine();
-            ImGui::Text("counter = %d", counter);
-
-            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
-            ImGui::End();
+        auto dockspace_id = DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+        if (GetFrameCount() == 1) {
+            auto demo_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Right, 0.3f, nullptr, &dockspace_id);
+            DockBuilderDockWindow(Windows.ImGuiDemo.Name, demo_node_id);
+            auto mesh_node_id = dockspace_id;
+            auto controls_node_id = DockBuilderSplitNode(mesh_node_id, ImGuiDir_Left, 0.4f, nullptr, &mesh_node_id);
+            DockBuilderDockWindow(Windows.MeshControls.Name, controls_node_id);
+            DockBuilderDockWindow(Windows.SceneControls.Name, controls_node_id);
+            DockBuilderDockWindow(Windows.Scene.Name, mesh_node_id);
         }
 
-        // 3. Show another simple window.
-        if (show_another_window) {
-            ImGui::Begin("Another Window", &show_another_window); // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-            ImGui::Text("Hello from another window!");
-            if (ImGui::Button("Close Me"))
-                show_another_window = false;
-            ImGui::End();
+        if (Windows.ImGuiDemo.Visible) ShowDemoWindow(&Windows.ImGuiDemo.Visible);
+
+        if (Windows.SceneControls.Visible) {
+            Begin(Windows.SceneControls.Name, &Windows.SceneControls.Visible);
+            // if (MainScene == nullptr) {
+            //     Text("No scene has been loaded.");
+            // } else {
+            //     MainScene->RenderConfig();
+            // }
+            End();
+        }
+        if (Windows.MeshControls.Visible) {
+            Begin(Windows.MeshControls.Name, &Windows.MeshControls.Visible);
+            // if (MainMesh == nullptr) {
+            //     Text("No mesh has been loaded.");
+            // } else {
+            //     MainMesh->RenderConfig();
+            // }
+            End();
+        }
+
+        if (Windows.Scene.Visible) {
+            PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+            Begin(Windows.Scene.Name, &Windows.Scene.Visible);
+            // MainScene->Render();
+            End();
+            PopStyleVar();
         }
 
         // Rendering
-        ImGui::Render();
-        ImDrawData *draw_data = ImGui::GetDrawData();
+        Render();
+        ImDrawData *draw_data = GetDrawData();
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
         if (!is_minimized) {
             wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
@@ -535,7 +544,7 @@ int main(int, char **) {
     CheckVk(vkDeviceWaitIdle(g_Device));
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+    DestroyContext();
 
     CleanupVulkanWindow();
     CleanupVulkan();
