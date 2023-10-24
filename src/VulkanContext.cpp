@@ -33,18 +33,18 @@ void VulkanContext::Init(std::vector<const char *> extensions) {
         // Create Vulkan instance.
         create_info.enabledExtensionCount = (uint32_t)extensions.size();
         create_info.ppEnabledExtensionNames = extensions.data();
-        CheckVk(vkCreateInstance(&create_info, Allocator, &Instance));
+        CheckVk(vkCreateInstance(&create_info, nullptr, &Instance));
 
         // Setup the debug report callback.
 #ifdef VKB_DEBUG
-        auto vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(Allocator, "vkCreateDebugReportCallbackEXT");
+        auto vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(nullptr, "vkCreateDebugReportCallbackEXT");
         IM_ASSERT(vkCreateDebugReportCallbackEXT != nullptr);
         VkDebugReportCallbackCreateInfoEXT debug_report_ci = {};
         debug_report_ci.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
         debug_report_ci.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
         debug_report_ci.pfnCallback = debug_report;
         debug_report_ci.pUserData = nullptr;
-        err = vkCreateDebugReportCallbackEXT(Allocator, &debug_report_ci, Allocator, &g_DebugReport);
+        err = vkCreateDebugReportCallbackEXT(nullptr, &debug_report_ci, nullptr, &g_DebugReport);
         check_vk_result(err);
 #endif
     }
@@ -95,7 +95,7 @@ void VulkanContext::Init(std::vector<const char *> extensions) {
         create_info.pQueueCreateInfos = queue_info;
         create_info.enabledExtensionCount = (uint32_t)device_extensions.size();
         create_info.ppEnabledExtensionNames = device_extensions.data();
-        CheckVk(vkCreateDevice(PhysicalDevice, &create_info, Allocator, &Device));
+        CheckVk(vkCreateDevice(PhysicalDevice, &create_info, nullptr, &Device));
         vkGetDeviceQueue(Device, QueueFamily, 0, &Queue);
     }
 
@@ -112,20 +112,20 @@ void VulkanContext::Init(std::vector<const char *> extensions) {
         pool_info.maxSets = 1;
         pool_info.poolSizeCount = 1;
         pool_info.pPoolSizes = pool_sizes;
-        CheckVk(vkCreateDescriptorPool(Device, &pool_info, Allocator, &DescriptorPool));
+        CheckVk(vkCreateDescriptorPool(Device, &pool_info, nullptr, &DescriptorPool));
     }
 }
 
 void VulkanContext::Uninit() {
-    vkDestroyDescriptorPool(Device, DescriptorPool, Allocator);
+    vkDestroyDescriptorPool(Device, DescriptorPool, nullptr);
 
 #ifdef VKB_DEBUG
-    auto vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(Allocator, "vkDestroyDebugReportCallbackEXT");
-    vkDestroyDebugReportCallbackEXT(Allocator, g_DebugReport, Allocator);
+    auto vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(nullptr, "vkDestroyDebugReportCallbackEXT");
+    vkDestroyDebugReportCallbackEXT(nullptr, g_DebugReport, nullptr);
 #endif
 
-    vkDestroyDevice(Device, Allocator);
-    vkDestroyInstance(Instance, Allocator);
+    vkDestroyDevice(Device, nullptr);
+    vkDestroyInstance(Instance, nullptr);
 }
 
 VkPhysicalDevice VulkanContext::FindPhysicalDevice() const {

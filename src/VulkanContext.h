@@ -39,7 +39,6 @@ struct VulkanContext {
     VkQueue Queue = VK_NULL_HANDLE;
     VkPipelineCache PipelineCache = VK_NULL_HANDLE;
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
-    VkAllocationCallbacks *Allocator = nullptr;
 
     void Init(std::vector<const char *> extensions);
     void Uninit();

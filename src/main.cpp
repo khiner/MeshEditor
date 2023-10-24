@@ -49,11 +49,11 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, VkSurfaceKHR surface
 
     // Create SwapChain, RenderPass, Framebuffer, etc.
     IM_ASSERT(g_MinImageCount >= 2);
-    ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance, VC.PhysicalDevice, VC.Device, wd, VC.QueueFamily, VC.Allocator, width, height, g_MinImageCount);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance, VC.PhysicalDevice, VC.Device, wd, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
 }
 
 static void CleanupVulkanWindow() {
-    ImGui_ImplVulkanH_DestroyWindow(VC.Instance, VC.Device, &g_MainWindowData, VC.Allocator);
+    ImGui_ImplVulkanH_DestroyWindow(VC.Instance, VC.Device, &g_MainWindowData, nullptr);
 }
 
 static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
@@ -195,7 +195,7 @@ int main(int, char **) {
     init_info.MinImageCount = g_MinImageCount;
     init_info.ImageCount = wd->ImageCount;
     init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.Allocator = VC.Allocator;
+    init_info.Allocator = nullptr;
     init_info.CheckVkResultFn = CheckVk;
     ImGui_ImplVulkan_Init(&init_info, wd->RenderPass);
 
@@ -265,7 +265,7 @@ int main(int, char **) {
             SDL_GetWindowSize(Window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(g_MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance, VC.PhysicalDevice, VC.Device, &g_MainWindowData, VC.QueueFamily, VC.Allocator, width, height, g_MinImageCount);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance, VC.PhysicalDevice, VC.Device, &g_MainWindowData, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
                 g_MainWindowData.FrameIndex = 0;
                 g_SwapChainRebuild = false;
             }
