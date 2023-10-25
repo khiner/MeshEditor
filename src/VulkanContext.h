@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 #include <vector>
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan.hpp>
 
 #include "Log.h"
 
@@ -24,25 +24,25 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugReportFlagsEXT flags,
 }
 #endif
 
-inline static bool IsExtensionAvailable(const std::vector<VkExtensionProperties> &properties, const char *extension) {
-    for (const VkExtensionProperties &p : properties)
+inline static bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &properties, const char *extension) {
+    for (const vk::ExtensionProperties &p : properties)
         if (strcmp(p.extensionName, extension) == 0)
             return true;
     return false;
 }
 
 struct VulkanContext {
-    VkInstance Instance = VK_NULL_HANDLE;
-    VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
-    VkDevice Device = VK_NULL_HANDLE;
+    vk::Instance Instance;
+    vk::PhysicalDevice PhysicalDevice;
+    vk::Device Device;
     uint32_t QueueFamily = (uint32_t)-1;
-    VkQueue Queue = VK_NULL_HANDLE;
-    VkPipelineCache PipelineCache = VK_NULL_HANDLE;
-    VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
+    vk::Queue Queue;
+    vk::PipelineCache PipelineCache;
+    vk::DescriptorPool DescriptorPool;
 
     void Init(std::vector<const char *> extensions);
     void Uninit();
 
     // Find a discrete GPU, or the first available (integrated) GPU.
-    VkPhysicalDevice FindPhysicalDevice() const;
+    vk::PhysicalDevice FindPhysicalDevice() const;
 };
