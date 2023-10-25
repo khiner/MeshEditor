@@ -22,12 +22,11 @@ static bool g_SwapChainRebuild = false;
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
-static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, VkSurfaceKHR surface, int width, int height) {
+static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int width, int height) {
     wd->Surface = surface;
 
     // Check for WSI support
-    VkBool32 res;
-    vkGetPhysicalDeviceSurfaceSupportKHR(VC.PhysicalDevice, VC.QueueFamily, wd->Surface, &res);
+    vk::Bool32 res = VC.PhysicalDevice.getSurfaceSupportKHR(VC.QueueFamily, wd->Surface);
     if (res != VK_TRUE) {
         fprintf(stderr, "Error no WSI support on physical device 0\n");
         exit(-1);
@@ -218,29 +217,23 @@ int main(int, char **) {
     // Upload fonts.
     {
         // Use any command queue
-        VkCommandPool command_pool = wd->Frames[wd->FrameIndex].CommandPool;
-        VkCommandBuffer command_buffer = wd->Frames[wd->FrameIndex].CommandBuffer;
-
-        CheckVk(vkResetCommandPool(VC.Device, command_pool, 0));
-        VkCommandBufferBeginInfo begin_info = {};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        CheckVk(vkBeginCommandBuffer(command_buffer, &begin_info));
+        vk::CommandPool command_pool = wd->Frames[wd->FrameIndex].CommandPool;
+        vk::CommandBuffer command_buffer = wd->Frames[wd->FrameIndex].CommandBuffer;
+        VC.Device.resetCommandPool(command_pool, vk::CommandPoolResetFlags());
+        command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
         ImGui_ImplVulkan_CreateFontsTexture(command_buffer);
 
-        VkSubmitInfo end_info = {};
-        end_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        end_info.commandBufferCount = 1;
-        end_info.pCommandBuffers = &command_buffer;
-        CheckVk(vkEndCommandBuffer(command_buffer));
-        CheckVk(vkQueueSubmit(VC.Queue, 1, &end_info, VK_NULL_HANDLE));
+        command_buffer.end(); // todo not needed?
+        vk::SubmitInfo submit;
+        submit.setCommandBuffers(command_buffer);
+        VC.Queue.submit(submit);
 
-        CheckVk(vkDeviceWaitIdle(VC.Device));
+        VC.Device.waitIdle();
         ImGui_ImplVulkan_DestroyFontUploadObjects();
     }
 
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    ImVec4 clear_color = {0.45f, 0.55f, 0.60f, 1.f};
 
     // Main loop
     bool done = false;
@@ -331,7 +324,7 @@ int main(int, char **) {
     }
 
     // Cleanup
-    CheckVk(vkDeviceWaitIdle(VC.Device));
+    VC.Device.waitIdle();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     DestroyContext();
