@@ -4,7 +4,7 @@ void VulkanContext::Init(std::vector<const char *> extensions) {
     // Create instance.
     vk::InstanceCreateFlags flags;
     // Enumerate available extensions.
-    std::vector<vk::ExtensionProperties> instance_props = vk::enumerateInstanceExtensionProperties();
+    const auto instance_props = vk::enumerateInstanceExtensionProperties();
     // Enable required extensions.
     if (IsExtensionAvailable(instance_props, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
         extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
@@ -20,11 +20,13 @@ void VulkanContext::Init(std::vector<const char *> extensions) {
     validation_layers.push_back("VK_LAYER_KHRONOS_validation");
     extensions.push_back("VK_EXT_debug_report");
 #endif
+
     vk::ApplicationInfo app("", {}, "", {}, {});
     vk::InstanceCreateInfo instance_info{flags, &app, validation_layers, extensions};
     Instance = vk::createInstance(instance_info);
-    // Setup the debug report callback.
+
 #ifdef VKB_DEBUG
+    // Setup the debug report callback.
     auto vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)instance.getProcAddr("vkCreateDebugReportCallbackEXT");
     IM_ASSERT(vkCreateDebugReportCallbackEXT != nullptr);
     vk::DebugReportCallbackCreateInfoEXT debug_report_ci;
@@ -37,38 +39,27 @@ void VulkanContext::Init(std::vector<const char *> extensions) {
     PhysicalDevice = FindPhysicalDevice();
 
     // Select graphics queue family.
-    std::vector<vk::QueueFamilyProperties> queues = PhysicalDevice.getQueueFamilyProperties();
-    for (uint32_t i = 0; i < queues.size(); i++) {
-        if (queues[i].queueFlags & vk::QueueFlagBits::eGraphics) {
-            QueueFamily = i;
-            break;
-        }
-    }
+    const auto queue_family_props = PhysicalDevice.getQueueFamilyProperties();
+    QueueFamily = std::distance(
+        queue_family_props.begin(),
+        std::find_if(queue_family_props.begin(), queue_family_props.end(), [](const auto &qfp) {
+            return qfp.queueFlags & vk::QueueFlagBits::eGraphics;
+        })
+    );
     if (QueueFamily == static_cast<uint32_t>(-1)) throw std::runtime_error("No graphics queue family found.");
 
     // Create logical device (with 1 queue).
-    std::vector<const char *> device_extensions;
-    device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-
-    // Enumerate physical device extension properties.
-    std::vector<vk::ExtensionProperties> extension_props = PhysicalDevice.enumerateDeviceExtensionProperties();
-#ifdef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
-    if (IsExtensionAvailable(extension_props, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)) {
-        device_extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
-    }
-#endif
-
-    std::array<float, 1> queue_priority = {1.0f};
-    vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
-    vk::DeviceCreateInfo device_info({}, queue_info, {}, device_extensions);
-    device_info.ppEnabledExtensionNames = device_extensions.data();
+    const std::vector<const char *> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
+    const std::array<float, 1> queue_priority = {1.0f};
+    const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
+    const vk::DeviceCreateInfo device_info({}, queue_info, {}, device_extensions);
 
     Device = PhysicalDevice.createDevice(device_info);
     Queue = Device.getQueue(QueueFamily, 0);
 
     // Create descriptor pool.
-    std::array<vk::DescriptorPoolSize, 1> pool_sizes = {vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 1)};
-    vk::DescriptorPoolCreateInfo pool_info{vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, pool_sizes};
+    const std::array<vk::DescriptorPoolSize, 1> pool_sizes = {vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 1)};
+    const vk::DescriptorPoolCreateInfo pool_info{vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, pool_sizes};
     DescriptorPool = Device.createDescriptorPool(pool_info);
 }
 
@@ -85,10 +76,10 @@ void VulkanContext::Uninit() {
 }
 
 vk::PhysicalDevice VulkanContext::FindPhysicalDevice() const {
-    std::vector<vk::PhysicalDevice> physicalDevices = Instance.enumeratePhysicalDevices();
+    const auto physicalDevices = Instance.enumeratePhysicalDevices();
     if (physicalDevices.empty()) throw std::runtime_error("No Vulkan devices found.");
 
-    for (vk::PhysicalDevice &device : physicalDevices) {
+    for (const auto &device : physicalDevices) {
         vk::PhysicalDeviceProperties properties = device.getProperties();
         if (properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) return device;
     }
