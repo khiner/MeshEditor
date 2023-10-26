@@ -7,7 +7,6 @@ struct Window {
 
 struct WindowsState {
     Window SceneControls{"Scene controls"};
-    Window MeshControls{"Mesh"};
     Window Scene{"Scene"};
-    Window ImGuiDemo{"Dear ImGui demo", true};
+    Window ImGuiDemo{"Dear ImGui Demo", true};
 };

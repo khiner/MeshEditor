@@ -33,8 +33,9 @@ include_directories(
     ${Vulkan_INCLUDE_DIRS}
     src
 )
-
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES})
+find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
+message(STATUS "Found shaderc in: ${SHADERC_LIB}")
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} ${SHADERC_LIB})
 
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base)
