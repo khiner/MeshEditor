@@ -48,17 +48,17 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surfa
 
     // Create SwapChain, RenderPass, Framebuffer, etc.
     IM_ASSERT(g_MinImageCount >= 2);
-    ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance, VC.PhysicalDevice, VC.Device, wd, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance.get(), VC.PhysicalDevice, VC.Device.get(), wd, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
 }
 
 static void CleanupVulkanWindow() {
-    ImGui_ImplVulkanH_DestroyWindow(VC.Instance, VC.Device, &g_MainWindowData, nullptr);
+    ImGui_ImplVulkanH_DestroyWindow(VC.Instance.get(), VC.Device.get(), &g_MainWindowData, nullptr);
 }
 
 static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
-    const VkResult err = vkAcquireNextImageKHR(VC.Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+    const VkResult err = vkAcquireNextImageKHR(VC.Device.get(), wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         g_SwapChainRebuild = true;
         return;
@@ -67,12 +67,11 @@ static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
 
     ImGui_ImplVulkanH_Frame *fd = &wd->Frames[wd->FrameIndex];
     {
-        CheckVk(vkWaitForFences(VC.Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
-
-        CheckVk(vkResetFences(VC.Device, 1, &fd->Fence));
+        CheckVk(vkWaitForFences(VC.Device.get(), 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
+        CheckVk(vkResetFences(VC.Device.get(), 1, &fd->Fence));
     }
     {
-        CheckVk(vkResetCommandPool(VC.Device, fd->CommandPool, 0));
+        CheckVk(vkResetCommandPool(VC.Device.get(), fd->CommandPool, 0));
         VkCommandBufferBeginInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -129,14 +128,10 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
         return;
     }
     CheckVk(err);
-    wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->ImageCount; // Now we can use the next set of semaphores
+    wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->ImageCount; // Now we can use the next set of semaphores.
 }
 
 using namespace ImGui;
-
-void RenderScene() {
-    Text("Hi! I will be rendering Vulkan stuff soon.");
-}
 
 int main(int, char **) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
@@ -147,7 +142,7 @@ int main(int, char **) {
 
     // Create window with Vulkan graphics context.
     const auto window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    auto *Window = SDL_CreateWindowWithPosition("FlowGrid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
+    auto *Window = SDL_CreateWindowWithPosition("Mesh2Audio-Vulkan", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
 
     uint32_t extensions_count = 0;
     SDL_Vulkan_GetInstanceExtensions(&extensions_count, nullptr);
@@ -157,7 +152,7 @@ int main(int, char **) {
 
     // Create window surface.
     VkSurfaceKHR surface;
-    if (SDL_Vulkan_CreateSurface(Window, VC.Instance, &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
+    if (SDL_Vulkan_CreateSurface(Window, VC.Instance.get(), &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
 
     // Create framebuffers.
     int w, h;
@@ -165,7 +160,7 @@ int main(int, char **) {
     ImGui_ImplVulkanH_Window *wd = &g_MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
 
-    // Setup Dear ImGui context.
+    // Setup ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
 
@@ -183,13 +178,13 @@ int main(int, char **) {
     // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(Window);
     ImGui_ImplVulkan_InitInfo init_info = {};
-    init_info.Instance = VC.Instance;
+    init_info.Instance = VC.Instance.get();
     init_info.PhysicalDevice = VC.PhysicalDevice;
-    init_info.Device = VC.Device;
+    init_info.Device = VC.Device.get();
     init_info.QueueFamily = VC.QueueFamily;
     init_info.Queue = VC.Queue;
-    init_info.PipelineCache = VC.PipelineCache;
-    init_info.DescriptorPool = VC.DescriptorPool;
+    init_info.PipelineCache = VC.PipelineCache.get();
+    init_info.DescriptorPool = VC.DescriptorPool.get();
     init_info.Subpass = 0;
     init_info.MinImageCount = g_MinImageCount;
     init_info.ImageCount = wd->ImageCount;
@@ -219,19 +214,19 @@ int main(int, char **) {
         // Use any command queue
         vk::CommandPool command_pool = wd->Frames[wd->FrameIndex].CommandPool;
         vk::CommandBuffer command_buffer = wd->Frames[wd->FrameIndex].CommandBuffer;
-        VC.Device.resetCommandPool(command_pool, vk::CommandPoolResetFlags());
+        VC.Device->resetCommandPool(command_pool, vk::CommandPoolResetFlags());
         command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
         ImGui_ImplVulkan_CreateFontsTexture(command_buffer);
+        command_buffer.end();
 
-        command_buffer.end(); // todo not needed?
         vk::SubmitInfo submit;
         submit.setCommandBuffers(command_buffer);
         VC.Queue.submit(submit);
-
-        VC.Device.waitIdle();
+        VC.Device->waitIdle();
         ImGui_ImplVulkan_DestroyFontUploadObjects();
     }
+
+    VC.CreateTriangleContext(w, h);
 
     ImVec4 clear_color = {0.45f, 0.55f, 0.60f, 1.f};
 
@@ -258,13 +253,13 @@ int main(int, char **) {
             SDL_GetWindowSize(Window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(g_MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance, VC.PhysicalDevice, VC.Device, &g_MainWindowData, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance.get(), VC.PhysicalDevice, VC.Device.get(), &g_MainWindowData, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
                 g_MainWindowData.FrameIndex = 0;
                 g_SwapChainRebuild = false;
             }
         }
 
-        // Start the Dear ImGui frame
+        // Start the ImGui frame.
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         NewFrame();
@@ -275,36 +270,16 @@ int main(int, char **) {
             DockBuilderDockWindow(Windows.ImGuiDemo.Name, demo_node_id);
             auto mesh_node_id = dockspace_id;
             auto controls_node_id = DockBuilderSplitNode(mesh_node_id, ImGuiDir_Left, 0.4f, nullptr, &mesh_node_id);
-            DockBuilderDockWindow(Windows.MeshControls.Name, controls_node_id);
             DockBuilderDockWindow(Windows.SceneControls.Name, controls_node_id);
             DockBuilderDockWindow(Windows.Scene.Name, mesh_node_id);
         }
 
         if (Windows.ImGuiDemo.Visible) ShowDemoWindow(&Windows.ImGuiDemo.Visible);
 
-        if (Windows.SceneControls.Visible) {
-            Begin(Windows.SceneControls.Name, &Windows.SceneControls.Visible);
-            // if (MainScene == nullptr) {
-            //     Text("No scene has been loaded.");
-            // } else {
-            //     MainScene->RenderConfig();
-            // }
-            End();
-        }
-        if (Windows.MeshControls.Visible) {
-            Begin(Windows.MeshControls.Name, &Windows.MeshControls.Visible);
-            // if (MainMesh == nullptr) {
-            //     Text("No mesh has been loaded.");
-            // } else {
-            //     MainMesh->RenderConfig();
-            // }
-            End();
-        }
-
         if (Windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
-            RenderScene();
+            Image((ImTextureID)VC.TC.DescriptorSet, ImGui::GetContentRegionAvail());
             End();
             PopStyleVar();
         }
@@ -324,7 +299,7 @@ int main(int, char **) {
     }
 
     // Cleanup
-    VC.Device.waitIdle();
+    VC.Device->waitIdle();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     DestroyContext();
