@@ -7,17 +7,19 @@
 #include <format>
 #include <stdexcept>
 
+#include "Scene.h"
 #include "VulkanContext.h"
 #include "Window.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 static WindowsState Windows;
+static std::unique_ptr<Scene> MainScene;
 
 // Vulkan data.
 static VulkanContext VC;
 static ImGui_ImplVulkanH_Window g_MainWindowData;
-static uint32_t g_MinImageCount = 2;
+static uint g_MinImageCount = 2;
 static bool g_SwapChainRebuild = false;
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
@@ -26,11 +28,8 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surfa
     wd->Surface = surface;
 
     // Check for WSI support
-    vk::Bool32 res = VC.PhysicalDevice.getSurfaceSupportKHR(VC.QueueFamily, wd->Surface);
-    if (res != VK_TRUE) {
-        fprintf(stderr, "Error no WSI support on physical device 0\n");
-        exit(-1);
-    }
+    auto res = VC.PhysicalDevice.getSurfaceSupportKHR(VC.QueueFamily, wd->Surface);
+    if (res != VK_TRUE) throw std::runtime_error("Error no WSI support on physical device 0\n");
 
     // Select surface format.
     const VkFormat requestSurfaceImageFormat[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
@@ -144,7 +143,7 @@ int main(int, char **) {
     const auto window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     auto *Window = SDL_CreateWindowWithPosition("Mesh2Audio-Vulkan", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
 
-    uint32_t extensions_count = 0;
+    uint extensions_count = 0;
     SDL_Vulkan_GetInstanceExtensions(&extensions_count, nullptr);
     std::vector<const char *> extensions(extensions_count);
     SDL_Vulkan_GetInstanceExtensions(&extensions_count, extensions.data());
@@ -226,7 +225,8 @@ int main(int, char **) {
         ImGui_ImplVulkan_DestroyFontUploadObjects();
     }
 
-    VC.CreateTriangleContext(w, h);
+    MainScene = std::make_unique<Scene>(VC, w, h);
+    MainScene->TC.DescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.OffscreenImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     ImVec4 clear_color = {0.45f, 0.55f, 0.60f, 1.f};
 
@@ -279,7 +279,7 @@ int main(int, char **) {
         if (Windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
-            Image((ImTextureID)VC.TC.DescriptorSet, ImGui::GetContentRegionAvail());
+            Image((ImTextureID)MainScene->TC.DescriptorSet, ImGui::GetContentRegionAvail());
             End();
             PopStyleVar();
         }

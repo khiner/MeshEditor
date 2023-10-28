@@ -6,6 +6,8 @@
 
 #include "Log.h"
 
+using uint = u_int32_t;
+
 inline static void CheckVk(VkResult err) {
     if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
 }
@@ -26,7 +28,7 @@ struct VulkanContext {
     vk::UniqueInstance Instance;
     vk::PhysicalDevice PhysicalDevice;
     vk::UniqueDevice Device;
-    uint32_t QueueFamily = (uint32_t)-1;
+    uint QueueFamily = (uint)-1;
     vk::Queue Queue;
     vk::UniquePipelineCache PipelineCache;
     vk::UniqueDescriptorPool DescriptorPool;
@@ -36,28 +38,5 @@ struct VulkanContext {
 
     // Find a discrete GPU, or the first available (integrated) GPU.
     vk::PhysicalDevice FindPhysicalDevice() const;
-    uint32_t FindMemoryType(uint32_t type_filter, vk::MemoryPropertyFlags props);
-
-    struct TriangleContext {
-        vk::UniqueShaderModule VertexShaderModule;
-        vk::UniqueShaderModule FragmentShaderModule;
-        vk::UniquePipelineLayout PipelineLayout;
-        vk::UniquePipeline GraphicsPipeline;
-        vk::UniqueRenderPass RenderPass;
-        vk::UniqueCommandPool CommandPool;
-        vk::UniqueFramebuffer Framebuffer; // Single framebuffer for offscreen rendering.
-        std::vector<vk::UniqueCommandBuffer> CommandBuffers;
-        vk::Extent2D Extent;
-
-        vk::UniqueImage OffscreenImage;
-        vk::UniqueImageView OffscreenImageView;
-
-        vk::UniqueSampler TextureSampler;
-        vk::DescriptorSet DescriptorSet; // Not unique, since this is returned by `ImGui_ImplVulkan_AddTexture` as a `VkDescriptorSet`.
-    };
-
-    TriangleContext TC;
-
-    // Populates `TC`.
-    void CreateTriangleContext(uint32_t width, uint32_t height);
+    uint FindMemoryType(uint type_filter, vk::MemoryPropertyFlags) const;
 };
