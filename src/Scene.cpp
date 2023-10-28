@@ -2,54 +2,54 @@
 
 #include <shaderc/shaderc.hpp>
 
+static const std::string TriangleVertShader = R"vertexshader(
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+out gl_PerVertex {
+    vec4 gl_Position;
+};
+
+layout(location = 0) out vec3 fragColor;
+
+vec2 positions[3] = vec2[](
+    vec2(0.0, -0.5),
+    vec2(0.5, 0.5),
+    vec2(-0.5, 0.5)
+);
+vec3 colors[3] = vec3[](
+    vec3(1.0, 0.0, 0.0),
+    vec3(0.0, 1.0, 0.0),
+    vec3(0.0, 0.0, 1.0)
+);
+
+void main() {
+    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+    fragColor = colors[gl_VertexIndex];
+}
+)vertexshader";
+
+static const std::string TriangleFragShader = R"frag_shader(
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(location = 0) in vec3 fragColor;
+
+layout(location = 0) out vec4 outColor;
+
+void main() {
+    outColor = vec4(fragColor, 1.0);
+}
+)frag_shader";
+
 Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
     TC.Extent = vk::Extent2D{width, height};
-
-    static const std::string vert_shader = R"vertexshader(
-        #version 450
-        #extension GL_ARB_separate_shader_objects : enable
-
-        out gl_PerVertex {
-            vec4 gl_Position;
-        };
-
-        layout(location = 0) out vec3 fragColor;
-
-        vec2 positions[3] = vec2[](
-            vec2(0.0, -0.5),
-            vec2(0.5, 0.5),
-            vec2(-0.5, 0.5)
-        );
-        vec3 colors[3] = vec3[](
-            vec3(1.0, 0.0, 0.0),
-            vec3(0.0, 1.0, 0.0),
-            vec3(0.0, 0.0, 1.0)
-        );
-
-        void main() {
-            gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-            fragColor = colors[gl_VertexIndex];
-        }
-        )vertexshader";
-
-    static const std::string frag_shader = R"frag_shader(
-        #version 450
-        #extension GL_ARB_separate_shader_objects : enable
-
-        layout(location = 0) in vec3 fragColor;
-
-        layout(location = 0) out vec4 outColor;
-
-        void main() {
-            outColor = vec4(fragColor, 1.0);
-        }
-        )frag_shader";
 
     shaderc::CompileOptions options;
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
 
     shaderc::Compiler compiler;
-    const auto vert_shader_module = compiler.CompileGlslToSpv(vert_shader, shaderc_glsl_vertex_shader, "vertex shader", options);
+    const auto vert_shader_module = compiler.CompileGlslToSpv(TriangleVertShader, shaderc_glsl_vertex_shader, "vertex shader", options);
     if (vert_shader_module.GetCompilationStatus() != shaderc_compilation_status_success) {
         throw std::runtime_error(std::format("Failed to compile vertex shader: {}", vert_shader_module.GetErrorMessage()));
     }
@@ -58,7 +58,7 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
     const vk::ShaderModuleCreateInfo vert_shader_info{{}, vert_size * sizeof(uint), vert_shader_code.data()};
     TC.VertexShaderModule = VC.Device->createShaderModuleUnique(vert_shader_info);
 
-    const auto frag_shader_module = compiler.CompileGlslToSpv(frag_shader, shaderc_glsl_fragment_shader, "fragment shader", options);
+    const auto frag_shader_module = compiler.CompileGlslToSpv(TriangleFragShader, shaderc_glsl_fragment_shader, "fragment shader", options);
     if (frag_shader_module.GetCompilationStatus() != shaderc_compilation_status_success) {
         throw std::runtime_error(std::format("Failed to compile fragment shader: {}", frag_shader_module.GetErrorMessage()));
     }
