@@ -17,9 +17,16 @@ struct Scene {
         std::vector<vk::UniqueCommandBuffer> CommandBuffers;
 
         vk::Extent2D Extent;
+
+        // The scene is rendered to this image.
         vk::UniqueImage OffscreenImage;
         vk::UniqueImageView OffscreenImageView;
         vk::UniqueDeviceMemory OffscreenImageMemory;
+
+        // The image is resolved to this image with MSAA.
+        vk::UniqueImage ResolveImage;
+        vk::UniqueImageView ResolveImageView;
+        vk::UniqueDeviceMemory ResolveImageMemory;
 
         vk::UniqueSampler TextureSampler;
         vk::DescriptorSet DescriptorSet; // Not unique, since this is returned by `ImGui_ImplVulkan_AddTexture` as a `VkDescriptorSet`.

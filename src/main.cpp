@@ -226,7 +226,7 @@ int main(int, char **) {
     }
 
     MainScene = std::make_unique<Scene>(*VC, w, h);
-    MainScene->TC.DescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.OffscreenImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    MainScene->TC.DescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     ImVec4 clear_color = {0.45f, 0.55f, 0.60f, 1.f};
 

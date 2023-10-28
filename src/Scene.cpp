@@ -42,6 +42,19 @@ void main() {
 }
 )frag_shader";
 
+vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
+    const auto props = physical_device.getProperties();
+    const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
+    if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
+    if (counts & vk::SampleCountFlagBits::e32) return vk::SampleCountFlagBits::e32;
+    if (counts & vk::SampleCountFlagBits::e16) return vk::SampleCountFlagBits::e16;
+    if (counts & vk::SampleCountFlagBits::e8) return vk::SampleCountFlagBits::e8;
+    if (counts & vk::SampleCountFlagBits::e4) return vk::SampleCountFlagBits::e4;
+    if (counts & vk::SampleCountFlagBits::e2) return vk::SampleCountFlagBits::e2;
+
+    return vk::SampleCountFlagBits::e1;
+}
+
 Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
     TC.Extent = vk::Extent2D{width, height};
 
@@ -73,7 +86,7 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
 
     const vk::PipelineVertexInputStateCreateInfo vertex_input_info{{}, 0u, nullptr, 0u, nullptr};
     const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, vk::PrimitiveTopology::eTriangleList, false};
-    const vk::Viewport viewport{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+    const vk::Viewport viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f};
     const vk::Rect2D scissor{{0, 0}, TC.Extent};
     const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, &viewport, 1, &scissor};
 
@@ -92,10 +105,12 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
     TC.PipelineLayout = VC.Device->createPipelineLayoutUnique({}, nullptr);
 
     const auto format = vk::Format::eB8G8R8A8Unorm;
+    // Render multisampled into the offscreen image, then resolve into a single-sampled resolve image.
+    const auto msaa_samples = GetMaxUsableSampleCount(VC.PhysicalDevice);
     const vk::AttachmentDescription color_attachment{
         {},
         format,
-        vk::SampleCountFlagBits::e1,
+        msaa_samples,
         vk::AttachmentLoadOp::eClear,
         vk::AttachmentStoreOp::eStore,
         {},
@@ -103,7 +118,32 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
         vk::ImageLayout::eUndefined,
         vk::ImageLayout::eShaderReadOnlyOptimal};
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::PipelineMultisampleStateCreateInfo multisampling{{}, vk::SampleCountFlagBits::e1, false, 1.0};
+
+    const vk::AttachmentDescription resolve_attachment{
+        {},
+        format,
+        vk::SampleCountFlagBits::e1, // Single-sampled resolve.
+        {},
+        vk::AttachmentStoreOp::eStore,
+        {},
+        {},
+        vk::ImageLayout::eColorAttachmentOptimal,
+        vk::ImageLayout::eShaderReadOnlyOptimal};
+    const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref};
+    const vk::SubpassDependency subpass_dependency{
+        VK_SUBPASS_EXTERNAL,
+        0,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        {},
+        vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite};
+
+    const std::array attachments{color_attachment, resolve_attachment};
+    TC.RenderPass = VC.Device->createRenderPassUnique({{}, uint(attachments.size()), attachments.data(), 1, &subpass, 1, &subpass_dependency});
+
+    const vk::PipelineMultisampleStateCreateInfo multisampling{{}, msaa_samples, false};
     const vk::PipelineColorBlendAttachmentState color_blend_attachment{
         {},
         /*srcCol*/ vk::BlendFactor::eOne,
@@ -114,38 +154,50 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
         /*alphaBlend*/ vk::BlendOp::eAdd,
         vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
     const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref};
-    const vk::SubpassDependency subpass_dependency{VK_SUBPASS_EXTERNAL, 0, vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite};
-    TC.RenderPass = VC.Device->createRenderPassUnique(vk::RenderPassCreateInfo{{}, 1, &color_attachment, 1, &subpass, 1, &subpass_dependency});
-
     const vk::GraphicsPipelineCreateInfo pipeline_info{{}, 2, pipeline_shader_stages.data(), &vertex_input_info, &input_assemply, nullptr, &viewport_state, &rasterizer, &multisampling, nullptr, &color_blending, nullptr, *TC.PipelineLayout, *TC.RenderPass, 0};
     TC.GraphicsPipeline = VC.Device->createGraphicsPipelineUnique({}, pipeline_info).value;
 
-    // Create an offscreen image to render the triangle into.
-    const vk::ImageCreateInfo image_info{
+    // Create an offscreen image to render the scene into.
+    const vk::ImageCreateInfo offscreen_image_info{
         {},
         vk::ImageType::e2D,
         format,
         vk::Extent3D{width, height, 1},
         1,
         1,
-        vk::SampleCountFlagBits::e1,
+        msaa_samples,
         vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc,
-        vk::SharingMode::eExclusive,
-        0,
-        nullptr,
-        vk::ImageLayout::eUndefined};
+        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+        vk::SharingMode::eExclusive};
 
-    TC.OffscreenImage = VC.Device->createImageUnique(image_info);
+    TC.OffscreenImage = VC.Device->createImageUnique(offscreen_image_info);
     const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(TC.OffscreenImage.get());
     TC.OffscreenImageMemory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
     VC.Device->bindImageMemory(TC.OffscreenImage.get(), TC.OffscreenImageMemory.get(), 0);
     TC.OffscreenImageView = VC.Device->createImageViewUnique({{}, TC.OffscreenImage.get(), vk::ImageViewType::e2D, format, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
+    const vk::ImageCreateInfo resolve_image_info{
+        {},
+        vk::ImageType::e2D,
+        format,
+        vk::Extent3D{width, height, 1},
+        1,
+        1,
+        vk::SampleCountFlagBits::e1, // Single-sampled resolve image.
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+        vk::SharingMode::eExclusive};
+
+    TC.ResolveImage = VC.Device->createImageUnique(resolve_image_info);
+    const auto resolve_image_mem_reqs = VC.Device->getImageMemoryRequirements(TC.ResolveImage.get());
+    TC.ResolveImageMemory = VC.Device->allocateMemoryUnique({resolve_image_mem_reqs.size, VC.FindMemoryType(resolve_image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+    VC.Device->bindImageMemory(TC.ResolveImage.get(), TC.ResolveImageMemory.get(), 0);
+    TC.ResolveImageView = VC.Device->createImageViewUnique({{}, TC.ResolveImage.get(), vk::ImageViewType::e2D, format, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+
     // Create a framebuffer using the offscreen image.
     const uint framebuffer_count = 1;
-    const vk::FramebufferCreateInfo framebuffer_info{{}, TC.RenderPass.get(), 1, &(*TC.OffscreenImageView), width, height, 1};
+    const std::array image_views{*TC.OffscreenImageView, *TC.ResolveImageView};
+    const vk::FramebufferCreateInfo framebuffer_info{{}, TC.RenderPass.get(), uint(image_views.size()), image_views.data(), width, height, 1};
     TC.Framebuffer = VC.Device->createFramebufferUnique(framebuffer_info);
     TC.CommandPool = VC.Device->createCommandPoolUnique({{}, VC.QueueFamily});
     TC.CommandBuffers = VC.Device->allocateCommandBuffersUnique({TC.CommandPool.get(), vk::CommandBufferLevel::ePrimary, framebuffer_count});
@@ -154,7 +206,26 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
     const auto &command_buffer = TC.CommandBuffers[0];
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    const auto render_pass_begin_info = vk::RenderPassBeginInfo{TC.RenderPass.get(), TC.Framebuffer.get(), vk::Rect2D{{0, 0}, TC.Extent}, 1, &clear_value};
+    const vk::ImageMemoryBarrier barrier{
+        {},
+        {},
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED,
+        TC.ResolveImage.get(),
+        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    };
+    command_buffer->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::DependencyFlags{},
+        0, nullptr, // No memory barriers.
+        0, nullptr, // No buffer memory barriers.
+        1, &barrier // 1 image memory barrier.
+    );
+
+    const vk::RenderPassBeginInfo render_pass_begin_info{TC.RenderPass.get(), TC.Framebuffer.get(), vk::Rect2D{{0, 0}, TC.Extent}, 1, &clear_value};
     command_buffer->beginRenderPass(render_pass_begin_info, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *TC.GraphicsPipeline);
     command_buffer->draw(3, 1, 0, 0);
@@ -169,9 +240,6 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
     vk::SamplerCreateInfo sampler_info;
     sampler_info.magFilter = vk::Filter::eLinear;
     sampler_info.minFilter = vk::Filter::eLinear;
-    // sampler_info.borderColor = vk::BorderColor::eIntOpaqueBlack;
-    // sampler_info.compareOp = vk::CompareOp::eAlways;
-    // sampler_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
 
     TC.TextureSampler = VC.Device->createSamplerUnique(sampler_info);
 }
