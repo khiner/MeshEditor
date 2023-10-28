@@ -25,6 +25,9 @@ inline static bool IsExtensionAvailable(const std::vector<vk::ExtensionPropertie
 }
 
 struct VulkanContext {
+    VulkanContext(std::vector<const char *> extensions);
+    ~VulkanContext() = default; // Using unique handles, so no need to manually destroy anything.
+
     vk::UniqueInstance Instance;
     vk::PhysicalDevice PhysicalDevice;
     vk::UniqueDevice Device;
@@ -32,9 +35,6 @@ struct VulkanContext {
     vk::Queue Queue;
     vk::UniquePipelineCache PipelineCache;
     vk::UniqueDescriptorPool DescriptorPool;
-
-    void Init(std::vector<const char *> extensions);
-    void Uninit();
 
     // Find a discrete GPU, or the first available (integrated) GPU.
     vk::PhysicalDevice FindPhysicalDevice() const;

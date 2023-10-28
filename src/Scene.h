@@ -4,6 +4,7 @@
 
 struct Scene {
     Scene(const VulkanContext &, uint width, uint height);
+    ~Scene() = default; // Using unique handles, so no need to manually destroy anything.
 
     struct TriangleContext {
         vk::UniqueShaderModule VertexShaderModule;

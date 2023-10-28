@@ -14,10 +14,10 @@
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 static WindowsState Windows;
-static std::unique_ptr<Scene> MainScene;
 
 // Vulkan data.
-static VulkanContext VC;
+static std::unique_ptr<VulkanContext> VC;
+static std::unique_ptr<Scene> MainScene;
 static ImGui_ImplVulkanH_Window g_MainWindowData;
 static uint g_MinImageCount = 2;
 static bool g_SwapChainRebuild = false;
@@ -28,13 +28,13 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surfa
     wd->Surface = surface;
 
     // Check for WSI support
-    auto res = VC.PhysicalDevice.getSurfaceSupportKHR(VC.QueueFamily, wd->Surface);
+    auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd->Surface);
     if (res != VK_TRUE) throw std::runtime_error("Error no WSI support on physical device 0\n");
 
     // Select surface format.
     const VkFormat requestSurfaceImageFormat[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
     const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC.PhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
+    wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC->PhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
     // Select present mode.
 #ifdef IMGUI_UNLIMITED_FRAME_RATE
@@ -42,22 +42,22 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surfa
 #else
     VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 #endif
-    wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC.PhysicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
+    wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
     // printf("[vulkan] Selected PresentMode = %d\n", wd->PresentMode);
 
     // Create SwapChain, RenderPass, Framebuffer, etc.
     IM_ASSERT(g_MinImageCount >= 2);
-    ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance.get(), VC.PhysicalDevice, VC.Device.get(), wd, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), wd, VC->QueueFamily, nullptr, width, height, g_MinImageCount);
 }
 
 static void CleanupVulkanWindow() {
-    ImGui_ImplVulkanH_DestroyWindow(VC.Instance.get(), VC.Device.get(), &g_MainWindowData, nullptr);
+    ImGui_ImplVulkanH_DestroyWindow(VC->Instance.get(), VC->Device.get(), &g_MainWindowData, nullptr);
 }
 
 static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
-    const VkResult err = vkAcquireNextImageKHR(VC.Device.get(), wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+    const VkResult err = vkAcquireNextImageKHR(VC->Device.get(), wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         g_SwapChainRebuild = true;
         return;
@@ -66,11 +66,11 @@ static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
 
     ImGui_ImplVulkanH_Frame *fd = &wd->Frames[wd->FrameIndex];
     {
-        CheckVk(vkWaitForFences(VC.Device.get(), 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
-        CheckVk(vkResetFences(VC.Device.get(), 1, &fd->Fence));
+        CheckVk(vkWaitForFences(VC->Device.get(), 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
+        CheckVk(vkResetFences(VC->Device.get(), 1, &fd->Fence));
     }
     {
-        CheckVk(vkResetCommandPool(VC.Device.get(), fd->CommandPool, 0));
+        CheckVk(vkResetCommandPool(VC->Device.get(), fd->CommandPool, 0));
         VkCommandBufferBeginInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -106,7 +106,7 @@ static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
         info.pSignalSemaphores = &render_complete_semaphore;
 
         CheckVk(vkEndCommandBuffer(fd->CommandBuffer));
-        CheckVk(vkQueueSubmit(VC.Queue, 1, &info, fd->Fence));
+        CheckVk(vkQueueSubmit(VC->Queue, 1, &info, fd->Fence));
     }
 }
 
@@ -121,7 +121,7 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     info.swapchainCount = 1;
     info.pSwapchains = &wd->Swapchain;
     info.pImageIndices = &wd->FrameIndex;
-    VkResult err = vkQueuePresentKHR(VC.Queue, &info);
+    VkResult err = vkQueuePresentKHR(VC->Queue, &info);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         g_SwapChainRebuild = true;
         return;
@@ -147,11 +147,11 @@ int main(int, char **) {
     SDL_Vulkan_GetInstanceExtensions(&extensions_count, nullptr);
     std::vector<const char *> extensions(extensions_count);
     SDL_Vulkan_GetInstanceExtensions(&extensions_count, extensions.data());
-    VC.Init(extensions);
+    VC = std::make_unique<VulkanContext>(extensions);
 
     // Create window surface.
     VkSurfaceKHR surface;
-    if (SDL_Vulkan_CreateSurface(Window, VC.Instance.get(), &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
+    if (SDL_Vulkan_CreateSurface(Window, VC->Instance.get(), &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
 
     // Create framebuffers.
     int w, h;
@@ -177,13 +177,13 @@ int main(int, char **) {
     // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(Window);
     ImGui_ImplVulkan_InitInfo init_info = {};
-    init_info.Instance = VC.Instance.get();
-    init_info.PhysicalDevice = VC.PhysicalDevice;
-    init_info.Device = VC.Device.get();
-    init_info.QueueFamily = VC.QueueFamily;
-    init_info.Queue = VC.Queue;
-    init_info.PipelineCache = VC.PipelineCache.get();
-    init_info.DescriptorPool = VC.DescriptorPool.get();
+    init_info.Instance = VC->Instance.get();
+    init_info.PhysicalDevice = VC->PhysicalDevice;
+    init_info.Device = VC->Device.get();
+    init_info.QueueFamily = VC->QueueFamily;
+    init_info.Queue = VC->Queue;
+    init_info.PipelineCache = VC->PipelineCache.get();
+    init_info.DescriptorPool = VC->DescriptorPool.get();
     init_info.Subpass = 0;
     init_info.MinImageCount = g_MinImageCount;
     init_info.ImageCount = wd->ImageCount;
@@ -213,19 +213,19 @@ int main(int, char **) {
         // Use any command queue
         vk::CommandPool command_pool = wd->Frames[wd->FrameIndex].CommandPool;
         vk::CommandBuffer command_buffer = wd->Frames[wd->FrameIndex].CommandBuffer;
-        VC.Device->resetCommandPool(command_pool, vk::CommandPoolResetFlags());
+        VC->Device->resetCommandPool(command_pool, vk::CommandPoolResetFlags());
         command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         ImGui_ImplVulkan_CreateFontsTexture(command_buffer);
         command_buffer.end();
 
         vk::SubmitInfo submit;
         submit.setCommandBuffers(command_buffer);
-        VC.Queue.submit(submit);
-        VC.Device->waitIdle();
+        VC->Queue.submit(submit);
+        VC->Device->waitIdle();
         ImGui_ImplVulkan_DestroyFontUploadObjects();
     }
 
-    MainScene = std::make_unique<Scene>(VC, w, h);
+    MainScene = std::make_unique<Scene>(*VC, w, h);
     MainScene->TC.DescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.OffscreenImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     ImVec4 clear_color = {0.45f, 0.55f, 0.60f, 1.f};
@@ -253,7 +253,7 @@ int main(int, char **) {
             SDL_GetWindowSize(Window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(g_MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(VC.Instance.get(), VC.PhysicalDevice, VC.Device.get(), &g_MainWindowData, VC.QueueFamily, nullptr, width, height, g_MinImageCount);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), &g_MainWindowData, VC->QueueFamily, nullptr, width, height, g_MinImageCount);
                 g_MainWindowData.FrameIndex = 0;
                 g_SwapChainRebuild = false;
             }
@@ -299,13 +299,14 @@ int main(int, char **) {
     }
 
     // Cleanup
-    VC.Device->waitIdle();
+    VC->Device->waitIdle();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     DestroyContext();
 
     CleanupVulkanWindow();
-    VC.Uninit();
+    MainScene.reset();
+    VC.reset();
 
     SDL_DestroyWindow(Window);
     SDL_Quit();
