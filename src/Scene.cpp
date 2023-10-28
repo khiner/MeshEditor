@@ -150,25 +150,10 @@ Scene::Scene(const VulkanContext &vc, uint width, uint height) : VC(vc) {
     TC.CommandPool = VC.Device->createCommandPoolUnique({{}, VC.QueueFamily});
     TC.CommandBuffers = VC.Device->allocateCommandBuffersUnique({TC.CommandPool.get(), vk::CommandBufferLevel::ePrimary, framebuffer_count});
 
-    // Image layout transition to VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL before rendering.
-    const vk::ImageMemoryBarrier barrier{
-        {},
-        {},
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        VK_QUEUE_FAMILY_IGNORED,
-        VK_QUEUE_FAMILY_IGNORED,
-        TC.OffscreenImage.get(),
-        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
-    };
-
+    const vk::ClearValue clear_value{};
     const auto &command_buffer = TC.CommandBuffers[0];
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    command_buffer->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        vk::DependencyFlags{}, 0, nullptr, 0, nullptr, 1, &barrier
-    );
-    vk::ClearValue clear_value{};
+
     const auto render_pass_begin_info = vk::RenderPassBeginInfo{TC.RenderPass.get(), TC.Framebuffer.get(), vk::Rect2D{{0, 0}, TC.Extent}, 1, &clear_value};
     command_buffer->beginRenderPass(render_pass_begin_info, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *TC.GraphicsPipeline);
