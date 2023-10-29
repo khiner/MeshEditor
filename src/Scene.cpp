@@ -2,45 +2,10 @@
 
 #include <shaderc/shaderc.hpp>
 
-static const std::string TriangleVertShader = R"vertexshader(
-#version 450
-#extension GL_ARB_separate_shader_objects : enable
+#include "File.h"
 
-out gl_PerVertex {
-    vec4 gl_Position;
-};
-
-layout(location = 0) out vec3 fragColor;
-
-vec2 positions[3] = vec2[](
-    vec2(0.0, -0.5),
-    vec2(0.5, 0.5),
-    vec2(-0.5, 0.5)
-);
-vec3 colors[3] = vec3[](
-    vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
-);
-
-void main() {
-    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-    fragColor = colors[gl_VertexIndex];
-}
-)vertexshader";
-
-static const std::string TriangleFragShader = R"frag_shader(
-#version 450
-#extension GL_ARB_separate_shader_objects : enable
-
-layout(location = 0) in vec3 fragColor;
-
-layout(location = 0) out vec4 outColor;
-
-void main() {
-    outColor = vec4(fragColor, 1.0);
-}
-)frag_shader";
+// All files in `src/Shaders` are copied to `build/Shaders` at build time.
+static const fs::path ShadersDir = "Shaders";
 
 static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
 
@@ -58,6 +23,9 @@ vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physica
 }
 
 Scene::Scene(const VulkanContext &vc) : VC(vc) {
+    static const std::string TriangleVertShader = File::Read(ShadersDir / "Triangle.vert");
+    static const std::string TriangleFragShader = File::Read(ShadersDir / "Triangle.frag");
+
     shaderc::CompileOptions options;
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
 
