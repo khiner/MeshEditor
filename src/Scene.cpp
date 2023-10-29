@@ -58,92 +58,45 @@ vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physica
 }
 
 Scene::Scene(const VulkanContext &vc) : VC(vc) {
-    static const uint framebuffer_count = 1;
-    TC.CommandPool = VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily});
-    TC.CommandBuffers = VC.Device->allocateCommandBuffersUnique({TC.CommandPool.get(), vk::CommandBufferLevel::ePrimary, framebuffer_count});
-
-    TC.PipelineLayout = VC.Device->createPipelineLayoutUnique({}, nullptr);
-
     shaderc::CompileOptions options;
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
 
     shaderc::Compiler compiler;
-    const auto vert_shader_module = compiler.CompileGlslToSpv(TriangleVertShader, shaderc_glsl_vertex_shader, "vertex shader", options);
-    if (vert_shader_module.GetCompilationStatus() != shaderc_compilation_status_success) {
-        throw std::runtime_error(std::format("Failed to compile vertex shader: {}", vert_shader_module.GetErrorMessage()));
+    const auto vert_shader_spv = compiler.CompileGlslToSpv(TriangleVertShader, shaderc_glsl_vertex_shader, "vertex shader", options);
+    if (vert_shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
+        throw std::runtime_error(std::format("Failed to compile vertex shader: {}", vert_shader_spv.GetErrorMessage()));
     }
-    const std::vector<uint> vert_shader_code{vert_shader_module.cbegin(), vert_shader_module.cend()};
-    const auto vert_size = std::distance(vert_shader_code.begin(), vert_shader_code.end());
-    const vk::ShaderModuleCreateInfo vert_shader_info{{}, vert_size * sizeof(uint), vert_shader_code.data()};
-    TC.VertexShaderModule = VC.Device->createShaderModuleUnique(vert_shader_info);
+    const std::vector<uint> vert_shader_code{vert_shader_spv.cbegin(), vert_shader_spv.cend()};
+    const auto vert_shader_module = VC.Device->createShaderModuleUnique({{}, vert_shader_code});
 
-    const auto frag_shader_module = compiler.CompileGlslToSpv(TriangleFragShader, shaderc_glsl_fragment_shader, "fragment shader", options);
-    if (frag_shader_module.GetCompilationStatus() != shaderc_compilation_status_success) {
-        throw std::runtime_error(std::format("Failed to compile fragment shader: {}", frag_shader_module.GetErrorMessage()));
+    const auto frag_shader_spv = compiler.CompileGlslToSpv(TriangleFragShader, shaderc_glsl_fragment_shader, "fragment shader", options);
+    if (frag_shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
+        throw std::runtime_error(std::format("Failed to compile fragment shader: {}", frag_shader_spv.GetErrorMessage()));
     }
-    const auto frag_shader_code = std::vector<uint>{frag_shader_module.cbegin(), frag_shader_module.cend()};
-    const auto frag_size = std::distance(frag_shader_code.begin(), frag_shader_code.end());
-    const vk::ShaderModuleCreateInfo frag_shader_info{{}, frag_size * sizeof(uint), frag_shader_code.data()};
-    TC.FragmentShaderModule = VC.Device->createShaderModuleUnique(frag_shader_info);
+    const std::vector<uint> frag_shader_code{frag_shader_spv.cbegin(), frag_shader_spv.cend()};
+    const auto frag_shader_module = VC.Device->createShaderModuleUnique({{}, frag_shader_code});
 
-    const vk::PipelineShaderStageCreateInfo vert_shader_stage_info{{}, vk::ShaderStageFlagBits::eVertex, *TC.VertexShaderModule, "main"};
-    const vk::PipelineShaderStageCreateInfo frag_shader_stage_info{{}, vk::ShaderStageFlagBits::eFragment, *TC.FragmentShaderModule, "main"};
-    TC.ShaderStages = {vert_shader_stage_info, frag_shader_stage_info};
+    const std::vector<vk::PipelineShaderStageCreateInfo> shader_stages{
+        {{}, vk::ShaderStageFlagBits::eVertex, *vert_shader_module, "main"},
+        {{}, vk::ShaderStageFlagBits::eFragment, *frag_shader_module, "main"},
+    };
 
     // Render multisampled into the offscreen image, then resolve into a single-sampled resolve image.
     TC.MsaaSamples = GetMaxUsableSampleCount(VC.PhysicalDevice);
-    const vk::AttachmentDescription color_attachment{
-        {},
-        ImageFormat,
-        TC.MsaaSamples,
-        vk::AttachmentLoadOp::eClear,
-        vk::AttachmentStoreOp::eStore,
-        {},
-        {},
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eShaderReadOnlyOptimal};
+    const std::vector<vk::AttachmentDescription> attachments{
+        // Multi-sampled offscreen image.
+        {{}, ImageFormat, TC.MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Single-sampled resolve.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+    };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-
-    const vk::AttachmentDescription resolve_attachment{
-        {},
-        ImageFormat,
-        vk::SampleCountFlagBits::e1, // Single-sampled resolve.
-        {},
-        vk::AttachmentStoreOp::eStore,
-        {},
-        {},
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::eShaderReadOnlyOptimal};
     const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref};
-    const vk::SubpassDependency subpass_dependency{
-        VK_SUBPASS_EXTERNAL,
-        0,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        {},
-        vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite};
-
-    const std::array attachments{color_attachment, resolve_attachment};
-    TC.RenderPass = VC.Device->createRenderPassUnique({{}, uint(attachments.size()), attachments.data(), 1, &subpass, 1, &subpass_dependency});
-
-    vk::SamplerCreateInfo sampler_info;
-    sampler_info.magFilter = vk::Filter::eLinear;
-    sampler_info.minFilter = vk::Filter::eLinear;
-    TC.TextureSampler = VC.Device->createSamplerUnique(sampler_info);
-}
-
-bool Scene::Render(uint width, uint height, const glm::vec4 &bg_color) {
-    if (TC.Extent.width == width && TC.Extent.height == height) return false;
-
-    TC.Extent = vk::Extent2D{width, height};
-    const vk::Viewport viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f};
-    const vk::Rect2D scissor{{0, 0}, TC.Extent};
-    const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, &viewport, 1, &scissor};
+    TC.RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     const vk::PipelineVertexInputStateCreateInfo vertex_input_info{{}, 0u, nullptr, 0u, nullptr};
     const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, vk::PrimitiveTopology::eTriangleList, false};
+    const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     const vk::PipelineRasterizationStateCreateInfo rasterizer{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.0f};
     const vk::PipelineMultisampleStateCreateInfo multisampling{{}, TC.MsaaSamples, false};
     const vk::PipelineColorBlendAttachmentState color_blend_attachment{
@@ -156,13 +109,45 @@ bool Scene::Render(uint width, uint height, const glm::vec4 &bg_color) {
         /*alphaBlend*/ vk::BlendOp::eAdd,
         vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
     const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment};
-    const vk::GraphicsPipelineCreateInfo pipeline_info{{}, 2, TC.ShaderStages.data(), &vertex_input_info, &input_assemply, nullptr, &viewport_state, &rasterizer, &multisampling, nullptr, &color_blending, nullptr, *TC.PipelineLayout, *TC.RenderPass, 0};
+    const std::array dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamic_state_info{{}, dynamic_states};
 
-    VC.Device->waitIdle();
+    auto pipeline_layout = VC.Device->createPipelineLayoutUnique({}, nullptr);
+    const vk::GraphicsPipelineCreateInfo pipeline_info{
+        {},
+        shader_stages,
+        &vertex_input_info,
+        &input_assemply,
+        nullptr,
+        &viewport_state,
+        &rasterizer,
+        &multisampling,
+        nullptr,
+        &color_blending,
+        &dynamic_state_info,
+        *pipeline_layout,
+        *TC.RenderPass,
+    };
     TC.GraphicsPipeline = VC.Device->createGraphicsPipelineUnique({}, pipeline_info).value;
 
+    static const uint framebuffer_count = 1;
+    TC.CommandPool = VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily});
+    TC.CommandBuffers = VC.Device->allocateCommandBuffersUnique({TC.CommandPool.get(), vk::CommandBufferLevel::ePrimary, framebuffer_count});
+
+    vk::SamplerCreateInfo sampler_info;
+    sampler_info.magFilter = vk::Filter::eLinear;
+    sampler_info.minFilter = vk::Filter::eLinear;
+    TC.TextureSampler = VC.Device->createSamplerUnique(sampler_info);
+}
+
+bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
+    if (TC.Extent.width == width && TC.Extent.height == height) return false;
+
+    TC.Extent = vk::Extent2D{width, height};
+    VC.Device->waitIdle();
+
     // Create an offscreen image to render the scene into.
-    TC.OffscreenImage = VC.Device->createImageUnique({
+    const auto offscreen_image = VC.Device->createImageUnique({
         {},
         vk::ImageType::e2D,
         ImageFormat,
@@ -174,10 +159,10 @@ bool Scene::Render(uint width, uint height, const glm::vec4 &bg_color) {
         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
         vk::SharingMode::eExclusive,
     });
-    const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(TC.OffscreenImage.get());
-    TC.OffscreenImageMemory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(TC.OffscreenImage.get(), TC.OffscreenImageMemory.get(), 0);
-    TC.OffscreenImageView = VC.Device->createImageViewUnique({{}, TC.OffscreenImage.get(), vk::ImageViewType::e2D, ImageFormat, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(offscreen_image.get());
+    const auto offscreen_image_memory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+    VC.Device->bindImageMemory(offscreen_image.get(), offscreen_image_memory.get(), 0);
+    const auto offscreen_image_view = VC.Device->createImageViewUnique({{}, offscreen_image.get(), vk::ImageViewType::e2D, ImageFormat, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
     TC.ResolveImage = VC.Device->createImageUnique({
         {},
@@ -197,12 +182,15 @@ bool Scene::Render(uint width, uint height, const glm::vec4 &bg_color) {
     VC.Device->bindImageMemory(TC.ResolveImage.get(), TC.ResolveImageMemory.get(), 0);
     TC.ResolveImageView = VC.Device->createImageViewUnique({{}, TC.ResolveImage.get(), vk::ImageViewType::e2D, ImageFormat, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
-    // Create a framebuffer using the offscreen image.
-    const std::array image_views{*TC.OffscreenImageView, *TC.ResolveImageView};
-    TC.Framebuffer = VC.Device->createFramebufferUnique({{}, TC.RenderPass.get(), uint(image_views.size()), image_views.data(), width, height, 1});
+    const std::array image_views{*offscreen_image_view, *TC.ResolveImageView};
+    const auto framebuffer = VC.Device->createFramebufferUnique({{}, TC.RenderPass.get(), image_views, width, height, 1});
 
     const auto &command_buffer = TC.CommandBuffers[0];
+    const vk::Viewport viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f};
+    const vk::Rect2D scissor{{0, 0}, TC.Extent};
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    command_buffer->setViewport(0, {viewport});
+    command_buffer->setScissor(0, {scissor});
 
     const vk::ImageMemoryBarrier barrier{
         {},
@@ -223,9 +211,8 @@ bool Scene::Render(uint width, uint height, const glm::vec4 &bg_color) {
         1, &barrier // 1 image memory barrier.
     );
 
-    const vk::ClearValue clear_value{vk::ClearColorValue{bg_color.r, bg_color.g, bg_color.b, bg_color.a}};
-    const vk::RenderPassBeginInfo render_pass_begin_info{TC.RenderPass.get(), TC.Framebuffer.get(), vk::Rect2D{{0, 0}, TC.Extent}, 1, &clear_value};
-    command_buffer->beginRenderPass(render_pass_begin_info, vk::SubpassContents::eInline);
+    const vk::ClearValue clear_value{bg_color};
+    command_buffer->beginRenderPass({TC.RenderPass.get(), framebuffer.get(), vk::Rect2D{{0, 0}, TC.Extent}, 1, &clear_value}, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *TC.GraphicsPipeline);
     command_buffer->draw(3, 1, 0, 0);
     command_buffer->endRenderPass();

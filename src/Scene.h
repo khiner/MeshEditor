@@ -2,38 +2,23 @@
 
 #include "VulkanContext.h"
 
-#include <glm/glm.hpp>
-
 struct Scene {
     Scene(const VulkanContext &);
     ~Scene() = default; // Using unique handles, so no need to manually destroy anything.
 
     // Returns true if the scene was updated.
-    bool Render(uint width, uint height, const glm::vec4 &bg_color);
+    bool Render(uint width, uint height, const vk::ClearColorValue &bg_color);
 
     struct TriangleContext {
+        vk::SampleCountFlagBits MsaaSamples;
+        vk::UniqueRenderPass RenderPass;
+        vk::UniquePipeline GraphicsPipeline;
         vk::UniqueCommandPool CommandPool;
         std::vector<vk::UniqueCommandBuffer> CommandBuffers;
-
-        vk::UniqueShaderModule VertexShaderModule;
-        vk::UniqueShaderModule FragmentShaderModule;
-        std::vector<vk::PipelineShaderStageCreateInfo> ShaderStages;
         vk::UniqueSampler TextureSampler;
-
-        vk::UniquePipelineLayout PipelineLayout;
-        vk::UniquePipeline GraphicsPipeline;
-        vk::UniqueRenderPass RenderPass;
-        vk::UniqueFramebuffer Framebuffer; // Single framebuffer for offscreen rendering.
-
         vk::Extent2D Extent;
-        vk::SampleCountFlagBits MsaaSamples;
 
-        // The scene is rendered to this image.
-        vk::UniqueImage OffscreenImage;
-        vk::UniqueImageView OffscreenImageView;
-        vk::UniqueDeviceMemory OffscreenImageMemory;
-
-        // The image is resolved to this image with MSAA.
+        // The scene is rendered to an offscreen image and then resolved to this image using MSAA.
         vk::UniqueImage ResolveImage;
         vk::UniqueImageView ResolveImageView;
         vk::UniqueDeviceMemory ResolveImageMemory;

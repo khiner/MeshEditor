@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <format>
+#include <glm/vec4.hpp>
 #include <stdexcept>
 
 #include "Scene.h"
@@ -132,7 +133,7 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
 
 using namespace ImGui;
 
-static glm::vec4 ImVec4ToGlmVec4(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
+static vk::ClearColorValue ImVec4ToClearColor(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
 
 int main(int, char **) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
@@ -279,7 +280,7 @@ int main(int, char **) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
             const auto content_region = GetContentRegionAvail();
-            if (MainScene->Render(content_region.x, content_region.y, ImVec4ToGlmVec4(GetStyleColorVec4(ImGuiCol_WindowBg)))) {
+            if (MainScene->Render(content_region.x, content_region.y, ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg)))) {
                 ImGui_ImplVulkan_RemoveTexture(MainSceneDescriptorSet);
                 MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
