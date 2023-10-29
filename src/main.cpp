@@ -266,15 +266,20 @@ int main(int, char **) {
 
         auto dockspace_id = DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
         if (GetFrameCount() == 1) {
-            auto demo_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Right, 0.3f, nullptr, &dockspace_id);
+            auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.25f, nullptr, &dockspace_id);
+            auto demo_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
             DockBuilderDockWindow(Windows.ImGuiDemo.Name, demo_node_id);
-            auto mesh_node_id = dockspace_id;
-            auto controls_node_id = DockBuilderSplitNode(mesh_node_id, ImGuiDir_Left, 0.4f, nullptr, &mesh_node_id);
             DockBuilderDockWindow(Windows.SceneControls.Name, controls_node_id);
-            DockBuilderDockWindow(Windows.Scene.Name, mesh_node_id);
+            DockBuilderDockWindow(Windows.Scene.Name, dockspace_id);
         }
 
         if (Windows.ImGuiDemo.Visible) ShowDemoWindow(&Windows.ImGuiDemo.Visible);
+
+        if (Windows.SceneControls.Visible) {
+            Begin(Windows.SceneControls.Name, &Windows.SceneControls.Visible);
+            if (Button("Recompile shaders")) MainScene->CompileShaders();
+            End();
+        }
 
         if (Windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});

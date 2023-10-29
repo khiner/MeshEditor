@@ -9,6 +9,8 @@ struct Scene {
     // Returns true if the scene was updated.
     bool Render(uint width, uint height, const vk::ClearColorValue &bg_color);
 
+    void CompileShaders();
+
     struct TriangleContext {
         vk::SampleCountFlagBits MsaaSamples;
         vk::UniqueRenderPass RenderPass;
@@ -26,4 +28,6 @@ struct Scene {
 
     const VulkanContext &VC;
     TriangleContext TC;
+
+    bool HasNewShaders{true};
 };

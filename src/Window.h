@@ -8,5 +8,5 @@ struct Window {
 struct WindowsState {
     Window SceneControls{"Scene controls"};
     Window Scene{"Scene"};
-    Window ImGuiDemo{"Dear ImGui Demo", true};
+    Window ImGuiDemo{"Dear ImGui Demo"};
 };

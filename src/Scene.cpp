@@ -4,8 +4,12 @@
 
 #include "File.h"
 
+#ifdef DEBUG_BUILD
+static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
+#elif defined(RELEASE_BUILD)
 // All files in `src/Shaders` are copied to `build/Shaders` at build time.
 static const fs::path ShadersDir = "Shaders";
+#endif
 
 static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
 
@@ -22,9 +26,9 @@ vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physica
     return vk::SampleCountFlagBits::e1;
 }
 
-Scene::Scene(const VulkanContext &vc) : VC(vc) {
-    static const std::string TriangleVertShader = File::Read(ShadersDir / "Triangle.vert");
-    static const std::string TriangleFragShader = File::Read(ShadersDir / "Triangle.frag");
+void Scene::CompileShaders() {
+    const std::string TriangleVertShader = File::Read(ShadersDir / "Triangle.vert");
+    const std::string TriangleFragShader = File::Read(ShadersDir / "Triangle.frag");
 
     shaderc::CompileOptions options;
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
@@ -49,19 +53,6 @@ Scene::Scene(const VulkanContext &vc) : VC(vc) {
         {{}, vk::ShaderStageFlagBits::eFragment, *frag_shader_module, "main"},
     };
 
-    // Render multisampled into the offscreen image, then resolve into a single-sampled resolve image.
-    TC.MsaaSamples = GetMaxUsableSampleCount(VC.PhysicalDevice);
-    const std::vector<vk::AttachmentDescription> attachments{
-        // Multi-sampled offscreen image.
-        {{}, ImageFormat, TC.MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-        // Single-sampled resolve.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
-    };
-    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref};
-    TC.RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
-
     const vk::PipelineVertexInputStateCreateInfo vertex_input_info{{}, 0u, nullptr, 0u, nullptr};
     const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, vk::PrimitiveTopology::eTriangleList, false};
     const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
@@ -77,10 +68,10 @@ Scene::Scene(const VulkanContext &vc) : VC(vc) {
         /*alphaBlend*/ vk::BlendOp::eAdd,
         vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
     const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment};
-    const std::array dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     vk::PipelineDynamicStateCreateInfo dynamic_state_info{{}, dynamic_states};
 
-    auto pipeline_layout = VC.Device->createPipelineLayoutUnique({}, nullptr);
+    const auto pipeline_layout = VC.Device->createPipelineLayoutUnique({}, nullptr);
     const vk::GraphicsPipelineCreateInfo pipeline_info{
         {},
         shader_stages,
@@ -97,6 +88,11 @@ Scene::Scene(const VulkanContext &vc) : VC(vc) {
         *TC.RenderPass,
     };
     TC.GraphicsPipeline = VC.Device->createGraphicsPipelineUnique({}, pipeline_info).value;
+    HasNewShaders = true;
+}
+
+Scene::Scene(const VulkanContext &vc) : VC(vc) {
+    TC.MsaaSamples = GetMaxUsableSampleCount(VC.PhysicalDevice);
 
     static const uint framebuffer_count = 1;
     TC.CommandPool = VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily});
@@ -106,10 +102,26 @@ Scene::Scene(const VulkanContext &vc) : VC(vc) {
     sampler_info.magFilter = vk::Filter::eLinear;
     sampler_info.minFilter = vk::Filter::eLinear;
     TC.TextureSampler = VC.Device->createSamplerUnique(sampler_info);
+
+    // Render multisampled into the offscreen image, then resolve into a single-sampled resolve image.
+    const std::vector<vk::AttachmentDescription> attachments{
+        // Multi-sampled offscreen image.
+        {{}, ImageFormat, TC.MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Single-sampled resolve.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+    };
+    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref};
+    TC.RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
+
+    CompileShaders();
 }
 
 bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
-    if (TC.Extent.width == width && TC.Extent.height == height) return false;
+    if (TC.Extent.width == width && TC.Extent.height == height && !HasNewShaders) return false;
+
+    HasNewShaders = false;
 
     TC.Extent = vk::Extent2D{width, height};
     VC.Device->waitIdle();
