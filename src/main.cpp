@@ -13,14 +13,14 @@
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
-static WindowsState Windows;
+static ImGui_ImplVulkanH_Window MainWindowData;
+static uint MinImageCount = 2;
+static bool SwapChainRebuild = false;
 
-// Vulkan data.
+static WindowsState Windows;
 static std::unique_ptr<VulkanContext> VC;
 static std::unique_ptr<Scene> MainScene;
-static ImGui_ImplVulkanH_Window g_MainWindowData;
-static uint g_MinImageCount = 2;
-static bool g_SwapChainRebuild = false;
+static vk::DescriptorSet MainSceneDescriptorSet;
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
@@ -46,12 +46,12 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surfa
     // printf("[vulkan] Selected PresentMode = %d\n", wd->PresentMode);
 
     // Create SwapChain, RenderPass, Framebuffer, etc.
-    IM_ASSERT(g_MinImageCount >= 2);
-    ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), wd, VC->QueueFamily, nullptr, width, height, g_MinImageCount);
+    IM_ASSERT(MinImageCount >= 2);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
 }
 
 static void CleanupVulkanWindow() {
-    ImGui_ImplVulkanH_DestroyWindow(VC->Instance.get(), VC->Device.get(), &g_MainWindowData, nullptr);
+    ImGui_ImplVulkanH_DestroyWindow(VC->Instance.get(), VC->Device.get(), &MainWindowData, nullptr);
 }
 
 static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
@@ -59,7 +59,7 @@ static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
     const VkResult err = vkAcquireNextImageKHR(VC->Device.get(), wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
-        g_SwapChainRebuild = true;
+        SwapChainRebuild = true;
         return;
     }
     CheckVk(err);
@@ -111,7 +111,7 @@ static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
 }
 
 static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
-    if (g_SwapChainRebuild) return;
+    if (SwapChainRebuild) return;
 
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
     VkPresentInfoKHR info = {};
@@ -123,7 +123,7 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     info.pImageIndices = &wd->FrameIndex;
     VkResult err = vkQueuePresentKHR(VC->Queue, &info);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
-        g_SwapChainRebuild = true;
+        SwapChainRebuild = true;
         return;
     }
     CheckVk(err);
@@ -131,6 +131,8 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
 }
 
 using namespace ImGui;
+
+static glm::vec4 ImVec4ToGlmVec4(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
 
 int main(int, char **) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
@@ -156,7 +158,7 @@ int main(int, char **) {
     // Create framebuffers.
     int w, h;
     SDL_GetWindowSize(Window, &w, &h);
-    ImGui_ImplVulkanH_Window *wd = &g_MainWindowData;
+    ImGui_ImplVulkanH_Window *wd = &MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
 
     // Setup ImGui context.
@@ -185,7 +187,7 @@ int main(int, char **) {
     init_info.PipelineCache = VC->PipelineCache.get();
     init_info.DescriptorPool = VC->DescriptorPool.get();
     init_info.Subpass = 0;
-    init_info.MinImageCount = g_MinImageCount;
+    init_info.MinImageCount = MinImageCount;
     init_info.ImageCount = wd->ImageCount;
     init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator = nullptr;
@@ -225,10 +227,7 @@ int main(int, char **) {
         ImGui_ImplVulkan_DestroyFontUploadObjects();
     }
 
-    MainScene = std::make_unique<Scene>(*VC, w, h);
-    MainScene->TC.DescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    ImVec4 clear_color = {0.45f, 0.55f, 0.60f, 1.f};
+    MainScene = std::make_unique<Scene>(*VC);
 
     // Main loop
     bool done = false;
@@ -248,14 +247,14 @@ int main(int, char **) {
         }
 
         // Resize swap chain?
-        if (g_SwapChainRebuild) {
+        if (SwapChainRebuild) {
             int width, height;
             SDL_GetWindowSize(Window, &width, &height);
             if (width > 0 && height > 0) {
-                ImGui_ImplVulkan_SetMinImageCount(g_MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), &g_MainWindowData, VC->QueueFamily, nullptr, width, height, g_MinImageCount);
-                g_MainWindowData.FrameIndex = 0;
-                g_SwapChainRebuild = false;
+                ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), &MainWindowData, VC->QueueFamily, nullptr, width, height, MinImageCount);
+                MainWindowData.FrameIndex = 0;
+                SwapChainRebuild = false;
             }
         }
 
@@ -279,7 +278,13 @@ int main(int, char **) {
         if (Windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
-            Image((ImTextureID)MainScene->TC.DescriptorSet, ImGui::GetContentRegionAvail());
+            const auto content_region = GetContentRegionAvail();
+            if (MainScene->Render(content_region.x, content_region.y, ImVec4ToGlmVec4(GetStyleColorVec4(ImGuiCol_WindowBg)))) {
+                ImGui_ImplVulkan_RemoveTexture(MainSceneDescriptorSet);
+                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+
+            Image((ImTextureID)MainSceneDescriptorSet, ImGui::GetContentRegionAvail());
             End();
             PopStyleVar();
         }
@@ -289,10 +294,11 @@ int main(int, char **) {
         ImDrawData *draw_data = GetDrawData();
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
         if (!is_minimized) {
-            wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
-            wd->ClearValue.color.float32[1] = clear_color.y * clear_color.w;
-            wd->ClearValue.color.float32[2] = clear_color.z * clear_color.w;
-            wd->ClearValue.color.float32[3] = clear_color.w;
+            static const glm::vec4 clear_color{0.45f, 0.55f, 0.60f, 1.f};
+            wd->ClearValue.color.float32[0] = clear_color.r * clear_color.a;
+            wd->ClearValue.color.float32[1] = clear_color.g * clear_color.a;
+            wd->ClearValue.color.float32[2] = clear_color.b * clear_color.a;
+            wd->ClearValue.color.float32[3] = clear_color.a;
             FrameRender(wd, draw_data);
             FramePresent(wd);
         }

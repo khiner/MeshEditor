@@ -31,6 +31,7 @@ include_directories(
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${Vulkan_INCLUDE_DIRS}
+    lib/glm
     src
 )
 find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
