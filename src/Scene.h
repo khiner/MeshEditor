@@ -2,6 +2,20 @@
 
 #include "VulkanContext.h"
 
+struct Scene;
+
+struct ShaderPipeline {
+    ShaderPipeline(const Scene &);
+    ~ShaderPipeline() = default;
+
+    void CompileShaders();
+
+    const Scene &S;
+
+    vk::UniquePipelineLayout PipelineLayout;
+    vk::UniquePipeline Pipeline;
+};
+
 struct Scene {
     Scene(const VulkanContext &);
     ~Scene() = default; // Using unique handles, so no need to manually destroy anything.
@@ -11,23 +25,23 @@ struct Scene {
 
     void CompileShaders();
 
-    struct TriangleContext {
-        vk::SampleCountFlagBits MsaaSamples;
-        vk::UniqueRenderPass RenderPass;
-        vk::UniquePipeline GraphicsPipeline;
-        vk::UniqueCommandPool CommandPool;
-        std::vector<vk::UniqueCommandBuffer> CommandBuffers;
-        vk::UniqueSampler TextureSampler;
-        vk::Extent2D Extent;
-
-        // The scene is rendered to an offscreen image and then resolved to this image using MSAA.
-        vk::UniqueImage ResolveImage;
-        vk::UniqueImageView ResolveImageView;
-        vk::UniqueDeviceMemory ResolveImageMemory;
-    };
-
     const VulkanContext &VC;
-    TriangleContext TC;
+
+    const uint FrameBufferCount{1};
+    vk::SampleCountFlagBits MsaaSamples;
+    vk::Extent2D Extent;
+
+    vk::UniqueRenderPass RenderPass;
+    vk::UniqueCommandPool CommandPool;
+    std::vector<vk::UniqueCommandBuffer> CommandBuffers;
+
+    // The scene is rendered to an offscreen image and then resolved to this image using MSAA.
+    vk::UniqueImage ResolveImage;
+    vk::UniqueImageView ResolveImageView;
+    vk::UniqueDeviceMemory ResolveImageMemory;
+    vk::UniqueSampler TextureSampler;
+
+    ShaderPipeline ShaderPipeline;
 
     bool HasNewShaders{true};
 };

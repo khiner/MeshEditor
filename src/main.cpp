@@ -287,7 +287,7 @@ int main(int, char **) {
             const auto content_region = GetContentRegionAvail();
             if (MainScene->Render(content_region.x, content_region.y, ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg)))) {
                 ImGui_ImplVulkan_RemoveTexture(MainSceneDescriptorSet);
-                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TC.TextureSampler.get(), MainScene->TC.ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TextureSampler.get(), MainScene->ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
 
             Image((ImTextureID)MainSceneDescriptorSet, ImGui::GetContentRegionAvail());
