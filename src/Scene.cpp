@@ -13,7 +13,7 @@ static const fs::path ShadersDir = "Shaders";
 
 static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
 
-vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
+static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
     const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
     if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
@@ -25,6 +25,12 @@ vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physica
 
     return vk::SampleCountFlagBits::e1;
 }
+
+static const std::vector<Vertex2D> TriangleVertices = {
+    {{0.f, -0.5f}, {1.f, 0.f, 0.f, 1.f}},
+    {{0.5f, 0.5f}, {0.f, 1.f, 0.f, 1.f}},
+    {{-0.5f, 0.5f}, {0.f, 0.f, 1.f, 1.f}},
+};
 
 Scene::Scene(const VulkanContext &vc)
     : VC(vc),
@@ -123,12 +129,17 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     const vk::ClearValue clear_value{bg_color};
     command_buffer->beginRenderPass({RenderPass.get(), framebuffer.get(), vk::Rect2D{{0, 0}, Extent}, 1, &clear_value}, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.Pipeline);
-    command_buffer->draw(3, 1, 0, 0);
+
+    vk::Buffer vertex_buffers[] = {ShaderPipeline.VertexBuffer.get()};
+    vk::DeviceSize offsets[] = {0};
+    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
+
+    command_buffer->draw(uint(TriangleVertices.size()), 1, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
 
     vk::SubmitInfo submit;
-    submit.setCommandBuffers(command_buffer.get());
+    submit.setCommandBuffers(*command_buffer);
     VC.Queue.submit(submit);
     VC.Device->waitIdle();
 
@@ -141,14 +152,17 @@ void Scene::CompileShaders() {
 }
 
 ShaderPipeline::ShaderPipeline(const Scene &scene)
-    : S(scene), PipelineLayout(S.VC.Device->createPipelineLayoutUnique({})) {}
+    : S(scene),
+      PipelineLayout(S.VC.Device->createPipelineLayoutUnique({})),
+      VertexTransferCommandBuffers(S.VC.Device->allocateCommandBuffersUnique({*S.CommandPool, vk::CommandBufferLevel::ePrimary, S.FrameBufferCount})) {
+    CreateVertexBuffers(TriangleVertices);
+}
 
 void ShaderPipeline::CompileShaders() {
-    static shaderc::Compiler compiler;
+    static const shaderc::Compiler compiler;
     static shaderc::CompileOptions compile_opts;
     compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
 
-    static const vk::PipelineVertexInputStateCreateInfo vertex_input_info{{}, 0u, nullptr, 0u, nullptr};
     static const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, vk::PrimitiveTopology::eTriangleList, false};
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     static const vk::PipelineRasterizationStateCreateInfo rasterizer{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.0f};
@@ -164,7 +178,13 @@ void ShaderPipeline::CompileShaders() {
         vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
     static const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment};
     static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
-    static vk::PipelineDynamicStateCreateInfo dynamic_state_info{{}, dynamic_states};
+    static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
+    static const vk::VertexInputBindingDescription vertex_binding{0, sizeof(Vertex2D), vk::VertexInputRate::eVertex};
+    static const std::vector<vk::VertexInputAttributeDescription> vertex_attrs{
+        {0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex2D, Position)},
+        {1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex2D, Color)},
+    };
+    static const vk::PipelineVertexInputStateCreateInfo vertex_input_state{{}, vertex_binding, vertex_attrs};
 
     const std::string VertShader = File::Read(ShadersDir / "Triangle.vert");
     const std::string FragShader = File::Read(ShadersDir / "Triangle.frag");
@@ -189,24 +209,59 @@ void ShaderPipeline::CompileShaders() {
         {{}, vk::ShaderStageFlagBits::eFragment, *frag_shader_module, "main"},
     };
 
-    const vk::GraphicsPipelineCreateInfo pipeline_info{
+    auto pipeline_result = device->createGraphicsPipelineUnique(
         {},
-        shader_stages,
-        &vertex_input_info,
-        &input_assemply,
-        nullptr,
-        &viewport_state,
-        &rasterizer,
-        &multisampling,
-        nullptr,
-        &color_blending,
-        &dynamic_state_info,
-        *PipelineLayout,
-        *S.RenderPass,
-    };
-    auto pipeline_result = device->createGraphicsPipelineUnique({}, pipeline_info);
+        {
+            {},
+            shader_stages,
+            &vertex_input_state,
+            &input_assemply,
+            nullptr,
+            &viewport_state,
+            &rasterizer,
+            &multisampling,
+            nullptr,
+            &color_blending,
+            &dynamic_state,
+            *PipelineLayout,
+            *S.RenderPass,
+        }
+    );
     if (pipeline_result.result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("Failed to create graphics pipeline: {}", vk::to_string(pipeline_result.result)));
     }
     Pipeline = std::move(pipeline_result.value);
+}
+
+void ShaderPipeline::CreateVertexBuffers(const std::vector<Vertex2D> &vertices) {
+    const auto &device = S.VC.Device;
+    const vk::DeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
+
+    // Create a temporary host-visible buffer and copy the vertex data to it.
+    const auto staging_buffer = device->createBufferUnique({{}, buffer_size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
+    const auto staging_mem_reqs = device->getBufferMemoryRequirements(*staging_buffer);
+    const auto staging_buffer_memory = device->allocateMemoryUnique({staging_mem_reqs.size, S.VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
+    device->bindBufferMemory(*staging_buffer, *staging_buffer_memory, 0);
+    void *mapped_data = device->mapMemory(*staging_buffer_memory, 0, buffer_size);
+    memcpy(mapped_data, vertices.data(), size_t(buffer_size));
+    device->unmapMemory(*staging_buffer_memory);
+
+    // Create a device-local vertex buffer, allocate memory for it, bind it, and copy the data from the staging buffer into it.
+    VertexBuffer = device->createBufferUnique({{}, buffer_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer, vk::SharingMode::eExclusive});
+    const auto vertex_mem_reqs = device->getBufferMemoryRequirements(*VertexBuffer);
+    VertexBufferMemory = device->allocateMemoryUnique({vertex_mem_reqs.size, S.VC.FindMemoryType(vertex_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+    device->bindBufferMemory(*VertexBuffer, *VertexBufferMemory, 0);
+
+    const auto &command_buffer = VertexTransferCommandBuffers[0];
+    command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    vk::BufferCopy copy_region;
+    copy_region.size = buffer_size;
+    command_buffer->copyBuffer(*staging_buffer, *VertexBuffer, std::move(copy_region));
+    command_buffer->end();
+
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(*command_buffer);
+    const auto &queue = S.VC.Queue;
+    queue.submit(submit, nullptr);
+    queue.waitIdle();
 }

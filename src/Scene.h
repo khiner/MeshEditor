@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Vertex.h"
 #include "VulkanContext.h"
 
 struct Scene;
@@ -9,11 +10,16 @@ struct ShaderPipeline {
     ~ShaderPipeline() = default;
 
     void CompileShaders();
+    void CreateVertexBuffers(const std::vector<Vertex2D> &vertices);
 
     const Scene &S;
 
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
+
+    vk::UniqueBuffer VertexBuffer;
+    vk::UniqueDeviceMemory VertexBufferMemory;
+    std::vector<vk::UniqueCommandBuffer> VertexTransferCommandBuffers;
 };
 
 struct Scene {

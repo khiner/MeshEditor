@@ -80,7 +80,7 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
 
     // Create logical device (with 1 queue).
     const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
-    const std::array<float, 1> queue_priority = {1.0f};
+    const std::array queue_priority = {1.0f};
     const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
     Device = PhysicalDevice.createDeviceUnique({{}, queue_info, {}, device_extensions});
     Queue = Device->getQueue(QueueFamily, 0);
