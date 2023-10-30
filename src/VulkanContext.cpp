@@ -1,5 +1,42 @@
 #include "VulkanContext.h"
 
+#include <ranges>
+
+VkBool32 DebugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT type,
+    const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
+    void *user_data
+) {
+    (void)user_data; // Unused.
+
+    const char *severity_str = "";
+    switch (severity) {
+        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: severity_str = "Verbose"; break;
+        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: severity_str = "Info"; break;
+        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: severity_str = "Warning"; break;
+        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: severity_str = "Error"; break;
+        default: break;
+    }
+
+    const char *type_str = "";
+    switch (type) {
+        case VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT: type_str = "General"; break;
+        case VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT: type_str = "Validation"; break;
+        case VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT: type_str = "Performance"; break;
+        default: break;
+    }
+
+    std::cerr << "[Vulkan|" << severity_str << "|" << type_str << "]"
+              << ": " << callback_data->pMessage << std::endl;
+
+    return VK_FALSE; // Return VK_TRUE if the message is to be aborted and VK_FALSE otherwise.
+}
+
+bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &properties, const char *extension) {
+    return std::ranges::any_of(properties, [extension](const auto &prop) { return strcmp(prop.extensionName, extension) == 0; });
+}
+
 VulkanContext::VulkanContext(std::vector<const char *> extensions) {
     const auto instance_props = vk::enumerateInstanceExtensionProperties();
     if (IsExtensionAvailable(instance_props, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
@@ -19,7 +56,7 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
 
     const vk::DispatchLoaderDynamic dldi{Instance.get(), vkGetInstanceProcAddr};
     const auto messenger = Instance->createDebugUtilsMessengerEXTUnique(
-        vk::DebugUtilsMessengerCreateInfoEXT{
+        {
             {},
             vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
                 vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
@@ -35,14 +72,11 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
 
     PhysicalDevice = FindPhysicalDevice();
 
-    const auto queue_family_props = PhysicalDevice.getQueueFamilyProperties();
-    QueueFamily = std::distance(
-        queue_family_props.begin(),
-        std::find_if(queue_family_props.begin(), queue_family_props.end(), [](const auto &qfp) {
-            return qfp.queueFlags & vk::QueueFlagBits::eGraphics;
-        })
-    );
-    if (QueueFamily == static_cast<uint>(-1)) throw std::runtime_error("No graphics queue family found.");
+    const auto qfp = PhysicalDevice.getQueueFamilyProperties();
+    const auto qfp_find_graphics_it = std::ranges::find_if(qfp, [](const auto &qfp) { return bool(qfp.queueFlags & vk::QueueFlagBits::eGraphics); });
+    if (qfp_find_graphics_it == qfp.end()) throw std::runtime_error("No graphics queue family found.");
+
+    QueueFamily = std::ranges::distance(qfp.begin(), qfp_find_graphics_it);
 
     // Create logical device (with 1 queue).
     const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};

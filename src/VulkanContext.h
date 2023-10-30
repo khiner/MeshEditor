@@ -12,17 +12,9 @@ inline static void CheckVk(VkResult err) {
     if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
 }
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData) {
-    std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
-    return VK_FALSE;
-}
+VkBool32 DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT *, void *);
 
-inline static bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &properties, const char *extension) {
-    for (const vk::ExtensionProperties &p : properties)
-        if (strcmp(p.extensionName, extension) == 0)
-            return true;
-    return false;
-}
+bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &properties, const char *extension);
 
 struct VulkanContext {
     VulkanContext(std::vector<const char *> extensions);
