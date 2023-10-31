@@ -8,3 +8,6 @@
 [submodule "lib/glm"]
 	path = lib/glm
 	url = git@github.com:g-truc/glm.git
+[submodule "lib/ImGuizmo"]
+	path = lib/ImGuizmo
+	url = git@github.com:CedricGuillemet/ImGuizmo.git

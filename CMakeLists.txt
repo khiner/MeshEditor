@@ -25,16 +25,17 @@ add_executable(${PROJECT_NAME}
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
+    lib/ImGuizmo/ImGuizmo.cpp
     ${SOURCES}
 )
 include_directories(
+    ${Vulkan_INCLUDE_DIRS}
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${Vulkan_INCLUDE_DIRS}
+    lib/ImGuizmo
     lib/glm
     src
 )
-
 find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} ${SHADERC_LIB})
@@ -47,6 +48,8 @@ endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base)
+
+add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS) # ImVec2 & ImVec4 math operators
 
 # Copy shader files on every release build.
 if(CMAKE_BUILD_TYPE MATCHES Release)

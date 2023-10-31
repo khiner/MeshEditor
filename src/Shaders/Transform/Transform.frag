@@ -15,5 +15,6 @@ layout(set = 0, binding = 1) uniform LightUBO {
 void main() {
     float diffuse = max(dot(normalize(FragNormal), -normalize(Light.Direction)), 0.0);
     vec3 lighting = diffuse * Light.Color;
-    OutColor = vec4(FragColor.rgb * lighting, FragColor.a);
+    // OutColor = vec4(FragColor.rgb * lighting, FragColor.a);
+    OutColor = FragColor;
 }

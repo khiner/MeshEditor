@@ -1,8 +1,13 @@
 #include "Scene.h"
 
+#include "imgui.h"
 #include <shaderc/shaderc.hpp>
 
+#include "ImGuizmo.h"
+
 #include "File.h"
+
+#include <iostream>
 
 #ifdef DEBUG_BUILD
 static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
@@ -25,6 +30,54 @@ static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice 
 }
 
 static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
+
+struct Gizmo {
+    bool Render(Camera &camera) const {
+        using namespace ImGui;
+
+        const auto content_region = GetContentRegionAvail();
+        const auto &window_pos = GetWindowPos();
+        ImGuizmo::BeginFrame();
+        ImGuizmo::SetDrawlist();
+        ImGuizmo::SetOrthographic(false);
+        ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
+
+        static const float ViewManipulateSize = 128;
+        const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
+        auto camera_view = camera.GetViewMatrix();
+        const float camera_distance = camera.GetDistance();
+        ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
+        camera.SetViewMatrix(camera_view);
+
+        return true; // todo only return true when view matrix has changed.
+    }
+
+    void RenderDebug() {
+        using namespace ImGui;
+
+        SeparatorText("Gizmo");
+        using namespace ImGuizmo;
+        const char *interaction_text =
+            IsUsing()         ? "Using Gizmo" :
+            IsOver(TRANSLATE) ? "Translate hovered" :
+            IsOver(ROTATE)    ? "Rotate hovered" :
+            IsOver(SCALE)     ? "Scale hovered" :
+            IsOver()          ? "Hovered" :
+                                "Not interacting";
+        Text("Interaction: %s", interaction_text);
+
+        if (IsKeyPressed(ImGuiKey_T)) ActiveOp = TRANSLATE;
+        if (IsKeyPressed(ImGuiKey_R)) ActiveOp = ROTATE;
+        if (IsKeyPressed(ImGuiKey_S)) ActiveOp = SCALE;
+        if (RadioButton("Translate (T)", ActiveOp == TRANSLATE)) ActiveOp = TRANSLATE;
+        if (RadioButton("Rotate (R)", ActiveOp == ROTATE)) ActiveOp = ROTATE;
+        if (RadioButton("Scale (S)", ActiveOp == SCALE)) ActiveOp = SCALE;
+        if (RadioButton("Universal", ActiveOp == UNIVERSAL)) ActiveOp = UNIVERSAL;
+        // Checkbox("Bound sizing", &ShowBounds);
+    }
+
+    ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
+};
 
 static std::vector<Vertex3D> GenerateCubeVertices() {
     std::vector<Vertex3D> vertices;
@@ -82,7 +135,8 @@ Scene::Scene(const VulkanContext &vc)
       CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
       CommandBuffers(VC.Device->allocateCommandBuffersUnique({CommandPool.get(), vk::CommandBufferLevel::ePrimary, FrameBufferCount})),
       TextureSampler(VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
-      ShaderPipeline(*this) {
+      ShaderPipeline(*this),
+      Gizmo(std::make_unique<::Gizmo>()) {
     // Render into a multisampled offscreen image, then resolve into a single-sampled resolve image.
     const std::vector<vk::AttachmentDescription> attachments{
         // Multisampled offscreen image.
@@ -98,10 +152,12 @@ Scene::Scene(const VulkanContext &vc)
     CompileShaders();
 }
 
-bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
-    if (Extent.width == width && Extent.height == height && !HasNewShaders) return false;
+Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
-    HasNewShaders = false;
+bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
+    if (Extent.width == width && Extent.height == height && !Dirty) return false;
+
+    Dirty = false;
     Extent = vk::Extent2D{width, height};
     VC.Device->waitIdle();
 
@@ -196,7 +252,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
 
 void Scene::CompileShaders() {
     ShaderPipeline.CompileShaders();
-    HasNewShaders = true;
+    Dirty = true;
 }
 
 ShaderPipeline::ShaderPipeline(const Scene &scene)
@@ -215,7 +271,7 @@ ShaderPipeline::ShaderPipeline(const Scene &scene)
 
     // const float aspect_ratio = S.Extent.width / float(S.Extent.height);
     const float aspect_ratio = 1;
-    CreateTransformBuffers(Transform{I, S.Camera.GetViewMatrix(),  S.Camera.GetProjectionMatrix(aspect_ratio)});
+    CreateTransformBuffers({I, S.Camera.GetViewMatrix(), S.Camera.GetProjectionMatrix(aspect_ratio)});
     CreateLightBuffers(S.Light);
 
     // Allocate DescriptorSet
@@ -345,6 +401,40 @@ void ShaderPipeline::CreateBuffer(
     queue.waitIdle();
 }
 
+void ShaderPipeline::UpdateBuffer(
+    const void *data,
+    vk::DeviceSize size,
+    vk::UniqueBuffer &buffer_out
+) {
+    const auto &device = S.VC.Device;
+    const auto &queue = S.VC.Queue;
+
+    // Create a staging buffer
+    const auto staging_buffer = device->createBufferUnique({{}, size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
+    const auto staging_mem_reqs = device->getBufferMemoryRequirements(*staging_buffer);
+    const auto staging_buffer_memory = device->allocateMemoryUnique({staging_mem_reqs.size, S.VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
+    device->bindBufferMemory(*staging_buffer, *staging_buffer_memory, 0);
+
+    // Copy data to the staging buffer
+    void *mapped_data = device->mapMemory(*staging_buffer_memory, 0, size);
+    memcpy(mapped_data, data, size_t(size));
+    device->unmapMemory(*staging_buffer_memory);
+
+    // Prepare a command buffer to copy data from the staging buffer to the device buffer
+    const auto &command_buffer = TransferCommandBuffers[0];
+    command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    vk::BufferCopy copy_region;
+    copy_region.size = size;
+    command_buffer->copyBuffer(*staging_buffer, buffer_out.get(), copy_region);
+    command_buffer->end();
+
+    // Submit the command buffer for execution
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(*command_buffer);
+    queue.submit(submit, nullptr);
+    queue.waitIdle();
+}
+
 void ShaderPipeline::CreateVertexBuffers(const std::vector<Vertex3D> &vertices) {
     const vk::DeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
     const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer;
@@ -357,14 +447,38 @@ void ShaderPipeline::CreateIndexBuffers(const std::vector<uint16_t> &indices) {
     CreateBuffer(indices.data(), buffer_size, usage, IndexBuffer, IndexBufferMemory);
 }
 
-void ShaderPipeline::CreateTransformBuffers(const Transform &transform_data) {
-    const vk::DeviceSize buffer_size = sizeof(transform_data);
+void ShaderPipeline::CreateTransformBuffers(const Transform &transform) {
+    const vk::DeviceSize buffer_size = sizeof(transform);
     const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
-    CreateBuffer(&transform_data, buffer_size, usage, TransformBuffer, TransformBufferMemory);
+    CreateBuffer(&transform, buffer_size, usage, TransformBuffer, TransformBufferMemory);
 }
 
-void ShaderPipeline::CreateLightBuffers(const Light &light_data) {
-    const vk::DeviceSize buffer_size = sizeof(light_data);
+void ShaderPipeline::CreateLightBuffers(const Light &light) {
+    const vk::DeviceSize buffer_size = sizeof(light);
     const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
-    CreateBuffer(&light_data, buffer_size, usage, LightBuffer, LightBufferMemory);
+    CreateBuffer(&light, buffer_size, usage, LightBuffer, LightBufferMemory);
+}
+
+using namespace ImGui;
+
+void Scene::RenderGizmo() {
+    if (Gizmo->Render(Camera)) {
+        const Transform transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(1)};
+        const vk::DeviceSize buffer_size = sizeof(transform);
+        ShaderPipeline.UpdateBuffer(&transform, buffer_size, ShaderPipeline.TransformBuffer);
+        Dirty = true;
+    }
+
+    const auto &io = ImGui::GetIO();
+    const bool window_hovered = IsWindowHovered();
+    if (window_hovered && io.MouseWheel != 0) {
+        Camera.SetDistance(Camera.GetDistance() * (1.f - io.MouseWheel / 16.f));
+        Dirty = true;
+    }
+}
+
+void Scene::RenderControls() {
+    if (Button("Recompile shaders")) CompileShaders();
+    SeparatorText("Debug");
+    Gizmo->RenderDebug();
 }

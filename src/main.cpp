@@ -277,7 +277,7 @@ int main(int, char **) {
 
         if (Windows.SceneControls.Visible) {
             Begin(Windows.SceneControls.Name, &Windows.SceneControls.Visible);
-            if (Button("Recompile shaders")) MainScene->CompileShaders();
+            MainScene->RenderControls();
             End();
         }
 
@@ -290,7 +290,10 @@ int main(int, char **) {
                 MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TextureSampler.get(), MainScene->ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
 
-            Image((ImTextureID)MainSceneDescriptorSet, ImGui::GetContentRegionAvail());
+            const auto &cursor = GetCursorPos();
+            Image((ImTextureID)MainSceneDescriptorSet, content_region, {0, 1}, {1, 0});
+            SetCursorPos(cursor);
+            MainScene->RenderGizmo();
             End();
             PopStyleVar();
         }

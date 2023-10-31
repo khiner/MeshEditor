@@ -24,6 +24,18 @@ struct Transform {
 struct Camera {
     inline glm::mat4 GetViewMatrix() const { return glm::lookAt(Position, Target, Up); }
     inline glm::mat4 GetProjectionMatrix(float aspect_ratio) const { return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip); }
+    inline float GetDistance() const { return glm::distance(Position, Target); }
+
+    inline void SetViewMatrix(const glm::mat4 &view) {
+        const auto view_inv = glm::inverse(view);
+        Position = view_inv[3];
+        Target = view_inv * glm::vec4{0, 0, -1, 0};
+    }
+
+    inline void SetDistance(float distance) {
+        const auto direction = glm::normalize(Position - Target);
+        Position = Target + direction * distance;
+    }
 
     glm::vec3 Position;
     glm::vec3 Target;
@@ -36,6 +48,8 @@ struct Light {
     glm::vec3 Color;
 };
 
+struct Gizmo;
+
 struct ShaderPipeline {
     ShaderPipeline(const Scene &);
     ~ShaderPipeline() = default;
@@ -43,6 +57,7 @@ struct ShaderPipeline {
     void CompileShaders();
 
     void CreateBuffer(const void *data, vk::DeviceSize size, vk::BufferUsageFlags usage, vk::UniqueBuffer &buffer_out, vk::UniqueDeviceMemory &buffer_memory_out);
+    void UpdateBuffer(const void *data, vk::DeviceSize size, vk::UniqueBuffer &buffer_out);
 
     void CreateVertexBuffers(const std::vector<Vertex3D> &);
     void CreateIndexBuffers(const std::vector<uint16_t> &);
@@ -74,10 +89,12 @@ struct ShaderPipeline {
 
 struct Scene {
     Scene(const VulkanContext &);
-    ~Scene() = default; // Using unique handles, so no need to manually destroy anything.
+    ~Scene();
 
     // Returns true if the scene was updated.
     bool Render(uint width, uint height, const vk::ClearColorValue &bg_color);
+    void RenderGizmo();
+    void RenderControls();
 
     void CompileShaders();
 
@@ -101,5 +118,7 @@ struct Scene {
     Light Light{{0, 0, -1}, White}; // White light coming from the Z direction.
 
     ShaderPipeline ShaderPipeline;
-    bool HasNewShaders{true};
+
+    std::unique_ptr<Gizmo> Gizmo;
+    bool Dirty{true};
 };
