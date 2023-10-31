@@ -11,9 +11,6 @@ static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
 static const fs::path ShadersDir = "Shaders";
 #endif
 
-static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
-static const auto FloatFormat = vk::Format::eR32G32B32Sfloat;
-
 static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
     const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
@@ -27,11 +24,57 @@ static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice 
     return vk::SampleCountFlagBits::e1;
 }
 
-static const std::vector<Vertex2D> TriangleVertices = {
-    {{0.f, -0.5f}, {1.f, 0.f, 0.f, 1.f}},
-    {{0.5f, 0.5f}, {0.f, 1.f, 0.f, 1.f}},
-    {{-0.5f, 0.5f}, {0.f, 0.f, 1.f, 1.f}},
-};
+static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
+
+static std::vector<Vertex3D> GenerateCubeVertices() {
+    std::vector<Vertex3D> vertices;
+    glm::vec3 positions[] = {
+        {-0.5f, -0.5f, -0.5f},
+        {0.5f, -0.5f, -0.5f},
+        {0.5f, 0.5f, -0.5f},
+        {-0.5f, 0.5f, -0.5f},
+        {-0.5f, -0.5f, 0.5f},
+        {0.5f, -0.5f, 0.5f},
+        {0.5f, 0.5f, 0.5f},
+        {-0.5f, 0.5f, 0.5f}};
+    glm::vec3 normals[] = {
+        {0.0f, 0.0f, -1.0f}, // Front
+        {0.0f, 0.0f, 1.0f}, // Back
+        {-1.0f, 0.0f, 0.0f}, // Left
+        {1.0f, 0.0f, 0.0f}, // Right
+        {0.0f, 1.0f, 0.0f}, // Top
+        {0.0f, -1.0f, 0.0f} // Bottom
+    };
+    glm::vec4 colors[] = {
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f},
+        {0.0f, 0.0f, 1.0f, 1.0f},
+        {1.0f, 1.0f, 1.0f, 1.0f},
+    };
+    uint8_t faces[] = {
+        0, 1, 2, 2, 3, 0, // Front
+        4, 5, 6, 6, 7, 4, // Back
+        0, 1, 5, 5, 4, 0, // Bottom
+        1, 2, 6, 6, 5, 1, // Right
+        2, 3, 7, 7, 6, 2, // Top
+        3, 0, 4, 4, 7, 3 // Left
+    };
+    for (int i = 0; i < 36; ++i) {
+        uint8_t vertex_index = faces[i];
+        uint8_t face_index = i / 6;
+        vertices.push_back({positions[vertex_index], normals[face_index], colors[vertex_index % 4]});
+    }
+    return vertices;
+}
+
+static std::vector<uint16_t> GenerateCubeIndices() {
+    std::vector<uint16_t> indices;
+    for (uint16_t i = 0; i < 36; ++i) indices.push_back(i);
+    return indices;
+}
+
+static const std::vector<Vertex3D> CubeVertices = GenerateCubeVertices();
+static const std::vector<uint16_t> CubeIndices = GenerateCubeIndices();
 
 Scene::Scene(const VulkanContext &vc)
     : VC(vc),
@@ -131,11 +174,15 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     command_buffer->beginRenderPass({RenderPass.get(), framebuffer.get(), vk::Rect2D{{0, 0}, Extent}, 1, &clear_value}, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.Pipeline);
 
-    vk::Buffer vertex_buffers[] = {ShaderPipeline.VertexBuffer.get()};
-    vk::DeviceSize offsets[] = {0};
-    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
+    vk::DescriptorSet descriptor_sets[] = {ShaderPipeline.DescriptorSet.get()};
+    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
 
-    command_buffer->draw(uint(TriangleVertices.size()), 1, 0, 0);
+    const vk::Buffer vertex_buffers[] = {*ShaderPipeline.VertexBuffer};
+    const vk::DeviceSize offsets[] = {0};
+    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
+    command_buffer->bindIndexBuffer(*ShaderPipeline.IndexBuffer, 0, vk::IndexType::eUint16);
+
+    command_buffer->drawIndexed(uint(CubeIndices.size()), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
 
@@ -154,9 +201,34 @@ void Scene::CompileShaders() {
 
 ShaderPipeline::ShaderPipeline(const Scene &scene)
     : S(scene),
-      PipelineLayout(S.VC.Device->createPipelineLayoutUnique({})),
-      VertexTransferCommandBuffers(S.VC.Device->allocateCommandBuffersUnique({*S.CommandPool, vk::CommandBufferLevel::ePrimary, S.FrameBufferCount})) {
-    CreateVertexBuffers(TriangleVertices);
+      TransferCommandBuffers(S.VC.Device->allocateCommandBuffersUnique({*S.CommandPool, vk::CommandBufferLevel::ePrimary, S.FrameBufferCount})) {
+    // Create descriptor set layout for transform and light buffers
+    std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
+        vk::DescriptorSetLayoutBinding{0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+        vk::DescriptorSetLayoutBinding{1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
+    };
+    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+
+    CreateVertexBuffers(CubeVertices);
+    CreateIndexBuffers(CubeIndices);
+
+    // const float aspect_ratio = S.Extent.width / float(S.Extent.height);
+    const float aspect_ratio = 1;
+    CreateTransformBuffers(Transform{I, S.Camera.GetViewMatrix(),  S.Camera.GetProjectionMatrix(aspect_ratio)});
+    CreateLightBuffers(S.Light);
+
+    // Allocate DescriptorSet
+    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+
+    // Update DescriptorSet
+    vk::DescriptorBufferInfo transform_buffer_info{*TransformBuffer, 0, VK_WHOLE_SIZE};
+    vk::DescriptorBufferInfo light_buffer_info{*LightBuffer, 0, VK_WHOLE_SIZE};
+    std::array<vk::WriteDescriptorSet, 2> write_descriptor_sets = {
+        vk::WriteDescriptorSet{*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+        vk::WriteDescriptorSet{*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info}};
+    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
 void ShaderPipeline::CompileShaders() {
@@ -180,15 +252,16 @@ void ShaderPipeline::CompileShaders() {
     static const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment};
     static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
-    static const vk::VertexInputBindingDescription vertex_binding{0, sizeof(Vertex2D), vk::VertexInputRate::eVertex};
+    static const vk::VertexInputBindingDescription vertex_binding{0, sizeof(Vertex3D), vk::VertexInputRate::eVertex};
     static const std::vector<vk::VertexInputAttributeDescription> vertex_attrs{
-        {0, 0, FloatFormat, offsetof(Vertex2D, Position)},
-        {1, 0, FloatFormat, offsetof(Vertex2D, Color)},
+        {0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex3D, Position)},
+        {1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex3D, Normal)},
+        {2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(Vertex3D, Color)},
     };
     static const vk::PipelineVertexInputStateCreateInfo vertex_input_state{{}, vertex_binding, vertex_attrs};
 
-    const std::string VertShader = File::Read(ShadersDir / "Basic" / "Basic.vert");
-    const std::string FragShader = File::Read(ShadersDir / "Basic" / "Basic.frag");
+    const std::string VertShader = File::Read(ShadersDir / "Transform" / "Transform.vert");
+    const std::string FragShader = File::Read(ShadersDir / "Transform" / "Transform.frag");
 
     const auto &device = S.VC.Device;
     const auto vert_shader_spv = compiler.CompileGlslToSpv(VertShader, shaderc_glsl_vertex_shader, "vertex shader", compile_opts);
@@ -234,35 +307,64 @@ void ShaderPipeline::CompileShaders() {
     Pipeline = std::move(pipeline_result.value);
 }
 
-void ShaderPipeline::CreateVertexBuffers(const std::vector<Vertex2D> &vertices) {
+void ShaderPipeline::CreateBuffer(
+    const void *data,
+    vk::DeviceSize size,
+    vk::BufferUsageFlags usage,
+    vk::UniqueBuffer &buffer_out,
+    vk::UniqueDeviceMemory &buffer_memory_out
+) {
     const auto &device = S.VC.Device;
-    const vk::DeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
+    const auto &queue = S.VC.Queue;
 
-    // Create a temporary host-visible buffer and copy the vertex data to it.
-    const auto staging_buffer = device->createBufferUnique({{}, buffer_size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
+    // Create a staging buffer
+    const auto staging_buffer = device->createBufferUnique({{}, size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
     const auto staging_mem_reqs = device->getBufferMemoryRequirements(*staging_buffer);
     const auto staging_buffer_memory = device->allocateMemoryUnique({staging_mem_reqs.size, S.VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
     device->bindBufferMemory(*staging_buffer, *staging_buffer_memory, 0);
-    void *mapped_data = device->mapMemory(*staging_buffer_memory, 0, buffer_size);
-    memcpy(mapped_data, vertices.data(), size_t(buffer_size));
+
+    void *mapped_data = device->mapMemory(*staging_buffer_memory, 0, size);
+    memcpy(mapped_data, data, size_t(size));
     device->unmapMemory(*staging_buffer_memory);
 
-    // Create a device-local vertex buffer, allocate memory for it, bind it, and copy the data from the staging buffer into it.
-    VertexBuffer = device->createBufferUnique({{}, buffer_size, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer, vk::SharingMode::eExclusive});
-    const auto vertex_mem_reqs = device->getBufferMemoryRequirements(*VertexBuffer);
-    VertexBufferMemory = device->allocateMemoryUnique({vertex_mem_reqs.size, S.VC.FindMemoryType(vertex_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    device->bindBufferMemory(*VertexBuffer, *VertexBufferMemory, 0);
+    buffer_out = device->createBufferUnique({{}, size, usage, vk::SharingMode::eExclusive});
+    const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer_out);
+    buffer_memory_out = device->allocateMemoryUnique({buffer_mem_reqs.size, S.VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+    device->bindBufferMemory(*buffer_out, *buffer_memory_out, 0);
 
-    const auto &command_buffer = VertexTransferCommandBuffers[0];
+    const auto &command_buffer = TransferCommandBuffers[0];
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     vk::BufferCopy copy_region;
-    copy_region.size = buffer_size;
-    command_buffer->copyBuffer(*staging_buffer, *VertexBuffer, std::move(copy_region));
+    copy_region.size = size;
+    command_buffer->copyBuffer(*staging_buffer, *buffer_out, copy_region);
     command_buffer->end();
 
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*command_buffer);
-    const auto &queue = S.VC.Queue;
     queue.submit(submit, nullptr);
     queue.waitIdle();
+}
+
+void ShaderPipeline::CreateVertexBuffers(const std::vector<Vertex3D> &vertices) {
+    const vk::DeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
+    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer;
+    CreateBuffer(vertices.data(), buffer_size, usage, VertexBuffer, VertexBufferMemory);
+}
+
+void ShaderPipeline::CreateIndexBuffers(const std::vector<uint16_t> &indices) {
+    const vk::DeviceSize buffer_size = sizeof(indices[0]) * indices.size();
+    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer;
+    CreateBuffer(indices.data(), buffer_size, usage, IndexBuffer, IndexBufferMemory);
+}
+
+void ShaderPipeline::CreateTransformBuffers(const Transform &transform_data) {
+    const vk::DeviceSize buffer_size = sizeof(transform_data);
+    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
+    CreateBuffer(&transform_data, buffer_size, usage, TransformBuffer, TransformBufferMemory);
+}
+
+void ShaderPipeline::CreateLightBuffers(const Light &light_data) {
+    const vk::DeviceSize buffer_size = sizeof(light_data);
+    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
+    CreateBuffer(&light_data, buffer_size, usage, LightBuffer, LightBufferMemory);
 }
