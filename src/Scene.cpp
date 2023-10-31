@@ -137,16 +137,20 @@ Scene::Scene(const VulkanContext &vc)
       TextureSampler(VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
       ShaderPipeline(*this),
       Gizmo(std::make_unique<::Gizmo>()) {
-    // Render into a multisampled offscreen image, then resolve into a single-sampled resolve image.
+    // Perform depth testing, render into a multisampled offscreen image, then resolve into a single-sampled resolve image.
     const std::vector<vk::AttachmentDescription> attachments{
+        // Depth attachment.
+        {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
         // Multisampled offscreen image.
         {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         // Single-sampled resolve.
         {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref};
+    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal}; // Reference to the depth attachment.
+    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
+
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     CompileShaders();
@@ -160,6 +164,24 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     Dirty = false;
     Extent = vk::Extent2D{width, height};
     VC.Device->waitIdle();
+
+    // Create a depth image, allocate memory, bind it, and create a depth image view
+    const auto depth_image = VC.Device->createImageUnique({
+        {},
+        vk::ImageType::e2D,
+        vk::Format::eD32Sfloat,
+        vk::Extent3D{width, height, 1},
+        1,
+        1,
+        vk::SampleCountFlagBits::e4,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eDepthStencilAttachment,
+        vk::SharingMode::eExclusive,
+    });
+    const auto depth_mem_reqs = VC.Device->getImageMemoryRequirements(depth_image.get());
+    const auto depth_image_memory = VC.Device->allocateMemoryUnique({depth_mem_reqs.size, VC.FindMemoryType(depth_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+    VC.Device->bindImageMemory(depth_image.get(), depth_image_memory.get(), 0);
+    const auto depth_image_view = VC.Device->createImageViewUnique({{}, depth_image.get(), vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}});
 
     // Create an offscreen image to render the scene into.
     const auto offscreen_image = VC.Device->createImageUnique({
@@ -197,7 +219,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     VC.Device->bindImageMemory(ResolveImage.get(), ResolveImageMemory.get(), 0);
     ResolveImageView = VC.Device->createImageViewUnique({{}, ResolveImage.get(), vk::ImageViewType::e2D, ImageFormat, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
-    const std::array image_views{*offscreen_image_view, *ResolveImageView};
+    const std::array image_views{*depth_image_view, *offscreen_image_view, *ResolveImageView};
     const auto framebuffer = VC.Device->createFramebufferUnique({{}, RenderPass.get(), image_views, width, height, 1});
 
     const auto &command_buffer = CommandBuffers[0];
@@ -226,8 +248,12 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         1, &barrier // 1 image memory barrier.
     );
 
-    const vk::ClearValue clear_value{bg_color};
-    command_buffer->beginRenderPass({RenderPass.get(), framebuffer.get(), vk::Rect2D{{0, 0}, Extent}, 1, &clear_value}, vk::SubpassContents::eInline);
+    const vk::ClearValue clear_values[3] = {
+        vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}}, // Clear value for the depth attachment.
+        vk::ClearValue{bg_color}, // Clear value for the color attachment.
+        vk::ClearValue{}, // Placeholder for the resolve attachment (it's not being cleared, so the value is ignored).
+    };
+    command_buffer->beginRenderPass({RenderPass.get(), framebuffer.get(), vk::Rect2D{{0, 0}, Extent}, 3, clear_values}, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.Pipeline);
 
     vk::DescriptorSet descriptor_sets[] = {ShaderPipeline.DescriptorSet.get()};
@@ -298,13 +324,14 @@ void ShaderPipeline::CompileShaders() {
     static const vk::PipelineMultisampleStateCreateInfo multisampling{{}, S.MsaaSamples, false};
     static const vk::PipelineColorBlendAttachmentState color_blend_attachment{
         {},
-        /*srcCol*/ vk::BlendFactor::eOne,
-        /*dstCol*/ vk::BlendFactor::eZero,
-        /*colBlend*/ vk::BlendOp::eAdd,
-        /*srcAlpha*/ vk::BlendFactor::eOne,
-        /*dstAlpha*/ vk::BlendFactor::eZero,
-        /*alphaBlend*/ vk::BlendOp::eAdd,
-        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
+        vk::BlendFactor::eOne, // srcCol
+        vk::BlendFactor::eZero, // dstCol
+        vk::BlendOp::eAdd, // colBlend
+        vk::BlendFactor::eOne, // srcAlpha
+        vk::BlendFactor::eZero, // dstAlpha
+        vk::BlendOp::eAdd, // alphaBlend
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    };
     static const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment};
     static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
@@ -315,6 +342,19 @@ void ShaderPipeline::CompileShaders() {
         {2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(Vertex3D, Color)},
     };
     static const vk::PipelineVertexInputStateCreateInfo vertex_input_state{{}, vertex_binding, vertex_attrs};
+
+    static const vk::PipelineDepthStencilStateCreateInfo depth_stencil_state{
+        {}, // flags
+        VK_TRUE, // depthTestEnable
+        VK_TRUE, // depthWriteEnable
+        vk::CompareOp::eLess, // depthCompareOp
+        VK_FALSE, // depthBoundsTestEnable
+        VK_FALSE, // stencilTestEnable
+        {}, // front (stencil state for front faces)
+        {}, // back (stencil state for back faces)
+        0.0f, // minDepthBounds
+        1.0f // maxDepthBounds
+    };
 
     const std::string VertShader = File::Read(ShadersDir / "Transform" / "Transform.vert");
     const std::string FragShader = File::Read(ShadersDir / "Transform" / "Transform.frag");
@@ -350,7 +390,7 @@ void ShaderPipeline::CompileShaders() {
             &viewport_state,
             &rasterizer,
             &multisampling,
-            nullptr,
+            &depth_stencil_state,
             &color_blending,
             &dynamic_state,
             *PipelineLayout,
@@ -425,7 +465,7 @@ void ShaderPipeline::UpdateBuffer(
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     vk::BufferCopy copy_region;
     copy_region.size = size;
-    command_buffer->copyBuffer(*staging_buffer, buffer_out.get(), copy_region);
+    command_buffer->copyBuffer(*staging_buffer, *buffer_out, copy_region);
     command_buffer->end();
 
     // Submit the command buffer for execution
