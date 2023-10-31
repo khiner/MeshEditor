@@ -12,6 +12,7 @@ static const fs::path ShadersDir = "Shaders";
 #endif
 
 static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
+static const auto FloatFormat = vk::Format::eR32G32B32Sfloat;
 
 static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
@@ -181,13 +182,13 @@ void ShaderPipeline::CompileShaders() {
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
     static const vk::VertexInputBindingDescription vertex_binding{0, sizeof(Vertex2D), vk::VertexInputRate::eVertex};
     static const std::vector<vk::VertexInputAttributeDescription> vertex_attrs{
-        {0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex2D, Position)},
-        {1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex2D, Color)},
+        {0, 0, FloatFormat, offsetof(Vertex2D, Position)},
+        {1, 0, FloatFormat, offsetof(Vertex2D, Color)},
     };
     static const vk::PipelineVertexInputStateCreateInfo vertex_input_state{{}, vertex_binding, vertex_attrs};
 
-    const std::string VertShader = File::Read(ShadersDir / "Triangle.vert");
-    const std::string FragShader = File::Read(ShadersDir / "Triangle.frag");
+    const std::string VertShader = File::Read(ShadersDir / "Basic" / "Basic.vert");
+    const std::string FragShader = File::Read(ShadersDir / "Basic" / "Basic.frag");
 
     const auto &device = S.VC.Device;
     const auto vert_shader_spv = compiler.CompileGlslToSpv(VertShader, shaderc_glsl_vertex_shader, "vertex shader", compile_opts);
