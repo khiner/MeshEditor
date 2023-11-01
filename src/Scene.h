@@ -24,14 +24,26 @@ struct Light {
 
 struct Gizmo;
 
+struct Buffer {
+    vk::DeviceSize Size{0};
+    vk::BufferUsageFlags Usage;
+
+    // GPU buffer.
+    vk::UniqueBuffer Buffer;
+    vk::UniqueDeviceMemory Memory;
+
+    // Host staging buffer, used to transfer data to the GPU.
+    vk::UniqueBuffer StagingBuffer;
+    vk::UniqueDeviceMemory StagingMemory;
+};
+
 struct ShaderPipeline {
     ShaderPipeline(const Scene &);
     ~ShaderPipeline() = default;
 
     void CompileShaders();
 
-    void CreateBuffer(const void *data, vk::DeviceSize size, vk::BufferUsageFlags usage, vk::UniqueBuffer &buffer_out, vk::UniqueDeviceMemory &buffer_memory_out, vk::UniqueBuffer &staging_buffer_out, vk::UniqueDeviceMemory &staging_memory_out);
-    void UpdateBuffer(const void *data, vk::DeviceSize size, vk::UniqueBuffer &buffer_out, vk::UniqueBuffer &staging_buffer_out, vk::UniqueDeviceMemory &staging_buffer_memory_out);
+    void CreateOrUpdateBuffer(Buffer &buffer, const void *data);
 
     void CreateVertexBuffers(const std::vector<Vertex3D> &);
     void CreateIndexBuffers(const std::vector<uint16_t> &);
@@ -46,25 +58,7 @@ struct ShaderPipeline {
 
     vk::UniqueDescriptorSet DescriptorSet;
 
-    vk::UniqueBuffer VertexBuffer;
-    vk::UniqueDeviceMemory VertexBufferMemory;
-    vk::UniqueBuffer VertexStagingBuffer;
-    vk::UniqueDeviceMemory VertexStagingBufferMemory;
-
-    vk::UniqueBuffer IndexBuffer;
-    vk::UniqueDeviceMemory IndexBufferMemory;
-    vk::UniqueBuffer IndexStagingBuffer;
-    vk::UniqueDeviceMemory IndexStagingBufferMemory;
-
-    vk::UniqueBuffer TransformBuffer;
-    vk::UniqueDeviceMemory TransformBufferMemory;
-    vk::UniqueBuffer TransformStagingBuffer;
-    vk::UniqueDeviceMemory TransformStagingBufferMemory;
-
-    vk::UniqueBuffer LightBuffer;
-    vk::UniqueBuffer LightStagingBuffer;
-    vk::UniqueDeviceMemory LightBufferMemory;
-    vk::UniqueDeviceMemory LightStagingBufferMemory;
+    Buffer VertexBuffer, IndexBuffer, TransformBuffer, LightBuffer;
 
     std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
 };
@@ -102,5 +96,6 @@ struct Scene {
     ShaderPipeline ShaderPipeline;
 
     std::unique_ptr<Gizmo> Gizmo;
+
     bool Dirty{true};
 };

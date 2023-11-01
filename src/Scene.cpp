@@ -52,9 +52,9 @@ struct Gizmo {
 
     void RenderDebug() {
         using namespace ImGui;
+        using namespace ImGuizmo;
 
         SeparatorText("Gizmo");
-        using namespace ImGuizmo;
         const char *interaction_text =
             IsUsing()         ? "Using Gizmo" :
             IsOver(TRANSLATE) ? "Translate hovered" :
@@ -259,10 +259,10 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     vk::DescriptorSet descriptor_sets[] = {ShaderPipeline.DescriptorSet.get()};
     command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
 
-    const vk::Buffer vertex_buffers[] = {*ShaderPipeline.VertexBuffer};
+    const vk::Buffer vertex_buffers[] = {*ShaderPipeline.VertexBuffer.Buffer};
     const vk::DeviceSize offsets[] = {0};
     command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
-    command_buffer->bindIndexBuffer(*ShaderPipeline.IndexBuffer, 0, vk::IndexType::eUint16);
+    command_buffer->bindIndexBuffer(*ShaderPipeline.IndexBuffer.Buffer, 0, vk::IndexType::eUint16);
 
     command_buffer->drawIndexed(uint(CubeIndices.size()), 1, 0, 0, 0);
     command_buffer->endRenderPass();
@@ -305,8 +305,8 @@ ShaderPipeline::ShaderPipeline(const Scene &scene)
     DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
 
     // Update DescriptorSet
-    vk::DescriptorBufferInfo transform_buffer_info{*TransformBuffer, 0, VK_WHOLE_SIZE};
-    vk::DescriptorBufferInfo light_buffer_info{*LightBuffer, 0, VK_WHOLE_SIZE};
+    vk::DescriptorBufferInfo transform_buffer_info{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    vk::DescriptorBufferInfo light_buffer_info{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE};
     std::array<vk::WriteDescriptorSet, 2> write_descriptor_sets = {
         vk::WriteDescriptorSet{*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
         vk::WriteDescriptorSet{*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info}};
@@ -403,68 +403,37 @@ void ShaderPipeline::CompileShaders() {
     Pipeline = std::move(pipeline_result.value);
 }
 
-void ShaderPipeline::CreateBuffer(
-    const void *data,
-    vk::DeviceSize size,
-    vk::BufferUsageFlags usage,
-    vk::UniqueBuffer &buffer_out,
-    vk::UniqueDeviceMemory &memory_out,
-    vk::UniqueBuffer &staging_buffer_out,
-    vk::UniqueDeviceMemory &staging_memory_out
-) {
+void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
     const auto &device = S.VC.Device;
     const auto &queue = S.VC.Queue;
 
-    // Create a staging buffer
-    staging_buffer_out = device->createBufferUnique({{}, size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
-    const auto staging_mem_reqs = device->getBufferMemoryRequirements(*staging_buffer_out);
-    staging_memory_out = device->allocateMemoryUnique({staging_mem_reqs.size, S.VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
-    device->bindBufferMemory(*staging_buffer_out, *staging_memory_out, 0);
+    // If the staging buffer or its memory hasn't been created yet, create them
+    if (!buffer.StagingBuffer || !buffer.StagingMemory) {
+        buffer.StagingBuffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
+        const auto staging_mem_reqs = device->getBufferMemoryRequirements(*buffer.StagingBuffer);
+        buffer.StagingMemory = device->allocateMemoryUnique({staging_mem_reqs.size, S.VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
+        device->bindBufferMemory(*buffer.StagingBuffer, *buffer.StagingMemory, 0);
+    }
 
-    void *mapped_data = device->mapMemory(*staging_memory_out, 0, size);
-    memcpy(mapped_data, data, size_t(size));
-    device->unmapMemory(*staging_memory_out);
-
-    buffer_out = device->createBufferUnique({{}, size, usage, vk::SharingMode::eExclusive});
-    const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer_out);
-    memory_out = device->allocateMemoryUnique({buffer_mem_reqs.size, S.VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    device->bindBufferMemory(*buffer_out, *memory_out, 0);
-
-    const auto &command_buffer = TransferCommandBuffers[0];
-    command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    vk::BufferCopy copy_region;
-    copy_region.size = size;
-    command_buffer->copyBuffer(*staging_buffer_out, *buffer_out, copy_region);
-    command_buffer->end();
-
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(*command_buffer);
-    queue.submit(submit, nullptr);
-    queue.waitIdle();
-}
-
-void ShaderPipeline::UpdateBuffer(
-    const void *data,
-    vk::DeviceSize size,
-    vk::UniqueBuffer &buffer_out,
-    vk::UniqueBuffer &staging_buffer_out,
-    vk::UniqueDeviceMemory &staging_buffer_memory_out
-) {
-    const auto &device = S.VC.Device;
-    const auto &queue = S.VC.Queue;
-
-    // Create a staging buffer
     // Copy data to the staging buffer
-    void *mapped_data = device->mapMemory(*staging_buffer_memory_out, 0, size);
-    memcpy(mapped_data, data, size_t(size));
-    device->unmapMemory(*staging_buffer_memory_out);
+    void *mapped_data = device->mapMemory(*buffer.StagingMemory, 0, buffer.Size);
+    memcpy(mapped_data, data, size_t(buffer.Size));
+    device->unmapMemory(*buffer.StagingMemory);
+
+    // If the device buffer or its memory hasn't been created yet, create them
+    if (!buffer.Buffer || !buffer.Memory) {
+        buffer.Buffer = device->createBufferUnique({{}, buffer.Size, buffer.Usage, vk::SharingMode::eExclusive});
+        const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer.Buffer);
+        buffer.Memory = device->allocateMemoryUnique({buffer_mem_reqs.size, S.VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+        device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
+    }
 
     // Prepare a command buffer to copy data from the staging buffer to the device buffer
     const auto &command_buffer = TransferCommandBuffers[0];
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     vk::BufferCopy copy_region;
-    copy_region.size = size;
-    command_buffer->copyBuffer(*staging_buffer_out, *buffer_out, copy_region);
+    copy_region.size = buffer.Size;
+    command_buffer->copyBuffer(*buffer.StagingBuffer, *buffer.Buffer, copy_region);
     command_buffer->end();
 
     // Submit the command buffer for execution
@@ -475,27 +444,27 @@ void ShaderPipeline::UpdateBuffer(
 }
 
 void ShaderPipeline::CreateVertexBuffers(const std::vector<Vertex3D> &vertices) {
-    const vk::DeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
-    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer;
-    CreateBuffer(vertices.data(), buffer_size, usage, VertexBuffer, VertexBufferMemory, VertexStagingBuffer, VertexStagingBufferMemory);
+    VertexBuffer.Size = sizeof(vertices[0]) * vertices.size();
+    VertexBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer;
+    CreateOrUpdateBuffer(VertexBuffer, vertices.data());
 }
 
 void ShaderPipeline::CreateIndexBuffers(const std::vector<uint16_t> &indices) {
-    const vk::DeviceSize buffer_size = sizeof(indices[0]) * indices.size();
-    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer;
-    CreateBuffer(indices.data(), buffer_size, usage, IndexBuffer, IndexBufferMemory, IndexStagingBuffer, IndexStagingBufferMemory);
+    IndexBuffer.Size = sizeof(indices[0]) * indices.size();
+    IndexBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer;
+    CreateOrUpdateBuffer(IndexBuffer, indices.data() );
 }
 
 void ShaderPipeline::CreateTransformBuffers(const Transform &transform) {
-    const vk::DeviceSize buffer_size = sizeof(transform);
-    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
-    CreateBuffer(&transform, buffer_size, usage, TransformBuffer, TransformBufferMemory, TransformStagingBuffer, TransformStagingBufferMemory);
+    TransformBuffer.Size = sizeof(transform);
+    TransformBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
+    CreateOrUpdateBuffer(TransformBuffer, &transform);
 }
 
 void ShaderPipeline::CreateLightBuffers(const Light &light) {
-    const vk::DeviceSize buffer_size = sizeof(light);
-    const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
-    CreateBuffer(&light, buffer_size, usage, LightBuffer, LightBufferMemory, LightStagingBuffer, LightStagingBufferMemory);
+    LightBuffer.Size = sizeof(light);
+    LightBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
+    CreateOrUpdateBuffer(LightBuffer, &light);
 }
 
 using namespace ImGui;
@@ -514,8 +483,7 @@ void Scene::RenderGizmo() {
     if (view_changed) {
         const float aspect_ratio = float(Extent.width) / float(Extent.height);
         const Transform transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-        const vk::DeviceSize buffer_size = sizeof(transform);
-        ShaderPipeline.UpdateBuffer(&transform, buffer_size, ShaderPipeline.TransformBuffer, ShaderPipeline.TransformStagingBuffer, ShaderPipeline.TransformStagingBufferMemory);
+        ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
         Dirty = true;
     }
 }
