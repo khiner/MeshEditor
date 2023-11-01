@@ -309,17 +309,20 @@ ShaderPipeline::ShaderPipeline(const Scene &scene)
     DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
     PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    CreateVertexBuffers(CubeVertices);
-    CreateIndexBuffers(CubeIndices);
-    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
-    CreateTransformBuffers({I, S.Camera.GetViewMatrix(), S.Camera.GetProjectionMatrix(aspect_ratio)});
-    CreateLightBuffers(S.Light);
+    VertexBuffer.Size = sizeof(CubeVertices[0]) * CubeVertices.size();
+    CreateOrUpdateBuffer(VertexBuffer, CubeVertices.data());
 
-    // Allocate DescriptorSet
+    IndexBuffer.Size = sizeof(CubeIndices[0]) * CubeIndices.size();
+    CreateOrUpdateBuffer(IndexBuffer, CubeIndices.data());
+
+    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
+    const Transform initial_transform{I, S.Camera.GetViewMatrix(), S.Camera.GetProjectionMatrix(aspect_ratio)};
+    CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
+    CreateOrUpdateBuffer(LightBuffer, &S.Light);
+
     vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
     DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
 
-    // Update DescriptorSet
     vk::DescriptorBufferInfo transform_buffer_info{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
     vk::DescriptorBufferInfo light_buffer_info{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE};
     std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
@@ -438,7 +441,7 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
 
     // If the device buffer or its memory hasn't been created yet, create them
     if (!buffer.Buffer || !buffer.Memory) {
-        buffer.Buffer = device->createBufferUnique({{}, buffer.Size, buffer.Usage, vk::SharingMode::eExclusive});
+        buffer.Buffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
         const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer.Buffer);
         buffer.Memory = device->allocateMemoryUnique({buffer_mem_reqs.size, S.VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
         device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
@@ -457,30 +460,6 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
     submit.setCommandBuffers(*command_buffer);
     queue.submit(submit, nullptr);
     queue.waitIdle();
-}
-
-void ShaderPipeline::CreateVertexBuffers(const std::vector<Vertex3D> &vertices) {
-    VertexBuffer.Size = sizeof(vertices[0]) * vertices.size();
-    VertexBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer;
-    CreateOrUpdateBuffer(VertexBuffer, vertices.data());
-}
-
-void ShaderPipeline::CreateIndexBuffers(const std::vector<uint16_t> &indices) {
-    IndexBuffer.Size = sizeof(indices[0]) * indices.size();
-    IndexBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer;
-    CreateOrUpdateBuffer(IndexBuffer, indices.data());
-}
-
-void ShaderPipeline::CreateTransformBuffers(const Transform &transform) {
-    TransformBuffer.Size = sizeof(transform);
-    TransformBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
-    CreateOrUpdateBuffer(TransformBuffer, &transform);
-}
-
-void ShaderPipeline::CreateLightBuffers(const Light &light) {
-    LightBuffer.Size = sizeof(light);
-    LightBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformBuffer;
-    CreateOrUpdateBuffer(LightBuffer, &light);
 }
 
 Transform Scene::GetTransform() const {

@@ -23,16 +23,16 @@ struct Light {
 struct Gizmo;
 
 struct Buffer {
+    vk::BufferUsageFlags Usage{};
     vk::DeviceSize Size{0};
-    vk::BufferUsageFlags Usage;
 
     // GPU buffer.
-    vk::UniqueBuffer Buffer;
-    vk::UniqueDeviceMemory Memory;
+    vk::UniqueBuffer Buffer{};
+    vk::UniqueDeviceMemory Memory{};
 
     // Host staging buffer, used to transfer data to the GPU.
-    vk::UniqueBuffer StagingBuffer;
-    vk::UniqueDeviceMemory StagingMemory;
+    vk::UniqueBuffer StagingBuffer{};
+    vk::UniqueDeviceMemory StagingMemory{};
 };
 
 struct ShaderPipeline {
@@ -43,11 +43,6 @@ struct ShaderPipeline {
 
     void CreateOrUpdateBuffer(Buffer &buffer, const void *data);
 
-    void CreateVertexBuffers(const std::vector<Vertex3D> &);
-    void CreateIndexBuffers(const std::vector<uint16_t> &);
-    void CreateTransformBuffers(const Transform &);
-    void CreateLightBuffers(const Light &);
-
     const Scene &S;
 
     vk::UniqueDescriptorSetLayout DescriptorSetLayout;
@@ -56,7 +51,10 @@ struct ShaderPipeline {
 
     vk::UniqueDescriptorSet DescriptorSet;
 
-    Buffer VertexBuffer, IndexBuffer, TransformBuffer, LightBuffer;
+    Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
+    Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
+    Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
+    Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
 
     std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
 };
@@ -92,7 +90,7 @@ struct Scene {
     vk::UniqueSampler TextureSampler;
 
     Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
-    Light Light{{1, 1, 1, 0.8}, {0, 0, -1}}; // White light coming from the Z direction.
+    Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
     ShaderPipeline ShaderPipeline;
 
