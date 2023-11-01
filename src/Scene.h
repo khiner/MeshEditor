@@ -72,6 +72,7 @@ struct Scene {
 
     Transform GetTransform() const;
     void UpdateTransform();
+    void UpdateLight();
 
     const VulkanContext &VC;
 

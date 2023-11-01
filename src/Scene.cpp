@@ -182,7 +182,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     Dirty = false;
     VC.Device->waitIdle();
 
-    // Create a depth image, allocate memory, bind it, and create a depth image view
+    /* Depth */
     const auto depth_image = VC.Device->createImageUnique({
         {},
         vk::ImageType::e2D,
@@ -200,7 +200,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     VC.Device->bindImageMemory(depth_image.get(), depth_image_memory.get(), 0);
     const auto depth_image_view = VC.Device->createImageViewUnique({{}, depth_image.get(), vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}});
 
-    // Create an offscreen image to render the scene into.
+    /* Offscreen */
     const auto offscreen_image = VC.Device->createImageUnique({
         {},
         vk::ImageType::e2D,
@@ -215,9 +215,10 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     });
     const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(offscreen_image.get());
     const auto offscreen_image_memory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(offscreen_image.get(), offscreen_image_memory.get(), 0);
-    const auto offscreen_image_view = VC.Device->createImageViewUnique({{}, offscreen_image.get(), vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    VC.Device->bindImageMemory(*offscreen_image, *offscreen_image_memory, 0);
+    const auto offscreen_image_view = VC.Device->createImageViewUnique({{}, *offscreen_image, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
+    /* Resolve. This image is used to create the final scene texture. */
     ResolveImage = VC.Device->createImageUnique({
         {},
         vk::ImageType::e2D,
@@ -230,14 +231,14 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
         vk::SharingMode::eExclusive,
     });
-
-    const auto resolve_image_mem_reqs = VC.Device->getImageMemoryRequirements(ResolveImage.get());
+    const auto resolve_image_mem_reqs = VC.Device->getImageMemoryRequirements(*ResolveImage);
     ResolveImageMemory = VC.Device->allocateMemoryUnique({resolve_image_mem_reqs.size, VC.FindMemoryType(resolve_image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(ResolveImage.get(), ResolveImageMemory.get(), 0);
-    ResolveImageView = VC.Device->createImageViewUnique({{}, ResolveImage.get(), vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    VC.Device->bindImageMemory(*ResolveImage, *ResolveImageMemory, 0);
+    ResolveImageView = VC.Device->createImageViewUnique({{}, *ResolveImage, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
+    /* Render */
     const std::array image_views{*depth_image_view, *offscreen_image_view, *ResolveImageView};
-    const auto framebuffer = VC.Device->createFramebufferUnique({{}, RenderPass.get(), image_views, width, height, 1});
+    const auto framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, width, height, 1});
 
     const auto &command_buffer = CommandBuffers[0];
     const vk::Viewport viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f};
@@ -246,7 +247,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     command_buffer->setViewport(0, {viewport});
     command_buffer->setScissor(0, {scissor});
 
-    const vk::ImageMemoryBarrier barrier{
+    const std::vector<vk::ImageMemoryBarrier> barriers{{
         {},
         {},
         vk::ImageLayout::eUndefined,
@@ -255,14 +256,14 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         VK_QUEUE_FAMILY_IGNORED,
         ResolveImage.get(),
         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
-    };
+    }};
     command_buffer->pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        vk::DependencyFlags{},
-        0, nullptr, // No memory barriers.
-        0, nullptr, // No buffer memory barriers.
-        1, &barrier // 1 image memory barrier.
+        {}, // No dependency flags.
+        {}, // No memory barriers.
+        {}, // No buffer memory barriers.
+        barriers
     );
 
     const vk::ClearValue clear_values[3] = {
@@ -270,10 +271,10 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         vk::ClearValue{bg_color}, // Clear value for the color attachment.
         vk::ClearValue{}, // Placeholder for the resolve attachment (it's not being cleared, so the value is ignored).
     };
-    command_buffer->beginRenderPass({RenderPass.get(), framebuffer.get(), vk::Rect2D{{0, 0}, Extent}, 3, clear_values}, vk::SubpassContents::eInline);
+    command_buffer->beginRenderPass({*RenderPass, *framebuffer, vk::Rect2D{{0, 0}, Extent}, 3, clear_values}, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.Pipeline);
 
-    vk::DescriptorSet descriptor_sets[] = {ShaderPipeline.DescriptorSet.get()};
+    vk::DescriptorSet descriptor_sets[] = {*ShaderPipeline.DescriptorSet};
     command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
 
     const vk::Buffer vertex_buffers[] = {*ShaderPipeline.VertexBuffer.Buffer};
@@ -473,6 +474,11 @@ void Scene::UpdateTransform() {
     Dirty = true;
 }
 
+void Scene::UpdateLight() {
+    ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.LightBuffer, &Light);
+    Dirty = true;
+}
+
 using namespace ImGui;
 
 void Scene::RenderGizmo() {
@@ -488,6 +494,41 @@ void Scene::RenderGizmo() {
 }
 
 void Scene::RenderControls() {
-    if (Button("Recompile shaders")) CompileShaders();
-    Gizmo->RenderDebug();
+    if (BeginTabBar("Scene controls")) {
+        if (BeginTabItem("Camera")) {
+            bool camera_changed = false;
+            if (Button("Reset camera")) {
+                Camera.Position = {0, 0, 2};
+                Camera.Target = {0, 0, 0};
+                camera_changed = true;
+            }
+            camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
+            camera_changed |= SliderFloat3("Target", &Camera.Target.x, -10, 10);
+            camera_changed |= SliderFloat("Field of view (deg)", &Camera.FieldOfView, 1, 180);
+            camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
+            camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
+            if (camera_changed) {
+                Camera.StopMoving();
+                UpdateTransform();
+            }
+            EndTabItem();
+        }
+        if (BeginTabItem("Light")) {
+            bool light_changed = false;
+            light_changed |= SliderFloat("Ambient intensity", &Light.ColorAndAmbient[3], 0, 1);
+            light_changed |= ColorEdit3("Diffuse color", &Light.ColorAndAmbient[0]);
+            light_changed |= SliderFloat3("Direction", &Light.Direction.x, -1, 1);
+            if (light_changed) UpdateLight();
+            EndTabItem();
+        }
+        if (BeginTabItem("Object")) {
+            Gizmo->RenderDebug();
+            EndTabItem();
+        }
+        if (BeginTabItem("Shader")) {
+            if (Button("Recompile shaders")) CompileShaders();
+            EndTabItem();
+        }
+        EndTabBar();
+    }
 }

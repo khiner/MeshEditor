@@ -8,6 +8,7 @@ float Camera::GetDistance() const { return glm::distance(Position, Target); }
 
 void Camera::SetPositionFromView(const glm::mat4 &view) {
     Position = glm::inverse(view)[3];
+    IsMoving = false;
 }
 
 void Camera::SetTargetDistance(float distance) {
@@ -26,6 +27,11 @@ bool Camera::Tick() {
         SetDistance(glm::mix(distance, TargetDistance, TickSpeed));
     }
     return true;
+}
+
+void Camera::StopMoving() {
+    IsMoving = false;
+    TargetDistance = GetDistance();
 }
 
 void Camera::SetDistance(float distance) {

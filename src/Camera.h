@@ -17,9 +17,11 @@ struct Camera {
     float GetDistance() const;
 
     void SetPositionFromView(const glm::mat4 &view);
-    void SetTargetDistance(float distance);
+
+    void SetTargetDistance(float distance); // Start moving camera to provided distance.
 
     bool Tick(); // Move camera to target distance. Returns true if camera moved.
+    void StopMoving(); // Stop target distance movement.
 
     glm::vec3 Position;
     glm::vec3 Target;
