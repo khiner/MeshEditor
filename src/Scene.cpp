@@ -7,8 +7,6 @@
 
 #include "File.h"
 
-#include <iostream>
-
 #ifdef DEBUG_BUILD
 static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
 #elif defined(RELEASE_BUILD)
@@ -99,10 +97,12 @@ static std::vector<Vertex3D> GenerateCubeVertices() {
         {0.0f, -1.0f, 0.0f} // Bottom
     };
     glm::vec4 colors[] = {
-        {1.0f, 0.0f, 0.0f, 1.0f},
-        {0.0f, 1.0f, 0.0f, 1.0f},
-        {0.0f, 0.0f, 1.0f, 1.0f},
-        {1.0f, 1.0f, 1.0f, 1.0f},
+        {1.0f, 0.0f, 0.0f, 1.0f}, // Front
+        {0.0f, 1.0f, 0.0f, 1.0f}, // Back
+        {0.0f, 0.0f, 1.0f, 1.0f}, // Left
+        {1.0f, 1.0f, 0.0f, 1.0f}, // Right
+        {1.0f, 0.0f, 1.0f, 1.0f}, // Top
+        {0.0f, 1.0f, 1.0f, 1.0f} // Bottom
     };
     uint8_t faces[] = {
         0, 1, 2, 2, 3, 0, // Front
@@ -115,7 +115,7 @@ static std::vector<Vertex3D> GenerateCubeVertices() {
     for (int i = 0; i < 36; ++i) {
         uint8_t vertex_index = faces[i];
         uint8_t face_index = i / 6;
-        vertices.push_back({positions[vertex_index], normals[face_index], colors[vertex_index % 4]});
+        vertices.push_back({positions[vertex_index], normals[face_index], colors[face_index]});
     }
     return vertices;
 }
@@ -199,7 +199,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(offscreen_image.get());
     const auto offscreen_image_memory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
     VC.Device->bindImageMemory(offscreen_image.get(), offscreen_image_memory.get(), 0);
-    const auto offscreen_image_view = VC.Device->createImageViewUnique({{}, offscreen_image.get(), vk::ImageViewType::e2D, ImageFormat, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    const auto offscreen_image_view = VC.Device->createImageViewUnique({{}, offscreen_image.get(), vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
     ResolveImage = VC.Device->createImageUnique({
         {},
@@ -217,7 +217,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     const auto resolve_image_mem_reqs = VC.Device->getImageMemoryRequirements(ResolveImage.get());
     ResolveImageMemory = VC.Device->allocateMemoryUnique({resolve_image_mem_reqs.size, VC.FindMemoryType(resolve_image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
     VC.Device->bindImageMemory(ResolveImage.get(), ResolveImageMemory.get(), 0);
-    ResolveImageView = VC.Device->createImageViewUnique({{}, ResolveImage.get(), vk::ImageViewType::e2D, ImageFormat, vk::ComponentMapping{}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    ResolveImageView = VC.Device->createImageViewUnique({{}, ResolveImage.get(), vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
     const std::array image_views{*depth_image_view, *offscreen_image_view, *ResolveImageView};
     const auto framebuffer = VC.Device->createFramebufferUnique({{}, RenderPass.get(), image_views, width, height, 1});
@@ -519,6 +519,5 @@ void Scene::RenderGizmo() {
 
 void Scene::RenderControls() {
     if (Button("Recompile shaders")) CompileShaders();
-    SeparatorText("Debug");
     Gizmo->RenderDebug();
 }
