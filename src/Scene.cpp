@@ -164,7 +164,7 @@ Scene::Scene(const VulkanContext &vc)
 
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
-    CompileShaders();
+    ShaderPipeline.CompileShaders();
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -204,18 +204,11 @@ void Scene::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
-    const bool viewport_changed = Extent.width != width || Extent.height != height;
-    if (!viewport_changed && !Dirty) return false;
-
-    if (viewport_changed) SetExtent({width, height});
-
-    Dirty = false;
-
-    /* Render */
+void Scene::RecordCommandBuffer() {
     const auto &command_buffer = CommandBuffers[0];
-    command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f});
+    command_buffer->reset({}); // Explicit reset, though not strictly necessary
+    command_buffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
+    command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
     const std::vector<vk::ImageMemoryBarrier> barriers{{
@@ -238,7 +231,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     );
 
     // Clear values for the depth, color, and (placeholder) resolve attachments.
-    const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {bg_color}, {}};
+    const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}, {}};
     command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.Pipeline);
 
@@ -252,7 +245,21 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     command_buffer->drawIndexed(uint(CubeIndices.size()), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
+}
 
+bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
+    const bool viewport_changed = Extent.width != width || Extent.height != height;
+    const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
+    if (!viewport_changed && !bg_color_changed && !Dirty) return false;
+
+    BackgroundColor = bg_color;
+
+    if (viewport_changed) SetExtent({width, height});
+    if (viewport_changed || bg_color_changed) RecordCommandBuffer();
+
+    Dirty = false;
+
+    const auto &command_buffer = CommandBuffers[0];
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*command_buffer);
     VC.Queue.submit(submit);
@@ -263,6 +270,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
 
 void Scene::CompileShaders() {
     ShaderPipeline.CompileShaders();
+    RecordCommandBuffer();
     Dirty = true;
 }
 

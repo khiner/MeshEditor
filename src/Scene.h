@@ -97,6 +97,7 @@ struct Scene {
     const uint FramebufferCount{1};
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
+    vk::ClearColorValue BackgroundColor;
 
     vk::UniqueFramebuffer Framebuffer;
     vk::UniqueRenderPass RenderPass;
@@ -107,6 +108,7 @@ private:
     // Recreates transform, render images (see below) and framebuffer based on the new extent.
     // These are then reused by future renders that don't change the extent.
     void SetExtent(vk::Extent2D);
+    void RecordCommandBuffer();
 
     // We use three images in the render pass:
     // 1) Perform depth testing.
