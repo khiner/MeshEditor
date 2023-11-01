@@ -169,67 +169,38 @@ Scene::Scene(const VulkanContext &vc)
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
+void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_props) {
+    const auto &device = vc.Device;
+    Image = device->createImageUnique(image_info);
+    const auto mem_reqs = device->getImageMemoryRequirements(*Image);
+    Memory = device->allocateMemoryUnique({mem_reqs.size, vc.FindMemoryType(mem_reqs.memoryTypeBits, mem_props)});
+    device->bindImageMemory(*Image, *Memory, 0);
+    view_info.image = *Image;
+    View = device->createImageViewUnique(view_info);
+}
+
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     UpdateTransform(); // Transform depends on the aspect ratio.
 
-    const vk::Extent3D extent_3d{Extent, 1};
+    const vk::Extent3D e3d{Extent, 1};
+    DepthImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, vk::Format::eD32Sfloat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+    );
+    OffscreenImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+    ResolveImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
 
-    /* Depth */
-    DepthImage = VC.Device->createImageUnique({
-        {},
-        vk::ImageType::e2D,
-        vk::Format::eD32Sfloat,
-        extent_3d,
-        1,
-        1,
-        vk::SampleCountFlagBits::e4,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eDepthStencilAttachment,
-        vk::SharingMode::eExclusive,
-    });
-    const auto depth_mem_reqs = VC.Device->getImageMemoryRequirements(*DepthImage);
-    DepthImageMemory = VC.Device->allocateMemoryUnique({depth_mem_reqs.size, VC.FindMemoryType(depth_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(*DepthImage, *DepthImageMemory, 0);
-    DepthImageView = VC.Device->createImageViewUnique({{}, *DepthImage, vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}});
-
-    /* Offscreen */
-    OffscreenImage = VC.Device->createImageUnique({
-        {},
-        vk::ImageType::e2D,
-        ImageFormat,
-        extent_3d,
-        1,
-        1,
-        MsaaSamples,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
-        vk::SharingMode::eExclusive,
-    });
-    const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(*OffscreenImage);
-    OffscreenImageMemory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(*OffscreenImage, *OffscreenImageMemory, 0);
-    OffscreenImageView = VC.Device->createImageViewUnique({{}, *OffscreenImage, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
-
-    /* Resolve. This image is used to create the final scene texture. */
-    ResolveImage = VC.Device->createImageUnique({
-        {},
-        vk::ImageType::e2D,
-        ImageFormat,
-        extent_3d,
-        1,
-        1,
-        vk::SampleCountFlagBits::e1, // Single-sampled resolve image.
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
-        vk::SharingMode::eExclusive,
-    });
-    const auto resolve_image_mem_reqs = VC.Device->getImageMemoryRequirements(*ResolveImage);
-    ResolveImageMemory = VC.Device->allocateMemoryUnique({resolve_image_mem_reqs.size, VC.FindMemoryType(resolve_image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(*ResolveImage, *ResolveImageMemory, 0);
-    ResolveImageView = VC.Device->createImageViewUnique({{}, *ResolveImage, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
-
-    const std::array image_views{*DepthImageView, *OffscreenImageView, *ResolveImageView};
+    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 

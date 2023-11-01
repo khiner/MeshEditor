@@ -35,6 +35,18 @@ struct Buffer {
     vk::UniqueDeviceMemory StagingMemory{};
 };
 
+struct ImageResource {
+    // The `image` in the view info is overwritten.
+    void Create(const VulkanContext &, vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags flags = vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    // Dereference forwards to the image.
+    const vk::Image &operator*() const { return *Image; }
+
+    vk::UniqueImage Image;
+    vk::UniqueImageView View;
+    vk::UniqueDeviceMemory Memory;
+};
+
 struct ShaderPipeline {
     ShaderPipeline(const Scene &);
     ~ShaderPipeline() = default;
@@ -64,7 +76,7 @@ struct Scene {
     ~Scene();
 
     VkSampler GetTextureSampler() const { return TextureSampler.get(); }
-    VkImageView GetResolveImageView() const { return ResolveImageView.get(); }
+    VkImageView GetResolveImageView() const { return ResolveImage.View.get(); }
 
     // Returns true if the scene was updated.
     bool Render(uint width, uint height, const vk::ClearColorValue &bg_color);
@@ -100,17 +112,10 @@ private:
     // 1) Perform depth testing.
     // 2) Render into a multisampled offscreen image.
     // 3) Resolve into a single-sampled resolve image.
-    vk::UniqueImage DepthImage;
-    vk::UniqueImageView DepthImageView;
-    vk::UniqueDeviceMemory DepthImageMemory;
-
-    vk::UniqueImage OffscreenImage;
-    vk::UniqueImageView OffscreenImageView;
-    vk::UniqueDeviceMemory OffscreenImageMemory;
-
-    vk::UniqueImage ResolveImage;
-    vk::UniqueImageView ResolveImageView;
-    vk::UniqueDeviceMemory ResolveImageMemory;
+    // All images are referenced by the framebuffer and thus must be kept in memory.
+    ImageResource DepthImage;
+    ImageResource OffscreenImage;
+    ImageResource ResolveImage;
 
     ShaderPipeline ShaderPipeline;
     vk::UniqueSampler TextureSampler;
