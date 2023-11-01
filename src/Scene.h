@@ -3,9 +3,9 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
+#include "Camera.h"
 #include "Vertex.h"
 #include "VulkanContext.h"
-#include "Camera.h"
 
 struct Scene;
 
@@ -30,8 +30,8 @@ struct ShaderPipeline {
 
     void CompileShaders();
 
-    void CreateBuffer(const void *data, vk::DeviceSize size, vk::BufferUsageFlags usage, vk::UniqueBuffer &buffer_out, vk::UniqueDeviceMemory &buffer_memory_out);
-    void UpdateBuffer(const void *data, vk::DeviceSize size, vk::UniqueBuffer &buffer_out);
+    void CreateBuffer(const void *data, vk::DeviceSize size, vk::BufferUsageFlags usage, vk::UniqueBuffer &buffer_out, vk::UniqueDeviceMemory &buffer_memory_out, vk::UniqueBuffer &staging_buffer_out, vk::UniqueDeviceMemory &staging_memory_out);
+    void UpdateBuffer(const void *data, vk::DeviceSize size, vk::UniqueBuffer &buffer_out, vk::UniqueBuffer &staging_buffer_out, vk::UniqueDeviceMemory &staging_buffer_memory_out);
 
     void CreateVertexBuffers(const std::vector<Vertex3D> &);
     void CreateIndexBuffers(const std::vector<uint16_t> &);
@@ -48,15 +48,23 @@ struct ShaderPipeline {
 
     vk::UniqueBuffer VertexBuffer;
     vk::UniqueDeviceMemory VertexBufferMemory;
+    vk::UniqueBuffer VertexStagingBuffer;
+    vk::UniqueDeviceMemory VertexStagingBufferMemory;
 
     vk::UniqueBuffer IndexBuffer;
     vk::UniqueDeviceMemory IndexBufferMemory;
+    vk::UniqueBuffer IndexStagingBuffer;
+    vk::UniqueDeviceMemory IndexStagingBufferMemory;
 
     vk::UniqueBuffer TransformBuffer;
     vk::UniqueDeviceMemory TransformBufferMemory;
+    vk::UniqueBuffer TransformStagingBuffer;
+    vk::UniqueDeviceMemory TransformStagingBufferMemory;
 
     vk::UniqueBuffer LightBuffer;
+    vk::UniqueBuffer LightStagingBuffer;
     vk::UniqueDeviceMemory LightBufferMemory;
+    vk::UniqueDeviceMemory LightStagingBufferMemory;
 
     std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
 };
