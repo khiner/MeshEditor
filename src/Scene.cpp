@@ -145,11 +145,10 @@ Scene::Scene(const VulkanContext &vc)
     : VC(vc),
       MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)),
       CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
-      CommandBuffers(VC.Device->allocateCommandBuffersUnique({CommandPool.get(), vk::CommandBufferLevel::ePrimary, FrameBufferCount})),
-      TextureSampler(VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
+      CommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
       ShaderPipeline(*this),
+      TextureSampler(VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
       Gizmo(std::make_unique<::Gizmo>()) {
-    // Perform depth testing, render into a multisampled offscreen image, then resolve into a single-sampled resolve image.
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
         {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -170,24 +169,18 @@ Scene::Scene(const VulkanContext &vc)
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
-bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
-    const bool viewport_changed = Extent.width != width || Extent.height != height;
-    if (!viewport_changed && !Dirty) return false;
+void Scene::SetExtent(vk::Extent2D extent) {
+    Extent = extent;
+    UpdateTransform(); // Transform depends on the aspect ratio.
 
-    if (viewport_changed) {
-        Extent = vk::Extent2D{width, height};
-        UpdateTransform(); // Transform depends on the aspect ratio.
-    }
-
-    Dirty = false;
-    VC.Device->waitIdle();
+    const vk::Extent3D extent_3d{Extent, 1};
 
     /* Depth */
-    const auto depth_image = VC.Device->createImageUnique({
+    DepthImage = VC.Device->createImageUnique({
         {},
         vk::ImageType::e2D,
         vk::Format::eD32Sfloat,
-        vk::Extent3D{width, height, 1},
+        extent_3d,
         1,
         1,
         vk::SampleCountFlagBits::e4,
@@ -195,17 +188,17 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         vk::ImageUsageFlagBits::eDepthStencilAttachment,
         vk::SharingMode::eExclusive,
     });
-    const auto depth_mem_reqs = VC.Device->getImageMemoryRequirements(depth_image.get());
-    const auto depth_image_memory = VC.Device->allocateMemoryUnique({depth_mem_reqs.size, VC.FindMemoryType(depth_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(depth_image.get(), depth_image_memory.get(), 0);
-    const auto depth_image_view = VC.Device->createImageViewUnique({{}, depth_image.get(), vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}});
+    const auto depth_mem_reqs = VC.Device->getImageMemoryRequirements(*DepthImage);
+    DepthImageMemory = VC.Device->allocateMemoryUnique({depth_mem_reqs.size, VC.FindMemoryType(depth_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+    VC.Device->bindImageMemory(*DepthImage, *DepthImageMemory, 0);
+    DepthImageView = VC.Device->createImageViewUnique({{}, *DepthImage, vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}});
 
     /* Offscreen */
-    const auto offscreen_image = VC.Device->createImageUnique({
+    OffscreenImage = VC.Device->createImageUnique({
         {},
         vk::ImageType::e2D,
         ImageFormat,
-        vk::Extent3D{width, height, 1},
+        extent_3d,
         1,
         1,
         MsaaSamples,
@@ -213,17 +206,17 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
         vk::SharingMode::eExclusive,
     });
-    const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(offscreen_image.get());
-    const auto offscreen_image_memory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-    VC.Device->bindImageMemory(*offscreen_image, *offscreen_image_memory, 0);
-    const auto offscreen_image_view = VC.Device->createImageViewUnique({{}, *offscreen_image, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    const auto image_mem_reqs = VC.Device->getImageMemoryRequirements(*OffscreenImage);
+    OffscreenImageMemory = VC.Device->allocateMemoryUnique({image_mem_reqs.size, VC.FindMemoryType(image_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+    VC.Device->bindImageMemory(*OffscreenImage, *OffscreenImageMemory, 0);
+    OffscreenImageView = VC.Device->createImageViewUnique({{}, *OffscreenImage, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
     /* Resolve. This image is used to create the final scene texture. */
     ResolveImage = VC.Device->createImageUnique({
         {},
         vk::ImageType::e2D,
         ImageFormat,
-        vk::Extent3D{width, height, 1},
+        extent_3d,
         1,
         1,
         vk::SampleCountFlagBits::e1, // Single-sampled resolve image.
@@ -236,16 +229,23 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     VC.Device->bindImageMemory(*ResolveImage, *ResolveImageMemory, 0);
     ResolveImageView = VC.Device->createImageViewUnique({{}, *ResolveImage, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
 
-    /* Render */
-    const std::array image_views{*depth_image_view, *offscreen_image_view, *ResolveImageView};
-    const auto framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, width, height, 1});
+    const std::array image_views{*DepthImageView, *OffscreenImageView, *ResolveImageView};
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+}
 
+bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
+    const bool viewport_changed = Extent.width != width || Extent.height != height;
+    if (!viewport_changed && !Dirty) return false;
+
+    if (viewport_changed) SetExtent({width, height});
+
+    Dirty = false;
+
+    /* Render */
     const auto &command_buffer = CommandBuffers[0];
-    const vk::Viewport viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f};
-    const vk::Rect2D scissor{{0, 0}, Extent};
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    command_buffer->setViewport(0, {viewport});
-    command_buffer->setScissor(0, {scissor});
+    command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f});
+    command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
     const std::vector<vk::ImageMemoryBarrier> barriers{{
         {},
@@ -254,7 +254,7 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         vk::ImageLayout::eColorAttachmentOptimal,
         VK_QUEUE_FAMILY_IGNORED,
         VK_QUEUE_FAMILY_IGNORED,
-        ResolveImage.get(),
+        *ResolveImage,
         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }};
     command_buffer->pipelineBarrier(
@@ -266,12 +266,9 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
         barriers
     );
 
-    const vk::ClearValue clear_values[3] = {
-        vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}}, // Clear value for the depth attachment.
-        vk::ClearValue{bg_color}, // Clear value for the color attachment.
-        vk::ClearValue{}, // Placeholder for the resolve attachment (it's not being cleared, so the value is ignored).
-    };
-    command_buffer->beginRenderPass({*RenderPass, *framebuffer, vk::Rect2D{{0, 0}, Extent}, 3, clear_values}, vk::SubpassContents::eInline);
+    // Clear values for the depth, color, and (placeholder) resolve attachments.
+    const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {bg_color}, {}};
+    command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.Pipeline);
 
     vk::DescriptorSet descriptor_sets[] = {*ShaderPipeline.DescriptorSet};
@@ -281,7 +278,6 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     const vk::DeviceSize offsets[] = {0};
     command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
     command_buffer->bindIndexBuffer(*ShaderPipeline.IndexBuffer.Buffer, 0, vk::IndexType::eUint16);
-
     command_buffer->drawIndexed(uint(CubeIndices.size()), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
@@ -301,7 +297,7 @@ void Scene::CompileShaders() {
 
 ShaderPipeline::ShaderPipeline(const Scene &scene)
     : S(scene),
-      TransferCommandBuffers(S.VC.Device->allocateCommandBuffersUnique({*S.CommandPool, vk::CommandBufferLevel::ePrimary, S.FrameBufferCount})) {
+      TransferCommandBuffers(S.VC.Device->allocateCommandBuffersUnique({*S.CommandPool, vk::CommandBufferLevel::ePrimary, S.FramebufferCount})) {
     // Create descriptor set layout for transform and light buffers
     std::vector<vk::DescriptorSetLayoutBinding> bindings{
         {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},

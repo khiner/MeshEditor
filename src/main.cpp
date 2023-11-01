@@ -287,7 +287,7 @@ int main(int, char **) {
             const auto content_region = GetContentRegionAvail();
             if (MainScene->Render(content_region.x, content_region.y, ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg)))) {
                 ImGui_ImplVulkan_RemoveTexture(MainSceneDescriptorSet);
-                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->TextureSampler.get(), MainScene->ResolveImageView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->GetTextureSampler(), MainScene->GetResolveImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
 
             const auto &cursor = GetCursorPos();

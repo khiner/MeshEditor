@@ -63,6 +63,9 @@ struct Scene {
     Scene(const VulkanContext &);
     ~Scene();
 
+    VkSampler GetTextureSampler() const { return TextureSampler.get(); }
+    VkImageView GetResolveImageView() const { return ResolveImageView.get(); }
+
     // Returns true if the scene was updated.
     bool Render(uint width, uint height, const vk::ClearColorValue &bg_color);
     void RenderGizmo();
@@ -76,24 +79,41 @@ struct Scene {
 
     const VulkanContext &VC;
 
-    const uint FrameBufferCount{1};
+    Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
+    Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
+
+    const uint FramebufferCount{1};
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
+    vk::UniqueFramebuffer Framebuffer;
     vk::UniqueRenderPass RenderPass;
     vk::UniqueCommandPool CommandPool;
     std::vector<vk::UniqueCommandBuffer> CommandBuffers;
 
-    // The scene is rendered to an offscreen image and then resolved to this image using MSAA.
+private:
+    // Recreates transform, render images (see below) and framebuffer based on the new extent.
+    // These are then reused by future renders that don't change the extent.
+    void SetExtent(vk::Extent2D);
+
+    // We use three images in the render pass:
+    // 1) Perform depth testing.
+    // 2) Render into a multisampled offscreen image.
+    // 3) Resolve into a single-sampled resolve image.
+    vk::UniqueImage DepthImage;
+    vk::UniqueImageView DepthImageView;
+    vk::UniqueDeviceMemory DepthImageMemory;
+
+    vk::UniqueImage OffscreenImage;
+    vk::UniqueImageView OffscreenImageView;
+    vk::UniqueDeviceMemory OffscreenImageMemory;
+
     vk::UniqueImage ResolveImage;
     vk::UniqueImageView ResolveImageView;
     vk::UniqueDeviceMemory ResolveImageMemory;
-    vk::UniqueSampler TextureSampler;
-
-    Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
-    Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
     ShaderPipeline ShaderPipeline;
+    vk::UniqueSampler TextureSampler;
 
     std::unique_ptr<Gizmo> Gizmo;
     glm::mat4 ModelTransform{1};
