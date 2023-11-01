@@ -30,7 +30,7 @@ static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice 
 static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
 
 struct Gizmo {
-    bool Render(Camera &camera) const {
+    void Begin() const {
         using namespace ImGui;
 
         const auto content_region = GetContentRegionAvail();
@@ -39,15 +39,22 @@ struct Gizmo {
         ImGuizmo::SetDrawlist();
         ImGuizmo::SetOrthographic(false);
         ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
+    }
+
+    bool Render(Camera &camera, glm::mat4 &model, float aspect_ratio = 1) const {
+        using namespace ImGui;
 
         static const float ViewManipulateSize = 128;
+        const auto &window_pos = GetWindowPos();
         const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
         auto camera_view = camera.GetViewMatrix();
         const float camera_distance = camera.GetDistance();
-        const bool changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
-        camera.SetPositionFromView(camera_view);
+        const bool view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
+        if (view_changed) camera.SetPositionFromView(camera_view);
 
-        return changed;
+        auto camera_projection = camera.GetProjectionMatrix(aspect_ratio);
+        const bool model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
+        return view_changed || model_changed;
     }
 
     void RenderDebug() {
@@ -55,6 +62,9 @@ struct Gizmo {
         using namespace ImGuizmo;
 
         SeparatorText("Gizmo");
+        Checkbox("Show gizmo", &ShowModelGizmo);
+        if (!ShowModelGizmo) return;
+
         const char *interaction_text =
             IsUsing()         ? "Using Gizmo" :
             IsOver(TRANSLATE) ? "Translate hovered" :
@@ -75,6 +85,8 @@ struct Gizmo {
     }
 
     ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
+    bool ShowBounds{false};
+    bool ShowModelGizmo{false};
 };
 
 static std::vector<Vertex3D> GenerateCubeVertices() {
@@ -452,7 +464,7 @@ void ShaderPipeline::CreateVertexBuffers(const std::vector<Vertex3D> &vertices) 
 void ShaderPipeline::CreateIndexBuffers(const std::vector<uint16_t> &indices) {
     IndexBuffer.Size = sizeof(indices[0]) * indices.size();
     IndexBuffer.Usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer;
-    CreateOrUpdateBuffer(IndexBuffer, indices.data() );
+    CreateOrUpdateBuffer(IndexBuffer, indices.data());
 }
 
 void ShaderPipeline::CreateTransformBuffers(const Transform &transform) {
@@ -470,19 +482,16 @@ void ShaderPipeline::CreateLightBuffers(const Light &light) {
 using namespace ImGui;
 
 void Scene::RenderGizmo() {
-    bool view_changed = false;
-    if (Gizmo->Render(Camera)) view_changed = true;
+    // Handle mouse scroll.
+    const float mouse_wheel = GetIO().MouseWheel;
+    if (mouse_wheel != 0 && IsWindowHovered()) Camera.SetTargetDistance(Camera.GetDistance() * (1.f - mouse_wheel / 16.f));
 
-    const auto &io = ImGui::GetIO();
-    const bool window_hovered = IsWindowHovered();
-    if (window_hovered && io.MouseWheel != 0) {
-        Camera.SetTargetDistance(Camera.GetDistance() * (1.f - io.MouseWheel / 16.f));
-    }
-    if (Camera.Tick()) view_changed = true;
-
-    if (view_changed) {
-        const float aspect_ratio = float(Extent.width) / float(Extent.height);
-        const Transform transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+    Gizmo->Begin();
+    const float aspect_ratio = float(Extent.width) / float(Extent.height);
+    bool view_or_model_changed = Gizmo->Render(Camera, ModelTransform, aspect_ratio);
+    view_or_model_changed |= Camera.Tick();
+    if (view_or_model_changed) {
+        const Transform transform{ModelTransform, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
         ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
         Dirty = true;
     }

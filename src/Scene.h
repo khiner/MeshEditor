@@ -96,6 +96,7 @@ struct Scene {
     ShaderPipeline ShaderPipeline;
 
     std::unique_ptr<Gizmo> Gizmo;
+    glm::mat4 ModelTransform{1};
 
     bool Dirty{true};
 };
