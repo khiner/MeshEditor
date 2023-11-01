@@ -171,10 +171,15 @@ Scene::Scene(const VulkanContext &vc)
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
 bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
-    if (Extent.width == width && Extent.height == height && !Dirty) return false;
+    const bool viewport_changed = Extent.width != width || Extent.height != height;
+    if (!viewport_changed && !Dirty) return false;
+
+    if (viewport_changed) {
+        Extent = vk::Extent2D{width, height};
+        UpdateTransform(); // Transform depends on the aspect ratio.
+    }
 
     Dirty = false;
-    Extent = vk::Extent2D{width, height};
     VC.Device->waitIdle();
 
     // Create a depth image, allocate memory, bind it, and create a depth image view
@@ -297,18 +302,16 @@ ShaderPipeline::ShaderPipeline(const Scene &scene)
     : S(scene),
       TransferCommandBuffers(S.VC.Device->allocateCommandBuffersUnique({*S.CommandPool, vk::CommandBufferLevel::ePrimary, S.FrameBufferCount})) {
     // Create descriptor set layout for transform and light buffers
-    std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
-        vk::DescriptorSetLayoutBinding{0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
-        vk::DescriptorSetLayoutBinding{1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
+    std::vector<vk::DescriptorSetLayoutBinding> bindings{
+        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+        {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
     };
     DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
     PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
     CreateVertexBuffers(CubeVertices);
     CreateIndexBuffers(CubeIndices);
-
-    // const float aspect_ratio = S.Extent.width / float(S.Extent.height);
-    const float aspect_ratio = 1;
+    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
     CreateTransformBuffers({I, S.Camera.GetViewMatrix(), S.Camera.GetProjectionMatrix(aspect_ratio)});
     CreateLightBuffers(S.Light);
 
@@ -319,9 +322,10 @@ ShaderPipeline::ShaderPipeline(const Scene &scene)
     // Update DescriptorSet
     vk::DescriptorBufferInfo transform_buffer_info{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
     vk::DescriptorBufferInfo light_buffer_info{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    std::array<vk::WriteDescriptorSet, 2> write_descriptor_sets = {
-        vk::WriteDescriptorSet{*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
-        vk::WriteDescriptorSet{*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info}};
+    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+        {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
+    };
     S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
@@ -479,6 +483,17 @@ void ShaderPipeline::CreateLightBuffers(const Light &light) {
     CreateOrUpdateBuffer(LightBuffer, &light);
 }
 
+Transform Scene::GetTransform() const {
+    const float aspect_ratio = float(Extent.width) / float(Extent.height);
+    return {ModelTransform, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+}
+
+void Scene::UpdateTransform() {
+    const auto transform = GetTransform();
+    ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
+    Dirty = true;
+}
+
 using namespace ImGui;
 
 void Scene::RenderGizmo() {
@@ -490,11 +505,7 @@ void Scene::RenderGizmo() {
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
     bool view_or_model_changed = Gizmo->Render(Camera, ModelTransform, aspect_ratio);
     view_or_model_changed |= Camera.Tick();
-    if (view_or_model_changed) {
-        const Transform transform{ModelTransform, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-        ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
-        Dirty = true;
-    }
+    if (view_or_model_changed) UpdateTransform();
 }
 
 void Scene::RenderControls() {

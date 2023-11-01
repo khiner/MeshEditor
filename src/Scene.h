@@ -9,8 +9,6 @@
 
 struct Scene;
 
-static const glm::vec4 White{1, 1, 1, 1};
-
 struct Transform {
     glm::mat4 Model;
     glm::mat4 View;
@@ -18,8 +16,8 @@ struct Transform {
 };
 
 struct Light {
+    glm::vec4 ColorAndAmbient; // RGB = color, A = ambient intensity. This is done for 16-byte alignment.
     glm::vec3 Direction;
-    glm::vec3 Color;
 };
 
 struct Gizmo;
@@ -74,6 +72,9 @@ struct Scene {
 
     void CompileShaders();
 
+    Transform GetTransform() const;
+    void UpdateTransform();
+
     const VulkanContext &VC;
 
     const uint FrameBufferCount{1};
@@ -90,8 +91,8 @@ struct Scene {
     vk::UniqueDeviceMemory ResolveImageMemory;
     vk::UniqueSampler TextureSampler;
 
-    Camera Camera{{0, 0, 1}, Origin, 45, 0.1, 100};
-    Light Light{{0, 0, -1}, White}; // White light coming from the Z direction.
+    Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
+    Light Light{{1, 1, 1, 0.8}, {0, 0, -1}}; // White light coming from the Z direction.
 
     ShaderPipeline ShaderPipeline;
 
