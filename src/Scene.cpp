@@ -44,10 +44,10 @@ struct Gizmo {
         const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
         auto camera_view = camera.GetViewMatrix();
         const float camera_distance = camera.GetDistance();
-        ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
-        camera.SetViewMatrix(camera_view);
+        const bool changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
+        camera.SetPositionFromView(camera_view);
 
-        return true; // todo only return true when view matrix has changed.
+        return changed;
     }
 
     void RenderDebug() {
@@ -502,17 +502,21 @@ void ShaderPipeline::CreateLightBuffers(const Light &light) {
 using namespace ImGui;
 
 void Scene::RenderGizmo() {
-    if (Gizmo->Render(Camera)) {
-        const Transform transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(1)};
-        const vk::DeviceSize buffer_size = sizeof(transform);
-        ShaderPipeline.UpdateBuffer(&transform, buffer_size, ShaderPipeline.TransformBuffer);
-        Dirty = true;
-    }
+    bool view_changed = false;
+    if (Gizmo->Render(Camera)) view_changed = true;
 
     const auto &io = ImGui::GetIO();
     const bool window_hovered = IsWindowHovered();
     if (window_hovered && io.MouseWheel != 0) {
-        Camera.SetDistance(Camera.GetDistance() * (1.f - io.MouseWheel / 16.f));
+        Camera.SetTargetDistance(Camera.GetDistance() * (1.f - io.MouseWheel / 16.f));
+    }
+    if (Camera.Tick()) view_changed = true;
+
+    if (view_changed) {
+        const float aspect_ratio = float(Extent.width) / float(Extent.height);
+        const Transform transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+        const vk::DeviceSize buffer_size = sizeof(transform);
+        ShaderPipeline.UpdateBuffer(&transform, buffer_size, ShaderPipeline.TransformBuffer);
         Dirty = true;
     }
 }

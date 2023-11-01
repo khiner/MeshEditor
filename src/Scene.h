@@ -1,17 +1,13 @@
 #pragma once
 
-#include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
 #include "Vertex.h"
 #include "VulkanContext.h"
+#include "Camera.h"
 
 struct Scene;
-
-static const glm::mat4 I{1};
-static const glm::vec3 Origin{0, 0, 0};
-static const glm::vec3 Up{0, 1, 0};
 
 static const glm::vec4 White{1, 1, 1, 1};
 
@@ -19,28 +15,6 @@ struct Transform {
     glm::mat4 Model;
     glm::mat4 View;
     glm::mat4 Projection;
-};
-
-struct Camera {
-    inline glm::mat4 GetViewMatrix() const { return glm::lookAt(Position, Target, Up); }
-    inline glm::mat4 GetProjectionMatrix(float aspect_ratio) const { return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip); }
-    inline float GetDistance() const { return glm::distance(Position, Target); }
-
-    inline void SetViewMatrix(const glm::mat4 &view) {
-        const auto view_inv = glm::inverse(view);
-        Position = view_inv[3];
-        Target = view_inv * glm::vec4{0, 0, -1, 0};
-    }
-
-    inline void SetDistance(float distance) {
-        const auto direction = glm::normalize(Position - Target);
-        Position = Target + direction * distance;
-    }
-
-    glm::vec3 Position;
-    glm::vec3 Target;
-    float FieldOfView;
-    float NearClip, FarClip;
 };
 
 struct Light {

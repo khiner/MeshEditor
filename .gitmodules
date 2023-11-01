@@ -10,4 +10,4 @@
 	url = git@github.com:g-truc/glm.git
 [submodule "lib/ImGuizmo"]
 	path = lib/ImGuizmo
-	url = git@github.com:CedricGuillemet/ImGuizmo.git
+	url = git@github.com:khiner/ImGuizmo.git
