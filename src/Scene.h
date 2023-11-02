@@ -61,6 +61,8 @@ struct ShaderPipeline {
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
+    std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
+
     vk::UniqueDescriptorSet DescriptorSet;
 
     Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
@@ -68,7 +70,6 @@ struct ShaderPipeline {
     Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
     Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
 
-    std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
 };
 
 struct Scene {
@@ -103,6 +104,8 @@ struct Scene {
     vk::UniqueRenderPass RenderPass;
     vk::UniqueCommandPool CommandPool;
     std::vector<vk::UniqueCommandBuffer> CommandBuffers;
+
+    vk::UniqueFence RenderFence;
 
 private:
     // Recreates transform, render images (see below) and framebuffer based on the new extent.

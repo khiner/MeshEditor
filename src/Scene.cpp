@@ -146,6 +146,7 @@ Scene::Scene(const VulkanContext &vc)
       MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)),
       CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
       CommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
+      RenderFence(VC.Device->createFenceUnique({})),
       ShaderPipeline(*this),
       TextureSampler(VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
       Gizmo(std::make_unique<::Gizmo>()) {
@@ -211,7 +212,7 @@ void Scene::RecordCommandBuffer() {
     command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
-    const std::vector<vk::ImageMemoryBarrier> barriers{{
+    const std::vector<vk::ImageMemoryBarrier> image_memory_barriers{{
         {},
         {},
         vk::ImageLayout::eUndefined,
@@ -227,7 +228,7 @@ void Scene::RecordCommandBuffer() {
         {}, // No dependency flags.
         {}, // No memory barriers.
         {}, // No buffer memory barriers.
-        barriers
+        image_memory_barriers
     );
 
     // Clear values for the depth, color, and (placeholder) resolve attachments.
@@ -262,8 +263,16 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
     const auto &command_buffer = CommandBuffers[0];
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*command_buffer);
-    VC.Queue.submit(submit);
-    VC.Device->waitIdle();
+    VC.Queue.submit(submit, *RenderFence);
+
+    // We must wait for the resolve image to be written to before exiting the method.
+    // The current contract is that the caller may use the image immediately after this method returns `true`.
+    // TODO it would be better to render as fast as we want using double or triple buffering.
+    auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
+    if (wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    VC.Device->resetFences(*RenderFence);
 
     return true;
 }
@@ -402,7 +411,7 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
     const auto &device = S.VC.Device;
     const auto &queue = S.VC.Queue;
 
-    // If the staging buffer or its memory hasn't been created yet, create them
+    // Optionally create the staging buffer and its memory.
     if (!buffer.StagingBuffer || !buffer.StagingMemory) {
         buffer.StagingBuffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
         const auto staging_mem_reqs = device->getBufferMemoryRequirements(*buffer.StagingBuffer);
@@ -410,12 +419,12 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
         device->bindBufferMemory(*buffer.StagingBuffer, *buffer.StagingMemory, 0);
     }
 
-    // Copy data to the staging buffer
+    // Copy data to the staging buffer.
     void *mapped_data = device->mapMemory(*buffer.StagingMemory, 0, buffer.Size);
     memcpy(mapped_data, data, size_t(buffer.Size));
     device->unmapMemory(*buffer.StagingMemory);
 
-    // If the device buffer or its memory hasn't been created yet, create them
+    // Optionally create the device buffer and its memory.
     if (!buffer.Buffer || !buffer.Memory) {
         buffer.Buffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
         const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer.Buffer);
@@ -423,7 +432,7 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
         device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
     }
 
-    // Prepare a command buffer to copy data from the staging buffer to the device buffer
+    // Copy data from the staging buffer to the device buffer.
     const auto &command_buffer = TransferCommandBuffers[0];
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     vk::BufferCopy copy_region;
@@ -431,11 +440,16 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
     command_buffer->copyBuffer(*buffer.StagingBuffer, *buffer.Buffer, copy_region);
     command_buffer->end();
 
-    // Submit the command buffer for execution
+    // TODO we should use a separate fence/semaphores for buffer updates and rendering.
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*command_buffer);
-    queue.submit(submit, nullptr);
-    queue.waitIdle();
+    queue.submit(submit, *S.RenderFence);
+
+    auto wait_result = device->waitForFences(*S.RenderFence, VK_TRUE, UINT64_MAX);
+    if (wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    device->resetFences(*S.RenderFence);
 }
 
 Transform Scene::GetTransform() const {
