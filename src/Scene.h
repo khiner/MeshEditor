@@ -69,7 +69,6 @@ struct ShaderPipeline {
     Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
     Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
     Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
-
 };
 
 struct Scene {
@@ -112,21 +111,18 @@ private:
     // These are then reused by future renders that don't change the extent.
     void SetExtent(vk::Extent2D);
     void RecordCommandBuffer();
+    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
 
     // We use three images in the render pass:
     // 1) Perform depth testing.
     // 2) Render into a multisampled offscreen image.
     // 3) Resolve into a single-sampled resolve image.
     // All images are referenced by the framebuffer and thus must be kept in memory.
-    ImageResource DepthImage;
-    ImageResource OffscreenImage;
-    ImageResource ResolveImage;
+    ImageResource DepthImage, OffscreenImage, ResolveImage;
 
     ShaderPipeline ShaderPipeline;
     vk::UniqueSampler TextureSampler;
 
     std::unique_ptr<Gizmo> Gizmo;
     glm::mat4 ModelTransform{1};
-
-    bool Dirty{true};
 };

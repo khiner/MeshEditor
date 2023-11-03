@@ -182,7 +182,9 @@ void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_in
 
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-    UpdateTransform(); // Transform depends on the aspect ratio.
+
+    const auto transform = GetTransform();
+    ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
 
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -207,7 +209,6 @@ void Scene::SetExtent(vk::Extent2D extent) {
 
 void Scene::RecordCommandBuffer() {
     const auto &command_buffer = CommandBuffers[0];
-    command_buffer->reset({}); // Explicit reset, though not strictly necessary
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
@@ -248,39 +249,38 @@ void Scene::RecordCommandBuffer() {
     command_buffer->end();
 }
 
+void Scene::SubmitCommandBuffer(vk::Fence fence) const {
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(*CommandBuffers[0]);
+    VC.Queue.submit(submit, fence);
+}
+
 bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
     const bool viewport_changed = Extent.width != width || Extent.height != height;
     const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
-    if (!viewport_changed && !bg_color_changed && !Dirty) return false;
+    if (!viewport_changed && !bg_color_changed) return false;
 
     BackgroundColor = bg_color;
 
     if (viewport_changed) SetExtent({width, height});
     if (viewport_changed || bg_color_changed) RecordCommandBuffer();
+    SubmitCommandBuffer(*RenderFence);
 
-    Dirty = false;
-
-    const auto &command_buffer = CommandBuffers[0];
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(*command_buffer);
-    VC.Queue.submit(submit, *RenderFence);
-
-    // We must wait for the resolve image to be written to before exiting the method.
-    // The current contract is that the caller may use the image immediately after this method returns `true`.
-    // TODO it would be better to render as fast as we want using double or triple buffering.
+    // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
+    // Returning `true` indicates that the resolve image/sampler have been recreated.
     auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
     if (wait_result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
     }
     VC.Device->resetFences(*RenderFence);
 
-    return true;
+    return viewport_changed;
 }
 
 void Scene::CompileShaders() {
     ShaderPipeline.CompileShaders();
     RecordCommandBuffer();
-    Dirty = true;
+    SubmitCommandBuffer();
 }
 
 ShaderPipeline::ShaderPipeline(const Scene &scene)
@@ -460,12 +460,12 @@ Transform Scene::GetTransform() const {
 void Scene::UpdateTransform() {
     const auto transform = GetTransform();
     ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
-    Dirty = true;
+    SubmitCommandBuffer();
 }
 
 void Scene::UpdateLight() {
     ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.LightBuffer, &Light);
-    Dirty = true;
+    SubmitCommandBuffer();
 }
 
 using namespace ImGui;
