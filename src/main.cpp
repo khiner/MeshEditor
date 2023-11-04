@@ -144,7 +144,7 @@ int main(int, char **) {
 
     // Create window with Vulkan graphics context.
     const auto window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    auto *Window = SDL_CreateWindowWithPosition("Mesh2Audio-Vulkan", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
+    auto *Window = SDL_CreateWindowWithPosition("MeshEditor", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
 
     uint extensions_count = 0;
     SDL_Vulkan_GetInstanceExtensions(&extensions_count, nullptr);
