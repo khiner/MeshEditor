@@ -11,3 +11,6 @@
 [submodule "lib/ImGuizmo"]
 	path = lib/ImGuizmo
 	url = git@github.com:khiner/ImGuizmo.git
+[submodule "lib/OpenMesh"]
+	path = lib/OpenMesh
+	url = https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh.git

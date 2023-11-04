@@ -6,6 +6,7 @@
 #include "ImGuizmo.h"
 
 #include "File.h"
+#include "Geometry/Primitive/Cuboid.h"
 
 #ifdef DEBUG_BUILD
 static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
@@ -89,57 +90,7 @@ struct Gizmo {
     bool ShowModelGizmo{false};
 };
 
-static std::vector<Vertex3D> GenerateCubeVertices() {
-    std::vector<Vertex3D> vertices;
-    glm::vec3 positions[] = {
-        {-0.5f, -0.5f, -0.5f},
-        {0.5f, -0.5f, -0.5f},
-        {0.5f, 0.5f, -0.5f},
-        {-0.5f, 0.5f, -0.5f},
-        {-0.5f, -0.5f, 0.5f},
-        {0.5f, -0.5f, 0.5f},
-        {0.5f, 0.5f, 0.5f},
-        {-0.5f, 0.5f, 0.5f}};
-    glm::vec3 normals[] = {
-        {0.0f, 0.0f, -1.0f}, // Front
-        {0.0f, 0.0f, 1.0f}, // Back
-        {-1.0f, 0.0f, 0.0f}, // Left
-        {1.0f, 0.0f, 0.0f}, // Right
-        {0.0f, 1.0f, 0.0f}, // Top
-        {0.0f, -1.0f, 0.0f} // Bottom
-    };
-    glm::vec4 colors[] = {
-        {1.0f, 0.0f, 0.0f, 1.0f}, // Front
-        {0.0f, 1.0f, 0.0f, 1.0f}, // Back
-        {0.0f, 0.0f, 1.0f, 1.0f}, // Left
-        {1.0f, 1.0f, 0.0f, 1.0f}, // Right
-        {1.0f, 0.0f, 1.0f, 1.0f}, // Top
-        {0.0f, 1.0f, 1.0f, 1.0f} // Bottom
-    };
-    uint8_t faces[] = {
-        0, 1, 2, 2, 3, 0, // Front
-        4, 5, 6, 6, 7, 4, // Back
-        0, 1, 5, 5, 4, 0, // Bottom
-        1, 2, 6, 6, 5, 1, // Right
-        2, 3, 7, 7, 6, 2, // Top
-        3, 0, 4, 4, 7, 3 // Left
-    };
-    for (int i = 0; i < 36; ++i) {
-        uint8_t vertex_index = faces[i];
-        uint8_t face_index = i / 6;
-        vertices.push_back({positions[vertex_index], normals[face_index], colors[face_index]});
-    }
-    return vertices;
-}
-
-static std::vector<uint16_t> GenerateCubeIndices() {
-    std::vector<uint16_t> indices;
-    for (uint16_t i = 0; i < 36; ++i) indices.push_back(i);
-    return indices;
-}
-
-static const std::vector<Vertex3D> CubeVertices = GenerateCubeVertices();
-static const std::vector<uint16_t> CubeIndices = GenerateCubeIndices();
+static const Cuboid Cube{{0.5, 0.5, 0.5}};
 
 Scene::Scene(const VulkanContext &vc)
     : VC(vc),
@@ -243,8 +194,8 @@ void Scene::RecordCommandBuffer() {
     const vk::Buffer vertex_buffers[] = {*ShaderPipeline.VertexBuffer.Buffer};
     const vk::DeviceSize offsets[] = {0};
     command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
-    command_buffer->bindIndexBuffer(*ShaderPipeline.IndexBuffer.Buffer, 0, vk::IndexType::eUint16);
-    command_buffer->drawIndexed(uint(CubeIndices.size()), 1, 0, 0, 0);
+    command_buffer->bindIndexBuffer(*ShaderPipeline.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    command_buffer->drawIndexed(Cube.NumIndices(), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
 }
@@ -294,11 +245,11 @@ ShaderPipeline::ShaderPipeline(const Scene &scene)
     DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
     PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    VertexBuffer.Size = sizeof(CubeVertices[0]) * CubeVertices.size();
-    CreateOrUpdateBuffer(VertexBuffer, CubeVertices.data());
+    VertexBuffer.Size = sizeof(Vertex3D) * Cube.NumVertices();
+    CreateOrUpdateBuffer(VertexBuffer, Cube.GetVertexData());
 
-    IndexBuffer.Size = sizeof(CubeIndices[0]) * CubeIndices.size();
-    CreateOrUpdateBuffer(IndexBuffer, CubeIndices.data());
+    IndexBuffer.Size = sizeof(uint) * Cube.NumIndices();
+    CreateOrUpdateBuffer(IndexBuffer, Cube.GetIndexData());
 
     const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
     const Transform initial_transform{I, S.Camera.GetViewMatrix(), S.Camera.GetProjectionMatrix(aspect_ratio)};
