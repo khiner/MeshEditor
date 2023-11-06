@@ -4,6 +4,7 @@
 #include <glm/vec3.hpp>
 
 #include "Camera.h"
+#include "RenderMode.h"
 #include "Vertex.h"
 #include "VulkanContext.h"
 
@@ -53,22 +54,34 @@ struct ShaderPipeline {
 
     void CompileShaders();
 
-    void CreateOrUpdateBuffer(Buffer &buffer, const void *data);
-
     const Scene &S;
 
     vk::UniqueDescriptorSetLayout DescriptorSetLayout;
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
-    std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
-
     vk::UniqueDescriptorSet DescriptorSet;
+
+    Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
+    Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
+};
+
+struct Geometry;
+
+struct GeometryInstance {
+    GeometryInstance(const Scene &, Geometry &&);
+
+    void SetMode(RenderMode mode);
+
+    const Scene &S;
+    RenderMode Mode{RenderMode::None};
+    std::unique_ptr<Geometry> G;
+
+    std::vector<Vertex3D> Vertices;
+    std::vector<uint> Indices;
 
     Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
     Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
-    Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
-    Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
 };
 
 struct Scene {
@@ -89,22 +102,20 @@ struct Scene {
     void UpdateTransform();
     void UpdateLight();
 
+    void CreateOrUpdateBuffer(Buffer &buffer, const void *data) const;
+
     const VulkanContext &VC;
 
     Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
     Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
+    RenderMode Mode{RenderMode::Flat};
+
     const uint FramebufferCount{1};
     vk::SampleCountFlagBits MsaaSamples;
-    vk::Extent2D Extent;
-    vk::ClearColorValue BackgroundColor;
 
     vk::UniqueFramebuffer Framebuffer;
     vk::UniqueRenderPass RenderPass;
-    vk::UniqueCommandPool CommandPool;
-    std::vector<vk::UniqueCommandBuffer> CommandBuffers;
-
-    vk::UniqueFence RenderFence;
 
 private:
     // Recreates transform, render images (see below) and framebuffer based on the new extent.
@@ -112,6 +123,13 @@ private:
     void SetExtent(vk::Extent2D);
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
+
+    vk::Extent2D Extent;
+    vk::ClearColorValue BackgroundColor;
+    vk::UniqueCommandPool CommandPool;
+    std::vector<vk::UniqueCommandBuffer> CommandBuffers;
+    std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
+    vk::UniqueFence RenderFence;
 
     // We use three images in the render pass:
     // 1) Perform depth testing.
@@ -125,4 +143,6 @@ private:
 
     std::unique_ptr<Gizmo> Gizmo;
     glm::mat4 ModelTransform{1};
+
+    std::vector<GeometryInstance> Geometries;
 };

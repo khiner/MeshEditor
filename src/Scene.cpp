@@ -90,13 +90,30 @@ struct Gizmo {
     bool ShowModelGizmo{false};
 };
 
-static const Cuboid Cube{{0.5, 0.5, 0.5}};
+GeometryInstance::GeometryInstance(const Scene &scene, Geometry &&geometry)
+    : S(scene), G(std::make_unique<Geometry>(std::move(geometry))) {
+    SetMode(S.Mode);
+}
+
+void GeometryInstance::SetMode(RenderMode mode) {
+    if (mode == Mode) return;
+
+    Mode = mode;
+    Vertices = G->GenerateVertices(Mode);
+    VertexBuffer.Size = sizeof(Vertex3D) * Vertices.size();
+    S.CreateOrUpdateBuffer(VertexBuffer, Vertices.data());
+
+    Indices = G->GenerateIndices(Mode);
+    IndexBuffer.Size = sizeof(uint) * Indices.size();
+    S.CreateOrUpdateBuffer(IndexBuffer, Indices.data());
+}
 
 Scene::Scene(const VulkanContext &vc)
     : VC(vc),
       MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)),
       CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
       CommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
+      TransferCommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
       RenderFence(VC.Device->createFenceUnique({})),
       ShaderPipeline(*this),
       TextureSampler(VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
@@ -117,6 +134,8 @@ Scene::Scene(const VulkanContext &vc)
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipeline.CompileShaders();
+
+    Geometries.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -135,7 +154,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
 
     const auto transform = GetTransform();
-    ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
+    CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
 
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -191,11 +210,12 @@ void Scene::RecordCommandBuffer() {
     vk::DescriptorSet descriptor_sets[] = {*ShaderPipeline.DescriptorSet};
     command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
 
-    const vk::Buffer vertex_buffers[] = {*ShaderPipeline.VertexBuffer.Buffer};
+    const auto &geometry = Geometries[0];
+    const vk::Buffer vertex_buffers[] = {*geometry.VertexBuffer.Buffer};
     const vk::DeviceSize offsets[] = {0};
     command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
-    command_buffer->bindIndexBuffer(*ShaderPipeline.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer->drawIndexed(Cube.NumIndices(), 1, 0, 0, 0);
+    command_buffer->bindIndexBuffer(*geometry.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    command_buffer->drawIndexed(geometry.Indices.size(), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
 }
@@ -235,8 +255,7 @@ void Scene::CompileShaders() {
 }
 
 ShaderPipeline::ShaderPipeline(const Scene &scene)
-    : S(scene),
-      TransferCommandBuffers(S.VC.Device->allocateCommandBuffersUnique({*S.CommandPool, vk::CommandBufferLevel::ePrimary, S.FramebufferCount})) {
+    : S(scene) {
     // Create descriptor set layout for transform and light buffers
     std::vector<vk::DescriptorSetLayoutBinding> bindings{
         {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
@@ -245,16 +264,10 @@ ShaderPipeline::ShaderPipeline(const Scene &scene)
     DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
     PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    VertexBuffer.Size = sizeof(Vertex3D) * Cube.NumVertices();
-    CreateOrUpdateBuffer(VertexBuffer, Cube.GetVertexData());
-
-    IndexBuffer.Size = sizeof(uint) * Cube.NumIndices();
-    CreateOrUpdateBuffer(IndexBuffer, Cube.GetIndexData());
-
     const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
     const Transform initial_transform{I, S.Camera.GetViewMatrix(), S.Camera.GetProjectionMatrix(aspect_ratio)};
-    CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
-    CreateOrUpdateBuffer(LightBuffer, &S.Light);
+    S.CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
+    S.CreateOrUpdateBuffer(LightBuffer, &S.Light);
 
     vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
     DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
@@ -358,15 +371,15 @@ void ShaderPipeline::CompileShaders() {
     Pipeline = std::move(pipeline_result.value);
 }
 
-void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
-    const auto &device = S.VC.Device;
-    const auto &queue = S.VC.Queue;
+void Scene::CreateOrUpdateBuffer(Buffer &buffer, const void *data) const {
+    const auto &device = VC.Device;
+    const auto &queue = VC.Queue;
 
     // Optionally create the staging buffer and its memory.
     if (!buffer.StagingBuffer || !buffer.StagingMemory) {
         buffer.StagingBuffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
         const auto staging_mem_reqs = device->getBufferMemoryRequirements(*buffer.StagingBuffer);
-        buffer.StagingMemory = device->allocateMemoryUnique({staging_mem_reqs.size, S.VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
+        buffer.StagingMemory = device->allocateMemoryUnique({staging_mem_reqs.size, VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
         device->bindBufferMemory(*buffer.StagingBuffer, *buffer.StagingMemory, 0);
     }
 
@@ -379,7 +392,7 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
     if (!buffer.Buffer || !buffer.Memory) {
         buffer.Buffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
         const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer.Buffer);
-        buffer.Memory = device->allocateMemoryUnique({buffer_mem_reqs.size, S.VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+        buffer.Memory = device->allocateMemoryUnique({buffer_mem_reqs.size, VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
         device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
     }
 
@@ -394,13 +407,13 @@ void ShaderPipeline::CreateOrUpdateBuffer(Buffer &buffer, const void *data) {
     // TODO we should use a separate fence/semaphores for buffer updates and rendering.
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*command_buffer);
-    queue.submit(submit, *S.RenderFence);
+    queue.submit(submit, *RenderFence);
 
-    auto wait_result = device->waitForFences(*S.RenderFence, VK_TRUE, UINT64_MAX);
+    auto wait_result = device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
     if (wait_result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
     }
-    device->resetFences(*S.RenderFence);
+    device->resetFences(*RenderFence);
 }
 
 Transform Scene::GetTransform() const {
@@ -410,12 +423,12 @@ Transform Scene::GetTransform() const {
 
 void Scene::UpdateTransform() {
     const auto transform = GetTransform();
-    ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
+    CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
     SubmitCommandBuffer();
 }
 
 void Scene::UpdateLight() {
-    ShaderPipeline.CreateOrUpdateBuffer(ShaderPipeline.LightBuffer, &Light);
+    CreateOrUpdateBuffer(ShaderPipeline.LightBuffer, &Light);
     SubmitCommandBuffer();
 }
 
@@ -462,6 +475,16 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
+            int render_mode = int(Mode);
+            bool render_mode_changed = RadioButton("Flat", &render_mode, int(RenderMode::Flat));
+            SameLine();
+            render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
+            if (render_mode_changed) {
+                Mode = RenderMode(render_mode);
+                for (auto &geometry : Geometries) geometry.SetMode(Mode);
+                RecordCommandBuffer();
+                SubmitCommandBuffer();
+            }
             Gizmo->RenderDebug();
             EndTabItem();
         }

@@ -8,7 +8,6 @@ bool Geometry::Load(const fs::path &file_path) {
         std::cerr << "Error loading mesh: " << file_path << std::endl;
         return false;
     }
-    UpdateBuffersFromMesh();
     return true;
 }
 

@@ -2,7 +2,7 @@
 
 Cuboid::Cuboid(glm::vec3 half_extents) : Geometry() {
     const auto &he = half_extents;
-    std::vector<Point> positions = {
+    const std::vector<Point> positions{
         {-he.x, -he.y, -he.z},
         {he.x, -he.y, -he.z},
         {he.x, he.y, -he.z},
@@ -17,7 +17,7 @@ Cuboid::Cuboid(glm::vec3 half_extents) : Geometry() {
     vhs.reserve(positions.size());
     for (const auto &vertex : positions) vhs.push_back(Mesh.add_vertex(vertex));
 
-    std::vector<std::vector<VH>> faces = {
+    const std::vector<std::vector<VH>> faces{
         {vhs[0], vhs[3], vhs[2], vhs[1]}, // front
         {vhs[4], vhs[5], vhs[6], vhs[7]}, // back
         {vhs[0], vhs[1], vhs[5], vhs[4]}, // bottom
@@ -27,6 +27,4 @@ Cuboid::Cuboid(glm::vec3 half_extents) : Geometry() {
     };
 
     for (const auto &face : faces) Mesh.add_face(face);
-
-    UpdateBuffersFromMesh();
 }
