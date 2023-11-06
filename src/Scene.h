@@ -77,9 +77,6 @@ struct GeometryInstance {
     RenderMode Mode{RenderMode::None};
     std::unique_ptr<Geometry> G;
 
-    std::vector<Vertex3D> Vertices;
-    std::vector<uint> Indices;
-
     Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
     Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
 };

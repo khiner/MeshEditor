@@ -99,13 +99,14 @@ void GeometryInstance::SetMode(RenderMode mode) {
     if (mode == Mode) return;
 
     Mode = mode;
-    Vertices = G->GenerateVertices(Mode);
-    VertexBuffer.Size = sizeof(Vertex3D) * Vertices.size();
-    S.CreateOrUpdateBuffer(VertexBuffer, Vertices.data());
 
-    Indices = G->GenerateIndices(Mode);
-    IndexBuffer.Size = sizeof(uint) * Indices.size();
-    S.CreateOrUpdateBuffer(IndexBuffer, Indices.data());
+    std::vector<Vertex3D> vertices = G->GenerateVertices(Mode);
+    VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
+    S.CreateOrUpdateBuffer(VertexBuffer, vertices.data());
+
+    std::vector<uint> indices = G->GenerateIndices(Mode);
+    IndexBuffer.Size = sizeof(uint) * indices.size();
+    S.CreateOrUpdateBuffer(IndexBuffer, indices.data());
 }
 
 Scene::Scene(const VulkanContext &vc)
@@ -215,7 +216,7 @@ void Scene::RecordCommandBuffer() {
     const vk::DeviceSize offsets[] = {0};
     command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
     command_buffer->bindIndexBuffer(*geometry.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer->drawIndexed(geometry.Indices.size(), 1, 0, 0, 0);
+    command_buffer->drawIndexed(geometry.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
 }
