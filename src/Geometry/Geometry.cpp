@@ -66,7 +66,7 @@ std::vector<uint> Geometry::GenerateTriangulatedFaceIndices() const {
     std::vector<uint> indices;
     uint index = 0;
     for (const auto &fh : Mesh.faces()) {
-        auto valence = Mesh.valence(fh);
+        const auto valence = Mesh.valence(fh);
         for (uint i = 0; i < valence - 2; ++i) {
             indices.insert(indices.end(), {index, index + i + 1, index + i + 2});
         }

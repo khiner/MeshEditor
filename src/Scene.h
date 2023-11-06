@@ -86,16 +86,21 @@ struct LineShaderPipeline : public ShaderPipeline {
 struct Geometry;
 
 struct GeometryInstance {
+    // todo line mode buffers can share vertex buffers with smooth mode.
+    struct Buffers {
+        Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
+        Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
+    };
+
     GeometryInstance(const Scene &, Geometry &&);
 
-    void SetMode(RenderMode mode);
+    const Buffers &GetBuffers(RenderMode mode) { return BuffersForMode.at(mode); }
 
     const Scene &S;
-    RenderMode Mode{RenderMode::None};
-    std::unique_ptr<Geometry> G;
 
-    Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
-    Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
+private:
+    std::unique_ptr<Geometry> G;
+    std::unordered_map<RenderMode, Buffers> BuffersForMode;
 };
 
 struct Scene {

@@ -92,21 +92,18 @@ struct Gizmo {
 
 GeometryInstance::GeometryInstance(const Scene &scene, Geometry &&geometry)
     : S(scene), G(std::make_unique<Geometry>(std::move(geometry))) {
-    SetMode(S.Mode);
-}
+    static const std::vector AllModes{RenderMode::Flat, RenderMode::Smooth, RenderMode::Lines};
+    for (const auto mode : AllModes) {
+        Buffers buffers;
+        std::vector<Vertex3D> vertices = G->GenerateVertices(mode);
+        buffers.VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
+        S.CreateOrUpdateBuffer(buffers.VertexBuffer, vertices.data());
 
-void GeometryInstance::SetMode(RenderMode mode) {
-    if (mode == Mode) return;
-
-    Mode = mode;
-
-    std::vector<Vertex3D> vertices = G->GenerateVertices(Mode);
-    VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
-    S.CreateOrUpdateBuffer(VertexBuffer, vertices.data(), true);
-
-    std::vector<uint> indices = G->GenerateIndices(Mode);
-    IndexBuffer.Size = sizeof(uint) * indices.size();
-    S.CreateOrUpdateBuffer(IndexBuffer, indices.data(), true);
+        std::vector<uint> indices = G->GenerateIndices(mode);
+        buffers.IndexBuffer.Size = sizeof(uint) * indices.size();
+        S.CreateOrUpdateBuffer(buffers.IndexBuffer, indices.data());
+        BuffersForMode[mode] = std::move(buffers);
+    }
 }
 
 Scene::Scene(const VulkanContext &vc)
@@ -218,12 +215,12 @@ void Scene::RecordCommandBuffer() {
     vk::DescriptorSet descriptor_sets[] = {*shader_pipeline->DescriptorSet};
     command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline->PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
 
-    const auto &geometry = Geometries[0];
-    const vk::Buffer vertex_buffers[] = {*geometry.VertexBuffer.Buffer};
+    const auto &geometry_buffers = Geometries[0].GetBuffers(Mode);
+    const vk::Buffer vertex_buffers[] = {*geometry_buffers.VertexBuffer.Buffer};
     const vk::DeviceSize offsets[] = {0};
     command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
-    command_buffer->bindIndexBuffer(*geometry.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer->drawIndexed(geometry.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+    command_buffer->bindIndexBuffer(*geometry_buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    command_buffer->drawIndexed(geometry_buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
 }
@@ -510,7 +507,6 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Lines", &render_mode, int(RenderMode::Lines));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
-                for (auto &geometry : Geometries) geometry.SetMode(Mode);
                 CompileShaders();
             }
             Gizmo->RenderDebug();
