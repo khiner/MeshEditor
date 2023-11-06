@@ -115,7 +115,7 @@ struct Scene {
     void RenderGizmo();
     void RenderControls();
 
-    void CompileShaders();
+    void RecompileShaders();
 
     Transform GetTransform() const;
     void UpdateTransform();

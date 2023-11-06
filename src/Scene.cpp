@@ -106,44 +106,6 @@ GeometryInstance::GeometryInstance(const Scene &scene, Geometry &&geometry)
     }
 }
 
-Scene::Scene(const VulkanContext &vc)
-    : VC(vc),
-      MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)),
-      CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
-      CommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
-      TransferCommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
-      RenderFence(VC.Device->createFenceUnique({})) {
-    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
-    const Transform initial_transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-    CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
-    CreateOrUpdateBuffer(LightBuffer, &Light);
-    FillShaderPipeline = std::make_unique<::FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
-    LineShaderPipeline = std::make_unique<::LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
-
-    TextureSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
-    Gizmo = std::make_unique<::Gizmo>();
-    const std::vector<vk::AttachmentDescription> attachments{
-        // Depth attachment.
-        {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        // Multisampled offscreen image.
-        {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-        // Single-sampled resolve.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
-    };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal}; // Reference to the depth attachment.
-    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
-
-    RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
-
-    GetShaderPipeline()->CompileShaders();
-
-    Geometries.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
-}
-
-Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
-
 void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_props) {
     const auto &device = vc.Device;
     Image = device->createImageUnique(image_info);
@@ -152,111 +114,6 @@ void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_in
     device->bindImageMemory(*Image, *Memory, 0);
     view_info.image = *Image;
     View = device->createImageViewUnique(view_info);
-}
-
-void Scene::SetExtent(vk::Extent2D extent) {
-    Extent = extent;
-
-    const auto transform = GetTransform();
-    CreateOrUpdateBuffer(TransformBuffer, &transform);
-
-    const vk::Extent3D e3d{Extent, 1};
-    DepthImage.Create(
-        VC,
-        {{}, vk::ImageType::e2D, vk::Format::eD32Sfloat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
-    );
-    OffscreenImage.Create(
-        VC,
-        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    );
-    ResolveImage.Create(
-        VC,
-        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    );
-
-    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
-    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
-}
-
-void Scene::RecordCommandBuffer() {
-    const auto &command_buffer = CommandBuffers[0];
-    command_buffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
-    command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
-
-    const std::vector<vk::ImageMemoryBarrier> image_memory_barriers{{
-        {},
-        {},
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        VK_QUEUE_FAMILY_IGNORED,
-        VK_QUEUE_FAMILY_IGNORED,
-        *ResolveImage,
-        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
-    }};
-    command_buffer->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        {}, // No dependency flags.
-        {}, // No memory barriers.
-        {}, // No buffer memory barriers.
-        image_memory_barriers
-    );
-
-    const auto *shader_pipeline = GetShaderPipeline();
-    // Clear values for the depth, color, and (placeholder) resolve attachments.
-    const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}, {}};
-    command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
-    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline->Pipeline);
-
-    vk::DescriptorSet descriptor_sets[] = {*shader_pipeline->DescriptorSet};
-    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline->PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
-
-    const auto &geometry_buffers = Geometries[0].GetBuffers(Mode);
-    const vk::Buffer vertex_buffers[] = {*geometry_buffers.VertexBuffer.Buffer};
-    const vk::DeviceSize offsets[] = {0};
-    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
-    command_buffer->bindIndexBuffer(*geometry_buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer->drawIndexed(geometry_buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
-    command_buffer->endRenderPass();
-    command_buffer->end();
-}
-
-void Scene::SubmitCommandBuffer(vk::Fence fence) const {
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(*CommandBuffers[0]);
-    VC.Queue.submit(submit, fence);
-}
-
-bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
-    const bool viewport_changed = Extent.width != width || Extent.height != height;
-    const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
-    if (!viewport_changed && !bg_color_changed) return false;
-
-    BackgroundColor = bg_color;
-
-    if (viewport_changed) SetExtent({width, height});
-    if (viewport_changed || bg_color_changed) RecordCommandBuffer();
-    SubmitCommandBuffer(*RenderFence);
-
-    // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
-    // Returning `true` indicates that the resolve image/sampler have been recreated.
-    auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
-    if (wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    VC.Device->resetFences(*RenderFence);
-
-    return viewport_changed;
-}
-
-void Scene::CompileShaders() {
-    GetShaderPipeline()->CompileShaders();
-    RecordCommandBuffer();
-    SubmitCommandBuffer();
 }
 
 ShaderPipeline::ShaderPipeline(
@@ -395,6 +252,150 @@ LineShaderPipeline::LineShaderPipeline(const Scene &s, const fs::path &vert_shad
     S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
+Scene::Scene(const VulkanContext &vc)
+    : VC(vc),
+      MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)),
+      CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
+      CommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
+      TransferCommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
+      RenderFence(VC.Device->createFenceUnique({})) {
+    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
+    const Transform initial_transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+    CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
+    CreateOrUpdateBuffer(LightBuffer, &Light);
+    FillShaderPipeline = std::make_unique<::FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
+    LineShaderPipeline = std::make_unique<::LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
+
+    TextureSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+    Gizmo = std::make_unique<::Gizmo>();
+    const std::vector<vk::AttachmentDescription> attachments{
+        // Depth attachment.
+        {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        // Multisampled offscreen image.
+        {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Single-sampled resolve.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+    };
+    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal}; // Reference to the depth attachment.
+    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
+
+    RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
+
+    FillShaderPipeline->CompileShaders();
+    LineShaderPipeline->CompileShaders();
+
+    Geometries.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
+}
+
+Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
+
+void Scene::SetExtent(vk::Extent2D extent) {
+    Extent = extent;
+
+    const auto transform = GetTransform();
+    CreateOrUpdateBuffer(TransformBuffer, &transform);
+
+    const vk::Extent3D e3d{Extent, 1};
+    DepthImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, vk::Format::eD32Sfloat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+    );
+    OffscreenImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+    ResolveImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+
+    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+}
+
+void Scene::RecordCommandBuffer() {
+    const auto &command_buffer = CommandBuffers[0];
+    command_buffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
+    command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
+    command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
+
+    const std::vector<vk::ImageMemoryBarrier> image_memory_barriers{{
+        {},
+        {},
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED,
+        *ResolveImage,
+        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    }};
+    command_buffer->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        {}, // No dependency flags.
+        {}, // No memory barriers.
+        {}, // No buffer memory barriers.
+        image_memory_barriers
+    );
+
+    const auto *shader_pipeline = GetShaderPipeline();
+    // Clear values for the depth, color, and (placeholder) resolve attachments.
+    const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}, {}};
+    command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline->Pipeline);
+
+    vk::DescriptorSet descriptor_sets[] = {*shader_pipeline->DescriptorSet};
+    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline->PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
+
+    const auto &geometry_buffers = Geometries[0].GetBuffers(Mode);
+    const vk::Buffer vertex_buffers[] = {*geometry_buffers.VertexBuffer.Buffer};
+    const vk::DeviceSize offsets[] = {0};
+    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
+    command_buffer->bindIndexBuffer(*geometry_buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    command_buffer->drawIndexed(geometry_buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+    command_buffer->endRenderPass();
+    command_buffer->end();
+}
+
+void Scene::SubmitCommandBuffer(vk::Fence fence) const {
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(*CommandBuffers[0]);
+    VC.Queue.submit(submit, fence);
+}
+
+void Scene::RecompileShaders() {
+    GetShaderPipeline()->CompileShaders();
+    RecordCommandBuffer();
+    SubmitCommandBuffer();
+}
+
+bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
+    const bool viewport_changed = Extent.width != width || Extent.height != height;
+    const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
+    if (!viewport_changed && !bg_color_changed) return false;
+
+    BackgroundColor = bg_color;
+
+    if (viewport_changed) SetExtent({width, height});
+    if (viewport_changed || bg_color_changed) RecordCommandBuffer();
+    SubmitCommandBuffer(*RenderFence);
+
+    // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
+    // Returning `true` indicates that the resolve image/sampler have been recreated.
+    auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
+    if (wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    VC.Device->resetFences(*RenderFence);
+
+    return viewport_changed;
+}
+
 void Scene::CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate) const {
     const auto &device = VC.Device;
     const auto &queue = VC.Queue;
@@ -507,13 +508,14 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Lines", &render_mode, int(RenderMode::Lines));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
-                CompileShaders();
+                RecordCommandBuffer();
+                SubmitCommandBuffer();
             }
             Gizmo->RenderDebug();
             EndTabItem();
         }
         if (BeginTabItem("Shader")) {
-            if (Button("Recompile shaders")) CompileShaders();
+            if (Button("Recompile shaders")) RecompileShaders();
             EndTabItem();
         }
         EndTabBar();
