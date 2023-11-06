@@ -4,4 +4,5 @@ enum class RenderMode {
     None,
     Flat,
     Smooth,
+    Lines,
 };

@@ -74,3 +74,14 @@ std::vector<uint> Geometry::GenerateTriangulatedFaceIndices() const {
     }
     return indices;
 }
+
+std::vector<uint> Geometry::GenerateLineIndices() const {
+    std::vector<uint> indices;
+    indices.reserve(Mesh.n_edges() * 2);
+    for (const auto &eh : Mesh.edges()) {
+        const auto heh = Mesh.halfedge_handle(eh, 0);
+        indices.push_back(Mesh.from_vertex_handle(heh).idx());
+        indices.push_back(Mesh.to_vertex_handle(heh).idx());
+    }
+    return indices;
+}

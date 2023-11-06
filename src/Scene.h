@@ -8,6 +8,10 @@
 #include "Vertex.h"
 #include "VulkanContext.h"
 
+#include <filesystem>
+
+namespace fs = std::filesystem;
+
 struct Scene;
 
 struct Transform {
@@ -49,21 +53,34 @@ struct ImageResource {
 };
 
 struct ShaderPipeline {
-    ShaderPipeline(const Scene &);
-    ~ShaderPipeline() = default;
+    // Paths are relative to the `Shaders` directory.
+    ShaderPipeline(
+        const Scene &,
+        const fs::path &vert_shader_path, const fs::path &frag_shader_path,
+        vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
+        vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList
+    );
+    virtual ~ShaderPipeline() = default;
 
     void CompileShaders();
 
     const Scene &S;
 
+    fs::path VertexShaderPath, FragmentShaderPath;
+    vk::PolygonMode PolygonMode;
+    vk::PrimitiveTopology Topology;
     vk::UniqueDescriptorSetLayout DescriptorSetLayout;
+    vk::UniqueDescriptorSet DescriptorSet;
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
+};
 
-    vk::UniqueDescriptorSet DescriptorSet;
+struct FillShaderPipeline : public ShaderPipeline {
+    FillShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
+};
 
-    Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
-    Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
+struct LineShaderPipeline : public ShaderPipeline {
+    LineShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
 };
 
 struct Geometry;
@@ -99,7 +116,7 @@ struct Scene {
     void UpdateTransform();
     void UpdateLight();
 
-    void CreateOrUpdateBuffer(Buffer &buffer, const void *data) const;
+    void CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate = false) const;
 
     const VulkanContext &VC;
 
@@ -114,12 +131,27 @@ struct Scene {
     vk::UniqueFramebuffer Framebuffer;
     vk::UniqueRenderPass RenderPass;
 
+    Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
+    Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
+
 private:
     // Recreates transform, render images (see below) and framebuffer based on the new extent.
     // These are then reused by future renders that don't change the extent.
     void SetExtent(vk::Extent2D);
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
+
+    inline ShaderPipeline *GetShaderPipeline() const {
+        switch (Mode) {
+            case RenderMode::Flat:
+            case RenderMode::Smooth:
+                return FillShaderPipeline.get();
+            case RenderMode::Lines:
+                return LineShaderPipeline.get();
+            default:
+                throw std::runtime_error("Invalid render mode.");
+        }
+    }
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
@@ -135,7 +167,9 @@ private:
     // All images are referenced by the framebuffer and thus must be kept in memory.
     ImageResource DepthImage, OffscreenImage, ResolveImage;
 
-    ShaderPipeline ShaderPipeline;
+    std::unique_ptr<FillShaderPipeline> FillShaderPipeline;
+    std::unique_ptr<LineShaderPipeline> LineShaderPipeline;
+
     vk::UniqueSampler TextureSampler;
 
     std::unique_ptr<Gizmo> Gizmo;

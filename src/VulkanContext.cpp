@@ -78,18 +78,24 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
     if (qfp_find_graphics_it == qfp.end()) throw std::runtime_error("No graphics queue family found.");
 
     QueueFamily = std::ranges::distance(qfp.begin(), qfp_find_graphics_it);
+    if (!PhysicalDevice.getFeatures().fillModeNonSolid) {
+        throw std::runtime_error("`fillModeNonSolid` is not supported, but is needed for line rendering.");
+    }
+
+    vk::PhysicalDeviceFeatures device_features{};
+    device_features.fillModeNonSolid = VK_TRUE;
 
     // Create logical device (with 1 queue).
     const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
     const std::array queue_priority = {1.0f};
     const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
-    Device = PhysicalDevice.createDeviceUnique({{}, queue_info, {}, device_extensions});
+    Device = PhysicalDevice.createDeviceUnique({{}, queue_info, {}, device_extensions, &device_features});
     Queue = Device->getQueue(QueueFamily, 0);
 
     // Create descriptor pool.
     const std::vector pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 2}, // 1 for ImGui and 1 for the Scene texture sampler.
-        {vk::DescriptorType::eUniformBuffer, 2}, // 1 for the transform buffer and 1 for the light buffer.
+        {vk::DescriptorType::eUniformBuffer, 3}, // Two shader pipelines use a transform buffer and one uses a light buffer.
     };
     const uint max_sets = std::accumulate(pool_sizes.begin(), pool_sizes.end(), 0u, [](uint sum, const vk::DescriptorPoolSize &pool_size) {
         return sum + pool_size.descriptorCount;

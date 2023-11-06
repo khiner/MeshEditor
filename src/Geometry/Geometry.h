@@ -83,10 +83,12 @@ struct Geometry {
 
     std::vector<uint> GenerateIndices(RenderMode mode) const {
         return mode == RenderMode::Flat ? GenerateTriangulatedFaceIndices() :
+            mode == RenderMode::Lines   ? GenerateLineIndices() :
                                           GenerateTriangleIndices();
     }
     std::vector<uint> GenerateTriangleIndices() const;
     std::vector<uint> GenerateTriangulatedFaceIndices() const;
+    std::vector<uint> GenerateLineIndices() const;
 
     // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
     std::pair<glm::vec3, glm::vec3> ComputeBounds() const;

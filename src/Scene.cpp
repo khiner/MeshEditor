@@ -102,11 +102,11 @@ void GeometryInstance::SetMode(RenderMode mode) {
 
     std::vector<Vertex3D> vertices = G->GenerateVertices(Mode);
     VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
-    S.CreateOrUpdateBuffer(VertexBuffer, vertices.data());
+    S.CreateOrUpdateBuffer(VertexBuffer, vertices.data(), true);
 
     std::vector<uint> indices = G->GenerateIndices(Mode);
     IndexBuffer.Size = sizeof(uint) * indices.size();
-    S.CreateOrUpdateBuffer(IndexBuffer, indices.data());
+    S.CreateOrUpdateBuffer(IndexBuffer, indices.data(), true);
 }
 
 Scene::Scene(const VulkanContext &vc)
@@ -115,10 +115,16 @@ Scene::Scene(const VulkanContext &vc)
       CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
       CommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
       TransferCommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
-      RenderFence(VC.Device->createFenceUnique({})),
-      ShaderPipeline(*this),
-      TextureSampler(VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
-      Gizmo(std::make_unique<::Gizmo>()) {
+      RenderFence(VC.Device->createFenceUnique({})) {
+    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
+    const Transform initial_transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+    CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
+    CreateOrUpdateBuffer(LightBuffer, &Light);
+    FillShaderPipeline = std::make_unique<::FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
+    LineShaderPipeline = std::make_unique<::LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
+
+    TextureSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+    Gizmo = std::make_unique<::Gizmo>();
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
         {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -134,7 +140,7 @@ Scene::Scene(const VulkanContext &vc)
 
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
-    ShaderPipeline.CompileShaders();
+    GetShaderPipeline()->CompileShaders();
 
     Geometries.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
 }
@@ -155,7 +161,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
 
     const auto transform = GetTransform();
-    CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
+    CreateOrUpdateBuffer(TransformBuffer, &transform);
 
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -203,13 +209,14 @@ void Scene::RecordCommandBuffer() {
         image_memory_barriers
     );
 
+    const auto *shader_pipeline = GetShaderPipeline();
     // Clear values for the depth, color, and (placeholder) resolve attachments.
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}, {}};
     command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
-    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.Pipeline);
+    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline->Pipeline);
 
-    vk::DescriptorSet descriptor_sets[] = {*ShaderPipeline.DescriptorSet};
-    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *ShaderPipeline.PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
+    vk::DescriptorSet descriptor_sets[] = {*shader_pipeline->DescriptorSet};
+    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline->PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
 
     const auto &geometry = Geometries[0];
     const vk::Buffer vertex_buffers[] = {*geometry.VertexBuffer.Buffer};
@@ -250,46 +257,24 @@ bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color)
 }
 
 void Scene::CompileShaders() {
-    ShaderPipeline.CompileShaders();
+    GetShaderPipeline()->CompileShaders();
     RecordCommandBuffer();
     SubmitCommandBuffer();
 }
 
-ShaderPipeline::ShaderPipeline(const Scene &scene)
-    : S(scene) {
-    // Create descriptor set layout for transform and light buffers
-    std::vector<vk::DescriptorSetLayoutBinding> bindings{
-        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
-        {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
-    };
-    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
-    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
-
-    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
-    const Transform initial_transform{I, S.Camera.GetViewMatrix(), S.Camera.GetProjectionMatrix(aspect_ratio)};
-    S.CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
-    S.CreateOrUpdateBuffer(LightBuffer, &S.Light);
-
-    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
-
-    vk::DescriptorBufferInfo transform_buffer_info{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    vk::DescriptorBufferInfo light_buffer_info{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
-        {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
-    };
-    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
-}
+ShaderPipeline::ShaderPipeline(
+    const Scene &scene,
+    const fs::path &vert_shader_path, const fs::path &frag_shader_path,
+    vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology
+)
+    : S(scene), VertexShaderPath(vert_shader_path), FragmentShaderPath(frag_shader_path), PolygonMode(polygon_mode), Topology(topology) {}
 
 void ShaderPipeline::CompileShaders() {
     static const shaderc::Compiler compiler;
     static shaderc::CompileOptions compile_opts;
     compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
 
-    static const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, vk::PrimitiveTopology::eTriangleList, false};
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
-    static const vk::PipelineRasterizationStateCreateInfo rasterizer{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.0f};
     static const vk::PipelineMultisampleStateCreateInfo multisampling{{}, S.MsaaSamples, false};
     static const vk::PipelineColorBlendAttachmentState color_blend_attachment{
         {},
@@ -325,18 +310,20 @@ void ShaderPipeline::CompileShaders() {
         1.0f // maxDepthBounds
     };
 
-    const std::string VertShader = File::Read(ShadersDir / "Transform" / "Transform.vert");
-    const std::string FragShader = File::Read(ShadersDir / "Transform" / "Transform.frag");
+    const std::string vert_shader = File::Read(ShadersDir / VertexShaderPath);
+    const std::string frag_shader = File::Read(ShadersDir / FragmentShaderPath);
+    const vk::PipelineRasterizationStateCreateInfo rasterizer{{}, false, false, PolygonMode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.0f};
+    const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, Topology, false};
 
     const auto &device = S.VC.Device;
-    const auto vert_shader_spv = compiler.CompileGlslToSpv(VertShader, shaderc_glsl_vertex_shader, "vertex shader", compile_opts);
+    const auto vert_shader_spv = compiler.CompileGlslToSpv(vert_shader, shaderc_glsl_vertex_shader, "vertex shader", compile_opts);
     if (vert_shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
         throw std::runtime_error(std::format("Failed to compile vertex shader: {}", vert_shader_spv.GetErrorMessage()));
     }
     const std::vector<uint> vert_shader_code{vert_shader_spv.cbegin(), vert_shader_spv.cend()};
     const auto vert_shader_module = device->createShaderModuleUnique({{}, vert_shader_code});
 
-    const auto frag_shader_spv = compiler.CompileGlslToSpv(FragShader, shaderc_glsl_fragment_shader, "fragment shader", compile_opts);
+    const auto frag_shader_spv = compiler.CompileGlslToSpv(frag_shader, shaderc_glsl_fragment_shader, "fragment shader", compile_opts);
     if (frag_shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
         throw std::runtime_error(std::format("Failed to compile fragment shader: {}", frag_shader_spv.GetErrorMessage()));
     }
@@ -372,12 +359,51 @@ void ShaderPipeline::CompileShaders() {
     Pipeline = std::move(pipeline_result.value);
 }
 
-void Scene::CreateOrUpdateBuffer(Buffer &buffer, const void *data) const {
+FillShaderPipeline::FillShaderPipeline(const Scene &s, const fs::path &vert_shader_path, const fs::path &frag_shader_path)
+    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList) {
+    std::vector<vk::DescriptorSetLayoutBinding> bindings{
+        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+        {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
+    };
+    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+
+    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+
+    vk::DescriptorBufferInfo transform_buffer_info{*S.TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    vk::DescriptorBufferInfo light_buffer_info{*S.LightBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+        {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
+    };
+    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+LineShaderPipeline::LineShaderPipeline(const Scene &s, const fs::path &vert_shader_path, const fs::path &frag_shader_path)
+    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList) {
+    std::vector<vk::DescriptorSetLayoutBinding> bindings{
+        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+    };
+    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+
+    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+
+    vk::DescriptorBufferInfo transform_buffer_info{*S.TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+    };
+    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+void Scene::CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate) const {
     const auto &device = VC.Device;
     const auto &queue = VC.Queue;
 
     // Optionally create the staging buffer and its memory.
-    if (!buffer.StagingBuffer || !buffer.StagingMemory) {
+    if (force_recreate || !buffer.StagingBuffer || !buffer.StagingMemory) {
         buffer.StagingBuffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
         const auto staging_mem_reqs = device->getBufferMemoryRequirements(*buffer.StagingBuffer);
         buffer.StagingMemory = device->allocateMemoryUnique({staging_mem_reqs.size, VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
@@ -390,7 +416,7 @@ void Scene::CreateOrUpdateBuffer(Buffer &buffer, const void *data) const {
     device->unmapMemory(*buffer.StagingMemory);
 
     // Optionally create the device buffer and its memory.
-    if (!buffer.Buffer || !buffer.Memory) {
+    if (force_recreate || !buffer.Buffer || !buffer.Memory) {
         buffer.Buffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
         const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer.Buffer);
         buffer.Memory = device->allocateMemoryUnique({buffer_mem_reqs.size, VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
@@ -424,12 +450,12 @@ Transform Scene::GetTransform() const {
 
 void Scene::UpdateTransform() {
     const auto transform = GetTransform();
-    CreateOrUpdateBuffer(ShaderPipeline.TransformBuffer, &transform);
+    CreateOrUpdateBuffer(TransformBuffer, &transform);
     SubmitCommandBuffer();
 }
 
 void Scene::UpdateLight() {
-    CreateOrUpdateBuffer(ShaderPipeline.LightBuffer, &Light);
+    CreateOrUpdateBuffer(LightBuffer, &Light);
     SubmitCommandBuffer();
 }
 
@@ -480,11 +506,12 @@ void Scene::RenderControls() {
             bool render_mode_changed = RadioButton("Flat", &render_mode, int(RenderMode::Flat));
             SameLine();
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
+            SameLine();
+            render_mode_changed |= RadioButton("Lines", &render_mode, int(RenderMode::Lines));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
                 for (auto &geometry : Geometries) geometry.SetMode(Mode);
-                RecordCommandBuffer();
-                SubmitCommandBuffer();
+                CompileShaders();
             }
             Gizmo->RenderDebug();
             EndTabItem();
