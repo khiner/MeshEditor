@@ -59,12 +59,12 @@ struct Geometry {
     uint FindVertextNearestTo(const glm::vec3 point) const;
     inline bool Empty() const { return Mesh.n_vertices() == 0; }
 
-    std::vector<Vertex3D> GenerateVertices(RenderMode mode) {
+    std::vector<Vertex3D> GenerateVertices(GeometryMode mode) {
         std::vector<Vertex3D> vertices;
 
         Mesh.update_normals();
         glm::vec4 color = {1, 1, 1, 1}; // todo
-        if (mode == RenderMode::Flat) {
+        if (mode == GeometryMode::Faces) {
             for (const auto &fh : Mesh.faces()) {
                 const auto &n = Mesh.normal(fh); // Duplicate the normal for each vertex.
                 for (const auto &vh : Mesh.fv_range(fh)) {
@@ -81,10 +81,10 @@ struct Geometry {
         return vertices;
     }
 
-    std::vector<uint> GenerateIndices(RenderMode mode) const {
-        return mode == RenderMode::Flat ? GenerateTriangulatedFaceIndices() :
-            mode == RenderMode::Lines   ? GenerateLineIndices() :
-                                          GenerateTriangleIndices();
+    std::vector<uint> GenerateIndices(GeometryMode mode) const {
+        return mode == GeometryMode::Faces ? GenerateTriangulatedFaceIndices() :
+            mode == GeometryMode::Edges    ? GenerateLineIndices() :
+                                             GenerateTriangleIndices();
     }
     std::vector<uint> GenerateTriangleIndices() const;
     std::vector<uint> GenerateTriangulatedFaceIndices() const;

@@ -92,7 +92,7 @@ struct Gizmo {
 
 GeometryInstance::GeometryInstance(const Scene &scene, Geometry &&geometry)
     : S(scene), G(std::make_unique<Geometry>(std::move(geometry))) {
-    static const std::vector AllModes{RenderMode::Flat, RenderMode::Smooth, RenderMode::Lines};
+    static const std::vector AllModes{GeometryMode::Faces, GeometryMode::Vertices, GeometryMode::Edges};
     for (const auto mode : AllModes) {
         Buffers buffers;
         std::vector<Vertex3D> vertices = G->GenerateVertices(mode);
@@ -318,6 +318,18 @@ void Scene::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
+static void RenderGeometryBuffers(const ShaderPipeline &shader_pipeline, const vk::UniqueCommandBuffer &command_buffer, const GeometryInstance::Buffers &buffers) {
+    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
+
+    vk::DescriptorSet descriptor_sets[] = {*shader_pipeline.DescriptorSet};
+    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
+    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
+    const vk::Buffer vertex_buffers[] = {*buffers.VertexBuffer.Buffer};
+    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, vertex_buffer_offsets);
+    command_buffer->bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    command_buffer->drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+}
+
 void Scene::RecordCommandBuffer() {
     const auto &command_buffer = CommandBuffers[0];
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
@@ -343,21 +355,22 @@ void Scene::RecordCommandBuffer() {
         image_memory_barriers
     );
 
-    const auto *shader_pipeline = GetShaderPipeline();
     // Clear values for the depth, color, and (placeholder) resolve attachments.
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}, {}};
     command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
-    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline->Pipeline);
 
-    vk::DescriptorSet descriptor_sets[] = {*shader_pipeline->DescriptorSet};
-    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline->PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
+    const auto &geometry = Geometries[0];
+    if (Mode == RenderMode::Flat) {
+        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Faces));
+    } else if (Mode == RenderMode::Smooth) {
+        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Vertices));
+    } else if (Mode == RenderMode::Lines) {
+        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
+    } else if (Mode == RenderMode::Mesh) {
+        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
+    }
 
-    const auto &geometry_buffers = Geometries[0].GetBuffers(Mode);
-    const vk::Buffer vertex_buffers[] = {*geometry_buffers.VertexBuffer.Buffer};
-    const vk::DeviceSize offsets[] = {0};
-    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, offsets);
-    command_buffer->bindIndexBuffer(*geometry_buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer->drawIndexed(geometry_buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
     command_buffer->endRenderPass();
     command_buffer->end();
 }
@@ -369,7 +382,8 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
 }
 
 void Scene::RecompileShaders() {
-    GetShaderPipeline()->CompileShaders();
+    FillShaderPipeline->CompileShaders();
+    LineShaderPipeline->CompileShaders();
     RecordCommandBuffer();
     SubmitCommandBuffer();
 }
@@ -506,6 +520,8 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
             SameLine();
             render_mode_changed |= RadioButton("Lines", &render_mode, int(RenderMode::Lines));
+            SameLine();
+            render_mode_changed |= RadioButton("Mesh", &render_mode, int(RenderMode::Mesh));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
                 RecordCommandBuffer();

@@ -94,13 +94,13 @@ struct GeometryInstance {
 
     GeometryInstance(const Scene &, Geometry &&);
 
-    const Buffers &GetBuffers(RenderMode mode) { return BuffersForMode.at(mode); }
+    const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
 
     const Scene &S;
 
 private:
     std::unique_ptr<Geometry> G;
-    std::unordered_map<RenderMode, Buffers> BuffersForMode;
+    std::unordered_map<GeometryMode, Buffers> BuffersForMode;
 };
 
 struct Scene {
