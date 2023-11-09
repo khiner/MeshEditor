@@ -4,6 +4,7 @@
 #include <glm/vec3.hpp>
 
 #include "Camera.h"
+#include "Geometry/GeometryMode.h"
 #include "RenderMode.h"
 #include "Vertex.h"
 #include "VulkanContext.h"
@@ -127,10 +128,10 @@ struct Scene {
 
     void CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate = false) const;
 
-    void UpdateGeometryLineColors() {
-        const auto &line_color = Mode == RenderMode::Mesh ? MeshLineColor : LineColor;
+    void UpdateGeometryEdgeColors() {
+        const auto &edge_color = Mode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
         for (auto &geometry : Geometries) {
-            geometry.SetEdgeColor(line_color);
+            geometry.SetEdgeColor(edge_color);
             geometry.GetBuffers(GeometryMode::Edges);
         }
     }
@@ -140,10 +141,10 @@ struct Scene {
     Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
     Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
-    RenderMode Mode{RenderMode::Lines};
+    RenderMode Mode{RenderMode::FacesAndEdges};
 
-    glm::vec4 LineColor{1, 1, 1, 1}; // Used for line mode.
-    glm::vec4 MeshLineColor{0, 0, 0, 1}; // Used for mesh mode.
+    glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
+    glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for mesh mode.
 
     const uint FramebufferCount{1};
     vk::SampleCountFlagBits MsaaSamples;
@@ -163,10 +164,10 @@ private:
 
     inline ShaderPipeline *GetShaderPipeline() const {
         switch (Mode) {
-            case RenderMode::Flat:
+            case RenderMode::Faces:
             case RenderMode::Smooth:
                 return FillShaderPipeline.get();
-            case RenderMode::Lines:
+            case RenderMode::Edges:
                 return LineShaderPipeline.get();
             default:
                 throw std::runtime_error("Invalid render mode.");

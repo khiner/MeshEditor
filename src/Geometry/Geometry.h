@@ -9,6 +9,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include "GeometryMode.h"
 #include "RenderMode.h"
 #include "Vertex.h"
 

@@ -293,7 +293,7 @@ Scene::Scene(const VulkanContext &vc)
     LineShaderPipeline->CompileShaders();
 
     Geometries.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
-    UpdateGeometryLineColors();
+    UpdateGeometryEdgeColors();
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -367,15 +367,15 @@ void Scene::RecordCommandBuffer() {
     command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 
     const auto &geometry = Geometries[0];
-    if (Mode == RenderMode::Flat) {
+    if (Mode == RenderMode::Faces) {
         RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Faces));
+    } else if (Mode == RenderMode::Edges) {
+        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
+    } else if (Mode == RenderMode::FacesAndEdges) {
+        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::Smooth) {
         RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Vertices));
-    } else if (Mode == RenderMode::Lines) {
-        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
-    } else if (Mode == RenderMode::Mesh) {
-        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Faces));
-        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
     }
 
     command_buffer->endRenderPass();
@@ -522,24 +522,23 @@ void Scene::RenderControls() {
         }
         if (BeginTabItem("Object")) {
             int render_mode = int(Mode);
-            bool render_mode_changed = RadioButton("Flat", &render_mode, int(RenderMode::Flat));
+            bool render_mode_changed = RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
+            SameLine();
+            render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
+            SameLine();
+            render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
             SameLine();
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
-            SameLine();
-            render_mode_changed |= RadioButton("Lines", &render_mode, int(RenderMode::Lines));
-            SameLine();
-            render_mode_changed |= RadioButton("Mesh", &render_mode, int(RenderMode::Mesh));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
-                UpdateGeometryLineColors();
+                UpdateGeometryEdgeColors();
                 RecordCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
                 SubmitCommandBuffer();
             }
-            if (Mode == RenderMode::Mesh || Mode == RenderMode::Lines) {
-                auto &line_color = Mode == RenderMode::Mesh ? MeshLineColor : LineColor;
-                const char *label = Mode == RenderMode::Mesh ? "Mesh line color" : "Line color";
-                if (ColorEdit3(label, &line_color.x)) {
-                    UpdateGeometryLineColors();
+            if (Mode == RenderMode::FacesAndEdges || Mode == RenderMode::Edges) {
+                auto &edge_color = Mode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+                if (ColorEdit3("Edge color", &edge_color.x)) {
+                    UpdateGeometryEdgeColors();
                     SubmitCommandBuffer();
                 }
             }
