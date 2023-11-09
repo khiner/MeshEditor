@@ -93,17 +93,23 @@ struct Gizmo {
 GeometryInstance::GeometryInstance(const Scene &scene, Geometry &&geometry)
     : S(scene), G(std::make_unique<Geometry>(std::move(geometry))) {
     static const std::vector AllModes{GeometryMode::Faces, GeometryMode::Vertices, GeometryMode::Edges};
-    for (const auto mode : AllModes) {
-        Buffers buffers;
-        std::vector<Vertex3D> vertices = G->GenerateVertices(mode);
-        buffers.VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
-        S.CreateOrUpdateBuffer(buffers.VertexBuffer, vertices.data());
+    for (const auto mode : AllModes) CreateOrUpdateBuffers(mode);
+}
 
-        std::vector<uint> indices = G->GenerateIndices(mode);
-        buffers.IndexBuffer.Size = sizeof(uint) * indices.size();
-        S.CreateOrUpdateBuffer(buffers.IndexBuffer, indices.data());
-        BuffersForMode[mode] = std::move(buffers);
-    }
+void GeometryInstance::CreateOrUpdateBuffers(GeometryMode mode) {
+    auto &buffers = BuffersForMode[mode];
+    std::vector<Vertex3D> vertices = G->GenerateVertices(mode);
+    buffers.VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
+    S.CreateOrUpdateBuffer(buffers.VertexBuffer, vertices.data());
+
+    std::vector<uint> indices = G->GenerateIndices(mode);
+    buffers.IndexBuffer.Size = sizeof(uint) * indices.size();
+    S.CreateOrUpdateBuffer(buffers.IndexBuffer, indices.data());
+}
+
+void GeometryInstance::SetEdgeColor(const glm::vec4 &color) {
+    G->SetEdgeColor(color);
+    CreateOrUpdateBuffers(GeometryMode::Edges);
 }
 
 void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_props) {
@@ -287,6 +293,7 @@ Scene::Scene(const VulkanContext &vc)
     LineShaderPipeline->CompileShaders();
 
     Geometries.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
+    UpdateGeometryLineColors();
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -524,8 +531,17 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Mesh", &render_mode, int(RenderMode::Mesh));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
-                RecordCommandBuffer();
+                UpdateGeometryLineColors();
+                RecordCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
                 SubmitCommandBuffer();
+            }
+            if (Mode == RenderMode::Mesh || Mode == RenderMode::Lines) {
+                auto &line_color = Mode == RenderMode::Mesh ? MeshLineColor : LineColor;
+                const char *label = Mode == RenderMode::Mesh ? "Mesh line color" : "Line color";
+                if (ColorEdit3(label, &line_color.x)) {
+                    UpdateGeometryLineColors();
+                    SubmitCommandBuffer();
+                }
             }
             Gizmo->RenderDebug();
             EndTabItem();

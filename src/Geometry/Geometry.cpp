@@ -19,6 +19,28 @@ void Geometry::Save(const fs::path &file_path) const {
     }
 }
 
+std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode) {
+    std::vector<Vertex3D> vertices;
+
+    Mesh.update_normals();
+    glm::vec4 color = mode == GeometryMode::Edges ? EdgeColor : glm::vec4{1, 1, 1, 1}; // todo face colors
+    if (mode == GeometryMode::Faces) {
+        for (const auto &fh : Mesh.faces()) {
+            const auto &n = Mesh.normal(fh); // Duplicate the normal for each vertex.
+            for (const auto &vh : Mesh.fv_range(fh)) {
+                vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(n), color);
+            }
+        }
+    } else {
+        vertices.reserve(Mesh.n_vertices());
+        for (const auto &vh : Mesh.vertices()) {
+            vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(Mesh.normal(vh)), color);
+        }
+    }
+
+    return vertices;
+}
+
 // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
 std::pair<glm::vec3, glm::vec3> Geometry::ComputeBounds() const {
     static const float min_float = std::numeric_limits<float>::lowest();

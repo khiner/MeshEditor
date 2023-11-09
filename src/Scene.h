@@ -96,11 +96,15 @@ struct GeometryInstance {
 
     const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
 
+    void SetEdgeColor(const glm::vec4 &);
+
     const Scene &S;
 
 private:
     std::unique_ptr<Geometry> G;
     std::unordered_map<GeometryMode, Buffers> BuffersForMode;
+
+    void CreateOrUpdateBuffers(GeometryMode);
 };
 
 struct Scene {
@@ -123,12 +127,23 @@ struct Scene {
 
     void CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate = false) const;
 
+    void UpdateGeometryLineColors() {
+        const auto &line_color = Mode == RenderMode::Mesh ? MeshLineColor : LineColor;
+        for (auto &geometry : Geometries) {
+            geometry.SetEdgeColor(line_color);
+            geometry.GetBuffers(GeometryMode::Edges);
+        }
+    }
+
     const VulkanContext &VC;
 
     Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
     Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
-    RenderMode Mode{RenderMode::Flat};
+    RenderMode Mode{RenderMode::Lines};
+
+    glm::vec4 LineColor{1, 1, 1, 1}; // Used for line mode.
+    glm::vec4 MeshLineColor{0, 0, 0, 1}; // Used for mesh mode.
 
     const uint FramebufferCount{1};
     vk::SampleCountFlagBits MsaaSamples;

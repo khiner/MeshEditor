@@ -4,6 +4,7 @@
 
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <OpenMesh/Core/Mesh/PolyMesh_ArrayKernelT.hh>
+
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -28,6 +29,7 @@ struct Geometry {
     Geometry() {
         Mesh.request_face_normals();
         Mesh.request_vertex_normals();
+        Mesh.request_face_colors();
     }
     Geometry(Geometry &&geometry) : Mesh(std::move(geometry.Mesh)) {}
     Geometry(const fs::path &file_path) {
@@ -59,33 +61,13 @@ struct Geometry {
     uint FindVertextNearestTo(const glm::vec3 point) const;
     inline bool Empty() const { return Mesh.n_vertices() == 0; }
 
-    std::vector<Vertex3D> GenerateVertices(GeometryMode mode) {
-        std::vector<Vertex3D> vertices;
-
-        Mesh.update_normals();
-        glm::vec4 color = {1, 1, 1, 1}; // todo
-        if (mode == GeometryMode::Faces) {
-            for (const auto &fh : Mesh.faces()) {
-                const auto &n = Mesh.normal(fh); // Duplicate the normal for each vertex.
-                for (const auto &vh : Mesh.fv_range(fh)) {
-                    vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(n), color);
-                }
-            }
-        } else {
-            vertices.reserve(Mesh.n_vertices());
-            for (const auto &vh : Mesh.vertices()) {
-                vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(Mesh.normal(vh)), color);
-            }
-        }
-
-        return vertices;
-    }
-
+    std::vector<Vertex3D> GenerateVertices(GeometryMode mode);
     std::vector<uint> GenerateIndices(GeometryMode mode) const {
         return mode == GeometryMode::Faces ? GenerateTriangulatedFaceIndices() :
             mode == GeometryMode::Edges    ? GenerateLineIndices() :
                                              GenerateTriangleIndices();
     }
+
     std::vector<uint> GenerateTriangleIndices() const;
     std::vector<uint> GenerateTriangulatedFaceIndices() const;
     std::vector<uint> GenerateLineIndices() const;
@@ -109,6 +91,11 @@ struct Geometry {
         Mesh.request_vertex_normals();
     }
 
+    void SetEdgeColor(const glm::vec4 &edge_color) {
+        EdgeColor = edge_color;
+    }
+
 protected:
     MeshType Mesh;
+    glm::vec4 EdgeColor{0, 0, 0, 1};
 };
