@@ -114,9 +114,13 @@ struct Scene {
 
     VkSampler GetTextureSampler() const { return TextureSampler.get(); }
     VkImageView GetResolveImageView() const { return ResolveImage.View.get(); }
+    const vk::Extent2D &GetExtent() const { return Extent; }
 
-    // Returns true if the scene was updated.
-    bool Render(uint width, uint height, const vk::ClearColorValue &bg_color);
+    // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
+    // The extent of the resolve image can be found with `GetExtent()` after the call,
+    // and it will be equal to the dimensions of `GetContentRegionAvail()` at the beginning of the call.
+    // Returns true if the scene was updated, which can happen when the window size or background color changes.
+    bool Render();
     void RenderGizmo();
     void RenderControls();
 
@@ -142,6 +146,7 @@ struct Scene {
     Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
     RenderMode Mode{RenderMode::FacesAndEdges};
+    SelectionMode SelectionMode{SelectionMode::None};
 
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for mesh mode.

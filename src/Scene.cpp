@@ -395,28 +395,6 @@ void Scene::RecompileShaders() {
     SubmitCommandBuffer();
 }
 
-bool Scene::Render(uint width, uint height, const vk::ClearColorValue &bg_color) {
-    const bool viewport_changed = Extent.width != width || Extent.height != height;
-    const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
-    if (!viewport_changed && !bg_color_changed) return false;
-
-    BackgroundColor = bg_color;
-
-    if (viewport_changed) SetExtent({width, height});
-    if (viewport_changed || bg_color_changed) RecordCommandBuffer();
-    SubmitCommandBuffer(*RenderFence);
-
-    // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
-    // Returning `true` indicates that the resolve image/sampler have been recreated.
-    auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
-    if (wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    VC.Device->resetFences(*RenderFence);
-
-    return viewport_changed;
-}
-
 void Scene::CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate) const {
     const auto &device = VC.Device;
     const auto &queue = VC.Queue;
@@ -479,6 +457,32 @@ void Scene::UpdateLight() {
 }
 
 using namespace ImGui;
+
+static vk::ClearColorValue ImVec4ToClearColor(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
+
+bool Scene::Render() {
+    const vk::ClearColorValue &bg_color = ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg));
+    const auto content_region = GetContentRegionAvail();
+    const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
+    const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
+    if (!extent_changed && !bg_color_changed) return false;
+
+    BackgroundColor = bg_color;
+
+    if (extent_changed) SetExtent({uint(content_region.x), uint(content_region.y)});
+    if (extent_changed || bg_color_changed) RecordCommandBuffer();
+    SubmitCommandBuffer(*RenderFence);
+
+    // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
+    // Returning `true` indicates that the resolve image/sampler have been recreated.
+    auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
+    if (wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    VC.Device->resetFences(*RenderFence);
+
+    return extent_changed;
+}
 
 void Scene::RenderGizmo() {
     // Handle mouse scroll.

@@ -133,8 +133,6 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
 
 using namespace ImGui;
 
-static vk::ClearColorValue ImVec4ToClearColor(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
-
 int main(int, char **) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
@@ -284,14 +282,14 @@ int main(int, char **) {
         if (Windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
-            const auto content_region = GetContentRegionAvail();
-            if (MainScene->Render(content_region.x, content_region.y, ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg)))) {
+            if (MainScene->Render()) {
                 ImGui_ImplVulkan_RemoveTexture(MainSceneDescriptorSet);
                 MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->GetTextureSampler(), MainScene->GetResolveImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
 
             const auto &cursor = GetCursorPos();
-            Image((ImTextureID)MainSceneDescriptorSet, content_region, {0, 1}, {1, 0});
+            const auto &scene_extent = MainScene->GetExtent();
+            Image((ImTextureID)MainSceneDescriptorSet, {float(scene_extent.width), float(scene_extent.height)}, {0, 1}, {1, 0});
             SetCursorPos(cursor);
             MainScene->RenderGizmo();
             End();
