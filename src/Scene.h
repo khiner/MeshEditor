@@ -115,6 +115,7 @@ struct Scene {
     RenderMode Mode{RenderMode::FacesAndEdges};
     SelectionMode SelectionMode{SelectionMode::None};
     int HoveredFace{-1}, SelectedFace{-1};
+    int HoveredVertex{-1}, SelectedVertex{-1};
 
     vk::SampleCountFlagBits MsaaSamples;
 

@@ -21,9 +21,13 @@ struct GeometryInstance {
 
     const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
 
-    // Returns a handle to the first face that intersects the ray, or -1 if no face intersects.
-    // The ray is assumed to be in world space.
-    Geometry::FH FindFirstIntersectingFace(const Ray &) const;
+    // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
+    Geometry::FH FindFirstIntersectingFace(const Ray &ray_world) const;
+    Geometry::FH FindFirstIntersectingFaceLocal(const Ray &ray_local) const; // Local space equivalent.
+
+    // Returns a handle to the vertex nearest to the world-space ray, on the first face that intersects the ray, or -1 if no face intersects.
+    Geometry::VH FindNearestVertex(const Ray &ray_world) const;
+    Geometry::VH FindNearestVertexLocal(const Ray &ray_local) const; // Local space equivalent.
 
     void SetEdgeColor(const glm::vec4 &);
 

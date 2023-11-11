@@ -414,12 +414,19 @@ bool Scene::Render() {
         const glm::vec2 mouse_pos_window = {mouse_pos.x - window_pos.x, mouse_pos.y - window_pos.y};
         const glm::vec2 mouse_pos_clip = {2.f * mouse_pos_window.x / new_extent.x - 1.f, 1.f - 2.f * mouse_pos_window.y / new_extent.y};
         const float aspect_ratio = float(Extent.width) / float(Extent.height);
+        const Ray ray = Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio);
         if (SelectionMode == SelectionMode::Face) {
-            // Find the hovered face.
-            HoveredFace = geometry_instance.FindFirstIntersectingFace(Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio)).idx();
+            HoveredFace = geometry_instance.FindFirstIntersectingFace(ray).idx();
             if (HoveredFace != -1) {
                 if (io.MouseClicked[0]) {
                     SelectedFace = HoveredFace;
+                }
+            }
+        } else if (SelectionMode == SelectionMode::Vertex) {
+            HoveredVertex = geometry_instance.FindNearestVertex(ray).idx();
+            if (HoveredVertex != -1) {
+                if (io.MouseClicked[0]) {
+                    SelectedVertex = HoveredVertex;
                 }
             }
         }
@@ -526,6 +533,9 @@ void Scene::RenderControls() {
             if (SelectionMode == SelectionMode::Face) {
                 const std::string hovered_face_label = HoveredFace == -1 ? "None" : std::format("{}", HoveredFace);
                 Text("Hovered face: %s", hovered_face_label.c_str());
+            } else if (SelectionMode == SelectionMode::Vertex) {
+                const std::string hovered_vertex_label = HoveredVertex == -1 ? "None" : std::format("{}", HoveredVertex);
+                Text("Hovered vertex: %s", hovered_vertex_label.c_str());
             }
             SeparatorText("Transform");
             Gizmo->RenderDebug();

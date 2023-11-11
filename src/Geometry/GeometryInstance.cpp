@@ -4,7 +4,6 @@
 
 #include "VulkanContext.h"
 
-#include <glm/gtx/norm.hpp>
 #include <glm/mat3x3.hpp>
 
 using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
@@ -58,8 +57,7 @@ static bool RayIntersectsTriangle(const Ray &ray, const glm::mat3 &triangle, flo
     return distance > Epsilon;
 }
 
-Geometry::FH GeometryInstance::FindFirstIntersectingFace(const Ray &ray_world) const {
-    const auto ray_local = ray_world.WorldToLocal(Model);
+Geometry::FH GeometryInstance::FindFirstIntersectingFaceLocal(const Ray &ray_local) const {
     const auto &tri_buffers = GetBuffers(GeometryMode::Faces); // Triangulated face buffers
     const std::vector<uint> &tri_indices = tri_buffers.Indices;
     const std::vector<Vertex3D> &tri_verts = tri_buffers.Vertices;
@@ -79,4 +77,28 @@ Geometry::FH GeometryInstance::FindFirstIntersectingFace(const Ray &ray_world) c
     }
 
     return closest_tri_i == -1 ? Geometry::FH{} : G.TriangulatedIndexToFace(closest_tri_i);
+}
+Geometry::FH GeometryInstance::FindFirstIntersectingFace(const Ray &ray_world) const {
+    return FindFirstIntersectingFaceLocal(ray_world.WorldToLocal(Model));
+}
+
+Geometry::VH GeometryInstance::FindNearestVertexLocal(const Ray &ray_local) const {
+    const auto intersecting_face = FindFirstIntersectingFaceLocal(ray_local);
+    if (!intersecting_face.is_valid()) return Geometry::VH{};
+
+    float closest_distance_sq = std::numeric_limits<float>::max();
+    Geometry::VH closest_vertex;
+    const auto &mesh = G.GetMesh();
+    for (const auto &vh : mesh.fv_range(intersecting_face)) {
+        const float distance_sq = ray_local.SquaredDistanceToPoint(ToGlm(mesh.point(vh)));
+        if (distance_sq < closest_distance_sq) {
+            closest_distance_sq = distance_sq;
+            closest_vertex = vh;
+        }
+    }
+
+    return closest_vertex;
+}
+Geometry::VH GeometryInstance::FindNearestVertex(const Ray &ray_world) const {
+    return FindNearestVertexLocal(ray_world.WorldToLocal(Model));
 }
