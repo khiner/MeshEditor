@@ -1,5 +1,7 @@
 #include "VulkanContext.h"
 
+#include <format>
+#include <iostream>
 #include <numeric>
 #include <ranges>
 
@@ -101,6 +103,11 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
         return sum + pool_size.descriptorCount;
     });
     DescriptorPool = Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, max_sets, pool_sizes});
+
+    CommandPool = Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, QueueFamily});
+    CommandBuffers = Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount});
+    TransferCommandBuffers = Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount});
+    RenderFence = Device->createFenceUnique({});
 }
 
 vk::PhysicalDevice VulkanContext::FindPhysicalDevice() const {
@@ -121,4 +128,46 @@ uint VulkanContext::FindMemoryType(uint type_filter, vk::MemoryPropertyFlags pro
         }
     }
     throw std::runtime_error("failed to find suitable memory type!");
+}
+
+void VulkanContext::CreateOrUpdateBuffer(VulkanBuffer &buffer, const void *data, bool force_recreate) const {
+    // Optionally create the staging buffer and its memory.
+    if (force_recreate || !buffer.StagingBuffer || !buffer.StagingMemory) {
+        buffer.StagingBuffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
+        const auto staging_mem_reqs = Device->getBufferMemoryRequirements(*buffer.StagingBuffer);
+        buffer.StagingMemory = Device->allocateMemoryUnique({staging_mem_reqs.size, FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
+        Device->bindBufferMemory(*buffer.StagingBuffer, *buffer.StagingMemory, 0);
+    }
+
+    // Copy data to the staging buffer.
+    void *mapped_data = Device->mapMemory(*buffer.StagingMemory, 0, buffer.Size);
+    memcpy(mapped_data, data, size_t(buffer.Size));
+    Device->unmapMemory(*buffer.StagingMemory);
+
+    // Optionally create the device buffer and its memory.
+    if (force_recreate || !buffer.Buffer || !buffer.Memory) {
+        buffer.Buffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
+        const auto buffer_mem_reqs = Device->getBufferMemoryRequirements(*buffer.Buffer);
+        buffer.Memory = Device->allocateMemoryUnique({buffer_mem_reqs.size, FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+        Device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
+    }
+
+    // Copy data from the staging buffer to the device buffer.
+    const auto &command_buffer = TransferCommandBuffers[0];
+    command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    vk::BufferCopy copy_region;
+    copy_region.size = buffer.Size;
+    command_buffer->copyBuffer(*buffer.StagingBuffer, *buffer.Buffer, copy_region);
+    command_buffer->end();
+
+    // TODO we should use a separate fence/semaphores for buffer updates and rendering.
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(*command_buffer);
+    Queue.submit(submit, *RenderFence);
+
+    auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
+    if (wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    Device->resetFences(*RenderFence);
 }

@@ -1,16 +1,10 @@
 #pragma once
 
-#include <stdexcept>
-#include <vector>
-#include <vulkan/vulkan.hpp>
+#include "VulkanBuffer.h"
 
-#include "Log.h"
+#include <vector>
 
 using uint = u_int32_t;
-
-inline static void CheckVk(VkResult err) {
-    if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
-}
 
 VkBool32 DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT *, void *);
 
@@ -28,7 +22,15 @@ struct VulkanContext {
     vk::UniquePipelineCache PipelineCache;
     vk::UniqueDescriptorPool DescriptorPool;
 
+    const uint FramebufferCount{1};
+    vk::UniqueCommandPool CommandPool;
+    std::vector<vk::UniqueCommandBuffer> CommandBuffers;
+    std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
+    vk::UniqueFence RenderFence;
+
     // Find a discrete GPU, or the first available (integrated) GPU.
     vk::PhysicalDevice FindPhysicalDevice() const;
     uint FindMemoryType(uint type_filter, vk::MemoryPropertyFlags) const;
+
+    void CreateOrUpdateBuffer(VulkanBuffer &, const void *data, bool force_recreate = false) const;
 };

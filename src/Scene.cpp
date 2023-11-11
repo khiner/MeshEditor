@@ -1,11 +1,14 @@
 #include "Scene.h"
 
+#include <format>
+
 #include "imgui.h"
 #include <shaderc/shaderc.hpp>
 
 #include "ImGuizmo.h"
 
 #include "File.h"
+#include "Geometry/GeometryInstance.h"
 #include "Geometry/Primitive/Cuboid.h"
 
 using glm::vec3, glm::vec4, glm::mat4;
@@ -91,28 +94,6 @@ struct Gizmo {
     bool ShowBounds{false};
     bool ShowModelGizmo{false};
 };
-
-GeometryInstance::GeometryInstance(const Scene &scene, Geometry &&geometry)
-    : S(scene), G(std::make_unique<Geometry>(std::move(geometry))) {
-    static const std::vector AllModes{GeometryMode::Faces, GeometryMode::Vertices, GeometryMode::Edges};
-    for (const auto mode : AllModes) CreateOrUpdateBuffers(mode);
-}
-
-void GeometryInstance::CreateOrUpdateBuffers(GeometryMode mode) {
-    auto &buffers = BuffersForMode[mode];
-    buffers.Vertices = G->GenerateVertices(mode);
-    buffers.VertexBuffer.Size = sizeof(Vertex3D) * buffers.Vertices.size();
-    S.CreateOrUpdateBuffer(buffers.VertexBuffer, buffers.Vertices.data());
-
-    buffers.Indices = G->GenerateIndices(mode);
-    buffers.IndexBuffer.Size = sizeof(uint) * buffers.Indices.size();
-    S.CreateOrUpdateBuffer(buffers.IndexBuffer, buffers.Indices.data());
-}
-
-void GeometryInstance::SetEdgeColor(const vec4 &color) {
-    G->SetEdgeColor(color);
-    CreateOrUpdateBuffers(GeometryMode::Edges);
-}
 
 void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_props) {
     const auto &device = vc.Device;
@@ -261,16 +242,11 @@ LineShaderPipeline::LineShaderPipeline(const Scene &s, const fs::path &vert_shad
 }
 
 Scene::Scene(const VulkanContext &vc)
-    : VC(vc),
-      MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)),
-      CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
-      CommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
-      TransferCommandBuffers(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount})),
-      RenderFence(VC.Device->createFenceUnique({})) {
+    : VC(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
     const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
     const Transform initial_transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-    CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
-    CreateOrUpdateBuffer(LightBuffer, &Light);
+    VC.CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
+    VC.CreateOrUpdateBuffer(LightBuffer, &Light);
     FillShaderPipeline = std::make_unique<::FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
     LineShaderPipeline = std::make_unique<::LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
 
@@ -294,7 +270,7 @@ Scene::Scene(const VulkanContext &vc)
     FillShaderPipeline->CompileShaders();
     LineShaderPipeline->CompileShaders();
 
-    GeometryInstances.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
+    GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
 }
 
@@ -304,7 +280,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
 
     const auto transform = GetTransform();
-    CreateOrUpdateBuffer(TransformBuffer, &transform);
+    VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
 
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -340,7 +316,7 @@ static void RenderGeometryBuffers(const ShaderPipeline &shader_pipeline, const v
 }
 
 void Scene::RecordCommandBuffer() {
-    const auto &command_buffer = CommandBuffers[0];
+    const auto &command_buffer = VC.CommandBuffers[0];
     command_buffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
@@ -368,7 +344,7 @@ void Scene::RecordCommandBuffer() {
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}, {}};
     command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 
-    const auto &geometry_instance = GeometryInstances[0];
+    const auto &geometry_instance = *GeometryInstances[0];
     if (Mode == RenderMode::Faces) {
         RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
     } else if (Mode == RenderMode::Edges) {
@@ -386,7 +362,7 @@ void Scene::RecordCommandBuffer() {
 
 void Scene::SubmitCommandBuffer(vk::Fence fence) const {
     vk::SubmitInfo submit;
-    submit.setCommandBuffers(*CommandBuffers[0]);
+    submit.setCommandBuffers(*VC.CommandBuffers[0]);
     VC.Queue.submit(submit, fence);
 }
 
@@ -397,118 +373,32 @@ void Scene::RecompileShaders() {
     SubmitCommandBuffer();
 }
 
-void Scene::CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate) const {
-    const auto &device = VC.Device;
-    const auto &queue = VC.Queue;
-
-    // Optionally create the staging buffer and its memory.
-    if (force_recreate || !buffer.StagingBuffer || !buffer.StagingMemory) {
-        buffer.StagingBuffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
-        const auto staging_mem_reqs = device->getBufferMemoryRequirements(*buffer.StagingBuffer);
-        buffer.StagingMemory = device->allocateMemoryUnique({staging_mem_reqs.size, VC.FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
-        device->bindBufferMemory(*buffer.StagingBuffer, *buffer.StagingMemory, 0);
+void Scene::UpdateGeometryEdgeColors() {
+    const auto &edge_color = Mode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+    for (auto &geometry : GeometryInstances) {
+        geometry->SetEdgeColor(edge_color);
+        geometry->GetBuffers(GeometryMode::Edges);
     }
-
-    // Copy data to the staging buffer.
-    void *mapped_data = device->mapMemory(*buffer.StagingMemory, 0, buffer.Size);
-    memcpy(mapped_data, data, size_t(buffer.Size));
-    device->unmapMemory(*buffer.StagingMemory);
-
-    // Optionally create the device buffer and its memory.
-    if (force_recreate || !buffer.Buffer || !buffer.Memory) {
-        buffer.Buffer = device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
-        const auto buffer_mem_reqs = device->getBufferMemoryRequirements(*buffer.Buffer);
-        buffer.Memory = device->allocateMemoryUnique({buffer_mem_reqs.size, VC.FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
-        device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
-    }
-
-    // Copy data from the staging buffer to the device buffer.
-    const auto &command_buffer = TransferCommandBuffers[0];
-    command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    vk::BufferCopy copy_region;
-    copy_region.size = buffer.Size;
-    command_buffer->copyBuffer(*buffer.StagingBuffer, *buffer.Buffer, copy_region);
-    command_buffer->end();
-
-    // TODO we should use a separate fence/semaphores for buffer updates and rendering.
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(*command_buffer);
-    queue.submit(submit, *RenderFence);
-
-    auto wait_result = device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
-    if (wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    device->resetFences(*RenderFence);
 }
 
 Transform Scene::GetTransform() const {
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    return {ModelTransform, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+    const auto &model = GeometryInstances[0]->Model;
+    return {model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
 }
 
 void Scene::UpdateTransform() {
     const auto transform = GetTransform();
-    CreateOrUpdateBuffer(TransformBuffer, &transform);
+    VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
     SubmitCommandBuffer();
 }
 
 void Scene::UpdateLight() {
-    CreateOrUpdateBuffer(LightBuffer, &Light);
+    VC.CreateOrUpdateBuffer(LightBuffer, &Light);
     SubmitCommandBuffer();
 }
 
 using namespace ImGui;
-
-// Moller-Trumbore ray-triangle intersection algorithm.
-// Returns true if the ray intersects the triangle, and sets `distance` to the distance along the ray to the intersection point.
-static bool RayIntersectsTriangle(const Ray &ray, const glm::vec3 &tri_a, const glm::vec3 &tri_b, const glm::vec3 &tri_c, float &distance) {
-    static const float Epsilon = 1e-7f; // Floating point error tolerance.
-
-    const vec3 edge1 = tri_b - tri_a, edge2 = tri_c - tri_a;
-    const vec3 h = glm::cross(ray.Direction, edge2);
-    const float a = glm::dot(edge1, h); // Barycentric coordinate a.
-
-    // Check if the ray is parallel to the triangle.
-    if (a > -Epsilon && a < Epsilon) return false;
-
-    // Check if the intersection point is inside the triangle (in barycentric coordinates).
-    const float f = 1.0 / a;
-    const vec3 s = ray.Origin - tri_a;
-    const float u = f * glm::dot(s, h);
-    if (u < 0.0 || u > 1.0) return false;
-
-    const vec3 q = glm::cross(s, edge1);
-    const float v = f * glm::dot(ray.Direction, q);
-    if (v < 0.0 || u + v > 1.0) return false;
-
-    // Calculate the intersection point's distance along the ray and verify it's positive (ahead of the ray's origin).
-    distance = f * glm::dot(edge2, q);
-    return distance > Epsilon;
-}
-
-// Returns a handle to the first face that intersects the ray, or -1 if no face intersects.
-static Geometry::FH FindFirstIntersectingFace(const GeometryInstance &geometry_instance, const mat4 &model, const Ray &ray) {
-    const auto &tri_buffers = geometry_instance.GetBuffers(GeometryMode::Faces); // Triangulated face buffers
-    const std::vector<uint> &tri_indices = tri_buffers.Indices;
-    const std::vector<Vertex3D> &tri_verts = tri_buffers.Vertices;
-
-    float closest_distance = std::numeric_limits<float>::max();
-    int closest_tri_i = -1;
-    for (size_t tri_i = 0; tri_i < tri_buffers.Indices.size() / 3; tri_i++) {
-        const vec3 tri_a{model * vec4{tri_verts[tri_indices[tri_i * 3 + 0]].Position, 1}};
-        const vec3 tri_b{model * vec4{tri_verts[tri_indices[tri_i * 3 + 1]].Position, 1}};
-        const vec3 tri_c{model * vec4{tri_verts[tri_indices[tri_i * 3 + 2]].Position, 1}};
-
-        float distance;
-        if (RayIntersectsTriangle(ray, tri_a, tri_b, tri_c, distance) && distance < closest_distance) {
-            closest_distance = distance;
-            closest_tri_i = tri_i;
-        }
-    }
-
-    return closest_tri_i == -1 ? Geometry::FH{} : geometry_instance.GetGeometry().TriangulatedIndexToFace(closest_tri_i);
-}
 
 static vk::ClearColorValue ImVec4ToClearColor(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
 
@@ -519,14 +409,14 @@ bool Scene::Render() {
     if (SelectionMode != SelectionMode::None) {
         const auto &io = GetIO();
         const auto &mouse_pos = ImGui::GetMousePos();
-        const auto &geometry_instance = GeometryInstances[0];
+        const auto &geometry_instance = *GeometryInstances[0];
         const auto &window_pos = GetCursorScreenPos();
         const glm::vec2 mouse_pos_window = {mouse_pos.x - window_pos.x, mouse_pos.y - window_pos.y};
         const glm::vec2 mouse_pos_clip = {2.f * mouse_pos_window.x / new_extent.x - 1.f, 1.f - 2.f * mouse_pos_window.y / new_extent.y};
         const float aspect_ratio = float(Extent.width) / float(Extent.height);
         if (SelectionMode == SelectionMode::Face) {
             // Find the hovered face.
-            HoveredFace = FindFirstIntersectingFace(geometry_instance, ModelTransform, Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio)).idx();
+            HoveredFace = geometry_instance.FindFirstIntersectingFace(Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio)).idx();
             if (HoveredFace != -1) {
                 if (io.MouseClicked[0]) {
                     SelectedFace = HoveredFace;
@@ -544,15 +434,15 @@ bool Scene::Render() {
 
     if (extent_changed) SetExtent({uint(new_extent.x), uint(new_extent.y)});
     if (extent_changed || bg_color_changed) RecordCommandBuffer();
-    SubmitCommandBuffer(*RenderFence);
+    SubmitCommandBuffer(*VC.RenderFence);
 
     // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
-    auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
+    auto wait_result = VC.Device->waitForFences(*VC.RenderFence, VK_TRUE, UINT64_MAX);
     if (wait_result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
     }
-    VC.Device->resetFences(*RenderFence);
+    VC.Device->resetFences(*VC.RenderFence);
 
     return extent_changed;
 }
@@ -564,7 +454,8 @@ void Scene::RenderGizmo() {
 
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    bool view_or_model_changed = Gizmo->Render(Camera, ModelTransform, aspect_ratio);
+    auto &model = GeometryInstances[0]->Model;
+    bool view_or_model_changed = Gizmo->Render(Camera, model, aspect_ratio);
     view_or_model_changed |= Camera.Tick();
     if (view_or_model_changed) UpdateTransform();
 }

@@ -55,6 +55,10 @@ static void CleanupVulkanWindow() {
     ImGui_ImplVulkanH_DestroyWindow(VC->Instance.get(), VC->Device.get(), &MainWindowData, nullptr);
 }
 
+static void CheckVk(VkResult err) {
+    if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
+}
+
 static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;

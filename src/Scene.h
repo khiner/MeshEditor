@@ -33,19 +33,6 @@ struct Light {
 
 struct Gizmo;
 
-struct Buffer {
-    vk::BufferUsageFlags Usage{};
-    vk::DeviceSize Size{0};
-
-    // GPU buffer.
-    vk::UniqueBuffer Buffer{};
-    vk::UniqueDeviceMemory Memory{};
-
-    // Host staging buffer, used to transfer data to the GPU.
-    vk::UniqueBuffer StagingBuffer{};
-    vk::UniqueDeviceMemory StagingMemory{};
-};
-
 struct ImageResource {
     // The `image` in the view info is overwritten.
     void Create(const VulkanContext &, vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags flags = vk::MemoryPropertyFlagBits::eDeviceLocal);
@@ -91,33 +78,7 @@ struct LineShaderPipeline : public ShaderPipeline {
     LineShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
 };
 
-struct Geometry;
-
-struct GeometryInstance {
-    // todo line mode buffers can share vertex buffers with smooth mode.
-    struct Buffers {
-        // Redundantly store the vertices and indices in the CPU for easy access.
-        std::vector<Vertex3D> Vertices;
-        std::vector<uint> Indices;
-        Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
-        Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
-    };
-
-    GeometryInstance(const Scene &, Geometry &&);
-
-    const Geometry &GetGeometry() const { return *G; }
-    const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
-
-    void SetEdgeColor(const glm::vec4 &);
-
-    const Scene &S;
-
-private:
-    std::unique_ptr<Geometry> G;
-    std::unordered_map<GeometryMode, Buffers> BuffersForMode;
-
-    void CreateOrUpdateBuffers(GeometryMode);
-};
+struct GeometryInstance;
 
 struct Scene {
     Scene(const VulkanContext &);
@@ -141,15 +102,7 @@ struct Scene {
     void UpdateTransform();
     void UpdateLight();
 
-    void CreateOrUpdateBuffer(Buffer &buffer, const void *data, bool force_recreate = false) const;
-
-    void UpdateGeometryEdgeColors() {
-        const auto &edge_color = Mode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-        for (auto &geometry : GeometryInstances) {
-            geometry.SetEdgeColor(edge_color);
-            geometry.GetBuffers(GeometryMode::Edges);
-        }
-    }
+    void UpdateGeometryEdgeColors();
 
     const VulkanContext &VC;
 
@@ -163,14 +116,13 @@ struct Scene {
     SelectionMode SelectionMode{SelectionMode::None};
     int HoveredFace{-1}, SelectedFace{-1};
 
-    const uint FramebufferCount{1};
     vk::SampleCountFlagBits MsaaSamples;
 
     vk::UniqueFramebuffer Framebuffer;
     vk::UniqueRenderPass RenderPass;
 
-    Buffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
-    Buffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
+    VulkanBuffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
+    VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
 
 private:
     // Recreates transform, render images (see below) and framebuffer based on the new extent.
@@ -193,10 +145,6 @@ private:
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
-    vk::UniqueCommandPool CommandPool;
-    std::vector<vk::UniqueCommandBuffer> CommandBuffers;
-    std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
-    vk::UniqueFence RenderFence;
 
     // We use three images in the render pass:
     // 1) Perform depth testing.
@@ -211,7 +159,6 @@ private:
     vk::UniqueSampler TextureSampler;
 
     std::unique_ptr<Gizmo> Gizmo;
-    glm::mat4 ModelTransform{1};
 
-    std::vector<GeometryInstance> GeometryInstances;
+    std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
 };
