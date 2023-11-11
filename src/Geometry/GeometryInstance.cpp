@@ -4,7 +4,10 @@
 
 #include "VulkanContext.h"
 
-using glm::vec3, glm::vec4;
+#include <glm/gtx/norm.hpp>
+#include <glm/mat3x3.hpp>
+
+using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
 GeometryInstance::GeometryInstance(const VulkanContext &vc, Geometry &&geometry)
     : VC(vc), G(std::move(geometry)) {
@@ -30,10 +33,10 @@ void GeometryInstance::SetEdgeColor(const vec4 &color) {
 
 // Moller-Trumbore ray-triangle intersection algorithm.
 // Returns true if the ray intersects the triangle, and sets `distance` to the distance along the ray to the intersection point.
-static bool RayIntersectsTriangle(const Ray &ray, const glm::vec3 &tri_a, const glm::vec3 &tri_b, const glm::vec3 &tri_c, float &distance) {
+static bool RayIntersectsTriangle(const Ray &ray, const glm::mat3 &triangle, float &distance) {
     static const float Epsilon = 1e-7f; // Floating point error tolerance.
 
-    const vec3 edge1 = tri_b - tri_a, edge2 = tri_c - tri_a;
+    const vec3 edge1 = triangle[1] - triangle[0], edge2 = triangle[2] - triangle[0];
     const vec3 h = glm::cross(ray.Direction, edge2);
     const float a = glm::dot(edge1, h); // Barycentric coordinate a.
 
@@ -42,7 +45,7 @@ static bool RayIntersectsTriangle(const Ray &ray, const glm::vec3 &tri_a, const 
 
     // Check if the intersection point is inside the triangle (in barycentric coordinates).
     const float f = 1.0 / a;
-    const vec3 s = ray.Origin - tri_a;
+    const vec3 s = ray.Origin - triangle[0];
     const float u = f * glm::dot(s, h);
     if (u < 0.0 || u > 1.0) return false;
 
@@ -55,20 +58,21 @@ static bool RayIntersectsTriangle(const Ray &ray, const glm::vec3 &tri_a, const 
     return distance > Epsilon;
 }
 
-Geometry::FH GeometryInstance::FindFirstIntersectingFace(const Ray &ray) const {
+Geometry::FH GeometryInstance::FindFirstIntersectingFace(const Ray &ray_world) const {
+    const auto ray_local = ray_world.WorldToLocal(Model);
     const auto &tri_buffers = GetBuffers(GeometryMode::Faces); // Triangulated face buffers
     const std::vector<uint> &tri_indices = tri_buffers.Indices;
     const std::vector<Vertex3D> &tri_verts = tri_buffers.Vertices;
 
     float closest_distance = std::numeric_limits<float>::max();
     int closest_tri_i = -1;
+    mat3 triangle; // Use a single triangle to avoid allocations in the loop.
+    float distance;
     for (size_t tri_i = 0; tri_i < tri_buffers.Indices.size() / 3; tri_i++) {
-        const vec3 tri_a{Model * vec4{tri_verts[tri_indices[tri_i * 3 + 0]].Position, 1}};
-        const vec3 tri_b{Model * vec4{tri_verts[tri_indices[tri_i * 3 + 1]].Position, 1}};
-        const vec3 tri_c{Model * vec4{tri_verts[tri_indices[tri_i * 3 + 2]].Position, 1}};
-
-        float distance;
-        if (RayIntersectsTriangle(ray, tri_a, tri_b, tri_c, distance) && distance < closest_distance) {
+        triangle[0] = tri_verts[tri_indices[tri_i * 3 + 0]].Position;
+        triangle[1] = tri_verts[tri_indices[tri_i * 3 + 1]].Position;
+        triangle[2] = tri_verts[tri_indices[tri_i * 3 + 2]].Position;
+        if (RayIntersectsTriangle(ray_local, triangle, distance) && distance < closest_distance) {
             closest_distance = distance;
             closest_tri_i = tri_i;
         }

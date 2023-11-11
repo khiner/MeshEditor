@@ -22,6 +22,7 @@ struct GeometryInstance {
     const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
 
     // Returns a handle to the first face that intersects the ray, or -1 if no face intersects.
+    // The ray is assumed to be in world space.
     Geometry::FH FindFirstIntersectingFace(const Ray &) const;
 
     void SetEdgeColor(const glm::vec4 &);
