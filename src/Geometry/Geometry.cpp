@@ -97,6 +97,15 @@ std::vector<uint> Geometry::GenerateTriangulatedFaceIndices() const {
     return indices;
 }
 
+Geometry::FH Geometry::TriangulatedIndexToFace(uint triangle_index) const {
+    for (const auto &fh : Mesh.faces()) {
+        const auto valence = Mesh.valence(fh);
+        if (triangle_index < valence - 2) return fh;
+        triangle_index -= valence - 2;
+    }
+    throw std::runtime_error("Invalid triangle index: " + std::to_string(triangle_index));
+}
+
 std::vector<uint> Geometry::GenerateLineIndices() const {
     std::vector<uint> indices;
     indices.reserve(Mesh.n_edges() * 2);

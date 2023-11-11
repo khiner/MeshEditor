@@ -19,8 +19,9 @@ namespace fs = std::filesystem;
 
 inline static glm::vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
 
+using MeshType = OpenMesh::PolyMesh_ArrayKernelT<>;
+
 struct Geometry {
-    using MeshType = OpenMesh::PolyMesh_ArrayKernelT<>;
     using VH = OpenMesh::VertexHandle;
     using FH = OpenMesh::FaceHandle;
     using EH = OpenMesh::EdgeHandle;
@@ -69,9 +70,11 @@ struct Geometry {
                                              GenerateTriangleIndices();
     }
 
-    std::vector<uint> GenerateTriangleIndices() const;
-    std::vector<uint> GenerateTriangulatedFaceIndices() const;
+    std::vector<uint> GenerateTriangleIndices() const; // Face indices after calling `Mesh.triangulate()`.
+    std::vector<uint> GenerateTriangulatedFaceIndices() const; // Triangle fan for each face.
     std::vector<uint> GenerateLineIndices() const;
+
+    FH TriangulatedIndexToFace(uint triangle_index) const; // Convert index generated with `GenerateTriangulatedFaceIndices()` to a face handle.
 
     // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
     std::pair<glm::vec3, glm::vec3> ComputeBounds() const;

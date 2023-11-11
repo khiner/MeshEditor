@@ -8,6 +8,8 @@
 #include "File.h"
 #include "Geometry/Primitive/Cuboid.h"
 
+using glm::vec3, glm::vec4, glm::mat4;
+
 #ifdef DEBUG_BUILD
 static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
 #elif defined(RELEASE_BUILD)
@@ -42,7 +44,7 @@ struct Gizmo {
         ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
     }
 
-    bool Render(Camera &camera, glm::mat4 &model, float aspect_ratio = 1) const {
+    bool Render(Camera &camera, mat4 &model, float aspect_ratio = 1) const {
         using namespace ImGui;
 
         static const float ViewManipulateSize = 128;
@@ -98,16 +100,16 @@ GeometryInstance::GeometryInstance(const Scene &scene, Geometry &&geometry)
 
 void GeometryInstance::CreateOrUpdateBuffers(GeometryMode mode) {
     auto &buffers = BuffersForMode[mode];
-    std::vector<Vertex3D> vertices = G->GenerateVertices(mode);
-    buffers.VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
-    S.CreateOrUpdateBuffer(buffers.VertexBuffer, vertices.data());
+    buffers.Vertices = G->GenerateVertices(mode);
+    buffers.VertexBuffer.Size = sizeof(Vertex3D) * buffers.Vertices.size();
+    S.CreateOrUpdateBuffer(buffers.VertexBuffer, buffers.Vertices.data());
 
-    std::vector<uint> indices = G->GenerateIndices(mode);
-    buffers.IndexBuffer.Size = sizeof(uint) * indices.size();
-    S.CreateOrUpdateBuffer(buffers.IndexBuffer, indices.data());
+    buffers.Indices = G->GenerateIndices(mode);
+    buffers.IndexBuffer.Size = sizeof(uint) * buffers.Indices.size();
+    S.CreateOrUpdateBuffer(buffers.IndexBuffer, buffers.Indices.data());
 }
 
-void GeometryInstance::SetEdgeColor(const glm::vec4 &color) {
+void GeometryInstance::SetEdgeColor(const vec4 &color) {
     G->SetEdgeColor(color);
     CreateOrUpdateBuffers(GeometryMode::Edges);
 }
@@ -292,7 +294,7 @@ Scene::Scene(const VulkanContext &vc)
     FillShaderPipeline->CompileShaders();
     LineShaderPipeline->CompileShaders();
 
-    Geometries.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
+    GeometryInstances.emplace_back(*this, Cuboid{{0.5, 0.5, 0.5}});
     UpdateGeometryEdgeColors();
 }
 
@@ -366,16 +368,16 @@ void Scene::RecordCommandBuffer() {
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}, {}};
     command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 
-    const auto &geometry = Geometries[0];
+    const auto &geometry_instance = GeometryInstances[0];
     if (Mode == RenderMode::Faces) {
-        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
     } else if (Mode == RenderMode::Edges) {
-        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
+        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::FacesAndEdges) {
-        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Faces));
-        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Edges));
+        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::Smooth) {
-        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry.GetBuffers(GeometryMode::Vertices));
+        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
     }
 
     command_buffer->endRenderPass();
@@ -458,18 +460,89 @@ void Scene::UpdateLight() {
 
 using namespace ImGui;
 
+// Moller-Trumbore ray-triangle intersection algorithm.
+// Returns true if the ray intersects the triangle, and sets `distance` to the distance along the ray to the intersection point.
+static bool RayIntersectsTriangle(const Ray &ray, const glm::vec3 &tri_a, const glm::vec3 &tri_b, const glm::vec3 &tri_c, float &distance) {
+    static const float Epsilon = 1e-7f; // Floating point error tolerance.
+
+    const vec3 edge1 = tri_b - tri_a, edge2 = tri_c - tri_a;
+    const vec3 h = glm::cross(ray.Direction, edge2);
+    const float a = glm::dot(edge1, h); // Barycentric coordinate a.
+
+    // Check if the ray is parallel to the triangle.
+    if (a > -Epsilon && a < Epsilon) return false;
+
+    // Check if the intersection point is inside the triangle (in barycentric coordinates).
+    const float f = 1.0 / a;
+    const vec3 s = ray.Origin - tri_a;
+    const float u = f * glm::dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+
+    const vec3 q = glm::cross(s, edge1);
+    const float v = f * glm::dot(ray.Direction, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+
+    // Calculate the intersection point's distance along the ray and verify it's positive (ahead of the ray's origin).
+    distance = f * glm::dot(edge2, q);
+    return distance > Epsilon;
+}
+
+// Returns a handle to the first face that intersects the ray, or -1 if no face intersects.
+static Geometry::FH FindFirstIntersectingFace(const GeometryInstance &geometry_instance, const mat4 &model, const Ray &ray) {
+    const auto &tri_buffers = geometry_instance.GetBuffers(GeometryMode::Faces); // Triangulated face buffers
+    const std::vector<uint> &tri_indices = tri_buffers.Indices;
+    const std::vector<Vertex3D> &tri_verts = tri_buffers.Vertices;
+
+    float closest_distance = std::numeric_limits<float>::max();
+    int closest_tri_i = -1;
+    for (size_t tri_i = 0; tri_i < tri_buffers.Indices.size() / 3; tri_i++) {
+        const vec3 tri_a{model * vec4{tri_verts[tri_indices[tri_i * 3 + 0]].Position, 1}};
+        const vec3 tri_b{model * vec4{tri_verts[tri_indices[tri_i * 3 + 1]].Position, 1}};
+        const vec3 tri_c{model * vec4{tri_verts[tri_indices[tri_i * 3 + 2]].Position, 1}};
+
+        float distance;
+        if (RayIntersectsTriangle(ray, tri_a, tri_b, tri_c, distance) && distance < closest_distance) {
+            closest_distance = distance;
+            closest_tri_i = tri_i;
+        }
+    }
+
+    return closest_tri_i == -1 ? Geometry::FH{} : geometry_instance.GetGeometry().TriangulatedIndexToFace(closest_tri_i);
+}
+
 static vk::ClearColorValue ImVec4ToClearColor(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
 
 bool Scene::Render() {
-    const vk::ClearColorValue &bg_color = ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg));
-    const auto content_region = GetContentRegionAvail();
-    const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
+    const auto new_extent = GetContentRegionAvail();
+
+    // Handle mouse input.
+    if (SelectionMode != SelectionMode::None) {
+        const auto &io = GetIO();
+        const auto &mouse_pos = ImGui::GetMousePos();
+        const auto &geometry_instance = GeometryInstances[0];
+        const auto &window_pos = GetCursorScreenPos();
+        const glm::vec2 mouse_pos_window = {mouse_pos.x - window_pos.x, mouse_pos.y - window_pos.y};
+        const glm::vec2 mouse_pos_clip = {2.f * mouse_pos_window.x / new_extent.x - 1.f, 1.f - 2.f * mouse_pos_window.y / new_extent.y};
+        const float aspect_ratio = float(Extent.width) / float(Extent.height);
+        if (SelectionMode == SelectionMode::Face) {
+            // Find the hovered face.
+            HoveredFace = FindFirstIntersectingFace(geometry_instance, ModelTransform, Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio)).idx();
+            if (HoveredFace != -1) {
+                if (io.MouseClicked[0]) {
+                    SelectedFace = HoveredFace;
+                }
+            }
+        }
+    }
+
+    const auto &bg_color = ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg));
+    const bool extent_changed = Extent.width != new_extent.x || Extent.height != new_extent.y;
     const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
     if (!extent_changed && !bg_color_changed) return false;
 
     BackgroundColor = bg_color;
 
-    if (extent_changed) SetExtent({uint(content_region.x), uint(content_region.y)});
+    if (extent_changed) SetExtent({uint(new_extent.x), uint(new_extent.y)});
     if (extent_changed || bg_color_changed) RecordCommandBuffer();
     SubmitCommandBuffer(*RenderFence);
 
@@ -525,6 +598,7 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
+            SeparatorText("Render");
             int render_mode = int(Mode);
             bool render_mode_changed = RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
             SameLine();
@@ -546,6 +620,23 @@ void Scene::RenderControls() {
                     SubmitCommandBuffer();
                 }
             }
+            SeparatorText("Selection");
+            int selection_mode = int(SelectionMode);
+            bool selection_mode_changed = RadioButton("None", &selection_mode, int(SelectionMode::None));
+            SameLine();
+            selection_mode_changed |= RadioButton("Vertex", &selection_mode, int(SelectionMode::Vertex));
+            SameLine();
+            selection_mode_changed |= RadioButton("Edge", &selection_mode, int(SelectionMode::Edge));
+            SameLine();
+            selection_mode_changed |= RadioButton("Face", &selection_mode, int(SelectionMode::Face));
+            if (selection_mode_changed) {
+                SelectionMode = ::SelectionMode(selection_mode);
+            }
+            if (SelectionMode == SelectionMode::Face) {
+                const std::string hovered_face_label = HoveredFace == -1 ? "None" : std::format("{}", HoveredFace);
+                Text("Hovered face: %s", hovered_face_label.c_str());
+            }
+            SeparatorText("Transform");
             Gizmo->RenderDebug();
             EndTabItem();
         }

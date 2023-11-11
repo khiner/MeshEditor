@@ -13,7 +13,12 @@
 
 namespace fs = std::filesystem;
 
-struct Scene;
+enum class SelectionMode {
+    None,
+    Vertex,
+    Edge,
+    Face,
+};
 
 struct Transform {
     glm::mat4 Model;
@@ -53,6 +58,8 @@ struct ImageResource {
     vk::UniqueDeviceMemory Memory;
 };
 
+struct Scene;
+
 struct ShaderPipeline {
     // Paths are relative to the `Shaders` directory.
     ShaderPipeline(
@@ -89,12 +96,16 @@ struct Geometry;
 struct GeometryInstance {
     // todo line mode buffers can share vertex buffers with smooth mode.
     struct Buffers {
+        // Redundantly store the vertices and indices in the CPU for easy access.
+        std::vector<Vertex3D> Vertices;
+        std::vector<uint> Indices;
         Buffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
         Buffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
     };
 
     GeometryInstance(const Scene &, Geometry &&);
 
+    const Geometry &GetGeometry() const { return *G; }
     const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
 
     void SetEdgeColor(const glm::vec4 &);
@@ -134,7 +145,7 @@ struct Scene {
 
     void UpdateGeometryEdgeColors() {
         const auto &edge_color = Mode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-        for (auto &geometry : Geometries) {
+        for (auto &geometry : GeometryInstances) {
             geometry.SetEdgeColor(edge_color);
             geometry.GetBuffers(GeometryMode::Edges);
         }
@@ -145,11 +156,12 @@ struct Scene {
     Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
     Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
-    RenderMode Mode{RenderMode::FacesAndEdges};
-    SelectionMode SelectionMode{SelectionMode::None};
-
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for mesh mode.
+
+    RenderMode Mode{RenderMode::FacesAndEdges};
+    SelectionMode SelectionMode{SelectionMode::None};
+    int HoveredFace{-1}, SelectedFace{-1};
 
     const uint FramebufferCount{1};
     vk::SampleCountFlagBits MsaaSamples;
@@ -201,5 +213,5 @@ private:
     std::unique_ptr<Gizmo> Gizmo;
     glm::mat4 ModelTransform{1};
 
-    std::vector<GeometryInstance> Geometries;
+    std::vector<GeometryInstance> GeometryInstances;
 };
