@@ -429,6 +429,13 @@ bool Scene::Render() {
                     SelectedVertex = HoveredVertex;
                 }
             }
+        } else if (SelectionMode == SelectionMode::Edge) {
+            HoveredEdge = geometry_instance.FindNearestEdge(ray).idx();
+            if (HoveredEdge != -1) {
+                if (io.MouseClicked[0]) {
+                    SelectedEdge = HoveredEdge;
+                }
+            }
         }
     }
 
@@ -536,6 +543,9 @@ void Scene::RenderControls() {
             } else if (SelectionMode == SelectionMode::Vertex) {
                 const std::string hovered_vertex_label = HoveredVertex == -1 ? "None" : std::format("{}", HoveredVertex);
                 Text("Hovered vertex: %s", hovered_vertex_label.c_str());
+            } else if (SelectionMode == SelectionMode::Edge) {
+                const std::string hovered_edge_label = HoveredEdge == -1 ? "None" : std::format("{}", HoveredEdge);
+                Text("Hovered edge: %s", hovered_edge_label.c_str());
             }
             SeparatorText("Transform");
             Gizmo->RenderDebug();

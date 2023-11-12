@@ -6,6 +6,7 @@
 struct Ray {
     Ray WorldToLocal(const glm::mat4 &model) const;
     float SquaredDistanceToPoint(const glm::vec3 &) const;
+    float SquaredDistanceToEdge(const glm::vec3 &, const glm::vec3 &) const;
 
     glm::vec3 Origin;
     glm::vec3 Direction;

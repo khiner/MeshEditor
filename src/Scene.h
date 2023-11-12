@@ -15,9 +15,9 @@ namespace fs = std::filesystem;
 
 enum class SelectionMode {
     None,
+    Face,
     Vertex,
     Edge,
-    Face,
 };
 
 struct Transform {
@@ -116,6 +116,7 @@ struct Scene {
     SelectionMode SelectionMode{SelectionMode::None};
     int HoveredFace{-1}, SelectedFace{-1};
     int HoveredVertex{-1}, SelectedVertex{-1};
+    int HoveredEdge{-1}, SelectedEdge{-1};
 
     vk::SampleCountFlagBits MsaaSamples;
 

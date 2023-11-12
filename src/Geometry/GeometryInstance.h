@@ -29,6 +29,10 @@ struct GeometryInstance {
     Geometry::VH FindNearestVertex(const Ray &ray_world) const;
     Geometry::VH FindNearestVertexLocal(const Ray &ray_local) const; // Local space equivalent.
 
+    // Returns a handle to the edge nearest to the world-space ray, or -1 if no face intersects.
+    Geometry::EH FindNearestEdge(const Ray &ray_world) const;
+    Geometry::EH FindNearestEdgeLocal(const Ray &ray_local) const; // Local space equivalent.
+
     void SetEdgeColor(const glm::vec4 &);
 
     const VulkanContext &VC;

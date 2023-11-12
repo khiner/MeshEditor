@@ -83,13 +83,13 @@ Geometry::FH GeometryInstance::FindFirstIntersectingFace(const Ray &ray_world) c
 }
 
 Geometry::VH GeometryInstance::FindNearestVertexLocal(const Ray &ray_local) const {
-    const auto intersecting_face = FindFirstIntersectingFaceLocal(ray_local);
-    if (!intersecting_face.is_valid()) return Geometry::VH{};
+    const auto face = FindFirstIntersectingFaceLocal(ray_local);
+    if (!face.is_valid()) return Geometry::VH{};
 
     float closest_distance_sq = std::numeric_limits<float>::max();
     Geometry::VH closest_vertex;
     const auto &mesh = G.GetMesh();
-    for (const auto &vh : mesh.fv_range(intersecting_face)) {
+    for (const auto &vh : mesh.fv_range(face)) {
         const float distance_sq = ray_local.SquaredDistanceToPoint(ToGlm(mesh.point(vh)));
         if (distance_sq < closest_distance_sq) {
             closest_distance_sq = distance_sq;
@@ -101,4 +101,26 @@ Geometry::VH GeometryInstance::FindNearestVertexLocal(const Ray &ray_local) cons
 }
 Geometry::VH GeometryInstance::FindNearestVertex(const Ray &ray_world) const {
     return FindNearestVertexLocal(ray_world.WorldToLocal(Model));
+}
+
+Geometry::EH GeometryInstance::FindNearestEdgeLocal(const Ray &ray_local) const {
+    float closest_distance_sq = std::numeric_limits<float>::max();
+    Geometry::EH closest_edge;
+    const auto &mesh = G.GetMesh();
+    for (const auto &eh : mesh.edges()) {
+        const auto heh = mesh.halfedge_handle(eh, 0);
+        const auto &v1 = ToGlm(mesh.point(mesh.from_vertex_handle(heh)));
+        const auto &v2 = ToGlm(mesh.point(mesh.to_vertex_handle(heh)));
+        const float distance_sq = ray_local.SquaredDistanceToEdge(v1, v2);
+        if (distance_sq < closest_distance_sq) {
+            closest_distance_sq = distance_sq;
+            closest_edge = eh;
+        }
+    }
+
+    return closest_edge;
+}
+
+Geometry::EH GeometryInstance::FindNearestEdge(const Ray &ray_world) const {
+    return FindNearestEdgeLocal(ray_world.WorldToLocal(Model));
 }
