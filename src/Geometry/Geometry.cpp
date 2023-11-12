@@ -2,6 +2,8 @@
 
 #include <glm/geometric.hpp>
 
+using glm::vec3, glm::vec4;
+
 bool Geometry::Load(const fs::path &file_path) {
     OpenMesh::IO::Options read_options; // No options used yet, but keeping this here for future use.
     if (!OpenMesh::IO::read_mesh(Mesh, file_path.string(), read_options)) {
@@ -19,8 +21,44 @@ void Geometry::Save(const fs::path &file_path) const {
     }
 }
 
+bool Geometry::DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const {
+    if (!edge.is_valid()) return false;
+
+    for (const auto &heh : Mesh.voh_range(vertex)) {
+        if (Mesh.edge_handle(heh) == edge && (Mesh.face_handle(heh) == face || Mesh.face_handle(Mesh.opposite_halfedge_handle(heh)) == face)) return true;
+    }
+    return false;
+}
+
+bool Geometry::DoesVertexBelongToEdge(VH vertex, EH edge) const {
+    if (!edge.is_valid()) return false;
+
+    for (const auto &heh : Mesh.voh_range(vertex)) {
+        if (Mesh.edge_handle(heh) == edge) return true;
+    }
+    return false;
+}
+
+bool Geometry::DoesVertexBelongToFace(VH vertex, FH face) const {
+    if (!face.is_valid()) return false;
+
+    for (const auto &vh : Mesh.fv_range(face)) {
+        if (vh == vertex) return true;
+    }
+    return false;
+}
+
+bool Geometry::DoesEdgeBelongToFace(EH edge, FH face) const {
+    if (!face.is_valid()) return false;
+
+    for (const auto &heh : Mesh.fh_range(face)) {
+        if (Mesh.edge_handle(heh) == edge) return true;
+    }
+    return false;
+}
+
 std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) {
-    static const glm::vec4 HighlightColor{1, 0, 0, 1};
+    static const vec4 HighlightColor{1, 0, 0, 1};
 
     std::vector<Vertex3D> vertices;
     Mesh.update_normals();
@@ -31,14 +69,14 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
             const auto &fn = Mesh.normal(fh);
             const auto &fc = Mesh.color(fh);
             for (const auto &vh : Mesh.fv_range(fh)) {
-                const glm::vec4 color = vh == highlighted_vertex || fh == highlighted_face ? HighlightColor : glm::vec4(fc[0], fc[1], fc[2], 1);
+                const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : vec4{fc[0], fc[1], fc[2], 1};
                 vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(fn), color);
             }
         }
     } else if (mode == GeometryMode::Vertices) {
         vertices.reserve(Mesh.n_vertices());
         for (const auto &vh : Mesh.vertices()) {
-            glm::vec4 color = vh == highlighted_vertex ? HighlightColor : glm::vec4(1);
+            const vec4 color = vh == highlighted_vertex || DoesVertexBelongToFace(vh, highlighted_face) || DoesVertexBelongToEdge(vh, highlighted_edge) ? HighlightColor : vec4{1};
             vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(Mesh.normal(vh)), color);
         }
     } else if (mode == GeometryMode::Edges) {
@@ -47,7 +85,7 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
             const auto &heh = Mesh.halfedge_handle(eh, 0);
             const auto &vh0 = Mesh.from_vertex_handle(heh);
             const auto &vh1 = Mesh.to_vertex_handle(heh);
-            const glm::vec4 color = eh == highlighted_edge ? HighlightColor : EdgeColor;
+            const vec4 color = eh == highlighted_edge || vh0 == highlighted_vertex || vh1 == highlighted_vertex || DoesEdgeBelongToFace(eh, highlighted_face) ? HighlightColor : EdgeColor;
             vertices.emplace_back(ToGlm(Mesh.point(vh0)), ToGlm(Mesh.normal(vh0)), color);
             vertices.emplace_back(ToGlm(Mesh.point(vh1)), ToGlm(Mesh.normal(vh1)), color);
         }
@@ -57,11 +95,11 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
 }
 
 // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
-std::pair<glm::vec3, glm::vec3> Geometry::ComputeBounds() const {
+std::pair<vec3, vec3> Geometry::ComputeBounds() const {
     static const float min_float = std::numeric_limits<float>::lowest();
     static const float max_float = std::numeric_limits<float>::max();
 
-    glm::vec3 min(max_float), max(min_float);
+    vec3 min(max_float), max(min_float);
     for (const auto &vh : Mesh.vertices()) {
         const auto &p = Mesh.point(vh);
         min.x = std::min(min.x, p[0]);
@@ -75,7 +113,7 @@ std::pair<glm::vec3, glm::vec3> Geometry::ComputeBounds() const {
     return {min, max};
 }
 
-uint Geometry::FindVertextNearestTo(const glm::vec3 point) const {
+uint Geometry::FindVertextNearestTo(const vec3 point) const {
     uint nearest_index = 0;
     float nearest_distance = std::numeric_limits<float>::max();
     for (uint i = 0; i < NumPositions(); i++) {

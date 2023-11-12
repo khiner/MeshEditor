@@ -109,6 +109,11 @@ struct Geometry {
         SetFaceColor(fh, color);
     }
 
+    bool DoesVertexBelongToEdge(VH vertex, EH edge) const;
+    bool DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const;
+    bool DoesVertexBelongToFace(VH vertex, FH face) const;
+    bool DoesEdgeBelongToFace(EH edge, FH face) const;
+
 protected:
     MeshType Mesh;
     glm::vec4 EdgeColor{0, 0, 0, 1};
