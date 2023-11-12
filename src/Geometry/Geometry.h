@@ -60,7 +60,6 @@ struct Geometry {
     inline glm::vec3 GetFaceNormal(uint index) const { return ToGlm(Mesh.normal(FH(index))); }
     inline glm::vec3 GetFaceCenter(uint index) const { return ToGlm(Mesh.calc_face_centroid(FH(index))); }
 
-    uint FindVertextNearestTo(const glm::vec3 point) const;
     inline bool Empty() const { return Mesh.n_vertices() == 0; }
 
     std::vector<Vertex3D> GenerateVertices(GeometryMode mode, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{});
@@ -105,8 +104,7 @@ struct Geometry {
     void SetEdgeColor(const glm::vec4 &edge_color) { EdgeColor = edge_color; }
 
     void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = {1, 1, 1, 1}) {
-        const auto fh = Mesh.add_face(vertices);
-        SetFaceColor(fh, color);
+        SetFaceColor(Mesh.add_face(vertices), color);
     }
 
     bool DoesVertexBelongToFace(VH vertex, FH face) const;

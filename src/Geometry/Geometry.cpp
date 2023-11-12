@@ -90,19 +90,6 @@ std::pair<vec3, vec3> Geometry::ComputeBounds() const {
     return {min, max};
 }
 
-uint Geometry::FindVertextNearestTo(const vec3 point) const {
-    uint nearest_index = 0;
-    float nearest_distance = std::numeric_limits<float>::max();
-    for (uint i = 0; i < NumPositions(); i++) {
-        const float distance = glm::distance(point, GetPosition(i));
-        if (distance < nearest_distance) {
-            nearest_distance = distance;
-            nearest_index = i;
-        }
-    }
-    return nearest_index;
-}
-
 std::vector<uint> Geometry::GenerateTriangleIndices() const {
     auto triangulated_mesh = Mesh; // `triangulate` is in-place, so we need to make a copy.
     triangulated_mesh.triangulate();
