@@ -404,24 +404,19 @@ bool Scene::Render() {
 
     // Handle mouse input.
     if (SelectionMode != SelectionMode::None) {
-        const auto &io = GetIO();
-        const auto &mouse_pos = ImGui::GetMousePos();
-        // const bool mouse_clicked = io.MouseClicked[0];
-        auto &geometry_instance = *GeometryInstances[0];
+        auto &geometry = *GeometryInstances[0];
+        const auto &mouse_pos = GetMousePos();
         const auto &window_pos = GetCursorScreenPos();
         const glm::vec2 mouse_pos_window = {mouse_pos.x - window_pos.x, mouse_pos.y - window_pos.y};
         const glm::vec2 mouse_pos_clip = {2.f * mouse_pos_window.x / new_extent.x - 1.f, 1.f - 2.f * mouse_pos_window.y / new_extent.y};
         const float aspect_ratio = float(Extent.width) / float(Extent.height);
         const Ray ray = Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio);
         if (SelectionMode == SelectionMode::Face) {
-            const auto &fh = geometry_instance.FindFirstIntersectingFace(ray);
-            if (geometry_instance.HighlightFace(fh)) SubmitCommandBuffer();
+            if (geometry.HighlightFace(geometry.FindFirstIntersectingFace(ray))) SubmitCommandBuffer();
         } else if (SelectionMode == SelectionMode::Vertex) {
-            const auto &vh = geometry_instance.FindNearestVertex(ray);
-            if (geometry_instance.HighlightVertex(vh)) SubmitCommandBuffer();
+            if (geometry.HighlightVertex(geometry.FindNearestVertex(ray))) SubmitCommandBuffer();
         } else if (SelectionMode == SelectionMode::Edge) {
-            const auto &eh = geometry_instance.FindNearestEdge(ray);
-            if (geometry_instance.HighlightEdge(eh)) SubmitCommandBuffer();
+            if (geometry.HighlightEdge(geometry.FindNearestEdge(ray))) SubmitCommandBuffer();
         }
     }
 

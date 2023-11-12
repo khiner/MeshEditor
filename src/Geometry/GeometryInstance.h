@@ -22,14 +22,15 @@ struct GeometryInstance {
     const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
 
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
-    Geometry::FH FindFirstIntersectingFace(const Ray &ray_world) const;
-    Geometry::FH FindFirstIntersectingFaceLocal(const Ray &ray_local) const; // Local space equivalent.
+    // If `closest_intersect_point_out` is not null, sets it to the intersection point. 
+    Geometry::FH FindFirstIntersectingFace(const Ray &ray_world, glm::vec3 *closest_intersect_point_out = nullptr) const;
+    Geometry::FH FindFirstIntersectingFaceLocal(const Ray &ray_local, glm::vec3 *closest_intersect_point_out = nullptr) const; // Local space equivalent.
 
-    // Returns a handle to the vertex nearest to the world-space ray, on the first face that intersects the ray, or -1 if no face intersects.
+    // Returns a handle to the vertex nearest to the intersecction point on the first intersecting face, or an invalid handle if no face intersects.
     Geometry::VH FindNearestVertex(const Ray &ray_world) const;
     Geometry::VH FindNearestVertexLocal(const Ray &ray_local) const; // Local space equivalent.
 
-    // Returns a handle to the edge nearest to the world-space ray, or -1 if no face intersects.
+    // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     Geometry::EH FindNearestEdge(const Ray &ray_world) const;
     Geometry::EH FindNearestEdgeLocal(const Ray &ray_local) const; // Local space equivalent.
 

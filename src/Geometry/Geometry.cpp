@@ -47,14 +47,14 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
             const auto &fc = Mesh.color(fh);
             for (const auto &vh : Mesh.fv_range(fh)) {
                 const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : vec4{fc[0], fc[1], fc[2], 1};
-                vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(fn), color);
+                vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
     } else if (mode == GeometryMode::Vertices) {
         vertices.reserve(Mesh.n_vertices());
         for (const auto &vh : Mesh.vertices()) {
             const vec4 color = vh == highlighted_vertex || DoesVertexBelongToFace(vh, highlighted_face) || DoesVertexBelongToEdge(vh, highlighted_edge) ? HighlightColor : vec4{1};
-            vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(Mesh.normal(vh)), color);
+            vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
         }
     } else if (mode == GeometryMode::Edges) {
         vertices.reserve(Mesh.n_edges() * 2);
@@ -63,8 +63,8 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
             const auto &vh0 = Mesh.from_vertex_handle(heh);
             const auto &vh1 = Mesh.to_vertex_handle(heh);
             const vec4 color = eh == highlighted_edge || vh0 == highlighted_vertex || vh1 == highlighted_vertex || DoesEdgeBelongToFace(eh, highlighted_face) ? HighlightColor : EdgeColor;
-            vertices.emplace_back(ToGlm(Mesh.point(vh0)), ToGlm(Mesh.normal(vh0)), color);
-            vertices.emplace_back(ToGlm(Mesh.point(vh1)), ToGlm(Mesh.normal(vh1)), color);
+            vertices.emplace_back(GetPosition(vh0), GetVertexNormal(vh0), color);
+            vertices.emplace_back(GetPosition(vh1), GetVertexNormal(vh1), color);
         }
     }
 

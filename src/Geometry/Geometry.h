@@ -55,10 +55,10 @@ struct Geometry {
 
     inline const float *GetPositionData() const { return (const float *)Mesh.points(); }
 
-    inline glm::vec3 GetPosition(uint index) const { return ToGlm(Mesh.point(VH(index))); }
-    inline glm::vec3 GetVertexNormal(uint index) const { return ToGlm(Mesh.normal(VH(index))); }
-    inline glm::vec3 GetFaceNormal(uint index) const { return ToGlm(Mesh.normal(FH(index))); }
-    inline glm::vec3 GetFaceCenter(uint index) const { return ToGlm(Mesh.calc_face_centroid(FH(index))); }
+    inline glm::vec3 GetPosition(VH vh) const { return ToGlm(Mesh.point(vh)); }
+    inline glm::vec3 GetVertexNormal(VH vh) const { return ToGlm(Mesh.normal(vh)); }
+    inline glm::vec3 GetFaceNormal(FH fh) const { return ToGlm(Mesh.normal(fh)); }
+    inline glm::vec3 GetFaceCenter(FH fh) const { return ToGlm(Mesh.calc_face_centroid(fh)); }
 
     inline bool Empty() const { return Mesh.n_vertices() == 0; }
 
