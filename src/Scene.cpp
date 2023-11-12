@@ -10,6 +10,7 @@
 #include "File.h"
 #include "Geometry/GeometryInstance.h"
 #include "Geometry/Primitive/Cuboid.h"
+#include "Geometry/Primitive/Rect.h"
 
 using glm::vec3, glm::vec4, glm::mat4;
 
@@ -109,8 +110,7 @@ ShaderPipeline::ShaderPipeline(
     const Scene &scene,
     const fs::path &vert_shader_path, const fs::path &frag_shader_path,
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology
-)
-    : S(scene), VertexShaderPath(vert_shader_path), FragmentShaderPath(frag_shader_path), PolygonMode(polygon_mode), Topology(topology) {}
+) : S(scene), VertexShaderPath(vert_shader_path), FragmentShaderPath(frag_shader_path), PolygonMode(polygon_mode), Topology(topology) {}
 
 void ShaderPipeline::CompileShaders() {
     static const shaderc::Compiler compiler;
@@ -120,12 +120,12 @@ void ShaderPipeline::CompileShaders() {
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     static const vk::PipelineMultisampleStateCreateInfo multisampling{{}, S.MsaaSamples, false};
     static const vk::PipelineColorBlendAttachmentState color_blend_attachment{
-        {},
-        vk::BlendFactor::eOne, // srcCol
-        vk::BlendFactor::eZero, // dstCol
+        true,
+        vk::BlendFactor::eSrcAlpha, // srcCol
+        vk::BlendFactor::eOneMinusSrcAlpha, // dstCol
         vk::BlendOp::eAdd, // colBlend
-        vk::BlendFactor::eOne, // srcAlpha
-        vk::BlendFactor::eZero, // dstAlpha
+        vk::BlendFactor::eOne, // srcAlpha (could also adjust if needed)
+        vk::BlendFactor::eOne, // dstAlpha
         vk::BlendOp::eAdd, // alphaBlend
         vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
     };
@@ -241,14 +241,37 @@ LineShaderPipeline::LineShaderPipeline(const Scene &s, const fs::path &vert_shad
     S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
+GridShaderPipeline::GridShaderPipeline(const Scene &s, const fs::path &vert_shader_path, const fs::path &frag_shader_path)
+    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList) {
+    std::vector<vk::DescriptorSetLayoutBinding> bindings{
+        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+        {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
+    };
+    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+
+    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+
+    vk::DescriptorBufferInfo view_proj_buffer_info{*S.ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    vk::DescriptorBufferInfo view_proj_near_far_buffer_info{*S.ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
+        {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
+    };
+    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
 Scene::Scene(const VulkanContext &vc)
     : VC(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
-    const float aspect_ratio = 1; // Initial aspect ratio doesn't matter, it will be updated on the first render.
-    const Transform initial_transform{I, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-    VC.CreateOrUpdateBuffer(TransformBuffer, &initial_transform);
+    CreateGrid();
+    GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
+    UpdateGeometryEdgeColors();
+    UpdateTransform();
     VC.CreateOrUpdateBuffer(LightBuffer, &Light);
     FillShaderPipeline = std::make_unique<::FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
     LineShaderPipeline = std::make_unique<::LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
+    GridShaderPipeline = std::make_unique<::GridShaderPipeline>(*this, "GridLines.vert", "GridLines.frag");
 
     TextureSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
     Gizmo = std::make_unique<::Gizmo>();
@@ -269,18 +292,14 @@ Scene::Scene(const VulkanContext &vc)
 
     FillShaderPipeline->CompileShaders();
     LineShaderPipeline->CompileShaders();
-
-    GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
-    UpdateGeometryEdgeColors();
+    GridShaderPipeline->CompileShaders();
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-
-    const auto transform = GetTransform();
-    VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
+    UpdateTransform();
 
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -356,6 +375,10 @@ void Scene::RecordCommandBuffer() {
         RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
     }
 
+    if (Grid) {
+        RenderGeometryBuffers(*GridShaderPipeline, command_buffer, Grid->GetBuffers(GeometryMode::Faces));
+    }
+
     command_buffer->endRenderPass();
     command_buffer->end();
 }
@@ -369,6 +392,7 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
 void Scene::RecompileShaders() {
     FillShaderPipeline->CompileShaders();
     LineShaderPipeline->CompileShaders();
+    GridShaderPipeline->CompileShaders();
     RecordCommandBuffer();
     SubmitCommandBuffer();
 }
@@ -378,21 +402,14 @@ void Scene::UpdateGeometryEdgeColors() {
     for (auto &geometry : GeometryInstances) geometry->SetEdgeColor(edge_color);
 }
 
-Transform Scene::GetTransform() const {
-    const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    const auto &model = GeometryInstances[0]->Model;
-    return {model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-}
-
 void Scene::UpdateTransform() {
-    const auto transform = GetTransform();
+    const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
+    const Transform transform{GeometryInstances[0]->Model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
     VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
-    SubmitCommandBuffer();
-}
-
-void Scene::UpdateLight() {
-    VC.CreateOrUpdateBuffer(LightBuffer, &Light);
-    SubmitCommandBuffer();
+    const ViewProjection vp{transform.View, transform.Projection};
+    VC.CreateOrUpdateBuffer(ViewProjectionBuffer, &vp);
+    const ViewProjNearFar vpnf{vp.View, vp.Projection, Camera.NearClip, Camera.FarClip};
+    VC.CreateOrUpdateBuffer(ViewProjNearFarBuffer, &vpnf);
 }
 
 using namespace ImGui;
@@ -452,7 +469,15 @@ void Scene::RenderGizmo() {
     auto &model = GeometryInstances[0]->Model;
     bool view_or_model_changed = Gizmo->Render(Camera, model, aspect_ratio);
     view_or_model_changed |= Camera.Tick();
-    if (view_or_model_changed) UpdateTransform();
+    if (view_or_model_changed) {
+        UpdateTransform();
+        SubmitCommandBuffer();
+    }
+}
+
+void Scene::CreateGrid() {
+    // todo only populate the `GeometryMode::Faces` buffers.
+    Grid = std::make_unique<GeometryInstance>(VC, Rect{{1, 1}});
 }
 
 void Scene::RenderControls() {
@@ -472,7 +497,12 @@ void Scene::RenderControls() {
             if (camera_changed) {
                 Camera.StopMoving();
                 UpdateTransform();
+                SubmitCommandBuffer();
             }
+            Text("Camera Y: %.3f", glm::vec3(glm::inverse(Camera.GetViewMatrix())[3]).y);
+            Text("Camera Y2: %.3f", Camera.Position.y);
+            Text("Camera Z: %.3f", glm::vec3(glm::inverse(Camera.GetViewMatrix())[3]).z);
+            Text("Camera Z2: %.3f", Camera.Position.z);
             EndTabItem();
         }
         if (BeginTabItem("Light")) {
@@ -480,10 +510,20 @@ void Scene::RenderControls() {
             light_changed |= SliderFloat("Ambient intensity", &Light.ColorAndAmbient[3], 0, 1);
             light_changed |= ColorEdit3("Diffuse color", &Light.ColorAndAmbient[0]);
             light_changed |= SliderFloat3("Direction", &Light.Direction.x, -1, 1);
-            if (light_changed) UpdateLight();
+            if (light_changed) {
+                VC.CreateOrUpdateBuffer(LightBuffer, &Light);
+                SubmitCommandBuffer();
+            }
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
+            bool show_grid = bool(Grid);
+            if (Checkbox("Show grid", &show_grid)) {
+                if (show_grid) CreateGrid();
+                else Grid.reset();
+                RecordCommandBuffer();
+                SubmitCommandBuffer();
+            }
             SeparatorText("Render");
             int render_mode = int(Mode);
             bool render_mode_changed = RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));

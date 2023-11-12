@@ -26,6 +26,18 @@ struct Transform {
     glm::mat4 Projection;
 };
 
+struct ViewProjection {
+    glm::mat4 View;
+    glm::mat4 Projection;
+};
+
+struct ViewProjNearFar {
+    glm::mat4 View;
+    glm::mat4 Projection;
+    float Near;
+    float Far;
+};
+
 struct Light {
     glm::vec4 ColorAndAmbient; // RGB = color, A = ambient intensity. This is done for 16-byte alignment.
     glm::vec3 Direction;
@@ -78,6 +90,10 @@ struct LineShaderPipeline : public ShaderPipeline {
     LineShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
 };
 
+struct GridShaderPipeline : public ShaderPipeline {
+    GridShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
+};
+
 struct GeometryInstance;
 
 struct Scene {
@@ -98,15 +114,13 @@ struct Scene {
 
     void RecompileShaders();
 
-    Transform GetTransform() const;
-    void UpdateTransform();
-    void UpdateLight();
+    void UpdateTransform(); // Updates buffers that depend on model/view/transform. (Does not submit command buffer.)
 
     void UpdateGeometryEdgeColors();
 
     const VulkanContext &VC;
 
-    Camera Camera{{0, 0, 2}, Origin, 45, 0.1, 100};
+    Camera Camera{{0, 0, 2}, Origin, 60, 0.1, 100};
     Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
 
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
@@ -120,6 +134,8 @@ struct Scene {
     vk::UniqueFramebuffer Framebuffer;
     vk::UniqueRenderPass RenderPass;
 
+    VulkanBuffer ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)};
+    VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
     VulkanBuffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
     VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
 
@@ -142,6 +158,11 @@ private:
         }
     }
 
+    // Rendering of grid lines derives from a plane at z = 0.
+    // See `GridLines.vert` and `GridLines.frag` for details.
+    // Based on https://asliceofrendering.com/scene%20helper/2020/01/05/InfiniteGrid.
+    void CreateGrid();
+
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
 
@@ -154,10 +175,12 @@ private:
 
     std::unique_ptr<FillShaderPipeline> FillShaderPipeline;
     std::unique_ptr<LineShaderPipeline> LineShaderPipeline;
+    std::unique_ptr<GridShaderPipeline> GridShaderPipeline;
 
     vk::UniqueSampler TextureSampler;
 
     std::unique_ptr<Gizmo> Gizmo;
 
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
+    std::unique_ptr<GeometryInstance> Grid;
 };
