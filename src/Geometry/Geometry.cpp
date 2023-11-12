@@ -1,8 +1,10 @@
 #include "Geometry.h"
 
-#include <glm/geometric.hpp>
+#include <ranges>
 
 using glm::vec3, glm::vec4;
+
+using std::ranges::any_of;
 
 bool Geometry::Load(const fs::path &file_path) {
     OpenMesh::IO::Options read_options; // No options used yet, but keeping this here for future use.
@@ -13,48 +15,23 @@ bool Geometry::Load(const fs::path &file_path) {
     return true;
 }
 
-void Geometry::Save(const fs::path &file_path) const {
-    if (file_path.extension() != ".obj") throw std::runtime_error("Unsupported file type: " + file_path.string());
-
-    if (!OpenMesh::IO::write_mesh(Mesh, file_path.string())) {
-        std::cerr << "Error writing mesh to file: " << file_path << std::endl;
-    }
-}
-
-bool Geometry::DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const {
-    if (!edge.is_valid()) return false;
-
-    for (const auto &heh : Mesh.voh_range(vertex)) {
-        if (Mesh.edge_handle(heh) == edge && (Mesh.face_handle(heh) == face || Mesh.face_handle(Mesh.opposite_halfedge_handle(heh)) == face)) return true;
-    }
-    return false;
+bool Geometry::DoesVertexBelongToFace(VH vertex, FH face) const {
+    return face.is_valid() && any_of(Mesh.fv_range(face), [&](const auto &vh) { return vh == vertex; });
 }
 
 bool Geometry::DoesVertexBelongToEdge(VH vertex, EH edge) const {
-    if (!edge.is_valid()) return false;
-
-    for (const auto &heh : Mesh.voh_range(vertex)) {
-        if (Mesh.edge_handle(heh) == edge) return true;
-    }
-    return false;
+    return edge.is_valid() && any_of(Mesh.voh_range(vertex), [&](const auto &heh) { return Mesh.edge_handle(heh) == edge; });
 }
 
-bool Geometry::DoesVertexBelongToFace(VH vertex, FH face) const {
-    if (!face.is_valid()) return false;
-
-    for (const auto &vh : Mesh.fv_range(face)) {
-        if (vh == vertex) return true;
-    }
-    return false;
+bool Geometry::DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const {
+    return face.is_valid() && edge.is_valid() &&
+        any_of(Mesh.voh_range(vertex), [&](const auto &heh) {
+               return Mesh.edge_handle(heh) == edge && (Mesh.face_handle(heh) == face || Mesh.face_handle(Mesh.opposite_halfedge_handle(heh)) == face);
+           });
 }
 
 bool Geometry::DoesEdgeBelongToFace(EH edge, FH face) const {
-    if (!face.is_valid()) return false;
-
-    for (const auto &heh : Mesh.fh_range(face)) {
-        if (Mesh.edge_handle(heh) == edge) return true;
-    }
-    return false;
+    return face.is_valid() && any_of(Mesh.fh_range(face), [&](const auto &heh) { return Mesh.edge_handle(heh) == edge; });
 }
 
 std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) {
