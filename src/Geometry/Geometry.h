@@ -63,7 +63,7 @@ struct Geometry {
     uint FindVertextNearestTo(const glm::vec3 point) const;
     inline bool Empty() const { return Mesh.n_vertices() == 0; }
 
-    std::vector<Vertex3D> GenerateVertices(GeometryMode mode);
+    std::vector<Vertex3D> GenerateVertices(GeometryMode mode, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{});
     std::vector<uint> GenerateIndices(GeometryMode mode) const {
         return mode == GeometryMode::Faces ? GenerateTriangulatedFaceIndices() :
             mode == GeometryMode::Edges    ? GenerateLineIndices() :
@@ -95,8 +95,18 @@ struct Geometry {
         Mesh.request_vertex_normals();
     }
 
-    void SetEdgeColor(const glm::vec4 &edge_color) {
-        EdgeColor = edge_color;
+    void SetFaceColor(FH fh, const glm::vec4 &face_color) {
+        Mesh.set_color(fh, {face_color.r, face_color.g, face_color.b});
+    }
+    void SetFaceColor(const glm::vec4 &face_color) {
+        for (const auto &fh : Mesh.faces()) SetFaceColor(fh, face_color);
+    }
+
+    void SetEdgeColor(const glm::vec4 &edge_color) { EdgeColor = edge_color; }
+
+    void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = {1, 1, 1, 1}) {
+        const auto fh = Mesh.add_face(vertices);
+        SetFaceColor(fh, color);
     }
 
 protected:

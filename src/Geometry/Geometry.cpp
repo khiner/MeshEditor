@@ -19,22 +19,37 @@ void Geometry::Save(const fs::path &file_path) const {
     }
 }
 
-std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode) {
-    std::vector<Vertex3D> vertices;
+std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) {
+    static const glm::vec4 HighlightColor{1, 0, 0, 1};
 
+    std::vector<Vertex3D> vertices;
     Mesh.update_normals();
-    glm::vec4 color = mode == GeometryMode::Edges ? EdgeColor : glm::vec4{1, 1, 1, 1}; // todo face colors
+
     if (mode == GeometryMode::Faces) {
+        vertices.reserve(Mesh.n_faces() * 3); // At least 3 vertices per face.
         for (const auto &fh : Mesh.faces()) {
-            const auto &n = Mesh.normal(fh); // Duplicate the normal for each vertex.
+            const auto &fn = Mesh.normal(fh);
+            const auto &fc = Mesh.color(fh);
             for (const auto &vh : Mesh.fv_range(fh)) {
-                vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(n), color);
+                const glm::vec4 color = vh == highlighted_vertex || fh == highlighted_face ? HighlightColor : glm::vec4(fc[0], fc[1], fc[2], 1);
+                vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(fn), color);
             }
         }
-    } else {
+    } else if (mode == GeometryMode::Vertices) {
         vertices.reserve(Mesh.n_vertices());
         for (const auto &vh : Mesh.vertices()) {
+            glm::vec4 color = vh == highlighted_vertex ? HighlightColor : glm::vec4(1);
             vertices.emplace_back(ToGlm(Mesh.point(vh)), ToGlm(Mesh.normal(vh)), color);
+        }
+    } else if (mode == GeometryMode::Edges) {
+        vertices.reserve(Mesh.n_edges() * 2);
+        for (const auto &eh : Mesh.edges()) {
+            const auto &heh = Mesh.halfedge_handle(eh, 0);
+            const auto &vh0 = Mesh.from_vertex_handle(heh);
+            const auto &vh1 = Mesh.to_vertex_handle(heh);
+            const glm::vec4 color = eh == highlighted_edge ? HighlightColor : EdgeColor;
+            vertices.emplace_back(ToGlm(Mesh.point(vh0)), ToGlm(Mesh.normal(vh0)), color);
+            vertices.emplace_back(ToGlm(Mesh.point(vh1)), ToGlm(Mesh.normal(vh1)), color);
         }
     }
 
@@ -109,10 +124,9 @@ Geometry::FH Geometry::TriangulatedIndexToFace(uint triangle_index) const {
 std::vector<uint> Geometry::GenerateLineIndices() const {
     std::vector<uint> indices;
     indices.reserve(Mesh.n_edges() * 2);
-    for (const auto &eh : Mesh.edges()) {
-        const auto heh = Mesh.halfedge_handle(eh, 0);
-        indices.push_back(Mesh.from_vertex_handle(heh).idx());
-        indices.push_back(Mesh.to_vertex_handle(heh).idx());
+    for (uint edge_i = 0; edge_i < Mesh.n_edges(); ++edge_i) {
+        indices.push_back(edge_i * 2);
+        indices.push_back(edge_i * 2 + 1);
     }
     return indices;
 }

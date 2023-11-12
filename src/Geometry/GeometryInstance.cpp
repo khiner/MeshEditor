@@ -1,33 +1,32 @@
 #include "GeometryInstance.h"
 
 #include "Ray.h"
-
 #include "VulkanContext.h"
 
+#include <format>
 #include <glm/mat3x3.hpp>
 
 using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
 GeometryInstance::GeometryInstance(const VulkanContext &vc, Geometry &&geometry)
     : VC(vc), G(std::move(geometry)) {
+    CreateOrUpdateBuffers();
+}
+
+void GeometryInstance::CreateOrUpdateBuffers() {
     static const std::vector AllModes{GeometryMode::Faces, GeometryMode::Vertices, GeometryMode::Edges};
     for (const auto mode : AllModes) CreateOrUpdateBuffers(mode);
 }
 
 void GeometryInstance::CreateOrUpdateBuffers(GeometryMode mode) {
     auto &buffers = BuffersForMode[mode];
-    buffers.Vertices = G.GenerateVertices(mode);
+    buffers.Vertices = G.GenerateVertices(mode, HighlightedFace, HighlightedVertex, HighlightedEdge);
     buffers.VertexBuffer.Size = sizeof(Vertex3D) * buffers.Vertices.size();
     VC.CreateOrUpdateBuffer(buffers.VertexBuffer, buffers.Vertices.data());
 
     buffers.Indices = G.GenerateIndices(mode);
     buffers.IndexBuffer.Size = sizeof(uint) * buffers.Indices.size();
     VC.CreateOrUpdateBuffer(buffers.IndexBuffer, buffers.Indices.data());
-}
-
-void GeometryInstance::SetEdgeColor(const vec4 &color) {
-    G.SetEdgeColor(color);
-    CreateOrUpdateBuffers(GeometryMode::Edges);
 }
 
 // Moller-Trumbore ray-triangle intersection algorithm.
@@ -123,4 +122,11 @@ Geometry::EH GeometryInstance::FindNearestEdgeLocal(const Ray &ray_local) const 
 
 Geometry::EH GeometryInstance::FindNearestEdge(const Ray &ray_world) const {
     return FindNearestEdgeLocal(ray_world.WorldToLocal(Model));
+}
+
+std::string GeometryInstance::GetHighlightLabel() const {
+    if (HighlightedFace.is_valid()) return std::format("Hovered face {}", HighlightedFace.idx());
+    if (HighlightedVertex.is_valid()) return std::format("Hovered vertex {}", HighlightedVertex.idx());
+    if (HighlightedEdge.is_valid()) return std::format("Hovered edge {}", HighlightedEdge.idx());
+    return "Hovered: None";
 }

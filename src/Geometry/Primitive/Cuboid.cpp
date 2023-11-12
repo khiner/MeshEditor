@@ -26,5 +26,5 @@ Cuboid::Cuboid(glm::vec3 half_extents) : Geometry() {
         {vhs[1], vhs[2], vhs[6], vhs[5]} // right
     };
 
-    for (const auto &face : faces) Mesh.add_face(face);
+    for (const auto &face : faces) AddFace(face);
 }

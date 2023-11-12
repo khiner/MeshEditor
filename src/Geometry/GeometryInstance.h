@@ -33,7 +33,39 @@ struct GeometryInstance {
     Geometry::EH FindNearestEdge(const Ray &ray_world) const;
     Geometry::EH FindNearestEdgeLocal(const Ray &ray_local) const; // Local space equivalent.
 
-    void SetEdgeColor(const glm::vec4 &);
+    void SetEdgeColor(const glm::vec4 &color) {
+        G.SetEdgeColor(color);
+        CreateOrUpdateBuffers();
+    }
+    bool HighlightFace(Geometry::FH face) {
+        if (face == HighlightedFace) return false;
+
+        HighlightedFace = face;
+        HighlightedVertex = Geometry::VH{};
+        HighlightedEdge = Geometry::EH{};
+        CreateOrUpdateBuffers();
+        return true;
+    }
+    bool HighlightVertex(Geometry::VH vertex) {
+        if (vertex == HighlightedVertex) return false;
+
+        HighlightedVertex = vertex;
+        HighlightedFace = Geometry::FH{};
+        HighlightedEdge = Geometry::EH{};
+        CreateOrUpdateBuffers();
+        return true;
+    }
+    bool HighlightEdge(Geometry::EH edge) {
+        if (edge == HighlightedEdge) return false;
+
+        HighlightedEdge = edge;
+        HighlightedFace = Geometry::FH{};
+        HighlightedVertex = Geometry::VH{};
+        CreateOrUpdateBuffers();
+        return true;
+    }
+
+    std::string GetHighlightLabel() const;
 
     const VulkanContext &VC;
     glm::mat4 Model{1};
@@ -42,5 +74,10 @@ private:
     Geometry G;
     std::unordered_map<GeometryMode, Buffers> BuffersForMode;
 
+    Geometry::FH HighlightedFace{};
+    Geometry::VH HighlightedVertex{};
+    Geometry::EH HighlightedEdge{};
+
     void CreateOrUpdateBuffers(GeometryMode);
+    void CreateOrUpdateBuffers(); // Update all buffers.
 };
