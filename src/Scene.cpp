@@ -106,19 +106,47 @@ void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_in
     View = device->createImageViewUnique(view_info);
 }
 
-ShaderPipeline::ShaderPipeline(
-    const Scene &scene,
-    const fs::path &vert_shader_path, const fs::path &frag_shader_path,
-    vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology
-) : S(scene), VertexShaderPath(vert_shader_path), FragmentShaderPath(frag_shader_path), PolygonMode(polygon_mode), Topology(topology) {}
+std::vector<uint> Shaders::Compile(ShaderType type) const {
+    if (!Paths.contains(type)) throw std::runtime_error(std::format("No path for shader type: {}", int(type)));
 
-void ShaderPipeline::CompileShaders() {
     static const shaderc::Compiler compiler;
     static shaderc::CompileOptions compile_opts;
     compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
 
+    shaderc_shader_kind kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader : shaderc_glsl_fragment_shader;
+    const std::string path = Paths.at(type);
+    const std::string shader_text = File::Read(ShadersDir / path);
+
+    const auto shader_spv = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
+    if (shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
+        // todo type to string
+        throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), shader_spv.GetErrorMessage()));
+    }
+    return {shader_spv.cbegin(), shader_spv.cend()};
+}
+
+std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(const vk::UniqueDevice &device) {
+    std::vector<vk::PipelineShaderStageCreateInfo> stages;
+    stages.reserve(Paths.size());
+    for (const auto &[type, path] : Paths) {
+        const auto &code = Compile(type);
+        Modules[type] = device->createShaderModuleUnique({{}, code});
+        stages.push_back({{}, type, *Modules.at(type), "main"});
+    }
+    return stages;
+}
+
+ShaderPipeline::ShaderPipeline(
+    const VulkanContext &vc, ::Shaders &&shaders,
+    vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
+    bool test_depth, bool write_depth, vk::SampleCountFlagBits msaa_samples
+) : VC(vc), Shaders(std::move(shaders)),
+    PolygonMode(polygon_mode), Topology(topology), TestDepth(test_depth), WriteDepth(write_depth), MsaaSamples(msaa_samples) {}
+
+void ShaderPipeline::Compile(const vk::UniqueRenderPass &render_pass) {
+    const std::vector<vk::PipelineShaderStageCreateInfo> shader_stages = Shaders.CompileAll(VC.Device);
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
-    static const vk::PipelineMultisampleStateCreateInfo multisampling{{}, S.MsaaSamples, false};
+    static const vk::PipelineMultisampleStateCreateInfo multisampling{{}, MsaaSamples, false};
     static const vk::PipelineColorBlendAttachmentState color_blend_attachment{
         true,
         vk::BlendFactor::eSrcAlpha, // srcCol
@@ -140,10 +168,10 @@ void ShaderPipeline::CompileShaders() {
     };
     static const vk::PipelineVertexInputStateCreateInfo vertex_input_state{{}, vertex_binding, vertex_attrs};
 
-    static const vk::PipelineDepthStencilStateCreateInfo depth_stencil_state{
+    const vk::PipelineDepthStencilStateCreateInfo depth_stencil_state{
         {}, // flags
-        VK_TRUE, // depthTestEnable
-        VK_TRUE, // depthWriteEnable
+        TestDepth, // depthTestEnable
+        WriteDepth, // depthWriteEnable
         vk::CompareOp::eLess, // depthCompareOp
         VK_FALSE, // depthBoundsTestEnable
         VK_FALSE, // stencilTestEnable
@@ -153,32 +181,10 @@ void ShaderPipeline::CompileShaders() {
         1.0f // maxDepthBounds
     };
 
-    const std::string vert_shader = File::Read(ShadersDir / VertexShaderPath);
-    const std::string frag_shader = File::Read(ShadersDir / FragmentShaderPath);
     const vk::PipelineRasterizationStateCreateInfo rasterizer{{}, false, false, PolygonMode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.0f};
     const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, Topology, false};
 
-    const auto &device = S.VC.Device;
-    const auto vert_shader_spv = compiler.CompileGlslToSpv(vert_shader, shaderc_glsl_vertex_shader, "vertex shader", compile_opts);
-    if (vert_shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
-        throw std::runtime_error(std::format("Failed to compile vertex shader: {}", vert_shader_spv.GetErrorMessage()));
-    }
-    const std::vector<uint> vert_shader_code{vert_shader_spv.cbegin(), vert_shader_spv.cend()};
-    const auto vert_shader_module = device->createShaderModuleUnique({{}, vert_shader_code});
-
-    const auto frag_shader_spv = compiler.CompileGlslToSpv(frag_shader, shaderc_glsl_fragment_shader, "fragment shader", compile_opts);
-    if (frag_shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
-        throw std::runtime_error(std::format("Failed to compile fragment shader: {}", frag_shader_spv.GetErrorMessage()));
-    }
-    const std::vector<uint> frag_shader_code{frag_shader_spv.cbegin(), frag_shader_spv.cend()};
-    const auto frag_shader_module = device->createShaderModuleUnique({{}, frag_shader_code});
-
-    const std::vector<vk::PipelineShaderStageCreateInfo> shader_stages{
-        {{}, vk::ShaderStageFlagBits::eVertex, *vert_shader_module, "main"},
-        {{}, vk::ShaderStageFlagBits::eFragment, *frag_shader_module, "main"},
-    };
-
-    auto pipeline_result = device->createGraphicsPipelineUnique(
+    auto pipeline_result = VC.Device->createGraphicsPipelineUnique(
         {},
         {
             {},
@@ -193,7 +199,7 @@ void ShaderPipeline::CompileShaders() {
             &color_blending,
             &dynamic_state,
             *PipelineLayout,
-            *S.RenderPass,
+            *render_pass,
         }
     );
     if (pipeline_result.result != vk::Result::eSuccess) {
@@ -202,64 +208,76 @@ void ShaderPipeline::CompileShaders() {
     Pipeline = std::move(pipeline_result.value);
 }
 
-FillShaderPipeline::FillShaderPipeline(const Scene &s, const fs::path &vert_shader_path, const fs::path &frag_shader_path)
-    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList) {
-    std::vector<vk::DescriptorSetLayoutBinding> bindings{
+struct FillShaderPipeline : public ShaderPipeline {
+    FillShaderPipeline(const VulkanContext &, ::Shaders &&, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform, vk::Buffer light);
+};
+
+struct LineShaderPipeline : public ShaderPipeline {
+    LineShaderPipeline(const VulkanContext &, ::Shaders &&, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform);
+};
+
+struct GridShaderPipeline : public ShaderPipeline {
+    GridShaderPipeline(const VulkanContext &, ::Shaders &&, vk::SampleCountFlagBits msaa_samples, vk::Buffer view_proj, vk::Buffer view_proj_near_far);
+};
+
+FillShaderPipeline::FillShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform, vk::Buffer light)
+    : ShaderPipeline(vc, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, msaa_samples) {
+    const std::vector<vk::DescriptorSetLayoutBinding> bindings{
         {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
         {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
     };
-    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
-    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    DescriptorSetLayout = VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+    const vk::DescriptorSetAllocateInfo alloc_info{*VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
 
-    vk::DescriptorBufferInfo transform_buffer_info{*S.TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    vk::DescriptorBufferInfo light_buffer_info{*S.LightBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+    const vk::DescriptorBufferInfo transform_buffer_info{transform, 0, VK_WHOLE_SIZE};
+    const vk::DescriptorBufferInfo light_buffer_info{light, 0, VK_WHOLE_SIZE};
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
         {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
         {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
     };
-    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
-LineShaderPipeline::LineShaderPipeline(const Scene &s, const fs::path &vert_shader_path, const fs::path &frag_shader_path)
-    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList) {
-    std::vector<vk::DescriptorSetLayoutBinding> bindings{
+LineShaderPipeline::LineShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform)
+    : ShaderPipeline(vc, std::move(shaders), vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, msaa_samples) {
+    const std::vector<vk::DescriptorSetLayoutBinding> bindings{
         {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
     };
-    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
-    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    DescriptorSetLayout = VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+    const vk::DescriptorSetAllocateInfo alloc_info{*VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
 
-    vk::DescriptorBufferInfo transform_buffer_info{*S.TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+    const vk::DescriptorBufferInfo transform_buffer_info{transform, 0, VK_WHOLE_SIZE};
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
         {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
     };
-    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
-GridShaderPipeline::GridShaderPipeline(const Scene &s, const fs::path &vert_shader_path, const fs::path &frag_shader_path)
-    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip) {
-    std::vector<vk::DescriptorSetLayoutBinding> bindings{
+GridShaderPipeline::GridShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer view_proj, vk::Buffer view_proj_near_far)
+    : ShaderPipeline(vc, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, msaa_samples) {
+    const std::vector<vk::DescriptorSetLayoutBinding> bindings{
         {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
         {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
     };
-    DescriptorSetLayout = S.VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
-    PipelineLayout = S.VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    DescriptorSetLayout = VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    vk::DescriptorSetAllocateInfo alloc_info{*S.VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(S.VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+    const vk::DescriptorSetAllocateInfo alloc_info{*VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
 
-    vk::DescriptorBufferInfo view_proj_buffer_info{*S.ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    vk::DescriptorBufferInfo view_proj_near_far_buffer_info{*S.ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+    const vk::DescriptorBufferInfo view_proj_buffer_info{view_proj, 0, VK_WHOLE_SIZE};
+    const vk::DescriptorBufferInfo view_proj_near_far_buffer_info{view_proj_near_far, 0, VK_WHOLE_SIZE};
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
         {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
         {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
     };
-    S.VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
 Scene::Scene(const VulkanContext &vc)
@@ -269,9 +287,9 @@ Scene::Scene(const VulkanContext &vc)
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightBuffer, &Light);
 
-    ShaderPipelines[ShaderPipelineType::Fill] = std::make_unique<FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
-    ShaderPipelines[ShaderPipelineType::Line] = std::make_unique<LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
-    ShaderPipelines[ShaderPipelineType::Grid] = std::make_unique<GridShaderPipeline>(*this, "GridLines.vert", "GridLines.frag");
+    ShaderPipelines[ShaderPipelineType::Fill] = std::make_unique<FillShaderPipeline>(VC, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}}, MsaaSamples, *TransformBuffer.Buffer, *LightBuffer.Buffer);
+    ShaderPipelines[ShaderPipelineType::Line] = std::make_unique<LineShaderPipeline>(VC, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}}, MsaaSamples, *TransformBuffer.Buffer);
+    ShaderPipelines[ShaderPipelineType::Grid] = std::make_unique<GridShaderPipeline>(VC, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}}, MsaaSamples, *ViewProjectionBuffer.Buffer, *ViewProjNearFarBuffer.Buffer);
 
     TextureSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
     Gizmo = std::make_unique<::Gizmo>();
@@ -320,13 +338,10 @@ void Scene::SetExtent(vk::Extent2D extent) {
 }
 
 static void RenderGeometryBuffers(const ShaderPipeline &shader_pipeline, const vk::UniqueCommandBuffer &command_buffer, const GeometryInstance::Buffers &buffers) {
-    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
-
-    vk::DescriptorSet descriptor_sets[] = {*shader_pipeline.DescriptorSet};
     command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
-    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, 1, descriptor_sets, 0, nullptr);
-    const vk::Buffer vertex_buffers[] = {*buffers.VertexBuffer.Buffer};
-    command_buffer->bindVertexBuffers(0, 1, vertex_buffers, vertex_buffer_offsets);
+    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
+    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
+    command_buffer->bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
     command_buffer->bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
     command_buffer->drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
 }
@@ -376,7 +391,7 @@ void Scene::RecordCommandBuffer() {
         const auto &grid_pipeline = ShaderPipelines.at(ShaderPipelineType::Grid);
         command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *grid_pipeline->Pipeline);
         command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grid_pipeline->PipelineLayout, 0, 1, &*grid_pipeline->DescriptorSet, 0, nullptr);
-        command_buffer->draw(4, 1, 0, 0); // Draw the full-screen quad for the grid.
+        command_buffer->draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
     }
 
     command_buffer->endRenderPass();
@@ -390,7 +405,7 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
 }
 
 void Scene::CompileShaders() {
-    for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->CompileShaders();
+    for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(RenderPass);
 }
 
 void Scene::UpdateGeometryEdgeColors() {
@@ -539,9 +554,7 @@ void Scene::RenderControls() {
             selection_mode_changed |= RadioButton("Edge", &selection_mode, int(SelectionMode::Edge));
             SameLine();
             selection_mode_changed |= RadioButton("Face", &selection_mode, int(SelectionMode::Face));
-            if (selection_mode_changed) {
-                SelectionMode = ::SelectionMode(selection_mode);
-            }
+            if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
             TextUnformatted(GeometryInstances[0]->GetHighlightLabel().c_str());
             SeparatorText("Transform");
             Gizmo->RenderDebug();

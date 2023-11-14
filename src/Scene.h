@@ -57,41 +57,44 @@ struct ImageResource {
     vk::UniqueDeviceMemory Memory;
 };
 
-struct Scene;
+using ShaderType = vk::ShaderStageFlagBits;
+using ShaderPaths = std::unordered_map<ShaderType, fs::path>;
+using ShaderModules = std::unordered_map<ShaderType, vk::UniqueShaderModule>;
+
+struct Shaders {
+    Shaders(ShaderPaths &&paths) : Paths(std::move(paths)) {}
+    std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(const vk::UniqueDevice &); // Populates `Modules`.
+    std::vector<uint> Compile(ShaderType) const;
+
+    inline static const std::vector AllTypes{ShaderType::eVertex, ShaderType::eFragment};
+    ShaderPaths Paths; // Paths are relative to the `Shaders` directory.
+    ShaderModules Modules;
+};
 
 struct ShaderPipeline {
-    // Paths are relative to the `Shaders` directory.
     ShaderPipeline(
-        const Scene &,
-        const fs::path &vert_shader_path, const fs::path &frag_shader_path,
+        const VulkanContext &, Shaders &&,
         vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
-        vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList
+        vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
+        bool test_depth = true, bool write_depth = true,
+        vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1
     );
     virtual ~ShaderPipeline() = default;
 
-    void CompileShaders();
+    void Compile(const vk::UniqueRenderPass &);
 
-    const Scene &S;
+    const VulkanContext &VC;
 
-    fs::path VertexShaderPath, FragmentShaderPath;
+    Shaders Shaders;
     vk::PolygonMode PolygonMode;
     vk::PrimitiveTopology Topology;
+    bool TestDepth, WriteDepth;
+    vk::SampleCountFlagBits MsaaSamples;
+
     vk::UniqueDescriptorSetLayout DescriptorSetLayout;
     vk::UniqueDescriptorSet DescriptorSet;
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
-};
-
-struct FillShaderPipeline : public ShaderPipeline {
-    FillShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
-};
-
-struct LineShaderPipeline : public ShaderPipeline {
-    LineShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
-};
-
-struct GridShaderPipeline : public ShaderPipeline {
-    GridShaderPipeline(const Scene &, const fs::path &vert_shader_path, const fs::path &frag_shader_path);
 };
 
 struct GeometryInstance;
@@ -100,9 +103,10 @@ struct Scene {
     Scene(const VulkanContext &);
     ~Scene();
 
-    VkSampler GetTextureSampler() const { return TextureSampler.get(); }
-    VkImageView GetResolveImageView() const { return ResolveImage.View.get(); }
     const vk::Extent2D &GetExtent() const { return Extent; }
+    vk::SampleCountFlagBits GetMsaaSamples() const { return MsaaSamples; }
+    vk::Sampler GetTextureSampler() const { return TextureSampler.get(); }
+    vk::ImageView GetResolveImageView() const { return ResolveImage.View.get(); }
 
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
@@ -118,6 +122,13 @@ struct Scene {
     void UpdateGeometryEdgeColors();
 
     const VulkanContext &VC;
+
+private:
+    // Recreates transform, render images (see below) and framebuffer based on the new extent.
+    // These are then reused by future renders that don't change the extent.
+    void SetExtent(vk::Extent2D);
+    void RecordCommandBuffer();
+    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
 
     Camera Camera{{0, 0, 2}, Origin, 60, 0.1, 100};
     Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
@@ -137,13 +148,6 @@ struct Scene {
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
     VulkanBuffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
     VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
-
-private:
-    // Recreates transform, render images (see below) and framebuffer based on the new extent.
-    // These are then reused by future renders that don't change the extent.
-    void SetExtent(vk::Extent2D);
-    void RecordCommandBuffer();
-    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
