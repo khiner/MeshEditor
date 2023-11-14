@@ -1,6 +1,7 @@
 #include "Scene.h"
 
 #include <format>
+#include <ranges>
 
 #include "imgui.h"
 #include <shaderc/shaderc.hpp>
@@ -267,9 +268,10 @@ Scene::Scene(const VulkanContext &vc)
     UpdateGeometryEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightBuffer, &Light);
-    FillShaderPipeline = std::make_unique<::FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
-    LineShaderPipeline = std::make_unique<::LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
-    GridShaderPipeline = std::make_unique<::GridShaderPipeline>(*this, "GridLines.vert", "GridLines.frag");
+
+    ShaderPipelines[ShaderPipelineType::Fill] = std::make_unique<FillShaderPipeline>(*this, "Transform.vert", "Lighting.frag");
+    ShaderPipelines[ShaderPipelineType::Line] = std::make_unique<LineShaderPipeline>(*this, "Transform.vert", "Basic.frag");
+    ShaderPipelines[ShaderPipelineType::Grid] = std::make_unique<GridShaderPipeline>(*this, "GridLines.vert", "GridLines.frag");
 
     TextureSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
     Gizmo = std::make_unique<::Gizmo>();
@@ -287,10 +289,7 @@ Scene::Scene(const VulkanContext &vc)
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
 
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
-
-    FillShaderPipeline->CompileShaders();
-    LineShaderPipeline->CompileShaders();
-    GridShaderPipeline->CompileShaders();
+    CompileShaders();
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -363,19 +362,20 @@ void Scene::RecordCommandBuffer() {
 
     const auto &geometry_instance = *GeometryInstances[0];
     if (Mode == RenderMode::Faces) {
-        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
     } else if (Mode == RenderMode::Edges) {
-        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
+        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Line), command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::FacesAndEdges) {
-        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
-        RenderGeometryBuffers(*LineShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
+        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Line), command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::Smooth) {
-        RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
+        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
     }
 
     if (ShowGrid) {
-        command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *GridShaderPipeline->Pipeline);
-        command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *GridShaderPipeline->PipelineLayout, 0, 1, &*GridShaderPipeline->DescriptorSet, 0, nullptr);
+        const auto &grid_pipeline = ShaderPipelines.at(ShaderPipelineType::Grid);
+        command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *grid_pipeline->Pipeline);
+        command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grid_pipeline->PipelineLayout, 0, 1, &*grid_pipeline->DescriptorSet, 0, nullptr);
         command_buffer->draw(4, 1, 0, 0); // Draw the full-screen quad for the grid.
     }
 
@@ -389,12 +389,8 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
     VC.Queue.submit(submit, fence);
 }
 
-void Scene::RecompileShaders() {
-    FillShaderPipeline->CompileShaders();
-    LineShaderPipeline->CompileShaders();
-    GridShaderPipeline->CompileShaders();
-    RecordCommandBuffer();
-    SubmitCommandBuffer();
+void Scene::CompileShaders() {
+    for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->CompileShaders();
 }
 
 void Scene::UpdateGeometryEdgeColors() {
@@ -523,7 +519,7 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
-                UpdateGeometryEdgeColors();
+                UpdateGeometryEdgeColors(); // Different modes use different edge colors for better visibility.
                 RecordCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
                 SubmitCommandBuffer();
             }
@@ -552,7 +548,11 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Shader")) {
-            if (Button("Recompile shaders")) RecompileShaders();
+            if (Button("Recompile shaders")) {
+                CompileShaders();
+                RecordCommandBuffer();
+                SubmitCommandBuffer();
+            }
             EndTabItem();
         }
         EndTabBar();
