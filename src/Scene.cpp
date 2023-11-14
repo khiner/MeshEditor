@@ -10,7 +10,6 @@
 #include "File.h"
 #include "Geometry/GeometryInstance.h"
 #include "Geometry/Primitive/Cuboid.h"
-#include "Geometry/Primitive/Rect.h"
 
 using glm::vec3, glm::vec4, glm::mat4;
 
@@ -242,7 +241,7 @@ LineShaderPipeline::LineShaderPipeline(const Scene &s, const fs::path &vert_shad
 }
 
 GridShaderPipeline::GridShaderPipeline(const Scene &s, const fs::path &vert_shader_path, const fs::path &frag_shader_path)
-    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList) {
+    : ShaderPipeline(s, vert_shader_path, frag_shader_path, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip) {
     std::vector<vk::DescriptorSetLayoutBinding> bindings{
         {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
         {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
@@ -264,7 +263,6 @@ GridShaderPipeline::GridShaderPipeline(const Scene &s, const fs::path &vert_shad
 
 Scene::Scene(const VulkanContext &vc)
     : VC(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
-    CreateGrid();
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
     UpdateTransform();
@@ -375,8 +373,10 @@ void Scene::RecordCommandBuffer() {
         RenderGeometryBuffers(*FillShaderPipeline, command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
     }
 
-    if (Grid) {
-        RenderGeometryBuffers(*GridShaderPipeline, command_buffer, Grid->GetBuffers(GeometryMode::Faces));
+    if (ShowGrid) {
+        command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *GridShaderPipeline->Pipeline);
+        command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *GridShaderPipeline->PipelineLayout, 0, 1, &*GridShaderPipeline->DescriptorSet, 0, nullptr);
+        command_buffer->draw(4, 1, 0, 0); // Draw the full-screen quad for the grid.
     }
 
     command_buffer->endRenderPass();
@@ -475,11 +475,6 @@ void Scene::RenderGizmo() {
     }
 }
 
-void Scene::CreateGrid() {
-    // todo only populate the `GeometryMode::Faces` buffers.
-    Grid = std::make_unique<GeometryInstance>(VC, Rect{{1, 1}});
-}
-
 void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Camera")) {
@@ -499,10 +494,6 @@ void Scene::RenderControls() {
                 UpdateTransform();
                 SubmitCommandBuffer();
             }
-            Text("Camera Y: %.3f", glm::vec3(glm::inverse(Camera.GetViewMatrix())[3]).y);
-            Text("Camera Y2: %.3f", Camera.Position.y);
-            Text("Camera Z: %.3f", glm::vec3(glm::inverse(Camera.GetViewMatrix())[3]).z);
-            Text("Camera Z2: %.3f", Camera.Position.z);
             EndTabItem();
         }
         if (BeginTabItem("Light")) {
@@ -517,10 +508,7 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
-            bool show_grid = bool(Grid);
-            if (Checkbox("Show grid", &show_grid)) {
-                if (show_grid) CreateGrid();
-                else Grid.reset();
+            if (Checkbox("Show grid", &ShowGrid)) {
                 RecordCommandBuffer();
                 SubmitCommandBuffer();
             }

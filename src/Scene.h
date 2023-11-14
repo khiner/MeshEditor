@@ -158,11 +158,6 @@ private:
         }
     }
 
-    // Rendering of grid lines derives from a plane at z = 0.
-    // See `GridLines.vert` and `GridLines.frag` for details.
-    // Based on https://asliceofrendering.com/scene%20helper/2020/01/05/InfiniteGrid.
-    void CreateGrid();
-
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
 
@@ -182,5 +177,6 @@ private:
     std::unique_ptr<Gizmo> Gizmo;
 
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
-    std::unique_ptr<GeometryInstance> Grid;
+
+    bool ShowGrid{true};
 };
