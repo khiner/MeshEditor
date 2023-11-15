@@ -36,9 +36,9 @@ include_directories(
     lib/glm
     src
 )
-find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
+find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib spirv-cross-core)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} ${SHADERC_LIB} OpenMeshCore)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} ${SHADERC_LIB} spirv-cross-core OpenMeshCore)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

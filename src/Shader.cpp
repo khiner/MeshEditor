@@ -3,6 +3,7 @@
 #include <format>
 
 #include <shaderc/shaderc.hpp>
+#include <spirv_cross/spirv_cross.hpp>
 
 #include "File.h"
 #include "Vertex.h"
@@ -13,6 +14,11 @@ static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
 // All files in `src/Shaders` are copied to `build/Shaders` at build time.
 static const fs::path ShadersDir = "Shaders";
 #endif
+
+Shaders::Shaders(std::unordered_map<ShaderType, fs::path> &&paths) : Paths(std::move(paths)) {}
+Shaders::Shaders(Shaders &&) = default;
+Shaders::~Shaders() = default;
+Shaders &Shaders::operator=(Shaders &&) = default;
 
 std::vector<uint> Shaders::Compile(ShaderType type) const {
     if (!Paths.contains(type)) throw std::runtime_error(std::format("No path for shader type: {}", int(type)));
@@ -25,20 +31,22 @@ std::vector<uint> Shaders::Compile(ShaderType type) const {
     const std::string path = Paths.at(type);
     const std::string shader_text = File::Read(ShadersDir / path);
 
-    const auto shader_spv = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
-    if (shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
+    const auto spirv = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
+    if (spirv.GetCompilationStatus() != shaderc_compilation_status_success) {
         // todo type to string
-        throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), shader_spv.GetErrorMessage()));
+        throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), spirv.GetErrorMessage()));
     }
-    return {shader_spv.cbegin(), shader_spv.cend()};
+    return {spirv.cbegin(), spirv.cend()};
 }
 
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(const vk::UniqueDevice &device) {
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
     stages.reserve(Paths.size());
     for (const auto &[type, path] : Paths) {
-        const auto &code = Compile(type);
-        Modules[type] = device->createShaderModuleUnique({{}, code});
+        const auto &spirv = Compile(type);
+        spirv_cross::Compiler comp(spirv);
+        Resources[type] = std::make_unique<spirv_cross::ShaderResources>(comp.get_shader_resources());
+        Modules[type] = device->createShaderModuleUnique({{}, spirv});
         stages.push_back({{}, type, *Modules.at(type), "main"});
     }
     return stages;

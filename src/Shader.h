@@ -8,16 +8,25 @@
 
 namespace fs = std::filesystem;
 
+namespace spirv_cross {
+struct ShaderResources;
+}
+
 using ShaderType = vk::ShaderStageFlagBits;
 
 struct Shaders {
-    Shaders(std::unordered_map<ShaderType, fs::path> &&paths) : Paths(std::move(paths)) {}
+    Shaders(std::unordered_map<ShaderType, fs::path> &&paths);
+    Shaders(Shaders &&);
+    ~Shaders();
+
+    Shaders &operator=(Shaders &&);
+
     std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(const vk::UniqueDevice &); // Populates `Modules`.
     std::vector<uint> Compile(ShaderType) const;
 
-    inline static const std::vector AllTypes{ShaderType::eVertex, ShaderType::eFragment};
     std::unordered_map<ShaderType, fs::path> Paths; // Paths are relative to the `Shaders` directory.
     std::unordered_map<ShaderType, vk::UniqueShaderModule> Modules;
+    std::unordered_map<ShaderType, std::unique_ptr<spirv_cross::ShaderResources>> Resources;
 };
 
 struct ShaderPipeline {
