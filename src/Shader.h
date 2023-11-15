@@ -21,17 +21,19 @@ struct Shaders {
 
     Shaders &operator=(Shaders &&);
 
-    std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(const vk::UniqueDevice &); // Populates `Modules`.
+    // Populates `Modules`, `Resources`, and `Bindings`.
+    std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(const vk::UniqueDevice &);
     std::vector<uint> Compile(ShaderType) const;
 
     std::unordered_map<ShaderType, fs::path> Paths; // Paths are relative to the `Shaders` directory.
     std::unordered_map<ShaderType, vk::UniqueShaderModule> Modules;
     std::unordered_map<ShaderType, std::unique_ptr<spirv_cross::ShaderResources>> Resources;
+    std::vector<vk::DescriptorSetLayoutBinding> Bindings;
 };
 
 struct ShaderPipeline {
     ShaderPipeline(
-        const vk::UniqueDevice &, Shaders &&,
+        const vk::UniqueDevice &, const vk::UniqueDescriptorPool &, Shaders &&,
         vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
         vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
         bool test_depth = true, bool write_depth = true,

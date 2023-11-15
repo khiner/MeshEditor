@@ -42,11 +42,20 @@ std::vector<uint> Shaders::Compile(ShaderType type) const {
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(const vk::UniqueDevice &device) {
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
     stages.reserve(Paths.size());
+    Bindings.clear();
     for (const auto &[type, path] : Paths) {
         const auto &spirv = Compile(type);
         spirv_cross::Compiler comp(spirv);
         Resources[type] = std::make_unique<spirv_cross::ShaderResources>(comp.get_shader_resources());
         Modules[type] = device->createShaderModuleUnique({{}, spirv});
+
+        for (const auto &resource : Resources.at(type)->uniform_buffers) {
+            // Only using a single set for now. Otherwise, we'd group bindings by set.
+            // uint set = comp.get_decoration(resource.id, spv::DecorationDescriptorSet);
+            uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+            Bindings.push_back(vk::DescriptorSetLayoutBinding(binding, vk::DescriptorType::eUniformBuffer, 1, type));
+        }
+
         stages.push_back({{}, type, *Modules.at(type), "main"});
     }
     return stages;
@@ -63,7 +72,7 @@ static vk::PipelineVertexInputStateCreateInfo CreateVertex3DInputState() {
 }
 
 ShaderPipeline::ShaderPipeline(
-    const vk::UniqueDevice &device, ::Shaders &&shaders,
+    const vk::UniqueDevice &device, const vk::UniqueDescriptorPool &descriptor_pool, ::Shaders &&shaders,
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
     bool test_depth, bool write_depth, vk::SampleCountFlagBits msaa_samples
 ) : Device(device), Shaders(std::move(shaders)),
@@ -92,7 +101,13 @@ ShaderPipeline::ShaderPipeline(
     }),
     VertexInputState(CreateVertex3DInputState()),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
-    InputAssemblyState({{}, topology}) {}
+    InputAssemblyState({{}, topology}) {
+    Shaders.CompileAll(Device); // todo this populates descriptor sets used in implementing ctors. Refactor to do a single compile for all shaders during construction.
+    DescriptorSetLayout = Device->createDescriptorSetLayoutUnique({{}, Shaders.Bindings});
+    PipelineLayout = Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    const vk::DescriptorSetAllocateInfo alloc_info{*descriptor_pool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(Device->allocateDescriptorSetsUnique(alloc_info).front());
+}
 
 void ShaderPipeline::Compile(const vk::UniqueRenderPass &render_pass) {
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
