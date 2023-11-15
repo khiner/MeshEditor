@@ -39,7 +39,7 @@ struct ShaderPipeline {
         bool test_depth = true, bool write_depth = true,
         vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1
     );
-    virtual ~ShaderPipeline() = default;
+    ~ShaderPipeline() = default;
 
     void Compile(const vk::UniqueRenderPass &); // Recompile all shaders and update `Pipeline`.
 

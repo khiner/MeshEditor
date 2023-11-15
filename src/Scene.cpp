@@ -97,43 +97,6 @@ void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_in
     View = device->createImageViewUnique(view_info);
 }
 
-struct FillShaderPipeline : ShaderPipeline {
-    FillShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform, vk::Buffer light)
-        : ShaderPipeline(vc.Device, vc.DescriptorPool, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, msaa_samples) {
-        const vk::DescriptorBufferInfo transform_buffer_info{transform, 0, VK_WHOLE_SIZE};
-        const vk::DescriptorBufferInfo light_buffer_info{light, 0, VK_WHOLE_SIZE};
-        const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-            {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
-            {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
-        };
-        Device->updateDescriptorSets(write_descriptor_sets, {});
-    }
-};
-
-struct LineShaderPipeline : ShaderPipeline {
-    LineShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform)
-        : ShaderPipeline(vc.Device, vc.DescriptorPool, std::move(shaders), vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, msaa_samples) {
-        const vk::DescriptorBufferInfo transform_buffer_info{transform, 0, VK_WHOLE_SIZE};
-        const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-            {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
-        };
-        Device->updateDescriptorSets(write_descriptor_sets, {});
-    }
-};
-
-struct GridShaderPipeline : ShaderPipeline {
-    GridShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer view_proj, vk::Buffer view_proj_near_far)
-        : ShaderPipeline(vc.Device, vc.DescriptorPool, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, msaa_samples) {
-        const vk::DescriptorBufferInfo view_proj_buffer_info{view_proj, 0, VK_WHOLE_SIZE};
-        const vk::DescriptorBufferInfo view_proj_near_far_buffer_info{view_proj_near_far, 0, VK_WHOLE_SIZE};
-        const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-            {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
-            {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
-        };
-        Device->updateDescriptorSets(write_descriptor_sets, {});
-    }
-};
-
 Scene::Scene(const VulkanContext &vc)
     : VC(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
@@ -155,13 +118,38 @@ Scene::Scene(const VulkanContext &vc)
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
-
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
-    ShaderPipelines[ShaderPipelineType::Fill] = std::make_unique<FillShaderPipeline>(VC, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}}, MsaaSamples, *TransformBuffer.Buffer, *LightBuffer.Buffer);
-    ShaderPipelines[ShaderPipelineType::Line] = std::make_unique<LineShaderPipeline>(VC, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}}, MsaaSamples, *TransformBuffer.Buffer);
-    ShaderPipelines[ShaderPipelineType::Grid] = std::make_unique<GridShaderPipeline>(VC, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}}, MsaaSamples, *ViewProjectionBuffer.Buffer, *ViewProjNearFarBuffer.Buffer);
+    ShaderPipelines[ShaderPipelineType::Fill] = std::make_unique<ShaderPipeline>(
+        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, MsaaSamples
+    );
+    ShaderPipelines[ShaderPipelineType::Line] = std::make_unique<ShaderPipeline>(
+        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}},
+        vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, MsaaSamples
+    );
+    ShaderPipelines[ShaderPipelineType::Grid] = std::make_unique<ShaderPipeline>(
+        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, MsaaSamples
+    );
 
+    // Write descriptor sets.
+    const vk::DescriptorBufferInfo
+        transform_buffer_info{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE},
+        light_buffer_info{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE},
+        view_proj_buffer_info{*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE},
+        view_proj_near_far_buffer_info{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    const auto &fill_ds = ShaderPipelines[ShaderPipelineType::Fill]->DescriptorSet;
+    const auto &line_ds = ShaderPipelines[ShaderPipelineType::Line]->DescriptorSet;
+    const auto &grid_ds = ShaderPipelines[ShaderPipelineType::Grid]->DescriptorSet;
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*fill_ds, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+        {*fill_ds, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
+        {*line_ds, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+        {*grid_ds, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
+        {*grid_ds, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
+    };
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
     CompileShaders();
 }
 
