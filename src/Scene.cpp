@@ -4,22 +4,13 @@
 #include <ranges>
 
 #include "imgui.h"
-#include <shaderc/shaderc.hpp>
 
 #include "ImGuizmo.h"
 
-#include "File.h"
 #include "Geometry/GeometryInstance.h"
 #include "Geometry/Primitive/Cuboid.h"
 
 using glm::vec3, glm::vec4, glm::mat4;
-
-#ifdef DEBUG_BUILD
-static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
-#elif defined(RELEASE_BUILD)
-// All files in `src/Shaders` are copied to `build/Shaders` at build time.
-static const fs::path ShadersDir = "Shaders";
-#endif
 
 static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
@@ -106,108 +97,6 @@ void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_in
     View = device->createImageViewUnique(view_info);
 }
 
-std::vector<uint> Shaders::Compile(ShaderType type) const {
-    if (!Paths.contains(type)) throw std::runtime_error(std::format("No path for shader type: {}", int(type)));
-
-    static const shaderc::Compiler compiler;
-    static shaderc::CompileOptions compile_opts;
-    compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
-
-    shaderc_shader_kind kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader : shaderc_glsl_fragment_shader;
-    const std::string path = Paths.at(type);
-    const std::string shader_text = File::Read(ShadersDir / path);
-
-    const auto shader_spv = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
-    if (shader_spv.GetCompilationStatus() != shaderc_compilation_status_success) {
-        // todo type to string
-        throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), shader_spv.GetErrorMessage()));
-    }
-    return {shader_spv.cbegin(), shader_spv.cend()};
-}
-
-std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(const vk::UniqueDevice &device) {
-    std::vector<vk::PipelineShaderStageCreateInfo> stages;
-    stages.reserve(Paths.size());
-    for (const auto &[type, path] : Paths) {
-        const auto &code = Compile(type);
-        Modules[type] = device->createShaderModuleUnique({{}, code});
-        stages.push_back({{}, type, *Modules.at(type), "main"});
-    }
-    return stages;
-}
-
-ShaderPipeline::ShaderPipeline(
-    const VulkanContext &vc, ::Shaders &&shaders,
-    vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
-    bool test_depth, bool write_depth, vk::SampleCountFlagBits msaa_samples
-) : VC(vc), Shaders(std::move(shaders)),
-    PolygonMode(polygon_mode), Topology(topology), TestDepth(test_depth), WriteDepth(write_depth), MsaaSamples(msaa_samples) {}
-
-void ShaderPipeline::Compile(const vk::UniqueRenderPass &render_pass) {
-    const std::vector<vk::PipelineShaderStageCreateInfo> shader_stages = Shaders.CompileAll(VC.Device);
-    static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
-    static const vk::PipelineMultisampleStateCreateInfo multisampling{{}, MsaaSamples, false};
-    static const vk::PipelineColorBlendAttachmentState color_blend_attachment{
-        true,
-        vk::BlendFactor::eSrcAlpha, // srcCol
-        vk::BlendFactor::eOneMinusSrcAlpha, // dstCol
-        vk::BlendOp::eAdd, // colBlend
-        vk::BlendFactor::eOne, // srcAlpha (could also adjust if needed)
-        vk::BlendFactor::eOne, // dstAlpha
-        vk::BlendOp::eAdd, // alphaBlend
-        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
-    };
-    static const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment};
-    static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
-    static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
-    static const vk::VertexInputBindingDescription vertex_binding{0, sizeof(Vertex3D), vk::VertexInputRate::eVertex};
-    static const std::vector<vk::VertexInputAttributeDescription> vertex_attrs{
-        {0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex3D, Position)},
-        {1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex3D, Normal)},
-        {2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(Vertex3D, Color)},
-    };
-    static const vk::PipelineVertexInputStateCreateInfo vertex_input_state{{}, vertex_binding, vertex_attrs};
-
-    const vk::PipelineDepthStencilStateCreateInfo depth_stencil_state{
-        {}, // flags
-        TestDepth, // depthTestEnable
-        WriteDepth, // depthWriteEnable
-        vk::CompareOp::eLess, // depthCompareOp
-        VK_FALSE, // depthBoundsTestEnable
-        VK_FALSE, // stencilTestEnable
-        {}, // front (stencil state for front faces)
-        {}, // back (stencil state for back faces)
-        0.0f, // minDepthBounds
-        1.0f // maxDepthBounds
-    };
-
-    const vk::PipelineRasterizationStateCreateInfo rasterizer{{}, false, false, PolygonMode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.0f};
-    const vk::PipelineInputAssemblyStateCreateInfo input_assemply{{}, Topology, false};
-
-    auto pipeline_result = VC.Device->createGraphicsPipelineUnique(
-        {},
-        {
-            {},
-            shader_stages,
-            &vertex_input_state,
-            &input_assemply,
-            nullptr,
-            &viewport_state,
-            &rasterizer,
-            &multisampling,
-            &depth_stencil_state,
-            &color_blending,
-            &dynamic_state,
-            *PipelineLayout,
-            *render_pass,
-        }
-    );
-    if (pipeline_result.result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to create graphics pipeline: {}", vk::to_string(pipeline_result.result)));
-    }
-    Pipeline = std::move(pipeline_result.value);
-}
-
 struct FillShaderPipeline : public ShaderPipeline {
     FillShaderPipeline(const VulkanContext &, ::Shaders &&, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform, vk::Buffer light);
 };
@@ -221,16 +110,16 @@ struct GridShaderPipeline : public ShaderPipeline {
 };
 
 FillShaderPipeline::FillShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform, vk::Buffer light)
-    : ShaderPipeline(vc, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, msaa_samples) {
+    : ShaderPipeline(vc.Device, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, msaa_samples) {
     const std::vector<vk::DescriptorSetLayoutBinding> bindings{
-        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
-        {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
+        {0, vk::DescriptorType::eUniformBuffer, 1, ShaderType::eVertex},
+        {1, vk::DescriptorType::eUniformBuffer, 1, ShaderType::eFragment},
     };
-    DescriptorSetLayout = VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
-    PipelineLayout = VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    DescriptorSetLayout = Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    const vk::DescriptorSetAllocateInfo alloc_info{*VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+    const vk::DescriptorSetAllocateInfo alloc_info{*vc.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(Device->allocateDescriptorSetsUnique(alloc_info).front());
 
     const vk::DescriptorBufferInfo transform_buffer_info{transform, 0, VK_WHOLE_SIZE};
     const vk::DescriptorBufferInfo light_buffer_info{light, 0, VK_WHOLE_SIZE};
@@ -238,38 +127,38 @@ FillShaderPipeline::FillShaderPipeline(const VulkanContext &vc, ::Shaders &&shad
         {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
         {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
     };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+    Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
 LineShaderPipeline::LineShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer transform)
-    : ShaderPipeline(vc, std::move(shaders), vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, msaa_samples) {
+    : ShaderPipeline(vc.Device, std::move(shaders), vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, msaa_samples) {
     const std::vector<vk::DescriptorSetLayoutBinding> bindings{
-        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+        {0, vk::DescriptorType::eUniformBuffer, 1, ShaderType::eVertex},
     };
-    DescriptorSetLayout = VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
-    PipelineLayout = VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    DescriptorSetLayout = Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    const vk::DescriptorSetAllocateInfo alloc_info{*VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+    const vk::DescriptorSetAllocateInfo alloc_info{*vc.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(Device->allocateDescriptorSetsUnique(alloc_info).front());
 
     const vk::DescriptorBufferInfo transform_buffer_info{transform, 0, VK_WHOLE_SIZE};
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
         {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
     };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+    Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
 GridShaderPipeline::GridShaderPipeline(const VulkanContext &vc, ::Shaders &&shaders, vk::SampleCountFlagBits msaa_samples, vk::Buffer view_proj, vk::Buffer view_proj_near_far)
-    : ShaderPipeline(vc, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, msaa_samples) {
+    : ShaderPipeline(vc.Device, std::move(shaders), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, msaa_samples) {
     const std::vector<vk::DescriptorSetLayoutBinding> bindings{
-        {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
-        {1, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
+        {0, vk::DescriptorType::eUniformBuffer, 1, ShaderType::eVertex},
+        {1, vk::DescriptorType::eUniformBuffer, 1, ShaderType::eFragment},
     };
-    DescriptorSetLayout = VC.Device->createDescriptorSetLayoutUnique({{}, bindings});
-    PipelineLayout = VC.Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    DescriptorSetLayout = Device->createDescriptorSetLayoutUnique({{}, bindings});
+    PipelineLayout = Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
 
-    const vk::DescriptorSetAllocateInfo alloc_info{*VC.DescriptorPool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(VC.Device->allocateDescriptorSetsUnique(alloc_info).front());
+    const vk::DescriptorSetAllocateInfo alloc_info{*vc.DescriptorPool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(Device->allocateDescriptorSetsUnique(alloc_info).front());
 
     const vk::DescriptorBufferInfo view_proj_buffer_info{view_proj, 0, VK_WHOLE_SIZE};
     const vk::DescriptorBufferInfo view_proj_near_far_buffer_info{view_proj_near_far, 0, VK_WHOLE_SIZE};
@@ -277,7 +166,7 @@ GridShaderPipeline::GridShaderPipeline(const VulkanContext &vc, ::Shaders &&shad
         {*DescriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
         {*DescriptorSet, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
     };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+    Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
 Scene::Scene(const VulkanContext &vc)

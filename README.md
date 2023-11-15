@@ -28,7 +28,7 @@ $ brew link llvm --force
 
 ```shell
 $ sudo apt install llvm libc++-dev libc++abi-dev
-$ ln -s llvm-config-16 llvm-config
+$ ln -s llvm-config-17 llvm-config
 $ export PATH="$(llvm-config --bindir):$PATH"
 ```
 
@@ -50,6 +50,6 @@ $ mkdir build && cd make && cmake .. && make
 
 - [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL) + [Vulkan](https://www.vulkan.org/): Immediate-mode UI/UX.
 - [glm](https://github.com/g-truc/glm): Graphics math.
-- [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral mesh representation data structure.
+- [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral mesh data structure.
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs.
 - [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform andcamera rotation gizmos.

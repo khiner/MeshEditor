@@ -6,12 +6,22 @@
 #include "Camera.h"
 #include "Geometry/GeometryMode.h"
 #include "RenderMode.h"
-#include "Vertex.h"
+#include "Shader.h"
 #include "VulkanContext.h"
 
-#include <filesystem>
+struct GeometryInstance;
 
-namespace fs = std::filesystem;
+struct ImageResource {
+    // The `image` in the view info is overwritten.
+    void Create(const VulkanContext &, vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags flags = vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    // Dereference forwards to the image.
+    const vk::Image &operator*() const { return *Image; }
+
+    vk::UniqueImage Image;
+    vk::UniqueImageView View;
+    vk::UniqueDeviceMemory Memory;
+};
 
 enum class SelectionMode {
     None,
@@ -44,60 +54,6 @@ struct Light {
 };
 
 struct Gizmo;
-
-struct ImageResource {
-    // The `image` in the view info is overwritten.
-    void Create(const VulkanContext &, vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags flags = vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-    // Dereference forwards to the image.
-    const vk::Image &operator*() const { return *Image; }
-
-    vk::UniqueImage Image;
-    vk::UniqueImageView View;
-    vk::UniqueDeviceMemory Memory;
-};
-
-using ShaderType = vk::ShaderStageFlagBits;
-using ShaderPaths = std::unordered_map<ShaderType, fs::path>;
-using ShaderModules = std::unordered_map<ShaderType, vk::UniqueShaderModule>;
-
-struct Shaders {
-    Shaders(ShaderPaths &&paths) : Paths(std::move(paths)) {}
-    std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(const vk::UniqueDevice &); // Populates `Modules`.
-    std::vector<uint> Compile(ShaderType) const;
-
-    inline static const std::vector AllTypes{ShaderType::eVertex, ShaderType::eFragment};
-    ShaderPaths Paths; // Paths are relative to the `Shaders` directory.
-    ShaderModules Modules;
-};
-
-struct ShaderPipeline {
-    ShaderPipeline(
-        const VulkanContext &, Shaders &&,
-        vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
-        vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
-        bool test_depth = true, bool write_depth = true,
-        vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1
-    );
-    virtual ~ShaderPipeline() = default;
-
-    void Compile(const vk::UniqueRenderPass &);
-
-    const VulkanContext &VC;
-
-    Shaders Shaders;
-    vk::PolygonMode PolygonMode;
-    vk::PrimitiveTopology Topology;
-    bool TestDepth, WriteDepth;
-    vk::SampleCountFlagBits MsaaSamples;
-
-    vk::UniqueDescriptorSetLayout DescriptorSetLayout;
-    vk::UniqueDescriptorSet DescriptorSet;
-    vk::UniquePipelineLayout PipelineLayout;
-    vk::UniquePipeline Pipeline;
-};
-
-struct GeometryInstance;
 
 struct Scene {
     Scene(const VulkanContext &);

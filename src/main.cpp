@@ -62,7 +62,7 @@ static void CheckVk(VkResult err) {
 static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
-    const VkResult err = vkAcquireNextImageKHR(VC->Device.get(), wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+    const VkResult err = vkAcquireNextImageKHR(*VC->Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         SwapChainRebuild = true;
         return;
@@ -71,11 +71,11 @@ static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
 
     ImGui_ImplVulkanH_Frame *fd = &wd->Frames[wd->FrameIndex];
     {
-        CheckVk(vkWaitForFences(VC->Device.get(), 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
-        CheckVk(vkResetFences(VC->Device.get(), 1, &fd->Fence));
+        CheckVk(vkWaitForFences(*VC->Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
+        CheckVk(vkResetFences(*VC->Device, 1, &fd->Fence));
     }
     {
-        CheckVk(vkResetCommandPool(VC->Device.get(), fd->CommandPool, 0));
+        CheckVk(vkResetCommandPool(*VC->Device, fd->CommandPool, 0));
         VkCommandBufferBeginInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -182,13 +182,13 @@ int main(int, char **) {
     // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(Window);
     ImGui_ImplVulkan_InitInfo init_info = {};
-    init_info.Instance = VC->Instance.get();
+    init_info.Instance = *VC->Instance;
     init_info.PhysicalDevice = VC->PhysicalDevice;
-    init_info.Device = VC->Device.get();
+    init_info.Device = *VC->Device;
     init_info.QueueFamily = VC->QueueFamily;
     init_info.Queue = VC->Queue;
-    init_info.PipelineCache = VC->PipelineCache.get();
-    init_info.DescriptorPool = VC->DescriptorPool.get();
+    init_info.PipelineCache = *VC->PipelineCache;
+    init_info.DescriptorPool = *VC->DescriptorPool;
     init_info.Subpass = 0;
     init_info.MinImageCount = MinImageCount;
     init_info.ImageCount = wd->ImageCount;
@@ -255,7 +255,7 @@ int main(int, char **) {
             SDL_GetWindowSize(Window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), &MainWindowData, VC->QueueFamily, nullptr, width, height, MinImageCount);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &MainWindowData, VC->QueueFamily, nullptr, width, height, MinImageCount);
                 MainWindowData.FrameIndex = 0;
                 SwapChainRebuild = false;
             }
