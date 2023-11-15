@@ -7,7 +7,7 @@ layout(location = 1) in vec3 FarPos;
 
 layout(location = 0) out vec4 OutColor;
 
-layout(binding = 1) uniform ViewProjectionUBO {
+layout(binding = 1) uniform ViewProjNearFarUBO {
     mat4 View;
     mat4 Projection;
     float Near;

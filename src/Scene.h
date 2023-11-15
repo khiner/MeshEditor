@@ -121,7 +121,9 @@ private:
         Line,
         Grid,
     };
-    std::unordered_map<ShaderPipelineType, std::unique_ptr<ShaderPipeline>> ShaderPipelines;
+    using SPT = ShaderPipelineType;
+
+    std::unordered_map<SPT, std::unique_ptr<ShaderPipeline>> ShaderPipelines;
 
     std::unique_ptr<Gizmo> Gizmo;
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;

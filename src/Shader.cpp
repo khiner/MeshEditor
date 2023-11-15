@@ -25,6 +25,7 @@ std::vector<uint> Shaders::Compile(ShaderType type) const {
 
     static const shaderc::Compiler compiler;
     static shaderc::CompileOptions compile_opts;
+    compile_opts.SetGenerateDebugInfo(); // To get resource variable names for linking with their binding.
     compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
 
     shaderc_shader_kind kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader : shaderc_glsl_fragment_shader;
@@ -53,7 +54,8 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(const vk::Uni
             // Only using a single set for now. Otherwise, we'd group bindings by set.
             // uint set = comp.get_decoration(resource.id, spv::DecorationDescriptorSet);
             uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-            Bindings.push_back(vk::DescriptorSetLayoutBinding(binding, vk::DescriptorType::eUniformBuffer, 1, type));
+            Bindings.emplace_back(binding, vk::DescriptorType::eUniformBuffer, 1, type);
+            BindingForResourceName[resource.name] = binding;
         }
 
         stages.push_back({{}, type, *Modules.at(type), "main"});
@@ -102,7 +104,7 @@ ShaderPipeline::ShaderPipeline(
     VertexInputState(CreateVertex3DInputState()),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
-    Shaders.CompileAll(Device); // todo this populates descriptor sets used in implementing ctors. Refactor to do a single compile for all shaders during construction.
+    Shaders.CompileAll(Device); // todo needed populates descriptor sets. This is done redundantly for all shaders in `Compile` at app startup.
     DescriptorSetLayout = Device->createDescriptorSetLayoutUnique({{}, Shaders.Bindings});
     PipelineLayout = Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
     const vk::DescriptorSetAllocateInfo alloc_info{*descriptor_pool, 1, &(*DescriptorSetLayout)};
@@ -110,12 +112,12 @@ ShaderPipeline::ShaderPipeline(
 }
 
 void ShaderPipeline::Compile(const vk::UniqueRenderPass &render_pass) {
+    const auto shader_stages = Shaders.CompileAll(Device);
+
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     static const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &ColorBlendAttachment};
     static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
-
-    const auto shader_stages = Shaders.CompileAll(Device);
     auto pipeline_result = Device->createGraphicsPipelineUnique(
         {},
         {

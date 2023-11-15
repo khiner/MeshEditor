@@ -120,15 +120,15 @@ Scene::Scene(const VulkanContext &vc)
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
-    ShaderPipelines[ShaderPipelineType::Fill] = std::make_unique<ShaderPipeline>(
+    ShaderPipelines[SPT::Fill] = std::make_unique<ShaderPipeline>(
         VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, MsaaSamples
     );
-    ShaderPipelines[ShaderPipelineType::Line] = std::make_unique<ShaderPipeline>(
+    ShaderPipelines[SPT::Line] = std::make_unique<ShaderPipeline>(
         VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}},
         vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, MsaaSamples
     );
-    ShaderPipelines[ShaderPipelineType::Grid] = std::make_unique<ShaderPipeline>(
+    ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
         VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, MsaaSamples
     );
@@ -139,15 +139,16 @@ Scene::Scene(const VulkanContext &vc)
         light_buffer_info{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE},
         view_proj_buffer_info{*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE},
         view_proj_near_far_buffer_info{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    const auto &fill_ds = ShaderPipelines[ShaderPipelineType::Fill]->DescriptorSet;
-    const auto &line_ds = ShaderPipelines[ShaderPipelineType::Line]->DescriptorSet;
-    const auto &grid_ds = ShaderPipelines[ShaderPipelineType::Grid]->DescriptorSet;
+
+    const auto &fill_sp = ShaderPipelines.at(SPT::Fill);
+    const auto &line_sp = ShaderPipelines.at(SPT::Line);
+    const auto &grid_sp = ShaderPipelines.at(SPT::Grid);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*fill_ds, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
-        {*fill_ds, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
-        {*line_ds, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
-        {*grid_ds, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
-        {*grid_ds, 1, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
+        {*fill_sp->DescriptorSet, fill_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+        {*fill_sp->DescriptorSet, fill_sp->GetBinding("LightUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
+        {*line_sp->DescriptorSet, line_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
+        {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjectionUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
+        {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjNearFarUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
     CompileShaders();
@@ -220,18 +221,18 @@ void Scene::RecordCommandBuffer() {
 
     const auto &geometry_instance = *GeometryInstances[0];
     if (Mode == RenderMode::Faces) {
-        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*ShaderPipelines.at(SPT::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
     } else if (Mode == RenderMode::Edges) {
-        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Line), command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
+        RenderGeometryBuffers(*ShaderPipelines.at(SPT::Line), command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::FacesAndEdges) {
-        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
-        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Line), command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
+        RenderGeometryBuffers(*ShaderPipelines.at(SPT::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces));
+        RenderGeometryBuffers(*ShaderPipelines.at(SPT::Line), command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::Smooth) {
-        RenderGeometryBuffers(*ShaderPipelines.at(ShaderPipelineType::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
+        RenderGeometryBuffers(*ShaderPipelines.at(SPT::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
     }
 
     if (ShowGrid) {
-        const auto &grid_pipeline = ShaderPipelines.at(ShaderPipelineType::Grid);
+        const auto &grid_pipeline = ShaderPipelines.at(SPT::Grid);
         command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *grid_pipeline->Pipeline);
         command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grid_pipeline->PipelineLayout, 0, 1, &*grid_pipeline->DescriptorSet, 0, nullptr);
         command_buffer->draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
