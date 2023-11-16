@@ -133,15 +133,15 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
 
     ShaderPipelines[SPT::Fill] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Line] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}},
-        vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, MsaaSamples
+        vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
     );
 }
 
@@ -209,7 +209,7 @@ SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc)
 
     ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, false, false, MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(false), std::nullopt, MsaaSamples
     );
 }
 

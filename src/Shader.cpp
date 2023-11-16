@@ -63,7 +63,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
     return stages;
 }
 
-static vk::PipelineVertexInputStateCreateInfo CreateVertex3DInputState() {
+static vk::PipelineVertexInputStateCreateInfo GenerateVertex3DInputState() {
     static const vk::VertexInputBindingDescription vertex_binding{0, sizeof(Vertex3D), vk::VertexInputRate::eVertex};
     static const std::vector<vk::VertexInputAttributeDescription> vertex_attrs{
         {0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex3D, Position)},
@@ -76,32 +76,14 @@ static vk::PipelineVertexInputStateCreateInfo CreateVertex3DInputState() {
 ShaderPipeline::ShaderPipeline(
     vk::Device device, vk::DescriptorPool descriptor_pool, ::Shaders &&shaders,
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
-    bool test_depth, bool write_depth, vk::SampleCountFlagBits msaa_samples
+    vk::PipelineColorBlendAttachmentState color_blend_attachment,
+    std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
+    vk::SampleCountFlagBits msaa_samples
 ) : Device(device), Shaders(std::move(shaders)),
     MultisampleState({{}, msaa_samples}),
-    ColorBlendAttachment{
-        true,
-        vk::BlendFactor::eSrcAlpha, // srcCol
-        vk::BlendFactor::eOneMinusSrcAlpha, // dstCol
-        vk::BlendOp::eAdd, // colBlend
-        vk::BlendFactor::eOne, // srcAlpha
-        vk::BlendFactor::eOne, // dstAlpha
-        vk::BlendOp::eAdd, // alphaBlend
-        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
-    },
-    DepthStencilState({
-        {}, // flags
-        test_depth, // depthTestEnable
-        write_depth, // depthWriteEnable
-        vk::CompareOp::eLess, // depthCompareOp
-        VK_FALSE, // depthBoundsTestEnable
-        VK_FALSE, // stencilTestEnable
-        {}, // front (stencil state for front faces)
-        {}, // back (stencil state for back faces)
-        0.f, // minDepthBounds
-        1.f // maxDepthBounds
-    }),
-    VertexInputState(CreateVertex3DInputState()),
+    ColorBlendAttachment(std::move(color_blend_attachment)),
+    DepthStencilState(std::move(depth_stencil_state)),
+    VertexInputState(GenerateVertex3DInputState()),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
     Shaders.CompileAll(Device); // todo needed populates descriptor sets. This is done redundantly for all shaders in `Compile` at app startup.
@@ -115,9 +97,10 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     const auto shader_stages = Shaders.CompileAll(Device);
 
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
-    static const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &ColorBlendAttachment};
     static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
+
+    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &ColorBlendAttachment};
     auto pipeline_result = Device.createGraphicsPipelineUnique(
         {},
         {
@@ -129,7 +112,7 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
             &viewport_state,
             &RasterizationState,
             &MultisampleState,
-            &DepthStencilState,
+            DepthStencilState.has_value() ? &*DepthStencilState : nullptr,
             &color_blending,
             &dynamic_state,
             *PipelineLayout,
