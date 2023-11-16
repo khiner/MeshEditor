@@ -6,23 +6,22 @@
 
 struct VulkanContext;
 struct Ray;
+// todo line mode buffers can share vertex buffers with smooth mode.
+struct GeometryBuffers {
+    // Redundantly store the vertices and indices in the CPU for easy access.
+    std::vector<Vertex3D> Vertices;
+    std::vector<uint> Indices;
+    VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
+    VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
+};
 
 struct GeometryInstance {
-    // todo line mode buffers can share vertex buffers with smooth mode.
-    struct Buffers {
-        // Redundantly store the vertices and indices in the CPU for easy access.
-        std::vector<Vertex3D> Vertices;
-        std::vector<uint> Indices;
-        VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
-        VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
-    };
-
     GeometryInstance(const VulkanContext &, Geometry &&);
 
-    const Buffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
+    const GeometryBuffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
 
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
-    // If `closest_intersect_point_out` is not null, sets it to the intersection point. 
+    // If `closest_intersect_point_out` is not null, sets it to the intersection point.
     Geometry::FH FindFirstIntersectingFace(const Ray &ray_world, glm::vec3 *closest_intersect_point_out = nullptr) const;
     Geometry::FH FindFirstIntersectingFaceLocal(const Ray &ray_local, glm::vec3 *closest_intersect_point_out = nullptr) const; // Local space equivalent.
 
@@ -73,7 +72,7 @@ struct GeometryInstance {
 
 private:
     Geometry G;
-    std::unordered_map<GeometryMode, Buffers> BuffersForMode;
+    std::unordered_map<GeometryMode, GeometryBuffers> BuffersForMode;
 
     Geometry::FH HighlightedFace{};
     Geometry::VH HighlightedVertex{};
