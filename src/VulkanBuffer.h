@@ -3,7 +3,7 @@
 #include <vulkan/vulkan.hpp>
 
 struct VulkanBuffer {
-    vk::BufferUsageFlags Usage{};
+    vk::BufferUsageFlags Usage;
     vk::DeviceSize Size{0};
 
     // GPU buffer.

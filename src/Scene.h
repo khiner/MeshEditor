@@ -93,9 +93,9 @@ struct MainRenderPipeline : RenderPipeline {
     // These are then reused by future renders that don't change the extent.
     void SetExtent(vk::Extent2D);
 
-    void Begin(const vk::UniqueCommandBuffer &, const vk::ClearColorValue &background_color) const;
-    void RenderGrid(const vk::UniqueCommandBuffer &) const;
-    void RenderGeometryBuffers(SPT, const vk::UniqueCommandBuffer &, const GeometryInstance &, GeometryMode) const;
+    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
+    void RenderGrid(vk::CommandBuffer) const;
+    void RenderGeometryBuffers(SPT, vk::CommandBuffer, const GeometryInstance &, GeometryMode) const;
 
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;

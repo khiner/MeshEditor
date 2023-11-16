@@ -22,7 +22,7 @@ struct Shaders {
     Shaders &operator=(Shaders &&);
 
     // Populates `Modules`, `Resources`, and `Bindings`.
-    std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(const vk::UniqueDevice &);
+    std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(vk::Device);
     std::vector<uint> Compile(ShaderType) const;
     inline uint GetBinding(const std::string &name) const { return BindingForResourceName.at(name); }
 
@@ -35,7 +35,7 @@ struct Shaders {
 
 struct ShaderPipeline {
     ShaderPipeline(
-        const vk::UniqueDevice &, const vk::UniqueDescriptorPool &, Shaders &&,
+        vk::Device, vk::DescriptorPool, Shaders &&,
         vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
         vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
         bool test_depth = true, bool write_depth = true,
@@ -43,10 +43,10 @@ struct ShaderPipeline {
     );
     ~ShaderPipeline() = default;
 
-    void Compile(const vk::UniqueRenderPass &); // Recompile all shaders and update `Pipeline`.
+    void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
     inline uint GetBinding(const std::string &name) const { return Shaders.GetBinding(name); }
 
-    const vk::UniqueDevice &Device;
+    vk::Device Device;
 
     Shaders Shaders;
 

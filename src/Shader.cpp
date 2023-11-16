@@ -40,7 +40,7 @@ std::vector<uint> Shaders::Compile(ShaderType type) const {
     return {spirv.cbegin(), spirv.cend()};
 }
 
-std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(const vk::UniqueDevice &device) {
+std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
     stages.reserve(Paths.size());
     Bindings.clear();
@@ -48,7 +48,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(const vk::Uni
         const auto &spirv = Compile(type);
         spirv_cross::Compiler comp(spirv);
         Resources[type] = std::make_unique<spirv_cross::ShaderResources>(comp.get_shader_resources());
-        Modules[type] = device->createShaderModuleUnique({{}, spirv});
+        Modules[type] = device.createShaderModuleUnique({{}, spirv});
 
         for (const auto &resource : Resources.at(type)->uniform_buffers) {
             // Only using a single set for now. Otherwise, we'd group bindings by set.
@@ -74,7 +74,7 @@ static vk::PipelineVertexInputStateCreateInfo CreateVertex3DInputState() {
 }
 
 ShaderPipeline::ShaderPipeline(
-    const vk::UniqueDevice &device, const vk::UniqueDescriptorPool &descriptor_pool, ::Shaders &&shaders,
+    vk::Device device, vk::DescriptorPool descriptor_pool, ::Shaders &&shaders,
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
     bool test_depth, bool write_depth, vk::SampleCountFlagBits msaa_samples
 ) : Device(device), Shaders(std::move(shaders)),
@@ -105,20 +105,20 @@ ShaderPipeline::ShaderPipeline(
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
     Shaders.CompileAll(Device); // todo needed populates descriptor sets. This is done redundantly for all shaders in `Compile` at app startup.
-    DescriptorSetLayout = Device->createDescriptorSetLayoutUnique({{}, Shaders.Bindings});
-    PipelineLayout = Device->createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
-    const vk::DescriptorSetAllocateInfo alloc_info{*descriptor_pool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(Device->allocateDescriptorSetsUnique(alloc_info).front());
+    DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.Bindings});
+    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, 1, &(*DescriptorSetLayout)};
+    DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());
 }
 
-void ShaderPipeline::Compile(const vk::UniqueRenderPass &render_pass) {
+void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     const auto shader_stages = Shaders.CompileAll(Device);
 
     static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     static const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &ColorBlendAttachment};
     static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
-    auto pipeline_result = Device->createGraphicsPipelineUnique(
+    auto pipeline_result = Device.createGraphicsPipelineUnique(
         {},
         {
             {},
@@ -133,7 +133,7 @@ void ShaderPipeline::Compile(const vk::UniqueRenderPass &render_pass) {
             &color_blending,
             &dynamic_state,
             *PipelineLayout,
-            *render_pass,
+            render_pass,
         }
     );
     if (pipeline_result.result != vk::Result::eSuccess) {

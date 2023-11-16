@@ -101,7 +101,7 @@ RenderPipeline::RenderPipeline(const VulkanContext &vc) : VC(vc) {}
 RenderPipeline::~RenderPipeline() = default;
 
 void RenderPipeline::CompileShaders() {
-    for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(RenderPass);
+    for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
 MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
@@ -120,19 +120,19 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc) : RenderPipeline
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Fill] = std::make_unique<ShaderPipeline>(
-        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, true, true, MsaaSamples
     );
     ShaderPipelines[SPT::Line] = std::make_unique<ShaderPipeline>(
-        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}},
         vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, true, true, MsaaSamples
     );
     ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
-        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, MsaaSamples
     );
     ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
-        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, false, false, MsaaSamples
     );
 }
@@ -158,15 +158,15 @@ void MainRenderPipeline::UpdateDescriptors(
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
-void MainRenderPipeline::RenderGeometryBuffers(SPT spt, const vk::UniqueCommandBuffer &command_buffer, const GeometryInstance &geometry_instance, GeometryMode mode) const {
+void MainRenderPipeline::RenderGeometryBuffers(SPT spt, vk::CommandBuffer command_buffer, const GeometryInstance &geometry_instance, GeometryMode mode) const {
     const auto &buffers = geometry_instance.GetBuffers(mode);
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
-    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
-    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
     static const vk::DeviceSize vertex_buffer_offsets[] = {0};
-    command_buffer->bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
-    command_buffer->bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer->drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+    command_buffer.bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
+    command_buffer.bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    command_buffer.drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
 }
 
 void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
@@ -192,17 +192,17 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void MainRenderPipeline::Begin(const vk::UniqueCommandBuffer &command_buffer, const vk::ClearColorValue &background_color) const {
+void MainRenderPipeline::Begin(vk::CommandBuffer command_buffer, const vk::ClearColorValue &background_color) const {
     // Clear values for the depth, color, and (placeholder) resolve attachments.
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {background_color}, {}};
-    command_buffer->beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-void MainRenderPipeline::RenderGrid(const vk::UniqueCommandBuffer &command_buffer) const {
+void MainRenderPipeline::RenderGrid(vk::CommandBuffer command_buffer) const {
     const auto &grid_pipeline = ShaderPipelines.at(SPT::Grid);
-    command_buffer->bindPipeline(vk::PipelineBindPoint::eGraphics, *grid_pipeline->Pipeline);
-    command_buffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grid_pipeline->PipelineLayout, 0, 1, &*grid_pipeline->DescriptorSet, 0, nullptr);
-    command_buffer->draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *grid_pipeline->Pipeline);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grid_pipeline->PipelineLayout, 0, 1, &*grid_pipeline->DescriptorSet, 0, nullptr);
+    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
 }
 
 Scene::Scene(const VulkanContext &vc)
@@ -231,10 +231,10 @@ void Scene::SetExtent(vk::Extent2D extent) {
 }
 
 void Scene::RecordCommandBuffer() {
-    const auto &command_buffer = VC.CommandBuffers[0];
-    command_buffer->begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    command_buffer->setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
-    command_buffer->setScissor(0, vk::Rect2D{{0, 0}, Extent});
+    const auto command_buffer = *VC.CommandBuffers[0];
+    command_buffer.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
+    command_buffer.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
+    command_buffer.setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
     const std::vector<vk::ImageMemoryBarrier> image_memory_barriers{{
         {},
@@ -246,7 +246,7 @@ void Scene::RecordCommandBuffer() {
         *MainRenderPipeline.ResolveImage,
         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }};
-    command_buffer->pipelineBarrier(
+    command_buffer.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
         {}, // No dependency flags.
@@ -273,8 +273,8 @@ void Scene::RecordCommandBuffer() {
 
     if (ShowGrid) MainRenderPipeline.RenderGrid(command_buffer);
 
-    command_buffer->endRenderPass();
-    command_buffer->end();
+    command_buffer.endRenderPass();
+    command_buffer.end();
 }
 
 void Scene::SubmitCommandBuffer(vk::Fence fence) const {
