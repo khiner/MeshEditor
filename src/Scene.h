@@ -120,6 +120,7 @@ private:
         Fill,
         Line,
         Grid,
+        Silhouette,
     };
     using SPT = ShaderPipelineType;
 

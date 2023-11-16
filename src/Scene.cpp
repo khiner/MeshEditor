@@ -132,6 +132,10 @@ Scene::Scene(const VulkanContext &vc)
         VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, MsaaSamples
     );
+    ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
+        VC.Device, VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, false, false, MsaaSamples
+    );
 
     // Write descriptor sets.
     const vk::DescriptorBufferInfo
@@ -143,12 +147,14 @@ Scene::Scene(const VulkanContext &vc)
     const auto &fill_sp = ShaderPipelines.at(SPT::Fill);
     const auto &line_sp = ShaderPipelines.at(SPT::Line);
     const auto &grid_sp = ShaderPipelines.at(SPT::Grid);
+    const auto &silhouette_sp = ShaderPipelines.at(SPT::Silhouette);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
         {*fill_sp->DescriptorSet, fill_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
         {*fill_sp->DescriptorSet, fill_sp->GetBinding("LightUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light_buffer_info},
         {*line_sp->DescriptorSet, line_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjectionUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_buffer_info},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjNearFarUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far_buffer_info},
+        {*silhouette_sp->DescriptorSet, fill_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform_buffer_info},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
     CompileShaders();
@@ -229,6 +235,8 @@ void Scene::RecordCommandBuffer() {
         RenderGeometryBuffers(*ShaderPipelines.at(SPT::Line), command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges));
     } else if (Mode == RenderMode::Smooth) {
         RenderGeometryBuffers(*ShaderPipelines.at(SPT::Fill), command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
+    } else if (Mode == RenderMode::Silhouette) {
+        RenderGeometryBuffers(*ShaderPipelines.at(SPT::Silhouette), command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices));
     }
 
     if (ShowGrid) {
@@ -376,6 +384,8 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
             SameLine();
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
+            // New line.
+            render_mode_changed |= RadioButton("Silhouette", &render_mode, int(RenderMode::Silhouette));
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
                 UpdateGeometryEdgeColors(); // Different modes use different edge colors for better visibility.

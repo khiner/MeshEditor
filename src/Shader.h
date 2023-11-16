@@ -49,6 +49,7 @@ struct ShaderPipeline {
     const vk::UniqueDevice &Device;
 
     Shaders Shaders;
+
     vk::PipelineMultisampleStateCreateInfo MultisampleState;
     vk::PipelineColorBlendAttachmentState ColorBlendAttachment;
     vk::PipelineDepthStencilStateCreateInfo DepthStencilState;
