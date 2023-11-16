@@ -68,7 +68,14 @@ struct RenderPipeline {
     RenderPipeline(const VulkanContext &);
     virtual ~RenderPipeline();
 
+    // Updates images and framebuffer based on the new extent.
+    // These resources are reused by future renders that don't change the extent.
+    virtual void SetExtent(vk::Extent2D, vk::ImageView resolve_image_view) = 0;
+    virtual void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const = 0;
+
     void CompileShaders();
+
+    void RenderGeometryBuffers(vk::CommandBuffer, const GeometryInstance &, SPT, GeometryMode) const;
 
     const VulkanContext &VC;
 
@@ -81,6 +88,9 @@ protected:
 struct MainRenderPipeline : RenderPipeline {
     MainRenderPipeline(const VulkanContext &);
 
+    void SetExtent(vk::Extent2D, vk::ImageView resolve_image_view) override;
+    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const override;
+
     // All of the UBOs used in the pipeline.
     void UpdateDescriptors(
         vk::DescriptorBufferInfo transform,
@@ -89,23 +99,31 @@ struct MainRenderPipeline : RenderPipeline {
         vk::DescriptorBufferInfo view_proj_near_far
     ) const;
 
-    // Recreates transform, render images (see below) and framebuffer based on the new extent.
-    // These are then reused by future renders that don't change the extent.
-    void SetExtent(vk::Extent2D);
-
-    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
     void RenderGrid(vk::CommandBuffer) const;
-    void RenderGeometryBuffers(SPT, vk::CommandBuffer, const GeometryInstance &, GeometryMode) const;
 
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
-    // We use three images in the render pass:
-    // 1) Perform depth testing.
-    // 2) Render into a multisampled offscreen image.
-    // 3) Resolve into a single-sampled resolve image.
-    // All images are referenced by the framebuffer and thus must be kept in memory.
-    ImageResource DepthImage, OffscreenImage, ResolveImage;
+    // Perform depth testing and render into a multisampled offscreen image.
+    ImageResource DepthImage, OffscreenImage;
+};
+
+struct SilhouetteRenderPipeline : RenderPipeline {
+    SilhouetteRenderPipeline(const VulkanContext &);
+
+    void SetExtent(vk::Extent2D, vk::ImageView resolve_image_view) override;
+    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const override;
+
+    // This pipeline only uses the transform UBO.
+    void UpdateDescriptors(vk::DescriptorBufferInfo transform) const;
+
+    void RenderGrid(vk::CommandBuffer) const;
+
+    vk::SampleCountFlagBits MsaaSamples;
+    vk::Extent2D Extent;
+
+    // Simply render to a multisampled offscreen image, without a depth buffer.
+    ImageResource OffscreenImage;
 };
 
 struct Scene {
@@ -114,7 +132,7 @@ struct Scene {
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainRenderPipeline.MsaaSamples; }
-    vk::ImageView GetResolveImageView() const { return MainRenderPipeline.ResolveImage.View.get(); }
+    vk::ImageView GetResolveImageView() const { return ResolveImage.View.get(); }
 
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
@@ -154,6 +172,11 @@ private:
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
 
     MainRenderPipeline MainRenderPipeline;
+    SilhouetteRenderPipeline SilhouetteRenderPipeline;
+
+    std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
+
+    ImageResource ResolveImage;
 
     std::unique_ptr<Gizmo> Gizmo;
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;

@@ -104,7 +104,19 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
+void RenderPipeline::RenderGeometryBuffers(vk::CommandBuffer command_buffer, const GeometryInstance &geometry_instance, SPT spt, GeometryMode mode) const {
+    const auto &buffers = geometry_instance.GetBuffers(mode);
+    const auto &shader_pipeline = *ShaderPipelines.at(spt);
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
+    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
+    command_buffer.bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
+    command_buffer.bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    command_buffer.drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+}
+
+MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
+    : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
         {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -113,7 +125,7 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc) : RenderPipeline
         // Single-sampled resolve.
         {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal}; // Reference to the depth attachment.
+    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
@@ -131,10 +143,6 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc) : RenderPipeline
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, true, true, MsaaSamples
     );
-    ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, false, false, MsaaSamples
-    );
 }
 
 void MainRenderPipeline::UpdateDescriptors(
@@ -146,30 +154,17 @@ void MainRenderPipeline::UpdateDescriptors(
     const auto &fill_sp = ShaderPipelines.at(SPT::Fill);
     const auto &line_sp = ShaderPipelines.at(SPT::Line);
     const auto &grid_sp = ShaderPipelines.at(SPT::Grid);
-    const auto &silhouette_sp = ShaderPipelines.at(SPT::Silhouette);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
         {*fill_sp->DescriptorSet, fill_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
         {*fill_sp->DescriptorSet, fill_sp->GetBinding("LightUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light},
         {*line_sp->DescriptorSet, line_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjectionUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjNearFarUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far},
-        {*silhouette_sp->DescriptorSet, fill_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
-void MainRenderPipeline::RenderGeometryBuffers(SPT spt, vk::CommandBuffer command_buffer, const GeometryInstance &geometry_instance, GeometryMode mode) const {
-    const auto &buffers = geometry_instance.GetBuffers(mode);
-    const auto &shader_pipeline = *ShaderPipelines.at(spt);
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
-    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
-    command_buffer.bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
-    command_buffer.bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer.drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
-}
-
-void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
+void MainRenderPipeline::SetExtent(vk::Extent2D extent, vk::ImageView resolve_image_view) {
     Extent = extent;
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -182,19 +177,13 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
         {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
-    ResolveImage.Create(
-        VC,
-        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    );
 
-    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
+    const std::array image_views{*DepthImage.View, *OffscreenImage.View, resolve_image_view};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
 void MainRenderPipeline::Begin(vk::CommandBuffer command_buffer, const vk::ClearColorValue &background_color) const {
-    // Clear values for the depth, color, and (placeholder) resolve attachments.
-    const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {background_color}, {}};
+    const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {background_color}};
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
@@ -205,8 +194,52 @@ void MainRenderPipeline::RenderGrid(vk::CommandBuffer command_buffer) const {
     command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
 }
 
+SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc)
+    : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
+    const std::vector<vk::AttachmentDescription> attachments{
+        // Multisampled offscreen image.
+        {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Single-sampled resolve.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+    };
+    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, nullptr};
+    RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
+
+    ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, false, false, MsaaSamples
+    );
+}
+
+void SilhouetteRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo transform) const {
+    const auto &silhouette_sp = ShaderPipelines.at(SPT::Silhouette);
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*silhouette_sp->DescriptorSet, silhouette_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
+    };
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent, vk::ImageView resolve_image_view) {
+    Extent = extent;
+    OffscreenImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+
+    const std::array image_views{*OffscreenImage.View, resolve_image_view};
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+}
+
+void SilhouetteRenderPipeline::Begin(vk::CommandBuffer command_buffer, const vk::ClearColorValue &background_color) const {
+    const std::vector<vk::ClearValue> clear_values{{background_color}};
+    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+}
+
 Scene::Scene(const VulkanContext &vc)
-    : VC(vc), MainRenderPipeline(VC) {
+    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC) {
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
     UpdateTransform();
@@ -217,6 +250,7 @@ Scene::Scene(const VulkanContext &vc)
         {*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE},
         {*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}
     );
+    SilhouetteRenderPipeline.UpdateDescriptors({*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE});
 
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
@@ -227,7 +261,13 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     UpdateTransform(); // Transform depends on the aspect ratio.
-    MainRenderPipeline.SetExtent(extent);
+    ResolveImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+    MainRenderPipeline.SetExtent(extent, *ResolveImage.View);
+    SilhouetteRenderPipeline.SetExtent(extent, *ResolveImage.View);
 }
 
 void Scene::RecordCommandBuffer() {
@@ -243,7 +283,7 @@ void Scene::RecordCommandBuffer() {
         vk::ImageLayout::eColorAttachmentOptimal,
         VK_QUEUE_FAMILY_IGNORED,
         VK_QUEUE_FAMILY_IGNORED,
-        *MainRenderPipeline.ResolveImage,
+        *ResolveImage,
         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }};
     command_buffer.pipelineBarrier(
@@ -255,20 +295,25 @@ void Scene::RecordCommandBuffer() {
         image_memory_barriers
     );
 
-    MainRenderPipeline.Begin(command_buffer, BackgroundColor);
-
     const auto &geometry_instance = *GeometryInstances[0];
+    if (Mode == RenderMode::Silhouette) {
+        SilhouetteRenderPipeline.Begin(command_buffer, BackgroundColor);
+        SilhouetteRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Silhouette, GeometryMode::Vertices);
+        command_buffer.endRenderPass();
+        command_buffer.end();
+        return;
+    }
+
+    MainRenderPipeline.Begin(command_buffer, BackgroundColor);
     if (Mode == RenderMode::Faces) {
-        MainRenderPipeline.RenderGeometryBuffers(SPT::Fill, command_buffer, geometry_instance, GeometryMode::Faces);
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Faces);
     } else if (Mode == RenderMode::Edges) {
-        MainRenderPipeline.RenderGeometryBuffers(SPT::Line, command_buffer, geometry_instance, GeometryMode::Edges);
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Line, GeometryMode::Edges);
     } else if (Mode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderGeometryBuffers(SPT::Fill, command_buffer, geometry_instance, GeometryMode::Faces);
-        MainRenderPipeline.RenderGeometryBuffers(SPT::Line, command_buffer, geometry_instance, GeometryMode::Edges);
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Faces);
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Line, GeometryMode::Edges);
     } else if (Mode == RenderMode::Smooth) {
-        MainRenderPipeline.RenderGeometryBuffers(SPT::Fill, command_buffer, geometry_instance, GeometryMode::Vertices);
-    } else if (Mode == RenderMode::Silhouette) {
-        MainRenderPipeline.RenderGeometryBuffers(SPT::Silhouette, command_buffer, geometry_instance, GeometryMode::Vertices);
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Vertices);
     }
 
     if (ShowGrid) MainRenderPipeline.RenderGrid(command_buffer);
@@ -285,6 +330,7 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
 
 void Scene::CompileShaders() {
     MainRenderPipeline.CompileShaders();
+    SilhouetteRenderPipeline.CompileShaders();
 }
 
 void Scene::UpdateGeometryEdgeColors() {
