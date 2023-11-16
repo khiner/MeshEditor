@@ -22,6 +22,7 @@ static WindowsState Windows;
 static std::unique_ptr<VulkanContext> VC;
 static std::unique_ptr<Scene> MainScene;
 static vk::DescriptorSet MainSceneDescriptorSet;
+static vk::UniqueSampler MainSceneTextureSampler;
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
@@ -163,6 +164,7 @@ int main(int, char **) {
     SDL_GetWindowSize(Window, &w, &h);
     ImGui_ImplVulkanH_Window *wd = &MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
+    MainSceneTextureSampler = VC->Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
 
     // Setup ImGui context.
     IMGUI_CHECKVERSION();
@@ -288,7 +290,7 @@ int main(int, char **) {
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
             if (MainScene->Render()) {
                 ImGui_ImplVulkan_RemoveTexture(MainSceneDescriptorSet);
-                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(MainScene->GetTextureSampler(), MainScene->GetResolveImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(*MainSceneTextureSampler, MainScene->GetResolveImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             }
 
             const auto &cursor = GetCursorPos();
@@ -322,6 +324,7 @@ int main(int, char **) {
     DestroyContext();
 
     CleanupVulkanWindow();
+    MainSceneTextureSampler.reset();
     MainScene.reset();
     VC.reset();
 

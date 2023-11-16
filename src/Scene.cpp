@@ -218,7 +218,6 @@ Scene::Scene(const VulkanContext &vc)
         {*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}
     );
 
-    TextureSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 }
