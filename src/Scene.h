@@ -68,7 +68,7 @@ enum class ShaderPipelineType {
     Grid,
     Silhouette,
     EdgeDetection,
-    Combine,
+    Texture,
 };
 using SPT = ShaderPipelineType;
 
@@ -106,6 +106,7 @@ struct MainRenderPipeline : RenderPipeline {
         vk::DescriptorBufferInfo view_proj,
         vk::DescriptorBufferInfo view_proj_near_far
     ) const;
+    void UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_edge_image) const;
 
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
@@ -141,27 +142,13 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
     ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
 };
 
-struct FinalRenderPipeline : RenderPipeline {
-    FinalRenderPipeline(const VulkanContext &);
-
-    void SetExtent(vk::Extent2D) override;
-    void Begin(vk::CommandBuffer) const;
-
-    void UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_edge_image) const;
-
-    vk::Extent2D Extent;
-
-    // A single-sampled image resulting from combining the main & silhouette images.
-    ImageResource OffscreenImage;
-};
-
 struct Scene {
     Scene(const VulkanContext &);
     ~Scene();
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainRenderPipeline.MsaaSamples; }
-    vk::ImageView GetResolveImageView() const { return *FinalRenderPipeline.OffscreenImage.View; }
+    vk::ImageView GetResolveImageView() const { return *MainRenderPipeline.ResolveImage.View; }
 
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
@@ -201,12 +188,11 @@ private:
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
     VulkanBuffer SilhouetteControlsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteControls)};
 
-    vk::UniqueSampler MainSceneImageSampler, SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
+    vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
     MainRenderPipeline MainRenderPipeline;
     SilhouetteRenderPipeline SilhouetteRenderPipeline;
     EdgeDetectionRenderPipeline EdgeDetectionRenderPipeline;
-    FinalRenderPipeline FinalRenderPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
     std::unique_ptr<Gizmo> Gizmo;

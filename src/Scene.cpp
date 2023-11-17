@@ -145,6 +145,10 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
     );
+    ShaderPipelines[SPT::Texture] = std::make_unique<ShaderPipeline>(
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Texture.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(false, false), MsaaSamples
+    );
 }
 
 void MainRenderPipeline::UpdateDescriptors(
@@ -162,6 +166,14 @@ void MainRenderPipeline::UpdateDescriptors(
         {*line_sp->DescriptorSet, line_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjectionUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjNearFarUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far},
+    };
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+void MainRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_edge_image) const {
+    const auto &sp = ShaderPipelines.at(SPT::Texture);
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*sp->DescriptorSet, sp->GetBinding("Texture"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_edge_image},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -281,49 +293,8 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer command_buffer) const 
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
-    const std::vector<vk::AttachmentDescription> attachments{
-        // Single-sampled offscreen image.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-    };
-    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
-    RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
-
-    ShaderPipelines[SPT::Combine] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "CombineTextures.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
-    );
-}
-
-void FinalRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_edge_image) const {
-    const auto &sp = ShaderPipelines.at(SPT::Combine);
-    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("Tex1"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &main_scene_image},
-        {*sp->DescriptorSet, sp->GetBinding("Tex2"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_edge_image},
-    };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
-}
-
-void FinalRenderPipeline::SetExtent(vk::Extent2D extent) {
-    Extent = extent;
-    OffscreenImage.Create(
-        VC,
-        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    );
-
-    const std::array image_views{*OffscreenImage.View};
-    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
-}
-
-void FinalRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
-    static const std::vector<vk::ClearValue> clear_values{{transparent}};
-    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
-}
-
 Scene::Scene(const VulkanContext &vc)
-    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC), FinalRenderPipeline(VC) {
+    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
     UpdateTransform();
@@ -349,8 +320,6 @@ void Scene::SetExtent(vk::Extent2D extent) {
     UpdateTransform(); // Transform depends on the aspect ratio.
     MainRenderPipeline.SetExtent(extent);
     SilhouetteRenderPipeline.SetExtent(extent);
-
-    MainSceneImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
     SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
         {},
         vk::Filter::eLinear,
@@ -366,12 +335,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
     EdgeDetectionRenderPipeline.UpdateImageDescriptors({*SilhouetteFillImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal});
     EdgeDetectionRenderPipeline.SetExtent(extent);
     SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
-
-    FinalRenderPipeline.UpdateImageDescriptors(
-        {*MainSceneImageSampler, *MainRenderPipeline.ResolveImage.View, vk::ImageLayout::eShaderReadOnlyOptimal},
-        {*SilhouetteEdgeImageSampler, *EdgeDetectionRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}
-    );
-    FinalRenderPipeline.SetExtent(extent);
+    MainRenderPipeline.UpdateImageDescriptors({*SilhouetteEdgeImageSampler, *EdgeDetectionRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal});
 }
 
 void Scene::RecordCommandBuffer() {
@@ -400,6 +364,15 @@ void Scene::RecordCommandBuffer() {
     );
 
     const auto &geometry_instance = *GeometryInstances[0];
+
+    SilhouetteRenderPipeline.Begin(command_buffer);
+    SilhouetteRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Silhouette, GeometryMode::Vertices);
+    command_buffer.endRenderPass();
+
+    EdgeDetectionRenderPipeline.Begin(command_buffer);
+    EdgeDetectionRenderPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(command_buffer);
+    command_buffer.endRenderPass();
+
     MainRenderPipeline.Begin(command_buffer, BackgroundColor);
     if (Mode == RenderMode::Faces) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Faces);
@@ -412,20 +385,8 @@ void Scene::RecordCommandBuffer() {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Vertices);
     }
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(command_buffer);
-    command_buffer.endRenderPass();
 
-    SilhouetteRenderPipeline.Begin(command_buffer);
-    SilhouetteRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Silhouette, GeometryMode::Vertices);
-    command_buffer.endRenderPass();
-
-    // VC.Queue.waitIdle();
-
-    EdgeDetectionRenderPipeline.Begin(command_buffer);
-    EdgeDetectionRenderPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(command_buffer);
-    command_buffer.endRenderPass();
-
-    FinalRenderPipeline.Begin(command_buffer);
-    FinalRenderPipeline.GetShaderPipeline(SPT::Combine)->RenderQuad(command_buffer);
+    MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(command_buffer);
     command_buffer.endRenderPass();
 
     command_buffer.end();
@@ -441,7 +402,6 @@ void Scene::CompileShaders() {
     MainRenderPipeline.CompileShaders();
     SilhouetteRenderPipeline.CompileShaders();
     EdgeDetectionRenderPipeline.CompileShaders();
-    FinalRenderPipeline.CompileShaders();
 }
 
 void Scene::UpdateGeometryEdgeColors() {
