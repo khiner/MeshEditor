@@ -80,6 +80,7 @@ struct RenderPipeline {
     // These resources are reused by future renders that don't change the extent.
     virtual void SetExtent(vk::Extent2D) = 0;
 
+    inline const ShaderPipeline *GetShaderPipeline(SPT spt) const { return ShaderPipelines.at(spt).get(); }
     void CompileShaders();
 
     void RenderGeometryBuffers(vk::CommandBuffer, const GeometryInstance &, SPT, GeometryMode) const;
@@ -106,8 +107,6 @@ struct MainRenderPipeline : RenderPipeline {
         vk::DescriptorBufferInfo view_proj_near_far
     ) const;
 
-    void RenderGrid(vk::CommandBuffer) const;
-
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
@@ -133,7 +132,6 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
 
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
-    void Render(vk::CommandBuffer command_buffer) const;
 
     void UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const;
     void UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const;
@@ -148,7 +146,6 @@ struct FinalRenderPipeline : RenderPipeline {
 
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
-    void Render(vk::CommandBuffer command_buffer) const;
 
     void UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_edge_image) const;
 

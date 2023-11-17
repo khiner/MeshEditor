@@ -193,13 +193,6 @@ void MainRenderPipeline::Begin(vk::CommandBuffer command_buffer, const vk::Clear
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-void MainRenderPipeline::RenderGrid(vk::CommandBuffer command_buffer) const {
-    const auto &grid_pipeline = ShaderPipelines.at(SPT::Grid);
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *grid_pipeline->Pipeline);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grid_pipeline->PipelineLayout, 0, 1, &*grid_pipeline->DescriptorSet, 0, nullptr);
-    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
-}
-
 SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
@@ -288,13 +281,6 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer command_buffer) const 
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-void EdgeDetectionRenderPipeline::Render(vk::CommandBuffer command_buffer) const {
-    const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *sp->Pipeline);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *sp->PipelineLayout, 0, 1, &*sp->DescriptorSet, 0, nullptr);
-    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip.
-}
-
 FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
@@ -334,13 +320,6 @@ void FinalRenderPipeline::SetExtent(vk::Extent2D extent) {
 void FinalRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
     static const std::vector<vk::ClearValue> clear_values{{transparent}};
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
-}
-
-void FinalRenderPipeline::Render(vk::CommandBuffer command_buffer) const {
-    const auto &sp = ShaderPipelines.at(SPT::Combine);
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *sp->Pipeline);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *sp->PipelineLayout, 0, 1, &*sp->DescriptorSet, 0, nullptr);
-    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip.
 }
 
 Scene::Scene(const VulkanContext &vc)
@@ -432,7 +411,7 @@ void Scene::RecordCommandBuffer() {
     } else if (Mode == RenderMode::Smooth) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Vertices);
     }
-    if (ShowGrid) MainRenderPipeline.RenderGrid(command_buffer);
+    if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(command_buffer);
     command_buffer.endRenderPass();
 
     SilhouetteRenderPipeline.Begin(command_buffer);
@@ -442,11 +421,11 @@ void Scene::RecordCommandBuffer() {
     // VC.Queue.waitIdle();
 
     EdgeDetectionRenderPipeline.Begin(command_buffer);
-    EdgeDetectionRenderPipeline.Render(command_buffer);
+    EdgeDetectionRenderPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(command_buffer);
     command_buffer.endRenderPass();
 
     FinalRenderPipeline.Begin(command_buffer);
-    FinalRenderPipeline.Render(command_buffer);
+    FinalRenderPipeline.GetShaderPipeline(SPT::Combine)->RenderQuad(command_buffer);
     command_buffer.endRenderPass();
 
     command_buffer.end();

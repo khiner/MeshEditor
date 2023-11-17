@@ -87,6 +87,8 @@ struct ShaderPipeline {
     void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
     inline uint GetBinding(const std::string &name) const { return Shaders.GetBinding(name); }
 
+    void RenderQuad(vk::CommandBuffer command_buffer) const;
+
     vk::Device Device;
 
     Shaders Shaders;

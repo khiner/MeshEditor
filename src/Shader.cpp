@@ -130,3 +130,9 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     }
     Pipeline = std::move(pipeline_result.value);
 }
+
+void ShaderPipeline::RenderQuad(vk::CommandBuffer command_buffer) const {
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *Pipeline);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &*DescriptorSet, 0, nullptr);
+    command_buffer.draw(4, 1, 0, 0); // Draw a full-screen quad triangle strip.
+}
