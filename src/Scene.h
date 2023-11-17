@@ -67,7 +67,8 @@ enum class ShaderPipelineType {
     Line,
     Grid,
     Silhouette,
-    Mix,
+    EdgeDetection,
+    Combine,
 };
 using SPT = ShaderPipelineType;
 
@@ -110,7 +111,7 @@ struct MainRenderPipeline : RenderPipeline {
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
-    // Perform depth testing, render into a multisampled offscreen image, and finally into a single-sampled resolve image.
+    // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
     ImageResource DepthImage, OffscreenImage, ResolveImage;
 };
 
@@ -120,16 +121,26 @@ struct SilhouetteRenderPipeline : RenderPipeline {
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
 
-    // This pipeline only uses the transform UBO.
     void UpdateDescriptors(vk::DescriptorBufferInfo transform) const;
 
-    void RenderGrid(vk::CommandBuffer) const;
-
-    vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
-    // Simply render to a multisampled offscreen image, without a depth buffer.
-    ImageResource OffscreenImage;
+    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+};
+
+struct EdgeDetectionRenderPipeline : RenderPipeline {
+    EdgeDetectionRenderPipeline(const VulkanContext &);
+
+    void SetExtent(vk::Extent2D) override;
+    void Begin(vk::CommandBuffer) const;
+    void Render(vk::CommandBuffer command_buffer) const;
+
+    void UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const;
+    void UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const;
+
+    vk::Extent2D Extent;
+
+    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
 };
 
 struct FinalRenderPipeline : RenderPipeline {
@@ -139,8 +150,7 @@ struct FinalRenderPipeline : RenderPipeline {
     void Begin(vk::CommandBuffer) const;
     void Render(vk::CommandBuffer command_buffer) const;
 
-    void UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const;
-    void UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_image) const;
+    void UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_edge_image) const;
 
     vk::Extent2D Extent;
 
@@ -194,16 +204,17 @@ private:
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
     VulkanBuffer SilhouetteControlsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteControls)};
 
-    vk::UniqueSampler MainSceneImageSampler, SilhouetteImageSampler;
+    vk::UniqueSampler MainSceneImageSampler, SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
     MainRenderPipeline MainRenderPipeline;
     SilhouetteRenderPipeline SilhouetteRenderPipeline;
     FinalRenderPipeline FinalRenderPipeline;
+    EdgeDetectionRenderPipeline EdgeDetectionRenderPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
     std::unique_ptr<Gizmo> Gizmo;
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
 
     bool ShowGrid{true};
-    SilhouetteControls SilhouetteControls{{0, 1, 0, 0.8}, 2.f, 0.f};
+    SilhouetteControls SilhouetteControls{{1, 0.627, 0.157, 1.}, 2.f, 0.f}; // Color taken from Blender's default `Preferences->3D Viewport->Active Object`.
 };

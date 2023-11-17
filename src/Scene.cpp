@@ -200,8 +200,7 @@ void MainRenderPipeline::RenderGrid(vk::CommandBuffer command_buffer) const {
     command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
 }
 
-SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc)
-    : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
+SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
         {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -241,6 +240,61 @@ void SilhouetteRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
+EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
+    const std::vector<vk::AttachmentDescription> attachments{
+        // Single-sampled offscreen image.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+    };
+    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
+    RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
+
+    ShaderPipelines[SPT::EdgeDetection] = std::make_unique<ShaderPipeline>(
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Sobel.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+    );
+}
+
+void EdgeDetectionRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const {
+    const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*sp->DescriptorSet, sp->GetBinding("SilhouetteControlsUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_controls},
+    };
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+void EdgeDetectionRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const {
+    const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*sp->DescriptorSet, sp->GetBinding("Tex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_fill_image},
+    };
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+void EdgeDetectionRenderPipeline::SetExtent(vk::Extent2D extent) {
+    Extent = extent;
+    OffscreenImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+
+    const std::array image_views{*OffscreenImage.View};
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+}
+
+void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
+    static const std::vector<vk::ClearValue> clear_values{{transparent}};
+    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+}
+
+void EdgeDetectionRenderPipeline::Render(vk::CommandBuffer command_buffer) const {
+    const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *sp->Pipeline);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *sp->PipelineLayout, 0, 1, &*sp->DescriptorSet, 0, nullptr);
+    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip.
+}
+
 FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
@@ -250,25 +304,17 @@ FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeli
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
-    ShaderPipelines[SPT::Mix] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
+    ShaderPipelines[SPT::Combine] = std::make_unique<ShaderPipeline>(
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "CombineTextures.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
 
-void FinalRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const {
-    const auto &sp = ShaderPipelines.at(SPT::Mix);
+void FinalRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_edge_image) const {
+    const auto &sp = ShaderPipelines.at(SPT::Combine);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("SilhouetteControlsUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_controls},
-    };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
-}
-
-void FinalRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_image) const {
-    const auto &sp = ShaderPipelines.at(SPT::Mix);
-    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("MainSceneTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &main_scene_image},
-        {*sp->DescriptorSet, sp->GetBinding("SilhouetteTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_image},
+        {*sp->DescriptorSet, sp->GetBinding("Tex1"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &main_scene_image},
+        {*sp->DescriptorSet, sp->GetBinding("Tex2"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_edge_image},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -291,14 +337,14 @@ void FinalRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
 }
 
 void FinalRenderPipeline::Render(vk::CommandBuffer command_buffer) const {
-    const auto &mix_pipeline = ShaderPipelines.at(SPT::Mix);
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *mix_pipeline->Pipeline);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *mix_pipeline->PipelineLayout, 0, 1, &*mix_pipeline->DescriptorSet, 0, nullptr);
-    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the texture mix.
+    const auto &sp = ShaderPipelines.at(SPT::Combine);
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *sp->Pipeline);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *sp->PipelineLayout, 0, 1, &*sp->DescriptorSet, 0, nullptr);
+    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip
 }
 
 Scene::Scene(const VulkanContext &vc)
-    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), FinalRenderPipeline(VC) {
+    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC), FinalRenderPipeline(VC) {
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
     UpdateTransform();
@@ -311,7 +357,7 @@ Scene::Scene(const VulkanContext &vc)
         {*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}
     );
     SilhouetteRenderPipeline.UpdateDescriptors({*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE});
-    FinalRenderPipeline.UpdateDescriptors({*SilhouetteControlsBuffer.Buffer, 0, VK_WHOLE_SIZE});
+    EdgeDetectionRenderPipeline.UpdateDescriptors({*SilhouetteControlsBuffer.Buffer, 0, VK_WHOLE_SIZE});
 
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
@@ -326,7 +372,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
     SilhouetteRenderPipeline.SetExtent(extent);
 
     MainSceneImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
-    SilhouetteImageSampler = VC.Device->createSamplerUnique({
+    SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
         {},
         vk::Filter::eLinear,
         vk::Filter::eLinear,
@@ -336,13 +382,16 @@ void Scene::SetExtent(vk::Extent2D extent) {
         vk::SamplerAddressMode::eClampToEdge,
         vk::SamplerAddressMode::eClampToEdge,
         vk::SamplerAddressMode::eClampToEdge,
-    }
-    );
+    });
+
+    EdgeDetectionRenderPipeline.UpdateImageDescriptors({*SilhouetteFillImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal});
+    EdgeDetectionRenderPipeline.SetExtent(extent);
+    SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+
     FinalRenderPipeline.UpdateImageDescriptors(
         {*MainSceneImageSampler, *MainRenderPipeline.ResolveImage.View, vk::ImageLayout::eShaderReadOnlyOptimal},
-        {*SilhouetteImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}
+        {*SilhouetteEdgeImageSampler, *EdgeDetectionRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}
     );
-
     FinalRenderPipeline.SetExtent(extent);
 }
 
@@ -392,6 +441,10 @@ void Scene::RecordCommandBuffer() {
 
     // VC.Queue.waitIdle();
 
+    EdgeDetectionRenderPipeline.Begin(command_buffer);
+    EdgeDetectionRenderPipeline.Render(command_buffer);
+    command_buffer.endRenderPass();
+
     FinalRenderPipeline.Begin(command_buffer);
     FinalRenderPipeline.Render(command_buffer);
     command_buffer.endRenderPass();
@@ -408,6 +461,7 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
 void Scene::CompileShaders() {
     MainRenderPipeline.CompileShaders();
     SilhouetteRenderPipeline.CompileShaders();
+    EdgeDetectionRenderPipeline.CompileShaders();
     FinalRenderPipeline.CompileShaders();
 }
 

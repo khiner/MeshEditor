@@ -96,8 +96,13 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
 
     // Create descriptor pool.
     const std::vector pool_sizes{
-        // 2 for the two scene images mixed into the final image, 1 for the Scene texture sampler, 1 for ImGui fonts.
-        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 4},
+        // Image samplers:
+        // 1) The antialiased 3D scene resolve image.
+        // 2) The (2D filled shape) silhouette of the selected mesh.
+        // 3) The (2D line) silhouette of the selected mesh, after edge detection.
+        // 4) The final scene texture sampler.
+        // 5) ImGui fonts.
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 5},
         {vk::DescriptorType::eUniformBuffer, 8}, // All uniform buffers used across all shaders.
     };
     const uint max_sets = std::accumulate(pool_sizes.begin(), pool_sizes.end(), 0u, [](uint sum, const vk::DescriptorPoolSize &pool_size) {

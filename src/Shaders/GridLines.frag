@@ -14,15 +14,18 @@ layout(binding = 1) uniform ViewProjNearFarUBO {
     float Far;
 } ViewProjNearFar;
 
+const float ScaleFactor = 0.2;
+
 vec4 Grid(vec3 pos_3d, float scale) {
-    vec2 coord = pos_3d.xz * scale;
+    vec2 coord = pos_3d.xz * scale * ScaleFactor;
     vec2 derivative = fwidth(coord);
     vec2 grid = abs(fract(coord - 0.5) - 0.5) / derivative;
     vec2 clipped_deriv = min(derivative, 1);
     vec4 color = vec4(0.2, 0.2, 0.2, 1.0 - min(min(grid.x, grid.y), 1));
     // Highlight the axes.
-    if (pos_3d.x > -0.1 * clipped_deriv.x && pos_3d.x < 0.1 * clipped_deriv.x) color.b = 1;
-    if (pos_3d.z > -0.1 * clipped_deriv.y && pos_3d.z < 0.1 * clipped_deriv.y) color.r = 1;
+    const float AxisWidth = 0.35;
+    if (pos_3d.x >= -AxisWidth * clipped_deriv.x && pos_3d.x <= AxisWidth * clipped_deriv.x) color = vec4(0, 0, 1, 1);
+    if (pos_3d.z >= -AxisWidth * clipped_deriv.y && pos_3d.z <= AxisWidth * clipped_deriv.y) color = vec4(1, 0, 0, 1);
     return color;
 }
 
@@ -41,6 +44,6 @@ void main() {
     vec4 clip_space_pos = ViewProjNearFar.Projection * ViewProjNearFar.View * vec4(pos_3d.xyz, 1);
     gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
 
-    OutColor = (Grid(pos_3d, 4) + Grid(pos_3d, 1)) * float(t > 0); // Draw grid at two scales.
+    OutColor = (Grid(pos_3d, 10) + Grid(pos_3d, 1)) * float(t > 0); // Draw grid at two scales.
     OutColor.a *= 0.5 * (1 - smoothstep(0.8, 1, LinearDepth())); // Fade out at the edge of the grid.
 }
