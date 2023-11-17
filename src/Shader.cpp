@@ -58,6 +58,12 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
             BindingForResourceName[resource.name] = binding;
         }
 
+        for (const auto &resource : Resources.at(type)->sampled_images) {
+            uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+            Bindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
+            BindingForResourceName[resource.name] = binding;
+        }
+
         stages.push_back({{}, type, *Modules.at(type), "main"});
     }
     return stages;

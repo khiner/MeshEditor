@@ -54,6 +54,10 @@ struct Light {
     glm::vec3 Direction;
 };
 
+struct SilhouetteControls {
+    float Alpha;
+};
+
 struct Gizmo;
 
 enum class ShaderPipelineType {
@@ -61,6 +65,7 @@ enum class ShaderPipelineType {
     Line,
     Grid,
     Silhouette,
+    Mix,
 };
 using SPT = ShaderPipelineType;
 
@@ -70,8 +75,7 @@ struct RenderPipeline {
 
     // Updates images and framebuffer based on the new extent.
     // These resources are reused by future renders that don't change the extent.
-    virtual void SetExtent(vk::Extent2D, vk::ImageView resolve_image_view) = 0;
-    virtual void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const = 0;
+    virtual void SetExtent(vk::Extent2D) = 0;
 
     void CompileShaders();
 
@@ -88,8 +92,8 @@ protected:
 struct MainRenderPipeline : RenderPipeline {
     MainRenderPipeline(const VulkanContext &);
 
-    void SetExtent(vk::Extent2D, vk::ImageView resolve_image_view) override;
-    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const override;
+    void SetExtent(vk::Extent2D) override;
+    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
 
     // All of the UBOs used in the pipeline.
     void UpdateDescriptors(
@@ -104,15 +108,15 @@ struct MainRenderPipeline : RenderPipeline {
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
-    // Perform depth testing and render into a multisampled offscreen image.
-    ImageResource DepthImage, OffscreenImage;
+    // Perform depth testing, render into a multisampled offscreen image, and finally into a single-sampled resolve image.
+    ImageResource DepthImage, OffscreenImage, ResolveImage;
 };
 
 struct SilhouetteRenderPipeline : RenderPipeline {
     SilhouetteRenderPipeline(const VulkanContext &);
 
-    void SetExtent(vk::Extent2D, vk::ImageView resolve_image_view) override;
-    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const override;
+    void SetExtent(vk::Extent2D) override;
+    void Begin(vk::CommandBuffer) const;
 
     // This pipeline only uses the transform UBO.
     void UpdateDescriptors(vk::DescriptorBufferInfo transform) const;
@@ -126,13 +130,29 @@ struct SilhouetteRenderPipeline : RenderPipeline {
     ImageResource OffscreenImage;
 };
 
+struct FinalRenderPipeline : RenderPipeline {
+    FinalRenderPipeline(const VulkanContext &);
+
+    void SetExtent(vk::Extent2D) override;
+    void Begin(vk::CommandBuffer) const;
+    void Render(vk::CommandBuffer command_buffer) const;
+
+    void UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const;
+    void UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_image) const;
+
+    vk::Extent2D Extent;
+
+    // A single-sampled image resulting from combining the main & silhouette images.
+    ImageResource OffscreenImage;
+};
+
 struct Scene {
     Scene(const VulkanContext &);
     ~Scene();
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainRenderPipeline.MsaaSamples; }
-    vk::ImageView GetResolveImageView() const { return ResolveImage.View.get(); }
+    vk::ImageView GetResolveImageView() const { return *FinalRenderPipeline.OffscreenImage.View; }
 
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
@@ -170,16 +190,18 @@ private:
     VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
     VulkanBuffer ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)};
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
+    VulkanBuffer SilhouetteControlsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteControls)};
+
+    vk::UniqueSampler MainSceneImageSampler, SilhouetteImageSampler;
 
     MainRenderPipeline MainRenderPipeline;
     SilhouetteRenderPipeline SilhouetteRenderPipeline;
-
+    FinalRenderPipeline FinalRenderPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
-
-    ImageResource ResolveImage;
 
     std::unique_ptr<Gizmo> Gizmo;
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
 
     bool ShowGrid{true};
+    SilhouetteControls SilhouetteControls{0.5f};
 };

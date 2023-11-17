@@ -12,6 +12,8 @@
 
 using glm::vec3, glm::vec4, glm::mat4;
 
+static const vk::ClearColorValue transparent(0.f, 0.f, 0.f, 0.f);
+
 static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
     const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
@@ -164,7 +166,7 @@ void MainRenderPipeline::UpdateDescriptors(
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
-void MainRenderPipeline::SetExtent(vk::Extent2D extent, vk::ImageView resolve_image_view) {
+void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -177,8 +179,12 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent, vk::ImageView resolve_im
         {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
-
-    const std::array image_views{*DepthImage.View, *OffscreenImage.View, resolve_image_view};
+    ResolveImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
@@ -197,19 +203,16 @@ void MainRenderPipeline::RenderGrid(vk::CommandBuffer command_buffer) const {
 SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc)
     : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
     const std::vector<vk::AttachmentDescription> attachments{
-        // Multisampled offscreen image.
-        {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-        // Single-sampled resolve.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Single-sampled offscreen image.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, nullptr};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(false), std::nullopt, MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
 
@@ -221,29 +224,86 @@ void SilhouetteRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo transf
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
-void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent, vk::ImageView resolve_image_view) {
+void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     OffscreenImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
-    const std::array image_views{*OffscreenImage.View, resolve_image_view};
+    const std::array image_views{*OffscreenImage.View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void SilhouetteRenderPipeline::Begin(vk::CommandBuffer command_buffer, const vk::ClearColorValue &background_color) const {
-    const std::vector<vk::ClearValue> clear_values{{background_color}};
+void SilhouetteRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
+    static const std::vector<vk::ClearValue> clear_values{{transparent}};
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
+FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
+    const std::vector<vk::AttachmentDescription> attachments{
+        // Single-sampled offscreen image.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+    };
+    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
+    RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
+
+    ShaderPipelines[SPT::Mix] = std::make_unique<ShaderPipeline>(
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Mix.vert"}, {ShaderType::eFragment, "Mix.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+    );
+}
+
+void FinalRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const {
+    const auto &mix_sp = ShaderPipelines.at(SPT::Mix);
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*mix_sp->DescriptorSet, mix_sp->GetBinding("SilhouetteControlsUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_controls},
+    };
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+void FinalRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_image) const {
+    const auto &mix_sp = ShaderPipelines.at(SPT::Mix);
+    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
+        {*mix_sp->DescriptorSet, mix_sp->GetBinding("MainSceneTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &main_scene_image},
+        {*mix_sp->DescriptorSet, mix_sp->GetBinding("SilhouetteTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_image},
+    };
+    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
+}
+
+void FinalRenderPipeline::SetExtent(vk::Extent2D extent) {
+    Extent = extent;
+    OffscreenImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+
+    const std::array image_views{*OffscreenImage.View};
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+}
+
+void FinalRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
+    static const std::vector<vk::ClearValue> clear_values{{transparent}};
+    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+}
+
+void FinalRenderPipeline::Render(vk::CommandBuffer command_buffer) const {
+    const auto &mix_pipeline = ShaderPipelines.at(SPT::Mix);
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *mix_pipeline->Pipeline);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *mix_pipeline->PipelineLayout, 0, 1, &*mix_pipeline->DescriptorSet, 0, nullptr);
+    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the texture mix.
+}
+
 Scene::Scene(const VulkanContext &vc)
-    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC) {
+    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), FinalRenderPipeline(VC) {
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightBuffer, &Light);
+    VC.CreateOrUpdateBuffer(SilhouetteControlsBuffer, &SilhouetteControls);
     MainRenderPipeline.UpdateDescriptors(
         {*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE},
         {*LightBuffer.Buffer, 0, VK_WHOLE_SIZE},
@@ -251,6 +311,7 @@ Scene::Scene(const VulkanContext &vc)
         {*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}
     );
     SilhouetteRenderPipeline.UpdateDescriptors({*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE});
+    FinalRenderPipeline.UpdateDescriptors({*SilhouetteControlsBuffer.Buffer, 0, VK_WHOLE_SIZE});
 
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
@@ -261,13 +322,17 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     UpdateTransform(); // Transform depends on the aspect ratio.
-    ResolveImage.Create(
-        VC,
-        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    MainRenderPipeline.SetExtent(extent);
+    SilhouetteRenderPipeline.SetExtent(extent);
+
+    MainSceneImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+    SilhouetteImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+    FinalRenderPipeline.UpdateImageDescriptors(
+        {*MainSceneImageSampler, *MainRenderPipeline.ResolveImage.View, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {*SilhouetteImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}
     );
-    MainRenderPipeline.SetExtent(extent, *ResolveImage.View);
-    SilhouetteRenderPipeline.SetExtent(extent, *ResolveImage.View);
+
+    FinalRenderPipeline.SetExtent(extent);
 }
 
 void Scene::RecordCommandBuffer() {
@@ -283,7 +348,7 @@ void Scene::RecordCommandBuffer() {
         vk::ImageLayout::eColorAttachmentOptimal,
         VK_QUEUE_FAMILY_IGNORED,
         VK_QUEUE_FAMILY_IGNORED,
-        *ResolveImage,
+        *MainRenderPipeline.ResolveImage,
         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }};
     command_buffer.pipelineBarrier(
@@ -296,14 +361,6 @@ void Scene::RecordCommandBuffer() {
     );
 
     const auto &geometry_instance = *GeometryInstances[0];
-    if (Mode == RenderMode::Silhouette) {
-        SilhouetteRenderPipeline.Begin(command_buffer, BackgroundColor);
-        SilhouetteRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Silhouette, GeometryMode::Vertices);
-        command_buffer.endRenderPass();
-        command_buffer.end();
-        return;
-    }
-
     MainRenderPipeline.Begin(command_buffer, BackgroundColor);
     if (Mode == RenderMode::Faces) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Faces);
@@ -315,10 +372,19 @@ void Scene::RecordCommandBuffer() {
     } else if (Mode == RenderMode::Smooth) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Vertices);
     }
-
     if (ShowGrid) MainRenderPipeline.RenderGrid(command_buffer);
-
     command_buffer.endRenderPass();
+
+    SilhouetteRenderPipeline.Begin(command_buffer);
+    SilhouetteRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Silhouette, GeometryMode::Vertices);
+    command_buffer.endRenderPass();
+
+    // VC.Queue.waitIdle();
+
+    FinalRenderPipeline.Begin(command_buffer);
+    FinalRenderPipeline.Render(command_buffer);
+    command_buffer.endRenderPass();
+
     command_buffer.end();
 }
 
@@ -331,6 +397,7 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
 void Scene::CompileShaders() {
     MainRenderPipeline.CompileShaders();
     SilhouetteRenderPipeline.CompileShaders();
+    FinalRenderPipeline.CompileShaders();
 }
 
 void Scene::UpdateGeometryEdgeColors() {
@@ -457,8 +524,10 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
             SameLine();
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
-            // New line.
-            render_mode_changed |= RadioButton("Silhouette", &render_mode, int(RenderMode::Silhouette));
+            if (SliderFloat("Silhouette alpha", &SilhouetteControls.Alpha, 0, 1)) {
+                VC.CreateOrUpdateBuffer(SilhouetteControlsBuffer, &SilhouetteControls);
+                SubmitCommandBuffer();
+            }
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
                 UpdateGeometryEdgeColors(); // Different modes use different edge colors for better visibility.
