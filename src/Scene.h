@@ -105,11 +105,10 @@ struct MainRenderPipeline : RenderPipeline {
 
     void RenderGrid(vk::CommandBuffer) const;
 
-    vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
     // Perform depth testing, render into a multisampled offscreen image, and finally into a single-sampled resolve image.
-    ImageResource DepthImage, OffscreenImage, ResolveImage;
+    ImageResource DepthImage, OffscreenImage;
 };
 
 struct SilhouetteRenderPipeline : RenderPipeline {
@@ -123,7 +122,6 @@ struct SilhouetteRenderPipeline : RenderPipeline {
 
     void RenderGrid(vk::CommandBuffer) const;
 
-    vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
     // Simply render to a multisampled offscreen image, without a depth buffer.
@@ -140,10 +138,11 @@ struct FinalRenderPipeline : RenderPipeline {
     void UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const;
     void UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_image) const;
 
+    vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
     // A single-sampled image resulting from combining the main & silhouette images.
-    ImageResource OffscreenImage;
+    ImageResource OffscreenImage, ResolveImage;
 };
 
 struct Scene {
@@ -151,8 +150,8 @@ struct Scene {
     ~Scene();
 
     const vk::Extent2D &GetExtent() const { return Extent; }
-    vk::SampleCountFlagBits GetMsaaSamples() const { return MainRenderPipeline.MsaaSamples; }
-    vk::ImageView GetResolveImageView() const { return *FinalRenderPipeline.OffscreenImage.View; }
+    vk::SampleCountFlagBits GetMsaaSamples() const { return FinalRenderPipeline.MsaaSamples; }
+    vk::ImageView GetResolveImageView() const { return *FinalRenderPipeline.ResolveImage.View; }
 
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,

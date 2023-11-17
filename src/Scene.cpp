@@ -117,33 +117,29 @@ void RenderPipeline::RenderGeometryBuffers(vk::CommandBuffer command_buffer, con
     command_buffer.drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
 }
 
-MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
-    : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
+MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
-        {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        // Multisampled offscreen image.
-        {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-        // Single-sampled resolve.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, vk::Format::eD32Sfloat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        // Single-sampled offscreen image.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Fill] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), vk::SampleCountFlagBits::e1
     );
     ShaderPipelines[SPT::Line] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
-        vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+        vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), vk::SampleCountFlagBits::e1
     );
     ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(), vk::SampleCountFlagBits::e1
     );
 }
 
@@ -171,20 +167,15 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, vk::Format::eD32Sfloat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
+        {{}, vk::ImageType::e2D, vk::Format::eD32Sfloat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
     );
     OffscreenImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    );
-    ResolveImage.Create(
-        VC,
         {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
-    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
+    const std::array image_views{*DepthImage.View, *OffscreenImage.View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
@@ -200,8 +191,7 @@ void MainRenderPipeline::RenderGrid(vk::CommandBuffer command_buffer) const {
     command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip for the grid.
 }
 
-SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc)
-    : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
+SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
         {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -241,18 +231,21 @@ void SilhouetteRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
+FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
     const std::vector<vk::AttachmentDescription> attachments{
-        // Single-sampled offscreen image.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Multisampled offscreen image.
+        {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Single-sampled resolve.
+        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
+    const vk::AttachmentReference resolve_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, nullptr};
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Mix] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, MsaaSamples
     );
 }
 
@@ -275,18 +268,24 @@ void FinalRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo main_sc
 
 void FinalRenderPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
+    const vk::Extent3D e3d{Extent, 1};
     OffscreenImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+    ResolveImage.Create(
+        VC,
+        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
-    const std::array image_views{*OffscreenImage.View};
+    const std::array image_views{*OffscreenImage.View, *ResolveImage.View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
 void FinalRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
-    static const std::vector<vk::ClearValue> clear_values{{transparent}};
+    static const std::vector<vk::ClearValue> clear_values{{transparent}, {transparent}};
     command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
@@ -328,7 +327,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
     MainSceneImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
     SilhouetteImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
     FinalRenderPipeline.UpdateImageDescriptors(
-        {*MainSceneImageSampler, *MainRenderPipeline.ResolveImage.View, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {*MainSceneImageSampler, *MainRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal},
         {*SilhouetteImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}
     );
 
@@ -348,7 +347,7 @@ void Scene::RecordCommandBuffer() {
         vk::ImageLayout::eColorAttachmentOptimal,
         VK_QUEUE_FAMILY_IGNORED,
         VK_QUEUE_FAMILY_IGNORED,
-        *MainRenderPipeline.ResolveImage,
+        *FinalRenderPipeline.ResolveImage,
         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }};
     command_buffer.pipelineBarrier(
