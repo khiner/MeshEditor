@@ -340,7 +340,7 @@ void FinalRenderPipeline::Render(vk::CommandBuffer command_buffer) const {
     const auto &sp = ShaderPipelines.at(SPT::Combine);
     command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *sp->Pipeline);
     command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *sp->PipelineLayout, 0, 1, &*sp->DescriptorSet, 0, nullptr);
-    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip
+    command_buffer.draw(4, 1, 0, 0); // Draw the full-screen quad triangle strip.
 }
 
 Scene::Scene(const VulkanContext &vc)

@@ -36,6 +36,10 @@ void main() {
     }
 
     float edge_amount = length(sobel);
-    float alpha_weight = min(edge_amount / 2, 1); // This provides a bit of "anti-aliasing" for the edges. (Not a proper normalization factor.)
-    OutColor = edge_amount > Controls.Threshold ? vec4(Controls.Color.rgb, Controls.Color.a * alpha_weight) : vec4(0);
+    if (edge_amount >= Controls.Threshold) {
+        float alpha_weight = min(edge_amount / 2, 1); // This provides a bit of "anti-aliasing" for the edges. (Not a proper normalization factor.)
+        OutColor = vec4(Controls.Color.rgb, Controls.Color.a * alpha_weight);
+    } else {
+        discard;
+    }
 }

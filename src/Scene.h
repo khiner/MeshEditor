@@ -208,8 +208,8 @@ private:
 
     MainRenderPipeline MainRenderPipeline;
     SilhouetteRenderPipeline SilhouetteRenderPipeline;
-    FinalRenderPipeline FinalRenderPipeline;
     EdgeDetectionRenderPipeline EdgeDetectionRenderPipeline;
+    FinalRenderPipeline FinalRenderPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
     std::unique_ptr<Gizmo> Gizmo;
