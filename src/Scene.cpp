@@ -134,11 +134,11 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Fill] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Line] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Transform.vert"}, {ShaderType::eFragment, "Basic.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
         vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
@@ -211,15 +211,15 @@ SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc)
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Silhouette.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "White.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
 
 void SilhouetteRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo transform) const {
-    const auto &silhouette_sp = ShaderPipelines.at(SPT::Silhouette);
+    const auto &sp = ShaderPipelines.at(SPT::Silhouette);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*silhouette_sp->DescriptorSet, silhouette_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
+        {*sp->DescriptorSet, sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -251,24 +251,24 @@ FinalRenderPipeline::FinalRenderPipeline(const VulkanContext &vc) : RenderPipeli
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Mix] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "Mix.vert"}, {ShaderType::eFragment, "Mix.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Silhouette.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
 
 void FinalRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const {
-    const auto &mix_sp = ShaderPipelines.at(SPT::Mix);
+    const auto &sp = ShaderPipelines.at(SPT::Mix);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*mix_sp->DescriptorSet, mix_sp->GetBinding("SilhouetteControlsUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_controls},
+        {*sp->DescriptorSet, sp->GetBinding("SilhouetteControlsUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_controls},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
 void FinalRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo main_scene_image, vk::DescriptorImageInfo silhouette_image) const {
-    const auto &mix_sp = ShaderPipelines.at(SPT::Mix);
+    const auto &sp = ShaderPipelines.at(SPT::Mix);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*mix_sp->DescriptorSet, mix_sp->GetBinding("MainSceneTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &main_scene_image},
-        {*mix_sp->DescriptorSet, mix_sp->GetBinding("SilhouetteTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_image},
+        {*sp->DescriptorSet, sp->GetBinding("MainSceneTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &main_scene_image},
+        {*sp->DescriptorSet, sp->GetBinding("SilhouetteTex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_image},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
