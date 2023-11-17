@@ -326,7 +326,18 @@ void Scene::SetExtent(vk::Extent2D extent) {
     SilhouetteRenderPipeline.SetExtent(extent);
 
     MainSceneImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
-    SilhouetteImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+    SilhouetteImageSampler = VC.Device->createSamplerUnique({
+        {},
+        vk::Filter::eLinear,
+        vk::Filter::eLinear,
+        vk::SamplerMipmapMode::eLinear,
+        // Prevent edge detection from wrapping around to the other side of the image.
+        // Instead, use the pixel value at the nearest edge.
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+    }
+    );
     FinalRenderPipeline.UpdateImageDescriptors(
         {*MainSceneImageSampler, *MainRenderPipeline.ResolveImage.View, vk::ImageLayout::eShaderReadOnlyOptimal},
         {*SilhouetteImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}
@@ -524,10 +535,6 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
             SameLine();
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
-            if (SliderFloat("Silhouette alpha", &SilhouetteControls.Alpha, 0, 1)) {
-                VC.CreateOrUpdateBuffer(SilhouetteControlsBuffer, &SilhouetteControls);
-                SubmitCommandBuffer();
-            }
             if (render_mode_changed) {
                 Mode = RenderMode(render_mode);
                 UpdateGeometryEdgeColors(); // Different modes use different edge colors for better visibility.
@@ -540,6 +547,14 @@ void Scene::RenderControls() {
                     UpdateGeometryEdgeColors();
                     SubmitCommandBuffer();
                 }
+            }
+            SeparatorText("Silhouette");
+            bool silhouette_changed = ColorEdit4("Color", &SilhouetteControls.Color[0]);
+            silhouette_changed |= SliderFloat("Thickness", &SilhouetteControls.Thickness, 0.25, 2.5);
+            silhouette_changed |= SliderFloat("Threshold", &SilhouetteControls.Threshold, 0, 10);
+            if (silhouette_changed) {
+                VC.CreateOrUpdateBuffer(SilhouetteControlsBuffer, &SilhouetteControls);
+                SubmitCommandBuffer();
             }
             SeparatorText("Selection");
             int selection_mode = int(SelectionMode);

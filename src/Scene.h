@@ -55,7 +55,9 @@ struct Light {
 };
 
 struct SilhouetteControls {
-    float Alpha;
+    glm::vec4 Color;
+    float Thickness;
+    float Threshold;
 };
 
 struct Gizmo;
@@ -203,5 +205,5 @@ private:
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
 
     bool ShowGrid{true};
-    SilhouetteControls SilhouetteControls{0.5f};
+    SilhouetteControls SilhouetteControls{{0, 1, 0, 0.8}, 2.f, 0.f};
 };

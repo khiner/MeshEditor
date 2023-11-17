@@ -3,8 +3,10 @@
 layout(binding = 0) uniform sampler2D MainSceneTex;
 layout(binding = 1) uniform sampler2D SilhouetteTex;
 layout(binding = 3) uniform SilhouetteControlsUBO {
-    float Alpha;
-} SilhouetteControls;
+    vec4 Color;
+    float Thickness;
+    float Threshold;
+} Controls;
 
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out vec4 OutColor;
@@ -25,7 +27,7 @@ const mat3 Gy = mat3(
 void main() {
     const vec4 main_color = texture(MainSceneTex, TexCoord);
     const vec4 silhouette_color = texture(SilhouetteTex, TexCoord);
-    const vec2 pixel_size = 1.0 / vec2(textureSize(SilhouetteTex, 0)); // Texture size in pixels.
+    const vec2 pixel_size = Controls.Thickness / vec2(textureSize(SilhouetteTex, 0));
     vec2 sobel = vec2(0);
     for (int i = -1; i <= 1; i++) {
         for (int j = -1; j <= 1; j++) {
@@ -35,5 +37,5 @@ void main() {
         }
     }
 
-    OutColor = length(sobel) > 0 ? mix(main_color, vec4(0, 1, 0, 1), SilhouetteControls.Alpha) : main_color;
+    OutColor = length(sobel) > Controls.Threshold ? mix(main_color, vec4(Controls.Color.rgb, 1), Controls.Color.a) : main_color;
 }
