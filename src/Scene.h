@@ -54,10 +54,8 @@ struct Light {
     glm::vec3 Direction;
 };
 
-struct SilhouetteControls {
+struct SilhouetteDisplay {
     glm::vec4 Color;
-    float Thickness;
-    float Threshold;
 };
 
 struct Gizmo;
@@ -104,7 +102,8 @@ struct MainRenderPipeline : RenderPipeline {
         vk::DescriptorBufferInfo transform,
         vk::DescriptorBufferInfo light,
         vk::DescriptorBufferInfo view_proj,
-        vk::DescriptorBufferInfo view_proj_near_far
+        vk::DescriptorBufferInfo view_proj_near_far,
+        vk::DescriptorBufferInfo silhouette_display
     ) const;
     void UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_edge_image) const;
 
@@ -134,7 +133,6 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
 
-    void UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const;
     void UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const;
 
     vk::Extent2D Extent;
@@ -186,7 +184,7 @@ private:
     VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
     VulkanBuffer ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)};
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
-    VulkanBuffer SilhouetteControlsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteControls)};
+    VulkanBuffer SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
 
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
@@ -199,5 +197,5 @@ private:
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
 
     bool ShowGrid{true};
-    SilhouetteControls SilhouetteControls{{1, 0.627, 0.157, 1.}, 2.f, 0.f}; // Color taken from Blender's default `Preferences->3D Viewport->Active Object`.
+    SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}};  // Color taken from Blender's default `Preferences->3D Viewport->Active Object`.
 };

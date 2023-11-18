@@ -102,7 +102,7 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
         // 3) The final scene texture sampler.
         // 4) ImGui fonts.
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 4},
-        {vk::DescriptorType::eUniformBuffer, 8}, // All uniform buffers used across all shaders.
+        {vk::DescriptorType::eUniformBuffer, 7}, // All uniform buffers used across all shaders.
     };
     const uint max_sets = std::accumulate(pool_sizes.begin(), pool_sizes.end(), 0u, [](uint sum, const vk::DescriptorPoolSize &pool_size) {
         return sum + pool_size.descriptorCount;

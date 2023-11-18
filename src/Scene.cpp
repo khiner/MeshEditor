@@ -143,11 +143,14 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
     );
     ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(true, false), MsaaSamples
     );
     ShaderPipelines[SPT::Texture] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Texture.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(false, false), MsaaSamples
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}},
+        // For the silhouette edge texture, we want to render all its pixels, but also explicitly override the depth buffer to make edge pixels "stick" to the geometry they are derived from.
+        // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers optimize out depth writes when depth testing is disabled,
+        // so instead we configure a depth test that always passes.
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples
     );
 }
 
@@ -155,17 +158,20 @@ void MainRenderPipeline::UpdateDescriptors(
     vk::DescriptorBufferInfo transform,
     vk::DescriptorBufferInfo light,
     vk::DescriptorBufferInfo view_proj,
-    vk::DescriptorBufferInfo view_proj_near_far
+    vk::DescriptorBufferInfo view_proj_near_far,
+    vk::DescriptorBufferInfo silhouette_display
 ) const {
     const auto &fill_sp = ShaderPipelines.at(SPT::Fill);
     const auto &line_sp = ShaderPipelines.at(SPT::Line);
     const auto &grid_sp = ShaderPipelines.at(SPT::Grid);
+    const auto &texture_sp = ShaderPipelines.at(SPT::Texture);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
         {*fill_sp->DescriptorSet, fill_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
         {*fill_sp->DescriptorSet, fill_sp->GetBinding("LightUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light},
         {*line_sp->DescriptorSet, line_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjectionUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj},
         {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjNearFarUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far},
+        {*texture_sp->DescriptorSet, texture_sp->GetBinding("SilhouetteDisplayUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_display},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -173,7 +179,7 @@ void MainRenderPipeline::UpdateDescriptors(
 void MainRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_edge_image) const {
     const auto &sp = ShaderPipelines.at(SPT::Texture);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("Texture"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_edge_image},
+        {*sp->DescriptorSet, sp->GetBinding("SilhouetteEdgeTexture"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_edge_image},
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -215,7 +221,7 @@ SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : Re
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "White.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
@@ -260,14 +266,6 @@ EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc
     );
 }
 
-void EdgeDetectionRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo silhouette_controls) const {
-    const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
-    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("SilhouetteControlsUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_controls},
-    };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
-}
-
 void EdgeDetectionRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const {
     const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
@@ -299,15 +297,15 @@ Scene::Scene(const VulkanContext &vc)
     UpdateGeometryEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightBuffer, &Light);
-    VC.CreateOrUpdateBuffer(SilhouetteControlsBuffer, &SilhouetteControls);
+    VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
     MainRenderPipeline.UpdateDescriptors(
         {*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE},
         {*LightBuffer.Buffer, 0, VK_WHOLE_SIZE},
         {*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE},
-        {*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}
+        {*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE},
+        {*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}
     );
     SilhouetteRenderPipeline.UpdateDescriptors({*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE});
-    EdgeDetectionRenderPipeline.UpdateDescriptors({*SilhouetteControlsBuffer.Buffer, 0, VK_WHOLE_SIZE});
 
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
@@ -384,9 +382,9 @@ void Scene::RecordCommandBuffer() {
     } else if (Mode == RenderMode::Smooth) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Vertices);
     }
+    MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(command_buffer);
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(command_buffer);
 
-    MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(command_buffer);
     command_buffer.endRenderPass();
 
     command_buffer.end();
@@ -542,11 +540,8 @@ void Scene::RenderControls() {
                 }
             }
             SeparatorText("Silhouette");
-            bool silhouette_changed = ColorEdit4("Color", &SilhouetteControls.Color[0]);
-            silhouette_changed |= SliderFloat("Thickness", &SilhouetteControls.Thickness, 0.25, 2.5);
-            silhouette_changed |= SliderFloat("Threshold", &SilhouetteControls.Threshold, 0, 10);
-            if (silhouette_changed) {
-                VC.CreateOrUpdateBuffer(SilhouetteControlsBuffer, &SilhouetteControls);
+            if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
+                VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
                 SubmitCommandBuffer();
             }
             SeparatorText("Selection");
