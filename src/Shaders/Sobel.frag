@@ -29,17 +29,17 @@ void main() {
 
     float edge_amount = length(sobel);
     if (edge_amount > Threshold) {
+        // Find the minimum depth (closest) of all neighbor pixels that belong to the silhouette.
         float min_depth = 1;
         for (int i = -1; i <= 1; i++) {
             for (int j = -1; j <= 1; j++) {
                 const vec4 neighbor_color = texture(Tex, TexCoord + vec2(i, j) * pixel_size);
-                if (neighbor_color.a == 1) {
+                if (neighbor_color.a == 1) { // Belongs to the silhouette.
                     min_depth = min(min_depth, neighbor_color.r);
                 }
             }
         }
-        float alpha = min(edge_amount / 2, 1); // This provides a bit of "anti-aliasing" for the edges. (Not a proper normalization factor.)
-        OutColor = vec4(min_depth, 1, 1, alpha);
+        OutColor = vec4(1, min_depth, min_depth, edge_amount / 4); // Output format: (IsEdge, Depth, Depth, (Normalized) amount)
     } else {
         discard;
     }
