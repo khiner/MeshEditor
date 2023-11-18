@@ -11,16 +11,11 @@ layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out vec4 OutColor;
 
 // Sobel kernel for edge detection.
+// `Gy` is the transpose of `Gx`.
 const mat3 Gx = mat3(
     -1, 0, 1,
     -2, 0, 2,
     -1, 0, 1
-);
-// `Gy` is the transpose of `Gx`, but we write it explicitly since globals must be compile-time constants.
-const mat3 Gy = mat3(
-    -1, -2, -1,
-     0,  0,  0,
-     1,  2,  1
 );
 
 void main() {
@@ -31,7 +26,7 @@ void main() {
         for (int j = -1; j <= 1; j++) {
             // The alpha channel of the silhouette texture is equal to 1 if the pixel is part of the silhouette, and 0 otherwise.
             const float alpha = texture(Tex, TexCoord + vec2(i, j) * pixel_size).a;
-            sobel += vec2(Gx[i + 1][j + 1], Gy[i + 1][j + 1]) * alpha;
+            sobel += vec2(Gx[i + 1][j + 1], Gx[j + 1][i + 1]) * alpha;
         }
     }
 
