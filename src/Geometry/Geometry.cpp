@@ -44,9 +44,9 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
         vertices.reserve(Mesh.n_faces() * 3); // At least 3 vertices per face.
         for (const auto &fh : Mesh.faces()) {
             const auto &fn = Mesh.normal(fh);
-            const auto &fc = Mesh.color(fh);
+            const auto &fc = ToGlm(Mesh.color(fh));
             for (const auto &vh : Mesh.fv_range(fh)) {
-                const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : vec4{fc[0], fc[1], fc[2], 1};
+                const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : fc;
                 vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
@@ -66,6 +66,15 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
             vertices.emplace_back(GetPosition(vh0), GetVertexNormal(vh0), color);
             vertices.emplace_back(GetPosition(vh1), GetVertexNormal(vh1), color);
         }
+    } else if (mode == GeometryMode::Lines) {
+        vertices.reserve(Mesh.n_vertices());
+        for (const auto &vh : Mesh.vertices()) {
+            const auto &vc = ToGlm(Mesh.color(vh));
+            const vec4 color = vh == highlighted_vertex || DoesVertexBelongToFace(vh, highlighted_face) || DoesVertexBelongToEdge(vh, highlighted_edge) ? HighlightColor : vc;
+            vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
+        }
+    } else {
+        throw std::runtime_error("Invalid geometry mode: " + std::to_string(int(mode)));
     }
 
     return vertices;
@@ -123,12 +132,22 @@ Geometry::FH Geometry::TriangulatedIndexToFace(uint triangle_index) const {
     throw std::runtime_error("Invalid triangle index: " + std::to_string(triangle_index));
 }
 
-std::vector<uint> Geometry::GenerateLineIndices() const {
+std::vector<uint> Geometry::GenerateEdgeIndices() const {
     std::vector<uint> indices;
     indices.reserve(Mesh.n_edges() * 2);
     for (uint edge_i = 0; edge_i < Mesh.n_edges(); ++edge_i) {
         indices.push_back(edge_i * 2);
         indices.push_back(edge_i * 2 + 1);
+    }
+    return indices;
+}
+
+// Assumes all lines were created by adding two additional vertices (as in `AddLine`).
+std::vector<uint> Geometry::GenerateLineIndices() const {
+    std::vector<uint> indices;
+    indices.reserve(Mesh.n_vertices());
+    for (uint vertex_i = 0; vertex_i < Mesh.n_vertices(); ++vertex_i) {
+        indices.push_back(vertex_i);
     }
     return indices;
 }

@@ -17,9 +17,13 @@ using uint = unsigned int;
 
 namespace fs = std::filesystem;
 
-inline static glm::vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
-
 using MeshType = OpenMesh::PolyMesh_ArrayKernelT<>;
+
+inline static glm::vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
+inline static OpenMesh::Vec3f ToOpenMesh(const glm::vec3 &v) { return {v.x, v.y, v.z}; }
+
+inline static MeshType::Color ToOpenMesh(const glm::vec4 &c) { return {c.r, c.g, c.b}; }
+inline static glm::vec4 ToGlm(const MeshType::Color &c) { return {c[0], c[1], c[2], 1}; }
 
 struct Geometry {
     using VH = OpenMesh::VertexHandle;
@@ -28,10 +32,19 @@ struct Geometry {
     using HH = OpenMesh::HalfedgeHandle;
     using Point = OpenMesh::Vec3f;
 
-    Geometry() {
+    enum class ColorMode {
+        None,
+        Face,
+        Vertex,
+        Edge,
+    };
+
+    Geometry(ColorMode color_mode = ColorMode::Face) {
         Mesh.request_face_normals();
         Mesh.request_vertex_normals();
-        Mesh.request_face_colors();
+        if (color_mode == ColorMode::Face) Mesh.request_face_colors();
+        else if (color_mode == ColorMode::Vertex) Mesh.request_vertex_colors();
+        else if (color_mode == ColorMode::Edge) Mesh.request_edge_colors();
     }
     Geometry(Geometry &&geometry) : Mesh(std::move(geometry.Mesh)) {}
     Geometry(const fs::path &file_path) {
@@ -65,12 +78,14 @@ struct Geometry {
     std::vector<Vertex3D> GenerateVertices(GeometryMode mode, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{});
     std::vector<uint> GenerateIndices(GeometryMode mode) const {
         return mode == GeometryMode::Faces ? GenerateTriangulatedFaceIndices() :
-            mode == GeometryMode::Edges    ? GenerateLineIndices() :
+            mode == GeometryMode::Edges    ? GenerateEdgeIndices() :
+            mode == GeometryMode::Lines    ? GenerateLineIndices() :
                                              GenerateTriangleIndices();
     }
 
     std::vector<uint> GenerateTriangleIndices() const; // Face indices after calling `Mesh.triangulate()`.
     std::vector<uint> GenerateTriangulatedFaceIndices() const; // Triangle fan for each face.
+    std::vector<uint> GenerateEdgeIndices() const;
     std::vector<uint> GenerateLineIndices() const;
 
     FH TriangulatedIndexToFace(uint triangle_index) const; // Convert index generated with `GenerateTriangulatedFaceIndices()` to a face handle.
@@ -94,17 +109,25 @@ struct Geometry {
         Mesh.request_vertex_normals();
     }
 
-    void SetFaceColor(FH fh, const glm::vec4 &face_color) {
-        Mesh.set_color(fh, {face_color.r, face_color.g, face_color.b});
+    void SetVertexColor(VH vh, const glm::vec4 &vertex_color) { Mesh.set_color(vh, ToOpenMesh(vertex_color)); }
+    void SetVertexColor(const glm::vec4 &vertex_color) {
+        for (const auto &vh : Mesh.vertices()) SetVertexColor(vh, vertex_color);
     }
+    void AddVertex(const glm::vec3 &position, const glm::vec4 &color = {1, 1, 1, 1}) { SetVertexColor(Mesh.add_vertex(ToOpenMesh(position)), color); }
+    void SetFaceColor(FH fh, const glm::vec4 &face_color) { Mesh.set_color(fh, {face_color.r, face_color.g, face_color.b}); }
     void SetFaceColor(const glm::vec4 &face_color) {
         for (const auto &fh : Mesh.faces()) SetFaceColor(fh, face_color);
     }
+    void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = {1, 1, 1, 1}) { SetFaceColor(Mesh.add_face(vertices), color); }
 
     void SetEdgeColor(const glm::vec4 &edge_color) { EdgeColor = edge_color; }
 
-    void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = {1, 1, 1, 1}) {
-        SetFaceColor(Mesh.add_face(vertices), color);
+    // OpenMesh does not support lines directly so we just use naked vertices.
+    // This method is only used to create "line soups" by calling this method multiple times and using `GenerateLineIndices()`.
+    // Don't mix with other `Add...` methods.
+    void AddLine(glm::vec3 p1, glm::vec3 p2, const glm::vec4 &color = {1, 1, 1, 1}) {
+        AddVertex(p1, color);
+        AddVertex(p2, color);
     }
 
     bool DoesVertexBelongToFace(VH vertex, FH face) const;

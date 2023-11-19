@@ -5,4 +5,5 @@ enum class GeometryMode {
     Faces, // Vertices are duplicated for each face. Each vertex uses the face normal.
     Vertices, // Vertices are not duplicated. Each vertex uses the vertex normal.
     Edges, // Vertices are not duplicated. Each vertex uses the vertex normal.
+    Lines, // Each line is composed of two consecutive vertices.
 };
