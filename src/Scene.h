@@ -198,4 +198,5 @@ private:
 
     bool ShowGrid{true};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}};  // Color taken from Blender's default `Preferences->3D Viewport->Active Object`.
+    glm::vec4 BgColor {0.22, 0.22, 0.22, 1.};
 };

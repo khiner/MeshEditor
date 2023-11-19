@@ -419,7 +419,7 @@ void Scene::UpdateTransform() {
 
 using namespace ImGui;
 
-static vk::ClearColorValue ImVec4ToClearColor(const ImVec4 &v) { return {v.x, v.y, v.z, v.w}; }
+static vk::ClearColorValue GlmToClearColor(const glm::vec4 &v) { return {v.r, v.g, v.b, v.a}; }
 
 bool Scene::Render() {
     const auto new_extent = GetContentRegionAvail();
@@ -442,7 +442,7 @@ bool Scene::Render() {
         }
     }
 
-    const auto &bg_color = ImVec4ToClearColor(GetStyleColorVec4(ImGuiCol_WindowBg));
+    const auto &bg_color = GlmToClearColor(BgColor);
     const bool extent_changed = Extent.width != new_extent.x || Extent.height != new_extent.y;
     const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
     if (!extent_changed && !bg_color_changed) return false;

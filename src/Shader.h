@@ -34,7 +34,7 @@ struct Shaders {
 };
 
 // Convenience generators for default pipeline states.
-inline static vk::PipelineDepthStencilStateCreateInfo GenerateDepthStencil(bool test_depth = true, bool write_depth = true, vk::CompareOp depth_compare_op = vk::CompareOp::eLessOrEqual) {
+inline static vk::PipelineDepthStencilStateCreateInfo GenerateDepthStencil(bool test_depth = true, bool write_depth = true, vk::CompareOp depth_compare_op = vk::CompareOp::eLess) {
     return {
         {}, // flags
         test_depth, // depthTestEnable

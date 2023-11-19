@@ -13,11 +13,11 @@ layout(set = 0, binding = 1) uniform LightUBO {
 } Light;
 
 void main() {
-    vec3 light_color = Light.ColorAndAmbient.xyz;
-    float light_ambient = Light.ColorAndAmbient.w;
-    vec3 diffuse_lighting = max(dot(normalize(FragNormal), -normalize(Light.Direction)), 0.0) * light_color;
-    vec3 ambient_lighting = light_color * light_ambient;
-    vec3 lighting = diffuse_lighting + ambient_lighting;
+    const vec3 light_color = Light.ColorAndAmbient.xyz;
+    const float light_ambient = Light.ColorAndAmbient.w;
+    const vec3 diffuse_lighting = max(dot(normalize(FragNormal), -normalize(Light.Direction)), 0.0) * light_color;
+    const vec3 ambient_lighting = light_color * light_ambient;
+    const vec3 lighting = diffuse_lighting + ambient_lighting;
 
     OutColor = vec4(FragColor.rgb * lighting, FragColor.a);
 }
