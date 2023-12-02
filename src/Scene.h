@@ -169,7 +169,7 @@ private:
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
 
     Camera Camera{{0, 0, 2}, Origin, 60, 0.1, 100};
-    Light Light{{1, 1, 1, 0.6}, {0, 0, -1}}; // White light coming from the Z direction.
+    Light MeshEditLight{{1, 1, 1, 0.1}, {}}; // White light and ambient value. Agnostic to direction, since we use the view position to compute the direction.
 
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
@@ -181,7 +181,7 @@ private:
     vk::ClearColorValue BackgroundColor;
 
     VulkanBuffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
-    VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Light)};
+    VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(MeshEditLight)};
     VulkanBuffer ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)};
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
     VulkanBuffer SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
@@ -197,6 +197,6 @@ private:
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
 
     bool ShowGrid{true};
-    SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}};  // Color taken from Blender's default `Preferences->3D Viewport->Active Object`.
-    glm::vec4 BgColor {0.22, 0.22, 0.22, 1.};
+    SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Color taken from Blender's default `Preferences->Themes->3D Viewport->Active Object`.
+    glm::vec4 BgColor{0.22, 0.22, 0.22, 1.};
 };

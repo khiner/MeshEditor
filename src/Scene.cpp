@@ -300,7 +300,7 @@ Scene::Scene(const VulkanContext &vc)
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
     UpdateTransform();
-    VC.CreateOrUpdateBuffer(LightBuffer, &Light);
+    VC.CreateOrUpdateBuffer(LightBuffer, &MeshEditLight);
     VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
     MainRenderPipeline.UpdateDescriptors(
         {*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE},
@@ -469,7 +469,7 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    // Handle mouse scroll.
+    // Handle mouse wheel zoom.
     const float mouse_wheel = GetIO().MouseWheel;
     if (mouse_wheel != 0 && IsWindowHovered()) Camera.SetTargetDistance(Camera.GetDistance() * (1.f - mouse_wheel / 16.f));
 
@@ -507,11 +507,13 @@ void Scene::RenderControls() {
         }
         if (BeginTabItem("Light")) {
             bool light_changed = false;
-            light_changed |= SliderFloat("Ambient intensity", &Light.ColorAndAmbient[3], 0, 1);
-            light_changed |= ColorEdit3("Diffuse color", &Light.ColorAndAmbient[0]);
-            light_changed |= SliderFloat3("Direction", &Light.Direction.x, -1, 1);
+            light_changed |= SliderFloat("Ambient intensity", &MeshEditLight.ColorAndAmbient[3], 0, 1);
+            light_changed |= ColorEdit3("Diffuse color", &MeshEditLight.ColorAndAmbient[0]);
+            // We use the view position to compute the light direction for mesh editing.
+            // Keeping this here as a reminder for future light direction controls.
+            // light_changed |= SliderFloat3("Direction", &MeshEditLight.Direction.x, -1, 1);
             if (light_changed) {
-                VC.CreateOrUpdateBuffer(LightBuffer, &Light);
+                VC.CreateOrUpdateBuffer(LightBuffer, &MeshEditLight);
                 SubmitCommandBuffer();
             }
             EndTabItem();
