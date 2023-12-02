@@ -27,7 +27,10 @@ static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice 
     return vk::SampleCountFlagBits::e1;
 }
 
-static const auto ImageFormat = vk::Format::eB8G8R8A8Unorm;
+namespace ImageFormat {
+static const auto Color = vk::Format::eB8G8R8A8Unorm;
+static const auto Float = vk::Format::eR32G32B32A32Sfloat;
+} // namespace ImageFormat
 
 struct Gizmo {
     void Begin() const {
@@ -123,9 +126,9 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
         // Depth attachment.
         {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
         // Multisampled offscreen image.
-        {{}, ImageFormat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, ImageFormat::Color, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         // Single-sampled resolve.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, ImageFormat::Color, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -147,9 +150,10 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
     );
     ShaderPipelines[SPT::Texture] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}},
-        // For the silhouette edge texture, we want to render all its pixels, but also explicitly override the depth buffer to make edge pixels "stick" to the geometry they are derived from.
-        // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers optimize out depth writes when depth testing is disabled,
-        // so instead we configure a depth test that always passes.
+        // We render all the silhouette edge texture's pixels regardless of the tested depth value,
+        // but also explicitly override the depth buffer to make edge pixels "stick" to the geometry they are derived from.
+        // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers
+        // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples
     );
 }
@@ -194,13 +198,13 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
     );
     OffscreenImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        {{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
     ResolveImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        {{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
     const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
@@ -214,7 +218,7 @@ void MainRenderPipeline::Begin(vk::CommandBuffer command_buffer, const vk::Clear
 SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
@@ -238,8 +242,8 @@ void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     OffscreenImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
     const std::array image_views{*OffscreenImage.View};
@@ -254,14 +258,14 @@ void SilhouetteRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
 EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
-        {{}, ImageFormat, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::EdgeDetection] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Sobel.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "GeometryEdges.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
@@ -278,8 +282,8 @@ void EdgeDetectionRenderPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     OffscreenImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
     const std::array image_views{*OffscreenImage.View};
@@ -320,9 +324,9 @@ void Scene::SetExtent(vk::Extent2D extent) {
     SilhouetteRenderPipeline.SetExtent(extent);
     SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
         {},
-        vk::Filter::eLinear,
-        vk::Filter::eLinear,
-        vk::SamplerMipmapMode::eLinear,
+        vk::Filter::eNearest,
+        vk::Filter::eNearest,
+        vk::SamplerMipmapMode::eNearest,
         // Prevent edge detection from wrapping around to the other side of the image.
         // Instead, use the pixel value at the nearest edge.
         vk::SamplerAddressMode::eClampToEdge,
@@ -332,7 +336,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
 
     EdgeDetectionRenderPipeline.UpdateImageDescriptors({*SilhouetteFillImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal});
     EdgeDetectionRenderPipeline.SetExtent(extent);
-    SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+    SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
     MainRenderPipeline.UpdateImageDescriptors({*SilhouetteEdgeImageSampler, *EdgeDetectionRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal});
 }
 
