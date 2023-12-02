@@ -140,6 +140,8 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
     ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
 };
 
+inline static const Camera DefaultCamera{{0, 0, 2}, Origin, 60, 0.1, 100};
+
 struct Scene {
     Scene(const VulkanContext &);
     ~Scene();
@@ -168,7 +170,7 @@ private:
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
 
-    Camera Camera{{0, 0, 2}, Origin, 60, 0.1, 100};
+    Camera Camera{DefaultCamera};
     Light MeshEditLight{{1, 1, 1, 0.1}, {}}; // White light and ambient value. Agnostic to direction, since we use the view position to compute the direction.
 
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
