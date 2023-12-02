@@ -170,12 +170,12 @@ void MainRenderPipeline::UpdateDescriptors(
     const auto &grid_sp = ShaderPipelines.at(SPT::Grid);
     const auto &texture_sp = ShaderPipelines.at(SPT::Texture);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*fill_sp->DescriptorSet, fill_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
-        {*fill_sp->DescriptorSet, fill_sp->GetBinding("LightUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &light},
-        {*line_sp->DescriptorSet, line_sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
-        {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjectionUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj},
-        {*grid_sp->DescriptorSet, grid_sp->GetBinding("ViewProjNearFarUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &view_proj_near_far},
-        {*texture_sp->DescriptorSet, texture_sp->GetBinding("SilhouetteDisplayUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &silhouette_display},
+        fill_sp->CreateWriteDescriptorSet("TransformUBO", &transform),
+        fill_sp->CreateWriteDescriptorSet("LightUBO", &light),
+        line_sp->CreateWriteDescriptorSet("TransformUBO", &transform),
+        grid_sp->CreateWriteDescriptorSet("ViewProjectionUBO", &view_proj),
+        grid_sp->CreateWriteDescriptorSet("ViewProjNearFarUBO", &view_proj_near_far),
+        texture_sp->CreateWriteDescriptorSet("SilhouetteDisplayUBO", &silhouette_display),
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -183,7 +183,7 @@ void MainRenderPipeline::UpdateDescriptors(
 void MainRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_edge_image) const {
     const auto &sp = ShaderPipelines.at(SPT::Texture);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("SilhouetteEdgeTexture"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_edge_image},
+        sp->CreateWriteDescriptorSet("SilhouetteEdgeTexture", &silhouette_edge_image),
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -233,7 +233,7 @@ SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : Re
 void SilhouetteRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo transform) const {
     const auto &sp = ShaderPipelines.at(SPT::Silhouette);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("TransformUBO"), 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &transform},
+        sp->CreateWriteDescriptorSet("TransformUBO", &transform),
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
@@ -273,7 +273,7 @@ EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc
 void EdgeDetectionRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const {
     const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
     const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        {*sp->DescriptorSet, sp->GetBinding("Tex"), 0, 1, vk::DescriptorType::eCombinedImageSampler, &silhouette_fill_image},
+        sp->CreateWriteDescriptorSet("Tex", &silhouette_fill_image),
     };
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }

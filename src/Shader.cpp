@@ -41,9 +41,13 @@ std::vector<uint> Shaders::Compile(ShaderType type) const {
 }
 
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
+    Modules.clear();
+    Resources.clear();
+    Bindings.clear();
+    BindingsByName.clear();
+
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
     stages.reserve(Paths.size());
-    Bindings.clear();
     for (const auto &[type, path] : Paths) {
         const auto &spirv = Compile(type);
         spirv_cross::Compiler comp(spirv);
@@ -53,15 +57,15 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
         for (const auto &resource : Resources.at(type)->uniform_buffers) {
             // Only using a single set for now. Otherwise, we'd group bindings by set.
             // uint set = comp.get_decoration(resource.id, spv::DecorationDescriptorSet);
-            uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+            const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
             Bindings.emplace_back(binding, vk::DescriptorType::eUniformBuffer, 1, type);
-            BindingForResourceName[resource.name] = binding;
+            BindingsByName.emplace(resource.name, binding);
         }
 
         for (const auto &resource : Resources.at(type)->sampled_images) {
-            uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+            const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
             Bindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
-            BindingForResourceName[resource.name] = binding;
+            BindingsByName.emplace(resource.name, binding);
         }
 
         stages.push_back({{}, type, *Modules.at(type), "main"});
@@ -97,6 +101,15 @@ ShaderPipeline::ShaderPipeline(
     PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
     const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, 1, &(*DescriptorSetLayout)};
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());
+}
+
+vk::WriteDescriptorSet ShaderPipeline::CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorBufferInfo *buffer_info) const {
+    const auto binding = GetBinding(binding_name);
+    return {*DescriptorSet, binding, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, buffer_info};
+}
+vk::WriteDescriptorSet ShaderPipeline::CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorImageInfo *image_info) const {
+    const auto binding = GetBinding(binding_name);
+    return {*DescriptorSet, binding, 0, 1, vk::DescriptorType::eCombinedImageSampler, image_info, nullptr};
 }
 
 void ShaderPipeline::Compile(vk::RenderPass render_pass) {

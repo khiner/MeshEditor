@@ -24,13 +24,13 @@ struct Shaders {
     // Populates `Modules`, `Resources`, and `Bindings`.
     std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(vk::Device);
     std::vector<uint> Compile(ShaderType) const;
-    inline uint GetBinding(const std::string &name) const { return BindingForResourceName.at(name); }
+    inline uint GetBinding(const std::string &name) const { return BindingsByName.at(name); }
 
     std::unordered_map<ShaderType, fs::path> Paths; // Paths are relative to the `Shaders` directory.
     std::unordered_map<ShaderType, vk::UniqueShaderModule> Modules;
     std::unordered_map<ShaderType, std::unique_ptr<spirv_cross::ShaderResources>> Resources;
     std::vector<vk::DescriptorSetLayoutBinding> Bindings;
-    std::unordered_map<std::string, uint> BindingForResourceName;
+    std::unordered_map<std::string, uint> BindingsByName;
 };
 
 // Convenience generators for default pipeline states.
@@ -85,6 +85,9 @@ struct ShaderPipeline {
     ~ShaderPipeline() = default;
 
     void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
+
+    vk::WriteDescriptorSet CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorBufferInfo *) const;
+    vk::WriteDescriptorSet CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorImageInfo *) const;
     inline uint GetBinding(const std::string &name) const { return Shaders.GetBinding(name); }
 
     void RenderQuad(vk::CommandBuffer command_buffer) const;
