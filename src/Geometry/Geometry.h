@@ -18,6 +18,14 @@ using uint = unsigned int;
 namespace fs = std::filesystem;
 
 inline static glm::vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
+inline static glm::vec4 ToGlm(const OpenMesh::Vec3uc &c) {
+    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
+    return {cc[0], cc[1], cc[2], 1};
+}
+inline static OpenMesh::Vec3uc ToOpenMesh(const glm::vec4 &c) {
+    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
+    return {cc[0], cc[1], cc[2]};
+}
 
 using MeshType = OpenMesh::PolyMesh_ArrayKernelT<>;
 
@@ -27,6 +35,8 @@ struct Geometry {
     using EH = OpenMesh::EdgeHandle;
     using HH = OpenMesh::HalfedgeHandle;
     using Point = OpenMesh::Vec3f;
+
+    inline static const glm::vec4 DefaultFaceColor = {0.75, 0.75, 0.75, 1};
 
     Geometry() {
         Mesh.request_face_normals();
@@ -95,7 +105,7 @@ struct Geometry {
     }
 
     void SetFaceColor(FH fh, const glm::vec4 &face_color) {
-        Mesh.set_color(fh, {face_color.r, face_color.g, face_color.b});
+        Mesh.set_color(fh, ToOpenMesh(face_color));
     }
     void SetFaceColor(const glm::vec4 &face_color) {
         for (const auto &fh : Mesh.faces()) SetFaceColor(fh, face_color);
@@ -103,7 +113,7 @@ struct Geometry {
 
     void SetEdgeColor(const glm::vec4 &edge_color) { EdgeColor = edge_color; }
 
-    void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = {1, 1, 1, 1}) {
+    void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = DefaultFaceColor) {
         SetFaceColor(Mesh.add_face(vertices), color);
     }
 

@@ -46,7 +46,7 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
             const auto &fn = Mesh.normal(fh);
             const auto &fc = Mesh.color(fh);
             for (const auto &vh : Mesh.fv_range(fh)) {
-                const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : vec4{fc[0], fc[1], fc[2], 1};
+                const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : ToGlm(fc);
                 vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
