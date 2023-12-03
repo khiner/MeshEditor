@@ -14,7 +14,7 @@ void main() {
         const float depth = value.g;
         gl_FragDepth = depth;
         OutColor = SilhouetteDisplay.Color;
-        OutColor.a *= value.a; // The alpha channel may store a normalized edge detection weight, which we use it here for alpha smoothing.
+        OutColor.a *= value.a; // The alpha channel may store a normalized edge detection weight, which we use it here for alpha to support "antialiasing".
     } else {
         discard;
     }

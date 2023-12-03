@@ -6,7 +6,7 @@
 
 struct VulkanContext;
 struct Ray;
-// todo line mode buffers can share vertex buffers with smooth mode.
+// todo edge mode buffers can share vertex buffers with vertices mode.
 struct GeometryBuffers {
     // Redundantly store the vertices and indices in the CPU for easy access.
     std::vector<Vertex3D> Vertices;

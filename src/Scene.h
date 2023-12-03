@@ -167,7 +167,7 @@ private:
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
 
     Camera Camera{DefaultCamera};
-    Light MeshEditLight{{1, 1, 1, 0.1}, {}}; // White light and ambient value. Agnostic to direction, since we use the view position to compute the direction.
+    Light MeshEditLight{{1, 1, 1, 0.2}, {}}; // White light and ambient value. Agnostic to direction, since we use the view position to compute the direction.
 
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.

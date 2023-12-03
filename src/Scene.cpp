@@ -138,15 +138,15 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
 
     ShaderPipelines[SPT::Fill] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Line] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
-        vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+        vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(true, false), MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(true), CreateDepthStencil(true, false), MsaaSamples
     );
     ShaderPipelines[SPT::Texture] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}},
@@ -154,11 +154,11 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
         // but also explicitly override the depth buffer to make edge pixels "stick" to the geometry they are derived from.
         // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers
         // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples
     );
     ShaderPipelines[SPT::DebugNormals] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
     );
 }
 
@@ -213,7 +213,7 @@ SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : Re
 
     ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
 
@@ -245,7 +245,7 @@ EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc
 
     ShaderPipelines[SPT::EdgeDetection] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "GeometryEdges.frag"}}},
-        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
 
@@ -364,7 +364,7 @@ void Scene::RecordCommandBuffer() {
     } else if (RenderMode == RenderMode::FacesAndEdges) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Faces);
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Line, GeometryMode::Edges);
-    } else if (RenderMode == RenderMode::Smooth) {
+    } else if (RenderMode == RenderMode::Vertices) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Vertices);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(command_buffer);
@@ -511,7 +511,7 @@ void Scene::RenderControls() {
             SameLine();
             render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
             SameLine();
-            render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
+            render_mode_changed |= RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
 
             int color_mode = int(ColorMode);
             bool color_mode_changed = false;

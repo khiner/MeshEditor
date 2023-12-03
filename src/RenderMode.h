@@ -5,8 +5,8 @@ enum class RenderMode {
     FacesAndEdges,
     Faces,
     Edges,
-    Smooth, // Uses vertices geometry mode.
-    Silhouette, // Uses the silhouette render pipeline.
+    Vertices,
+    Silhouette,
 };
 
 enum class ColorMode {
