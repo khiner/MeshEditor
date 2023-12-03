@@ -49,8 +49,13 @@ struct ViewProjNearFar {
     float Far;
 };
 
-struct Light {
-    glm::vec4 ColorAndAmbient; // RGB = color, A = ambient intensity. This is done for 16-byte alignment.
+struct Lights {
+    // RGB: Color of the light emitting from the view position.
+    // A: Ambient intensity. (Using a single vec4 for 16-byte alignment.)
+    glm::vec4 ViewColorAndAmbient;
+    // RGB: Color of the directional light.
+    // A: Intensity of the directional light.
+    glm::vec4 DirectionalColorAndIntensity;
     glm::vec3 Direction;
 };
 
@@ -167,7 +172,7 @@ private:
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
 
     Camera Camera{DefaultCamera};
-    Light MeshEditLight{{1, 1, 1, 0.2}, {}}; // White light and ambient value. Agnostic to direction, since we use the view position to compute the direction.
+    Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
@@ -180,7 +185,7 @@ private:
     vk::ClearColorValue BackgroundColor;
 
     VulkanBuffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
-    VulkanBuffer LightBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(MeshEditLight)};
+    VulkanBuffer LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)};
     VulkanBuffer ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)};
     VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
     VulkanBuffer SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};

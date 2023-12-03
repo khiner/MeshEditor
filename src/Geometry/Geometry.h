@@ -36,7 +36,7 @@ struct Geometry {
     using HH = OpenMesh::HalfedgeHandle;
     using Point = OpenMesh::Vec3f;
 
-    inline static const glm::vec4 DefaultFaceColor = {0.75, 0.75, 0.75, 1};
+    inline static const glm::vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
 
     Geometry() {
         Mesh.request_face_normals();

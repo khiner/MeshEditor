@@ -271,12 +271,12 @@ Scene::Scene(const VulkanContext &vc)
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateGeometryEdgeColors();
     UpdateTransform();
-    VC.CreateOrUpdateBuffer(LightBuffer, &MeshEditLight);
+    VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
     VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
     vk::DescriptorBufferInfo transform_buffer = {*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
     MainRenderPipeline.UpdateDescriptors({
         {SPT::Fill, "TransformUBO", transform_buffer},
-        {SPT::Fill, "LightUBO", vk::DescriptorBufferInfo{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+        {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{*LightsBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Line, "TransformUBO", transform_buffer},
         {SPT::Grid, "ViewProjectionUBO", vk::DescriptorBufferInfo{*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}},
@@ -485,15 +485,15 @@ void Scene::RenderControls() {
             }
             EndTabItem();
         }
-        if (BeginTabItem("Light")) {
+        if (BeginTabItem("Lights")) {
             bool light_changed = false;
-            light_changed |= SliderFloat("Ambient intensity", &MeshEditLight.ColorAndAmbient[3], 0, 1);
-            light_changed |= ColorEdit3("Diffuse color", &MeshEditLight.ColorAndAmbient[0]);
-            // We use the view position to compute the light direction for mesh editing.
-            // Keeping this here as a reminder for future light direction controls.
-            // light_changed |= SliderFloat3("Direction", &MeshEditLight.Direction.x, -1, 1);
+            light_changed |= ColorEdit3("View light color", &Lights.ViewColorAndAmbient[0]);
+            light_changed |= SliderFloat("Ambient intensity", &Lights.ViewColorAndAmbient[3], 0, 1);
+            light_changed |= ColorEdit3("Directional color", &Lights.DirectionalColorAndIntensity[0]);
+            light_changed |= SliderFloat("Directional intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
+            light_changed |= SliderFloat3("Direction (xyz)", &Lights.Direction.x, -1, 1);
             if (light_changed) {
-                VC.CreateOrUpdateBuffer(LightBuffer, &MeshEditLight);
+                VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
                 SubmitCommandBuffer();
             }
             EndTabItem();
