@@ -156,6 +156,10 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
         // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, GenerateColorBlendAttachment(true), GenerateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples
     );
+    ShaderPipelines[SPT::DebugNormals] = std::make_unique<ShaderPipeline>(
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, GenerateColorBlendAttachment(true), GenerateDepthStencil(), MsaaSamples
+    );
 }
 
 void RenderPipeline::UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&descriptors) const {
@@ -277,6 +281,7 @@ Scene::Scene(const VulkanContext &vc)
         {SPT::Grid, "ViewProjectionUBO", vk::DescriptorBufferInfo{*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+        {SPT::DebugNormals, "TransformUBO", transform_buffer},
     });
     SilhouetteRenderPipeline.UpdateDescriptors({
         {SPT::Silhouette, "TransformUBO", transform_buffer},
@@ -351,15 +356,16 @@ void Scene::RecordCommandBuffer() {
     command_buffer.endRenderPass();
 
     MainRenderPipeline.Begin(command_buffer, BackgroundColor);
-    if (Mode == RenderMode::Faces) {
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Faces);
-    } else if (Mode == RenderMode::Edges) {
+    const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+    if (RenderMode == RenderMode::Faces) {
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Faces);
+    } else if (RenderMode == RenderMode::Edges) {
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Line, GeometryMode::Edges);
-    } else if (Mode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Faces);
+    } else if (RenderMode == RenderMode::FacesAndEdges) {
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Faces);
         MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Line, GeometryMode::Edges);
-    } else if (Mode == RenderMode::Smooth) {
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Fill, GeometryMode::Vertices);
+    } else if (RenderMode == RenderMode::Smooth) {
+        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Vertices);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(command_buffer);
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(command_buffer);
@@ -382,7 +388,7 @@ void Scene::CompileShaders() {
 }
 
 void Scene::UpdateGeometryEdgeColors() {
-    const auto &edge_color = Mode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+    const auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
     for (auto &geometry : GeometryInstances) geometry->SetEdgeColor(edge_color);
 }
 
@@ -497,8 +503,8 @@ void Scene::RenderControls() {
                 RecordCommandBuffer();
                 SubmitCommandBuffer();
             }
-            SeparatorText("Render");
-            int render_mode = int(Mode);
+            SeparatorText("Render mode");
+            int render_mode = int(RenderMode);
             bool render_mode_changed = RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
             SameLine();
             render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
@@ -506,14 +512,23 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
             SameLine();
             render_mode_changed |= RadioButton("Smooth", &render_mode, int(RenderMode::Smooth));
-            if (render_mode_changed) {
-                Mode = RenderMode(render_mode);
+
+            int color_mode = int(ColorMode);
+            bool color_mode_changed = false;
+            if (RenderMode != RenderMode::Edges) {
+                SeparatorText("Fill color mode");
+                color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
+                color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
+            }
+            if (render_mode_changed || color_mode_changed) {
+                RenderMode = ::RenderMode(render_mode);
+                ColorMode = ::ColorMode(color_mode);
                 UpdateGeometryEdgeColors(); // Different modes use different edge colors for better visibility.
                 RecordCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
                 SubmitCommandBuffer();
             }
-            if (Mode == RenderMode::FacesAndEdges || Mode == RenderMode::Edges) {
-                auto &edge_color = Mode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+            if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
+                auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
                 if (ColorEdit3("Edge color", &edge_color.x)) {
                     UpdateGeometryEdgeColors();
                     SubmitCommandBuffer();

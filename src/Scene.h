@@ -67,6 +67,7 @@ enum class ShaderPipelineType {
     Silhouette,
     EdgeDetection,
     Texture,
+    DebugNormals,
 };
 using SPT = ShaderPipelineType;
 
@@ -171,7 +172,8 @@ private:
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
 
-    RenderMode Mode{RenderMode::FacesAndEdges};
+    RenderMode RenderMode{RenderMode::FacesAndEdges};
+    ColorMode ColorMode{ColorMode::Mesh};
     SelectionMode SelectionMode{SelectionMode::None};
 
     vk::Extent2D Extent;
