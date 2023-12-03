@@ -103,13 +103,12 @@ ShaderPipeline::ShaderPipeline(
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());
 }
 
-vk::WriteDescriptorSet ShaderPipeline::CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorBufferInfo *buffer_info) const {
-    const auto binding = GetBinding(binding_name);
-    return {*DescriptorSet, binding, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, buffer_info};
-}
-vk::WriteDescriptorSet ShaderPipeline::CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorImageInfo *image_info) const {
-    const auto binding = GetBinding(binding_name);
-    return {*DescriptorSet, binding, 0, 1, vk::DescriptorType::eCombinedImageSampler, image_info, nullptr};
+std::optional<vk::WriteDescriptorSet> ShaderPipeline::CreateWriteDescriptorSet(const std::string &binding_name, const vk::DescriptorBufferInfo *buffer_info, const vk::DescriptorImageInfo *image_info) const {
+    if (!Shaders.HasBinding(binding_name)) return std::nullopt;
+
+    const auto binding = Shaders.GetBinding(binding_name);
+    if (buffer_info) return {{*DescriptorSet, binding, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, buffer_info}};
+    return {{*DescriptorSet, binding, 0, 1, vk::DescriptorType::eCombinedImageSampler, image_info, nullptr}};
 }
 
 void ShaderPipeline::Compile(vk::RenderPass render_pass) {

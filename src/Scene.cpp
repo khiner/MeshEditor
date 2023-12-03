@@ -158,33 +158,16 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
     );
 }
 
-void MainRenderPipeline::UpdateDescriptors(
-    vk::DescriptorBufferInfo transform,
-    vk::DescriptorBufferInfo light,
-    vk::DescriptorBufferInfo view_proj,
-    vk::DescriptorBufferInfo view_proj_near_far,
-    vk::DescriptorBufferInfo silhouette_display
-) const {
-    const auto &fill_sp = ShaderPipelines.at(SPT::Fill);
-    const auto &line_sp = ShaderPipelines.at(SPT::Line);
-    const auto &grid_sp = ShaderPipelines.at(SPT::Grid);
-    const auto &texture_sp = ShaderPipelines.at(SPT::Texture);
-    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        fill_sp->CreateWriteDescriptorSet("TransformUBO", &transform),
-        fill_sp->CreateWriteDescriptorSet("LightUBO", &light),
-        line_sp->CreateWriteDescriptorSet("TransformUBO", &transform),
-        grid_sp->CreateWriteDescriptorSet("ViewProjectionUBO", &view_proj),
-        grid_sp->CreateWriteDescriptorSet("ViewProjNearFarUBO", &view_proj_near_far),
-        texture_sp->CreateWriteDescriptorSet("SilhouetteDisplayUBO", &silhouette_display),
-    };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
-}
-
-void MainRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_edge_image) const {
-    const auto &sp = ShaderPipelines.at(SPT::Texture);
-    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        sp->CreateWriteDescriptorSet("SilhouetteEdgeTexture", &silhouette_edge_image),
-    };
+void RenderPipeline::UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&descriptors) const {
+    std::vector<vk::WriteDescriptorSet> write_descriptor_sets;
+    for (const auto &descriptor : descriptors) {
+        const auto &sp = ShaderPipelines.at(descriptor.PipelineType);
+        const auto *buffer_info = descriptor.BufferInfo.has_value() ? &(*descriptor.BufferInfo) : nullptr;
+        const auto *image_info = descriptor.ImageInfo.has_value() ? &(*descriptor.ImageInfo) : nullptr;
+        if (auto ds = sp->CreateWriteDescriptorSet(descriptor.BindingName, buffer_info, image_info)) {
+            write_descriptor_sets.push_back(*ds);
+        }
+    }
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
@@ -230,14 +213,6 @@ SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : Re
     );
 }
 
-void SilhouetteRenderPipeline::UpdateDescriptors(vk::DescriptorBufferInfo transform) const {
-    const auto &sp = ShaderPipelines.at(SPT::Silhouette);
-    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        sp->CreateWriteDescriptorSet("TransformUBO", &transform),
-    };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
-}
-
 void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     OffscreenImage.Create(
@@ -270,14 +245,6 @@ EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc
     );
 }
 
-void EdgeDetectionRenderPipeline::UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const {
-    const auto &sp = ShaderPipelines.at(SPT::EdgeDetection);
-    const std::vector<vk::WriteDescriptorSet> write_descriptor_sets{
-        sp->CreateWriteDescriptorSet("Tex", &silhouette_fill_image),
-    };
-    VC.Device->updateDescriptorSets(write_descriptor_sets, {});
-}
-
 void EdgeDetectionRenderPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     OffscreenImage.Create(
@@ -302,14 +269,18 @@ Scene::Scene(const VulkanContext &vc)
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightBuffer, &MeshEditLight);
     VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
-    MainRenderPipeline.UpdateDescriptors(
-        {*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE},
-        {*LightBuffer.Buffer, 0, VK_WHOLE_SIZE},
-        {*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE},
-        {*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE},
-        {*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}
-    );
-    SilhouetteRenderPipeline.UpdateDescriptors({*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE});
+    vk::DescriptorBufferInfo transform_buffer = {*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    MainRenderPipeline.UpdateDescriptors({
+        {SPT::Fill, "TransformUBO", transform_buffer},
+        {SPT::Fill, "LightUBO", vk::DescriptorBufferInfo{*LightBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+        {SPT::Line, "TransformUBO", transform_buffer},
+        {SPT::Grid, "ViewProjectionUBO", vk::DescriptorBufferInfo{*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+        {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+        {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+    });
+    SilhouetteRenderPipeline.UpdateDescriptors({
+        {SPT::Silhouette, "TransformUBO", transform_buffer},
+    });
 
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
@@ -334,10 +305,14 @@ void Scene::SetExtent(vk::Extent2D extent) {
         vk::SamplerAddressMode::eClampToEdge,
     });
 
-    EdgeDetectionRenderPipeline.UpdateImageDescriptors({*SilhouetteFillImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal});
+    EdgeDetectionRenderPipeline.UpdateDescriptors({
+        {SPT::EdgeDetection, "Tex", std::nullopt, vk::DescriptorImageInfo{*SilhouetteFillImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
+    });
     EdgeDetectionRenderPipeline.SetExtent(extent);
     SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
-    MainRenderPipeline.UpdateImageDescriptors({*SilhouetteEdgeImageSampler, *EdgeDetectionRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal});
+    MainRenderPipeline.UpdateDescriptors({
+        {SPT::Texture, "SilhouetteEdgeTexture", std::nullopt, vk::DescriptorImageInfo{*SilhouetteEdgeImageSampler, *EdgeDetectionRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
+    });
 }
 
 void Scene::RecordCommandBuffer() {

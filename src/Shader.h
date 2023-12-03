@@ -24,6 +24,7 @@ struct Shaders {
     // Populates `Modules`, `Resources`, and `Bindings`.
     std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(vk::Device);
     std::vector<uint> Compile(ShaderType) const;
+    inline bool HasBinding(const std::string &name) const { return BindingsByName.contains(name); }
     inline uint GetBinding(const std::string &name) const { return BindingsByName.at(name); }
 
     std::unordered_map<ShaderType, fs::path> Paths; // Paths are relative to the `Shaders` directory.
@@ -86,9 +87,7 @@ struct ShaderPipeline {
 
     void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
 
-    vk::WriteDescriptorSet CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorBufferInfo *) const;
-    vk::WriteDescriptorSet CreateWriteDescriptorSet(const std::string &binding_name, vk::DescriptorImageInfo *) const;
-    inline uint GetBinding(const std::string &name) const { return Shaders.GetBinding(name); }
+    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(const std::string &binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
 
     void RenderQuad(vk::CommandBuffer command_buffer) const;
 

@@ -71,6 +71,13 @@ enum class ShaderPipelineType {
 using SPT = ShaderPipelineType;
 
 struct RenderPipeline {
+    struct ShaderBindingDescriptor {
+        SPT PipelineType;
+        std::string BindingName;
+        std::optional<vk::DescriptorBufferInfo> BufferInfo{};
+        std::optional<vk::DescriptorImageInfo> ImageInfo{};
+    };
+
     RenderPipeline(const VulkanContext &);
     virtual ~RenderPipeline();
 
@@ -80,6 +87,8 @@ struct RenderPipeline {
 
     inline const ShaderPipeline *GetShaderPipeline(SPT spt) const { return ShaderPipelines.at(spt).get(); }
     void CompileShaders();
+
+    void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
 
     void RenderGeometryBuffers(vk::CommandBuffer, const GeometryInstance &, SPT, GeometryMode) const;
 
@@ -97,16 +106,6 @@ struct MainRenderPipeline : RenderPipeline {
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
 
-    // All of the UBOs used in the pipeline.
-    void UpdateDescriptors(
-        vk::DescriptorBufferInfo transform,
-        vk::DescriptorBufferInfo light,
-        vk::DescriptorBufferInfo view_proj,
-        vk::DescriptorBufferInfo view_proj_near_far,
-        vk::DescriptorBufferInfo silhouette_display
-    ) const;
-    void UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_edge_image) const;
-
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
 
@@ -120,8 +119,6 @@ struct SilhouetteRenderPipeline : RenderPipeline {
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
 
-    void UpdateDescriptors(vk::DescriptorBufferInfo transform) const;
-
     vk::Extent2D Extent;
 
     ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
@@ -132,8 +129,6 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
 
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
-
-    void UpdateImageDescriptors(vk::DescriptorImageInfo silhouette_fill_image) const;
 
     vk::Extent2D Extent;
 
