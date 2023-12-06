@@ -1,16 +1,15 @@
 #pragma once
 
-#include "VulkanBuffer.h"
-
 #include "Geometry.h"
+#include "VulkanBuffer.h"
 
 struct VulkanContext;
 struct Ray;
+
 // todo edge mode buffers can share vertex buffers with vertices mode.
 struct GeometryBuffers {
-    // Redundantly store the vertices and indices in the CPU for easy access.
-    std::vector<Vertex3D> Vertices;
-    std::vector<uint> Indices;
+    std::vector<Vertex3D> Vertices{};
+    std::vector<uint> Indices{};
     VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
     VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
 };
@@ -18,7 +17,12 @@ struct GeometryBuffers {
 struct GeometryInstance {
     GeometryInstance(const VulkanContext &, Geometry &&);
 
+    void CreateOrUpdateBuffers(GeometryMode);
+    void CreateOrUpdateBuffers(); // Update all buffers.
+
     const GeometryBuffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
+    const GeometryBuffers *GetFaceNormalIndicatorBuffers() const { return FaceNormalIndicatorBuffers.get(); }
+    const GeometryBuffers *GetVertexNormalIndicatorBuffers() const { return VertexNormalIndicatorBuffers.get(); }
 
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
@@ -33,10 +37,8 @@ struct GeometryInstance {
     Geometry::EH FindNearestEdge(const Ray &ray_world) const;
     Geometry::EH FindNearestEdgeLocal(const Ray &ray_local) const; // Local space equivalent.
 
-    void SetEdgeColor(const glm::vec4 &color) {
-        G.SetEdgeColor(color);
-        CreateOrUpdateBuffers();
-    }
+    void ShowNormalIndicators(NormalIndicatorMode mode, bool show);
+
     bool HighlightFace(Geometry::FH face) {
         if (face == HighlightedFace) return false;
 
@@ -73,11 +75,9 @@ struct GeometryInstance {
 private:
     Geometry G;
     std::unordered_map<GeometryMode, GeometryBuffers> BuffersForMode;
+    std::unique_ptr<GeometryBuffers> FaceNormalIndicatorBuffers, VertexNormalIndicatorBuffers;
 
     Geometry::FH HighlightedFace{};
     Geometry::VH HighlightedVertex{};
     Geometry::EH HighlightedEdge{};
-
-    void CreateOrUpdateBuffers(GeometryMode);
-    void CreateOrUpdateBuffers(); // Update all buffers.
 };

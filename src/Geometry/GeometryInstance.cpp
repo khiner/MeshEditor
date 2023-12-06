@@ -30,6 +30,19 @@ void GeometryInstance::CreateOrUpdateBuffers(GeometryMode mode) {
     VC.CreateOrUpdateBuffer(buffers.IndexBuffer, buffers.Indices.data());
 }
 
+void GeometryInstance::ShowNormalIndicators(NormalIndicatorMode mode, bool show) {
+    auto &buffers = mode == NormalIndicatorMode::Faces ? FaceNormalIndicatorBuffers : VertexNormalIndicatorBuffers;
+    buffers.reset();
+    if (!show) return;
+
+    buffers = std::make_unique<GeometryBuffers>(G.GenerateVertices(mode), G.GenerateIndices(mode));
+    buffers->VertexBuffer.Size = sizeof(Vertex3D) * buffers->Vertices.size();
+    VC.CreateOrUpdateBuffer(buffers->VertexBuffer, buffers->Vertices.data());
+
+    buffers->IndexBuffer.Size = sizeof(uint) * buffers->Indices.size();
+    VC.CreateOrUpdateBuffer(buffers->IndexBuffer, buffers->Indices.data());
+}
+
 // Moller-Trumbore ray-triangle intersection algorithm.
 // Returns true if the ray intersects the triangle.
 // If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.

@@ -8,6 +8,7 @@
 #include "RenderMode.h"
 #include "Shader.h"
 #include "VulkanContext.h"
+#include "World.h"
 
 struct GeometryInstance;
 struct GeometryBuffers;
@@ -96,7 +97,7 @@ struct RenderPipeline {
 
     void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
 
-    void RenderGeometryBuffers(vk::CommandBuffer, const GeometryInstance &, SPT, GeometryMode) const;
+    void RenderBuffers(vk::CommandBuffer, const GeometryBuffers &, SPT) const;
 
     const VulkanContext &VC;
 
@@ -141,7 +142,7 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
     ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
 };
 
-inline static const Camera DefaultCamera{{0, 0, 2}, Origin, 60, 0.1, 100};
+inline static const Camera DefaultCamera{{0, 0, 2}, World::Origin, 60, 0.1, 100};
 
 struct Scene {
     Scene(const VulkanContext &);
@@ -162,7 +163,8 @@ struct Scene {
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
     void UpdateTransform(); // Updates buffers that depend on model/view/transform.
-    void UpdateGeometryEdgeColors();
+    void UpdateEdgeColors();
+    void UpdateNormalIndicators();
 
     const VulkanContext &VC;
 
@@ -170,6 +172,7 @@ private:
     void SetExtent(vk::Extent2D);
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
+    void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
     Camera Camera{DefaultCamera};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
@@ -180,6 +183,7 @@ private:
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
     SelectionMode SelectionMode{SelectionMode::None};
+    bool ShowFaceNormals{false}, ShowVertexNormals{false};
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
@@ -201,6 +205,6 @@ private:
     std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
 
     bool ShowGrid{true};
-    SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Color taken from Blender's default `Preferences->Themes->3D Viewport->Active Object`.
+    SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     glm::vec4 BgColor{0.22, 0.22, 0.22, 1.};
 };

@@ -109,8 +109,7 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-void RenderPipeline::RenderGeometryBuffers(vk::CommandBuffer command_buffer, const GeometryInstance &geometry_instance, SPT spt, GeometryMode mode) const {
-    const auto &buffers = geometry_instance.GetBuffers(mode);
+void RenderPipeline::RenderBuffers(vk::CommandBuffer command_buffer, const GeometryBuffers &buffers, SPT spt) const {
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
     command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
@@ -269,7 +268,7 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer command_buffer) const 
 Scene::Scene(const VulkanContext &vc)
     : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
     GeometryInstances.push_back(std::make_unique<GeometryInstance>(VC, Cuboid{{0.5, 0.5, 0.5}}));
-    UpdateGeometryEdgeColors();
+    UpdateEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
     VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
@@ -348,7 +347,7 @@ void Scene::RecordCommandBuffer() {
     const auto &geometry_instance = *GeometryInstances[0];
 
     SilhouetteRenderPipeline.Begin(command_buffer);
-    SilhouetteRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Silhouette, GeometryMode::Vertices);
+    SilhouetteRenderPipeline.RenderBuffers(command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices), SPT::Silhouette);
     command_buffer.endRenderPass();
 
     EdgeDetectionRenderPipeline.Begin(command_buffer);
@@ -358,14 +357,20 @@ void Scene::RecordCommandBuffer() {
     MainRenderPipeline.Begin(command_buffer, BackgroundColor);
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Faces);
+        MainRenderPipeline.RenderBuffers(command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces), fill_pipeline);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Line, GeometryMode::Edges);
+        MainRenderPipeline.RenderBuffers(command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Faces);
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, SPT::Line, GeometryMode::Edges);
+        MainRenderPipeline.RenderBuffers(command_buffer, geometry_instance.GetBuffers(GeometryMode::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(command_buffer, geometry_instance.GetBuffers(GeometryMode::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderGeometryBuffers(command_buffer, geometry_instance, fill_pipeline, GeometryMode::Vertices);
+        MainRenderPipeline.RenderBuffers(command_buffer, geometry_instance.GetBuffers(GeometryMode::Vertices), fill_pipeline);
+    }
+    if (const auto *face_normals = geometry_instance.GetFaceNormalIndicatorBuffers()) {
+        MainRenderPipeline.RenderBuffers(command_buffer, *face_normals, SPT::Line);
+    }
+    if (const auto *vertex_normals = geometry_instance.GetVertexNormalIndicatorBuffers()) {
+        MainRenderPipeline.RenderBuffers(command_buffer, *vertex_normals, SPT::Line);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(command_buffer);
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(command_buffer);
@@ -381,15 +386,26 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
     VC.Queue.submit(submit, fence);
 }
 
+void Scene::RecordAndSubmitCommandBuffer(vk::Fence fence) {
+    RecordCommandBuffer();
+    SubmitCommandBuffer(fence);
+}
+
 void Scene::CompileShaders() {
     MainRenderPipeline.CompileShaders();
     SilhouetteRenderPipeline.CompileShaders();
     EdgeDetectionRenderPipeline.CompileShaders();
 }
 
-void Scene::UpdateGeometryEdgeColors() {
-    const auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (auto &geometry : GeometryInstances) geometry->SetEdgeColor(edge_color);
+void Scene::UpdateEdgeColors() {
+    Geometry::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+    for (auto &geometry : GeometryInstances) geometry->CreateOrUpdateBuffers();
+}
+void Scene::UpdateNormalIndicators() {
+    for (auto &geometry : GeometryInstances) {
+        geometry->ShowNormalIndicators(NormalIndicatorMode::Faces, ShowFaceNormals);
+        geometry->ShowNormalIndicators(NormalIndicatorMode::Vertices, ShowVertexNormals);
+    }
 }
 
 void Scene::UpdateTransform() {
@@ -499,41 +515,47 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
-            if (Checkbox("Show grid", &ShowGrid)) {
-                RecordCommandBuffer();
-                SubmitCommandBuffer();
-            }
+            if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
             SeparatorText("Render mode");
             int render_mode = int(RenderMode);
-            bool render_mode_changed = RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
+            bool render_mode_changed = RadioButton("Faces and edges##Render", &render_mode, int(RenderMode::FacesAndEdges));
             SameLine();
-            render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
+            render_mode_changed |= RadioButton("Faces##Render", &render_mode, int(RenderMode::Faces));
             SameLine();
-            render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
+            render_mode_changed |= RadioButton("Edges##Render", &render_mode, int(RenderMode::Edges));
             SameLine();
-            render_mode_changed |= RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
+            render_mode_changed |= RadioButton("Vertices##Render", &render_mode, int(RenderMode::Vertices));
 
             int color_mode = int(ColorMode);
             bool color_mode_changed = false;
             if (RenderMode != RenderMode::Edges) {
                 SeparatorText("Fill color mode");
-                color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
-                color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
+                color_mode_changed |= RadioButton("Mesh##Color", &color_mode, int(ColorMode::Mesh));
+                color_mode_changed |= RadioButton("Normals##Color", &color_mode, int(ColorMode::Normals));
             }
             if (render_mode_changed || color_mode_changed) {
                 RenderMode = ::RenderMode(render_mode);
                 ColorMode = ::ColorMode(color_mode);
-                UpdateGeometryEdgeColors(); // Different modes use different edge colors for better visibility.
-                RecordCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
-                SubmitCommandBuffer();
+                UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
+                RecordAndSubmitCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
             }
             if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
                 auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
                 if (ColorEdit3("Edge color", &edge_color.x)) {
-                    UpdateGeometryEdgeColors();
+                    UpdateEdgeColors();
                     SubmitCommandBuffer();
                 }
             }
+
+            SeparatorText("Normal indicators");
+            bool normal_indicators_changed = Checkbox("Face normals", &ShowFaceNormals);
+            SameLine();
+            normal_indicators_changed |= Checkbox("Vertex normals", &ShowVertexNormals);
+            if (normal_indicators_changed) {
+                UpdateNormalIndicators();
+                RecordAndSubmitCommandBuffer();
+            }
+
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
                 VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
@@ -541,13 +563,13 @@ void Scene::RenderControls() {
             }
             SeparatorText("Selection");
             int selection_mode = int(SelectionMode);
-            bool selection_mode_changed = RadioButton("None", &selection_mode, int(SelectionMode::None));
+            bool selection_mode_changed = RadioButton("None##Selection", &selection_mode, int(SelectionMode::None));
             SameLine();
-            selection_mode_changed |= RadioButton("Vertex", &selection_mode, int(SelectionMode::Vertex));
+            selection_mode_changed |= RadioButton("Vertex##Selection", &selection_mode, int(SelectionMode::Vertex));
             SameLine();
-            selection_mode_changed |= RadioButton("Edge", &selection_mode, int(SelectionMode::Edge));
+            selection_mode_changed |= RadioButton("Edge##Selection", &selection_mode, int(SelectionMode::Edge));
             SameLine();
-            selection_mode_changed |= RadioButton("Face", &selection_mode, int(SelectionMode::Face));
+            selection_mode_changed |= RadioButton("Face##Selection", &selection_mode, int(SelectionMode::Face));
             if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
             TextUnformatted(GeometryInstances[0]->GetHighlightLabel().c_str());
             SeparatorText("Transform");
@@ -557,8 +579,7 @@ void Scene::RenderControls() {
         if (BeginTabItem("Shader")) {
             if (Button("Recompile shaders")) {
                 CompileShaders();
-                RecordCommandBuffer();
-                SubmitCommandBuffer();
+                RecordAndSubmitCommandBuffer();
             }
             EndTabItem();
         }

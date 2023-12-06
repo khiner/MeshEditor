@@ -37,6 +37,11 @@ struct Geometry {
     using Point = OpenMesh::Vec3f;
 
     inline static const glm::vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
+    inline static glm::vec4 EdgeColor{0, 0, 0, 1};
+    inline static glm::vec4 HighlightColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
+    inline static glm::vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Face Normal`.
+    inline static glm::vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Vertex Normal`.
+    inline static float NormalIndicatorLengthScale = 0.25f;
 
     Geometry() {
         Mesh.request_face_normals();
@@ -74,14 +79,27 @@ struct Geometry {
 
     std::vector<Vertex3D> GenerateVertices(GeometryMode mode, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{});
     std::vector<uint> GenerateIndices(GeometryMode mode) const {
-        return mode == GeometryMode::Faces ? GenerateTriangulatedFaceIndices() :
-            mode == GeometryMode::Edges    ? GenerateLineIndices() :
-                                             GenerateTriangleIndices();
+        switch (mode) {
+            case GeometryMode::Faces: return GenerateTriangulatedFaceIndices();
+            case GeometryMode::Edges: return GenerateEdgeIndices();
+            case GeometryMode::Vertices: return GenerateTriangleIndices();
+            default: return {};
+        }
+    }
+    std::vector<Vertex3D> GenerateVertices(NormalIndicatorMode mode);
+    std::vector<uint> GenerateIndices(NormalIndicatorMode mode) const {
+        switch (mode) {
+            case NormalIndicatorMode::Faces: return GenerateFaceNormalIndicatorIndices();
+            case NormalIndicatorMode::Vertices: return GenerateVertexNormalIndicatorIndices();
+            default: return {};
+        }
     }
 
     std::vector<uint> GenerateTriangleIndices() const; // Face indices after calling `Mesh.triangulate()`.
     std::vector<uint> GenerateTriangulatedFaceIndices() const; // Triangle fan for each face.
-    std::vector<uint> GenerateLineIndices() const;
+    std::vector<uint> GenerateEdgeIndices() const;
+    std::vector<uint> GenerateFaceNormalIndicatorIndices() const;
+    std::vector<uint> GenerateVertexNormalIndicatorIndices() const;
 
     FH TriangulatedIndexToFace(uint triangle_index) const; // Convert index generated with `GenerateTriangulatedFaceIndices()` to a face handle.
 
@@ -111,8 +129,6 @@ struct Geometry {
         for (const auto &fh : Mesh.faces()) SetFaceColor(fh, face_color);
     }
 
-    void SetEdgeColor(const glm::vec4 &edge_color) { EdgeColor = edge_color; }
-
     void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = DefaultFaceColor) {
         SetFaceColor(Mesh.add_face(vertices), color);
     }
@@ -124,5 +140,4 @@ struct Geometry {
 
 protected:
     MeshType Mesh;
-    glm::vec4 EdgeColor{0, 0, 0, 1};
 };
