@@ -10,7 +10,7 @@
 #include "Geometry/GeometryInstance.h"
 #include "Geometry/Primitive/Cuboid.h"
 
-using glm::vec3, glm::vec4, glm::mat4;
+using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
 static const vk::ClearColorValue transparent(0.f, 0.f, 0.f, 0.f);
 
@@ -410,7 +410,9 @@ void Scene::UpdateNormalIndicators() {
 
 void Scene::UpdateTransform() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    const Transform transform{GeometryInstances[0]->Model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+    const mat4 &model = GeometryInstances[0]->Model;
+    const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model))); // todo only recalculate when model changes.
+    const Transform transform{model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
     VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
     const ViewProjection vp{transform.View, transform.Projection};
     VC.CreateOrUpdateBuffer(ViewProjectionBuffer, &vp);
@@ -473,9 +475,9 @@ void Scene::RenderGizmo() {
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
     auto &model = GeometryInstances[0]->Model;
-    bool view_or_model_changed = Gizmo->Render(Camera, model, aspect_ratio);
-    view_or_model_changed |= Camera.Tick();
-    if (view_or_model_changed) {
+    const bool model_changed  = Gizmo->Render(Camera, model, aspect_ratio);
+    const bool view_changed = Camera.Tick();
+    if (model_changed || view_changed) {
         UpdateTransform();
         SubmitCommandBuffer();
     }

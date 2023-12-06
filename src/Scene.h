@@ -33,9 +33,10 @@ enum class SelectionMode {
 };
 
 struct Transform {
-    glm::mat4 Model;
-    glm::mat4 View;
-    glm::mat4 Projection;
+    glm::mat4 Model{1};
+    glm::mat4 View{1};
+    glm::mat4 Projection{1};
+    glm::mat4 NormalToWorld{1}; // Only a mat3 is needed, but mat4 is used for alignment.
 };
 
 struct ViewProjection {

@@ -12,8 +12,9 @@ layout(set = 0, binding = 1) uniform LightsUBO {
     vec3 Direction;
 } Lights;
 
+// Assumes `direction` and `normal` are normalized.
 vec3 DirectionalLighting(vec3 direction, vec3 normal, vec3 color, float ambient, float intensity) {
-    const vec3 diffuse_lighting = max(dot(normalize(normal), -direction), 0.0) * color * intensity;
+    const vec3 diffuse_lighting = max(dot(normal, -direction), 0.0) * color * intensity;
     const vec3 ambient_lighting = color * ambient;
     return diffuse_lighting + ambient_lighting;
 }
