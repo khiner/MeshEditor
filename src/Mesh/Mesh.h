@@ -6,10 +6,31 @@
 struct VulkanContext;
 struct Ray;
 
-// todo edge mode buffers can share vertex buffers with vertices mode.
-struct GeometryBuffers {
-    std::vector<Vertex3D> Vertices{};
-    std::vector<uint> Indices{};
+struct VkMeshBuffers {
+    VkMeshBuffers(const VulkanContext &vc) : VC(vc) {}
+    VkMeshBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices)
+        : VC(vc), Buffers(std::move(vertices), std::move(indices)) {
+        CreateOrUpdateBuffers();
+    }
+    VkMeshBuffers(const VulkanContext &vc, MeshBuffers &&buffers)
+        : VC(vc), Buffers(std::move(buffers)) {
+        CreateOrUpdateBuffers();
+    }
+    ~VkMeshBuffers() = default;
+
+    const std::vector<Vertex3D> &GetVertices() const { return Buffers.Vertices; }
+    const std::vector<uint> &GetIndices() const { return Buffers.Indices; }
+
+    inline void Set(MeshBuffers &&buffers) {
+        Buffers = std::move(buffers);
+        CreateOrUpdateBuffers();
+    }
+
+    void CreateOrUpdateBuffers();
+    void Bind(vk::CommandBuffer cb) const;
+
+    const VulkanContext &VC;
+    MeshBuffers Buffers;
     VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
     VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
 };
@@ -18,12 +39,12 @@ struct GeometryBuffers {
 struct Mesh {
     Mesh(const VulkanContext &, Geometry &&);
 
-    void CreateOrUpdateBuffers(GeometryMode);
+    void CreateOrUpdateBuffers(MeshElement);
     void CreateOrUpdateBuffers(); // Update all buffers.
 
-    const GeometryBuffers &GetBuffers(GeometryMode mode) const { return BuffersForMode.at(mode); }
-    const GeometryBuffers *GetFaceNormalIndicatorBuffers() const { return FaceNormalIndicatorBuffers.get(); }
-    const GeometryBuffers *GetVertexNormalIndicatorBuffers() const { return VertexNormalIndicatorBuffers.get(); }
+    const VkMeshBuffers &GetBuffers(MeshElement element) const;
+    const VkMeshBuffers *GetFaceNormalIndicatorBuffers() const;
+    const VkMeshBuffers *GetVertexNormalIndicatorBuffers() const;
 
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
@@ -38,7 +59,7 @@ struct Mesh {
     Geometry::EH FindNearestEdge(const Ray &ray_world) const;
     Geometry::EH FindNearestEdgeLocal(const Ray &ray_local) const; // Local space equivalent.
 
-    void ShowNormalIndicators(NormalIndicatorMode mode, bool show);
+    void ShowNormalIndicators(NormalMode mode, bool show);
 
     bool HighlightFace(Geometry::FH face) {
         if (face == HighlightedFace) return false;
@@ -75,8 +96,8 @@ struct Mesh {
 
 private:
     Geometry G;
-    std::unordered_map<GeometryMode, GeometryBuffers> BuffersForMode;
-    std::unique_ptr<GeometryBuffers> FaceNormalIndicatorBuffers, VertexNormalIndicatorBuffers;
+    std::unordered_map<MeshElement, std::unique_ptr<VkMeshBuffers>> ElementBuffers;
+    std::unique_ptr<VkMeshBuffers> FaceNormalIndicatorBuffers, VertexNormalIndicatorBuffers;
 
     Geometry::FH HighlightedFace{};
     Geometry::VH HighlightedVertex{};

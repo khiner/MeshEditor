@@ -109,14 +109,11 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const GeometryBuffers &buffers, SPT spt) const {
+void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const VkMeshBuffers &buffers, SPT spt) const {
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
-    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
-    cb.bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
-    cb.bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    cb.drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+    buffers.Bind(cb);
 }
 
 MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
@@ -347,7 +344,7 @@ void Scene::RecordCommandBuffer() {
     const auto &mesh = *Meshes[0];
 
     SilhouetteRenderPipeline.Begin(cb);
-    SilhouetteRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Vertices), SPT::Silhouette);
+    SilhouetteRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Vertices), SPT::Silhouette);
     cb.endRenderPass();
 
     EdgeDetectionRenderPipeline.Begin(cb);
@@ -357,14 +354,14 @@ void Scene::RecordCommandBuffer() {
     MainRenderPipeline.Begin(cb, BackgroundColor);
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Faces), fill_pipeline);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Faces), fill_pipeline);
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Vertices), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Vertices), fill_pipeline);
     }
     if (const auto *face_normals = mesh.GetFaceNormalIndicatorBuffers()) {
         MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line);
@@ -403,8 +400,8 @@ void Scene::UpdateEdgeColors() {
 }
 void Scene::UpdateNormalIndicators() {
     for (auto &mesh : Meshes) {
-        mesh->ShowNormalIndicators(NormalIndicatorMode::Faces, ShowFaceNormals);
-        mesh->ShowNormalIndicators(NormalIndicatorMode::Vertices, ShowVertexNormals);
+        mesh->ShowNormalIndicators(NormalMode::Faces, ShowFaceNormals);
+        mesh->ShowNormalIndicators(NormalMode::Vertices, ShowVertexNormals);
     }
 }
 

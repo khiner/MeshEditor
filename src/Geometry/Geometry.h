@@ -9,7 +9,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
-#include "GeometryMode.h"
+#include "MeshElement.h"
 #include "RenderMode.h"
 #include "Vertex.h"
 
@@ -36,6 +36,18 @@ using EH = OpenMesh::EdgeHandle;
 using HH = OpenMesh::HalfedgeHandle;
 using Point = OpenMesh::Vec3f;
 }; // namespace om
+
+// Faces mesh buffers: Vertices are duplicated for each face. Each vertex uses the face normal.
+// Vertices mesh buffers: Vertices are not duplicated. Uses vertext normals.
+// Edge mesh buffers: Vertices are duplicated. Each vertex uses the vertex normal.
+struct MeshBuffers {
+    MeshBuffers() = default;
+    MeshBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) : Vertices(vertices), Indices(indices) {}
+    virtual ~MeshBuffers() = default;
+
+    std::vector<Vertex3D> Vertices{};
+    std::vector<uint> Indices{};
+};
 
 // A `Geometry` is a wrapper around an `OpenMesh::PolyMesh`, privately available as `M`.
 struct Geometry {
@@ -86,29 +98,14 @@ struct Geometry {
 
     inline bool Empty() const { return M.n_vertices() == 0; }
 
-    std::vector<Vertex3D> GenerateVertices(GeometryMode mode, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{});
-    std::vector<uint> GenerateIndices(GeometryMode mode) const {
-        switch (mode) {
-            case GeometryMode::Faces: return GenerateTriangulatedFaceIndices();
-            case GeometryMode::Edges: return GenerateEdgeIndices();
-            case GeometryMode::Vertices: return GenerateTriangleIndices();
-            default: return {};
-        }
-    }
-    std::vector<Vertex3D> GenerateVertices(NormalIndicatorMode mode);
-    std::vector<uint> GenerateIndices(NormalIndicatorMode mode) const {
-        switch (mode) {
-            case NormalIndicatorMode::Faces: return GenerateFaceNormalIndicatorIndices();
-            case NormalIndicatorMode::Vertices: return GenerateVertexNormalIndicatorIndices();
-            default: return {};
-        }
-    }
+    inline void UpdateNormals() { M.update_normals(); }
 
-    std::vector<uint> GenerateTriangleIndices() const; // Face indices after calling `Mesh.triangulate()`.
-    std::vector<uint> GenerateTriangulatedFaceIndices() const; // Triangle fan for each face.
-    std::vector<uint> GenerateEdgeIndices() const;
-    std::vector<uint> GenerateFaceNormalIndicatorIndices() const;
-    std::vector<uint> GenerateVertexNormalIndicatorIndices() const;
+    inline MeshBuffers GenerateBuffers(MeshElement element, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const {
+        return {GenerateVertices(element, highlighted_face, highlighted_vertex, highlighted_edge), GenerateIndices(element)};
+    }
+    inline MeshBuffers GenerateBuffers(NormalMode mode) const {
+        return {GenerateVertices(mode), GenerateIndices(mode)};
+    }
 
     FH TriangulatedIndexToFace(uint triangle_index) const; // Convert index generated with `GenerateTriangulatedFaceIndices()` to a face handle.
 
@@ -149,4 +146,15 @@ struct Geometry {
 
 protected:
     om::Mesh M;
+
+    std::vector<Vertex3D> GenerateVertices(MeshElement element, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const;
+    std::vector<uint> GenerateIndices(MeshElement element) const;
+    std::vector<Vertex3D> GenerateVertices(NormalMode mode) const;
+    std::vector<uint> GenerateIndices(NormalMode mode) const;
+
+    std::vector<uint> GenerateTriangleIndices() const; // Triangulated face indices.
+    std::vector<uint> GenerateTriangulatedFaceIndices() const; // Triangle fan for each face.
+    std::vector<uint> GenerateEdgeIndices() const;
+    std::vector<uint> GenerateFaceNormalIndicatorIndices() const;
+    std::vector<uint> GenerateVertexNormalIndicatorIndices() const;
 };

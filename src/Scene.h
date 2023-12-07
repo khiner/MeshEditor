@@ -4,14 +4,14 @@
 #include <glm/vec3.hpp>
 
 #include "Camera.h"
-#include "Geometry/GeometryMode.h"
+#include "Geometry/MeshElement.h"
 #include "RenderMode.h"
 #include "Shader.h"
 #include "VulkanContext.h"
 #include "World.h"
 
 struct Mesh;
-struct GeometryBuffers;
+struct VkMeshBuffers;
 
 struct ImageResource {
     // The `image` in the view info is overwritten.
@@ -98,7 +98,7 @@ struct RenderPipeline {
 
     void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
 
-    void RenderBuffers(vk::CommandBuffer, const GeometryBuffers &, SPT) const;
+    void RenderBuffers(vk::CommandBuffer, const VkMeshBuffers &, SPT) const;
 
     const VulkanContext &VC;
 

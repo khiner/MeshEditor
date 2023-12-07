@@ -38,11 +38,25 @@ bool Geometry::DoesEdgeBelongToFace(EH edge, FH face) const {
     return face.is_valid() && any_of(M.fh_range(face), [&](const auto &heh) { return M.edge_handle(heh) == edge; });
 }
 
-std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) {
-    M.update_normals(); // todo only update when necessary.
+std::vector<uint> Geometry::GenerateIndices(MeshElement element) const {
+    switch (element) {
+        case MeshElement::Faces: return GenerateTriangulatedFaceIndices();
+        case MeshElement::Edges: return GenerateEdgeIndices();
+        case MeshElement::Vertices: return GenerateTriangleIndices();
+        default: return {};
+    }
+}
+std::vector<uint> Geometry::GenerateIndices(NormalMode mode) const {
+    switch (mode) {
+        case NormalMode::Faces: return GenerateFaceNormalIndicatorIndices();
+        case NormalMode::Vertices: return GenerateVertexNormalIndicatorIndices();
+        default: return {};
+    }
+}
 
+std::vector<Vertex3D> Geometry::GenerateVertices(MeshElement element, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) const {
     std::vector<Vertex3D> vertices;
-    if (mode == GeometryMode::Faces) {
+    if (element == MeshElement::Faces) {
         vertices.reserve(M.n_faces() * 3); // At least 3 vertices per face.
         for (const auto &fh : M.faces()) {
             const auto &fn = M.normal(fh);
@@ -52,13 +66,13 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
                 vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
-    } else if (mode == GeometryMode::Vertices) {
+    } else if (element == MeshElement::Vertices) {
         vertices.reserve(M.n_vertices());
         for (const auto &vh : M.vertices()) {
             const vec4 color = vh == highlighted_vertex || DoesVertexBelongToFace(vh, highlighted_face) || DoesVertexBelongToEdge(vh, highlighted_edge) ? HighlightColor : vec4{1};
             vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
         }
-    } else if (mode == GeometryMode::Edges) {
+    } else if (element == MeshElement::Edges) {
         vertices.reserve(M.n_edges() * 2);
         for (const auto &eh : M.edges()) {
             const auto &heh = M.halfedge_handle(eh, 0);
@@ -88,11 +102,9 @@ static float CalcFaceArea(const Mesh &mesh, Mesh::FaceHandle fh) {
     return area;
 }
 
-std::vector<Vertex3D> Geometry::GenerateVertices(NormalIndicatorMode mode) {
-    M.update_normals(); // todo only update when necessary.
-
+std::vector<Vertex3D> Geometry::GenerateVertices(NormalMode mode) const {
     std::vector<Vertex3D> vertices;
-    if (mode == NormalIndicatorMode::Faces) {
+    if (mode == NormalMode::Faces) {
         // Line for each face normal, with length scaled by the face area.
         vertices.reserve(M.n_faces() * 2);
         for (const auto &fh : M.faces()) {
@@ -101,7 +113,7 @@ std::vector<Vertex3D> Geometry::GenerateVertices(NormalIndicatorMode mode) {
             vertices.emplace_back(point, ToGlm(fn), FaceNormalIndicatorColor);
             vertices.emplace_back(point + NormalIndicatorLengthScale * CalcFaceArea(M, fh) * ToGlm(fn), ToGlm(fn), FaceNormalIndicatorColor);
         }
-    } else if (mode == NormalIndicatorMode::Vertices) {
+    } else if (mode == NormalMode::Vertices) {
         // Line for each vertex normal, with length scaled by the average edge length.
         vertices.reserve(M.n_vertices() * 2);
         for (const auto &vh : M.vertices()) {

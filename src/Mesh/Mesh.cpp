@@ -9,38 +9,47 @@
 
 using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
+void VkMeshBuffers::CreateOrUpdateBuffers() {
+    VertexBuffer.Size = sizeof(Vertex3D) * GetVertices().size();
+    IndexBuffer.Size = sizeof(uint) * GetIndices().size();
+    VC.CreateOrUpdateBuffer(VertexBuffer, GetVertices().data());
+    VC.CreateOrUpdateBuffer(IndexBuffer, GetIndices().data());
+}
+
+void VkMeshBuffers::Bind(vk::CommandBuffer cb) const {
+    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
+    cb.bindVertexBuffers(0, *VertexBuffer.Buffer, vertex_buffer_offsets);
+    cb.bindIndexBuffer(*IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    cb.drawIndexed(IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+}
+
 Mesh::Mesh(const VulkanContext &vc, Geometry &&geometry)
     : VC(vc), G(std::move(geometry)) {
     CreateOrUpdateBuffers();
 }
 
 void Mesh::CreateOrUpdateBuffers() {
-    static const std::vector AllModes{GeometryMode::Faces, GeometryMode::Vertices, GeometryMode::Edges};
-    for (const auto mode : AllModes) CreateOrUpdateBuffers(mode);
+    static const std::vector AllElements{MeshElement::Faces, MeshElement::Vertices, MeshElement::Edges};
+    for (const auto element : AllElements) CreateOrUpdateBuffers(element);
 }
 
-void Mesh::CreateOrUpdateBuffers(GeometryMode mode) {
-    auto &buffers = BuffersForMode[mode];
-    buffers.Vertices = G.GenerateVertices(mode, HighlightedFace, HighlightedVertex, HighlightedEdge);
-    buffers.VertexBuffer.Size = sizeof(Vertex3D) * buffers.Vertices.size();
-    VC.CreateOrUpdateBuffer(buffers.VertexBuffer, buffers.Vertices.data());
-
-    buffers.Indices = G.GenerateIndices(mode);
-    buffers.IndexBuffer.Size = sizeof(uint) * buffers.Indices.size();
-    VC.CreateOrUpdateBuffer(buffers.IndexBuffer, buffers.Indices.data());
+void Mesh::CreateOrUpdateBuffers(MeshElement element) {
+    if (!ElementBuffers.contains(element)) ElementBuffers[element] = std::make_unique<VkMeshBuffers>(VC);
+    G.UpdateNormals(); // todo only update when necessary.
+    ElementBuffers[element]->Set(G.GenerateBuffers(element, HighlightedFace, HighlightedVertex, HighlightedEdge));
 }
 
-void Mesh::ShowNormalIndicators(NormalIndicatorMode mode, bool show) {
-    auto &buffers = mode == NormalIndicatorMode::Faces ? FaceNormalIndicatorBuffers : VertexNormalIndicatorBuffers;
+const VkMeshBuffers &Mesh::GetBuffers(MeshElement mode) const { return *ElementBuffers.at(mode); }
+const VkMeshBuffers *Mesh::GetFaceNormalIndicatorBuffers() const { return FaceNormalIndicatorBuffers.get(); }
+const VkMeshBuffers *Mesh::GetVertexNormalIndicatorBuffers() const { return VertexNormalIndicatorBuffers.get(); }
+
+void Mesh::ShowNormalIndicators(NormalMode mode, bool show) {
+    auto &buffers = mode == NormalMode::Faces ? FaceNormalIndicatorBuffers : VertexNormalIndicatorBuffers;
     buffers.reset();
     if (!show) return;
 
-    buffers = std::make_unique<GeometryBuffers>(G.GenerateVertices(mode), G.GenerateIndices(mode));
-    buffers->VertexBuffer.Size = sizeof(Vertex3D) * buffers->Vertices.size();
-    VC.CreateOrUpdateBuffer(buffers->VertexBuffer, buffers->Vertices.data());
-
-    buffers->IndexBuffer.Size = sizeof(uint) * buffers->Indices.size();
-    VC.CreateOrUpdateBuffer(buffers->IndexBuffer, buffers->Indices.data());
+    G.UpdateNormals(); // todo do we need this for lines?
+    buffers = std::make_unique<VkMeshBuffers>(VC, G.GenerateBuffers(mode));
 }
 
 // Moller-Trumbore ray-triangle intersection algorithm.
@@ -77,9 +86,9 @@ static bool RayIntersectsTriangle(const Ray &ray, const mat3 &triangle, float *d
 }
 
 Geometry::FH Mesh::FindFirstIntersectingFaceLocal(const Ray &ray_local, vec3 *closest_intersect_point_out) const {
-    const auto &tri_buffers = GetBuffers(GeometryMode::Faces); // Triangulated face buffers
-    const std::vector<uint> &tri_indices = tri_buffers.Indices;
-    const std::vector<Vertex3D> &tri_verts = tri_buffers.Vertices;
+    const auto &tri_buffers = GetBuffers(MeshElement::Faces); // Triangulated face buffers
+    const std::vector<uint> &tri_indices = tri_buffers.GetIndices();
+    const std::vector<Vertex3D> &tri_verts = tri_buffers.GetVertices();
 
     // Avoid allocations in the loop.
     int closest_tri_i = -1;
@@ -88,7 +97,7 @@ Geometry::FH Mesh::FindFirstIntersectingFaceLocal(const Ray &ray_local, vec3 *cl
     float closest_distance = std::numeric_limits<float>::max();
     vec3 intersect_point;
     vec3 closest_intersection_point; // Only tracked for output.
-    for (size_t tri_i = 0; tri_i < tri_buffers.Indices.size() / 3; tri_i++) {
+    for (size_t tri_i = 0; tri_i < tri_indices.size() / 3; tri_i++) {
         triangle[0] = tri_verts[tri_indices[tri_i * 3 + 0]].Position;
         triangle[1] = tri_verts[tri_indices[tri_i * 3 + 1]].Position;
         triangle[2] = tri_verts[tri_indices[tri_i * 3 + 2]].Position;
