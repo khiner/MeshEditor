@@ -13,49 +13,9 @@ using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
 using std::ranges::any_of;
 
-// Moller-Trumbore ray-triangle intersection algorithm.
-// Returns true if the ray intersects the triangle.
-// If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
-static bool RayIntersectsTriangle(const Ray &ray, const mat3 &triangle, float *distance_out, vec3 *intersect_point_out = nullptr) {
-    static const float Epsilon = 1e-7f; // Floating point error tolerance.
-
-    const vec3 edge1 = triangle[1] - triangle[0], edge2 = triangle[2] - triangle[0];
-    const vec3 h = glm::cross(ray.Direction, edge2);
-    const float a = glm::dot(edge1, h); // Barycentric coordinate a.
-
-    // Check if the ray is parallel to the triangle.
-    if (a > -Epsilon && a < Epsilon) return false;
-
-    // Check if the intersection point is inside the triangle (in barycentric coordinates).
-    const float f = 1.0 / a;
-    const vec3 s = ray.Origin - triangle[0];
-    const float u = f * glm::dot(s, h);
-    if (u < 0.0 || u > 1.0) return false;
-
-    const vec3 q = glm::cross(s, edge1);
-    const float v = f * glm::dot(ray.Direction, q);
-    if (v < 0.0 || u + v > 1.0) return false;
-
-    // Calculate the intersection point's distance along the ray and verify it's positive (ahead of the ray's origin).
-    const float distance = f * glm::dot(edge2, q);
-    if (distance > Epsilon) {
-        if (distance_out) *distance_out = distance;
-        if (intersect_point_out) *intersect_point_out = ray.Origin + ray.Direction * distance;
-        return true;
-    }
-    return false;
-}
-
-static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const vec3 &point) {
-    const vec3 edge = v2 - v1;
-    const float t = glm::clamp(glm::dot(point - v1, edge) / glm::dot(edge, edge), 0.f, 1.f);
-    const vec3 closest_point = v1 + t * edge;
-    return glm::distance2(point, closest_point);
-}
-
-bool Mesh::Load(const fs::path &file_path) {
+bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {
     OpenMesh::IO::Options read_options; // No options used yet, but keeping this here for future use.
-    if (!OpenMesh::IO::read_mesh(M, file_path.string(), read_options)) {
+    if (!OpenMesh::IO::read_mesh(out_mesh, file_path.string(), read_options)) {
         std::cerr << "Error loading mesh: " << file_path << std::endl;
         return false;
     }
@@ -81,9 +41,50 @@ bool Mesh::DoesEdgeBelongToFace(EH edge, FH face) const {
     return face.is_valid() && any_of(M.fh_range(face), [&](const auto &heh) { return M.edge_handle(heh) == edge; });
 }
 
-VH Mesh::FindNearestVertex(const MeshBuffers &tri_buffers, const Ray &ray_local) const {
+static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const vec3 &point) {
+    const vec3 edge = v2 - v1;
+    const float t = glm::clamp(glm::dot(point - v1, edge) / glm::dot(edge, edge), 0.f, 1.f);
+    const vec3 closest_point = v1 + t * edge;
+    return glm::distance2(point, closest_point);
+}
+
+// Moller-Trumbore ray-triangle intersection algorithm.
+bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) const {
+    static const float Epsilon = 1e-7f; // Floating point error tolerance.
+
+    const Point &ray_origin = ToOpenMesh(ray.Origin);
+    const Point &ray_dir = ToOpenMesh(ray.Direction);
+    const Point &p1 = M.point(v1), &p2 = M.point(v2), &p3 = M.point(v3);
+    const Point edge1 = p2 - p1, edge2 = p3 - p1;
+    const Point h = ray_dir % edge2;
+    const float a = edge1.dot(h); // Barycentric coordinate a.
+
+    // Check if the ray is parallel to the triangle.
+    if (a > -Epsilon && a < Epsilon) return false;
+
+    // Check if the intersection point is inside the triangle (in barycentric coordinates).
+    const float f = 1.0 / a;
+    const Point s = ray_origin - p1;
+    const float u = f * s.dot(h);
+    if (u < 0.0 || u > 1.0) return false;
+
+    const Point q = s % edge1;
+    const float v = f * ray_dir.dot(q);
+    if (v < 0.0 || u + v > 1.0) return false;
+
+    // Calculate the intersection point's distance along the ray and verify it's positive (ahead of the ray's origin).
+    const float distance = f * edge2.dot(q);
+    if (distance > Epsilon) {
+        if (distance_out) *distance_out = distance;
+        if (intersect_point_out) *intersect_point_out = ray.Origin + ray.Direction * distance;
+        return true;
+    }
+    return false;
+}
+
+VH Mesh::FindNearestVertex(const Ray &ray_local) const {
     vec3 intersection_point;
-    const auto face = FindFirstIntersectingFace(tri_buffers, ray_local, &intersection_point);
+    const auto face = FindFirstIntersectingFace(ray_local, &intersection_point);
     if (!face.is_valid()) return VH{};
 
     VH closest_vertex;
@@ -99,47 +100,44 @@ VH Mesh::FindNearestVertex(const MeshBuffers &tri_buffers, const Ray &ray_local)
     return closest_vertex;
 }
 
-FH Mesh::FindFirstIntersectingFace(const MeshBuffers &tri_buffers, const Ray &ray_local, vec3 *closest_intersect_point_out) const {
-    const std::vector<Vertex3D> &tri_verts = tri_buffers.Vertices;
-    const std::vector<uint> &tri_indices = tri_buffers.Indices;
-
+FH Mesh::FindFirstIntersectingFace(const Ray &ray_local, vec3 *closest_intersect_point_out) const {
     // Avoid allocations in the loop.
-    int closest_tri_i = -1;
-    mat3 triangle;
+    FH closest_face{};
     float distance;
     float closest_distance = std::numeric_limits<float>::max();
     vec3 intersect_point;
     vec3 closest_intersection_point; // Only tracked for output.
-    for (size_t tri_i = 0; tri_i < tri_indices.size() / 3; tri_i++) {
-        triangle[0] = tri_verts[tri_indices[tri_i * 3 + 0]].Position;
-        triangle[1] = tri_verts[tri_indices[tri_i * 3 + 1]].Position;
-        triangle[2] = tri_verts[tri_indices[tri_i * 3 + 2]].Position;
-        if (RayIntersectsTriangle(ray_local, triangle, &distance, &intersect_point) && distance < closest_distance) {
-            closest_distance = distance;
-            closest_intersection_point = intersect_point;
-            closest_tri_i = tri_i;
+    for (const auto &fh : M.faces()) {
+        auto fv_it = M.cfv_iter(fh);
+        const VH v0 = *fv_it;
+        ++fv_it;
+        for (; fv_it != M.cfv_end(fh); ++fv_it) {
+            const VH v1 = *fv_it, v2 = *(++fv_it);
+            --fv_it;
+            if (RayIntersectsTriangle(ray_local, v0, v1, v2, &distance, &intersect_point) && distance < closest_distance) {
+                closest_distance = distance;
+                closest_intersection_point = intersect_point;
+                closest_face = fh;
+            }
         }
     }
 
-    if (closest_tri_i != -1) {
-        if (closest_intersect_point_out) *closest_intersect_point_out = closest_intersection_point;
-        return TriangulatedIndexToFace(closest_tri_i);
-    }
-    return Mesh::FH{};
+    if (closest_face.is_valid() && closest_intersect_point_out) *closest_intersect_point_out = closest_intersection_point;
+    return closest_face;
 }
 
-EH Mesh::FindNearestEdge(const MeshBuffers &tri_buffers, const Ray &ray_local) const {
+EH Mesh::FindNearestEdge(const Ray &ray_local) const {
     vec3 intersection_point;
-    const auto face = FindFirstIntersectingFace(tri_buffers, ray_local, &intersection_point);
+    const auto face = FindFirstIntersectingFace(ray_local, &intersection_point);
     if (!face.is_valid()) return Mesh::EH{};
 
     Mesh::EH closest_edge;
     float closest_distance_sq = std::numeric_limits<float>::max();
     for (const auto &heh : M.fh_range(face)) {
         const auto &edge_handle = M.edge_handle(heh);
-        const auto &v1 = GetPosition(M.from_vertex_handle(M.halfedge_handle(edge_handle, 0)));
-        const auto &v2 = GetPosition(M.to_vertex_handle(M.halfedge_handle(edge_handle, 0)));
-        const float distance_sq = SquaredDistanceToLineSegment(v1, v2, intersection_point);
+        const auto &p1 = GetPosition(M.from_vertex_handle(M.halfedge_handle(edge_handle, 0)));
+        const auto &p2 = GetPosition(M.to_vertex_handle(M.halfedge_handle(edge_handle, 0)));
+        const float distance_sq = SquaredDistanceToLineSegment(p1, p2, intersection_point);
         if (distance_sq < closest_distance_sq) {
             closest_distance_sq = distance_sq;
             closest_edge = edge_handle;
@@ -198,18 +196,17 @@ std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, FH highlighted
     return vertices;
 }
 
-static float CalcFaceArea(const PolyMesh &mesh, FH fh) {
-    std::vector<OpenMesh::Vec3f> vertices;
-    vertices.reserve(mesh.valence(fh));
-    for (const auto &vh : mesh.fv_range(fh)) vertices.emplace_back(mesh.point(vh));
-
+float Mesh::CalcFaceArea(FH fh) const {
     float area{0};
-    for (size_t i = 1; i < vertices.size() - 1; ++i) {
-        const auto &v0 = vertices[0], &v1 = vertices[i], &v2 = vertices[i + 1];
-        const auto cross_product = (v1 - v0) % (v2 - v0);
+    auto fv_it = M.cfv_iter(fh);
+    const auto p0 = M.point(*fv_it);
+    ++fv_it;
+    for (; fv_it != M.cfv_end(fh); ++fv_it) {
+        const Point p1 = M.point(*fv_it), p2 = M.point(*(++fv_it));
+        --fv_it;
+        const auto cross_product = (p1 - p0) % (p2 - p0);
         area += cross_product.norm() * 0.5;
     }
-
     return area;
 }
 
@@ -222,7 +219,7 @@ std::vector<Vertex3D> Mesh::GenerateVertices(NormalMode mode) const {
             const auto &fn = M.normal(fh);
             const vec3 point = ToGlm(M.calc_face_centroid(fh));
             vertices.emplace_back(point, ToGlm(fn), FaceNormalIndicatorColor);
-            vertices.emplace_back(point + NormalIndicatorLengthScale * CalcFaceArea(M, fh) * ToGlm(fn), ToGlm(fn), FaceNormalIndicatorColor);
+            vertices.emplace_back(point + NormalIndicatorLengthScale * CalcFaceArea(fh) * ToGlm(fn), ToGlm(fn), FaceNormalIndicatorColor);
         }
     } else if (mode == NormalMode::Vertices) {
         // Line for each vertex normal, with length scaled by the average edge length.
@@ -263,12 +260,16 @@ std::pair<vec3, vec3> Mesh::ComputeBounds() const {
 }
 
 std::vector<uint> Mesh::GenerateTriangleIndices() const {
-    auto triangulated_mesh = M; // `triangulate` is in-place, so we need to make a copy.
-    triangulated_mesh.triangulate();
     std::vector<uint> indices;
-    for (const auto &fh : triangulated_mesh.faces()) {
-        auto v_it = triangulated_mesh.cfv_iter(fh);
-        indices.insert(indices.end(), {uint(v_it->idx()), uint((++v_it)->idx()), uint((++v_it)->idx())});
+    for (const auto &fh : M.faces()) {
+        auto fv_it = M.cfv_iter(fh);
+        const VH v0 = *fv_it;
+        ++fv_it;
+        for (; fv_it != M.cfv_end(fh); ++fv_it) {
+            const VH v1 = *fv_it, v2 = *(++fv_it);
+            --fv_it;
+            indices.insert(indices.end(), {uint(v0.idx()), uint(v1.idx()), uint(v2.idx())});
+        }
     }
     return indices;
 }
@@ -284,15 +285,6 @@ std::vector<uint> Mesh::GenerateTriangulatedFaceIndices() const {
         index += valence;
     }
     return indices;
-}
-
-Mesh::FH Mesh::TriangulatedIndexToFace(uint triangle_index) const {
-    for (const auto &fh : M.faces()) {
-        const auto valence = M.valence(fh);
-        if (triangle_index < valence - 2) return fh;
-        triangle_index -= valence - 2;
-    }
-    throw std::runtime_error("Invalid triangle index: " + std::to_string(triangle_index));
 }
 
 std::vector<uint> Mesh::GenerateEdgeIndices() const {

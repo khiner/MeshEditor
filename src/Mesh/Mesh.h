@@ -17,16 +17,6 @@ namespace fs = std::filesystem;
 
 struct Ray;
 
-inline static glm::vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
-inline static glm::vec4 ToGlm(const OpenMesh::Vec3uc &c) {
-    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
-    return {cc[0], cc[1], cc[2], 1};
-}
-inline static OpenMesh::Vec3uc ToOpenMesh(const glm::vec4 &c) {
-    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
-    return {cc[0], cc[1], cc[2]};
-}
-
 // Aliases for OpenMesh types to support `using namespace om;`.
 namespace om {
 using PolyMesh = OpenMesh::PolyMesh_ArrayKernelT<>;
@@ -36,6 +26,17 @@ using EH = OpenMesh::EdgeHandle;
 using HH = OpenMesh::HalfedgeHandle;
 using Point = OpenMesh::Vec3f;
 }; // namespace om
+
+inline static glm::vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
+inline static glm::vec4 ToGlm(const OpenMesh::Vec3uc &c) {
+    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
+    return {cc[0], cc[1], cc[2], 1};
+}
+inline static om::Point ToOpenMesh(const glm::vec3 &v) { return {v.x, v.y, v.z}; }
+inline static OpenMesh::Vec3uc ToOpenMesh(const glm::vec4 &c) {
+    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
+    return {cc[0], cc[1], cc[2]};
+}
 
 // A `Mesh` is a wrapper around an `OpenMesh::PolyMesh`, privately available as `M`.
 struct Mesh {
@@ -58,20 +59,25 @@ struct Mesh {
         M.request_vertex_normals();
         M.request_face_colors();
     }
-    Mesh(Mesh &&mesh) : M(std::move(mesh.M)) {}
+    Mesh(Mesh &&mesh) : M(std::move(mesh.M)) {
+        M.request_face_normals();
+        M.request_vertex_normals();
+        M.request_face_colors();
+    }
     Mesh(const fs::path &file_path) {
         M.request_face_normals();
         M.request_vertex_normals();
-        Load(file_path);
+        M.request_face_colors();
+        Load(file_path, M);
     }
 
     ~Mesh() {
         M.release_vertex_normals();
         M.release_face_normals();
+        M.release_face_colors();
     }
 
-    bool Load(const fs::path &file_path);
-    void Save(const fs::path &file_path) const;
+    static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 
     inline uint NumPositions() const { return M.n_vertices(); }
     inline uint NumFaces() const { return M.n_faces(); }
@@ -85,6 +91,8 @@ struct Mesh {
     inline glm::vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
     inline glm::vec3 GetFaceCenter(FH fh) const { return ToGlm(M.calc_face_centroid(fh)); }
 
+    float CalcFaceArea(FH) const;
+
     inline bool Empty() const { return M.n_vertices() == 0; }
 
     inline void UpdateNormals() { M.update_normals(); }
@@ -95,8 +103,6 @@ struct Mesh {
     inline MeshBuffers GenerateBuffers(NormalMode mode) const {
         return {GenerateVertices(mode), GenerateIndices(mode)};
     }
-
-    FH TriangulatedIndexToFace(uint triangle_index) const; // Convert index generated with `GenerateTriangulatedFaceIndices()` to a face handle.
 
     // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
     std::pair<glm::vec3, glm::vec3> ComputeBounds() const;
@@ -133,14 +139,17 @@ struct Mesh {
     bool DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const;
     bool DoesEdgeBelongToFace(EH edge, FH face) const;
 
+    // Returns true if the ray intersects the given triangle.
+    // If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
+    bool RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, glm::vec3 *intersect_point_out = nullptr) const;
+
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
-    // Provide triangulated face buffers, to avoid re-triangulating the mesh.
-    VH FindNearestVertex(const MeshBuffers &tri_buffers, const Ray &ray_local) const;
+    VH FindNearestVertex(const Ray &ray_local) const;
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
-    FH FindFirstIntersectingFace(const MeshBuffers &tri_buffers, const Ray &ray_local, glm::vec3 *closest_intersect_point_out = nullptr) const;
+    FH FindFirstIntersectingFace(const Ray &ray_local, glm::vec3 *closest_intersect_point_out = nullptr) const;
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
-    EH FindNearestEdge(const MeshBuffers &tri_buffers, const Ray &ray_world) const;
+    EH FindNearestEdge(const Ray &ray_world) const;
 
 protected:
     PolyMesh M;

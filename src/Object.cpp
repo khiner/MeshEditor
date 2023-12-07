@@ -51,14 +51,14 @@ void Object::ShowNormalIndicators(NormalMode mode, bool show) {
 }
 
 Mesh::FH Object::FindFirstIntersectingFace(const Ray &ray_world, vec3 *closest_intersect_point_out) const {
-    return M.FindFirstIntersectingFace(GetBuffers(MeshElement::Faces).Buffers, ray_world.WorldToLocal(Model), closest_intersect_point_out);
+    return M.FindFirstIntersectingFace(ray_world.WorldToLocal(Model), closest_intersect_point_out);
 }
 
 Mesh::VH Object::FindNearestVertex(const Ray &ray_world) const {
-    return M.FindNearestVertex(GetBuffers(MeshElement::Faces).Buffers, ray_world.WorldToLocal(Model));
+    return M.FindNearestVertex(ray_world.WorldToLocal(Model));
 }
 
-Mesh::EH Object::FindNearestEdge(const Ray &ray_world) const { return M.FindNearestEdge(GetBuffers(MeshElement::Faces).Buffers, ray_world.WorldToLocal(Model)); }
+Mesh::EH Object::FindNearestEdge(const Ray &ray_world) const { return M.FindNearestEdge(ray_world.WorldToLocal(Model)); }
 
 std::string Object::GetHighlightLabel() const {
     if (HighlightedFace.is_valid()) return std::format("Hovered face {}", HighlightedFace.idx());
