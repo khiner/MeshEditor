@@ -5,6 +5,8 @@
 #include <numeric>
 #include <ranges>
 
+#include "VulkanBuffer.h"
+
 VkBool32 DebugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type,

@@ -4,13 +4,15 @@
 #include <glm/vec3.hpp>
 
 #include "Camera.h"
-#include "Geometry/MeshElement.h"
+#include "Mesh/MeshElement.h"
 #include "RenderMode.h"
 #include "Shader.h"
-#include "VulkanContext.h"
+#include "Vulkan/VulkanContext.h"
+#include "Vulkan/VulkanBuffer.h"
+
 #include "World.h"
 
-struct Mesh;
+struct Object;
 struct VkMeshBuffers;
 
 struct ImageResource {
@@ -203,7 +205,7 @@ private:
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
     std::unique_ptr<Gizmo> Gizmo;
-    std::vector<std::unique_ptr<Mesh>> Meshes;
+    std::vector<std::unique_ptr<Object>> Objects;
 
     bool ShowGrid{true};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.

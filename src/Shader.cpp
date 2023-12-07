@@ -6,7 +6,7 @@
 #include <spirv_cross/spirv_cross.hpp>
 
 #include "File.h"
-#include "Vertex.h"
+#include "Mesh/Vertex.h"
 
 #ifdef DEBUG_BUILD
 static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.

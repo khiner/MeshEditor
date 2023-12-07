@@ -2,7 +2,7 @@
 
 using glm::vec2, glm::vec3;
 
-Rect::Rect(vec2 half_extents) : Geometry() {
+Rect::Rect(vec2 half_extents) : Mesh() {
     const auto &he = half_extents;
     const std::vector<Point> positions{
         {-he.x, -he.y, 0},

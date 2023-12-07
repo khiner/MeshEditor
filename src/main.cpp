@@ -9,7 +9,7 @@
 #include <stdexcept>
 
 #include "Scene.h"
-#include "VulkanContext.h"
+#include "Vulkan/VulkanContext.h"
 #include "Window.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE

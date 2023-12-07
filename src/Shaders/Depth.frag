@@ -1,6 +1,6 @@
 #version 450
 
-layout(location = 0) out vec4 OutColor; // {depth, depth, depth, HasGeometry}
+layout(location = 0) out vec4 OutColor; // {depth, depth, depth, HasMesh}
 
 void main() {
     const float depth = gl_FragCoord.z;

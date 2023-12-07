@@ -1,8 +1,10 @@
 #pragma once
 
-#include "VulkanBuffer.h"
-
 #include <vector>
+
+#include <vulkan/vulkan.hpp>
+
+struct VulkanBuffer;
 
 using uint = u_int32_t;
 

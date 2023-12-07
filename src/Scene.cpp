@@ -7,8 +7,8 @@
 
 #include "ImGuizmo.h"
 
-#include "Geometry/Primitive/Cuboid.h"
-#include "Mesh/Mesh.h"
+#include "Object.h"
+#include "Mesh/Primitive/Cuboid.h"
 
 using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
@@ -147,7 +147,7 @@ MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
     ShaderPipelines[SPT::Texture] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}},
         // We render all the silhouette edge texture's pixels regardless of the tested depth value,
-        // but also explicitly override the depth buffer to make edge pixels "stick" to the geometry they are derived from.
+        // but also explicitly override the depth buffer to make edge pixels "stick" to the mesh they are derived from.
         // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers
         // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples
@@ -240,7 +240,7 @@ EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc
     RenderPass = VC.Device->createRenderPassUnique({{}, attachments, subpass});
 
     ShaderPipelines[SPT::EdgeDetection] = std::make_unique<ShaderPipeline>(
-        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "GeometryEdges.frag"}}},
+        *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "MeshEdges.frag"}}},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
@@ -264,7 +264,7 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
 
 Scene::Scene(const VulkanContext &vc)
     : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
-    Meshes.push_back(std::make_unique<Mesh>(VC, Cuboid{{0.5, 0.5, 0.5}}));
+    Objects.push_back(std::make_unique<Object>(VC, Cuboid{{0.5, 0.5, 0.5}}));
     UpdateEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
@@ -341,10 +341,10 @@ void Scene::RecordCommandBuffer() {
         image_memory_barriers
     );
 
-    const auto &mesh = *Meshes[0];
+    const auto &object = *Objects[0];
 
     SilhouetteRenderPipeline.Begin(cb);
-    SilhouetteRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Vertices), SPT::Silhouette);
+    SilhouetteRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertices), SPT::Silhouette);
     cb.endRenderPass();
 
     EdgeDetectionRenderPipeline.Begin(cb);
@@ -354,19 +354,19 @@ void Scene::RecordCommandBuffer() {
     MainRenderPipeline.Begin(cb, BackgroundColor);
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Faces), fill_pipeline);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Faces), fill_pipeline);
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(MeshElement::Vertices), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertices), fill_pipeline);
     }
-    if (const auto *face_normals = mesh.GetFaceNormalIndicatorBuffers()) {
+    if (const auto *face_normals = object.GetFaceNormalIndicatorBuffers()) {
         MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line);
     }
-    if (const auto *vertex_normals = mesh.GetVertexNormalIndicatorBuffers()) {
+    if (const auto *vertex_normals = object.GetVertexNormalIndicatorBuffers()) {
         MainRenderPipeline.RenderBuffers(cb, *vertex_normals, SPT::Line);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
@@ -395,19 +395,19 @@ void Scene::CompileShaders() {
 }
 
 void Scene::UpdateEdgeColors() {
-    Geometry::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (auto &mesh : Meshes) mesh->CreateOrUpdateBuffers();
+    Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+    for (auto &object : Objects) object->CreateOrUpdateBuffers();
 }
 void Scene::UpdateNormalIndicators() {
-    for (auto &mesh : Meshes) {
-        mesh->ShowNormalIndicators(NormalMode::Faces, ShowFaceNormals);
-        mesh->ShowNormalIndicators(NormalMode::Vertices, ShowVertexNormals);
+    for (auto &object : Objects) {
+        object->ShowNormalIndicators(NormalMode::Faces, ShowFaceNormals);
+        object->ShowNormalIndicators(NormalMode::Vertices, ShowVertexNormals);
     }
 }
 
 void Scene::UpdateTransform() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    const mat4 &model = Meshes[0]->Model;
+    const mat4 &model = Objects[0]->Model;
     const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model))); // todo only recalculate when model changes.
     const Transform transform{model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
     VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
@@ -426,7 +426,7 @@ bool Scene::Render() {
 
     // Handle mouse input.
     if (SelectionMode != SelectionMode::None) {
-        auto &mesh = *Meshes[0];
+        auto &object = *Objects[0];
         const auto &mouse_pos = GetMousePos();
         const auto &window_pos = GetCursorScreenPos();
         const glm::vec2 mouse_pos_window = {mouse_pos.x - window_pos.x, mouse_pos.y - window_pos.y};
@@ -434,11 +434,11 @@ bool Scene::Render() {
         const float aspect_ratio = float(Extent.width) / float(Extent.height);
         const Ray ray = Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio);
         if (SelectionMode == SelectionMode::Face) {
-            if (mesh.HighlightFace(mesh.FindFirstIntersectingFace(ray))) SubmitCommandBuffer();
+            if (object.HighlightFace(object.FindFirstIntersectingFace(ray))) SubmitCommandBuffer();
         } else if (SelectionMode == SelectionMode::Vertex) {
-            if (mesh.HighlightVertex(mesh.FindNearestVertex(ray))) SubmitCommandBuffer();
+            if (object.HighlightVertex(object.FindNearestVertex(ray))) SubmitCommandBuffer();
         } else if (SelectionMode == SelectionMode::Edge) {
-            if (mesh.HighlightEdge(mesh.FindNearestEdge(ray))) SubmitCommandBuffer();
+            if (object.HighlightEdge(object.FindNearestEdge(ray))) SubmitCommandBuffer();
         }
     }
 
@@ -471,7 +471,7 @@ void Scene::RenderGizmo() {
 
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    auto &model = Meshes[0]->Model;
+    auto &model = Objects[0]->Model;
     const bool model_changed = Gizmo->Render(Camera, model, aspect_ratio);
     const bool view_changed = Camera.Tick();
     if (model_changed || view_changed) {
@@ -570,7 +570,7 @@ void Scene::RenderControls() {
             SameLine();
             selection_mode_changed |= RadioButton("Face##Selection", &selection_mode, int(SelectionMode::Face));
             if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
-            TextUnformatted(Meshes[0]->GetHighlightLabel().c_str());
+            TextUnformatted(Objects[0]->GetHighlightLabel().c_str());
             SeparatorText("Transform");
             Gizmo->RenderDebug();
             EndTabItem();

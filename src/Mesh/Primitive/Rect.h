@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Geometry/Geometry.h"
+#include "Mesh/Mesh.h"
 
-struct Rect : Geometry {
+struct Rect : Mesh {
     Rect(glm::vec2 half_extents = {1, 1});
 };
