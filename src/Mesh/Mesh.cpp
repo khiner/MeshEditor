@@ -1,4 +1,4 @@
-#include "GeometryInstance.h"
+#include "Mesh/Mesh.h"
 
 #include "Ray.h"
 #include "VulkanContext.h"
@@ -9,17 +9,17 @@
 
 using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
-GeometryInstance::GeometryInstance(const VulkanContext &vc, Geometry &&geometry)
+Mesh::Mesh(const VulkanContext &vc, Geometry &&geometry)
     : VC(vc), G(std::move(geometry)) {
     CreateOrUpdateBuffers();
 }
 
-void GeometryInstance::CreateOrUpdateBuffers() {
+void Mesh::CreateOrUpdateBuffers() {
     static const std::vector AllModes{GeometryMode::Faces, GeometryMode::Vertices, GeometryMode::Edges};
     for (const auto mode : AllModes) CreateOrUpdateBuffers(mode);
 }
 
-void GeometryInstance::CreateOrUpdateBuffers(GeometryMode mode) {
+void Mesh::CreateOrUpdateBuffers(GeometryMode mode) {
     auto &buffers = BuffersForMode[mode];
     buffers.Vertices = G.GenerateVertices(mode, HighlightedFace, HighlightedVertex, HighlightedEdge);
     buffers.VertexBuffer.Size = sizeof(Vertex3D) * buffers.Vertices.size();
@@ -30,7 +30,7 @@ void GeometryInstance::CreateOrUpdateBuffers(GeometryMode mode) {
     VC.CreateOrUpdateBuffer(buffers.IndexBuffer, buffers.Indices.data());
 }
 
-void GeometryInstance::ShowNormalIndicators(NormalIndicatorMode mode, bool show) {
+void Mesh::ShowNormalIndicators(NormalIndicatorMode mode, bool show) {
     auto &buffers = mode == NormalIndicatorMode::Faces ? FaceNormalIndicatorBuffers : VertexNormalIndicatorBuffers;
     buffers.reset();
     if (!show) return;
@@ -76,7 +76,7 @@ static bool RayIntersectsTriangle(const Ray &ray, const mat3 &triangle, float *d
     return false;
 }
 
-Geometry::FH GeometryInstance::FindFirstIntersectingFaceLocal(const Ray &ray_local, vec3 *closest_intersect_point_out) const {
+Geometry::FH Mesh::FindFirstIntersectingFaceLocal(const Ray &ray_local, vec3 *closest_intersect_point_out) const {
     const auto &tri_buffers = GetBuffers(GeometryMode::Faces); // Triangulated face buffers
     const std::vector<uint> &tri_indices = tri_buffers.Indices;
     const std::vector<Vertex3D> &tri_verts = tri_buffers.Vertices;
@@ -105,11 +105,11 @@ Geometry::FH GeometryInstance::FindFirstIntersectingFaceLocal(const Ray &ray_loc
     }
     return Geometry::FH{};
 }
-Geometry::FH GeometryInstance::FindFirstIntersectingFace(const Ray &ray_world, vec3 *closest_intersect_point_out) const {
+Geometry::FH Mesh::FindFirstIntersectingFace(const Ray &ray_world, vec3 *closest_intersect_point_out) const {
     return FindFirstIntersectingFaceLocal(ray_world.WorldToLocal(Model), closest_intersect_point_out);
 }
 
-Geometry::VH GeometryInstance::FindNearestVertexLocal(const Ray &ray_local) const {
+Geometry::VH Mesh::FindNearestVertexLocal(const Ray &ray_local) const {
     vec3 intersection_point;
     const auto face = FindFirstIntersectingFaceLocal(ray_local, &intersection_point);
     if (!face.is_valid()) return Geometry::VH{};
@@ -127,7 +127,7 @@ Geometry::VH GeometryInstance::FindNearestVertexLocal(const Ray &ray_local) cons
 
     return closest_vertex;
 }
-Geometry::VH GeometryInstance::FindNearestVertex(const Ray &ray_world) const {
+Geometry::VH Mesh::FindNearestVertex(const Ray &ray_world) const {
     return FindNearestVertexLocal(ray_world.WorldToLocal(Model));
 }
 
@@ -138,7 +138,7 @@ static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const 
     return glm::distance2(point, closest_point);
 }
 
-Geometry::EH GeometryInstance::FindNearestEdgeLocal(const Ray &ray_local) const {
+Geometry::EH Mesh::FindNearestEdgeLocal(const Ray &ray_local) const {
     vec3 intersection_point;
     const auto face = FindFirstIntersectingFaceLocal(ray_local, &intersection_point);
     if (!face.is_valid()) return Geometry::EH{};
@@ -160,11 +160,11 @@ Geometry::EH GeometryInstance::FindNearestEdgeLocal(const Ray &ray_local) const 
     return closest_edge;
 }
 
-Geometry::EH GeometryInstance::FindNearestEdge(const Ray &ray_world) const {
+Geometry::EH Mesh::FindNearestEdge(const Ray &ray_world) const {
     return FindNearestEdgeLocal(ray_world.WorldToLocal(Model));
 }
 
-std::string GeometryInstance::GetHighlightLabel() const {
+std::string Mesh::GetHighlightLabel() const {
     if (HighlightedFace.is_valid()) return std::format("Hovered face {}", HighlightedFace.idx());
     if (HighlightedVertex.is_valid()) return std::format("Hovered vertex {}", HighlightedVertex.idx());
     if (HighlightedEdge.is_valid()) return std::format("Hovered edge {}", HighlightedEdge.idx());

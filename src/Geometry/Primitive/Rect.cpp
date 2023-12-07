@@ -13,7 +13,7 @@ Rect::Rect(vec2 half_extents) : Geometry() {
 
     std::vector<VH> face;
     face.reserve(positions.size());
-    for (const auto &position : positions) face.push_back(Mesh.add_vertex(position));
+    for (const auto &position : positions) face.push_back(M.add_vertex(position));
 
     AddFace(face);
 }

@@ -10,7 +10,7 @@
 #include "VulkanContext.h"
 #include "World.h"
 
-struct GeometryInstance;
+struct Mesh;
 struct GeometryBuffers;
 
 struct ImageResource {
@@ -203,7 +203,7 @@ private:
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
     std::unique_ptr<Gizmo> Gizmo;
-    std::vector<std::unique_ptr<GeometryInstance>> GeometryInstances;
+    std::vector<std::unique_ptr<Mesh>> Meshes;
 
     bool ShowGrid{true};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.

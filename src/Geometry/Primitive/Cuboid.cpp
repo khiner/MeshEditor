@@ -15,7 +15,7 @@ Cuboid::Cuboid(glm::vec3 half_extents) : Geometry() {
 
     std::vector<VH> vhs;
     vhs.reserve(positions.size());
-    for (const auto &position : positions) vhs.push_back(Mesh.add_vertex(position));
+    for (const auto &position : positions) vhs.push_back(M.add_vertex(position));
 
     const std::vector<std::vector<VH>> faces{
         {vhs[0], vhs[3], vhs[2], vhs[1]}, // front

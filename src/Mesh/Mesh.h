@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Geometry.h"
+#include "Geometry/Geometry.h"
 #include "VulkanBuffer.h"
 
 struct VulkanContext;
@@ -14,8 +14,9 @@ struct GeometryBuffers {
     VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
 };
 
-struct GeometryInstance {
-    GeometryInstance(const VulkanContext &, Geometry &&);
+// A `Mesh` is a wrapper around a `Geometry`, a `Model` matrix, Vulkan buffers, and other application state.
+struct Mesh {
+    Mesh(const VulkanContext &, Geometry &&);
 
     void CreateOrUpdateBuffers(GeometryMode);
     void CreateOrUpdateBuffers(); // Update all buffers.

@@ -27,14 +27,23 @@ inline static OpenMesh::Vec3uc ToOpenMesh(const glm::vec4 &c) {
     return {cc[0], cc[1], cc[2]};
 }
 
-using MeshType = OpenMesh::PolyMesh_ArrayKernelT<>;
+// Aliases for OpenMesh types to avoid collision with our own `Mesh` type.
+namespace om {
+using Mesh = OpenMesh::PolyMesh_ArrayKernelT<>;
+using VH = OpenMesh::VertexHandle;
+using FH = OpenMesh::FaceHandle;
+using EH = OpenMesh::EdgeHandle;
+using HH = OpenMesh::HalfedgeHandle;
+using Point = OpenMesh::Vec3f;
+}; // namespace om
 
+// A `Geometry` is a wrapper around an `OpenMesh::PolyMesh`, privately available as `M`.
 struct Geometry {
-    using VH = OpenMesh::VertexHandle;
-    using FH = OpenMesh::FaceHandle;
-    using EH = OpenMesh::EdgeHandle;
-    using HH = OpenMesh::HalfedgeHandle;
-    using Point = OpenMesh::Vec3f;
+    using VH = om::VH;
+    using FH = om::FH;
+    using EH = om::EH;
+    using HH = om::HH;
+    using Point = om::Point;
 
     inline static const glm::vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
     inline static glm::vec4 EdgeColor{0, 0, 0, 1};
@@ -44,38 +53,38 @@ struct Geometry {
     inline static float NormalIndicatorLengthScale = 0.25f;
 
     Geometry() {
-        Mesh.request_face_normals();
-        Mesh.request_vertex_normals();
-        Mesh.request_face_colors();
+        M.request_face_normals();
+        M.request_vertex_normals();
+        M.request_face_colors();
     }
-    Geometry(Geometry &&geometry) : Mesh(std::move(geometry.Mesh)) {}
+    Geometry(Geometry &&geometry) : M(std::move(geometry.M)) {}
     Geometry(const fs::path &file_path) {
-        Mesh.request_face_normals();
-        Mesh.request_vertex_normals();
+        M.request_face_normals();
+        M.request_vertex_normals();
         Load(file_path);
     }
 
     ~Geometry() {
-        Mesh.release_vertex_normals();
-        Mesh.release_face_normals();
+        M.release_vertex_normals();
+        M.release_face_normals();
     }
 
     bool Load(const fs::path &file_path);
     void Save(const fs::path &file_path) const;
 
-    inline uint NumPositions() const { return Mesh.n_vertices(); }
-    inline uint NumFaces() const { return Mesh.n_faces(); }
+    inline uint NumPositions() const { return M.n_vertices(); }
+    inline uint NumFaces() const { return M.n_faces(); }
 
-    inline const MeshType &GetMesh() const { return Mesh; }
+    inline const om::Mesh &GetMesh() const { return M; }
 
-    inline const float *GetPositionData() const { return (const float *)Mesh.points(); }
+    inline const float *GetPositionData() const { return (const float *)M.points(); }
 
-    inline glm::vec3 GetPosition(VH vh) const { return ToGlm(Mesh.point(vh)); }
-    inline glm::vec3 GetVertexNormal(VH vh) const { return ToGlm(Mesh.normal(vh)); }
-    inline glm::vec3 GetFaceNormal(FH fh) const { return ToGlm(Mesh.normal(fh)); }
-    inline glm::vec3 GetFaceCenter(FH fh) const { return ToGlm(Mesh.calc_face_centroid(fh)); }
+    inline glm::vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
+    inline glm::vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
+    inline glm::vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
+    inline glm::vec3 GetFaceCenter(FH fh) const { return ToGlm(M.calc_face_centroid(fh)); }
 
-    inline bool Empty() const { return Mesh.n_vertices() == 0; }
+    inline bool Empty() const { return M.n_vertices() == 0; }
 
     std::vector<Vertex3D> GenerateVertices(GeometryMode mode, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{});
     std::vector<uint> GenerateIndices(GeometryMode mode) const {
@@ -116,21 +125,21 @@ struct Geometry {
     //     }
     // }
 
-    void SetMesh(const MeshType &mesh) {
-        Mesh = mesh;
-        Mesh.request_face_normals();
-        Mesh.request_vertex_normals();
+    void SetMesh(const om::Mesh &mesh) {
+        M = mesh;
+        M.request_face_normals();
+        M.request_vertex_normals();
     }
 
     void SetFaceColor(FH fh, const glm::vec4 &face_color) {
-        Mesh.set_color(fh, ToOpenMesh(face_color));
+        M.set_color(fh, ToOpenMesh(face_color));
     }
     void SetFaceColor(const glm::vec4 &face_color) {
-        for (const auto &fh : Mesh.faces()) SetFaceColor(fh, face_color);
+        for (const auto &fh : M.faces()) SetFaceColor(fh, face_color);
     }
 
     void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = DefaultFaceColor) {
-        SetFaceColor(Mesh.add_face(vertices), color);
+        SetFaceColor(M.add_face(vertices), color);
     }
 
     bool DoesVertexBelongToFace(VH vertex, FH face) const;
@@ -139,5 +148,5 @@ struct Geometry {
     bool DoesEdgeBelongToFace(EH edge, FH face) const;
 
 protected:
-    MeshType Mesh;
+    om::Mesh M;
 };

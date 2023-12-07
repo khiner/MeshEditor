@@ -5,13 +5,14 @@
 #include <algorithm>
 #include <ranges>
 
+using namespace om;
 using glm::vec3, glm::vec4, glm::mat4;
 
 using std::ranges::any_of;
 
 bool Geometry::Load(const fs::path &file_path) {
     OpenMesh::IO::Options read_options; // No options used yet, but keeping this here for future use.
-    if (!OpenMesh::IO::read_mesh(Mesh, file_path.string(), read_options)) {
+    if (!OpenMesh::IO::read_mesh(M, file_path.string(), read_options)) {
         std::cerr << "Error loading mesh: " << file_path << std::endl;
         return false;
     }
@@ -19,50 +20,50 @@ bool Geometry::Load(const fs::path &file_path) {
 }
 
 bool Geometry::DoesVertexBelongToFace(VH vertex, FH face) const {
-    return face.is_valid() && any_of(Mesh.fv_range(face), [&](const auto &vh) { return vh == vertex; });
+    return face.is_valid() && any_of(M.fv_range(face), [&](const auto &vh) { return vh == vertex; });
 }
 
 bool Geometry::DoesVertexBelongToEdge(VH vertex, EH edge) const {
-    return edge.is_valid() && any_of(Mesh.voh_range(vertex), [&](const auto &heh) { return Mesh.edge_handle(heh) == edge; });
+    return edge.is_valid() && any_of(M.voh_range(vertex), [&](const auto &heh) { return M.edge_handle(heh) == edge; });
 }
 
 bool Geometry::DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const {
     return face.is_valid() && edge.is_valid() &&
-        any_of(Mesh.voh_range(vertex), [&](const auto &heh) {
-               return Mesh.edge_handle(heh) == edge && (Mesh.face_handle(heh) == face || Mesh.face_handle(Mesh.opposite_halfedge_handle(heh)) == face);
+        any_of(M.voh_range(vertex), [&](const auto &heh) {
+               return M.edge_handle(heh) == edge && (M.face_handle(heh) == face || M.face_handle(M.opposite_halfedge_handle(heh)) == face);
            });
 }
 
 bool Geometry::DoesEdgeBelongToFace(EH edge, FH face) const {
-    return face.is_valid() && any_of(Mesh.fh_range(face), [&](const auto &heh) { return Mesh.edge_handle(heh) == edge; });
+    return face.is_valid() && any_of(M.fh_range(face), [&](const auto &heh) { return M.edge_handle(heh) == edge; });
 }
 
 std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) {
-    Mesh.update_normals(); // todo only update when necessary.
+    M.update_normals(); // todo only update when necessary.
 
     std::vector<Vertex3D> vertices;
     if (mode == GeometryMode::Faces) {
-        vertices.reserve(Mesh.n_faces() * 3); // At least 3 vertices per face.
-        for (const auto &fh : Mesh.faces()) {
-            const auto &fn = Mesh.normal(fh);
-            const auto &fc = Mesh.color(fh);
-            for (const auto &vh : Mesh.fv_range(fh)) {
+        vertices.reserve(M.n_faces() * 3); // At least 3 vertices per face.
+        for (const auto &fh : M.faces()) {
+            const auto &fn = M.normal(fh);
+            const auto &fc = M.color(fh);
+            for (const auto &vh : M.fv_range(fh)) {
                 const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : ToGlm(fc);
                 vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
     } else if (mode == GeometryMode::Vertices) {
-        vertices.reserve(Mesh.n_vertices());
-        for (const auto &vh : Mesh.vertices()) {
+        vertices.reserve(M.n_vertices());
+        for (const auto &vh : M.vertices()) {
             const vec4 color = vh == highlighted_vertex || DoesVertexBelongToFace(vh, highlighted_face) || DoesVertexBelongToEdge(vh, highlighted_edge) ? HighlightColor : vec4{1};
             vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
         }
     } else if (mode == GeometryMode::Edges) {
-        vertices.reserve(Mesh.n_edges() * 2);
-        for (const auto &eh : Mesh.edges()) {
-            const auto &heh = Mesh.halfedge_handle(eh, 0);
-            const auto &vh0 = Mesh.from_vertex_handle(heh);
-            const auto &vh1 = Mesh.to_vertex_handle(heh);
+        vertices.reserve(M.n_edges() * 2);
+        for (const auto &eh : M.edges()) {
+            const auto &heh = M.halfedge_handle(eh, 0);
+            const auto &vh0 = M.from_vertex_handle(heh);
+            const auto &vh1 = M.to_vertex_handle(heh);
             const vec4 color = eh == highlighted_edge || vh0 == highlighted_vertex || vh1 == highlighted_vertex || DoesEdgeBelongToFace(eh, highlighted_face) ? HighlightColor : EdgeColor;
             vertices.emplace_back(GetPosition(vh0), GetVertexNormal(vh0), color);
             vertices.emplace_back(GetPosition(vh1), GetVertexNormal(vh1), color);
@@ -72,7 +73,7 @@ std::vector<Vertex3D> Geometry::GenerateVertices(GeometryMode mode, FH highlight
     return vertices;
 }
 
-static float CalcFaceArea(const MeshType &mesh, MeshType::FaceHandle fh) {
+static float CalcFaceArea(const Mesh &mesh, Mesh::FaceHandle fh) {
     std::vector<OpenMesh::Vec3f> vertices;
     vertices.reserve(mesh.valence(fh));
     for (const auto &vh : mesh.fv_range(fh)) vertices.emplace_back(mesh.point(vh));
@@ -88,29 +89,29 @@ static float CalcFaceArea(const MeshType &mesh, MeshType::FaceHandle fh) {
 }
 
 std::vector<Vertex3D> Geometry::GenerateVertices(NormalIndicatorMode mode) {
-    Mesh.update_normals(); // todo only update when necessary.
+    M.update_normals(); // todo only update when necessary.
 
     std::vector<Vertex3D> vertices;
     if (mode == NormalIndicatorMode::Faces) {
         // Line for each face normal, with length scaled by the face area.
-        vertices.reserve(Mesh.n_faces() * 2);
-        for (const auto &fh : Mesh.faces()) {
-            const auto &fn = Mesh.normal(fh);
-            const vec3 point = ToGlm(Mesh.calc_face_centroid(fh));
+        vertices.reserve(M.n_faces() * 2);
+        for (const auto &fh : M.faces()) {
+            const auto &fn = M.normal(fh);
+            const vec3 point = ToGlm(M.calc_face_centroid(fh));
             vertices.emplace_back(point, ToGlm(fn), FaceNormalIndicatorColor);
-            vertices.emplace_back(point + NormalIndicatorLengthScale * CalcFaceArea(Mesh, fh) * ToGlm(fn), ToGlm(fn), FaceNormalIndicatorColor);
+            vertices.emplace_back(point + NormalIndicatorLengthScale * CalcFaceArea(M, fh) * ToGlm(fn), ToGlm(fn), FaceNormalIndicatorColor);
         }
     } else if (mode == NormalIndicatorMode::Vertices) {
         // Line for each vertex normal, with length scaled by the average edge length.
-        vertices.reserve(Mesh.n_vertices() * 2);
-        for (const auto &vh : Mesh.vertices()) {
-            const auto &vn = Mesh.normal(vh);
-            const auto &voh_range = Mesh.voh_range(vh);
+        vertices.reserve(M.n_vertices() * 2);
+        for (const auto &vh : M.vertices()) {
+            const auto &vn = M.normal(vh);
+            const auto &voh_range = M.voh_range(vh);
             const float total_edge_length = std::reduce(voh_range.begin(), voh_range.end(), 0.f, [&](float total, const auto &heh) {
-                return total + Mesh.calc_edge_length(heh);
+                return total + M.calc_edge_length(heh);
             });
-            const float avg_edge_length = total_edge_length / Mesh.valence(vh);
-            const vec3 point = ToGlm(Mesh.point(vh));
+            const float avg_edge_length = total_edge_length / M.valence(vh);
+            const vec3 point = ToGlm(M.point(vh));
             vertices.emplace_back(point, ToGlm(vn), VertexNormalIndicatorColor);
             vertices.emplace_back(point + NormalIndicatorLengthScale * avg_edge_length * ToGlm(vn), ToGlm(vn), VertexNormalIndicatorColor);
         }
@@ -125,8 +126,8 @@ std::pair<vec3, vec3> Geometry::ComputeBounds() const {
     static const float max_float = std::numeric_limits<float>::max();
 
     vec3 min(max_float), max(min_float);
-    for (const auto &vh : Mesh.vertices()) {
-        const auto &p = Mesh.point(vh);
+    for (const auto &vh : M.vertices()) {
+        const auto &p = M.point(vh);
         min.x = std::min(min.x, p[0]);
         min.y = std::min(min.y, p[1]);
         min.z = std::min(min.z, p[2]);
@@ -139,7 +140,7 @@ std::pair<vec3, vec3> Geometry::ComputeBounds() const {
 }
 
 std::vector<uint> Geometry::GenerateTriangleIndices() const {
-    auto triangulated_mesh = Mesh; // `triangulate` is in-place, so we need to make a copy.
+    auto triangulated_mesh = M; // `triangulate` is in-place, so we need to make a copy.
     triangulated_mesh.triangulate();
     std::vector<uint> indices;
     for (const auto &fh : triangulated_mesh.faces()) {
@@ -152,8 +153,8 @@ std::vector<uint> Geometry::GenerateTriangleIndices() const {
 std::vector<uint> Geometry::GenerateTriangulatedFaceIndices() const {
     std::vector<uint> indices;
     uint index = 0;
-    for (const auto &fh : Mesh.faces()) {
-        const auto valence = Mesh.valence(fh);
+    for (const auto &fh : M.faces()) {
+        const auto valence = M.valence(fh);
         for (uint i = 0; i < valence - 2; ++i) {
             indices.insert(indices.end(), {index, index + i + 1, index + i + 2});
         }
@@ -163,8 +164,8 @@ std::vector<uint> Geometry::GenerateTriangulatedFaceIndices() const {
 }
 
 Geometry::FH Geometry::TriangulatedIndexToFace(uint triangle_index) const {
-    for (const auto &fh : Mesh.faces()) {
-        const auto valence = Mesh.valence(fh);
+    for (const auto &fh : M.faces()) {
+        const auto valence = M.valence(fh);
         if (triangle_index < valence - 2) return fh;
         triangle_index -= valence - 2;
     }
@@ -173,8 +174,8 @@ Geometry::FH Geometry::TriangulatedIndexToFace(uint triangle_index) const {
 
 std::vector<uint> Geometry::GenerateEdgeIndices() const {
     std::vector<uint> indices;
-    indices.reserve(Mesh.n_edges() * 2);
-    for (uint ei = 0; ei < Mesh.n_edges(); ++ei) {
+    indices.reserve(M.n_edges() * 2);
+    for (uint ei = 0; ei < M.n_edges(); ++ei) {
         indices.push_back(ei * 2);
         indices.push_back(ei * 2 + 1);
     }
@@ -183,8 +184,8 @@ std::vector<uint> Geometry::GenerateEdgeIndices() const {
 
 std::vector<uint> Geometry::GenerateFaceNormalIndicatorIndices() const {
     std::vector<uint> indices;
-    indices.reserve(Mesh.n_faces() * 2);
-    for (uint fi = 0; fi < Mesh.n_faces(); ++fi) {
+    indices.reserve(M.n_faces() * 2);
+    for (uint fi = 0; fi < M.n_faces(); ++fi) {
         indices.push_back(fi * 2);
         indices.push_back(fi * 2 + 1);
     }
@@ -193,8 +194,8 @@ std::vector<uint> Geometry::GenerateFaceNormalIndicatorIndices() const {
 
 std::vector<uint> Geometry::GenerateVertexNormalIndicatorIndices() const {
     std::vector<uint> indices;
-    indices.reserve(Mesh.n_vertices() * 2);
-    for (uint vi = 0; vi < Mesh.n_vertices(); ++vi) {
+    indices.reserve(M.n_vertices() * 2);
+    for (uint vi = 0; vi < M.n_vertices(); ++vi) {
         indices.push_back(vi * 2);
         indices.push_back(vi * 2 + 1);
     }
