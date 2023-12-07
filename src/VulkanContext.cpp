@@ -158,16 +158,16 @@ void VulkanContext::CreateOrUpdateBuffer(VulkanBuffer &buffer, const void *data,
     }
 
     // Copy data from the staging buffer to the device buffer.
-    const auto &command_buffer = TransferCommandBuffers[0];
-    command_buffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    const auto &cb = TransferCommandBuffers[0];
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     vk::BufferCopy copy_region;
     copy_region.size = buffer.Size;
-    command_buffer->copyBuffer(*buffer.StagingBuffer, *buffer.Buffer, copy_region);
-    command_buffer->end();
+    cb->copyBuffer(*buffer.StagingBuffer, *buffer.Buffer, copy_region);
+    cb->end();
 
     // TODO we should use a separate fence/semaphores for buffer updates and rendering.
     vk::SubmitInfo submit;
-    submit.setCommandBuffers(*command_buffer);
+    submit.setCommandBuffers(*cb);
     Queue.submit(submit, *RenderFence);
 
     auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);

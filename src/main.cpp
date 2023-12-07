@@ -219,14 +219,14 @@ int main(int, char **) {
     {
         // Use any command queue
         vk::CommandPool command_pool = wd->Frames[wd->FrameIndex].CommandPool;
-        vk::CommandBuffer command_buffer = wd->Frames[wd->FrameIndex].CommandBuffer;
+        vk::CommandBuffer cb = wd->Frames[wd->FrameIndex].CommandBuffer;
         VC->Device->resetCommandPool(command_pool, vk::CommandPoolResetFlags());
-        command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        ImGui_ImplVulkan_CreateFontsTexture(command_buffer);
-        command_buffer.end();
+        cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        ImGui_ImplVulkan_CreateFontsTexture(cb);
+        cb.end();
 
         vk::SubmitInfo submit;
-        submit.setCommandBuffers(command_buffer);
+        submit.setCommandBuffers(cb);
         VC->Queue.submit(submit);
         VC->Device->waitIdle();
         ImGui_ImplVulkan_DestroyFontUploadObjects();

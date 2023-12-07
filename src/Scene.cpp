@@ -109,14 +109,14 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-void RenderPipeline::RenderBuffers(vk::CommandBuffer command_buffer, const GeometryBuffers &buffers, SPT spt) const {
+void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const GeometryBuffers &buffers, SPT spt) const {
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
+    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
     static const vk::DeviceSize vertex_buffer_offsets[] = {0};
-    command_buffer.bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
-    command_buffer.bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    command_buffer.drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
+    cb.bindVertexBuffers(0, *buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
+    cb.bindIndexBuffer(*buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    cb.drawIndexed(buffers.IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
 }
 
 MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
@@ -196,9 +196,9 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void MainRenderPipeline::Begin(vk::CommandBuffer command_buffer, const vk::ClearColorValue &background_color) const {
+void MainRenderPipeline::Begin(vk::CommandBuffer cb, const vk::ClearColorValue &background_color) const {
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {background_color}};
-    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
 SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
@@ -228,9 +228,9 @@ void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void SilhouetteRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
+void SilhouetteRenderPipeline::Begin(vk::CommandBuffer cb) const {
     static const std::vector<vk::ClearValue> clear_values{{transparent}};
-    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
 EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
@@ -260,9 +260,9 @@ void EdgeDetectionRenderPipeline::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer command_buffer) const {
+void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
     static const std::vector<vk::ClearValue> clear_values{{transparent}};
-    command_buffer.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
 Scene::Scene(const VulkanContext &vc)
@@ -320,10 +320,10 @@ void Scene::SetExtent(vk::Extent2D extent) {
 }
 
 void Scene::RecordCommandBuffer() {
-    const auto command_buffer = *VC.CommandBuffers[0];
-    command_buffer.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    command_buffer.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
-    command_buffer.setScissor(0, vk::Rect2D{{0, 0}, Extent});
+    const auto cb = *VC.CommandBuffers[0];
+    cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
     const std::vector<vk::ImageMemoryBarrier> image_memory_barriers{{
         {},
@@ -335,7 +335,7 @@ void Scene::RecordCommandBuffer() {
         *MainRenderPipeline.ResolveImage,
         {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }};
-    command_buffer.pipelineBarrier(
+    cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
         {}, // No dependency flags.
@@ -346,38 +346,38 @@ void Scene::RecordCommandBuffer() {
 
     const auto &mesh = *Meshes[0];
 
-    SilhouetteRenderPipeline.Begin(command_buffer);
-    SilhouetteRenderPipeline.RenderBuffers(command_buffer, mesh.GetBuffers(GeometryMode::Vertices), SPT::Silhouette);
-    command_buffer.endRenderPass();
+    SilhouetteRenderPipeline.Begin(cb);
+    SilhouetteRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Vertices), SPT::Silhouette);
+    cb.endRenderPass();
 
-    EdgeDetectionRenderPipeline.Begin(command_buffer);
-    EdgeDetectionRenderPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(command_buffer);
-    command_buffer.endRenderPass();
+    EdgeDetectionRenderPipeline.Begin(cb);
+    EdgeDetectionRenderPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
+    cb.endRenderPass();
 
-    MainRenderPipeline.Begin(command_buffer, BackgroundColor);
+    MainRenderPipeline.Begin(cb, BackgroundColor);
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(command_buffer, mesh.GetBuffers(GeometryMode::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Faces), fill_pipeline);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(command_buffer, mesh.GetBuffers(GeometryMode::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(command_buffer, mesh.GetBuffers(GeometryMode::Faces), fill_pipeline);
-        MainRenderPipeline.RenderBuffers(command_buffer, mesh.GetBuffers(GeometryMode::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Edges), SPT::Line);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(command_buffer, mesh.GetBuffers(GeometryMode::Vertices), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, mesh.GetBuffers(GeometryMode::Vertices), fill_pipeline);
     }
     if (const auto *face_normals = mesh.GetFaceNormalIndicatorBuffers()) {
-        MainRenderPipeline.RenderBuffers(command_buffer, *face_normals, SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line);
     }
     if (const auto *vertex_normals = mesh.GetVertexNormalIndicatorBuffers()) {
-        MainRenderPipeline.RenderBuffers(command_buffer, *vertex_normals, SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, *vertex_normals, SPT::Line);
     }
-    MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(command_buffer);
-    if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(command_buffer);
+    MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
+    if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
 
-    command_buffer.endRenderPass();
+    cb.endRenderPass();
 
-    command_buffer.end();
+    cb.end();
 }
 
 void Scene::SubmitCommandBuffer(vk::Fence fence) const {

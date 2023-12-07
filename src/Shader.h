@@ -89,7 +89,7 @@ struct ShaderPipeline {
 
     std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(const std::string &binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
 
-    void RenderQuad(vk::CommandBuffer command_buffer) const;
+    void RenderQuad(vk::CommandBuffer cb) const;
 
     vk::Device Device;
 
