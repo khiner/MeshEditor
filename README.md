@@ -2,6 +2,8 @@
 
 Real-time mesh viewer and editor, using Vulkan and ImGui.
 
+![](screenshot.png)
+
 For me to learn Vulkan, and to transition [mesh2audio](https://github.com/khiner/mesh2audio) to Vulkan with this project as the mesh library so it's just responsible for the audio/modeling side.
 
 ## Build app
