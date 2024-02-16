@@ -6,6 +6,21 @@ Real-time mesh viewer and editor, using Vulkan and ImGui.
 
 For me to learn Vulkan, and to transition [mesh2audio](https://github.com/khiner/mesh2audio) to Vulkan with this project as the mesh library so it's just responsible for the audio/modeling side.
 
+## Features
+
+Incomplete list of interesting features so far:
+* Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp) with little indirection
+* Re-compile and apply shader code at runtime
+* Camera rotate & zoom mouse/scrollwheel controls
+* Simple camera + scene lighting model, visually matching Blender
+* Flat/smooth storage and rendering
+* Hover-highlight vertices, edges, or faces
+* Normal debugging: Render faces as normals, show normal lines
+* Edge-detection-based silhouette outlining embedded into the scene with accurate per-pixel depth
+* Fast infinite grid with horizon fade
+* Camera/lighting editing
+* Object and view manipulation gizmos
+
 ## Build app
 
 ### Install dependencies
