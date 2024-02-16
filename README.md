@@ -54,4 +54,4 @@ $ mkdir build && cd make && cmake .. && make
 - [glm](https://github.com/g-truc/glm): Graphics math.
 - [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral mesh data structure.
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs.
-- [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform andcamera rotation gizmos.
+- [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform and camera rotation gizmos.

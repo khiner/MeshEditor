@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <ranges>
 
-#include <glm/gtx/norm.hpp>
-
 using namespace om;
 using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
@@ -45,7 +43,8 @@ static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const 
     const vec3 edge = v2 - v1;
     const float t = glm::clamp(glm::dot(point - v1, edge) / glm::dot(edge, edge), 0.f, 1.f);
     const vec3 closest_point = v1 + t * edge;
-    return glm::distance2(point, closest_point);
+    const vec3 diff = point - closest_point;
+    return glm::dot(diff, diff);
 }
 
 // Moller-Trumbore ray-triangle intersection algorithm.
@@ -90,7 +89,8 @@ VH Mesh::FindNearestVertex(const Ray &ray_local) const {
     VH closest_vertex;
     float closest_distance_sq = std::numeric_limits<float>::max();
     for (const auto &vh : M.fv_range(face)) {
-        const float distance_sq = glm::distance2(GetPosition(vh), intersection_point);
+        const vec3 diff = GetPosition(vh) - intersection_point;
+        const float distance_sq = glm::dot(diff, diff);
         if (distance_sq < closest_distance_sq) {
             closest_distance_sq = distance_sq;
             closest_vertex = vh;

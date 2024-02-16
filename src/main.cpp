@@ -147,17 +147,16 @@ int main(int, char **) {
 
     // Create window with Vulkan graphics context.
     const auto window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    auto *Window = SDL_CreateWindowWithPosition("MeshEditor", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
+    auto *Window = SDL_CreateWindow("MeshEditor", 1280, 720, window_flags);
 
     uint extensions_count = 0;
-    SDL_Vulkan_GetInstanceExtensions(&extensions_count, nullptr);
-    std::vector<const char *> extensions(extensions_count);
-    SDL_Vulkan_GetInstanceExtensions(&extensions_count, extensions.data());
-    VC = std::make_unique<VulkanContext>(extensions);
+    const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
+    const std::vector<const char *> instance_extensions(instance_extensions_raw, instance_extensions_raw + extensions_count);
+    VC = std::make_unique<VulkanContext>(instance_extensions);
 
     // Create window surface.
     VkSurfaceKHR surface;
-    if (SDL_Vulkan_CreateSurface(Window, VC->Instance.get(), &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
+    if (SDL_Vulkan_CreateSurface(Window, VC->Instance.get(), nullptr, &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
 
     // Create framebuffers.
     int w, h;
@@ -191,13 +190,14 @@ int main(int, char **) {
     init_info.Queue = VC->Queue;
     init_info.PipelineCache = *VC->PipelineCache;
     init_info.DescriptorPool = *VC->DescriptorPool;
+    init_info.RenderPass = wd->RenderPass;
     init_info.Subpass = 0;
     init_info.MinImageCount = MinImageCount;
     init_info.ImageCount = wd->ImageCount;
     init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator = nullptr;
     init_info.CheckVkResultFn = CheckVk;
-    ImGui_ImplVulkan_Init(&init_info, wd->RenderPass);
+    ImGui_ImplVulkan_Init(&init_info);
 
     // Load fonts.
     // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use PushFont()/PopFont() to select them.
@@ -214,23 +214,6 @@ int main(int, char **) {
     // io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
     // ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
     // IM_ASSERT(font != nullptr);
-
-    // Upload fonts.
-    {
-        // Use any command queue
-        vk::CommandPool command_pool = wd->Frames[wd->FrameIndex].CommandPool;
-        vk::CommandBuffer cb = wd->Frames[wd->FrameIndex].CommandBuffer;
-        VC->Device->resetCommandPool(command_pool, vk::CommandPoolResetFlags());
-        cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        ImGui_ImplVulkan_CreateFontsTexture(cb);
-        cb.end();
-
-        vk::SubmitInfo submit;
-        submit.setCommandBuffers(cb);
-        VC->Queue.submit(submit);
-        VC->Device->waitIdle();
-        ImGui_ImplVulkan_DestroyFontUploadObjects();
-    }
 
     MainScene = std::make_unique<Scene>(*VC);
 
