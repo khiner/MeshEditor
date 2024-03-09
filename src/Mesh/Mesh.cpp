@@ -51,20 +51,18 @@ static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const 
 bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) const {
     static const float Epsilon = 1e-7f; // Floating point error tolerance.
 
-    const Point &ray_origin = ToOpenMesh(ray.Origin);
-    const Point &ray_dir = ToOpenMesh(ray.Direction);
+    const Point ray_origin = ToOpenMesh(ray.Origin), ray_dir = ToOpenMesh(ray.Direction);
     const Point &p1 = M.point(v1), &p2 = M.point(v2), &p3 = M.point(v3);
     const Point edge1 = p2 - p1, edge2 = p3 - p1;
     const Point h = ray_dir % edge2;
-    const float a = edge1.dot(h); // Barycentric coordinate a.
+    const float a = edge1.dot(h); // Barycentric coordinate
 
     // Check if the ray is parallel to the triangle.
     if (a > -Epsilon && a < Epsilon) return false;
 
     // Check if the intersection point is inside the triangle (in barycentric coordinates).
-    const float f = 1.0 / a;
     const Point s = ray_origin - p1;
-    const float u = f * s.dot(h);
+    const float f = 1.0 / a, u = f * s.dot(h);
     if (u < 0.0 || u > 1.0) return false;
 
     const Point q = s % edge1;
@@ -75,7 +73,7 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     const float distance = f * edge2.dot(q);
     if (distance > Epsilon) {
         if (distance_out) *distance_out = distance;
-        if (intersect_point_out) *intersect_point_out = ray.Origin + ray.Direction * distance;
+        if (intersect_point_out) *intersect_point_out = ray(distance);
         return true;
     }
     return false;
