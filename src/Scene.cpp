@@ -485,7 +485,7 @@ void Scene::RenderControls() {
         if (BeginTabItem("Camera")) {
             bool camera_changed = false;
             if (Button("Reset camera")) {
-                Camera = DefaultCamera;
+                Camera = CreateDefaultCamera();
                 camera_changed = true;
             }
             camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);

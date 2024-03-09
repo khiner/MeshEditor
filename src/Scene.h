@@ -7,8 +7,8 @@
 #include "Mesh/MeshElement.h"
 #include "RenderMode.h"
 #include "Shader.h"
-#include "Vulkan/VulkanContext.h"
 #include "Vulkan/VulkanBuffer.h"
+#include "Vulkan/VulkanContext.h"
 
 #include "World.h"
 
@@ -145,11 +145,11 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
     ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
 };
 
-inline static const Camera DefaultCamera{{0, 0, 2}, World::Origin, 60, 0.1, 100};
-
 struct Scene {
     Scene(const VulkanContext &);
     ~Scene();
+
+    const VulkanContext &VC;
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainRenderPipeline.MsaaSamples; }
@@ -169,7 +169,7 @@ struct Scene {
     void UpdateEdgeColors();
     void UpdateNormalIndicators();
 
-    const VulkanContext &VC;
+    Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
 
 private:
     void SetExtent(vk::Extent2D);
@@ -177,7 +177,8 @@ private:
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
-    Camera Camera{DefaultCamera};
+    World World{};
+    Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
     glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
@@ -191,11 +192,12 @@ private:
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
 
-    VulkanBuffer TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)};
-    VulkanBuffer LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)};
-    VulkanBuffer ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)};
-    VulkanBuffer ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)};
-    VulkanBuffer SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
+    VulkanBuffer
+        TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)},
+        LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)},
+        ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)},
+        ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)},
+        SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
 
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
