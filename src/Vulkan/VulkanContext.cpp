@@ -56,7 +56,7 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
     extensions.push_back("VK_EXT_debug_utils");
 
     const std::vector<const char *> validation_layers{"VK_LAYER_KHRONOS_validation"};
-    const vk::ApplicationInfo app{"", {}, "", {}, {}};
+    const vk::ApplicationInfo app{"", {}, "", {}, VK_API_VERSION_1_3};
     Instance = vk::createInstanceUnique({flags, &app, validation_layers, extensions});
 
     const vk::DispatchLoaderDynamic dldi{Instance.get(), vkGetInstanceProcAddr};
