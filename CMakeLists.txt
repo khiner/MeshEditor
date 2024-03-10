@@ -54,7 +54,7 @@ add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS) # ImVec2 & ImVec4 math operators
 # Copy shader files on every release build.
 if(CMAKE_BUILD_TYPE MATCHES Release)
     add_custom_target(copy_shaders ALL
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/src/Shaders ${CMAKE_BINARY_DIR}/Shaders
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/src/shaders ${CMAKE_BINARY_DIR}/shaders
     )
     add_dependencies(${PROJECT_NAME} copy_shaders)
 endif()

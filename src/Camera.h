@@ -1,8 +1,8 @@
 #pragma once
 
-#include "mat4.h"
-#include "vec2.h"
-#include "vec3.h"
+#include "numeric/mat4.h"
+#include "numeric/vec2.h"
+#include "numeric/vec3.h"
 
 #include "Ray.h"
 

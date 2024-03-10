@@ -10,7 +10,7 @@ For me to learn Vulkan, and to transition [mesh2audio](https://github.com/khiner
 
 Incomplete list of interesting features so far:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp) with little indirection
-* Re-compile and apply shader code at runtime
+* Change and recompile the SPIRV shader code at runtime
 * Camera rotate & zoom mouse/scrollwheel controls
 * Simple camera + scene lighting model, visually matching Blender
 * Flat/smooth storage and rendering

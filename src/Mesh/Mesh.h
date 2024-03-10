@@ -5,8 +5,8 @@
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <OpenMesh/Core/Mesh/PolyMesh_ArrayKernelT.hh>
 
-#include "vec3.h"
-#include "vec4.h"
+#include "numeric/vec3.h"
+#include "numeric/vec4.h"
 
 #include "MeshBuffers.h"
 #include "MeshElement.h"

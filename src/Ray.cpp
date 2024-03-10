@@ -1,8 +1,8 @@
 #include "Ray.h"
 
-#include "mat4.h"
-#include "vec3.h"
-#include "vec4.h"
+#include "numeric/mat4.h"
+#include "numeric/vec3.h"
+#include "numeric/vec4.h"
 
 // The origin is transformed using the full inverse transformation (including translation),
 // while the direction is transformed using only the rotational part (ignoring translation) to maintain its directionality.

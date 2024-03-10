@@ -1,7 +1,7 @@
 #pragma once
 
 #include "MeshBuffers.h"
-#include "Vulkan/VulkanBuffer.h"
+#include "vulkan/VulkanBuffer.h"
 
 struct VulkanContext;
 

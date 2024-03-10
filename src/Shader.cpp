@@ -6,12 +6,12 @@
 #include <spirv_cross/spirv_cross.hpp>
 
 #include "File.h"
-#include "Mesh/Vertex.h"
+#include "mesh/Vertex.h"
 
 #ifdef DEBUG_BUILD
-static const fs::path ShadersDir = "../src/Shaders"; // Relative to `build/`.
+static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
 #elif defined(RELEASE_BUILD)
-// All files in `src/Shaders` are copied to `build/Shaders` at build time.
+// All files in `src/shaders` are copied to `build/shaders` at build time.
 static const fs::path ShadersDir = "Shaders";
 #endif
 

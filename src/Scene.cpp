@@ -5,12 +5,14 @@
 
 #include "imgui.h"
 
-#include "ImGuizmo.h"
-#include "Mesh/Primitive/Cuboid.h"
-#include "Object.h"
-#include "mat3.h"
+#include "ImGuizmo.h" // imgui must be included before imguizmo.
 
-static const vk::ClearColorValue transparent(0.f, 0.f, 0.f, 0.f);
+#include "numeric/mat3.h"
+
+#include "Object.h"
+#include "mesh/primitive/Cuboid.h"
+
+const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
 static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
@@ -46,6 +48,7 @@ struct Gizmo {
         using namespace ImGui;
 
         static const float ViewManipulateSize = 128;
+
         const auto &window_pos = GetWindowPos();
         const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
         auto camera_view = camera.GetViewMatrix();
@@ -224,7 +227,7 @@ void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent) {
 }
 
 void SilhouetteRenderPipeline::Begin(vk::CommandBuffer cb) const {
-    static const std::vector<vk::ClearValue> clear_values{{transparent}};
+    static const std::vector<vk::ClearValue> clear_values{{Transparent}};
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
@@ -256,7 +259,7 @@ void EdgeDetectionRenderPipeline::SetExtent(vk::Extent2D extent) {
 }
 
 void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
-    static const std::vector<vk::ClearValue> clear_values{{transparent}};
+    static const std::vector<vk::ClearValue> clear_values{{Transparent}};
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 

@@ -1,8 +1,9 @@
 #pragma once
 
-#include "Mesh/Mesh.h"
-#include "Mesh/VkMeshBuffers.h"
-#include "mat4.h"
+#include "numeric/mat4.h"
+
+#include "mesh/Mesh.h"
+#include "mesh/VkMeshBuffers.h"
 
 // An `Object` is a wrapper around a `Mesh`, a `Model` matrix, Vulkan buffers, and other application state.
 struct Object {

@@ -8,11 +8,11 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
-#include "vec4.h"
+#include "numeric/vec4.h"
 
 #include "Scene.h"
-#include "Vulkan/VulkanContext.h"
 #include "Window.h"
+#include "vulkan/VulkanContext.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
