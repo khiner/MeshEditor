@@ -7,8 +7,8 @@
 
 #include "ImGuizmo.h"
 
-#include "Object.h"
 #include "Mesh/Primitive/Cuboid.h"
+#include "Object.h"
 
 using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
@@ -419,37 +419,47 @@ void Scene::UpdateTransform() {
 
 using namespace ImGui;
 
-static vk::ClearColorValue GlmToClearColor(const glm::vec4 &v) { return {v.r, v.g, v.b, v.a}; }
+vk::ClearColorValue ToClearColor(glm::vec4 v) { return {v.r, v.g, v.b, v.a}; }
+glm::vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
+
+glm::vec2 GetScroll() { return {GetScrollX(), GetScrollY()}; }
+glm::vec2 GetWindowMousePos() { return ToGlm(GetMousePos() - GetWindowPos()) - GetScroll(); }
+
+// Returns a world space ray from the mouse into the scene.
+Ray GetMouseWorldRay(Camera camera, glm::vec2 view_extent) {
+    const glm::vec2 mouse_pos = GetWindowMousePos(), content_region = ToGlm(GetContentRegionAvail());
+    const glm::vec2 mouse_content_pos = mouse_pos / content_region;
+    // Normalized Device Coordinates, $\mathcal{NDC} \in [-1,1]^2$
+    const glm::vec2 mouse_pos_ndc = glm::vec2{2 * mouse_content_pos.x - 1, 1 - 2 * mouse_content_pos.y};
+    return camera.ClipPosToWorldRay(mouse_pos_ndc, view_extent.x / view_extent.y);
+}
+
+glm::vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
+vk::Extent2D ToVkExtent(glm::vec2 e) { return {uint32_t(e.x), uint32_t(e.y)}; }
 
 bool Scene::Render() {
-    const auto new_extent = GetContentRegionAvail();
-
     // Handle mouse input.
     if (SelectionMode != SelectionMode::None) {
         auto &object = *Objects[0];
-        const auto &mouse_pos = GetMousePos();
-        const auto &window_pos = GetCursorScreenPos();
-        const glm::vec2 mouse_pos_window = {mouse_pos.x - window_pos.x, mouse_pos.y - window_pos.y};
-        const glm::vec2 mouse_pos_clip = {2.f * mouse_pos_window.x / new_extent.x - 1.f, 1.f - 2.f * mouse_pos_window.y / new_extent.y};
-        const float aspect_ratio = float(Extent.width) / float(Extent.height);
-        const Ray ray = Camera.ClipPosToWorldRay(mouse_pos_clip, aspect_ratio);
+        const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
         if (SelectionMode == SelectionMode::Face) {
-            if (object.HighlightFace(object.FindFirstIntersectingFace(ray))) SubmitCommandBuffer();
+            if (object.HighlightFace(object.FindFirstIntersectingFace(mouse_ray))) SubmitCommandBuffer();
         } else if (SelectionMode == SelectionMode::Vertex) {
-            if (object.HighlightVertex(object.FindNearestVertex(ray))) SubmitCommandBuffer();
+            if (object.HighlightVertex(object.FindNearestVertex(mouse_ray))) SubmitCommandBuffer();
         } else if (SelectionMode == SelectionMode::Edge) {
-            if (object.HighlightEdge(object.FindNearestEdge(ray))) SubmitCommandBuffer();
+            if (object.HighlightEdge(object.FindNearestEdge(mouse_ray))) SubmitCommandBuffer();
         }
     }
 
-    const auto &bg_color = GlmToClearColor(BgColor);
-    const bool extent_changed = Extent.width != new_extent.x || Extent.height != new_extent.y;
+    const glm::vec2 content_region = ToGlm(GetContentRegionAvail());
+    const auto bg_color = ToClearColor(BgColor);
+    const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
     if (!extent_changed && !bg_color_changed) return false;
 
     BackgroundColor = bg_color;
 
-    if (extent_changed) SetExtent({uint(new_extent.x), uint(new_extent.y)});
+    if (extent_changed) SetExtent(ToVkExtent(content_region));
     if (extent_changed || bg_color_changed) RecordCommandBuffer();
     SubmitCommandBuffer(*VC.RenderFence);
 

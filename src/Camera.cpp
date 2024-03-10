@@ -11,7 +11,7 @@ mat4 Camera::GetProjectionMatrix(float aspect_ratio) const { return glm::perspec
 mat4 Camera::GetInvViewProjectionMatrix(float aspect_ratio) const { return glm::inverse(GetProjectionMatrix(aspect_ratio) * GetViewMatrix()); }
 float Camera::GetDistance() const { return glm::distance(Position, Target); }
 
-Ray Camera::ClipPosToWorldRay(const vec2 &pos_clip, float aspect_ratio) const {
+Ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
     const mat4 inv_vp = GetInvViewProjectionMatrix(aspect_ratio);
 
     vec4 near_point = inv_vp * vec4(pos_clip.x, pos_clip.y, -1.0, 1.0);

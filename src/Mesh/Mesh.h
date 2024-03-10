@@ -32,8 +32,8 @@ inline static glm::vec4 ToGlm(const OpenMesh::Vec3uc &c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
     return {cc[0], cc[1], cc[2], 1};
 }
-inline static om::Point ToOpenMesh(const glm::vec3 &v) { return {v.x, v.y, v.z}; }
-inline static OpenMesh::Vec3uc ToOpenMesh(const glm::vec4 &c) {
+inline static om::Point ToOpenMesh(glm::vec3 v) { return {v.x, v.y, v.z}; }
+inline static OpenMesh::Vec3uc ToOpenMesh(glm::vec4 c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
     return {cc[0], cc[1], cc[2]};
 }
@@ -123,14 +123,12 @@ struct Mesh {
         M.request_vertex_normals();
     }
 
-    void SetFaceColor(FH fh, const glm::vec4 &face_color) {
-        M.set_color(fh, ToOpenMesh(face_color));
-    }
-    void SetFaceColor(const glm::vec4 &face_color) {
+    void SetFaceColor(FH fh, glm::vec4 face_color) { M.set_color(fh, ToOpenMesh(face_color)); }
+    void SetFaceColor(glm::vec4 face_color) {
         for (const auto &fh : M.faces()) SetFaceColor(fh, face_color);
     }
 
-    void AddFace(const std::vector<VH> &vertices, const glm::vec4 &color = DefaultFaceColor) {
+    void AddFace(const std::vector<VH> &vertices, glm::vec4 color = DefaultFaceColor) {
         SetFaceColor(M.add_face(vertices), color);
     }
 
@@ -141,7 +139,7 @@ struct Mesh {
 
     // Returns true if the ray intersects the given triangle.
     // If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
-    bool RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, glm::vec3 *intersect_point_out = nullptr) const;
+    bool RayIntersectsTriangle(const Ray &, VH v1, VH v2, VH v3, float *distance_out, glm::vec3 *intersect_point_out = nullptr) const;
 
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.

@@ -6,7 +6,7 @@
 #include <glm/vec3.hpp>
 
 struct Camera {
-    Camera(const glm::vec3 &up, const glm::vec3 &position, const glm::vec3 &target, float field_of_view, float near_clip, float far_clip)
+    Camera(glm::vec3 up, glm::vec3 position, glm::vec3 target, float field_of_view, float near_clip, float far_clip)
         : Up(up), Position(position), Target(target), FieldOfView(field_of_view), NearClip(near_clip), FarClip(far_clip) {}
     ~Camera() = default;
 
@@ -16,7 +16,7 @@ struct Camera {
     float GetDistance() const;
 
     // Converts a position in clip space to a ray in world space.
-    Ray ClipPosToWorldRay(const glm::vec2 &pos_clip, float aspect_ratio) const;
+    Ray ClipPosToWorldRay(glm::vec2 pos_clip, float aspect_ratio) const;
 
     void SetPositionFromView(const glm::mat4 &view);
     void SetTargetDistance(float distance); // Start moving camera to provided distance.
