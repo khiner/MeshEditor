@@ -85,12 +85,6 @@ struct ShaderPipeline {
     );
     ~ShaderPipeline() = default;
 
-    void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
-
-    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(const std::string &binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
-
-    void RenderQuad(vk::CommandBuffer cb) const;
-
     vk::Device Device;
 
     Shaders Shaders;
@@ -106,4 +100,10 @@ struct ShaderPipeline {
     vk::UniqueDescriptorSet DescriptorSet;
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
+
+    void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
+
+    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(const std::string &binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
+
+    void RenderQuad(vk::CommandBuffer cb) const;
 };

@@ -11,6 +11,12 @@ struct Camera {
         : Up(up), Position(position), Target(target), FieldOfView(field_of_view), NearClip(near_clip), FarClip(far_clip) {}
     ~Camera() = default;
 
+    vec3 Up;
+    vec3 Position;
+    vec3 Target;
+    float FieldOfView;
+    float NearClip, FarClip;
+
     mat4 GetViewMatrix() const;
     mat4 GetProjectionMatrix(float aspect_ratio) const;
     mat4 GetInvViewProjectionMatrix(float aspect_ratio) const;
@@ -24,12 +30,6 @@ struct Camera {
 
     bool Tick(); // Move camera to target distance. Returns true if camera moved.
     void StopMoving(); // Stop target distance movement.
-
-    vec3 Up;
-    vec3 Position;
-    vec3 Target;
-    float FieldOfView;
-    float NearClip, FarClip;
 
 private:
     void SetDistance(float distance);

@@ -92,6 +92,8 @@ struct RenderPipeline {
     RenderPipeline(const VulkanContext &);
     virtual ~RenderPipeline();
 
+    const VulkanContext &VC;
+
     // Updates images and framebuffer based on the new extent.
     // These resources are reused by future renders that don't change the extent.
     virtual void SetExtent(vk::Extent2D) = 0;
@@ -103,8 +105,6 @@ struct RenderPipeline {
 
     void RenderBuffers(vk::CommandBuffer, const VkMeshBuffers &, SPT) const;
 
-    const VulkanContext &VC;
-
 protected:
     vk::UniqueFramebuffer Framebuffer;
     vk::UniqueRenderPass RenderPass;
@@ -114,36 +114,33 @@ protected:
 struct MainRenderPipeline : RenderPipeline {
     MainRenderPipeline(const VulkanContext &);
 
-    void SetExtent(vk::Extent2D) override;
-    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
-
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
-
     // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
     ImageResource DepthImage, OffscreenImage, ResolveImage;
+
+    void SetExtent(vk::Extent2D) override;
+    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
 };
 
 struct SilhouetteRenderPipeline : RenderPipeline {
     SilhouetteRenderPipeline(const VulkanContext &);
 
+    vk::Extent2D Extent;
+    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
-
-    vk::Extent2D Extent;
-
-    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
 };
 
 struct EdgeDetectionRenderPipeline : RenderPipeline {
     EdgeDetectionRenderPipeline(const VulkanContext &);
 
+    vk::Extent2D Extent;
+    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
-
-    vk::Extent2D Extent;
-
-    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
 };
 
 struct Scene {

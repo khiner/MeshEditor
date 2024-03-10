@@ -17,6 +17,11 @@ struct VkMeshBuffers {
     }
     ~VkMeshBuffers() = default;
 
+    const VulkanContext &VC;
+    MeshBuffers Buffers;
+    VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
+    VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
+
     const std::vector<Vertex3D> &GetVertices() const { return Buffers.Vertices; }
     const std::vector<uint> &GetIndices() const { return Buffers.Indices; }
 
@@ -27,9 +32,4 @@ struct VkMeshBuffers {
 
     void CreateOrUpdateBuffers();
     void Bind(vk::CommandBuffer) const;
-
-    const VulkanContext &VC;
-    MeshBuffers Buffers;
-    VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
-    VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
 };

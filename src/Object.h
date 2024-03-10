@@ -9,6 +9,9 @@
 struct Object {
     Object(const VulkanContext &, Mesh &&);
 
+    const VulkanContext &VC;
+    mat4 Model{1};
+
     void CreateOrUpdateBuffers(MeshElement);
     void CreateOrUpdateBuffers(); // Update all buffers.
 
@@ -51,9 +54,6 @@ struct Object {
     }
 
     std::string GetHighlightLabel() const;
-
-    const VulkanContext &VC;
-    mat4 Model{1};
 
 private:
     Mesh M;
