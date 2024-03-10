@@ -2,6 +2,7 @@
 
 #include "Mesh/Mesh.h"
 #include "Mesh/VkMeshBuffers.h"
+#include "mat4.h"
 
 // An `Object` is a wrapper around a `Mesh`, a `Model` matrix, Vulkan buffers, and other application state.
 struct Object {
@@ -14,7 +15,7 @@ struct Object {
     const VkMeshBuffers *GetFaceNormalIndicatorBuffers() const;
     const VkMeshBuffers *GetVertexNormalIndicatorBuffers() const;
 
-    Mesh::FH FindFirstIntersectingFace(const Ray &ray_world, glm::vec3 *closest_intersect_point_out = nullptr) const;
+    Mesh::FH FindFirstIntersectingFace(const Ray &ray_world, vec3 *closest_intersect_point_out = nullptr) const;
 
     Mesh::VH FindNearestVertex(const Ray &ray_world) const;
 
@@ -53,7 +54,7 @@ struct Object {
     std::string GetHighlightLabel() const;
 
     const VulkanContext &VC;
-    glm::mat4 Model{1};
+    mat4 Model{1};
 
 private:
     Mesh M;

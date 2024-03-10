@@ -1,7 +1,9 @@
 #pragma once
 
-#include <glm/mat4x4.hpp>
-#include <glm/vec3.hpp>
+#include "mat4.h"
+#include "vec2.h"
+#include "vec3.h"
+#include "vec4.h"
 
 #include "Camera.h"
 #include "Mesh/MeshElement.h"
@@ -35,20 +37,20 @@ enum class SelectionMode {
 };
 
 struct Transform {
-    glm::mat4 Model{1};
-    glm::mat4 View{1};
-    glm::mat4 Projection{1};
-    glm::mat4 NormalToWorld{1}; // Only a mat3 is needed, but mat4 is used for alignment.
+    mat4 Model{1};
+    mat4 View{1};
+    mat4 Projection{1};
+    mat4 NormalToWorld{1}; // Only a mat3 is needed, but mat4 is used for alignment.
 };
 
 struct ViewProjection {
-    glm::mat4 View;
-    glm::mat4 Projection;
+    mat4 View;
+    mat4 Projection;
 };
 
 struct ViewProjNearFar {
-    glm::mat4 View;
-    glm::mat4 Projection;
+    mat4 View;
+    mat4 Projection;
     float Near;
     float Far;
 };
@@ -56,15 +58,15 @@ struct ViewProjNearFar {
 struct Lights {
     // RGB: Color of the light emitting from the view position.
     // A: Ambient intensity. (Using a single vec4 for 16-byte alignment.)
-    glm::vec4 ViewColorAndAmbient;
+    vec4 ViewColorAndAmbient;
     // RGB: Color of the directional light.
     // A: Intensity of the directional light.
-    glm::vec4 DirectionalColorAndIntensity;
-    glm::vec3 Direction;
+    vec4 DirectionalColorAndIntensity;
+    vec3 Direction;
 };
 
 struct SilhouetteDisplay {
-    glm::vec4 Color;
+    vec4 Color;
 };
 
 struct Gizmo;
@@ -181,8 +183,8 @@ private:
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
-    glm::vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
-    glm::vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
+    vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
+    vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
 
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
@@ -211,5 +213,5 @@ private:
 
     bool ShowGrid{true};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
-    glm::vec4 BgColor{0.22, 0.22, 0.22, 1.};
+    vec4 BgColor{0.22, 0.22, 0.22, 1.};
 };

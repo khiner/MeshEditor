@@ -1,7 +1,7 @@
 #pragma once
 
-#include <glm/vec3.hpp>
+#include "vec3.h"
 
 struct World {
-    const glm::vec3 Origin{0, 0, 0}, Up{0, 1, 0};
+    const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
 };

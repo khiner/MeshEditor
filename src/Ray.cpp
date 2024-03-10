@@ -1,8 +1,8 @@
 #include "Ray.h"
 
-#include <glm/vec4.hpp>
-
-using glm::vec3, glm::vec4, glm::mat4;
+#include "mat4.h"
+#include "vec3.h"
+#include "vec4.h"
 
 // The origin is transformed using the full inverse transformation (including translation),
 // while the direction is transformed using only the rotational part (ignoring translation) to maintain its directionality.

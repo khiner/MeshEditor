@@ -1,13 +1,13 @@
 #include "Mesh.h"
 
-#include "Ray.h"
-#include "World.h"
-
 #include <algorithm>
 #include <ranges>
 
+#include "Ray.h"
+#include "World.h"
+
+
 using namespace om;
-using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
 
 using std::ranges::any_of;
 

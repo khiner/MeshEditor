@@ -1,7 +1,9 @@
 #pragma once
 
+#include "vec2.h"
+
 #include "Mesh/Mesh.h"
 
 struct Rect : Mesh {
-    Rect(glm::vec2 half_extents = {1, 1});
+    Rect(vec2 half_extents = {1, 1});
 };

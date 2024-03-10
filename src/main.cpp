@@ -1,12 +1,14 @@
+#include <format>
+#include <stdexcept>
+
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
-#include <format>
-#include <glm/vec4.hpp>
-#include <stdexcept>
+
+#include "vec4.h"
 
 #include "Scene.h"
 #include "Vulkan/VulkanContext.h"
@@ -290,7 +292,7 @@ int main(int, char **) {
         ImDrawData *draw_data = GetDrawData();
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
         if (!is_minimized) {
-            static const glm::vec4 clear_color{0.45f, 0.55f, 0.60f, 1.f};
+            static const vec4 clear_color{0.45f, 0.55f, 0.60f, 1.f};
             wd->ClearValue.color.float32[0] = clear_color.r * clear_color.a;
             wd->ClearValue.color.float32[1] = clear_color.g * clear_color.a;
             wd->ClearValue.color.float32[2] = clear_color.b * clear_color.a;

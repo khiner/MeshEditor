@@ -6,11 +6,9 @@
 #include "imgui.h"
 
 #include "ImGuizmo.h"
-
 #include "Mesh/Primitive/Cuboid.h"
 #include "Object.h"
-
-using glm::vec3, glm::vec4, glm::mat3, glm::mat4;
+#include "mat3.h"
 
 static const vk::ClearColorValue transparent(0.f, 0.f, 0.f, 0.f);
 
@@ -419,23 +417,23 @@ void Scene::UpdateTransform() {
 
 using namespace ImGui;
 
-vk::ClearColorValue ToClearColor(glm::vec4 v) { return {v.r, v.g, v.b, v.a}; }
-glm::vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
+vk::ClearColorValue ToClearColor(vec4 v) { return {v.r, v.g, v.b, v.a}; }
+vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
 
-glm::vec2 GetScroll() { return {GetScrollX(), GetScrollY()}; }
-glm::vec2 GetWindowMousePos() { return ToGlm(GetMousePos() - GetWindowPos()) - GetScroll(); }
+vec2 GetScroll() { return {GetScrollX(), GetScrollY()}; }
+vec2 GetWindowMousePos() { return ToGlm(GetMousePos() - GetWindowPos()) - GetScroll(); }
 
 // Returns a world space ray from the mouse into the scene.
-Ray GetMouseWorldRay(Camera camera, glm::vec2 view_extent) {
-    const glm::vec2 mouse_pos = GetWindowMousePos(), content_region = ToGlm(GetContentRegionAvail());
-    const glm::vec2 mouse_content_pos = mouse_pos / content_region;
+Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
+    const vec2 mouse_pos = GetWindowMousePos(), content_region = ToGlm(GetContentRegionAvail());
+    const vec2 mouse_content_pos = mouse_pos / content_region;
     // Normalized Device Coordinates, $\mathcal{NDC} \in [-1,1]^2$
-    const glm::vec2 mouse_pos_ndc = glm::vec2{2 * mouse_content_pos.x - 1, 1 - 2 * mouse_content_pos.y};
+    const vec2 mouse_pos_ndc = vec2{2 * mouse_content_pos.x - 1, 1 - 2 * mouse_content_pos.y};
     return camera.ClipPosToWorldRay(mouse_pos_ndc, view_extent.x / view_extent.y);
 }
 
-glm::vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
-vk::Extent2D ToVkExtent(glm::vec2 e) { return {uint32_t(e.x), uint32_t(e.y)}; }
+vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
+vk::Extent2D ToVkExtent(vec2 e) { return {uint32_t(e.x), uint32_t(e.y)}; }
 
 bool Scene::Render() {
     // Handle mouse input.
@@ -451,7 +449,7 @@ bool Scene::Render() {
         }
     }
 
-    const glm::vec2 content_region = ToGlm(GetContentRegionAvail());
+    const vec2 content_region = ToGlm(GetContentRegionAvail());
     const auto bg_color = ToClearColor(BgColor);
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;

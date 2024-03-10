@@ -5,8 +5,6 @@
 
 #include <format>
 
-using glm::vec3;
-
 void VkMeshBuffers::CreateOrUpdateBuffers() {
     VertexBuffer.Size = sizeof(Vertex3D) * GetVertices().size();
     IndexBuffer.Size = sizeof(uint) * GetIndices().size();
