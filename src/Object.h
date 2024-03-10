@@ -5,7 +5,7 @@
 #include "mesh/Mesh.h"
 #include "mesh/VkMeshBuffers.h"
 
-// An `Object` is a wrapper around a `Mesh`, a `Model` matrix, Vulkan buffers, and other application state.
+// An `Object` is a wrapper around a `Mesh`, a `Model` transform, Vulkan buffers, and other application state.
 struct Object {
     Object(const VulkanContext &, Mesh &&);
 
@@ -16,13 +16,11 @@ struct Object {
     const VkMeshBuffers *GetFaceNormalIndicatorBuffers() const;
     const VkMeshBuffers *GetVertexNormalIndicatorBuffers() const;
 
-    Mesh::FH FindFirstIntersectingFace(const Ray &ray_world, vec3 *closest_intersect_point_out = nullptr) const;
+    Mesh::FH FindFirstIntersectingFace(const Ray &world_ray, vec3 *closest_intersect_point_out = nullptr) const;
+    Mesh::VH FindNearestVertex(const Ray &world_ray) const;
+    Mesh::EH FindNearestEdge(const Ray &world_ray) const;
 
-    Mesh::VH FindNearestVertex(const Ray &ray_world) const;
-
-    Mesh::EH FindNearestEdge(const Ray &ray_local) const; // Local space equivalent.
-
-    void ShowNormalIndicators(NormalMode mode, bool show);
+    void ShowNormalIndicators(NormalMode, bool show);
 
     bool HighlightFace(Mesh::FH face) {
         if (face == HighlightedFace) return false;
@@ -36,8 +34,8 @@ struct Object {
     bool HighlightVertex(Mesh::VH vertex) {
         if (vertex == HighlightedVertex) return false;
 
-        HighlightedVertex = vertex;
         HighlightedFace = Mesh::FH{};
+        HighlightedVertex = vertex;
         HighlightedEdge = Mesh::EH{};
         CreateOrUpdateBuffers();
         return true;
@@ -45,9 +43,9 @@ struct Object {
     bool HighlightEdge(Mesh::EH edge) {
         if (edge == HighlightedEdge) return false;
 
-        HighlightedEdge = edge;
         HighlightedFace = Mesh::FH{};
         HighlightedVertex = Mesh::VH{};
+        HighlightedEdge = edge;
         CreateOrUpdateBuffers();
         return true;
     }

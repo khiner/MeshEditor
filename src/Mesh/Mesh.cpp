@@ -6,7 +6,6 @@
 #include "Ray.h"
 #include "World.h"
 
-
 using namespace om;
 
 using std::ranges::any_of;
@@ -79,9 +78,9 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     return false;
 }
 
-VH Mesh::FindNearestVertex(const Ray &ray_local) const {
+VH Mesh::FindNearestVertex(const Ray &local_ray) const {
     vec3 intersection_point;
-    const auto face = FindFirstIntersectingFace(ray_local, &intersection_point);
+    const auto face = FindFirstIntersectingFace(local_ray, &intersection_point);
     if (!face.is_valid()) return VH{};
 
     VH closest_vertex;
@@ -98,7 +97,7 @@ VH Mesh::FindNearestVertex(const Ray &ray_local) const {
     return closest_vertex;
 }
 
-FH Mesh::FindFirstIntersectingFace(const Ray &ray_local, vec3 *closest_intersect_point_out) const {
+FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out) const {
     // Avoid allocations in the loop.
     FH closest_face{};
     float distance;
@@ -112,7 +111,7 @@ FH Mesh::FindFirstIntersectingFace(const Ray &ray_local, vec3 *closest_intersect
         for (; fv_it != M.cfv_end(fh); ++fv_it) {
             const VH v1 = *fv_it, v2 = *(++fv_it);
             --fv_it;
-            if (RayIntersectsTriangle(ray_local, v0, v1, v2, &distance, &intersect_point) && distance < closest_distance) {
+            if (RayIntersectsTriangle(local_ray, v0, v1, v2, &distance, &intersect_point) && distance < closest_distance) {
                 closest_distance = distance;
                 closest_intersection_point = intersect_point;
                 closest_face = fh;
@@ -124,9 +123,9 @@ FH Mesh::FindFirstIntersectingFace(const Ray &ray_local, vec3 *closest_intersect
     return closest_face;
 }
 
-EH Mesh::FindNearestEdge(const Ray &ray_local) const {
+EH Mesh::FindNearestEdge(const Ray &local_ray) const {
     vec3 intersection_point;
-    const auto face = FindFirstIntersectingFace(ray_local, &intersection_point);
+    const auto face = FindFirstIntersectingFace(local_ray, &intersection_point);
     if (!face.is_valid()) return Mesh::EH{};
 
     Mesh::EH closest_edge;

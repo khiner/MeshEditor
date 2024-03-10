@@ -19,8 +19,7 @@ void VkMeshBuffers::Bind(vk::CommandBuffer cb) const {
     cb.drawIndexed(IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
 }
 
-Object::Object(const VulkanContext &vc, Mesh &&mesh)
-    : VC(vc), M(std::move(mesh)) {
+Object::Object(const VulkanContext &vc, Mesh &&mesh) : VC(vc), M(std::move(mesh)) {
     CreateOrUpdateBuffers();
 }
 
@@ -35,7 +34,7 @@ void Object::CreateOrUpdateBuffers(MeshElement element) {
     ElementBuffers[element]->Set(M.GenerateBuffers(element, HighlightedFace, HighlightedVertex, HighlightedEdge));
 }
 
-const VkMeshBuffers &Object::GetBuffers(MeshElement mode) const { return *ElementBuffers.at(mode); }
+const VkMeshBuffers &Object::GetBuffers(MeshElement element) const { return *ElementBuffers.at(element); }
 const VkMeshBuffers *Object::GetFaceNormalIndicatorBuffers() const { return FaceNormalIndicatorBuffers.get(); }
 const VkMeshBuffers *Object::GetVertexNormalIndicatorBuffers() const { return VertexNormalIndicatorBuffers.get(); }
 
@@ -48,15 +47,12 @@ void Object::ShowNormalIndicators(NormalMode mode, bool show) {
     buffers = std::make_unique<VkMeshBuffers>(VC, M.GenerateBuffers(mode));
 }
 
-Mesh::FH Object::FindFirstIntersectingFace(const Ray &ray_world, vec3 *closest_intersect_point_out) const {
-    return M.FindFirstIntersectingFace(ray_world.WorldToLocal(Model), closest_intersect_point_out);
+Mesh::FH Object::FindFirstIntersectingFace(const Ray &world_ray, vec3 *closest_intersect_point_out) const {
+    return M.FindFirstIntersectingFace(world_ray.WorldToLocal(Model), closest_intersect_point_out);
 }
 
-Mesh::VH Object::FindNearestVertex(const Ray &ray_world) const {
-    return M.FindNearestVertex(ray_world.WorldToLocal(Model));
-}
-
-Mesh::EH Object::FindNearestEdge(const Ray &ray_world) const { return M.FindNearestEdge(ray_world.WorldToLocal(Model)); }
+Mesh::VH Object::FindNearestVertex(const Ray &world_ray) const { return M.FindNearestVertex(world_ray.WorldToLocal(Model)); }
+Mesh::EH Object::FindNearestEdge(const Ray &world_ray) const { return M.FindNearestEdge(world_ray.WorldToLocal(Model)); }
 
 std::string Object::GetHighlightLabel() const {
     if (HighlightedFace.is_valid()) return std::format("Hovered face {}", HighlightedFace.idx());

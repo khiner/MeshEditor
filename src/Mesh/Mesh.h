@@ -142,11 +142,11 @@ struct Mesh {
 
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
-    VH FindNearestVertex(const Ray &ray_local) const;
+    VH FindNearestVertex(const Ray &local_ray) const;
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
-    FH FindFirstIntersectingFace(const Ray &ray_local, vec3 *closest_intersect_point_out = nullptr) const;
+    FH FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out = nullptr) const;
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
-    EH FindNearestEdge(const Ray &ray_world) const;
+    EH FindNearestEdge(const Ray &world_ray) const;
 
 protected:
     PolyMesh M;

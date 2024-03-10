@@ -2,8 +2,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-#include "numeric/vec4.h"
 #include "World.h"
+#include "numeric/vec4.h"
 
 mat4 Camera::GetViewMatrix() const { return glm::lookAt(Position, Target, Up); }
 mat4 Camera::GetProjectionMatrix(float aspect_ratio) const { return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip); }

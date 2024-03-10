@@ -28,8 +28,8 @@ static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice 
 }
 
 namespace ImageFormat {
-static const auto Color = vk::Format::eB8G8R8A8Unorm;
-static const auto Float = vk::Format::eR32G32B32A32Sfloat;
+const auto Color = vk::Format::eB8G8R8A8Unorm;
+const auto Float = vk::Format::eR32G32B32A32Sfloat;
 } // namespace ImageFormat
 
 struct Gizmo {

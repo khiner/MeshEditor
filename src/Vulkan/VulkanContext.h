@@ -10,7 +10,7 @@ using uint = u_int32_t;
 
 VkBool32 DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT *, void *);
 
-bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &properties, const char *extension);
+bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &, const char *extension);
 
 struct VulkanContext {
     VulkanContext(std::vector<const char *> extensions);
@@ -19,7 +19,7 @@ struct VulkanContext {
     vk::UniqueInstance Instance;
     vk::PhysicalDevice PhysicalDevice;
     vk::UniqueDevice Device;
-    uint QueueFamily = (uint)-1;
+    uint QueueFamily{uint(-1)};
     vk::Queue Queue;
     vk::UniquePipelineCache PipelineCache;
     vk::UniqueDescriptorPool DescriptorPool;

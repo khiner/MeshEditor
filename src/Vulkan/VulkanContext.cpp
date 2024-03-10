@@ -13,7 +13,7 @@ VkBool32 DebugCallback(
     const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
     void *user_data
 ) {
-    (void)user_data; // Unused.
+    (void)user_data; // Unused
 
     const char *severity_str = "";
     switch (severity) {
@@ -59,7 +59,6 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
     const vk::ApplicationInfo app{"", {}, "", {}, VK_API_VERSION_1_3};
     Instance = vk::createInstanceUnique({flags, &app, validation_layers, extensions});
 
-    const vk::DispatchLoaderDynamic dldi{Instance.get(), vkGetInstanceProcAddr};
     const auto messenger = Instance->createDebugUtilsMessengerEXTUnique(
         {
             {},
@@ -72,7 +71,8 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
                 vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
             DebugCallback,
         },
-        nullptr, dldi
+        nullptr,
+        vk::DispatchLoaderDynamic{Instance.get(), vkGetInstanceProcAddr}
     );
 
     PhysicalDevice = FindPhysicalDevice();
@@ -89,9 +89,9 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
     vk::PhysicalDeviceFeatures device_features{};
     device_features.fillModeNonSolid = VK_TRUE;
 
-    // Create logical device (with 1 queue).
-    const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
-    const std::array queue_priority = {1.0f};
+    // Create logical device (with one queue).
+    static const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
+    static const std::array queue_priority{1.0f};
     const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
     Device = PhysicalDevice.createDeviceUnique({{}, queue_info, {}, device_extensions, &device_features});
     Queue = Device->getQueue(QueueFamily, 0);
@@ -104,11 +104,13 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
         // 3) The final scene texture sampler.
         // 4) ImGui fonts.
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 4},
-        {vk::DescriptorType::eUniformBuffer, 8}, // All uniform buffer descriptors used across all shaders.
+        // All uniform buffer descriptors used across all shaders.
+        {vk::DescriptorType::eUniformBuffer, 8},
     };
-    const uint max_sets = std::accumulate(pool_sizes.begin(), pool_sizes.end(), 0u, [](uint sum, const vk::DescriptorPoolSize &pool_size) {
-        return sum + pool_size.descriptorCount;
-    });
+    const uint max_sets = std::accumulate(
+        pool_sizes.begin(), pool_sizes.end(), 0u,
+        [](uint sum, const vk::DescriptorPoolSize &pool_size) { return sum + pool_size.descriptorCount; }
+    );
     DescriptorPool = Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, max_sets, pool_sizes});
 
     CommandPool = Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, QueueFamily});
