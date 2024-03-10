@@ -79,28 +79,28 @@ struct Mesh {
 
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 
-    inline uint NumPositions() const { return M.n_vertices(); }
-    inline uint NumFaces() const { return M.n_faces(); }
+    uint NumPositions() const { return M.n_vertices(); }
+    uint NumFaces() const { return M.n_faces(); }
 
-    inline const PolyMesh &GetMesh() const { return M; }
+    const PolyMesh &GetMesh() const { return M; }
 
-    inline const float *GetPositionData() const { return (const float *)M.points(); }
+    const float *GetPositionData() const { return (const float *)M.points(); }
 
-    inline vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
-    inline vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
-    inline vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
-    inline vec3 GetFaceCenter(FH fh) const { return ToGlm(M.calc_face_centroid(fh)); }
+    vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
+    vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
+    vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
+    vec3 GetFaceCenter(FH fh) const { return ToGlm(M.calc_face_centroid(fh)); }
 
     float CalcFaceArea(FH) const;
 
-    inline bool Empty() const { return M.n_vertices() == 0; }
+    bool Empty() const { return M.n_vertices() == 0; }
 
-    inline void UpdateNormals() { M.update_normals(); }
+    void UpdateNormals() { M.update_normals(); }
 
-    inline MeshBuffers GenerateBuffers(MeshElement element, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const {
+    MeshBuffers GenerateBuffers(MeshElement element, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const {
         return {GenerateVertices(element, highlighted_face, highlighted_vertex, highlighted_edge), GenerateIndices(element)};
     }
-    inline MeshBuffers GenerateBuffers(NormalMode mode) const { return {GenerateVertices(mode), GenerateIndices(mode)}; }
+    MeshBuffers GenerateBuffers(NormalMode mode) const { return {GenerateVertices(mode), GenerateIndices(mode)}; }
 
     // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
     std::pair<vec3, vec3> ComputeBounds() const;

@@ -2,17 +2,15 @@
 
 // Based on https://asliceofrendering.com/scene%20helper/2020/01/05/InfiniteGrid/
 
+layout(binding = 0) uniform ViewProjNearFarUBO {
+    mat4 View, Projection;
+    float Near, Far;
+} ViewProjection;
+
 layout(location = 0) in vec3 NearPos;
 layout(location = 1) in vec3 FarPos;
 
 layout(location = 0) out vec4 OutColor;
-
-layout(binding = 1) uniform ViewProjNearFarUBO {
-    mat4 View;
-    mat4 Projection;
-    float Near;
-    float Far;
-} ViewProjNearFar;
 
 const float ScaleFactor = 0.2;
 
@@ -32,8 +30,7 @@ vec4 Grid(vec3 pos_3d, float scale) {
 
 // Assumes `gl_FragDepth` is set to the depth of the fragment in clip space.
 float LinearDepth() {
-    const float near = ViewProjNearFar.Near;
-    const float far = ViewProjNearFar.Far;
+    const float near = ViewProjection.Near, far = ViewProjection.Far;
     const float clip_space_depth = gl_FragDepth * 2.0 - 1.0; // Normalize to [-1, 1].
     const float linear_depth = (2.0 * near * far) / (near + far - clip_space_depth * (far - near)); // Linear value between `Near` and `Far`.
     return linear_depth / far; // Normalize.
@@ -49,7 +46,7 @@ vec4 BlendGrids(vec4 grid1, vec4 grid2) {
 void main() {
     const float t = -NearPos.y / (FarPos.y - NearPos.y);
     const vec3 pos_3d = NearPos + t * (FarPos - NearPos);
-    const vec4 clip_space_pos = ViewProjNearFar.Projection * ViewProjNearFar.View * vec4(pos_3d.xyz, 1);
+    const vec4 clip_space_pos = ViewProjection.Projection * ViewProjection.View * vec4(pos_3d.xyz, 1);
     gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
 
     OutColor = BlendGrids(Grid(pos_3d, 10), Grid(pos_3d, 1)) * float(t > 0); // Draw grid at two scales.

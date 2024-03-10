@@ -98,7 +98,7 @@ struct RenderPipeline {
     // These resources are reused by future renders that don't change the extent.
     virtual void SetExtent(vk::Extent2D) = 0;
 
-    inline const ShaderPipeline *GetShaderPipeline(SPT spt) const { return ShaderPipelines.at(spt).get(); }
+    const ShaderPipeline *GetShaderPipeline(SPT spt) const { return ShaderPipelines.at(spt).get(); }
     void CompileShaders();
 
     void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
@@ -193,7 +193,6 @@ private:
     VulkanBuffer
         TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)},
         LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)},
-        ViewProjectionBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjection)},
         ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)},
         SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
 

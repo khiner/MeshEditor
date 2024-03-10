@@ -270,12 +270,11 @@ Scene::Scene(const VulkanContext &vc)
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
     VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
-    vk::DescriptorBufferInfo transform_buffer = {*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    vk::DescriptorBufferInfo transform_buffer{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
     MainRenderPipeline.UpdateDescriptors({
         {SPT::Fill, "TransformUBO", transform_buffer},
         {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{*LightsBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Line, "TransformUBO", transform_buffer},
-        {SPT::Grid, "ViewProjectionUBO", vk::DescriptorBufferInfo{*ViewProjectionBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::DebugNormals, "TransformUBO", transform_buffer},
@@ -412,9 +411,7 @@ void Scene::UpdateTransform() {
     const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model))); // todo only recalculate when model changes.
     const Transform transform{model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
     VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
-    const ViewProjection vp{transform.View, transform.Projection};
-    VC.CreateOrUpdateBuffer(ViewProjectionBuffer, &vp);
-    const ViewProjNearFar vpnf{vp.View, vp.Projection, Camera.NearClip, Camera.FarClip};
+    const ViewProjNearFar vpnf{transform.View, transform.Projection, Camera.NearClip, Camera.FarClip};
     VC.CreateOrUpdateBuffer(ViewProjNearFarBuffer, &vpnf);
 }
 

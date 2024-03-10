@@ -1,8 +1,8 @@
 #version 450
 
-layout(binding = 0) uniform ViewProjectionUBO {
-    mat4 View;
-    mat4 Projection;
+layout(binding = 0) uniform ViewProjNearFarUBO {
+    mat4 View, Projection;
+    float Near, Far;
 } ViewProjection;
 
 layout(location = 0) out vec3 NearPos;

@@ -43,8 +43,8 @@ std::vector<uint> Shaders::Compile(ShaderType type) const {
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
     Modules.clear();
     Resources.clear();
-    Bindings.clear();
-    BindingsByName.clear();
+    LayoutBindings.clear();
+    BindingByName.clear();
 
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
     stages.reserve(Paths.size());
@@ -55,20 +55,27 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
         Modules[type] = device.createShaderModuleUnique({{}, spirv});
 
         for (const auto &resource : Resources.at(type)->uniform_buffers) {
-            // Only using a single set for now. Otherwise, we'd group bindings by set.
+            // Only using a single set for now. Otherwise, we'd group LayoutBindings by set.
             // uint set = comp.get_decoration(resource.id, spv::DecorationDescriptorSet);
+
             const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-            Bindings.emplace_back(binding, vk::DescriptorType::eUniformBuffer, 1, type);
-            BindingsByName.emplace(resource.name, binding);
+            if (!BindingByName.contains(resource.name)) {
+                BindingByName.emplace(resource.name, binding);
+                // Keep LayoutBindings sorted by binding number.
+                const auto pos = std::lower_bound(LayoutBindings.begin(), LayoutBindings.end(), binding, [](const auto &b, uint i) { return b.binding < i; });
+                LayoutBindings.insert(pos, {binding, vk::DescriptorType::eUniformBuffer, 1, type, nullptr});
+            } else {
+                LayoutBindings[binding].stageFlags |= type; // This binding is used in multiple stages.
+            }
         }
 
         for (const auto &resource : Resources.at(type)->sampled_images) {
             const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-            Bindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
-            BindingsByName.emplace(resource.name, binding);
+            LayoutBindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
+            BindingByName.emplace(resource.name, binding);
         }
 
-        stages.push_back({{}, type, *Modules.at(type), "main"});
+        stages.push_back({vk::PipelineShaderStageCreateFlags{}, type, *Modules.at(type), "main"});
     }
     return stages;
 }
@@ -96,8 +103,8 @@ ShaderPipeline::ShaderPipeline(
     VertexInputState(GenerateVertex3DInputState()),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
-    Shaders.CompileAll(Device); // todo needed populates descriptor sets. This is done redundantly for all shaders in `Compile` at app startup.
-    DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.Bindings});
+    Shaders.CompileAll(Device); // Populates descriptor sets. todo This is done redundantly for all shaders in `Compile` at app startup.
+    DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.LayoutBindings});
     PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
     const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, 1, &(*DescriptorSetLayout)};
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());

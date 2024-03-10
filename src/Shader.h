@@ -21,17 +21,18 @@ struct Shaders {
 
     Shaders &operator=(Shaders &&);
 
-    // Populates `Modules`, `Resources`, and `Bindings`.
+    // Populates all fields.
     std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(vk::Device);
     std::vector<uint> Compile(ShaderType) const;
-    inline bool HasBinding(const std::string &name) const { return BindingsByName.contains(name); }
-    inline uint GetBinding(const std::string &name) const { return BindingsByName.at(name); }
+
+    bool HasBinding(const std::string &name) const { return BindingByName.contains(name); }
+    uint GetBinding(const std::string &name) const { return BindingByName.at(name); }
 
     std::unordered_map<ShaderType, fs::path> Paths; // Paths are relative to the `Shaders` directory.
     std::unordered_map<ShaderType, vk::UniqueShaderModule> Modules;
     std::unordered_map<ShaderType, std::unique_ptr<spirv_cross::ShaderResources>> Resources;
-    std::vector<vk::DescriptorSetLayoutBinding> Bindings;
-    std::unordered_map<std::string, uint> BindingsByName;
+    std::vector<vk::DescriptorSetLayoutBinding> LayoutBindings; // Sorted by binding number.
+    std::unordered_map<std::string, uint> BindingByName;
 };
 
 // Convenience generators for default pipeline states.

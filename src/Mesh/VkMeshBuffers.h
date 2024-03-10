@@ -25,7 +25,7 @@ struct VkMeshBuffers {
     const std::vector<Vertex3D> &GetVertices() const { return Buffers.Vertices; }
     const std::vector<uint> &GetIndices() const { return Buffers.Indices; }
 
-    inline void Set(MeshBuffers &&buffers) {
+    void Set(MeshBuffers &&buffers) {
         Buffers = std::move(buffers);
         CreateOrUpdateBuffers();
     }
