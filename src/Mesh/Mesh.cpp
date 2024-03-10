@@ -19,23 +19,23 @@ bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {
     return true;
 }
 
-bool Mesh::DoesVertexBelongToFace(VH vertex, FH face) const {
-    return face.is_valid() && any_of(M.fv_range(face), [&](const auto &vh) { return vh == vertex; });
+bool Mesh::DoesVertexBelongToFace(VH vh, FH fh) const {
+    return fh.is_valid() && any_of(M.fv_range(fh), [&](const auto &vh_o) { return vh_o == vh; });
 }
 
-bool Mesh::DoesVertexBelongToEdge(VH vertex, EH edge) const {
-    return edge.is_valid() && any_of(M.voh_range(vertex), [&](const auto &heh) { return M.edge_handle(heh) == edge; });
+bool Mesh::DoesVertexBelongToEdge(VH vh, EH eh) const {
+    return eh.is_valid() && any_of(M.voh_range(vh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
 }
 
-bool Mesh::DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const {
-    return face.is_valid() && edge.is_valid() &&
-        any_of(M.voh_range(vertex), [&](const auto &heh) {
-               return M.edge_handle(heh) == edge && (M.face_handle(heh) == face || M.face_handle(M.opposite_halfedge_handle(heh)) == face);
+bool Mesh::DoesVertexBelongToFaceEdge(VH vh, FH fh, EH eh) const {
+    return fh.is_valid() && eh.is_valid() &&
+        any_of(M.voh_range(vh), [&](const auto &heh) {
+               return M.edge_handle(heh) == eh && (M.face_handle(heh) == fh || M.face_handle(M.opposite_halfedge_handle(heh)) == fh);
            });
 }
 
-bool Mesh::DoesEdgeBelongToFace(EH edge, FH face) const {
-    return face.is_valid() && any_of(M.fh_range(face), [&](const auto &heh) { return M.edge_handle(heh) == edge; });
+bool Mesh::DoesEdgeBelongToFace(EH eh, FH fh) const {
+    return fh.is_valid() && any_of(M.fh_range(fh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
 }
 
 static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const vec3 &point) {
@@ -48,7 +48,7 @@ static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const 
 
 // Moller-Trumbore ray-triangle intersection algorithm.
 bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) const {
-    static const float Epsilon = 1e-7f; // Floating point error tolerance.
+    static const float eps = 1e-7f; // Floating point error tolerance.
 
     const Point ray_origin = ToOpenMesh(ray.Origin), ray_dir = ToOpenMesh(ray.Direction);
     const Point &p1 = M.point(v1), &p2 = M.point(v2), &p3 = M.point(v3);
@@ -57,7 +57,7 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     const float a = edge1.dot(h); // Barycentric coordinate
 
     // Check if the ray is parallel to the triangle.
-    if (a > -Epsilon && a < Epsilon) return false;
+    if (a > -eps && a < eps) return false;
 
     // Check if the intersection point is inside the triangle (in barycentric coordinates).
     const Point s = ray_origin - p1;
@@ -70,7 +70,7 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
 
     // Calculate the intersection point's distance along the ray and verify it's positive (ahead of the ray's origin).
     const float distance = f * edge2.dot(q);
-    if (distance > Epsilon) {
+    if (distance > eps) {
         if (distance_out) *distance_out = distance;
         if (intersect_point_out) *intersect_point_out = ray(distance);
         return true;
@@ -146,23 +146,23 @@ EH Mesh::FindNearestEdge(const Ray &local_ray) const {
 
 std::vector<uint> Mesh::GenerateIndices(MeshElement element) const {
     switch (element) {
-        case MeshElement::Faces: return GenerateTriangulatedFaceIndices();
-        case MeshElement::Edges: return GenerateEdgeIndices();
-        case MeshElement::Vertices: return GenerateTriangleIndices();
+        case MeshElement::Face: return GenerateTriangulatedFaceIndices();
+        case MeshElement::Edge: return GenerateEdgeIndices();
+        case MeshElement::Vertex: return GenerateTriangleIndices();
         default: return {};
     }
 }
 std::vector<uint> Mesh::GenerateIndices(NormalMode mode) const {
     switch (mode) {
-        case NormalMode::Faces: return GenerateFaceNormalIndicatorIndices();
-        case NormalMode::Vertices: return GenerateVertexNormalIndicatorIndices();
+        case NormalMode::Face: return GenerateFaceNormalIndicatorIndices();
+        case NormalMode::Vertex: return GenerateVertexNormalIndicatorIndices();
         default: return {};
     }
 }
 
 std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) const {
     std::vector<Vertex3D> vertices;
-    if (element == MeshElement::Faces) {
+    if (element == MeshElement::Face) {
         vertices.reserve(M.n_faces() * 3); // At least 3 vertices per face.
         for (const auto &fh : M.faces()) {
             const auto &fn = M.normal(fh);
@@ -172,13 +172,13 @@ std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, FH highlighted
                 vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
-    } else if (element == MeshElement::Vertices) {
+    } else if (element == MeshElement::Vertex) {
         vertices.reserve(M.n_vertices());
         for (const auto &vh : M.vertices()) {
             const vec4 color = vh == highlighted_vertex || DoesVertexBelongToFace(vh, highlighted_face) || DoesVertexBelongToEdge(vh, highlighted_edge) ? HighlightColor : vec4{1};
             vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
         }
-    } else if (element == MeshElement::Edges) {
+    } else if (element == MeshElement::Edge) {
         vertices.reserve(M.n_edges() * 2);
         for (const auto &eh : M.edges()) {
             const auto &heh = M.halfedge_handle(eh, 0);
@@ -209,7 +209,7 @@ float Mesh::CalcFaceArea(FH fh) const {
 
 std::vector<Vertex3D> Mesh::GenerateVertices(NormalMode mode) const {
     std::vector<Vertex3D> vertices;
-    if (mode == NormalMode::Faces) {
+    if (mode == NormalMode::Face) {
         // Line for each face normal, with length scaled by the face area.
         vertices.reserve(M.n_faces() * 2);
         for (const auto &fh : M.faces()) {
@@ -218,7 +218,7 @@ std::vector<Vertex3D> Mesh::GenerateVertices(NormalMode mode) const {
             vertices.emplace_back(point, ToGlm(fn), FaceNormalIndicatorColor);
             vertices.emplace_back(point + NormalIndicatorLengthScale * CalcFaceArea(fh) * ToGlm(fn), ToGlm(fn), FaceNormalIndicatorColor);
         }
-    } else if (mode == NormalMode::Vertices) {
+    } else if (mode == NormalMode::Vertex) {
         // Line for each vertex normal, with length scaled by the average edge length.
         vertices.reserve(M.n_vertices() * 2);
         for (const auto &vh : M.vertices()) {

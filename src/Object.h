@@ -25,30 +25,30 @@ struct Object {
 
     void ShowNormalIndicators(NormalMode, bool show);
 
-    bool HighlightFace(Mesh::FH face) {
-        if (face == HighlightedFace) return false;
+    bool HighlightFace(Mesh::FH fh) {
+        if (fh == HighlightedFace) return false;
 
-        HighlightedFace = face;
+        HighlightedFace = fh;
         HighlightedVertex = Mesh::VH{};
         HighlightedEdge = Mesh::EH{};
         CreateOrUpdateBuffers();
         return true;
     }
-    bool HighlightVertex(Mesh::VH vertex) {
-        if (vertex == HighlightedVertex) return false;
+    bool HighlightVertex(Mesh::VH vh) {
+        if (vh == HighlightedVertex) return false;
 
         HighlightedFace = Mesh::FH{};
-        HighlightedVertex = vertex;
+        HighlightedVertex = vh;
         HighlightedEdge = Mesh::EH{};
         CreateOrUpdateBuffers();
         return true;
     }
-    bool HighlightEdge(Mesh::EH edge) {
-        if (edge == HighlightedEdge) return false;
+    bool HighlightEdge(Mesh::EH eh) {
+        if (eh == HighlightedEdge) return false;
 
         HighlightedFace = Mesh::FH{};
         HighlightedVertex = Mesh::VH{};
-        HighlightedEdge = edge;
+        HighlightedEdge = eh;
         CreateOrUpdateBuffers();
         return true;
     }

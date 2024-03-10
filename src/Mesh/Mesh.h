@@ -10,6 +10,7 @@
 
 #include "MeshBuffers.h"
 #include "MeshElement.h"
+#include "NormalMode.h"
 #include "RenderMode.h"
 
 namespace fs = std::filesystem;
@@ -99,9 +100,7 @@ struct Mesh {
     inline MeshBuffers GenerateBuffers(MeshElement element, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const {
         return {GenerateVertices(element, highlighted_face, highlighted_vertex, highlighted_edge), GenerateIndices(element)};
     }
-    inline MeshBuffers GenerateBuffers(NormalMode mode) const {
-        return {GenerateVertices(mode), GenerateIndices(mode)};
-    }
+    inline MeshBuffers GenerateBuffers(NormalMode mode) const { return {GenerateVertices(mode), GenerateIndices(mode)}; }
 
     // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
     std::pair<vec3, vec3> ComputeBounds() const;
@@ -131,10 +130,10 @@ struct Mesh {
         SetFaceColor(M.add_face(vertices), color);
     }
 
-    bool DoesVertexBelongToFace(VH vertex, FH face) const;
-    bool DoesVertexBelongToEdge(VH vertex, EH edge) const;
-    bool DoesVertexBelongToFaceEdge(VH vertex, FH face, EH edge) const;
-    bool DoesEdgeBelongToFace(EH edge, FH face) const;
+    bool DoesVertexBelongToFace(VH, FH) const;
+    bool DoesVertexBelongToEdge(VH, EH) const;
+    bool DoesVertexBelongToFaceEdge(VH, FH, EH) const;
+    bool DoesEdgeBelongToFace(EH, FH) const;
 
     // Returns true if the ray intersects the given triangle.
     // If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
@@ -151,10 +150,10 @@ struct Mesh {
 protected:
     PolyMesh M;
 
-    std::vector<Vertex3D> GenerateVertices(MeshElement element, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const;
-    std::vector<uint> GenerateIndices(MeshElement element) const;
-    std::vector<Vertex3D> GenerateVertices(NormalMode mode) const;
-    std::vector<uint> GenerateIndices(NormalMode mode) const;
+    std::vector<Vertex3D> GenerateVertices(MeshElement, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const;
+    std::vector<uint> GenerateIndices(MeshElement) const;
+    std::vector<Vertex3D> GenerateVertices(NormalMode) const;
+    std::vector<uint> GenerateIndices(NormalMode) const;
 
     std::vector<uint> GenerateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> GenerateTriangulatedFaceIndices() const; // Triangle fan for each face.

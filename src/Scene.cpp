@@ -345,7 +345,7 @@ void Scene::RecordCommandBuffer() {
     const auto &object = *Objects[0];
 
     SilhouetteRenderPipeline.Begin(cb);
-    SilhouetteRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertices), SPT::Silhouette);
+    SilhouetteRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), SPT::Silhouette);
     cb.endRenderPass();
 
     EdgeDetectionRenderPipeline.Begin(cb);
@@ -355,14 +355,14 @@ void Scene::RecordCommandBuffer() {
     MainRenderPipeline.Begin(cb, BackgroundColor);
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Faces), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Faces), fill_pipeline);
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edges), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertices), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), fill_pipeline);
     }
     if (const auto *face_normals = object.GetFaceNormalIndicatorBuffers()) {
         MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line);
@@ -401,8 +401,8 @@ void Scene::UpdateEdgeColors() {
 }
 void Scene::UpdateNormalIndicators() {
     for (auto &object : Objects) {
-        object->ShowNormalIndicators(NormalMode::Faces, ShowFaceNormals);
-        object->ShowNormalIndicators(NormalMode::Vertices, ShowVertexNormals);
+        object->ShowNormalIndicators(NormalMode::Face, ShowFaceNormals);
+        object->ShowNormalIndicators(NormalMode::Vertex, ShowVertexNormals);
     }
 }
 

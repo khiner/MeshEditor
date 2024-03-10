@@ -24,7 +24,7 @@ Object::Object(const VulkanContext &vc, Mesh &&mesh) : VC(vc), M(std::move(mesh)
 }
 
 void Object::CreateOrUpdateBuffers() {
-    static const std::vector AllElements{MeshElement::Faces, MeshElement::Vertices, MeshElement::Edges};
+    static const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
     for (const auto element : AllElements) CreateOrUpdateBuffers(element);
 }
 
@@ -39,7 +39,7 @@ const VkMeshBuffers *Object::GetFaceNormalIndicatorBuffers() const { return Face
 const VkMeshBuffers *Object::GetVertexNormalIndicatorBuffers() const { return VertexNormalIndicatorBuffers.get(); }
 
 void Object::ShowNormalIndicators(NormalMode mode, bool show) {
-    auto &buffers = mode == NormalMode::Faces ? FaceNormalIndicatorBuffers : VertexNormalIndicatorBuffers;
+    auto &buffers = mode == NormalMode::Face ? FaceNormalIndicatorBuffers : VertexNormalIndicatorBuffers;
     buffers.reset();
     if (!show) return;
 
