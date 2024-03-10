@@ -5,6 +5,8 @@
 #include <shaderc/shaderc.hpp>
 #include <spirv_cross/spirv_cross.hpp>
 
+#include "numeric/mat4.h"
+
 #include "File.h"
 #include "mesh/Vertex.h"
 
@@ -80,14 +82,27 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
     return stages;
 }
 
-static vk::PipelineVertexInputStateCreateInfo GenerateVertex3DInputState() {
-    static const vk::VertexInputBindingDescription vertex_binding{0, sizeof(Vertex3D), vk::VertexInputRate::eVertex};
-    static const std::vector<vk::VertexInputAttributeDescription> vertex_attrs{
-        {0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex3D, Position)},
-        {1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex3D, Normal)},
-        {2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(Vertex3D, Color)},
+namespace Format {
+const auto Vec3 = vk::Format::eR32G32B32Sfloat;
+const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
+} // namespace Format
+
+vk::PipelineVertexInputStateCreateInfo GenerateVertex3DInputState() {
+    static const std::vector<vk::VertexInputBindingDescription> bindings{
+        {0, sizeof(Vertex3D), vk::VertexInputRate::eVertex},
+        {1, sizeof(mat4), vk::VertexInputRate::eInstance}
     };
-    return {{}, vertex_binding, vertex_attrs};
+    static const std::vector<vk::VertexInputAttributeDescription> attrs{
+        {0, 0, Format::Vec3, offsetof(Vertex3D, Position)},
+        {1, 0, Format::Vec3, offsetof(Vertex3D, Normal)},
+        {2, 0, Format::Vec4, offsetof(Vertex3D, Color)},
+        // Instance mat4, one vec4 per row
+        {3, 1, Format::Vec4, 0},
+        {4, 1, Format::Vec4, sizeof(vec4)},
+        {5, 1, Format::Vec4, 2 * sizeof(vec4)},
+        {6, 1, Format::Vec4, 3 * sizeof(vec4)}
+    };
+    return {{}, bindings, attrs};
 }
 
 ShaderPipeline::ShaderPipeline(

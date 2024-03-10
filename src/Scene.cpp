@@ -10,7 +10,9 @@
 #include "numeric/mat3.h"
 
 #include "Object.h"
+#include "Registry.h"
 #include "mesh/primitive/Cuboid.h"
+#include "vulkan/VulkanContext.h"
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -30,6 +32,7 @@ static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice 
 namespace ImageFormat {
 const auto Color = vk::Format::eB8G8R8A8Unorm;
 const auto Float = vk::Format::eR32G32B32A32Sfloat;
+const auto Depth = vk::Format::eD32Sfloat;
 } // namespace ImageFormat
 
 struct Gizmo {
@@ -110,18 +113,22 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const VkMeshBuffers &buffers, SPT spt) const {
+void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const VkMeshBuffers &mesh_buffers, SPT spt, const VulkanBuffer &models_buffer) const {
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
-    buffers.Bind(cb);
+    mesh_buffers.Bind(cb);
+    static const vk::DeviceSize models_buffer_offsets[] = {0};
+    cb.bindVertexBuffers(1, *models_buffer.Buffer, models_buffer_offsets);
+    const uint instance_count = models_buffer.Size / sizeof(mat4);
+    mesh_buffers.Draw(cb, instance_count);
 }
 
 MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
     : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
-        {{}, vk::Format::eD32Sfloat, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        {{}, ImageFormat::Depth, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
         // Multisampled offscreen image.
         {{}, ImageFormat::Color, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         // Single-sampled resolve.
@@ -177,8 +184,8 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
         VC,
-        {{}, vk::ImageType::e2D, vk::Format::eD32Sfloat, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, vk::Format::eD32Sfloat, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+        {{}, vk::ImageType::e2D, ImageFormat::Depth, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
     );
     OffscreenImage.Create(
         VC,
@@ -263,9 +270,9 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-Scene::Scene(const VulkanContext &vc)
-    : VC(vc), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
-    Objects.push_back(std::make_unique<Object>(VC, Cuboid{{0.5, 0.5, 0.5}}));
+Scene::Scene(const VulkanContext &vc, Registry &r)
+    : VC(vc), R(r), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
+    Objects.push_back(std::make_unique<Object>(VC, R, Cuboid{{0.5, 0.5, 0.5}}, 0));
     UpdateEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
@@ -344,7 +351,7 @@ void Scene::RecordCommandBuffer() {
     const auto &object = *Objects[0];
 
     SilhouetteRenderPipeline.Begin(cb);
-    SilhouetteRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), SPT::Silhouette);
+    SilhouetteRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
     EdgeDetectionRenderPipeline.Begin(cb);
@@ -352,22 +359,23 @@ void Scene::RecordCommandBuffer() {
     cb.endRenderPass();
 
     MainRenderPipeline.Begin(cb, BackgroundColor);
+
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline, ModelsBuffer);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line, ModelsBuffer);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline);
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line, ModelsBuffer);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), fill_pipeline);
+        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), fill_pipeline, ModelsBuffer);
     }
     if (const auto *face_normals = object.GetFaceNormalIndicatorBuffers()) {
-        MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line, ModelsBuffer);
     }
     if (const auto *vertex_normals = object.GetVertexNormalIndicatorBuffers()) {
-        MainRenderPipeline.RenderBuffers(cb, *vertex_normals, SPT::Line);
+        MainRenderPipeline.RenderBuffers(cb, *vertex_normals, SPT::Line, ModelsBuffer);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
@@ -407,9 +415,13 @@ void Scene::UpdateNormalIndicators() {
 
 void Scene::UpdateTransform() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    const mat4 &model = Objects[0]->Model;
-    const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model))); // todo only recalculate when model changes.
-    const Transform transform{model, Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
+    ModelsBuffer.Size = R.Models.size() * sizeof(mat4);
+    VC.CreateOrUpdateBuffer(ModelsBuffer, R.Models.data());
+
+    // todo update for instancing, only recalculate when model changes.
+    const mat4 &model = R.Models[0];
+    const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model)));
+    const Transform transform{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
     VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
     const ViewProjNearFar vpnf{transform.View, transform.Projection, Camera.NearClip, Camera.FarClip};
     VC.CreateOrUpdateBuffer(ViewProjNearFarBuffer, &vpnf);
@@ -479,7 +491,7 @@ void Scene::RenderGizmo() {
 
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    auto &model = Objects[0]->Model;
+    auto &model = R.Models[0];
     const bool model_changed = Gizmo->Render(Camera, model, aspect_ratio);
     const bool view_changed = Camera.Tick();
     if (model_changed || view_changed) {

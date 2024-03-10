@@ -1,25 +1,13 @@
 #include "Object.h"
 
-#include "Ray.h"
-#include "vulkan/VulkanContext.h"
-
 #include <format>
 
-void VkMeshBuffers::CreateOrUpdateBuffers() {
-    VertexBuffer.Size = sizeof(Vertex3D) * GetVertices().size();
-    IndexBuffer.Size = sizeof(uint) * GetIndices().size();
-    VC.CreateOrUpdateBuffer(VertexBuffer, GetVertices().data());
-    VC.CreateOrUpdateBuffer(IndexBuffer, GetIndices().data());
-}
+#include "Ray.h"
+#include "Registry.h"
+#include "vulkan/VulkanContext.h"
 
-void VkMeshBuffers::Bind(vk::CommandBuffer cb) const {
-    static const vk::DeviceSize vertex_buffer_offsets[] = {0};
-    cb.bindVertexBuffers(0, *VertexBuffer.Buffer, vertex_buffer_offsets);
-    cb.bindIndexBuffer(*IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
-    cb.drawIndexed(IndexBuffer.Size / sizeof(uint), 1, 0, 0, 0);
-}
-
-Object::Object(const VulkanContext &vc, Mesh &&mesh) : VC(vc), M(std::move(mesh)) {
+Object::Object(const VulkanContext &vc, const Registry &r, Mesh &&mesh, uint instance)
+    : VC(vc), R(r), M(std::move(mesh)), Instance(instance) {
     CreateOrUpdateBuffers();
 }
 
@@ -27,6 +15,8 @@ void Object::CreateOrUpdateBuffers() {
     static const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
     for (const auto element : AllElements) CreateOrUpdateBuffers(element);
 }
+
+const mat4 &Object::GetModel() const { return R.Models[Instance]; }
 
 void Object::CreateOrUpdateBuffers(MeshElement element) {
     if (!ElementBuffers.contains(element)) ElementBuffers[element] = std::make_unique<VkMeshBuffers>(VC);
@@ -48,11 +38,11 @@ void Object::ShowNormalIndicators(NormalMode mode, bool show) {
 }
 
 Mesh::FH Object::FindFirstIntersectingFace(const Ray &world_ray, vec3 *closest_intersect_point_out) const {
-    return M.FindFirstIntersectingFace(world_ray.WorldToLocal(Model), closest_intersect_point_out);
+    return M.FindFirstIntersectingFace(world_ray.WorldToLocal(GetModel()), closest_intersect_point_out);
 }
 
-Mesh::VH Object::FindNearestVertex(const Ray &world_ray) const { return M.FindNearestVertex(world_ray.WorldToLocal(Model)); }
-Mesh::EH Object::FindNearestEdge(const Ray &world_ray) const { return M.FindNearestEdge(world_ray.WorldToLocal(Model)); }
+Mesh::VH Object::FindNearestVertex(const Ray &world_ray) const { return M.FindNearestVertex(world_ray.WorldToLocal(GetModel())); }
+Mesh::EH Object::FindNearestEdge(const Ray &world_ray) const { return M.FindNearestEdge(world_ray.WorldToLocal(GetModel())); }
 
 std::string Object::GetHighlightLabel() const {
     if (HighlightedFace.is_valid()) return std::format("Hovered face {}", HighlightedFace.idx());

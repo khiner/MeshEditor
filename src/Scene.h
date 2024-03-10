@@ -11,8 +11,9 @@
 #include "World.h"
 #include "mesh/MeshElement.h"
 #include "vulkan/VulkanBuffer.h"
-#include "vulkan/VulkanContext.h"
 
+struct Registry;
+struct VulkanContext;
 struct Object;
 struct VkMeshBuffers;
 
@@ -36,7 +37,6 @@ enum class SelectionMode {
 };
 
 struct Transform {
-    mat4 Model{1};
     mat4 View{1};
     mat4 Projection{1};
     mat4 NormalToWorld{1}; // Only a mat3 is needed, but mat4 is used for alignment.
@@ -103,7 +103,7 @@ struct RenderPipeline {
 
     void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
 
-    void RenderBuffers(vk::CommandBuffer, const VkMeshBuffers &, SPT) const;
+    void RenderBuffers(vk::CommandBuffer, const VkMeshBuffers &, SPT, const VulkanBuffer &models_buffer) const;
 
 protected:
     vk::UniqueFramebuffer Framebuffer;
@@ -144,10 +144,11 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
 };
 
 struct Scene {
-    Scene(const VulkanContext &);
+    Scene(const VulkanContext &, Registry &);
     ~Scene();
 
     const VulkanContext &VC;
+    Registry &R;
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainRenderPipeline.MsaaSamples; }
@@ -194,7 +195,8 @@ private:
         TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)},
         LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)},
         ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)},
-        SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
+        SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)},
+        ModelsBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
 
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 

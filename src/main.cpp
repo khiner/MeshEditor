@@ -10,21 +10,23 @@
 
 #include "numeric/vec4.h"
 
+#include "Registry.h"
 #include "Scene.h"
 #include "Window.h"
 #include "vulkan/VulkanContext.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
-static ImGui_ImplVulkanH_Window MainWindowData;
-static uint MinImageCount = 2;
-static bool SwapChainRebuild = false;
+ImGui_ImplVulkanH_Window MainWindowData;
+uint MinImageCount = 2;
+bool SwapChainRebuild = false;
 
-static WindowsState Windows;
-static std::unique_ptr<VulkanContext> VC;
-static std::unique_ptr<Scene> MainScene;
-static vk::DescriptorSet MainSceneDescriptorSet;
-static vk::UniqueSampler MainSceneTextureSampler;
+WindowsState Windows;
+std::unique_ptr<Registry> R;
+std::unique_ptr<VulkanContext> VC;
+std::unique_ptr<Scene> MainScene;
+vk::DescriptorSet MainSceneDescriptorSet;
+vk::UniqueSampler MainSceneTextureSampler;
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
@@ -217,7 +219,9 @@ int main(int, char **) {
     // ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
     // IM_ASSERT(font != nullptr);
 
-    MainScene = std::make_unique<Scene>(*VC);
+    R = std::make_unique<Registry>();
+    R->Models.emplace_back(1);
+    MainScene = std::make_unique<Scene>(*VC, *R);
 
     // Main loop
     bool done = false;

@@ -7,12 +7,7 @@ struct VulkanContext;
 
 struct VkMeshBuffers {
     VkMeshBuffers(const VulkanContext &vc) : VC(vc) {}
-    VkMeshBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices)
-        : VC(vc), Buffers(std::move(vertices), std::move(indices)) {
-        CreateOrUpdateBuffers();
-    }
-    VkMeshBuffers(const VulkanContext &vc, MeshBuffers &&buffers)
-        : VC(vc), Buffers(std::move(buffers)) {
+    VkMeshBuffers(const VulkanContext &vc, MeshBuffers &&buffers) : VC(vc), Buffers(std::move(buffers)) {
         CreateOrUpdateBuffers();
     }
     ~VkMeshBuffers() = default;
@@ -32,4 +27,5 @@ struct VkMeshBuffers {
 
     void CreateOrUpdateBuffers();
     void Bind(vk::CommandBuffer) const;
+    void Draw(vk::CommandBuffer, uint instance_count = 1) const;
 };

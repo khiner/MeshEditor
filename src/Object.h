@@ -5,12 +5,16 @@
 #include "mesh/Mesh.h"
 #include "mesh/VkMeshBuffers.h"
 
+struct Registry;
+
 // An `Object` is a wrapper around a `Mesh`, a `Model` transform, Vulkan buffers, and other application state.
 struct Object {
-    Object(const VulkanContext &, Mesh &&);
+    Object(const VulkanContext &, const Registry &, Mesh &&, uint instance);
 
     const VulkanContext &VC;
-    mat4 Model{1};
+    const Registry &R;
+
+    const mat4 &GetModel() const;
 
     void CreateOrUpdateBuffers(MeshElement);
     void CreateOrUpdateBuffers(); // Update all buffers.
@@ -57,6 +61,8 @@ struct Object {
 
 private:
     Mesh M;
+    uint Instance;
+
     std::unordered_map<MeshElement, std::unique_ptr<VkMeshBuffers>> ElementBuffers;
     std::unique_ptr<VkMeshBuffers> FaceNormalIndicatorBuffers, VertexNormalIndicatorBuffers;
 
