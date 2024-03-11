@@ -3,6 +3,8 @@
 #include <format>
 #include <ranges>
 
+#include <glm/gtx/matrix_decompose.hpp>
+
 #include "imgui.h"
 
 #include "ImGuizmo.h" // imgui must be included before imguizmo.
@@ -36,6 +38,10 @@ const auto Depth = vk::Format::eD32Sfloat;
 } // namespace ImageFormat
 
 struct Gizmo {
+    ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
+    bool ShowBounds{false};
+    bool ShowModelGizmo{false};
+
     void Begin() const {
         using namespace ImGui;
 
@@ -68,8 +74,7 @@ struct Gizmo {
         using namespace ImGui;
         using namespace ImGuizmo;
 
-        SeparatorText("Gizmo");
-        Checkbox("Show gizmo", &ShowModelGizmo);
+        Checkbox("Gizmo", &ShowModelGizmo);
         if (!ShowModelGizmo) return;
 
         const char *interaction_text =
@@ -90,10 +95,6 @@ struct Gizmo {
         if (RadioButton("Universal", ActiveOp == UNIVERSAL)) ActiveOp = UNIVERSAL;
         // Checkbox("Bound sizing", &ShowBounds);
     }
-
-    ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
-    bool ShowBounds{false};
-    bool ShowModelGizmo{false};
 };
 
 void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_props) {
@@ -497,6 +498,14 @@ void Scene::RenderGizmo() {
     }
 }
 
+void DecomposeTransform(const glm::mat4 &transform, glm::vec3 &position, glm::vec3 &rotation, glm::vec3 &scale) {
+    glm::vec3 skew;
+    glm::vec4 perspective;
+    glm::quat orientation;
+    glm::decompose(transform, scale, orientation, position, skew, perspective);
+    rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
+}
+
 void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Scene")) {
@@ -542,64 +551,82 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
-            SeparatorText("Render mode");
-            int render_mode = int(RenderMode);
-            bool render_mode_changed = RadioButton("Faces and edges##Render", &render_mode, int(RenderMode::FacesAndEdges));
-            SameLine();
-            render_mode_changed |= RadioButton("Faces##Render", &render_mode, int(RenderMode::Faces));
-            SameLine();
-            render_mode_changed |= RadioButton("Edges##Render", &render_mode, int(RenderMode::Edges));
-            SameLine();
-            render_mode_changed |= RadioButton("Vertices##Render", &render_mode, int(RenderMode::Vertices));
+            if (CollapsingHeader("Render")) {
+                SeparatorText("Render mode");
+                int render_mode = int(RenderMode);
+                bool render_mode_changed = RadioButton("Faces and edges##Render", &render_mode, int(RenderMode::FacesAndEdges));
+                SameLine();
+                render_mode_changed |= RadioButton("Faces##Render", &render_mode, int(RenderMode::Faces));
+                SameLine();
+                render_mode_changed |= RadioButton("Edges##Render", &render_mode, int(RenderMode::Edges));
+                SameLine();
+                render_mode_changed |= RadioButton("Vertices##Render", &render_mode, int(RenderMode::Vertices));
 
-            int color_mode = int(ColorMode);
-            bool color_mode_changed = false;
-            if (RenderMode != RenderMode::Edges) {
-                SeparatorText("Fill color mode");
-                color_mode_changed |= RadioButton("Mesh##Color", &color_mode, int(ColorMode::Mesh));
-                color_mode_changed |= RadioButton("Normals##Color", &color_mode, int(ColorMode::Normals));
-            }
-            if (render_mode_changed || color_mode_changed) {
-                RenderMode = ::RenderMode(render_mode);
-                ColorMode = ::ColorMode(color_mode);
-                UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
-                RecordAndSubmitCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
-            }
-            if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
-                auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-                if (ColorEdit3("Edge color", &edge_color.x)) {
-                    UpdateEdgeColors();
+                int color_mode = int(ColorMode);
+                bool color_mode_changed = false;
+                if (RenderMode != RenderMode::Edges) {
+                    SeparatorText("Fill color mode");
+                    color_mode_changed |= RadioButton("Mesh##Color", &color_mode, int(ColorMode::Mesh));
+                    color_mode_changed |= RadioButton("Normals##Color", &color_mode, int(ColorMode::Normals));
+                }
+                if (render_mode_changed || color_mode_changed) {
+                    RenderMode = ::RenderMode(render_mode);
+                    ColorMode = ::ColorMode(color_mode);
+                    UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
+                    RecordAndSubmitCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
+                }
+                if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
+                    auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+                    if (ColorEdit3("Edge color", &edge_color.x)) {
+                        UpdateEdgeColors();
+                        SubmitCommandBuffer();
+                    }
+                }
+
+                SeparatorText("Normal indicators");
+                bool normal_indicators_changed = Checkbox("Face", &ShowFaceNormals);
+                SameLine();
+                normal_indicators_changed |= Checkbox("Vertex", &ShowVertexNormals);
+                if (normal_indicators_changed) {
+                    UpdateNormalIndicators();
+                    RecordAndSubmitCommandBuffer();
+                }
+
+                SeparatorText("Silhouette");
+                if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
+                    VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
                     SubmitCommandBuffer();
                 }
             }
-
-            SeparatorText("Normal indicators");
-            bool normal_indicators_changed = Checkbox("Face normals", &ShowFaceNormals);
-            SameLine();
-            normal_indicators_changed |= Checkbox("Vertex normals", &ShowVertexNormals);
-            if (normal_indicators_changed) {
-                UpdateNormalIndicators();
-                RecordAndSubmitCommandBuffer();
+            if (CollapsingHeader("Selection")) {
+                int selection_mode = int(SelectionMode);
+                bool selection_mode_changed = RadioButton("None##Selection", &selection_mode, int(SelectionMode::None));
+                SameLine();
+                selection_mode_changed |= RadioButton("Vertex##Selection", &selection_mode, int(SelectionMode::Vertex));
+                SameLine();
+                selection_mode_changed |= RadioButton("Edge##Selection", &selection_mode, int(SelectionMode::Edge));
+                SameLine();
+                selection_mode_changed |= RadioButton("Face##Selection", &selection_mode, int(SelectionMode::Face));
+                if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
+                TextUnformatted(Objects[0]->GetHighlightLabel().c_str());
             }
-
-            SeparatorText("Silhouette");
-            if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
-                VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
-                SubmitCommandBuffer();
+            if (CollapsingHeader("Transform")) {
+                glm::vec3 position, rotation, scale;
+                DecomposeTransform(R.Models[0], position, rotation, scale);
+                bool transform_changed = false;
+                transform_changed |= DragFloat3("Position", &position[0], 0.01f);
+                transform_changed |= DragFloat3("Rotation (deg)", &rotation[0], 1, -90, 90, "%.0f");
+                transform_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
+                if (transform_changed) {
+                    R.Models[0] =
+                        glm::translate(position) *
+                        mat4{glm::quat{{glm::radians(rotation.x), glm::radians(rotation.y), glm::radians(rotation.z)}}} *
+                        glm::scale(scale);
+                    UpdateTransform();
+                    SubmitCommandBuffer();
+                }
+                Gizmo->RenderDebug();
             }
-            SeparatorText("Selection");
-            int selection_mode = int(SelectionMode);
-            bool selection_mode_changed = RadioButton("None##Selection", &selection_mode, int(SelectionMode::None));
-            SameLine();
-            selection_mode_changed |= RadioButton("Vertex##Selection", &selection_mode, int(SelectionMode::Vertex));
-            SameLine();
-            selection_mode_changed |= RadioButton("Edge##Selection", &selection_mode, int(SelectionMode::Edge));
-            SameLine();
-            selection_mode_changed |= RadioButton("Face##Selection", &selection_mode, int(SelectionMode::Face));
-            if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
-            TextUnformatted(Objects[0]->GetHighlightLabel().c_str());
-            SeparatorText("Transform");
-            Gizmo->RenderDebug();
             EndTabItem();
         }
         EndTabBar();
