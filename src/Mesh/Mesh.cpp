@@ -19,23 +19,23 @@ bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {
     return true;
 }
 
-bool Mesh::DoesVertexBelongToFace(VH vh, FH fh) const {
-    return fh.is_valid() && any_of(M.fv_range(fh), [&](const auto &vh_o) { return vh_o == vh; });
+bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
+    return vh.is_valid() && fh.is_valid() && any_of(M.fv_range(fh), [&](const auto &vh_o) { return vh_o == vh; });
 }
 
-bool Mesh::DoesVertexBelongToEdge(VH vh, EH eh) const {
-    return eh.is_valid() && any_of(M.voh_range(vh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
+bool Mesh::VertexBelongsToEdge(VH vh, EH eh) const {
+    return vh.is_valid() && eh.is_valid() && any_of(M.voh_range(vh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
 }
 
-bool Mesh::DoesVertexBelongToFaceEdge(VH vh, FH fh, EH eh) const {
+bool Mesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
     return fh.is_valid() && eh.is_valid() &&
         any_of(M.voh_range(vh), [&](const auto &heh) {
                return M.edge_handle(heh) == eh && (M.face_handle(heh) == fh || M.face_handle(M.opposite_halfedge_handle(heh)) == fh);
            });
 }
 
-bool Mesh::DoesEdgeBelongToFace(EH eh, FH fh) const {
-    return fh.is_valid() && any_of(M.fh_range(fh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
+bool Mesh::EdgeBelongsToFace(EH eh, FH fh) const {
+    return eh.is_valid() && fh.is_valid() && any_of(M.fh_range(fh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
 }
 
 static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const vec3 &point) {
@@ -55,9 +55,7 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     const Point edge1 = p2 - p1, edge2 = p3 - p1;
     const Point h = ray_dir % edge2;
     const float a = edge1.dot(h); // Barycentric coordinate
-
-    // Check if the ray is parallel to the triangle.
-    if (a > -eps && a < eps) return false;
+    if (a > -eps && a < eps) return false; // Check if the ray is parallel to the triangle.
 
     // Check if the intersection point is inside the triangle (in barycentric coordinates).
     const Point s = ray_origin - p1;
@@ -68,7 +66,7 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     const float v = f * ray_dir.dot(q);
     if (v < 0.0 || u + v > 1.0) return false;
 
-    // Calculate the intersection point's distance along the ray and verify it's positive (ahead of the ray's origin).
+    // Calculate the intersection point's distance along the ray and verify it's ahead of the ray's origin.
     const float distance = f * edge2.dot(q);
     if (distance > eps) {
         if (distance_out) *distance_out = distance;
@@ -76,6 +74,30 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
         return true;
     }
     return false;
+}
+
+FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out) const {
+    // Avoid allocations in the loop.
+    float distance;
+    float closest_distance = std::numeric_limits<float>::max();
+    vec3 intersect_point;
+    FH closest_face{};
+    for (const auto &fh : M.faces()) {
+        auto fv_it = M.cfv_iter(fh);
+        const VH v0 = *fv_it;
+        ++fv_it;
+        for (; fv_it != M.cfv_end(fh); ++fv_it) {
+            const VH v1 = *fv_it, v2 = *(++fv_it);
+            --fv_it;
+            if (RayIntersectsTriangle(local_ray, v0, v1, v2, &distance, &intersect_point) && distance < closest_distance) {
+                closest_distance = distance;
+                closest_face = fh;
+                if (closest_intersect_point_out) *closest_intersect_point_out = intersect_point;
+            }
+        }
+    }
+
+    return closest_face;
 }
 
 VH Mesh::FindNearestVertex(const Ray &local_ray) const {
@@ -95,32 +117,6 @@ VH Mesh::FindNearestVertex(const Ray &local_ray) const {
     }
 
     return closest_vertex;
-}
-
-FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out) const {
-    // Avoid allocations in the loop.
-    FH closest_face{};
-    float distance;
-    float closest_distance = std::numeric_limits<float>::max();
-    vec3 intersect_point;
-    vec3 closest_intersection_point; // Only tracked for output.
-    for (const auto &fh : M.faces()) {
-        auto fv_it = M.cfv_iter(fh);
-        const VH v0 = *fv_it;
-        ++fv_it;
-        for (; fv_it != M.cfv_end(fh); ++fv_it) {
-            const VH v1 = *fv_it, v2 = *(++fv_it);
-            --fv_it;
-            if (RayIntersectsTriangle(local_ray, v0, v1, v2, &distance, &intersect_point) && distance < closest_distance) {
-                closest_distance = distance;
-                closest_intersection_point = intersect_point;
-                closest_face = fh;
-            }
-        }
-    }
-
-    if (closest_face.is_valid() && closest_intersect_point_out) *closest_intersect_point_out = closest_intersection_point;
-    return closest_face;
 }
 
 EH Mesh::FindNearestEdge(const Ray &local_ray) const {
@@ -160,7 +156,7 @@ std::vector<uint> Mesh::GenerateIndices(NormalMode mode) const {
     }
 }
 
-std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, FH highlighted_face, VH highlighted_vertex, EH highlighted_edge) const {
+std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, ElementIndex highlighted) const {
     std::vector<Vertex3D> vertices;
     if (element == MeshElement::Face) {
         vertices.reserve(M.n_faces() * 3); // At least 3 vertices per face.
@@ -168,14 +164,15 @@ std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, FH highlighted
             const auto &fn = M.normal(fh);
             const auto &fc = M.color(fh);
             for (const auto &vh : M.fv_range(fh)) {
-                const vec4 color = vh == highlighted_vertex || fh == highlighted_face || DoesVertexBelongToFaceEdge(vh, fh, highlighted_edge) ? HighlightColor : ToGlm(fc);
+                const vec4 color = vh == highlighted || fh == highlighted || VertexBelongsToFaceEdge(vh, fh, highlighted) ? HighlightColor : ToGlm(fc);
                 vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
     } else if (element == MeshElement::Vertex) {
         vertices.reserve(M.n_vertices());
         for (const auto &vh : M.vertices()) {
-            const vec4 color = vh == highlighted_vertex || DoesVertexBelongToFace(vh, highlighted_face) || DoesVertexBelongToEdge(vh, highlighted_edge) ? HighlightColor : vec4{1};
+            const vec4 color =
+                vh == highlighted || VertexBelongsToFace(vh, highlighted) || VertexBelongsToEdge(vh, highlighted) ? HighlightColor : vec4{1};
             vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
         }
     } else if (element == MeshElement::Edge) {
@@ -184,7 +181,7 @@ std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, FH highlighted
             const auto &heh = M.halfedge_handle(eh, 0);
             const auto &vh0 = M.from_vertex_handle(heh);
             const auto &vh1 = M.to_vertex_handle(heh);
-            const vec4 color = eh == highlighted_edge || vh0 == highlighted_vertex || vh1 == highlighted_vertex || DoesEdgeBelongToFace(eh, highlighted_face) ? HighlightColor : EdgeColor;
+            const vec4 color = eh == highlighted || vh0 == highlighted || vh1 == highlighted || EdgeBelongsToFace(eh, highlighted) ? HighlightColor : EdgeColor;
             vertices.emplace_back(GetPosition(vh0), GetVertexNormal(vh0), color);
             vertices.emplace_back(GetPosition(vh1), GetVertexNormal(vh1), color);
         }

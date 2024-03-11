@@ -1,12 +1,17 @@
 #include "VkMeshBuffers.h"
 
+#include "MeshBuffers.h"
 #include "vulkan/VulkanContext.h"
 
-void VkMeshBuffers::CreateOrUpdateBuffers() {
-    VertexBuffer.Size = sizeof(Vertex3D) * GetVertices().size();
-    IndexBuffer.Size = sizeof(uint) * GetIndices().size();
-    VC.CreateOrUpdateBuffer(VertexBuffer, GetVertices().data());
-    VC.CreateOrUpdateBuffer(IndexBuffer, GetIndices().data());
+VkMeshBuffers::VkMeshBuffers(const VulkanContext &vc) : VC(vc) {}
+VkMeshBuffers::VkMeshBuffers(const VulkanContext &vc, MeshBuffers &&buffers) : VC(vc) { Set(std::move(buffers)); }
+VkMeshBuffers::~VkMeshBuffers() = default;
+
+void VkMeshBuffers::Set(MeshBuffers &&buffers) {
+    VertexBuffer.Size = sizeof(Vertex3D) * buffers.Vertices.size();
+    IndexBuffer.Size = sizeof(uint) * buffers.Indices.size();
+    VC.CreateOrUpdateBuffer(VertexBuffer, buffers.Vertices.data());
+    VC.CreateOrUpdateBuffer(IndexBuffer, buffers.Indices.data());
 }
 
 void VkMeshBuffers::Bind(vk::CommandBuffer cb) const {

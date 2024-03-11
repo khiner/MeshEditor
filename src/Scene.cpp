@@ -11,8 +11,8 @@
 
 #include "numeric/mat3.h"
 
-#include "Object.h"
 #include "Registry.h"
+#include "mesh/VkMeshBuffers.h"
 #include "mesh/primitive/Cuboid.h"
 #include "vulkan/VulkanContext.h"
 
@@ -93,7 +93,6 @@ struct Gizmo {
         if (RadioButton("Rotate (R)", ActiveOp == ROTATE)) ActiveOp = ROTATE;
         if (RadioButton("Scale (S)", ActiveOp == SCALE)) ActiveOp = SCALE;
         if (RadioButton("Universal", ActiveOp == UNIVERSAL)) ActiveOp = UNIVERSAL;
-        // Checkbox("Bound sizing", &ShowBounds);
     }
 };
 
@@ -271,9 +270,18 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
+// todo move fieds to registry.
+struct Object {
+    std::unordered_map<MeshElement, std::unique_ptr<VkMeshBuffers>> ElementBuffers;
+    std::unique_ptr<VkMeshBuffers> FaceNormalIndicatorBuffers, VertexNormalIndicatorBuffers;
+};
+
 Scene::Scene(const VulkanContext &vc, Registry &r)
     : VC(vc), R(r), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
-    Objects.push_back(std::make_unique<Object>(VC, R, Cuboid{{0.5, 0.5, 0.5}}, 0));
+    R.Meshes.emplace_back(Cuboid{{0.5, 0.5, 0.5}});
+    R.Models.emplace_back(1);
+    Objects.push_back(std::make_unique<Object>());
+    CreateOrUpdateBuffers(0);
     UpdateEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
@@ -296,6 +304,21 @@ Scene::Scene(const VulkanContext &vc, Registry &r)
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
+
+Object &Scene::GetSelectedObject() const { return *Objects[SelectedObjectId]; }
+Mesh &Scene::GetSelectedMesh() const { return R.Meshes[SelectedObjectId]; }
+mat4 &Scene::GetSelectedModel() const { return R.Models[SelectedObjectId]; }
+
+void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlighted_element) {
+    auto &mesh = R.Meshes[instance];
+    auto &buffers = Objects[instance]->ElementBuffers;
+    static const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
+    for (const auto element : AllElements) {
+        if (!buffers.contains(element)) buffers[element] = std::make_unique<VkMeshBuffers>(VC);
+        mesh.UpdateNormals(); // todo only update when necessary.
+        buffers[element]->Set(mesh.GenerateBuffers(element, highlighted_element));
+    }
+}
 
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
@@ -349,10 +372,12 @@ void Scene::RecordCommandBuffer() {
         image_memory_barriers
     );
 
-    const auto &object = *Objects[0];
+    const auto &object = GetSelectedObject();
+    const auto &buffers = object.ElementBuffers;
 
     SilhouetteRenderPipeline.Begin(cb);
-    SilhouetteRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
+
+    SilhouetteRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
     EdgeDetectionRenderPipeline.Begin(cb);
@@ -363,19 +388,19 @@ void Scene::RecordCommandBuffer() {
 
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Face), fill_pipeline, ModelsBuffer);
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Edge), SPT::Line, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(cb, object.GetBuffers(MeshElement::Vertex), fill_pipeline, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Vertex), fill_pipeline, ModelsBuffer);
     }
-    if (const auto *face_normals = object.GetFaceNormalIndicatorBuffers()) {
+    if (const auto &face_normals = object.FaceNormalIndicatorBuffers) {
         MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line, ModelsBuffer);
     }
-    if (const auto *vertex_normals = object.GetVertexNormalIndicatorBuffers()) {
+    if (const auto &vertex_normals = object.VertexNormalIndicatorBuffers) {
         MainRenderPipeline.RenderBuffers(cb, *vertex_normals, SPT::Line, ModelsBuffer);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
@@ -405,12 +430,19 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (auto &object : Objects) object->CreateOrUpdateBuffers();
+    for (uint i = 0; i < R.Meshes.size(); ++i) {
+        CreateOrUpdateBuffers(i, HighlightedElement);
+    }
 }
+
 void Scene::UpdateNormalIndicators() {
-    for (auto &object : Objects) {
-        object->ShowNormalIndicators(NormalMode::Face, ShowFaceNormals);
-        object->ShowNormalIndicators(NormalMode::Vertex, ShowVertexNormals);
+    for (uint i = 0; i < R.Meshes.size(); ++i) {
+        auto &object = *Objects[i];
+        if (ShowFaceNormals) object.FaceNormalIndicatorBuffers = std::make_unique<VkMeshBuffers>(VC, R.Meshes[i].GenerateBuffers(NormalMode::Face));
+        else object.FaceNormalIndicatorBuffers.reset();
+
+        if (ShowVertexNormals) object.VertexNormalIndicatorBuffers = std::make_unique<VkMeshBuffers>(VC, R.Meshes[i].GenerateBuffers(NormalMode::Vertex));
+        else object.VertexNormalIndicatorBuffers.reset();
     }
 }
 
@@ -420,7 +452,7 @@ void Scene::UpdateTransform() {
     VC.CreateOrUpdateBuffer(ModelsBuffer, R.Models.data());
 
     // todo update for instancing, only recalculate when model changes.
-    const mat4 &model = R.Models[0];
+    const mat4 &model = GetSelectedModel();
     const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model)));
     const Transform transform{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
     VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
@@ -445,17 +477,30 @@ Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
 vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
+// Mesh::FH Object::FindFirstIntersectingFace(const Ray &world_ray, vec3 *closest_intersect_point_out) const { return GetMesh().FindFirstIntersectingFace(world_ray.WorldToLocal(GetModel()), closest_intersect_point_out); }
+// Mesh::VH Object::FindNearestVertex(const Ray &world_ray) const { return GetMesh().FindNearestVertex(world_ray.WorldToLocal(GetModel())); }
+// Mesh::EH Object::FindNearestEdge(const Ray &world_ray) const { return GetMesh().FindNearestEdge(world_ray.WorldToLocal(GetModel())); }
+
 bool Scene::Render() {
     // Handle mouse input.
     if (SelectionMode != SelectionMode::None) {
-        auto &object = *Objects[0];
-        const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
+        auto &mesh = GetSelectedMesh();
+        auto &model = GetSelectedModel();
+        const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model);
+        const Mesh::ElementIndex highlighted_element = HighlightedElement;
         if (SelectionMode == SelectionMode::Face) {
-            if (object.HighlightFace(object.FindFirstIntersectingFace(mouse_ray))) SubmitCommandBuffer();
+            const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
+            if (highlighted_element != fh) HighlightedElement = {MeshElement::Face, fh.idx()};
         } else if (SelectionMode == SelectionMode::Vertex) {
-            if (object.HighlightVertex(object.FindNearestVertex(mouse_ray))) SubmitCommandBuffer();
+            const auto vh = mesh.FindNearestVertex(mouse_ray);
+            if (highlighted_element != vh) HighlightedElement = {MeshElement::Vertex, vh.idx()};
         } else if (SelectionMode == SelectionMode::Edge) {
-            if (object.HighlightEdge(object.FindNearestEdge(mouse_ray))) SubmitCommandBuffer();
+            const auto eh = mesh.FindNearestEdge(mouse_ray);
+            if (highlighted_element != eh) HighlightedElement = {MeshElement::Edge, eh.idx()};
+        }
+        if (HighlightedElement != highlighted_element) {
+            CreateOrUpdateBuffers(SelectedObjectId, HighlightedElement);
+            SubmitCommandBuffer();
         }
     }
 
@@ -489,7 +534,7 @@ void Scene::RenderGizmo() {
 
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    auto &model = R.Models[0];
+    auto &model = GetSelectedModel();
     const bool model_changed = Gizmo->Render(Camera, model, aspect_ratio);
     const bool view_changed = Camera.Tick();
     if (model_changed || view_changed) {
@@ -608,17 +653,19 @@ void Scene::RenderControls() {
                 SameLine();
                 selection_mode_changed |= RadioButton("Face##Selection", &selection_mode, int(SelectionMode::Face));
                 if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
-                TextUnformatted(Objects[0]->GetHighlightLabel().c_str());
+                const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", HighlightedElement.ElementName(), HighlightedElement.idx()) : "Hovered: None";
+                TextUnformatted(highlight_label.c_str());
             }
             if (CollapsingHeader("Transform")) {
+                auto &model = GetSelectedModel();
                 glm::vec3 position, rotation, scale;
-                DecomposeTransform(R.Models[0], position, rotation, scale);
+                DecomposeTransform(model, position, rotation, scale);
                 bool transform_changed = false;
                 transform_changed |= DragFloat3("Position", &position[0], 0.01f);
                 transform_changed |= DragFloat3("Rotation (deg)", &rotation[0], 1, -90, 90, "%.0f");
                 transform_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
                 if (transform_changed) {
-                    R.Models[0] =
+                    model =
                         glm::translate(position) *
                         mat4{glm::quat{{glm::radians(rotation.x), glm::radians(rotation.y), glm::radians(rotation.z)}}} *
                         glm::scale(scale);

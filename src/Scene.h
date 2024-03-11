@@ -12,9 +12,10 @@
 #include "mesh/MeshElement.h"
 #include "vulkan/VulkanBuffer.h"
 
+struct Mesh;
+struct Object;
 struct Registry;
 struct VulkanContext;
-struct Object;
 struct VkMeshBuffers;
 
 struct ImageResource {
@@ -171,14 +172,22 @@ struct Scene {
     Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
 
 private:
+    Object &GetSelectedObject() const;
+    Mesh &GetSelectedMesh() const;
+    mat4 &GetSelectedModel() const;
+
     void SetExtent(vk::Extent2D);
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
+    void CreateOrUpdateBuffers(uint instance, MeshElementIndex highlighted_element = {});
+
     World World{};
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
+    uint SelectedObjectId{0};
+    MeshElementIndex HighlightedElement{};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.

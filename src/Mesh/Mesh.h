@@ -47,6 +47,21 @@ struct Mesh {
     using HH = om::HH;
     using Point = om::Point;
 
+    // Adds OpenMesh handle comparison/conversion to `MeshElementIndex`.
+    struct ElementIndex : MeshElementIndex {
+        using MeshElementIndex::MeshElementIndex;
+        ElementIndex(const MeshElementIndex &other) : MeshElementIndex(other) {}
+
+        bool operator==(FH fh) const { return Element == MeshElement::Face && Index == fh.idx(); }
+        bool operator==(VH vh) const { return Element == MeshElement::Vertex && Index == vh.idx(); }
+        bool operator==(EH eh) const { return Element == MeshElement::Edge && Index == eh.idx(); }
+
+        // Implicit conversion to OpenMesh handles.
+        operator FH() const { return Element == MeshElement::Face ? FH(Index) : FH(-1); }
+        operator VH() const { return Element == MeshElement::Vertex ? VH(Index) : VH(-1); }
+        operator EH() const { return Element == MeshElement::Edge ? EH(Index) : EH(-1); }
+    };
+
     inline static const vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
     inline static vec4 EdgeColor{0, 0, 0, 1};
     inline static vec4 HighlightColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
@@ -79,17 +94,14 @@ struct Mesh {
 
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 
-    uint NumPositions() const { return M.n_vertices(); }
-    uint NumFaces() const { return M.n_faces(); }
-
     const PolyMesh &GetMesh() const { return M; }
 
     const float *GetPositionData() const { return (const float *)M.points(); }
 
     vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
-    vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
-    vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
     vec3 GetFaceCenter(FH fh) const { return ToGlm(M.calc_face_centroid(fh)); }
+    vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
+    vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
 
     float CalcFaceArea(FH) const;
 
@@ -97,8 +109,8 @@ struct Mesh {
 
     void UpdateNormals() { M.update_normals(); }
 
-    MeshBuffers GenerateBuffers(MeshElement element, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const {
-        return {GenerateVertices(element, highlighted_face, highlighted_vertex, highlighted_edge), GenerateIndices(element)};
+    MeshBuffers GenerateBuffers(MeshElement element, ElementIndex highlighted_element = {}) const {
+        return {GenerateVertices(element, highlighted_element), GenerateIndices(element)};
     }
     MeshBuffers GenerateBuffers(NormalMode mode) const { return {GenerateVertices(mode), GenerateIndices(mode)}; }
 
@@ -130,27 +142,27 @@ struct Mesh {
         SetFaceColor(M.add_face(vertices), color);
     }
 
-    bool DoesVertexBelongToFace(VH, FH) const;
-    bool DoesVertexBelongToEdge(VH, EH) const;
-    bool DoesVertexBelongToFaceEdge(VH, FH, EH) const;
-    bool DoesEdgeBelongToFace(EH, FH) const;
+    bool VertexBelongsToFace(VH, FH) const;
+    bool VertexBelongsToEdge(VH, EH) const;
+    bool VertexBelongsToFaceEdge(VH, FH, EH) const;
+    bool EdgeBelongsToFace(EH, FH) const;
 
     // Returns true if the ray intersects the given triangle.
     // If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
     bool RayIntersectsTriangle(const Ray &, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out = nullptr) const;
 
+    // If `closest_intersect_point_out` is not null, sets it to the intersection point.
+    FH FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out = nullptr) const;
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
     VH FindNearestVertex(const Ray &local_ray) const;
-    // If `closest_intersect_point_out` is not null, sets it to the intersection point.
-    FH FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out = nullptr) const;
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     EH FindNearestEdge(const Ray &world_ray) const;
 
 protected:
     PolyMesh M;
 
-    std::vector<Vertex3D> GenerateVertices(MeshElement, FH highlighted_face = FH{}, VH highlighted_vertex = VH{}, EH highlighted_edge = EH{}) const;
+    std::vector<Vertex3D> GenerateVertices(MeshElement, ElementIndex highlighted_element = {}) const;
     std::vector<uint> GenerateIndices(MeshElement) const;
     std::vector<Vertex3D> GenerateVertices(NormalMode) const;
     std::vector<uint> GenerateIndices(NormalMode) const;

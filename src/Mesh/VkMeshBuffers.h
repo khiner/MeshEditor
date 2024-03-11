@@ -1,31 +1,20 @@
 #pragma once
 
-#include "MeshBuffers.h"
 #include "vulkan/VulkanBuffer.h"
 
+struct MeshBuffers;
 struct VulkanContext;
 
 struct VkMeshBuffers {
-    VkMeshBuffers(const VulkanContext &vc) : VC(vc) {}
-    VkMeshBuffers(const VulkanContext &vc, MeshBuffers &&buffers) : VC(vc), Buffers(std::move(buffers)) {
-        CreateOrUpdateBuffers();
-    }
-    ~VkMeshBuffers() = default;
+    VkMeshBuffers(const VulkanContext &);
+    VkMeshBuffers(const VulkanContext &, MeshBuffers &&);
+    ~VkMeshBuffers();
 
     const VulkanContext &VC;
-    MeshBuffers Buffers;
     VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
     VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
 
-    const std::vector<Vertex3D> &GetVertices() const { return Buffers.Vertices; }
-    const std::vector<uint> &GetIndices() const { return Buffers.Indices; }
-
-    void Set(MeshBuffers &&buffers) {
-        Buffers = std::move(buffers);
-        CreateOrUpdateBuffers();
-    }
-
-    void CreateOrUpdateBuffers();
+    void Set(MeshBuffers &&);
     void Bind(vk::CommandBuffer) const;
     void Draw(vk::CommandBuffer, uint instance_count = 1) const;
 };

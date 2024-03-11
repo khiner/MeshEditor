@@ -220,7 +220,6 @@ int main(int, char **) {
     // IM_ASSERT(font != nullptr);
 
     R = std::make_unique<Registry>();
-    R->Models.emplace_back(1);
     MainScene = std::make_unique<Scene>(*VC, *R);
 
     // Main loop
