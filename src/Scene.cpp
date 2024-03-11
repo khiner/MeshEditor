@@ -429,15 +429,12 @@ void Scene::UpdateTransform() {
 
 using namespace ImGui;
 
-vk::ClearColorValue ToClearColor(vec4 v) { return {v.r, v.g, v.b, v.a}; }
 vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
-
-vec2 GetScroll() { return {GetScrollX(), GetScrollY()}; }
-vec2 GetWindowMousePos() { return ToGlm(GetMousePos() - GetWindowPos()) - GetScroll(); }
+vk::ClearColorValue ToClearColor(vec4 v) { return {v.r, v.g, v.b, v.a}; }
 
 // Returns a world space ray from the mouse into the scene.
 Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
-    const vec2 mouse_pos = GetWindowMousePos(), content_region = ToGlm(GetContentRegionAvail());
+    const vec2 mouse_pos = ToGlm(GetMousePos() - GetCursorScreenPos()), content_region = ToGlm(GetContentRegionAvail());
     const vec2 mouse_content_pos = mouse_pos / content_region;
     // Normalized Device Coordinates, $\mathcal{NDC} \in [-1,1]^2$
     const vec2 mouse_pos_ndc = vec2{2 * mouse_content_pos.x - 1, 1 - 2 * mouse_content_pos.y};
@@ -445,7 +442,7 @@ Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
 }
 
 vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
-vk::Extent2D ToVkExtent(vec2 e) { return {uint32_t(e.x), uint32_t(e.y)}; }
+vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 bool Scene::Render() {
     // Handle mouse input.
