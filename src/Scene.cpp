@@ -502,6 +502,14 @@ void Scene::RenderGizmo() {
 
 void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
+        if (BeginTabItem("Scene")) {
+            if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
+            if (Button("Recompile shaders")) {
+                CompileShaders();
+                RecordAndSubmitCommandBuffer();
+            }
+            EndTabItem();
+        }
         if (BeginTabItem("Camera")) {
             bool camera_changed = false;
             if (Button("Reset camera")) {
@@ -522,11 +530,14 @@ void Scene::RenderControls() {
         }
         if (BeginTabItem("Lights")) {
             bool light_changed = false;
-            light_changed |= ColorEdit3("View light color", &Lights.ViewColorAndAmbient[0]);
-            light_changed |= SliderFloat("Ambient intensity", &Lights.ViewColorAndAmbient[3], 0, 1);
-            light_changed |= ColorEdit3("Directional color", &Lights.DirectionalColorAndIntensity[0]);
-            light_changed |= SliderFloat("Directional intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
-            light_changed |= SliderFloat3("Direction (xyz)", &Lights.Direction.x, -1, 1);
+            SeparatorText("View light");
+            light_changed |= ColorEdit3("Color", &Lights.ViewColorAndAmbient[0]);
+            SeparatorText("Ambient light");
+            light_changed |= SliderFloat("Intensity", &Lights.ViewColorAndAmbient[3], 0, 1);
+            SeparatorText("Directional light");
+            light_changed |= SliderFloat3("Direction", &Lights.Direction[0], -1, 1);
+            light_changed |= ColorEdit3("Color", &Lights.DirectionalColorAndIntensity[0]);
+            light_changed |= SliderFloat("Intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
                 VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
                 SubmitCommandBuffer();
@@ -534,7 +545,6 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
-            if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
             SeparatorText("Render mode");
             int render_mode = int(RenderMode);
             bool render_mode_changed = RadioButton("Faces and edges##Render", &render_mode, int(RenderMode::FacesAndEdges));
@@ -593,13 +603,6 @@ void Scene::RenderControls() {
             TextUnformatted(Objects[0]->GetHighlightLabel().c_str());
             SeparatorText("Transform");
             Gizmo->RenderDebug();
-            EndTabItem();
-        }
-        if (BeginTabItem("Shader")) {
-            if (Button("Recompile shaders")) {
-                CompileShaders();
-                RecordAndSubmitCommandBuffer();
-            }
             EndTabItem();
         }
         EndTabBar();
