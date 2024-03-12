@@ -12,7 +12,6 @@
 #include "numeric/mat3.h"
 
 #include "Registry.h"
-#include "mesh/VkMeshBuffers.h"
 #include "mesh/primitive/Cuboid.h"
 #include "vulkan/VulkanContext.h"
 
@@ -270,17 +269,9 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-// todo move fieds to registry.
-struct Object {
-    std::unordered_map<MeshElement, std::unique_ptr<VkMeshBuffers>> ElementBuffers;
-    std::unique_ptr<VkMeshBuffers> FaceNormalIndicatorBuffers, VertexNormalIndicatorBuffers;
-};
-
 Scene::Scene(const VulkanContext &vc, Registry &r)
     : VC(vc), R(r), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
-    R.Meshes.emplace_back(Cuboid{{0.5, 0.5, 0.5}});
-    R.Models.emplace_back(1);
-    Objects.push_back(std::make_unique<Object>());
+    R.AddMesh(Cuboid{{0.5, 0.5, 0.5}});
     CreateOrUpdateBuffers(0);
     UpdateEdgeColors();
     UpdateTransform();
@@ -305,18 +296,16 @@ Scene::Scene(const VulkanContext &vc, Registry &r)
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
-Object &Scene::GetSelectedObject() const { return *Objects[SelectedObjectId]; }
 Mesh &Scene::GetSelectedMesh() const { return R.Meshes[SelectedObjectId]; }
 mat4 &Scene::GetSelectedModel() const { return R.Models[SelectedObjectId]; }
 
 void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlighted_element) {
     auto &mesh = R.Meshes[instance];
-    auto &buffers = Objects[instance]->ElementBuffers;
+    auto &buffers = R.ElementBuffers[instance];
     static const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
     for (const auto element : AllElements) {
-        if (!buffers.contains(element)) buffers[element] = std::make_unique<VkMeshBuffers>(VC);
         mesh.UpdateNormals(); // todo only update when necessary.
-        buffers[element]->Set(mesh.GenerateBuffers(element, highlighted_element));
+        buffers[element].Set(VC, mesh.GenerateBuffers(element, highlighted_element));
     }
 }
 
@@ -372,12 +361,11 @@ void Scene::RecordCommandBuffer() {
         image_memory_barriers
     );
 
-    const auto &object = GetSelectedObject();
-    const auto &buffers = object.ElementBuffers;
+    const auto &buffers = R.ElementBuffers[SelectedObjectId];
 
     SilhouetteRenderPipeline.Begin(cb);
 
-    SilhouetteRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
+    SilhouetteRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
     EdgeDetectionRenderPipeline.Begin(cb);
@@ -388,20 +376,20 @@ void Scene::RecordCommandBuffer() {
 
     const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
     } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
     } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
-        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
     } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(cb, *buffers.at(MeshElement::Vertex), fill_pipeline, ModelsBuffer);
+        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), fill_pipeline, ModelsBuffer);
     }
-    if (const auto &face_normals = object.FaceNormalIndicatorBuffers) {
-        MainRenderPipeline.RenderBuffers(cb, *face_normals, SPT::Line, ModelsBuffer);
+    if (SelectedObjectId < R.FaceNormalIndicatorBuffers.size()) {
+        MainRenderPipeline.RenderBuffers(cb, R.FaceNormalIndicatorBuffers[SelectedObjectId], SPT::Line, ModelsBuffer);
     }
-    if (const auto &vertex_normals = object.VertexNormalIndicatorBuffers) {
-        MainRenderPipeline.RenderBuffers(cb, *vertex_normals, SPT::Line, ModelsBuffer);
+    if (SelectedObjectId < R.VertexNormalIndicatorBuffers.size()) {
+        MainRenderPipeline.RenderBuffers(cb, R.VertexNormalIndicatorBuffers[SelectedObjectId], SPT::Line, ModelsBuffer);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
@@ -430,20 +418,18 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (uint i = 0; i < R.Meshes.size(); ++i) {
-        CreateOrUpdateBuffers(i, HighlightedElement);
-    }
+    for (uint i = 0; i < R.Meshes.size(); ++i) CreateOrUpdateBuffers(i, HighlightedElement);
 }
 
 void Scene::UpdateNormalIndicators() {
-    for (uint i = 0; i < R.Meshes.size(); ++i) {
-        auto &object = *Objects[i];
-        if (ShowFaceNormals) object.FaceNormalIndicatorBuffers = std::make_unique<VkMeshBuffers>(VC, R.Meshes[i].GenerateBuffers(NormalMode::Face));
-        else object.FaceNormalIndicatorBuffers.reset();
+    const auto &mesh = GetSelectedMesh();
+    auto &face_normals = R.FaceNormalIndicatorBuffers;
+    auto &vertex_normals = R.VertexNormalIndicatorBuffers;
+    if (ShowFaceNormals && face_normals.empty()) face_normals.emplace_back(VC, mesh.GenerateBuffers(NormalMode::Face));
+    else if (!ShowFaceNormals && !face_normals.empty()) face_normals.pop_back();
 
-        if (ShowVertexNormals) object.VertexNormalIndicatorBuffers = std::make_unique<VkMeshBuffers>(VC, R.Meshes[i].GenerateBuffers(NormalMode::Vertex));
-        else object.VertexNormalIndicatorBuffers.reset();
-    }
+    if (ShowVertexNormals && vertex_normals.empty()) vertex_normals.emplace_back(VC, mesh.GenerateBuffers(NormalMode::Vertex));
+    else if (!ShowVertexNormals && !vertex_normals.empty()) vertex_normals.pop_back();
 }
 
 void Scene::UpdateTransform() {

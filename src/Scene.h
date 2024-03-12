@@ -13,7 +13,6 @@
 #include "vulkan/VulkanBuffer.h"
 
 struct Mesh;
-struct Object;
 struct Registry;
 struct VulkanContext;
 struct VkMeshBuffers;
@@ -172,7 +171,6 @@ struct Scene {
     Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
 
 private:
-    Object &GetSelectedObject() const;
     Mesh &GetSelectedMesh() const;
     mat4 &GetSelectedModel() const;
 
@@ -215,7 +213,6 @@ private:
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
     std::unique_ptr<Gizmo> Gizmo;
-    std::vector<std::unique_ptr<Object>> Objects;
 
     bool ShowGrid{true};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.

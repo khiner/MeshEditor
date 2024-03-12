@@ -314,6 +314,7 @@ int main(int, char **) {
     CleanupVulkanWindow();
     MainSceneTextureSampler.reset();
     MainScene.reset();
+    R.reset();
     VC.reset();
 
     SDL_DestroyWindow(Window);

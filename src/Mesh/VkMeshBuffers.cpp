@@ -3,15 +3,15 @@
 #include "MeshBuffers.h"
 #include "vulkan/VulkanContext.h"
 
-VkMeshBuffers::VkMeshBuffers(const VulkanContext &vc) : VC(vc) {}
-VkMeshBuffers::VkMeshBuffers(const VulkanContext &vc, MeshBuffers &&buffers) : VC(vc) { Set(std::move(buffers)); }
+VkMeshBuffers::VkMeshBuffers() {}
+VkMeshBuffers::VkMeshBuffers(const VulkanContext &vc, MeshBuffers &&buffers) { Set(vc, std::move(buffers)); }
 VkMeshBuffers::~VkMeshBuffers() = default;
 
-void VkMeshBuffers::Set(MeshBuffers &&buffers) {
+void VkMeshBuffers::Set(const VulkanContext &vc, MeshBuffers &&buffers) {
     VertexBuffer.Size = sizeof(Vertex3D) * buffers.Vertices.size();
     IndexBuffer.Size = sizeof(uint) * buffers.Indices.size();
-    VC.CreateOrUpdateBuffer(VertexBuffer, buffers.Vertices.data());
-    VC.CreateOrUpdateBuffer(IndexBuffer, buffers.Indices.data());
+    vc.CreateOrUpdateBuffer(VertexBuffer, buffers.Vertices.data());
+    vc.CreateOrUpdateBuffer(IndexBuffer, buffers.Indices.data());
 }
 
 void VkMeshBuffers::Bind(vk::CommandBuffer cb) const {
