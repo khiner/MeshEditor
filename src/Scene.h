@@ -37,16 +37,9 @@ struct Transform {
     mat4 NormalToWorld{1}; // Only a mat3 is needed, but mat4 is used for alignment.
 };
 
-struct ViewProjection {
-    mat4 View;
-    mat4 Projection;
-};
-
 struct ViewProjNearFar {
-    mat4 View;
-    mat4 Projection;
-    float Near;
-    float Far;
+    mat4 View, Projection;
+    float Near, Far;
 };
 
 struct Lights {
