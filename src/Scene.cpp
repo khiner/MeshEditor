@@ -2,7 +2,6 @@
 
 #include <format>
 #include <ranges>
-#include <vector>
 
 #include <glm/gtx/matrix_decompose.hpp>
 
@@ -20,8 +19,6 @@ void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
 
-const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
-const std::vector AllElementsWithNone{MeshElement::None, MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
 const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
@@ -125,11 +122,17 @@ void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const VkMeshBuffers &me
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
-    mesh_buffers.Bind(cb);
-    static const vk::DeviceSize models_buffer_offsets[] = {0};
+
+    // Bind buffers
+    static const vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
+    cb.bindVertexBuffers(0, *mesh_buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
+    cb.bindIndexBuffer(*mesh_buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
     cb.bindVertexBuffers(1, *models_buffer.Buffer, models_buffer_offsets);
+
+    // Draw
+    const uint index_count = mesh_buffers.IndexBuffer.Size / sizeof(uint);
     const uint instance_count = models_buffer.Size / sizeof(mat4);
-    mesh_buffers.Draw(cb, instance_count);
+    cb.drawIndexed(index_count, instance_count, 0, 0, 0);
 }
 
 MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
@@ -308,12 +311,19 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 Mesh &Scene::GetSelectedMesh() const { return R.Meshes[SelectedObjectId]; }
 mat4 &Scene::GetSelectedModel() const { return R.Models[SelectedObjectId]; }
 
-void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlighted_element) {
+void SetBuffers(const VulkanContext &vc, VkMeshBuffers &buffers, MeshBuffers &&mesh_buffers) {
+    buffers.VertexBuffer.Size = sizeof(Vertex3D) * mesh_buffers.Vertices.size();
+    buffers.IndexBuffer.Size = sizeof(uint) * mesh_buffers.Indices.size();
+    vc.CreateOrUpdateBuffer(buffers.VertexBuffer, mesh_buffers.Vertices.data());
+    vc.CreateOrUpdateBuffer(buffers.IndexBuffer, mesh_buffers.Indices.data());
+}
+
+void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlight_element) {
     auto &mesh = R.Meshes[instance];
-    auto &buffers = R.ElementBuffers[instance];
-    for (const auto element : AllElements) {
-        mesh.UpdateNormals(); // todo only update when necessary.
-        buffers[element].Set(VC, mesh.GenerateBuffers(element, highlighted_element));
+    auto &mesh_buffers = R.ElementBuffers[instance];
+    mesh.UpdateNormals(); // todo only update when normals have changed.
+    for (auto element : AllElements) { // todo only create buffers for viewed elements.
+        SetBuffers(VC, mesh_buffers[element], mesh.GenerateBuffers(element, highlight_element));
     }
 }
 
@@ -433,8 +443,11 @@ void Scene::UpdateNormalIndicators() {
     const auto &mesh = GetSelectedMesh();
     auto &normals = R.NormalIndicatorBuffers[SelectedObjectId];
     for (const auto element : AllNormalElements) {
-        if (ShownNormals.contains(element)) normals.emplace(element, VkMeshBuffers{VC, mesh.GenerateNormalBuffers(element)});
-        else normals.erase(element);
+        if (ShownNormals.contains(element)) {
+            VkMeshBuffers buffers;
+            SetBuffers(VC, buffers, mesh.GenerateNormalBuffers(element));
+            normals.emplace(element, std::move(buffers));
+        } else normals.erase(element);
     }
 }
 
@@ -475,18 +488,18 @@ bool Scene::Render() {
         auto &mesh = GetSelectedMesh();
         auto &model = GetSelectedModel();
         const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model);
-        const Mesh::ElementIndex highlighted_element = HighlightedElement;
+        const Mesh::ElementIndex highlight_element = HighlightedElement;
         if (SelectionElement == MeshElement::Face) {
             const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
-            if (highlighted_element != fh) HighlightedElement = {SelectionElement, fh.idx()};
+            if (highlight_element != fh) HighlightedElement = {SelectionElement, fh.idx()};
         } else if (SelectionElement == MeshElement::Vertex) {
             const auto vh = mesh.FindNearestVertex(mouse_ray);
-            if (highlighted_element != vh) HighlightedElement = {SelectionElement, vh.idx()};
+            if (highlight_element != vh) HighlightedElement = {SelectionElement, vh.idx()};
         } else if (SelectionElement == MeshElement::Edge) {
             const auto eh = mesh.FindNearestEdge(mouse_ray);
-            if (highlighted_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
+            if (highlight_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
         }
-        if (HighlightedElement != highlighted_element) {
+        if (HighlightedElement != highlight_element) {
             CreateOrUpdateBuffers(SelectedObjectId, HighlightedElement);
             SubmitCommandBuffer();
         }

@@ -167,7 +167,7 @@ private:
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
-    void CreateOrUpdateBuffers(uint instance, MeshElementIndex highlighted_element = {});
+    void CreateOrUpdateBuffers(uint instance, MeshElementIndex highlight_element = {});
 
     World World{};
     Camera Camera{CreateDefaultCamera()};

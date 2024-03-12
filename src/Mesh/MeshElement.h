@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 enum class MeshElement {
     None,
@@ -8,6 +9,9 @@ enum class MeshElement {
     Vertex, // Vertices are not duplicated. Each vertex uses the vertex normal.
     Edge, // Vertices are duplicated. Each vertex uses the vertex normal.
 };
+
+inline static const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
+inline static const std::vector AllElementsWithNone{MeshElement::None, MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
 
 inline static std::string to_string(MeshElement element) {
     switch (element) {

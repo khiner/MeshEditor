@@ -93,8 +93,6 @@ struct Mesh {
 
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 
-    const PolyMesh &GetMesh() const { return M; }
-
     const float *GetPositionData() const { return (const float *)M.points(); }
 
     vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
@@ -108,8 +106,8 @@ struct Mesh {
 
     void UpdateNormals() { M.update_normals(); }
 
-    MeshBuffers GenerateBuffers(MeshElement element, ElementIndex highlighted_element = {}) const {
-        return {GenerateVertices(element, highlighted_element), GenerateIndices(element)};
+    MeshBuffers GenerateBuffers(MeshElement element, ElementIndex highlight_element = {}) const {
+        return {GenerateVertices(element, highlight_element), GenerateIndices(element)};
     }
     MeshBuffers GenerateNormalBuffers(MeshElement mode) const { return {GenerateNormalVertices(mode), GenerateNormalIndices(mode)}; }
 
@@ -125,12 +123,6 @@ struct Mesh {
     //         Mesh.set_point(vh, point - cog);
     //     }
     // }
-
-    void SetMesh(const PolyMesh &mesh) {
-        M = mesh;
-        M.request_face_normals();
-        M.request_vertex_normals();
-    }
 
     void SetFaceColor(FH fh, vec4 face_color) { M.set_color(fh, ToOpenMesh(face_color)); }
     void SetFaceColor(vec4 face_color) {
@@ -161,7 +153,7 @@ struct Mesh {
 protected:
     PolyMesh M;
 
-    std::vector<Vertex3D> GenerateVertices(MeshElement, ElementIndex highlighted_element = {}) const;
+    std::vector<Vertex3D> GenerateVertices(MeshElement, ElementIndex highlight_element = {}) const;
     std::vector<uint> GenerateIndices(MeshElement) const;
     std::vector<Vertex3D> GenerateNormalVertices(MeshElement) const;
     std::vector<uint> GenerateNormalIndices(MeshElement) const;
