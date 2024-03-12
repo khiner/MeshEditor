@@ -31,13 +31,6 @@ struct ImageResource {
     vk::UniqueDeviceMemory Memory;
 };
 
-enum class SelectionMode {
-    None,
-    Face,
-    Vertex,
-    Edge,
-};
-
 struct Transform {
     mat4 View{1};
     mat4 Projection{1};
@@ -194,7 +187,7 @@ private:
 
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
-    SelectionMode SelectionMode{SelectionMode::None};
+    MeshElement SelectionElement{MeshElement::None};
     std::unordered_set<MeshElement> ShownNormals{};
 
     vk::Extent2D Extent;

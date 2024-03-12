@@ -20,7 +20,9 @@ void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
 
-const std::vector<MeshElement> AllNormalElements{MeshElement::Face, MeshElement::Vertex};
+const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
+const std::vector AllElementsWithNone{MeshElement::None, MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
+const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -309,7 +311,6 @@ mat4 &Scene::GetSelectedModel() const { return R.Models[SelectedObjectId]; }
 void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlighted_element) {
     auto &mesh = R.Meshes[instance];
     auto &buffers = R.ElementBuffers[instance];
-    static const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
     for (const auto element : AllElements) {
         mesh.UpdateNormals(); // todo only update when necessary.
         buffers[element].Set(VC, mesh.GenerateBuffers(element, highlighted_element));
@@ -482,20 +483,20 @@ vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 bool Scene::Render() {
     // Handle mouse input.
-    if (SelectionMode != SelectionMode::None) {
+    if (SelectionElement != MeshElement::None) {
         auto &mesh = GetSelectedMesh();
         auto &model = GetSelectedModel();
         const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model);
         const Mesh::ElementIndex highlighted_element = HighlightedElement;
-        if (SelectionMode == SelectionMode::Face) {
+        if (SelectionElement == MeshElement::Face) {
             const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
-            if (highlighted_element != fh) HighlightedElement = {MeshElement::Face, fh.idx()};
-        } else if (SelectionMode == SelectionMode::Vertex) {
+            if (highlighted_element != fh) HighlightedElement = {SelectionElement, fh.idx()};
+        } else if (SelectionElement == MeshElement::Vertex) {
             const auto vh = mesh.FindNearestVertex(mouse_ray);
-            if (highlighted_element != vh) HighlightedElement = {MeshElement::Vertex, vh.idx()};
-        } else if (SelectionMode == SelectionMode::Edge) {
+            if (highlighted_element != vh) HighlightedElement = {SelectionElement, vh.idx()};
+        } else if (SelectionElement == MeshElement::Edge) {
             const auto eh = mesh.FindNearestEdge(mouse_ray);
-            if (highlighted_element != eh) HighlightedElement = {MeshElement::Edge, eh.idx()};
+            if (highlighted_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
         }
         if (HighlightedElement != highlighted_element) {
             CreateOrUpdateBuffers(SelectedObjectId, HighlightedElement);
@@ -632,9 +633,9 @@ void Scene::RenderControls() {
                 const uint before_normal_count = ShownNormals.size();
                 for (const auto element : AllNormalElements) {
                     bool show_normals = ShownNormals.contains(element);
-                    std::string str = to_string(element);
-                    Capitalize(str);
-                    if (Checkbox(str.c_str(), &show_normals)) {
+                    std::string name = to_string(element);
+                    Capitalize(name);
+                    if (Checkbox(name.c_str(), &show_normals)) {
                         if (show_normals) ShownNormals.insert(element);
                         else ShownNormals.erase(element);
                     }
@@ -652,15 +653,14 @@ void Scene::RenderControls() {
                 }
             }
             if (CollapsingHeader("Selection")) {
-                int selection_mode = int(SelectionMode);
-                bool selection_mode_changed = RadioButton("None##Selection", &selection_mode, int(SelectionMode::None));
-                SameLine();
-                selection_mode_changed |= RadioButton("Vertex##Selection", &selection_mode, int(SelectionMode::Vertex));
-                SameLine();
-                selection_mode_changed |= RadioButton("Edge##Selection", &selection_mode, int(SelectionMode::Edge));
-                SameLine();
-                selection_mode_changed |= RadioButton("Face##Selection", &selection_mode, int(SelectionMode::Face));
-                if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
+                int selection_mode = int(SelectionElement);
+                for (const auto element : AllElementsWithNone) {
+                    std::string name = to_string(element);
+                    Capitalize(name);
+                    name += "##Selection";
+                    if (RadioButton(name.c_str(), &selection_mode, int(element))) SelectionElement = MeshElement(element);
+                    if (element != AllElementsWithNone.back()) SameLine();
+                }
                 const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", to_string(HighlightedElement.Element), HighlightedElement.idx()) : "Hovered: None";
                 TextUnformatted(highlight_label.c_str());
             }
