@@ -10,7 +10,6 @@
 
 #include "MeshBuffers.h"
 #include "MeshElement.h"
-#include "NormalMode.h"
 #include "RenderMode.h"
 
 namespace fs = std::filesystem;
@@ -112,7 +111,7 @@ struct Mesh {
     MeshBuffers GenerateBuffers(MeshElement element, ElementIndex highlighted_element = {}) const {
         return {GenerateVertices(element, highlighted_element), GenerateIndices(element)};
     }
-    MeshBuffers GenerateBuffers(NormalMode mode) const { return {GenerateVertices(mode), GenerateIndices(mode)}; }
+    MeshBuffers GenerateNormalBuffers(MeshElement mode) const { return {GenerateNormalVertices(mode), GenerateNormalIndices(mode)}; }
 
     // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
     std::pair<vec3, vec3> ComputeBounds() const;
@@ -164,12 +163,11 @@ protected:
 
     std::vector<Vertex3D> GenerateVertices(MeshElement, ElementIndex highlighted_element = {}) const;
     std::vector<uint> GenerateIndices(MeshElement) const;
-    std::vector<Vertex3D> GenerateVertices(NormalMode) const;
-    std::vector<uint> GenerateIndices(NormalMode) const;
+    std::vector<Vertex3D> GenerateNormalVertices(MeshElement) const;
+    std::vector<uint> GenerateNormalIndices(MeshElement) const;
 
     std::vector<uint> GenerateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> GenerateTriangulatedFaceIndices() const; // Triangle fan for each face.
     std::vector<uint> GenerateEdgeIndices() const;
-    std::vector<uint> GenerateFaceNormalIndicatorIndices() const;
     std::vector<uint> GenerateVertexNormalIndicatorIndices() const;
 };

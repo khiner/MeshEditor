@@ -2,6 +2,7 @@
 
 #include <format>
 #include <ranges>
+#include <vector>
 
 #include <glm/gtx/matrix_decompose.hpp>
 
@@ -14,6 +15,12 @@
 #include "Registry.h"
 #include "mesh/primitive/Cuboid.h"
 #include "vulkan/VulkanContext.h"
+
+void Capitalize(std::string &str) {
+    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
+}
+
+const std::vector<MeshElement> AllNormalElements{MeshElement::Face, MeshElement::Vertex};
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -385,11 +392,14 @@ void Scene::RecordCommandBuffer() {
     } else if (RenderMode == RenderMode::Vertices) {
         MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), fill_pipeline, ModelsBuffer);
     }
-    if (SelectedObjectId < R.FaceNormalIndicatorBuffers.size()) {
-        MainRenderPipeline.RenderBuffers(cb, R.FaceNormalIndicatorBuffers[SelectedObjectId], SPT::Line, ModelsBuffer);
-    }
-    if (SelectedObjectId < R.VertexNormalIndicatorBuffers.size()) {
-        MainRenderPipeline.RenderBuffers(cb, R.VertexNormalIndicatorBuffers[SelectedObjectId], SPT::Line, ModelsBuffer);
+    if (SelectedObjectId < R.NormalIndicatorBuffers.size()) {
+        const auto &normal_buffers = R.NormalIndicatorBuffers[SelectedObjectId];
+        if (auto it = normal_buffers.find(MeshElement::Face); it != normal_buffers.end()) {
+            MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
+        }
+        if (auto it = normal_buffers.find(MeshElement::Vertex); it != normal_buffers.end()) {
+            MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
+        }
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
@@ -422,14 +432,17 @@ void Scene::UpdateEdgeColors() {
 }
 
 void Scene::UpdateNormalIndicators() {
-    const auto &mesh = GetSelectedMesh();
-    auto &face_normals = R.FaceNormalIndicatorBuffers;
-    auto &vertex_normals = R.VertexNormalIndicatorBuffers;
-    if (ShowFaceNormals && face_normals.empty()) face_normals.emplace_back(VC, mesh.GenerateBuffers(NormalMode::Face));
-    else if (!ShowFaceNormals && !face_normals.empty()) face_normals.pop_back();
+    auto &normals = R.NormalIndicatorBuffers;
+    if (!ShownNormals.empty() && normals.empty()) normals.emplace_back();
+    else if (ShownNormals.empty() && !normals.empty()) normals.pop_back();
+    if (ShownNormals.empty()) return;
 
-    if (ShowVertexNormals && vertex_normals.empty()) vertex_normals.emplace_back(VC, mesh.GenerateBuffers(NormalMode::Vertex));
-    else if (!ShowVertexNormals && !vertex_normals.empty()) vertex_normals.pop_back();
+    const auto &mesh = GetSelectedMesh();
+    auto &selected_normals = normals[SelectedObjectId];
+    for (const auto element : AllNormalElements) {
+        if (ShownNormals.contains(element)) selected_normals.emplace(element, VkMeshBuffers{VC, mesh.GenerateNormalBuffers(element)});
+        else selected_normals.erase(element);
+    }
 }
 
 void Scene::UpdateTransform() {
@@ -615,10 +628,19 @@ void Scene::RenderControls() {
                 }
 
                 SeparatorText("Normal indicators");
-                bool normal_indicators_changed = Checkbox("Face", &ShowFaceNormals);
-                SameLine();
-                normal_indicators_changed |= Checkbox("Vertex", &ShowVertexNormals);
-                if (normal_indicators_changed) {
+
+                const uint before_normal_count = ShownNormals.size();
+                for (const auto element : AllNormalElements) {
+                    bool show_normals = ShownNormals.contains(element);
+                    std::string str = to_string(element);
+                    Capitalize(str);
+                    if (Checkbox(str.c_str(), &show_normals)) {
+                        if (show_normals) ShownNormals.insert(element);
+                        else ShownNormals.erase(element);
+                    }
+                    if (element != AllNormalElements.back()) SameLine();
+                }
+                if (before_normal_count != ShownNormals.size()) {
                     UpdateNormalIndicators();
                     RecordAndSubmitCommandBuffer();
                 }
@@ -639,7 +661,7 @@ void Scene::RenderControls() {
                 SameLine();
                 selection_mode_changed |= RadioButton("Face##Selection", &selection_mode, int(SelectionMode::Face));
                 if (selection_mode_changed) SelectionMode = ::SelectionMode(selection_mode);
-                const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", HighlightedElement.ElementName(), HighlightedElement.idx()) : "Hovered: None";
+                const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", to_string(HighlightedElement.Element), HighlightedElement.idx()) : "Hovered: None";
                 TextUnformatted(highlight_label.c_str());
             }
             if (CollapsingHeader("Transform")) {

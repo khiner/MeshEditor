@@ -1,5 +1,7 @@
 #pragma once
 
+#include <unordered_set>
+
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
@@ -193,7 +195,7 @@ private:
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
     SelectionMode SelectionMode{SelectionMode::None};
-    bool ShowFaceNormals{false}, ShowVertexNormals{false};
+    std::unordered_set<MeshElement> ShownNormals{};
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;

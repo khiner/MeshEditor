@@ -9,6 +9,15 @@ enum class MeshElement {
     Edge, // Vertices are duplicated. Each vertex uses the vertex normal.
 };
 
+inline static std::string to_string(MeshElement element) {
+    switch (element) {
+        case MeshElement::Face: return "face";
+        case MeshElement::Vertex: return "vertex";
+        case MeshElement::Edge: return "edge";
+        case MeshElement::None: return "none";
+    }
+}
+
 struct MeshElementIndex {
     MeshElementIndex() : Element(MeshElement::None), Index(-1) {}
     MeshElementIndex(MeshElement element, int index) : Element(element), Index(index) {}
@@ -20,13 +29,4 @@ struct MeshElementIndex {
 
     bool is_valid() const { return Index >= 0; }
     int idx() const { return Index; }
-
-    std::string ElementName() const {
-        switch (Element) {
-            case MeshElement::Face: return "face";
-            case MeshElement::Vertex: return "vertex";
-            case MeshElement::Edge: return "edge";
-            case MeshElement::None: return "none";
-        }
-    }
 };

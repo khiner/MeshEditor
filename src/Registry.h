@@ -12,10 +12,9 @@
 #include "mesh/VkMeshBuffers.h"
 
 struct Registry {
-    std::vector<mat4> Models{};
+    std::vector<mat4> Models;
     std::vector<Mesh> Meshes;
-    std::vector<VkMeshBuffers> FaceNormalIndicatorBuffers;
-    std::vector<VkMeshBuffers> VertexNormalIndicatorBuffers;
+    std::vector<std::unordered_map<MeshElement, VkMeshBuffers>> NormalIndicatorBuffers;
     std::vector<std::unordered_map<MeshElement, VkMeshBuffers>> ElementBuffers;
 
     void AddMesh(Mesh &&mesh) {

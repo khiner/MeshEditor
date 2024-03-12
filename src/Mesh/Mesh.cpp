@@ -46,6 +46,20 @@ static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const 
     return glm::dot(diff, diff);
 }
 
+float Mesh::CalcFaceArea(FH fh) const {
+    float area{0};
+    auto fv_it = M.cfv_iter(fh);
+    const auto p0 = M.point(*fv_it);
+    ++fv_it;
+    for (; fv_it != M.cfv_end(fh); ++fv_it) {
+        const Point p1 = M.point(*fv_it), p2 = M.point(*(++fv_it));
+        --fv_it;
+        const auto cross_product = (p1 - p0) % (p2 - p0);
+        area += cross_product.norm() * 0.5;
+    }
+    return area;
+}
+
 // Moller-Trumbore ray-triangle intersection algorithm.
 bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) const {
     static const float eps = 1e-7f; // Floating point error tolerance.
@@ -145,15 +159,20 @@ std::vector<uint> Mesh::GenerateIndices(MeshElement element) const {
         case MeshElement::Face: return GenerateTriangulatedFaceIndices();
         case MeshElement::Edge: return GenerateEdgeIndices();
         case MeshElement::Vertex: return GenerateTriangleIndices();
-        default: return {};
+        case MeshElement::None: return {};
     }
 }
-std::vector<uint> Mesh::GenerateIndices(NormalMode mode) const {
-    switch (mode) {
-        case NormalMode::Face: return GenerateFaceNormalIndicatorIndices();
-        case NormalMode::Vertex: return GenerateVertexNormalIndicatorIndices();
-        default: return {};
+std::vector<uint> Mesh::GenerateNormalIndices(MeshElement mode) const {
+    if (mode == MeshElement::None || mode == MeshElement::Edge) return {};
+
+    const uint n = mode == MeshElement::Face ? M.n_faces() : M.n_vertices();
+    std::vector<uint> indices;
+    indices.reserve(n * 2);
+    for (uint i = 0; i < n; ++i) {
+        indices.push_back(i * 2);
+        indices.push_back(i * 2 + 1);
     }
+    return indices;
 }
 
 std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, ElementIndex highlighted) const {
@@ -190,23 +209,9 @@ std::vector<Vertex3D> Mesh::GenerateVertices(MeshElement element, ElementIndex h
     return vertices;
 }
 
-float Mesh::CalcFaceArea(FH fh) const {
-    float area{0};
-    auto fv_it = M.cfv_iter(fh);
-    const auto p0 = M.point(*fv_it);
-    ++fv_it;
-    for (; fv_it != M.cfv_end(fh); ++fv_it) {
-        const Point p1 = M.point(*fv_it), p2 = M.point(*(++fv_it));
-        --fv_it;
-        const auto cross_product = (p1 - p0) % (p2 - p0);
-        area += cross_product.norm() * 0.5;
-    }
-    return area;
-}
-
-std::vector<Vertex3D> Mesh::GenerateVertices(NormalMode mode) const {
+std::vector<Vertex3D> Mesh::GenerateNormalVertices(MeshElement mode) const {
     std::vector<Vertex3D> vertices;
-    if (mode == NormalMode::Face) {
+    if (mode == MeshElement::Face) {
         // Line for each face normal, with length scaled by the face area.
         vertices.reserve(M.n_faces() * 2);
         for (const auto &fh : M.faces()) {
@@ -215,7 +220,7 @@ std::vector<Vertex3D> Mesh::GenerateVertices(NormalMode mode) const {
             vertices.emplace_back(point, ToGlm(fn), FaceNormalIndicatorColor);
             vertices.emplace_back(point + NormalIndicatorLengthScale * CalcFaceArea(fh) * ToGlm(fn), ToGlm(fn), FaceNormalIndicatorColor);
         }
-    } else if (mode == NormalMode::Vertex) {
+    } else if (mode == MeshElement::Vertex) {
         // Line for each vertex normal, with length scaled by the average edge length.
         vertices.reserve(M.n_vertices() * 2);
         for (const auto &vh : M.vertices()) {
@@ -230,7 +235,6 @@ std::vector<Vertex3D> Mesh::GenerateVertices(NormalMode mode) const {
             vertices.emplace_back(point + NormalIndicatorLengthScale * avg_edge_length * ToGlm(vn), ToGlm(vn), VertexNormalIndicatorColor);
         }
     }
-
     return vertices;
 }
 
@@ -285,28 +289,8 @@ std::vector<uint> Mesh::GenerateEdgeIndices() const {
     std::vector<uint> indices;
     indices.reserve(M.n_edges() * 2);
     for (uint ei = 0; ei < M.n_edges(); ++ei) {
-        indices.push_back(ei * 2);
-        indices.push_back(ei * 2 + 1);
-    }
-    return indices;
-}
-
-std::vector<uint> Mesh::GenerateFaceNormalIndicatorIndices() const {
-    std::vector<uint> indices;
-    indices.reserve(M.n_faces() * 2);
-    for (uint fi = 0; fi < M.n_faces(); ++fi) {
-        indices.push_back(fi * 2);
-        indices.push_back(fi * 2 + 1);
-    }
-    return indices;
-}
-
-std::vector<uint> Mesh::GenerateVertexNormalIndicatorIndices() const {
-    std::vector<uint> indices;
-    indices.reserve(M.n_vertices() * 2);
-    for (uint vi = 0; vi < M.n_vertices(); ++vi) {
-        indices.push_back(vi * 2);
-        indices.push_back(vi * 2 + 1);
+        indices.push_back(2 * ei);
+        indices.push_back(2 * ei + 1);
     }
     return indices;
 }
