@@ -118,7 +118,7 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const VkMeshBuffers &mesh_buffers, SPT spt, const VulkanBuffer &models_buffer) const {
+void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const MeshBuffers &mesh_buffers, SPT spt, const VulkanBuffer &models_buffer) const {
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
@@ -311,11 +311,11 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 Mesh &Scene::GetSelectedMesh() const { return R.Meshes[SelectedObjectId]; }
 mat4 &Scene::GetSelectedModel() const { return R.Models[SelectedObjectId]; }
 
-void SetBuffers(const VulkanContext &vc, VkMeshBuffers &buffers, MeshBuffers &&mesh_buffers) {
-    buffers.VertexBuffer.Size = sizeof(Vertex3D) * mesh_buffers.Vertices.size();
-    buffers.IndexBuffer.Size = sizeof(uint) * mesh_buffers.Indices.size();
-    vc.CreateOrUpdateBuffer(buffers.VertexBuffer, mesh_buffers.Vertices.data());
-    vc.CreateOrUpdateBuffer(buffers.IndexBuffer, mesh_buffers.Indices.data());
+void SetBuffers(const VulkanContext &vc, MeshBuffers &buffers, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
+    buffers.VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
+    buffers.IndexBuffer.Size = sizeof(uint) * indices.size();
+    vc.CreateOrUpdateBuffer(buffers.VertexBuffer, vertices.data());
+    vc.CreateOrUpdateBuffer(buffers.IndexBuffer, indices.data());
 }
 
 void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlight_element) {
@@ -323,7 +323,7 @@ void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlight_elem
     auto &mesh_buffers = R.ElementBuffers[instance];
     mesh.UpdateNormals(); // todo only update when normals have changed.
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        SetBuffers(VC, mesh_buffers[element], mesh.GenerateBuffers(element, highlight_element));
+        SetBuffers(VC, mesh_buffers[element], mesh.CreateVertices(element, highlight_element), mesh.CreateIndices(element));
     }
 }
 
@@ -444,10 +444,12 @@ void Scene::UpdateNormalIndicators() {
     auto &normals = R.NormalIndicatorBuffers[SelectedObjectId];
     for (const auto element : AllNormalElements) {
         if (ShownNormals.contains(element)) {
-            VkMeshBuffers buffers;
-            SetBuffers(VC, buffers, mesh.GenerateNormalBuffers(element));
+            MeshBuffers buffers;
+            SetBuffers(VC, buffers, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element));
             normals.emplace(element, std::move(buffers));
-        } else normals.erase(element);
+        } else {
+            normals.erase(element);
+        }
     }
 }
 

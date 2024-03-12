@@ -17,7 +17,7 @@
 struct Mesh;
 struct Registry;
 struct VulkanContext;
-struct VkMeshBuffers;
+struct MeshBuffers;
 
 struct ImageResource {
     // The `image` in the view info is overwritten.
@@ -91,7 +91,7 @@ struct RenderPipeline {
 
     void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
 
-    void RenderBuffers(vk::CommandBuffer, const VkMeshBuffers &, SPT, const VulkanBuffer &models_buffer) const;
+    void RenderBuffers(vk::CommandBuffer, const MeshBuffers &, SPT, const VulkanBuffer &models_buffer) const;
 
 protected:
     vk::UniqueFramebuffer Framebuffer;
