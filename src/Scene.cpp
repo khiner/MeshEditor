@@ -344,6 +344,17 @@ void Scene::SetExtent(vk::Extent2D extent) {
     });
 }
 
+std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_mode, ColorMode color_mode) {
+    const SPT fill_pipeline = color_mode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+    switch (render_mode) {
+        case RenderMode::Faces: return {{fill_pipeline, MeshElement::Face}};
+        case RenderMode::Edges: return {{SPT::Line, MeshElement::Edge}};
+        case RenderMode::FacesAndEdges: return {{fill_pipeline, MeshElement::Face}, {SPT::Line, MeshElement::Edge}};
+        case RenderMode::Vertices: return {{fill_pipeline, MeshElement::Vertex}};
+        case RenderMode::None: return {};
+    }
+}
+
 void Scene::RecordCommandBuffer() {
     const auto cb = *VC.CommandBuffers[0];
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
@@ -369,10 +380,9 @@ void Scene::RecordCommandBuffer() {
         image_memory_barriers
     );
 
-    const auto &buffers = R.ElementBuffers[SelectedObjectId];
-
     SilhouetteRenderPipeline.Begin(cb);
 
+    const auto &buffers = R.ElementBuffers[SelectedObjectId];
     SilhouetteRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
@@ -381,32 +391,19 @@ void Scene::RecordCommandBuffer() {
     cb.endRenderPass();
 
     MainRenderPipeline.Begin(cb, BackgroundColor);
-
-    const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-    if (RenderMode == RenderMode::Faces) {
-        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
-    } else if (RenderMode == RenderMode::Edges) {
-        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
-    } else if (RenderMode == RenderMode::FacesAndEdges) {
-        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Face), fill_pipeline, ModelsBuffer);
-        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Edge), SPT::Line, ModelsBuffer);
-    } else if (RenderMode == RenderMode::Vertices) {
-        MainRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), fill_pipeline, ModelsBuffer);
-    }
-    if (SelectedObjectId < R.NormalIndicatorBuffers.size()) {
-        const auto &normal_buffers = R.NormalIndicatorBuffers[SelectedObjectId];
-        if (auto it = normal_buffers.find(MeshElement::Face); it != normal_buffers.end()) {
-            MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
-        }
-        if (auto it = normal_buffers.find(MeshElement::Vertex); it != normal_buffers.end()) {
-            MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
-        }
+    for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
+        MainRenderPipeline.RenderBuffers(cb, buffers.at(element), pipeline, ModelsBuffer);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
+    const auto &normals = R.NormalIndicatorBuffers[SelectedObjectId];
+    for (auto normal_element : AllNormalElements) {
+        if (auto it = normals.find(normal_element); it != normals.end()) {
+            MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
+        }
+    }
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
 
     cb.endRenderPass();
-
     cb.end();
 }
 
@@ -433,16 +430,11 @@ void Scene::UpdateEdgeColors() {
 }
 
 void Scene::UpdateNormalIndicators() {
-    auto &normals = R.NormalIndicatorBuffers;
-    if (!ShownNormals.empty() && normals.empty()) normals.emplace_back();
-    else if (ShownNormals.empty() && !normals.empty()) normals.pop_back();
-    if (ShownNormals.empty()) return;
-
     const auto &mesh = GetSelectedMesh();
-    auto &selected_normals = normals[SelectedObjectId];
+    auto &normals = R.NormalIndicatorBuffers[SelectedObjectId];
     for (const auto element : AllNormalElements) {
-        if (ShownNormals.contains(element)) selected_normals.emplace(element, VkMeshBuffers{VC, mesh.GenerateNormalBuffers(element)});
-        else selected_normals.erase(element);
+        if (ShownNormals.contains(element)) normals.emplace(element, VkMeshBuffers{VC, mesh.GenerateNormalBuffers(element)});
+        else normals.erase(element);
     }
 }
 
@@ -451,7 +443,7 @@ void Scene::UpdateTransform() {
     ModelsBuffer.Size = R.Models.size() * sizeof(mat4);
     VC.CreateOrUpdateBuffer(ModelsBuffer, R.Models.data());
 
-    // todo update for instancing, only recalculate when model changes.
+    // todo update for instancing
     const mat4 &model = GetSelectedModel();
     const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model)));
     const Transform transform{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
@@ -476,10 +468,6 @@ Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
 
 vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
-
-// Mesh::FH Object::FindFirstIntersectingFace(const Ray &world_ray, vec3 *closest_intersect_point_out) const { return GetMesh().FindFirstIntersectingFace(world_ray.WorldToLocal(GetModel()), closest_intersect_point_out); }
-// Mesh::VH Object::FindNearestVertex(const Ray &world_ray) const { return GetMesh().FindNearestVertex(world_ray.WorldToLocal(GetModel())); }
-// Mesh::EH Object::FindNearestEdge(const Ray &world_ray) const { return GetMesh().FindNearestEdge(world_ray.WorldToLocal(GetModel())); }
 
 bool Scene::Render() {
     // Handle mouse input.

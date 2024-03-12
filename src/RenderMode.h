@@ -6,7 +6,6 @@ enum class RenderMode {
     Faces,
     Edges,
     Vertices,
-    Silhouette,
 };
 
 enum class ColorMode {

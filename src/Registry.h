@@ -14,12 +14,13 @@
 struct Registry {
     std::vector<mat4> Models;
     std::vector<Mesh> Meshes;
-    std::vector<std::unordered_map<MeshElement, VkMeshBuffers>> NormalIndicatorBuffers;
     std::vector<std::unordered_map<MeshElement, VkMeshBuffers>> ElementBuffers;
+    std::vector<std::unordered_map<MeshElement, VkMeshBuffers>> NormalIndicatorBuffers;
 
     void AddMesh(Mesh &&mesh) {
         Meshes.emplace_back(std::move(mesh));
         Models.emplace_back(1);
         ElementBuffers.emplace_back();
+        NormalIndicatorBuffers.emplace_back();
     }
 };
