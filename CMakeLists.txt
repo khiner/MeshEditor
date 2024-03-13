@@ -29,6 +29,7 @@ include_directories(
     ${IMGUI_DIR}/backends
     lib/ImGuizmo
     lib/glm
+    lib/entt/src
     src
 )
 find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib spirv-cross-core)

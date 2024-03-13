@@ -68,5 +68,6 @@ $ mkdir build && cd make && cmake .. && make
 - [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL) + [Vulkan](https://www.vulkan.org/): Immediate-mode UI/UX.
 - [glm](https://github.com/g-truc/glm): Graphics math.
 - [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral mesh data structure.
+- [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs.
 - [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform and camera rotation gizmos.

@@ -11,7 +11,7 @@
 
 #include "numeric/mat3.h"
 
-#include "Registry.h"
+#include "mesh/MeshElementBuffers.h"
 #include "mesh/primitive/Cuboid.h"
 #include "vulkan/VulkanContext.h"
 
@@ -281,10 +281,10 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-Scene::Scene(const VulkanContext &vc, Registry &r)
-    : VC(vc), R(r), MainRenderPipeline(VC), SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
-    R.AddMesh(Cuboid{{0.5, 0.5, 0.5}});
-    CreateOrUpdateBuffers(0);
+Scene::Scene(const VulkanContext &vc, entt::registry &r)
+    : VC(vc), R(r), MainRenderPipeline(VC), MeshElementBuffers(std::make_unique<::MeshElementBuffers>()),
+      SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
+    AddMesh(Cuboid{{0.5, 0.5, 0.5}});
     UpdateEdgeColors();
     UpdateTransform();
     VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
@@ -308,8 +308,20 @@ Scene::Scene(const VulkanContext &vc, Registry &r)
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
-Mesh &Scene::GetSelectedMesh() const { return R.Meshes[SelectedObjectId]; }
-mat4 &Scene::GetSelectedModel() const { return R.Models[SelectedObjectId]; }
+void Scene::AddMesh(Mesh &&mesh) {
+    auto entity = R.create();
+    R.emplace<Mesh>(entity, std::move(mesh));
+    R.emplace<mat4>(entity, 1);
+
+    MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
+    MeshElementBuffers->ElementBuffers.emplace_back();
+    MeshElementBuffers->NormalIndicatorBuffers.emplace_back();
+
+    CreateOrUpdateBuffers(entity);
+}
+
+Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
+mat4 &Scene::GetSelectedModel() const { return R.get<mat4>(SelectedEntity); }
 
 void SetBuffers(const VulkanContext &vc, MeshBuffers &buffers, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
     buffers.VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
@@ -318,9 +330,9 @@ void SetBuffers(const VulkanContext &vc, MeshBuffers &buffers, std::vector<Verte
     vc.CreateOrUpdateBuffer(buffers.IndexBuffer, indices.data());
 }
 
-void Scene::CreateOrUpdateBuffers(uint instance, MeshElementIndex highlight_element) {
-    auto &mesh = R.Meshes[instance];
-    auto &mesh_buffers = R.ElementBuffers[instance];
+void Scene::CreateOrUpdateBuffers(entt::entity entity, MeshElementIndex highlight_element) {
+    auto &mesh = R.get<Mesh>(entity);
+    auto &mesh_buffers = MeshElementBuffers->ElementBuffers[MeshBufferIndices.at(entity)];
     mesh.UpdateNormals(); // todo only update when normals have changed.
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
         SetBuffers(VC, mesh_buffers[element], mesh.CreateVertices(element, highlight_element), mesh.CreateIndices(element));
@@ -392,7 +404,8 @@ void Scene::RecordCommandBuffer() {
 
     SilhouetteRenderPipeline.Begin(cb);
 
-    const auto &buffers = R.ElementBuffers[SelectedObjectId];
+    const uint entity_index = MeshBufferIndices.at(SelectedEntity);
+    const auto &buffers = MeshElementBuffers->ElementBuffers[entity_index];
     SilhouetteRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
@@ -405,7 +418,7 @@ void Scene::RecordCommandBuffer() {
         MainRenderPipeline.RenderBuffers(cb, buffers.at(element), pipeline, ModelsBuffer);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
-    const auto &normals = R.NormalIndicatorBuffers[SelectedObjectId];
+    const auto &normals = MeshElementBuffers->NormalIndicatorBuffers[entity_index];
     for (auto normal_element : AllNormalElements) {
         if (auto it = normals.find(normal_element); it != normals.end()) {
             MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
@@ -436,12 +449,12 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (uint i = 0; i < R.Meshes.size(); ++i) CreateOrUpdateBuffers(i, HighlightedElement);
+    R.view<Mesh>().each([this](auto entity, auto &) { CreateOrUpdateBuffers(entity, HighlightedElement); });
 }
 
 void Scene::UpdateNormalIndicators() {
     const auto &mesh = GetSelectedMesh();
-    auto &normals = R.NormalIndicatorBuffers[SelectedObjectId];
+    auto &normals = MeshElementBuffers->NormalIndicatorBuffers[MeshBufferIndices.at(SelectedEntity)];
     for (const auto element : AllNormalElements) {
         if (ShownNormals.contains(element)) {
             MeshBuffers buffers;
@@ -454,9 +467,14 @@ void Scene::UpdateNormalIndicators() {
 }
 
 void Scene::UpdateTransform() {
+    auto models_view = R.view<mat4>();
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    ModelsBuffer.Size = R.Models.size() * sizeof(mat4);
-    VC.CreateOrUpdateBuffer(ModelsBuffer, R.Models.data());
+    ModelsBuffer.Size = models_view.size() * sizeof(mat4);
+    // Copy models vector
+    std::vector<mat4> models;
+    models.reserve(models_view.size());
+    models_view.each([&models](const auto &model) { models.push_back(model); });
+    VC.CreateOrUpdateBuffer(ModelsBuffer, models.data());
 
     // todo update for instancing
     const mat4 &model = GetSelectedModel();
@@ -502,7 +520,7 @@ bool Scene::Render() {
             if (highlight_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
         }
         if (HighlightedElement != highlight_element) {
-            CreateOrUpdateBuffers(SelectedObjectId, HighlightedElement);
+            CreateOrUpdateBuffers(SelectedEntity, HighlightedElement);
             SubmitCommandBuffer();
         }
     }

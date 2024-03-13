@@ -10,7 +10,6 @@
 
 #include "numeric/vec4.h"
 
-#include "Registry.h"
 #include "Scene.h"
 #include "Window.h"
 #include "vulkan/VulkanContext.h"
@@ -21,8 +20,8 @@ ImGui_ImplVulkanH_Window MainWindowData;
 uint MinImageCount = 2;
 bool SwapChainRebuild = false;
 
+std::unique_ptr<entt::registry> R;
 WindowsState Windows;
-std::unique_ptr<Registry> R;
 std::unique_ptr<VulkanContext> VC;
 std::unique_ptr<Scene> MainScene;
 vk::DescriptorSet MainSceneDescriptorSet;
@@ -219,7 +218,7 @@ int main(int, char **) {
     // ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
     // IM_ASSERT(font != nullptr);
 
-    R = std::make_unique<Registry>();
+    R = std::make_unique<entt::registry>();
     MainScene = std::make_unique<Scene>(*VC, *R);
 
     // Main loop

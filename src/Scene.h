@@ -2,6 +2,8 @@
 
 #include <unordered_set>
 
+#include <entt/entity/registry.hpp>
+
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
@@ -15,9 +17,10 @@
 #include "vulkan/VulkanBuffer.h"
 
 struct Mesh;
-struct Registry;
 struct VulkanContext;
 struct MeshBuffers;
+struct MeshElementBuffers;
+struct VkBuffers;
 
 struct ImageResource {
     // The `image` in the view info is overwritten.
@@ -132,11 +135,13 @@ struct EdgeDetectionRenderPipeline : RenderPipeline {
 };
 
 struct Scene {
-    Scene(const VulkanContext &, Registry &);
+    Scene(const VulkanContext &, entt::registry &);
     ~Scene();
 
     const VulkanContext &VC;
-    Registry &R;
+    entt::registry &R;
+
+    void AddMesh(Mesh &&);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainRenderPipeline.MsaaSamples; }
@@ -159,20 +164,9 @@ struct Scene {
     Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
 
 private:
-    Mesh &GetSelectedMesh() const;
-    mat4 &GetSelectedModel() const;
-
-    void SetExtent(vk::Extent2D);
-    void RecordCommandBuffer();
-    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
-    void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
-
-    void CreateOrUpdateBuffers(uint instance, MeshElementIndex highlight_element = {});
-
     World World{};
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
-    uint SelectedObjectId{0};
     MeshElementIndex HighlightedElement{};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
@@ -182,6 +176,12 @@ private:
     ColorMode ColorMode{ColorMode::Mesh};
     MeshElement SelectionElement{MeshElement::None};
     std::unordered_set<MeshElement> ShownNormals{};
+
+    entt::entity SelectedEntity{0};
+    // Map of entities to contiguous indices.
+    // Currently only used for `MeshElementBuffers` indexing, but could be used for anything.
+    std::unordered_map<entt::entity, uint> MeshBufferIndices;
+    std::unique_ptr<MeshElementBuffers> MeshElementBuffers;
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
@@ -205,4 +205,14 @@ private:
     bool ShowGrid{true};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
+
+    Mesh &GetSelectedMesh() const;
+    mat4 &GetSelectedModel() const;
+
+    void SetExtent(vk::Extent2D);
+    void RecordCommandBuffer();
+    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
+    void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
+
+    void CreateOrUpdateBuffers(entt::entity, MeshElementIndex highlight_element = {});
 };

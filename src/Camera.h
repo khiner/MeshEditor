@@ -32,9 +32,9 @@ struct Camera {
     void StopMoving(); // Stop target distance movement.
 
 private:
-    void SetDistance(float distance);
-
     float TargetDistance;
     float TickSpeed{0.3};
     bool IsMoving{false};
+
+    void SetDistance(float distance);
 };

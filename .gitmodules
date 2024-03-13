@@ -14,3 +14,6 @@
 [submodule "lib/OpenMesh"]
 	path = lib/OpenMesh
 	url = https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh.git
+[submodule "lib/entt"]
+	path = lib/entt
+	url = git@github.com:skypjack/entt.git
