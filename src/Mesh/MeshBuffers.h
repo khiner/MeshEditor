@@ -6,6 +6,6 @@
 // Vertices: Vertices are not duplicated. Uses vertex normals.
 // Edge: Vertices are duplicated. Each vertex uses the vertex normal.
 struct MeshBuffers {
-    VulkanBuffer VertexBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
-    VulkanBuffer IndexBuffer{vk::BufferUsageFlagBits::eIndexBuffer};
+    VulkanBuffer Vertices{vk::BufferUsageFlagBits::eVertexBuffer};
+    VulkanBuffer Indices{vk::BufferUsageFlagBits::eIndexBuffer};
 };

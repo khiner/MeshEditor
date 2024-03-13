@@ -3,9 +3,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "mesh/MeshElement.h"
 #include "mesh/MeshBuffers.h"
+#include "mesh/MeshElement.h"
 
-struct MeshElementBuffers {
+// Contiguous vectors of mesh data for Vulkan.
+struct MeshVkData {
+    std::vector<mat4> Models;
     std::vector<std::unordered_map<MeshElement, MeshBuffers>> ElementBuffers, NormalIndicatorBuffers;
 };

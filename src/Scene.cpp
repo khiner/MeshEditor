@@ -11,7 +11,7 @@
 
 #include "numeric/mat3.h"
 
-#include "mesh/MeshElementBuffers.h"
+#include "mesh/MeshVkData.h"
 #include "mesh/primitive/Cuboid.h"
 #include "vulkan/VulkanContext.h"
 
@@ -125,12 +125,12 @@ void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const MeshBuffers &mesh
 
     // Bind buffers
     static const vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
-    cb.bindVertexBuffers(0, *mesh_buffers.VertexBuffer.Buffer, vertex_buffer_offsets);
-    cb.bindIndexBuffer(*mesh_buffers.IndexBuffer.Buffer, 0, vk::IndexType::eUint32);
+    cb.bindVertexBuffers(0, *mesh_buffers.Vertices.Buffer, vertex_buffer_offsets);
+    cb.bindIndexBuffer(*mesh_buffers.Indices.Buffer, 0, vk::IndexType::eUint32);
     cb.bindVertexBuffers(1, *models_buffer.Buffer, models_buffer_offsets);
 
     // Draw
-    const uint index_count = mesh_buffers.IndexBuffer.Size / sizeof(uint);
+    const uint index_count = mesh_buffers.Indices.Size / sizeof(uint);
     const uint instance_count = models_buffer.Size / sizeof(mat4);
     cb.drawIndexed(index_count, instance_count, 0, 0, 0);
 }
@@ -282,7 +282,7 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
 }
 
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
-    : VC(vc), R(r), MainRenderPipeline(VC), MeshElementBuffers(std::make_unique<::MeshElementBuffers>()),
+    : VC(vc), R(r), MainRenderPipeline(VC), MeshVkData(std::make_unique<::MeshVkData>()),
       SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
     AddMesh(Cuboid{{0.5, 0.5, 0.5}});
     UpdateEdgeColors();
@@ -314,8 +314,9 @@ void Scene::AddMesh(Mesh &&mesh) {
     R.emplace<mat4>(entity, 1);
 
     MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
-    MeshElementBuffers->ElementBuffers.emplace_back();
-    MeshElementBuffers->NormalIndicatorBuffers.emplace_back();
+    MeshVkData->ElementBuffers.emplace_back();
+    MeshVkData->NormalIndicatorBuffers.emplace_back();
+    MeshVkData->Models.emplace_back(1);
 
     CreateOrUpdateBuffers(entity);
 }
@@ -324,15 +325,15 @@ Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
 mat4 &Scene::GetSelectedModel() const { return R.get<mat4>(SelectedEntity); }
 
 void SetBuffers(const VulkanContext &vc, MeshBuffers &buffers, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
-    buffers.VertexBuffer.Size = sizeof(Vertex3D) * vertices.size();
-    buffers.IndexBuffer.Size = sizeof(uint) * indices.size();
-    vc.CreateOrUpdateBuffer(buffers.VertexBuffer, vertices.data());
-    vc.CreateOrUpdateBuffer(buffers.IndexBuffer, indices.data());
+    buffers.Vertices.Size = sizeof(Vertex3D) * vertices.size();
+    buffers.Indices.Size = sizeof(uint) * indices.size();
+    vc.CreateOrUpdateBuffer(buffers.Vertices, vertices.data());
+    vc.CreateOrUpdateBuffer(buffers.Indices, indices.data());
 }
 
 void Scene::CreateOrUpdateBuffers(entt::entity entity, MeshElementIndex highlight_element) {
     auto &mesh = R.get<Mesh>(entity);
-    auto &mesh_buffers = MeshElementBuffers->ElementBuffers[MeshBufferIndices.at(entity)];
+    auto &mesh_buffers = MeshVkData->ElementBuffers[MeshBufferIndices.at(entity)];
     mesh.UpdateNormals(); // todo only update when normals have changed.
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
         SetBuffers(VC, mesh_buffers[element], mesh.CreateVertices(element, highlight_element), mesh.CreateIndices(element));
@@ -405,7 +406,7 @@ void Scene::RecordCommandBuffer() {
     SilhouetteRenderPipeline.Begin(cb);
 
     const uint entity_index = MeshBufferIndices.at(SelectedEntity);
-    const auto &buffers = MeshElementBuffers->ElementBuffers[entity_index];
+    const auto &buffers = MeshVkData->ElementBuffers[entity_index];
     SilhouetteRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
@@ -418,7 +419,7 @@ void Scene::RecordCommandBuffer() {
         MainRenderPipeline.RenderBuffers(cb, buffers.at(element), pipeline, ModelsBuffer);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
-    const auto &normals = MeshElementBuffers->NormalIndicatorBuffers[entity_index];
+    const auto &normals = MeshVkData->NormalIndicatorBuffers[entity_index];
     for (auto normal_element : AllNormalElements) {
         if (auto it = normals.find(normal_element); it != normals.end()) {
             MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
@@ -454,7 +455,7 @@ void Scene::UpdateEdgeColors() {
 
 void Scene::UpdateNormalIndicators() {
     const auto &mesh = GetSelectedMesh();
-    auto &normals = MeshElementBuffers->NormalIndicatorBuffers[MeshBufferIndices.at(SelectedEntity)];
+    auto &normals = MeshVkData->NormalIndicatorBuffers[MeshBufferIndices.at(SelectedEntity)];
     for (const auto element : AllNormalElements) {
         if (ShownNormals.contains(element)) {
             MeshBuffers buffers;
@@ -467,18 +468,16 @@ void Scene::UpdateNormalIndicators() {
 }
 
 void Scene::UpdateTransform() {
-    auto models_view = R.view<mat4>();
-    const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    ModelsBuffer.Size = models_view.size() * sizeof(mat4);
-    // Copy models vector
-    std::vector<mat4> models;
-    models.reserve(models_view.size());
-    models_view.each([&models](const auto &model) { models.push_back(model); });
+    auto &models = MeshVkData->Models; // Update the contiguous vector of model matrices.
+    R.view<mat4>().each([&](auto entity, const auto &model) { models[MeshBufferIndices.at(entity)] = model; });
+
+    ModelsBuffer.Size = models.size() * sizeof(mat4);
     VC.CreateOrUpdateBuffer(ModelsBuffer, models.data());
 
     // todo update for instancing
     const mat4 &model = GetSelectedModel();
     const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model)));
+    const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const Transform transform{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
     VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
     const ViewProjNearFar vpnf{transform.View, transform.Projection, Camera.NearClip, Camera.FarClip};

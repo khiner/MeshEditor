@@ -19,7 +19,7 @@
 struct Mesh;
 struct VulkanContext;
 struct MeshBuffers;
-struct MeshElementBuffers;
+struct MeshVkData;
 struct VkBuffers;
 
 struct ImageResource {
@@ -179,9 +179,9 @@ private:
 
     entt::entity SelectedEntity{0};
     // Map of entities to contiguous indices.
-    // Currently only used for `MeshElementBuffers` indexing, but could be used for anything.
+    // Currently only used for `MeshVkData` indexing, but could be used for anything.
     std::unordered_map<entt::entity, uint> MeshBufferIndices;
-    std::unique_ptr<MeshElementBuffers> MeshElementBuffers;
+    std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
