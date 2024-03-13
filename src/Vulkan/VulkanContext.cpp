@@ -139,33 +139,34 @@ uint VulkanContext::FindMemoryType(uint type_filter, vk::MemoryPropertyFlags pro
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void VulkanContext::CreateOrUpdateBuffer(VulkanBuffer &buffer, const void *data, bool force_recreate) const {
+void VulkanContext::CreateOrUpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
+    if (bytes == 0) bytes = buffer.Size;
+
     // Optionally create the staging buffer and its memory.
-    if (force_recreate || !buffer.StagingBuffer || !buffer.StagingMemory) {
+    if (!buffer.StagingBuffer || !buffer.StagingMemory) {
         buffer.StagingBuffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
-        const auto staging_mem_reqs = Device->getBufferMemoryRequirements(*buffer.StagingBuffer);
-        buffer.StagingMemory = Device->allocateMemoryUnique({staging_mem_reqs.size, FindMemoryType(staging_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
+        const auto mem_reqs = Device->getBufferMemoryRequirements(*buffer.StagingBuffer);
+        buffer.StagingMemory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
         Device->bindBufferMemory(*buffer.StagingBuffer, *buffer.StagingMemory, 0);
     }
 
     // Copy data to the staging buffer.
-    void *mapped_data = Device->mapMemory(*buffer.StagingMemory, 0, buffer.Size);
-    memcpy(mapped_data, data, size_t(buffer.Size));
+    void *mapped_data = Device->mapMemory(*buffer.StagingMemory, offset, bytes);
+    memcpy(mapped_data, data, size_t(bytes));
     Device->unmapMemory(*buffer.StagingMemory);
 
     // Optionally create the device buffer and its memory.
-    if (force_recreate || !buffer.Buffer || !buffer.Memory) {
+    if (!buffer.Buffer || !buffer.Memory) {
         buffer.Buffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
-        const auto buffer_mem_reqs = Device->getBufferMemoryRequirements(*buffer.Buffer);
-        buffer.Memory = Device->allocateMemoryUnique({buffer_mem_reqs.size, FindMemoryType(buffer_mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
+        const auto mem_reqs = Device->getBufferMemoryRequirements(*buffer.Buffer);
+        buffer.Memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
         Device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
     }
 
     // Copy data from the staging buffer to the device buffer.
     const auto &cb = TransferCommandBuffers[0];
     cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    vk::BufferCopy copy_region;
-    copy_region.size = buffer.Size;
+    const vk::BufferCopy copy_region{offset, offset, bytes}; // Same src/dst offset.
     cb->copyBuffer(*buffer.StagingBuffer, *buffer.Buffer, copy_region);
     cb->end();
 
@@ -175,8 +176,7 @@ void VulkanContext::CreateOrUpdateBuffer(VulkanBuffer &buffer, const void *data,
     Queue.submit(submit, *RenderFence);
 
     auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
-    if (wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
+    if (wait_result != vk::Result::eSuccess) throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+
     Device->resetFences(*RenderFence);
 }

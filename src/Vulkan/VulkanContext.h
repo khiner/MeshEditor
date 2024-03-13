@@ -34,10 +34,12 @@ struct VulkanContext {
     vk::PhysicalDevice FindPhysicalDevice() const;
     uint FindMemoryType(uint type_filter, vk::MemoryPropertyFlags) const;
 
-    void CreateOrUpdateBuffer(VulkanBuffer &, const void *data, bool force_recreate = false) const;
+    // `bytes == 0` defaults to `buffer.Size`.
+    // If the buffer doesn't exist, it will be created, _always_ using the buffer size (even if `offset`/`bytes` is specified).
+    void CreateOrUpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
 
-    template<typename T> void CreateOrUpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data, bool force_recreate = false) const {
+    template<typename T> void CreateOrUpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
         buffer.Size = sizeof(T) * data.size();
-        CreateOrUpdateBuffer(buffer, data.data(), force_recreate);
+        CreateOrUpdateBuffer(buffer, data.data(), 0, buffer.Size);
     }
 };
