@@ -282,7 +282,7 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
 }
 
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
-    : VC(vc), R(r), MainRenderPipeline(VC), MeshVkData(std::make_unique<::MeshVkData>()),
+    : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainRenderPipeline(VC),
       SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
     AddMesh(Cuboid{{0.5, 0.5, 0.5}});
     UpdateEdgeColors();
@@ -324,19 +324,14 @@ void Scene::AddMesh(Mesh &&mesh) {
 Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
 mat4 &Scene::GetSelectedModel() const { return R.get<mat4>(SelectedEntity); }
 
-void SetBuffers(const VulkanContext &vc, MeshBuffers &buffers, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
-    buffers.Vertices.Size = sizeof(Vertex3D) * vertices.size();
-    buffers.Indices.Size = sizeof(uint) * indices.size();
-    vc.CreateOrUpdateBuffer(buffers.Vertices, vertices.data());
-    vc.CreateOrUpdateBuffer(buffers.Indices, indices.data());
-}
-
 void Scene::CreateOrUpdateBuffers(entt::entity entity, MeshElementIndex highlight_element) {
     auto &mesh = R.get<Mesh>(entity);
     auto &mesh_buffers = MeshVkData->ElementBuffers[MeshBufferIndices.at(entity)];
     mesh.UpdateNormals(); // todo only update when normals have changed.
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        SetBuffers(VC, mesh_buffers[element], mesh.CreateVertices(element, highlight_element), mesh.CreateIndices(element));
+        auto &buffers = mesh_buffers[element];
+        VC.CreateOrUpdateBuffer(buffers.Vertices, mesh.CreateVertices(element, highlight_element));
+        VC.CreateOrUpdateBuffer(buffers.Indices, mesh.CreateIndices(element));
     }
 }
 
@@ -459,7 +454,8 @@ void Scene::UpdateNormalIndicators() {
     for (const auto element : AllNormalElements) {
         if (ShownNormals.contains(element)) {
             MeshBuffers buffers;
-            SetBuffers(VC, buffers, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element));
+            VC.CreateOrUpdateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
+            VC.CreateOrUpdateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
             normals.emplace(element, std::move(buffers));
         } else {
             normals.erase(element);
@@ -470,9 +466,7 @@ void Scene::UpdateNormalIndicators() {
 void Scene::UpdateTransform() {
     auto &models = MeshVkData->Models; // Update the contiguous vector of model matrices.
     R.view<mat4>().each([&](auto entity, const auto &model) { models[MeshBufferIndices.at(entity)] = model; });
-
-    ModelsBuffer.Size = models.size() * sizeof(mat4);
-    VC.CreateOrUpdateBuffer(ModelsBuffer, models.data());
+    VC.CreateOrUpdateBuffer(ModelsBuffer, models);
 
     // todo update for instancing
     const mat4 &model = GetSelectedModel();

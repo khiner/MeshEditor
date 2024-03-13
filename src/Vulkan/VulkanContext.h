@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include <vulkan/vulkan.hpp>
+#include "VulkanBuffer.h"
 
 struct VulkanBuffer;
 
@@ -35,4 +35,9 @@ struct VulkanContext {
     uint FindMemoryType(uint type_filter, vk::MemoryPropertyFlags) const;
 
     void CreateOrUpdateBuffer(VulkanBuffer &, const void *data, bool force_recreate = false) const;
+
+    template<typename T> void CreateOrUpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data, bool force_recreate = false) const {
+        buffer.Size = sizeof(T) * data.size();
+        CreateOrUpdateBuffer(buffer, data.data(), force_recreate);
+    }
 };
