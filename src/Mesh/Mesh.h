@@ -8,9 +8,9 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include "Vertex.h"
 #include "MeshElement.h"
 #include "RenderMode.h"
+#include "Vertex.h"
 
 namespace fs = std::filesystem;
 
@@ -84,6 +84,9 @@ struct Mesh {
         M.request_face_colors();
         Load(file_path, M);
     }
+    Mesh(std::vector<Point> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) : Mesh() {
+        SetFaces(std::move(vertices), std::move(faces), color);
+    }
 
     ~Mesh() {
         M.release_vertex_normals();
@@ -130,8 +133,16 @@ struct Mesh {
         for (const auto &fh : M.faces()) SetFaceColor(fh, face_color);
     }
 
-    void AddFace(const std::vector<VH> &vertices, vec4 color = DefaultFaceColor) {
-        SetFaceColor(M.add_face(vertices), color);
+    void AddFace(const std::vector<VH> &vertices, vec4 color = DefaultFaceColor) { SetFaceColor(M.add_face(vertices), color); }
+
+    void SetFaces(const std::vector<Point> &vertices, const std::vector<std::vector<uint>> &faces, vec4 color = DefaultFaceColor) {
+        for (const auto &v : vertices) M.add_vertex(v);
+        for (const auto &face : faces) {
+            std::vector<VH> face_vhs;
+            face_vhs.reserve(face.size());
+            for (const auto &vi : face) face_vhs.push_back(VH(vi));
+            AddFace(std::move(face_vhs), color);
+        }
     }
 
     bool VertexBelongsToFace(VH, FH) const;

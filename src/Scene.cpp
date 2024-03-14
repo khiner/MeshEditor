@@ -293,7 +293,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     VC.CreateBuffer(TransformBuffer, sizeof(ViewProj));
     VC.CreateBuffer(ViewProjNearFarBuffer, sizeof(ViewProjNearFar));
     UpdateViewProj();
-    AddMesh(Cuboid{{0.5, 0.5, 0.5}});
+    AddMesh(Cuboid({0.5, 0.5, 0.5}));
     UpdateTransform(SelectedEntity);
 
     VC.CreateBuffer(LightsBuffer, std::vector{Lights});
