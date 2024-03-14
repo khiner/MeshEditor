@@ -83,9 +83,11 @@ struct Mesh {
         M.request_vertex_normals();
         M.request_face_colors();
         Load(file_path, M);
+        UpdateNormals();
     }
     Mesh(std::vector<Point> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) : Mesh() {
         SetFaces(std::move(vertices), std::move(faces), color);
+        UpdateNormals();
     }
 
     ~Mesh() {

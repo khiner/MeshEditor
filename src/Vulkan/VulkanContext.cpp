@@ -141,7 +141,7 @@ void VulkanContext::CreateBuffer(VulkanBuffer &buffer, vk::DeviceSize bytes) con
     buffer.Size = bytes;
     {
         // Create the staging buffer and its memory.
-        if (buffer.StagingBuffer || buffer.StagingMemory) throw std::runtime_error("Staging buffer already exists.");
+        // if (buffer.StagingBuffer || buffer.StagingMemory) throw std::runtime_error("Staging buffer already exists.");
         buffer.StagingBuffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
         const auto mem_reqs = Device->getBufferMemoryRequirements(*buffer.StagingBuffer);
         buffer.StagingMemory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
@@ -149,7 +149,7 @@ void VulkanContext::CreateBuffer(VulkanBuffer &buffer, vk::DeviceSize bytes) con
     }
     {
         // Create the device buffer and its memory.
-        if (buffer.Buffer || buffer.Memory) throw std::runtime_error("Device buffer already exists.");
+        // if (buffer.Buffer || buffer.Memory) throw std::runtime_error("Device buffer already exists.");
         buffer.Buffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
         const auto mem_reqs = Device->getBufferMemoryRequirements(*buffer.Buffer);
         buffer.Memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});

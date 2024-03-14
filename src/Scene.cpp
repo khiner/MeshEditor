@@ -15,6 +15,8 @@
 #include "mesh/primitive/Cuboid.h"
 #include "vulkan/VulkanContext.h"
 
+#include <print>
+
 void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
@@ -289,12 +291,11 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainRenderPipeline(VC),
       SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
     UpdateEdgeColors();
-    VC.CreateBuffer(ModelsBuffer, sizeof(Model));
+    VC.CreateBuffer(ModelsBuffer, 10 * sizeof(Model));
     VC.CreateBuffer(TransformBuffer, sizeof(ViewProj));
     VC.CreateBuffer(ViewProjNearFarBuffer, sizeof(ViewProjNearFar));
     UpdateViewProj();
     AddMesh(Cuboid({0.5, 0.5, 0.5}));
-    UpdateTransform(SelectedEntity);
 
     VC.CreateBuffer(LightsBuffer, std::vector{Lights});
     VC.CreateBuffer(SilhouetteDisplayBuffer, std::vector{SilhouetteDisplay});
@@ -318,7 +319,8 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
 void Scene::AddMesh(Mesh &&mesh) {
-    mesh.UpdateNormals(); // todo move to mesh ctor
+    const auto entity = R.create();
+    MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
 
     BuffersByElement mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
@@ -327,13 +329,16 @@ void Scene::AddMesh(Mesh &&mesh) {
         VC.CreateBuffer(buffers.Indices, mesh.CreateIndices(element));
     }
 
-    const auto entity = R.create();
-    MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
 
     R.emplace<Mesh>(entity, std::move(mesh));
     R.emplace<Model>(entity, 1);
+
+    // VC.CreateBuffer(ModelsBuffer, sizeof(Model) * MeshVkData->Main.size());
+    // R.view<Mesh>().each([this](auto entity, auto &) { UpdateTransform(entity); });
+    UpdateTransform(entity);
+    SelectedEntity = entity;
 }
 
 Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
@@ -435,6 +440,7 @@ void Scene::RecordCommandBuffer() {
             MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
         }
     }
+    // R.view<Mesh>().each([this, &cb](auto entity, auto &) {});
     if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
 
     cb.endRenderPass();
@@ -611,6 +617,9 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
+            if (CollapsingHeader("Add")) {
+                if (Button("Cuboid")) AddMesh(Cuboid({0.5, 0.5, 0.5}));
+            }
             if (CollapsingHeader("Render")) {
                 SeparatorText("Render mode");
                 int render_mode = int(RenderMode);
