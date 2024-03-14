@@ -58,7 +58,7 @@ struct Gizmo {
         ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
     }
 
-    bool Render(Camera &camera, mat4 &model, float aspect_ratio = 1) const {
+    void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
         using namespace ImGui;
 
         static const float ViewManipulateSize = 128;
@@ -67,12 +67,11 @@ struct Gizmo {
         const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
         auto camera_view = camera.GetViewMatrix();
         const float camera_distance = camera.GetDistance();
-        const bool view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
+        view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
         if (view_changed) camera.SetPositionFromView(camera_view);
 
         auto camera_projection = camera.GetProjectionMatrix(aspect_ratio);
-        const bool model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
-        return view_changed || model_changed;
+        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
     }
 
     void RenderDebug() {
@@ -288,8 +287,9 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     VC.CreateBuffer(ModelsBuffer, sizeof(Model));
     VC.CreateBuffer(TransformBuffer, sizeof(ViewProj));
     VC.CreateBuffer(ViewProjNearFarBuffer, sizeof(ViewProjNearFar));
+    UpdateViewProj();
     AddMesh(Cuboid{{0.5, 0.5, 0.5}});
-    UpdateTransform();
+    UpdateTransform(SelectedEntity);
 
     VC.CreateBuffer(LightsBuffer, std::vector{Lights});
     VC.CreateBuffer(SilhouetteDisplayBuffer, std::vector{SilhouetteDisplay});
@@ -315,8 +315,6 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 void Scene::AddMesh(Mesh &&mesh) {
     mesh.UpdateNormals(); // todo move to mesh ctor
 
-    MeshVkData->Models.emplace_back(1);
-
     MeshVkData::MeshElementBuffers mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
         auto &buffers = mesh_buffers[element];
@@ -334,7 +332,10 @@ void Scene::AddMesh(Mesh &&mesh) {
 
 Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
 Model &Scene::GetSelectedModel() const { return R.get<Model>(SelectedEntity); }
-void Scene::SetSelectedModel(mat4 &&model) const { R.replace<Model>(SelectedEntity, std::move(model)); }
+void Scene::SetSelectedModel(mat4 &&model) {
+    R.replace<Model>(SelectedEntity, std::move(model));
+    UpdateTransform(SelectedEntity);
+}
 
 void Scene::UpdateMeshBuffers(entt::entity entity, MeshElementIndex highlight_element) {
     auto &mesh = R.get<Mesh>(entity);
@@ -346,7 +347,7 @@ void Scene::UpdateMeshBuffers(entt::entity entity, MeshElementIndex highlight_el
 
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-    UpdateTransform(); // Transform depends on the aspect ratio.
+    UpdateViewProj(); // Depends on the aspect ratio.
     MainRenderPipeline.SetExtent(extent);
     SilhouetteRenderPipeline.SetExtent(extent);
     SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
@@ -457,17 +458,18 @@ void Scene::UpdateEdgeColors() {
     R.view<Mesh>().each([this](auto entity, auto &) { UpdateMeshBuffers(entity, HighlightedElement); });
 }
 
-void Scene::UpdateTransform() {
-    auto &models = MeshVkData->Models; // Update the contiguous vector of model matrices.
-    R.view<Model>().each([&](auto entity, const auto &model) { models[MeshBufferIndices.at(entity)] = model; });
-    VC.UpdateBuffer(ModelsBuffer, models);
-
-    // todo update for instancing
+void Scene::UpdateViewProj() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
     VC.UpdateBuffer(TransformBuffer, &view_proj);
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
     VC.UpdateBuffer(ViewProjNearFarBuffer, &vpnf);
+}
+
+void Scene::UpdateTransform(entt::entity entity) {
+    const auto &model = R.get<Model>(entity);
+    const uint i = MeshBufferIndices.at(entity);
+    VC.UpdateBuffer(ModelsBuffer, &model, i * sizeof(Model), sizeof(Model));
 }
 
 using namespace ImGui;
@@ -541,11 +543,12 @@ void Scene::RenderGizmo() {
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
     mat4 model = GetSelectedModel().Transform;
-    const bool model_changed = Gizmo->Render(Camera, model, aspect_ratio);
-    const bool view_changed = Camera.Tick();
+    bool view_changed, model_changed;
+    Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
+    view_changed |= Camera.Tick();
     if (model_changed || view_changed) {
-        SetSelectedModel(std::move(model));
-        UpdateTransform();
+        if (model_changed) SetSelectedModel(std::move(model));
+        if (view_changed) UpdateViewProj();
         SubmitCommandBuffer();
     }
 }
@@ -581,7 +584,7 @@ void Scene::RenderControls() {
             camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
             if (camera_changed) {
                 Camera.StopMoving();
-                UpdateTransform();
+                UpdateViewProj();
                 SubmitCommandBuffer();
             }
             EndTabItem();
@@ -684,7 +687,6 @@ void Scene::RenderControls() {
                 model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
                 if (model_changed) {
                     SetSelectedModel(glm::translate(pos) * glm::mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
-                    UpdateTransform();
                     SubmitCommandBuffer();
                 }
                 Gizmo->RenderDebug();

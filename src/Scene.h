@@ -163,8 +163,6 @@ struct Scene {
 
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
-    void UpdateTransform(); // Updates buffers that depend on model/view/transform.
-    void UpdateEdgeColors();
 
     Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
 
@@ -212,7 +210,12 @@ private:
 
     Mesh &GetSelectedMesh() const;
     Model &GetSelectedModel() const;
-    void SetSelectedModel(mat4 &&) const;
+    void SetSelectedModel(mat4 &&);
+
+    // VK buffer update methods.
+    void UpdateViewProj();
+    void UpdateTransform(entt::entity);
+    void UpdateEdgeColors();
 
     void SetExtent(vk::Extent2D);
     void RecordCommandBuffer();

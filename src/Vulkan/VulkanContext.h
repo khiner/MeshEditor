@@ -34,9 +34,6 @@ struct VulkanContext {
     vk::PhysicalDevice FindPhysicalDevice() const;
     uint FindMemoryType(uint type_filter, vk::MemoryPropertyFlags) const;
 
-    // todo next up: Split `CreateOrUpdateBuffer` into `CreateBuffer` and `UpdateBuffer`, (be explicit about buffer lifecycles).
-    //   Then, we can work on deleting stuff from `MeshVkData` (starting with `Models`) and instead update the staging buffers directly.
-
     // Create the staging and device buffers and their memory.
     // Assumes `buffer.Size` is set.
     void CreateBuffer(VulkanBuffer &, vk::DeviceSize bytes) const;
