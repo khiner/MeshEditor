@@ -7,8 +7,8 @@ layout(location = 3) in mat4 Model;
 layout(location = 7) in mat4 InvModel; // Stores the transpose of the inverse of `Model`.
 
 layout(location = 0) out vec3 WorldNormal; // Vertex normal transformed to world space, for lighting calculations.
-layout(location = 1) out vec4 FragColor;
-layout(location = 2) out vec3 FragViewPosition;
+layout(location = 1) out vec4 Color;
+layout(location = 2) out vec3 ViewPosition;
 
 layout(binding = 0) uniform ViewProjectionUBO {
     mat4 View;
@@ -17,7 +17,7 @@ layout(binding = 0) uniform ViewProjectionUBO {
 
 void main() {
     WorldNormal = mat3(InvModel) * VertexNormal;
-    FragColor = VertexColor;
-    FragViewPosition = -vec3(inverse(ViewProj.View)[3]); // Camera position in world space
+    Color = VertexColor;
+    ViewPosition = -vec3(inverse(ViewProj.View)[3]); // Camera position in world space
     gl_Position = ViewProj.Proj * ViewProj.View * Model * vec4(Position, 1.0);
 }
