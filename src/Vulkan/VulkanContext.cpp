@@ -132,36 +132,38 @@ vk::PhysicalDevice VulkanContext::FindPhysicalDevice() const {
 uint VulkanContext::FindMemoryType(uint type_filter, vk::MemoryPropertyFlags prop_flags) const {
     auto mem_props = PhysicalDevice.getMemoryProperties();
     for (uint i = 0; i < mem_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & prop_flags) == prop_flags) {
-            return i;
-        }
+        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & prop_flags) == prop_flags) return i;
     }
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void VulkanContext::CreateOrUpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
-    if (bytes == 0) bytes = buffer.Size;
-
-    // Optionally create the staging buffer and its memory.
-    if (!buffer.StagingBuffer || !buffer.StagingMemory) {
+void VulkanContext::CreateBuffer(VulkanBuffer &buffer, vk::DeviceSize bytes) const {
+    buffer.Size = bytes;
+    {
+        // Create the staging buffer and its memory.
+        if (buffer.StagingBuffer || buffer.StagingMemory) throw std::runtime_error("Staging buffer already exists.");
         buffer.StagingBuffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive});
         const auto mem_reqs = Device->getBufferMemoryRequirements(*buffer.StagingBuffer);
         buffer.StagingMemory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
         Device->bindBufferMemory(*buffer.StagingBuffer, *buffer.StagingMemory, 0);
     }
-
-    // Copy data to the staging buffer.
-    void *mapped_data = Device->mapMemory(*buffer.StagingMemory, offset, bytes);
-    memcpy(mapped_data, data, size_t(bytes));
-    Device->unmapMemory(*buffer.StagingMemory);
-
-    // Optionally create the device buffer and its memory.
-    if (!buffer.Buffer || !buffer.Memory) {
+    {
+        // Create the device buffer and its memory.
+        if (buffer.Buffer || buffer.Memory) throw std::runtime_error("Device buffer already exists.");
         buffer.Buffer = Device->createBufferUnique({{}, buffer.Size, vk::BufferUsageFlagBits::eTransferDst | buffer.Usage, vk::SharingMode::eExclusive});
         const auto mem_reqs = Device->getBufferMemoryRequirements(*buffer.Buffer);
         buffer.Memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
         Device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
     }
+}
+
+void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
+    if (bytes == 0) bytes = buffer.Size;
+
+    // Copy data to the staging buffer.
+    void *mapped_data = Device->mapMemory(*buffer.StagingMemory, offset, bytes);
+    memcpy(mapped_data, data, size_t(bytes));
+    Device->unmapMemory(*buffer.StagingMemory);
 
     // Copy data from the staging buffer to the device buffer.
     const auto &cb = TransferCommandBuffers[0];

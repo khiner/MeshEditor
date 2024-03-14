@@ -284,11 +284,15 @@ void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainRenderPipeline(VC),
       SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
-    AddMesh(Cuboid{{0.5, 0.5, 0.5}});
     UpdateEdgeColors();
+    VC.CreateBuffer(ModelsBuffer, sizeof(Model));
+    VC.CreateBuffer(TransformBuffer, sizeof(ViewProj));
+    VC.CreateBuffer(ViewProjNearFarBuffer, sizeof(ViewProjNearFar));
+    AddMesh(Cuboid{{0.5, 0.5, 0.5}});
     UpdateTransform();
-    VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
-    VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
+
+    VC.CreateBuffer(LightsBuffer, std::vector{Lights});
+    VC.CreateBuffer(SilhouetteDisplayBuffer, std::vector{SilhouetteDisplay});
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
     MainRenderPipeline.UpdateDescriptors({
         {SPT::Fill, "ViewProjectionUBO", transform_buffer},
@@ -309,30 +313,34 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
 void Scene::AddMesh(Mesh &&mesh) {
-    auto entity = R.create();
-    R.emplace<Mesh>(entity, std::move(mesh));
-    R.emplace<Model>(entity, 1);
+    mesh.UpdateNormals(); // todo move to mesh ctor
 
-    MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
-    MeshVkData->ElementBuffers.emplace_back();
-    MeshVkData->NormalIndicatorBuffers.emplace_back();
     MeshVkData->Models.emplace_back(1);
 
-    CreateOrUpdateBuffers(entity);
+    MeshVkData::MeshElementBuffers mesh_buffers{};
+    for (auto element : AllElements) { // todo only create buffers for viewed elements.
+        auto &buffers = mesh_buffers[element];
+        VC.CreateBuffer(buffers.Vertices, mesh.CreateVertices(element));
+        VC.CreateBuffer(buffers.Indices, mesh.CreateIndices(element));
+    }
+    MeshVkData->ElementBuffers.emplace_back(std::move(mesh_buffers));
+    MeshVkData->NormalIndicatorBuffers.emplace_back();
+
+    const auto entity = R.create();
+    MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
+    R.emplace<Mesh>(entity, std::move(mesh));
+    R.emplace<Model>(entity, 1);
 }
 
 Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
 Model &Scene::GetSelectedModel() const { return R.get<Model>(SelectedEntity); }
 void Scene::SetSelectedModel(mat4 &&model) const { R.replace<Model>(SelectedEntity, std::move(model)); }
 
-void Scene::CreateOrUpdateBuffers(entt::entity entity, MeshElementIndex highlight_element) {
+void Scene::UpdateMeshBuffers(entt::entity entity, MeshElementIndex highlight_element) {
     auto &mesh = R.get<Mesh>(entity);
     auto &mesh_buffers = MeshVkData->ElementBuffers[MeshBufferIndices.at(entity)];
-    mesh.UpdateNormals(); // todo only update when normals have changed.
-    for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        auto &buffers = mesh_buffers[element];
-        VC.CreateOrUpdateBuffer(buffers.Vertices, mesh.CreateVertices(element, highlight_element));
-        VC.CreateOrUpdateBuffer(buffers.Indices, mesh.CreateIndices(element));
+    for (auto element : AllElements) { // todo only update buffers for viewed elements.
+        VC.UpdateBuffer(mesh_buffers[element].Vertices, mesh.CreateVertices(element, highlight_element));
     }
 }
 
@@ -446,35 +454,20 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    R.view<Mesh>().each([this](auto entity, auto &) { CreateOrUpdateBuffers(entity, HighlightedElement); });
-}
-
-void Scene::UpdateNormalIndicators() {
-    const auto &mesh = GetSelectedMesh();
-    auto &normals = MeshVkData->NormalIndicatorBuffers[MeshBufferIndices.at(SelectedEntity)];
-    for (const auto element : AllNormalElements) {
-        if (ShownNormals.contains(element)) {
-            MeshBuffers buffers;
-            VC.CreateOrUpdateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
-            VC.CreateOrUpdateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
-            normals.emplace(element, std::move(buffers));
-        } else {
-            normals.erase(element);
-        }
-    }
+    R.view<Mesh>().each([this](auto entity, auto &) { UpdateMeshBuffers(entity, HighlightedElement); });
 }
 
 void Scene::UpdateTransform() {
     auto &models = MeshVkData->Models; // Update the contiguous vector of model matrices.
     R.view<Model>().each([&](auto entity, const auto &model) { models[MeshBufferIndices.at(entity)] = model; });
-    VC.CreateOrUpdateBuffer(ModelsBuffer, models);
+    VC.UpdateBuffer(ModelsBuffer, models);
 
     // todo update for instancing
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-    VC.CreateOrUpdateBuffer(TransformBuffer, &view_proj);
+    VC.UpdateBuffer(TransformBuffer, &view_proj);
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
-    VC.CreateOrUpdateBuffer(ViewProjNearFarBuffer, &vpnf);
+    VC.UpdateBuffer(ViewProjNearFarBuffer, &vpnf);
 }
 
 using namespace ImGui;
@@ -512,7 +505,7 @@ bool Scene::Render() {
             if (highlight_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
         }
         if (HighlightedElement != highlight_element) {
-            CreateOrUpdateBuffers(SelectedEntity, HighlightedElement);
+            UpdateMeshBuffers(SelectedEntity, HighlightedElement);
             SubmitCommandBuffer();
         }
     }
@@ -604,7 +597,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                VC.CreateOrUpdateBuffer(LightsBuffer, &Lights);
+                VC.UpdateBuffer(LightsBuffer, &Lights);
                 SubmitCommandBuffer();
             }
             EndTabItem();
@@ -641,28 +634,31 @@ void Scene::RenderControls() {
                         SubmitCommandBuffer();
                     }
                 }
-
-                SeparatorText("Normal indicators");
-
-                const uint before_normal_count = ShownNormals.size();
-                for (const auto element : AllNormalElements) {
-                    bool show_normals = ShownNormals.contains(element);
-                    std::string name = to_string(element);
-                    Capitalize(name);
-                    if (Checkbox(name.c_str(), &show_normals)) {
-                        if (show_normals) ShownNormals.insert(element);
-                        else ShownNormals.erase(element);
+                {
+                    SeparatorText("Normal indicators");
+                    auto &normals = MeshVkData->NormalIndicatorBuffers[MeshBufferIndices.at(SelectedEntity)];
+                    for (const auto element : AllNormalElements) {
+                        bool has_normals = normals.contains(element);
+                        std::string name = to_string(element);
+                        Capitalize(name);
+                        if (Checkbox(name.c_str(), &has_normals)) {
+                            if (has_normals) {
+                                const auto &mesh = GetSelectedMesh();
+                                MeshBuffers buffers;
+                                VC.CreateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
+                                VC.CreateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
+                                normals.emplace(element, std::move(buffers));
+                            } else {
+                                normals.erase(element);
+                            }
+                            RecordAndSubmitCommandBuffer();
+                        }
+                        if (element != AllNormalElements.back()) SameLine();
                     }
-                    if (element != AllNormalElements.back()) SameLine();
                 }
-                if (before_normal_count != ShownNormals.size()) {
-                    UpdateNormalIndicators();
-                    RecordAndSubmitCommandBuffer();
-                }
-
                 SeparatorText("Silhouette");
                 if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
-                    VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
+                    VC.UpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
                     SubmitCommandBuffer();
                 }
             }

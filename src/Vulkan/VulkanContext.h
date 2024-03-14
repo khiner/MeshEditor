@@ -34,12 +34,18 @@ struct VulkanContext {
     vk::PhysicalDevice FindPhysicalDevice() const;
     uint FindMemoryType(uint type_filter, vk::MemoryPropertyFlags) const;
 
-    // `bytes == 0` defaults to `buffer.Size`.
-    // If the buffer doesn't exist, it will be created, _always_ using the buffer size (even if `offset`/`bytes` is specified).
-    void CreateOrUpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
+    // todo next up: Split `CreateOrUpdateBuffer` into `CreateBuffer` and `UpdateBuffer`, (be explicit about buffer lifecycles).
+    //   Then, we can work on deleting stuff from `MeshVkData` (starting with `Models`) and instead update the staging buffers directly.
 
-    template<typename T> void CreateOrUpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
-        buffer.Size = sizeof(T) * data.size();
-        CreateOrUpdateBuffer(buffer, data.data(), 0, buffer.Size);
+    // Create the staging and device buffers and their memory.
+    // Assumes `buffer.Size` is set.
+    void CreateBuffer(VulkanBuffer &, vk::DeviceSize bytes) const;
+    // Uses `buffer.Size` if `bytes` is not set.
+    void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
+
+    template<typename T> void CreateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
+        CreateBuffer(buffer, sizeof(T) * data.size());
+        UpdateBuffer(buffer, data);
     }
+    template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const { UpdateBuffer(buffer, data.data(), 0, buffer.Size); }
 };

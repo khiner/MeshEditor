@@ -1,7 +1,5 @@
 #pragma once
 
-#include <unordered_set>
-
 #include <entt/entity/registry.hpp>
 
 #include "numeric/mat4.h"
@@ -167,7 +165,6 @@ struct Scene {
     void CompileShaders();
     void UpdateTransform(); // Updates buffers that depend on model/view/transform.
     void UpdateEdgeColors();
-    void UpdateNormalIndicators();
 
     Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
 
@@ -183,7 +180,6 @@ private:
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
     MeshElement SelectionElement{MeshElement::None};
-    std::unordered_set<MeshElement> ShownNormals{};
 
     entt::entity SelectedEntity{0};
     // Map of entities to contiguous indices.
@@ -223,5 +219,5 @@ private:
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
-    void CreateOrUpdateBuffers(entt::entity, MeshElementIndex highlight_element = {});
+    void UpdateMeshBuffers(entt::entity, MeshElementIndex highlight_element = {});
 };
