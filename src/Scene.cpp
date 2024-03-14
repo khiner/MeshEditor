@@ -11,7 +11,7 @@
 
 #include "numeric/mat3.h"
 
-#include "mesh/MeshVkData.h"
+#include "mesh/MeshBuffers.h"
 #include "mesh/primitive/Cuboid.h"
 #include "vulkan/VulkanContext.h"
 
@@ -20,6 +20,11 @@ void Capitalize(std::string &str) {
 }
 
 const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
+
+using BuffersByElement = std::unordered_map<MeshElement, MeshBuffers>;
+struct MeshVkData {
+    std::unordered_map<entt::entity, BuffersByElement> Main, NormalIndicators;
+};
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -315,17 +320,18 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 void Scene::AddMesh(Mesh &&mesh) {
     mesh.UpdateNormals(); // todo move to mesh ctor
 
-    MeshVkData::MeshElementBuffers mesh_buffers{};
+    BuffersByElement mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
         auto &buffers = mesh_buffers[element];
         VC.CreateBuffer(buffers.Vertices, mesh.CreateVertices(element));
         VC.CreateBuffer(buffers.Indices, mesh.CreateIndices(element));
     }
-    MeshVkData->ElementBuffers.emplace_back(std::move(mesh_buffers));
-    MeshVkData->NormalIndicatorBuffers.emplace_back();
 
     const auto entity = R.create();
     MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
+    MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
+    MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
+
     R.emplace<Mesh>(entity, std::move(mesh));
     R.emplace<Model>(entity, 1);
 }
@@ -339,7 +345,7 @@ void Scene::SetSelectedModel(mat4 &&model) {
 
 void Scene::UpdateMeshBuffers(entt::entity entity, MeshElementIndex highlight_element) {
     auto &mesh = R.get<Mesh>(entity);
-    auto &mesh_buffers = MeshVkData->ElementBuffers[MeshBufferIndices.at(entity)];
+    auto &mesh_buffers = MeshVkData->Main.at(entity);
     for (auto element : AllElements) { // todo only update buffers for viewed elements.
         VC.UpdateBuffer(mesh_buffers[element].Vertices, mesh.CreateVertices(element, highlight_element));
     }
@@ -410,8 +416,7 @@ void Scene::RecordCommandBuffer() {
 
     SilhouetteRenderPipeline.Begin(cb);
 
-    const uint entity_index = MeshBufferIndices.at(SelectedEntity);
-    const auto &buffers = MeshVkData->ElementBuffers[entity_index];
+    const auto &buffers = MeshVkData->Main.at(SelectedEntity);
     SilhouetteRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
@@ -424,7 +429,7 @@ void Scene::RecordCommandBuffer() {
         MainRenderPipeline.RenderBuffers(cb, buffers.at(element), pipeline, ModelsBuffer);
     }
     MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
-    const auto &normals = MeshVkData->NormalIndicatorBuffers[entity_index];
+    const auto &normals = MeshVkData->NormalIndicators.at(SelectedEntity);
     for (auto normal_element : AllNormalElements) {
         if (auto it = normals.find(normal_element); it != normals.end()) {
             MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
@@ -639,7 +644,7 @@ void Scene::RenderControls() {
                 }
                 {
                     SeparatorText("Normal indicators");
-                    auto &normals = MeshVkData->NormalIndicatorBuffers[MeshBufferIndices.at(SelectedEntity)];
+                    auto &normals = MeshVkData->NormalIndicators.at(SelectedEntity);
                     for (const auto element : AllNormalElements) {
                         bool has_normals = normals.contains(element);
                         std::string name = to_string(element);

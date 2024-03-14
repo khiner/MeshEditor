@@ -181,7 +181,7 @@ private:
 
     entt::entity SelectedEntity{0};
     // Map of entities to contiguous indices.
-    // Currently only used for `MeshVkData` indexing, but could be used for anything.
+    // This is currently used to map to offsets into contiguous regions VK staging buffers, but it could be used for other things.
     std::unordered_map<entt::entity, uint> MeshBufferIndices;
     std::unique_ptr<MeshVkData> MeshVkData;
 
