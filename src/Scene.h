@@ -34,14 +34,22 @@ struct ImageResource {
     vk::UniqueDeviceMemory Memory;
 };
 
-struct Transform {
-    mat4 View{1};
-    mat4 Projection{1};
-    mat4 NormalToWorld{1}; // Only a mat3 is needed, but mat4 is used for alignment.
+struct Model {
+    Model(mat4 &&transform)
+        : Transform{std::move(transform)}, InvTransform{glm::transpose(glm::inverse(Transform))} {}
+
+    mat4 Transform{1};
+    // `InvTransform` is the _transpose_ of the inverse of `Transform`.
+    // Since this rarely changes, we precompute it and send it to the shader.
+    mat4 InvTransform{1};
+};
+
+struct ViewProj {
+    mat4 View{1}, Projection{1};
 };
 
 struct ViewProjNearFar {
-    mat4 View, Projection;
+    mat4 View{1}, Projection{1};
     float Near, Far;
 };
 
@@ -187,7 +195,7 @@ private:
     vk::ClearColorValue BackgroundColor;
 
     VulkanBuffer
-        TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Transform)},
+        TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)},
         LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)},
         ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)},
         SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)},
@@ -207,7 +215,8 @@ private:
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
 
     Mesh &GetSelectedMesh() const;
-    mat4 &GetSelectedModel() const;
+    Model &GetSelectedModel() const;
+    void SetSelectedModel(mat4 &&) const;
 
     void SetExtent(vk::Extent2D);
     void RecordCommandBuffer();

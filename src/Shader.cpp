@@ -90,17 +90,22 @@ const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
 vk::PipelineVertexInputStateCreateInfo GenerateVertex3DInputState() {
     static const std::vector<vk::VertexInputBindingDescription> bindings{
         {0, sizeof(Vertex3D), vk::VertexInputRate::eVertex},
-        {1, sizeof(mat4), vk::VertexInputRate::eInstance}
+        {1, 2 * sizeof(mat4), vk::VertexInputRate::eInstance},
     };
     static const std::vector<vk::VertexInputAttributeDescription> attrs{
         {0, 0, Format::Vec3, offsetof(Vertex3D, Position)},
         {1, 0, Format::Vec3, offsetof(Vertex3D, Normal)},
         {2, 0, Format::Vec4, offsetof(Vertex3D, Color)},
-        // Instance mat4, one vec4 per row
+        // Model mat4, one vec4 per row
         {3, 1, Format::Vec4, 0},
         {4, 1, Format::Vec4, sizeof(vec4)},
         {5, 1, Format::Vec4, 2 * sizeof(vec4)},
-        {6, 1, Format::Vec4, 3 * sizeof(vec4)}
+        {6, 1, Format::Vec4, 3 * sizeof(vec4)},
+        // Inverse model mat4, one vec4 per row
+        {7, 1, Format::Vec4, 4 * sizeof(vec4)},
+        {8, 1, Format::Vec4, 5 * sizeof(vec4)},
+        {9, 1, Format::Vec4, 6 * sizeof(vec4)},
+        {10, 1, Format::Vec4, 7 * sizeof(vec4)},
     };
     return {{}, bindings, attrs};
 }

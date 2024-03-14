@@ -131,7 +131,7 @@ void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const MeshBuffers &mesh
 
     // Draw
     const uint index_count = mesh_buffers.Indices.Size / sizeof(uint);
-    const uint instance_count = models_buffer.Size / sizeof(mat4);
+    const uint instance_count = models_buffer.Size / sizeof(Model);
     cb.drawIndexed(index_count, instance_count, 0, 0, 0);
 }
 
@@ -291,15 +291,15 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     VC.CreateOrUpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
     MainRenderPipeline.UpdateDescriptors({
-        {SPT::Fill, "TransformUBO", transform_buffer},
+        {SPT::Fill, "ViewProjectionUBO", transform_buffer},
         {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{*LightsBuffer.Buffer, 0, VK_WHOLE_SIZE}},
-        {SPT::Line, "TransformUBO", transform_buffer},
+        {SPT::Line, "ViewProjectionUBO", transform_buffer},
         {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}},
-        {SPT::DebugNormals, "TransformUBO", transform_buffer},
+        {SPT::DebugNormals, "ViewProjectionUBO", transform_buffer},
     });
     SilhouetteRenderPipeline.UpdateDescriptors({
-        {SPT::Silhouette, "TransformUBO", transform_buffer},
+        {SPT::Silhouette, "ViewProjectionUBO", transform_buffer},
     });
 
     Gizmo = std::make_unique<::Gizmo>();
@@ -311,7 +311,7 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 void Scene::AddMesh(Mesh &&mesh) {
     auto entity = R.create();
     R.emplace<Mesh>(entity, std::move(mesh));
-    R.emplace<mat4>(entity, 1);
+    R.emplace<Model>(entity, 1);
 
     MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
     MeshVkData->ElementBuffers.emplace_back();
@@ -322,7 +322,8 @@ void Scene::AddMesh(Mesh &&mesh) {
 }
 
 Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
-mat4 &Scene::GetSelectedModel() const { return R.get<mat4>(SelectedEntity); }
+Model &Scene::GetSelectedModel() const { return R.get<Model>(SelectedEntity); }
+void Scene::SetSelectedModel(mat4 &&model) const { R.replace<Model>(SelectedEntity, std::move(model)); }
 
 void Scene::CreateOrUpdateBuffers(entt::entity entity, MeshElementIndex highlight_element) {
     auto &mesh = R.get<Mesh>(entity);
@@ -465,16 +466,14 @@ void Scene::UpdateNormalIndicators() {
 
 void Scene::UpdateTransform() {
     auto &models = MeshVkData->Models; // Update the contiguous vector of model matrices.
-    R.view<mat4>().each([&](auto entity, const auto &model) { models[MeshBufferIndices.at(entity)] = model; });
+    R.view<Model>().each([&](auto entity, const auto &model) { models[MeshBufferIndices.at(entity)] = model; });
     VC.CreateOrUpdateBuffer(ModelsBuffer, models);
 
     // todo update for instancing
-    const mat4 &model = GetSelectedModel();
-    const mat3 normal_to_world = glm::transpose(glm::inverse(mat3(model)));
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    const Transform transform{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio), normal_to_world};
-    VC.CreateOrUpdateBuffer(TransformBuffer, &transform);
-    const ViewProjNearFar vpnf{transform.View, transform.Projection, Camera.NearClip, Camera.FarClip};
+    const ViewProj view_proj{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+    VC.CreateOrUpdateBuffer(TransformBuffer, &view_proj);
+    const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
     VC.CreateOrUpdateBuffer(ViewProjNearFarBuffer, &vpnf);
 }
 
@@ -499,8 +498,8 @@ bool Scene::Render() {
     // Handle mouse input.
     if (SelectionElement != MeshElement::None) {
         auto &mesh = GetSelectedMesh();
-        auto &model = GetSelectedModel();
-        const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model);
+        const auto &model = GetSelectedModel();
+        const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
         const Mesh::ElementIndex highlight_element = HighlightedElement;
         if (SelectionElement == MeshElement::Face) {
             const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
@@ -548,10 +547,11 @@ void Scene::RenderGizmo() {
 
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    auto &model = GetSelectedModel();
+    mat4 model = GetSelectedModel().Transform;
     const bool model_changed = Gizmo->Render(Camera, model, aspect_ratio);
     const bool view_changed = Camera.Tick();
     if (model_changed || view_changed) {
+        SetSelectedModel(std::move(model));
         UpdateTransform();
         SubmitCommandBuffer();
     }
@@ -679,18 +679,15 @@ void Scene::RenderControls() {
                 TextUnformatted(highlight_label.c_str());
             }
             if (CollapsingHeader("Transform")) {
-                auto &model = GetSelectedModel();
-                glm::vec3 position, rotation, scale;
-                DecomposeTransform(model, position, rotation, scale);
-                bool transform_changed = false;
-                transform_changed |= DragFloat3("Position", &position[0], 0.01f);
-                transform_changed |= DragFloat3("Rotation (deg)", &rotation[0], 1, -90, 90, "%.0f");
-                transform_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
-                if (transform_changed) {
-                    model =
-                        glm::translate(position) *
-                        mat4{glm::quat{{glm::radians(rotation.x), glm::radians(rotation.y), glm::radians(rotation.z)}}} *
-                        glm::scale(scale);
+                const auto &model = GetSelectedModel().Transform;
+                glm::vec3 pos, rot, scale;
+                DecomposeTransform(model, pos, rot, scale);
+                bool model_changed = false;
+                model_changed |= DragFloat3("Position", &pos[0], 0.01f);
+                model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
+                model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
+                if (model_changed) {
+                    SetSelectedModel(glm::translate(pos) * glm::mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
                     UpdateTransform();
                     SubmitCommandBuffer();
                 }

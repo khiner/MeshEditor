@@ -8,6 +8,6 @@
 
 // Contiguous vectors of mesh data for Vulkan.
 struct MeshVkData {
-    std::vector<mat4> Models;
+    std::vector<Model> Models;
     std::vector<std::unordered_map<MeshElement, MeshBuffers>> ElementBuffers, NormalIndicatorBuffers;
 };
