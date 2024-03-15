@@ -13,6 +13,7 @@
 
 #include "mesh/MeshBuffers.h"
 #include "mesh/primitive/Cuboid.h"
+#include "mesh/primitive/IcoSphere.h"
 #include "vulkan/VulkanContext.h"
 
 #include <print>
@@ -400,28 +401,27 @@ void Scene::RecordCommandBuffer() {
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
-    const std::vector<vk::ImageMemoryBarrier> image_memory_barriers{{
-        {},
-        {},
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        VK_QUEUE_FAMILY_IGNORED,
-        VK_QUEUE_FAMILY_IGNORED,
-        *MainRenderPipeline.ResolveImage,
-        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
-    }};
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
         {}, // No dependency flags.
         {}, // No memory barriers.
         {}, // No buffer memory barriers.
-        image_memory_barriers
+        std::vector<vk::ImageMemoryBarrier>{{
+            {},
+            {},
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            *MainRenderPipeline.ResolveImage,
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        }}
     );
 
-    SilhouetteRenderPipeline.Begin(cb);
-
     const auto &buffers = MeshVkData->Main.at(SelectedEntity);
+
+    SilhouetteRenderPipeline.Begin(cb);
     SilhouetteRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
@@ -619,6 +619,7 @@ void Scene::RenderControls() {
         if (BeginTabItem("Object")) {
             if (CollapsingHeader("Add")) {
                 if (Button("Cuboid")) AddMesh(Cuboid({0.5, 0.5, 0.5}));
+                if (Button("IcoSphere")) AddMesh(IcoSphere(0.5, 3));
             }
             if (CollapsingHeader("Render")) {
                 SeparatorText("Render mode");

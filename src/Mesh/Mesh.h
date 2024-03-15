@@ -85,7 +85,7 @@ struct Mesh {
         Load(file_path, M);
         UpdateNormals();
     }
-    Mesh(std::vector<Point> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) : Mesh() {
+    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) : Mesh() {
         SetFaces(std::move(vertices), std::move(faces), color);
         UpdateNormals();
     }
@@ -137,8 +137,8 @@ struct Mesh {
 
     void AddFace(const std::vector<VH> &vertices, vec4 color = DefaultFaceColor) { SetFaceColor(M.add_face(vertices), color); }
 
-    void SetFaces(const std::vector<Point> &vertices, const std::vector<std::vector<uint>> &faces, vec4 color = DefaultFaceColor) {
-        for (const auto &v : vertices) M.add_vertex(v);
+    void SetFaces(const std::vector<vec3> &vertices, const std::vector<std::vector<uint>> &faces, vec4 color = DefaultFaceColor) {
+        for (const auto &v : vertices) M.add_vertex(ToOpenMesh(v));
         for (const auto &face : faces) {
             std::vector<VH> face_vhs;
             face_vhs.reserve(face.size());
