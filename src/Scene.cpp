@@ -12,8 +12,7 @@
 #include "numeric/mat3.h"
 
 #include "mesh/MeshBuffers.h"
-#include "mesh/primitive/Cuboid.h"
-#include "mesh/primitive/IcoSphere.h"
+#include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
 #include <print>
@@ -25,9 +24,10 @@ void Capitalize(std::string &str) {
 namespace PrimitiveName {
 const std::string
     Cuboid = "Cuboid",
-    IcoSphere = "IcoSphere";
+    IcoSphere = "IcoSphere",
+    Rect = "Rect";
 
-const std::vector All{Cuboid, IcoSphere};
+const std::vector All{Cuboid, IcoSphere, Rect};
 } // namespace PrimitiveName
 
 const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
@@ -670,6 +670,7 @@ void Scene::RenderControls() {
                     if (Button(primitive.c_str())) {
                         if (primitive == PrimitiveName::Cuboid) AddMesh(Cuboid({0.5, 0.5, 0.5}));
                         else if (primitive == PrimitiveName::IcoSphere) AddMesh(IcoSphere(0.5, 3));
+                        else if (primitive == PrimitiveName::Rect) AddMesh(Rect({0.5, 0.5}));
                         RecordAndSubmitCommandBuffer();
                     }
                 }

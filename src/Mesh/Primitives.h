@@ -1,6 +1,40 @@
 #pragma once
 
+#include "numeric/vec2.h"
+
 #include "mesh/Mesh.h"
+
+inline Mesh Rect(vec2 half_extents) {
+    const auto x = half_extents.x, y = half_extents.y;
+    return {
+        {{-x, -y, 0}, {x, -y, 0}, {x, y, 0}, {-x, y, 0}},
+        {{0, 1, 2, 3}}
+    };
+}
+
+inline Mesh Cuboid(vec3 half_extents) {
+    const auto x = half_extents.x, y = half_extents.y, z = half_extents.z;
+    return {
+        {
+            {-x, -y, -z},
+            {x, -y, -z},
+            {x, y, -z},
+            {-x, y, -z},
+            {-x, -y, z},
+            {x, -y, z},
+            {x, y, z},
+            {-x, y, z},
+        },
+        {
+            {0, 3, 2, 1}, // front
+            {4, 5, 6, 7}, // back
+            {0, 1, 5, 4}, // bottom
+            {3, 7, 6, 2}, // top
+            {0, 4, 7, 3}, // left
+            {1, 2, 6, 5}, // right
+        }
+    };
+}
 
 inline Mesh IcoSphere(float radius = 1, int recursion_level = 1) {
     static const float t = (1.f + sqrt(5.f)) / 2.f;
