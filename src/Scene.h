@@ -1,5 +1,7 @@
 #pragma once
 
+#include <set>
+
 #include <entt/entity/registry.hpp>
 
 #include "numeric/mat4.h"
@@ -144,6 +146,11 @@ struct SceneNode {
     std::vector<entt::entity> children;
 };
 
+enum class SelectionMode {
+    Object, // Select objects
+    Edit, // Select individual mesh elements (vertices, edges, faces)
+};
+
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);
     ~Scene();
@@ -175,16 +182,19 @@ private:
     World World{};
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
-    MeshElementIndex HighlightedElement{};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
 
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
-    MeshElement SelectionElement{MeshElement::None};
 
-    entt::entity SelectedEntity{0};
+    SelectionMode SelectionMode{SelectionMode::Object};
+    MeshElement SelectionElement{MeshElement::None};
+    MeshElementIndex HighlightedElement{};
+
+    entt::entity SelectedEntity{entt::null};
+    std::set<entt::entity> HoveredEntities{entt::null};
     std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;

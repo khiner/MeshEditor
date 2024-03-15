@@ -453,6 +453,8 @@ void Scene::RecordCommandBuffer() {
     EdgeDetectionPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
     cb.endRenderPass();
 
+    // todo reorganize VK buffers to reduce the number of draw calls and pipeline switches.
+    //   - Use a single VK buffer per-(element_type|{index,vertex}), shared across all meshes
     MainPipeline.Begin(cb, BackgroundColor);
     R.view<Mesh>().each([this, &cb](auto mesh_entity, auto &) {
         const auto &buffers = MeshVkData->Main.at(mesh_entity);
@@ -546,24 +548,42 @@ vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 bool Scene::Render() {
     // Handle mouse input.
-    if (SelectionElement != MeshElement::None) {
-        auto &mesh = GetSelectedMesh();
-        const auto &model = GetSelectedModel();
-        const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
-        const Mesh::ElementIndex highlight_element = HighlightedElement;
-        if (SelectionElement == MeshElement::Face) {
-            const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
-            if (highlight_element != fh) HighlightedElement = {SelectionElement, fh.idx()};
-        } else if (SelectionElement == MeshElement::Vertex) {
-            const auto vh = mesh.FindNearestVertex(mouse_ray);
-            if (highlight_element != vh) HighlightedElement = {SelectionElement, vh.idx()};
-        } else if (SelectionElement == MeshElement::Edge) {
-            const auto eh = mesh.FindNearestEdge(mouse_ray);
-            if (highlight_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
+    HighlightedElement = {MeshElement::None, 0};
+    HoveredEntities.clear();
+    if (Extent.width != 0 && Extent.height != 0) {
+        if (SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
+            auto &mesh = GetSelectedMesh();
+            const auto &model = GetSelectedModel();
+            const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
+            const Mesh::ElementIndex highlight_element = HighlightedElement;
+            if (SelectionElement == MeshElement::Face) {
+                const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
+                if (highlight_element != fh) HighlightedElement = {SelectionElement, fh.idx()};
+            } else if (SelectionElement == MeshElement::Vertex) {
+                const auto vh = mesh.FindNearestVertex(mouse_ray);
+                if (highlight_element != vh) HighlightedElement = {SelectionElement, vh.idx()};
+            } else if (SelectionElement == MeshElement::Edge) {
+                const auto eh = mesh.FindNearestEdge(mouse_ray);
+                if (highlight_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
+            }
+            if (HighlightedElement != highlight_element) {
+                UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
+                SubmitCommandBuffer();
+            }
+        } else if (SelectionMode == SelectionMode::Object) {
+            R.view<Model>().each([this](auto entity, const auto &model) {
+                const auto &mesh = R.get<Mesh>(GetMeshEntity(entity));
+                const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
+                if (mesh.FindNearestVertex(mouse_ray).is_valid()) HoveredEntities.emplace(entity);
+            });
         }
-        if (HighlightedElement != highlight_element) {
-            UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
-            SubmitCommandBuffer();
+        if (IsMouseClicked(ImGuiMouseButton_Left) && !HoveredEntities.empty()) {
+            // Cycle through hovered entities.
+            auto it = HoveredEntities.find(SelectedEntity);
+            if (it != HoveredEntities.end()) ++it;
+            if (it == HoveredEntities.end()) it = HoveredEntities.begin();
+            SelectedEntity = *it;
+            RecordAndSubmitCommandBuffer();
         }
     }
 
@@ -661,10 +681,6 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
-            if (Button("Add instance")) {
-                AddInstance(GetMeshEntity(SelectedEntity));
-                RecordAndSubmitCommandBuffer();
-            }
             if (CollapsingHeader("Add mesh")) {
                 for (const auto &primitive : PrimitiveName::All) {
                     if (Button(primitive.c_str())) {
@@ -735,30 +751,57 @@ void Scene::RenderControls() {
                 }
             }
             if (CollapsingHeader("Selection")) {
-                int selection_mode = int(SelectionElement);
-                for (const auto element : AllElementsWithNone) {
-                    std::string name = to_string(element);
-                    Capitalize(name);
-                    name += "##Selection";
-                    if (RadioButton(name.c_str(), &selection_mode, int(element))) SelectionElement = MeshElement(element);
-                    if (element != AllElementsWithNone.back()) SameLine();
+                int selection_mode = int(SelectionMode);
+                if (RadioButton("Object##Selection", &selection_mode, int(SelectionMode::Object))) SelectionMode = SelectionMode::Object;
+                SameLine();
+                if (RadioButton("Edit##Selection", &selection_mode, int(SelectionMode::Edit))) SelectionMode = SelectionMode::Edit;
+                if (SelectionMode == SelectionMode::Edit) {
+                    int element_selection_mode = int(SelectionElement);
+                    for (const auto element : AllElementsWithNone) {
+                        std::string name = to_string(element);
+                        Capitalize(name);
+                        name += "##Selection";
+                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
+                        if (element != AllElementsWithNone.back()) SameLine();
+                    }
+                    const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", to_string(HighlightedElement.Element), HighlightedElement.idx()) : "Hovered: None";
+                    TextUnformatted(highlight_label.c_str());
                 }
-                const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", to_string(HighlightedElement.Element), HighlightedElement.idx()) : "Hovered: None";
-                TextUnformatted(highlight_label.c_str());
             }
-            if (CollapsingHeader("Transform")) {
-                const auto &model = GetSelectedModel().Transform;
-                glm::vec3 pos, rot, scale;
-                DecomposeTransform(model, pos, rot, scale);
-                bool model_changed = false;
-                model_changed |= DragFloat3("Position", &pos[0], 0.01f);
-                model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
-                model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
-                if (model_changed) {
-                    SetSelectedModel(glm::translate(pos) * glm::mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
-                    SubmitCommandBuffer();
+            if (SelectedEntity != entt::null) {
+                TextUnformatted(std::format("Selected: {}", uint(SelectedEntity)).c_str());
+                if (SelectionMode == SelectionMode::Object) {
+                    std::string selected_label = "Hovered: ";
+                    if (HoveredEntities.empty()) {
+                        selected_label += "None";
+                    } else {
+                        // comma-separated
+                        for (auto it = HoveredEntities.begin(); it != HoveredEntities.end(); ++it) {
+                            selected_label += std::format("{}", uint(*it));
+                            if (std::next(it) != HoveredEntities.end()) selected_label += ", ";
+                        }
+                    }
+                    SameLine();
+                    TextUnformatted(selected_label.c_str());
                 }
-                Gizmo->RenderDebug();
+                if (Button("Add instance")) {
+                    AddInstance(GetMeshEntity(SelectedEntity));
+                    RecordAndSubmitCommandBuffer();
+                }
+                if (CollapsingHeader("Transform")) {
+                    const auto &model = GetSelectedModel().Transform;
+                    glm::vec3 pos, rot, scale;
+                    DecomposeTransform(model, pos, rot, scale);
+                    bool model_changed = false;
+                    model_changed |= DragFloat3("Position", &pos[0], 0.01f);
+                    model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
+                    model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
+                    if (model_changed) {
+                        SetSelectedModel(glm::translate(pos) * glm::mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
+                        SubmitCommandBuffer();
+                    }
+                    Gizmo->RenderDebug();
+                }
             }
             EndTabItem();
         }
