@@ -22,6 +22,14 @@ void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
 
+namespace PrimitiveName {
+const std::string
+    Cuboid = "Cuboid",
+    IcoSphere = "IcoSphere";
+
+const std::vector All{Cuboid, IcoSphere};
+} // namespace PrimitiveName
+
 const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
 
 using BuffersByElement = std::unordered_map<MeshElement, MeshBuffers>;
@@ -142,7 +150,7 @@ void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const MeshBuffers &mesh
     cb.drawIndexed(index_count, instance_count, 0, 0, 0);
 }
 
-MainRenderPipeline::MainRenderPipeline(const VulkanContext &vc)
+MainPipeline::MainPipeline(const VulkanContext &vc)
     : RenderPipeline(vc), MsaaSamples(GetMaxUsableSampleCount(VC.PhysicalDevice)) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
@@ -197,7 +205,7 @@ void RenderPipeline::UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&de
     VC.Device->updateDescriptorSets(write_descriptor_sets, {});
 }
 
-void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
+void MainPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     const vk::Extent3D e3d{Extent, 1};
     DepthImage.Create(
@@ -219,12 +227,12 @@ void MainRenderPipeline::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void MainRenderPipeline::Begin(vk::CommandBuffer cb, const vk::ClearColorValue &background_color) const {
+void MainPipeline::Begin(vk::CommandBuffer cb, const vk::ClearColorValue &background_color) const {
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {background_color}};
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
+SilhouettePipeline::SilhouettePipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
         {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -239,7 +247,7 @@ SilhouetteRenderPipeline::SilhouetteRenderPipeline(const VulkanContext &vc) : Re
     );
 }
 
-void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent) {
+void SilhouettePipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     OffscreenImage.Create(
         VC,
@@ -251,12 +259,12 @@ void SilhouetteRenderPipeline::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void SilhouetteRenderPipeline::Begin(vk::CommandBuffer cb) const {
+void SilhouettePipeline::Begin(vk::CommandBuffer cb) const {
     static const std::vector<vk::ClearValue> clear_values{{Transparent}};
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
+EdgeDetectionPipeline::EdgeDetectionPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
         {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -271,7 +279,7 @@ EdgeDetectionRenderPipeline::EdgeDetectionRenderPipeline(const VulkanContext &vc
     );
 }
 
-void EdgeDetectionRenderPipeline::SetExtent(vk::Extent2D extent) {
+void EdgeDetectionPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     OffscreenImage.Create(
         VC,
@@ -283,25 +291,24 @@ void EdgeDetectionRenderPipeline::SetExtent(vk::Extent2D extent) {
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
-void EdgeDetectionRenderPipeline::Begin(vk::CommandBuffer cb) const {
+void EdgeDetectionPipeline::Begin(vk::CommandBuffer cb) const {
     static const std::vector<vk::ClearValue> clear_values{{Transparent}};
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
-    : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainRenderPipeline(VC),
-      SilhouetteRenderPipeline(VC), EdgeDetectionRenderPipeline(VC) {
+    : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
+      SilhouettePipeline(VC), EdgeDetectionPipeline(VC) {
     UpdateEdgeColors();
     VC.CreateBuffer(ModelsBuffer, 10 * sizeof(Model));
     VC.CreateBuffer(TransformBuffer, sizeof(ViewProj));
     VC.CreateBuffer(ViewProjNearFarBuffer, sizeof(ViewProjNearFar));
     UpdateViewProj();
-    AddMesh(Cuboid({0.5, 0.5, 0.5}));
 
     VC.CreateBuffer(LightsBuffer, std::vector{Lights});
     VC.CreateBuffer(SilhouetteDisplayBuffer, std::vector{SilhouetteDisplay});
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
-    MainRenderPipeline.UpdateDescriptors({
+    MainPipeline.UpdateDescriptors({
         {SPT::Fill, "ViewProjectionUBO", transform_buffer},
         {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{*LightsBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::Line, "ViewProjectionUBO", transform_buffer},
@@ -309,12 +316,14 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
         {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}},
         {SPT::DebugNormals, "ViewProjectionUBO", transform_buffer},
     });
-    SilhouetteRenderPipeline.UpdateDescriptors({
+    SilhouettePipeline.UpdateDescriptors({
         {SPT::Silhouette, "ViewProjectionUBO", transform_buffer},
     });
 
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
+
+    AddMesh(Cuboid({0.5, 0.5, 0.5}));
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -329,7 +338,6 @@ void Scene::AddMesh(Mesh &&mesh) {
         VC.CreateBuffer(buffers.Vertices, mesh.CreateVertices(element));
         VC.CreateBuffer(buffers.Indices, mesh.CreateIndices(element));
     }
-
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
 
@@ -360,8 +368,8 @@ void Scene::UpdateMeshBuffers(entt::entity entity, MeshElementIndex highlight_el
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     UpdateViewProj(); // Depends on the aspect ratio.
-    MainRenderPipeline.SetExtent(extent);
-    SilhouetteRenderPipeline.SetExtent(extent);
+    MainPipeline.SetExtent(extent);
+    SilhouettePipeline.SetExtent(extent);
     SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
         {},
         vk::Filter::eNearest,
@@ -374,13 +382,13 @@ void Scene::SetExtent(vk::Extent2D extent) {
         vk::SamplerAddressMode::eClampToEdge,
     });
 
-    EdgeDetectionRenderPipeline.UpdateDescriptors({
-        {SPT::EdgeDetection, "Tex", std::nullopt, vk::DescriptorImageInfo{*SilhouetteFillImageSampler, *SilhouetteRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
+    EdgeDetectionPipeline.UpdateDescriptors({
+        {SPT::EdgeDetection, "Tex", std::nullopt, vk::DescriptorImageInfo{*SilhouetteFillImageSampler, *SilhouettePipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
     });
-    EdgeDetectionRenderPipeline.SetExtent(extent);
+    EdgeDetectionPipeline.SetExtent(extent);
     SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
-    MainRenderPipeline.UpdateDescriptors({
-        {SPT::Texture, "SilhouetteEdgeTexture", std::nullopt, vk::DescriptorImageInfo{*SilhouetteEdgeImageSampler, *EdgeDetectionRenderPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
+    MainPipeline.UpdateDescriptors({
+        {SPT::Texture, "SilhouetteEdgeTexture", std::nullopt, vk::DescriptorImageInfo{*SilhouetteEdgeImageSampler, *EdgeDetectionPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
     });
 }
 
@@ -414,34 +422,35 @@ void Scene::RecordCommandBuffer() {
             vk::ImageLayout::eColorAttachmentOptimal,
             VK_QUEUE_FAMILY_IGNORED,
             VK_QUEUE_FAMILY_IGNORED,
-            *MainRenderPipeline.ResolveImage,
+            *MainPipeline.ResolveImage,
             {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
         }}
     );
 
     const auto &buffers = MeshVkData->Main.at(SelectedEntity);
 
-    SilhouetteRenderPipeline.Begin(cb);
-    SilhouetteRenderPipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
+    SilhouettePipeline.Begin(cb);
+    SilhouettePipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
     cb.endRenderPass();
 
-    EdgeDetectionRenderPipeline.Begin(cb);
-    EdgeDetectionRenderPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
+    EdgeDetectionPipeline.Begin(cb);
+    EdgeDetectionPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
     cb.endRenderPass();
 
-    MainRenderPipeline.Begin(cb, BackgroundColor);
+    MainPipeline.Begin(cb, BackgroundColor);
     for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
-        MainRenderPipeline.RenderBuffers(cb, buffers.at(element), pipeline, ModelsBuffer);
+        MainPipeline.RenderBuffers(cb, buffers.at(element), pipeline, ModelsBuffer);
     }
-    MainRenderPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
+    MainPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
+
     const auto &normals = MeshVkData->NormalIndicators.at(SelectedEntity);
     for (auto normal_element : AllNormalElements) {
         if (auto it = normals.find(normal_element); it != normals.end()) {
-            MainRenderPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
+            MainPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
         }
     }
     // R.view<Mesh>().each([this, &cb](auto entity, auto &) {});
-    if (ShowGrid) MainRenderPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
+    if (ShowGrid) MainPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
 
     cb.endRenderPass();
     cb.end();
@@ -459,9 +468,9 @@ void Scene::RecordAndSubmitCommandBuffer(vk::Fence fence) {
 }
 
 void Scene::CompileShaders() {
-    MainRenderPipeline.CompileShaders();
-    SilhouetteRenderPipeline.CompileShaders();
-    EdgeDetectionRenderPipeline.CompileShaders();
+    MainPipeline.CompileShaders();
+    SilhouettePipeline.CompileShaders();
+    EdgeDetectionPipeline.CompileShaders();
 }
 
 void Scene::UpdateEdgeColors() {
@@ -618,8 +627,13 @@ void Scene::RenderControls() {
         }
         if (BeginTabItem("Object")) {
             if (CollapsingHeader("Add")) {
-                if (Button("Cuboid")) AddMesh(Cuboid({0.5, 0.5, 0.5}));
-                if (Button("IcoSphere")) AddMesh(IcoSphere(0.5, 3));
+                for (const auto &primitive : PrimitiveName::All) {
+                    if (Button(primitive.c_str())) {
+                        if (primitive == PrimitiveName::Cuboid) AddMesh(Cuboid({0.5, 0.5, 0.5}));
+                        else if (primitive == PrimitiveName::IcoSphere) AddMesh(IcoSphere(0.5, 3));
+                        RecordAndSubmitCommandBuffer();
+                    }
+                }
             }
             if (CollapsingHeader("Render")) {
                 SeparatorText("Render mode");
