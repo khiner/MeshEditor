@@ -133,21 +133,26 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, const MeshBuffers &mesh_buffers, SPT spt, const VulkanBuffer &models_buffer) const {
+void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, SPT spt, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index) const {
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
 
     // Bind buffers
     static const vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
-    cb.bindVertexBuffers(0, *mesh_buffers.Vertices.Buffer, vertex_buffer_offsets);
-    cb.bindIndexBuffer(*mesh_buffers.Indices.Buffer, 0, vk::IndexType::eUint32);
-    cb.bindVertexBuffers(1, *models_buffer.Buffer, models_buffer_offsets);
+    cb.bindVertexBuffers(0, *vertices.Buffer, vertex_buffer_offsets);
+    cb.bindIndexBuffer(*indices.Buffer, 0, vk::IndexType::eUint32);
+    cb.bindVertexBuffers(1, *models.Buffer, models_buffer_offsets);
 
     // Draw
-    const uint index_count = mesh_buffers.Indices.Size / sizeof(uint);
-    const uint instance_count = models_buffer.Size / sizeof(Model);
-    cb.drawIndexed(index_count, instance_count, 0, 0, 0);
+    const uint index_count = indices.Size / sizeof(uint);
+    const uint first_instance = model_index.value_or(0);
+    const uint instance_count = model_index.has_value() ? 1 : models.Size / sizeof(Model);
+    cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
+}
+
+void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, SPT spt, const MeshBuffers &mesh_buffers, const VulkanBuffer &models, std::optional<uint> model_index) const {
+    RenderBuffers(cb, spt, mesh_buffers.Vertices, mesh_buffers.Indices, models, model_index);
 }
 
 MainPipeline::MainPipeline(const VulkanContext &vc)
@@ -419,6 +424,15 @@ std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_m
     }
 }
 
+uint GetModelIndex(const entt::registry &r, entt::entity entity) {
+    const auto &node = r.get<SceneNode>(entity);
+    if (node.parent == entt::null) return 0; // Mesh, model index 0
+
+    // Instance, model index 1 + index in parent's children
+    const auto &parent_node = r.get<SceneNode>(node.parent);
+    return 1 + std::distance(parent_node.children.begin(), std::ranges::find(parent_node.children, entity));
+}
+
 void Scene::RecordCommandBuffer() {
     const auto cb = *VC.CommandBuffers[0];
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
@@ -447,7 +461,8 @@ void Scene::RecordCommandBuffer() {
     const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
     const auto &selected_models_buffer = ModelsBuffers.at(selected_mesh_entity);
     SilhouettePipeline.Begin(cb);
-    SilhouettePipeline.RenderBuffers(cb, selected_buffers.at(MeshElement::Vertex), SPT::Silhouette, selected_models_buffer);
+    // Only render the silhouette edge texture for the selected mesh instance.
+    SilhouettePipeline.RenderBuffers(cb, SPT::Silhouette, selected_buffers.at(MeshElement::Vertex), selected_models_buffer, GetModelIndex(R, SelectedEntity));
     cb.endRenderPass();
     EdgeDetectionPipeline.Begin(cb);
     EdgeDetectionPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
@@ -460,7 +475,7 @@ void Scene::RecordCommandBuffer() {
         const auto &buffers = MeshVkData->Main.at(mesh_entity);
         const auto &models_buffer = ModelsBuffers.at(mesh_entity);
         for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
-            MainPipeline.RenderBuffers(cb, buffers.at(element), pipeline, models_buffer);
+            MainPipeline.RenderBuffers(cb, pipeline, buffers.at(element), models_buffer);
         }
     });
 
@@ -472,7 +487,7 @@ void Scene::RecordCommandBuffer() {
         const auto &models_buffer = ModelsBuffers.at(mesh_entity);
         for (auto normal_element : AllNormalElements) {
             if (auto it = normals.find(normal_element); it != normals.end()) {
-                MainPipeline.RenderBuffers(cb, it->second, SPT::Line, models_buffer);
+                MainPipeline.RenderBuffers(cb, SPT::Line, it->second, models_buffer);
             }
         }
     });
@@ -515,17 +530,7 @@ void Scene::UpdateViewProj() {
 
 void Scene::UpdateTransform(entt::entity entity) {
     const auto &model = R.get<Model>(entity);
-    const auto &node = R.get<SceneNode>(entity);
-    const auto parent = node.parent;
-
-    uint i;
-    if (parent == entt::null) { // Mesh, model index 0
-        i = 0;
-    } else { // Instance, model index 1 + index in parent's children
-        const auto &parent_node = R.get<SceneNode>(parent); // Assuming one level deep hierarchy for now.
-        i = 1 + std::distance(parent_node.children.begin(), std::ranges::find(parent_node.children, entity));
-    }
-
+    uint i = GetModelIndex(R, entity);
     VC.UpdateBuffer(ModelsBuffers.at(GetMeshEntity(entity)), &model, i * sizeof(Model), sizeof(Model));
 }
 

@@ -101,7 +101,10 @@ struct RenderPipeline {
 
     void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
 
-    void RenderBuffers(vk::CommandBuffer, const MeshBuffers &, SPT, const VulkanBuffer &models_buffer) const;
+    // If `model_index` is set, only the model at that index is rendered.
+    // Otherwise, all models are rendered.
+    void RenderBuffers(vk::CommandBuffer, SPT, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
+    void RenderBuffers(vk::CommandBuffer, SPT, const MeshBuffers &, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
 
 protected:
     vk::UniqueFramebuffer Framebuffer;
