@@ -140,6 +140,11 @@ struct EdgeDetectionPipeline : RenderPipeline {
     void Begin(vk::CommandBuffer) const;
 };
 
+struct SceneNode {
+    entt::entity parent = entt::null;
+    std::vector<entt::entity> children;
+};
+
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);
     ~Scene();
@@ -148,6 +153,7 @@ struct Scene {
     entt::registry &R;
 
     void AddMesh(Mesh &&);
+    void AddInstance(entt::entity);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
@@ -180,9 +186,6 @@ private:
     MeshElement SelectionElement{MeshElement::None};
 
     entt::entity SelectedEntity{0};
-    // Map of entities to contiguous indices.
-    // This is currently used to map to offsets into contiguous regions VK staging buffers, but it could be used for other things.
-    std::unordered_map<entt::entity, uint> MeshBufferIndices;
     std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;
@@ -192,8 +195,9 @@ private:
         TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)},
         LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)},
         ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)},
-        SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)},
-        ModelsBuffer{vk::BufferUsageFlagBits::eVertexBuffer};
+        SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
+
+    std::unordered_map<entt::entity, VulkanBuffer> ModelsBuffers;
 
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
@@ -208,6 +212,7 @@ private:
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
 
+    entt::entity GetMeshEntity(entt::entity) const;
     Mesh &GetSelectedMesh() const;
     Model &GetSelectedModel() const;
     void SetSelectedModel(mat4 &&);

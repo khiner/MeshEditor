@@ -300,7 +300,6 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
       SilhouettePipeline(VC), EdgeDetectionPipeline(VC) {
     UpdateEdgeColors();
-    VC.CreateBuffer(ModelsBuffer, 10 * sizeof(Model));
     VC.CreateBuffer(TransformBuffer, sizeof(ViewProj));
     VC.CreateBuffer(ViewProjNearFarBuffer, sizeof(ViewProjNearFar));
     UpdateViewProj();
@@ -330,7 +329,6 @@ Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anyth
 
 void Scene::AddMesh(Mesh &&mesh) {
     const auto entity = R.create();
-    MeshBufferIndices.emplace(entity, MeshBufferIndices.size());
 
     BuffersByElement mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
@@ -341,25 +339,43 @@ void Scene::AddMesh(Mesh &&mesh) {
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
 
+    VulkanBuffer models_buffer{vk::BufferUsageFlagBits::eVertexBuffer};
+    VC.CreateBuffer(models_buffer, 10 * sizeof(Model));
+    ModelsBuffers.emplace(entity, std::move(models_buffer));
+
     R.emplace<Mesh>(entity, std::move(mesh));
+    R.emplace<SceneNode>(entity); // No parent or children.
     R.emplace<Model>(entity, 1);
 
-    // VC.CreateBuffer(ModelsBuffer, sizeof(Model) * MeshVkData->Main.size());
-    // R.view<Mesh>().each([this](auto entity, auto &) { UpdateTransform(entity); });
+    UpdateTransform(entity);
+    SelectedEntity = entity;
+}
+void Scene::AddInstance(entt::entity parent) {
+    const auto entity = R.create();
+    // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
+    R.emplace<SceneNode>(entity, parent);
+    R.get<SceneNode>(parent).children.emplace_back(entity);
+    R.emplace<Model>(entity, 1);
+
     UpdateTransform(entity);
     SelectedEntity = entity;
 }
 
-Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(SelectedEntity); }
+entt::entity Scene::GetMeshEntity(entt::entity entity) const {
+    const auto &node = R.get<SceneNode>(entity);
+    return node.parent == entt::null ? entity : GetMeshEntity(node.parent);
+}
+
+Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetMeshEntity(SelectedEntity)); }
 Model &Scene::GetSelectedModel() const { return R.get<Model>(SelectedEntity); }
 void Scene::SetSelectedModel(mat4 &&model) {
     R.replace<Model>(SelectedEntity, std::move(model));
     UpdateTransform(SelectedEntity);
 }
 
-void Scene::UpdateMeshBuffers(entt::entity entity, MeshElementIndex highlight_element) {
-    auto &mesh = R.get<Mesh>(entity);
-    auto &mesh_buffers = MeshVkData->Main.at(entity);
+void Scene::UpdateMeshBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
+    auto &mesh = R.get<Mesh>(mesh_entity);
+    auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
     for (auto element : AllElements) { // todo only update buffers for viewed elements.
         VC.UpdateBuffer(mesh_buffers[element].Vertices, mesh.CreateVertices(element, highlight_element));
     }
@@ -427,29 +443,38 @@ void Scene::RecordCommandBuffer() {
         }}
     );
 
-    const auto &buffers = MeshVkData->Main.at(SelectedEntity);
-
+    const auto selected_mesh_entity = GetMeshEntity(SelectedEntity);
+    const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
+    const auto &selected_models_buffer = ModelsBuffers.at(selected_mesh_entity);
     SilhouettePipeline.Begin(cb);
-    SilhouettePipeline.RenderBuffers(cb, buffers.at(MeshElement::Vertex), SPT::Silhouette, ModelsBuffer);
+    SilhouettePipeline.RenderBuffers(cb, selected_buffers.at(MeshElement::Vertex), SPT::Silhouette, selected_models_buffer);
     cb.endRenderPass();
-
     EdgeDetectionPipeline.Begin(cb);
     EdgeDetectionPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
     cb.endRenderPass();
 
     MainPipeline.Begin(cb, BackgroundColor);
-    for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
-        MainPipeline.RenderBuffers(cb, buffers.at(element), pipeline, ModelsBuffer);
-    }
+    R.view<Mesh>().each([this, &cb](auto mesh_entity, auto &) {
+        const auto &buffers = MeshVkData->Main.at(mesh_entity);
+        const auto &models_buffer = ModelsBuffers.at(mesh_entity);
+        for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
+            MainPipeline.RenderBuffers(cb, buffers.at(element), pipeline, models_buffer);
+        }
+    });
+
+    // Render silhouette edge texture.
     MainPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
 
-    const auto &normals = MeshVkData->NormalIndicators.at(SelectedEntity);
-    for (auto normal_element : AllNormalElements) {
-        if (auto it = normals.find(normal_element); it != normals.end()) {
-            MainPipeline.RenderBuffers(cb, it->second, SPT::Line, ModelsBuffer);
+    R.view<Mesh>().each([this, &cb](auto mesh_entity, auto &) {
+        const auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
+        const auto &models_buffer = ModelsBuffers.at(mesh_entity);
+        for (auto normal_element : AllNormalElements) {
+            if (auto it = normals.find(normal_element); it != normals.end()) {
+                MainPipeline.RenderBuffers(cb, it->second, SPT::Line, models_buffer);
+            }
         }
-    }
-    // R.view<Mesh>().each([this, &cb](auto entity, auto &) {});
+    });
+
     if (ShowGrid) MainPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
 
     cb.endRenderPass();
@@ -488,8 +513,18 @@ void Scene::UpdateViewProj() {
 
 void Scene::UpdateTransform(entt::entity entity) {
     const auto &model = R.get<Model>(entity);
-    const uint i = MeshBufferIndices.at(entity);
-    VC.UpdateBuffer(ModelsBuffer, &model, i * sizeof(Model), sizeof(Model));
+    const auto &node = R.get<SceneNode>(entity);
+    const auto parent = node.parent;
+
+    uint i;
+    if (parent == entt::null) { // Mesh, model index 0
+        i = 0;
+    } else { // Instance, model index 1 + index in parent's children
+        const auto &parent_node = R.get<SceneNode>(parent); // Assuming one level deep hierarchy for now.
+        i = 1 + std::distance(parent_node.children.begin(), std::ranges::find(parent_node.children, entity));
+    }
+
+    VC.UpdateBuffer(ModelsBuffers.at(GetMeshEntity(entity)), &model, i * sizeof(Model), sizeof(Model));
 }
 
 using namespace ImGui;
@@ -527,7 +562,7 @@ bool Scene::Render() {
             if (highlight_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
         }
         if (HighlightedElement != highlight_element) {
-            UpdateMeshBuffers(SelectedEntity, HighlightedElement);
+            UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
             SubmitCommandBuffer();
         }
     }
@@ -626,7 +661,11 @@ void Scene::RenderControls() {
             EndTabItem();
         }
         if (BeginTabItem("Object")) {
-            if (CollapsingHeader("Add")) {
+            if (Button("Add instance")) {
+                AddInstance(GetMeshEntity(SelectedEntity));
+                RecordAndSubmitCommandBuffer();
+            }
+            if (CollapsingHeader("Add mesh")) {
                 for (const auto &primitive : PrimitiveName::All) {
                     if (Button(primitive.c_str())) {
                         if (primitive == PrimitiveName::Cuboid) AddMesh(Cuboid({0.5, 0.5, 0.5}));
@@ -668,7 +707,7 @@ void Scene::RenderControls() {
                 }
                 {
                     SeparatorText("Normal indicators");
-                    auto &normals = MeshVkData->NormalIndicators.at(SelectedEntity);
+                    auto &normals = MeshVkData->NormalIndicators.at(GetMeshEntity(SelectedEntity));
                     for (const auto element : AllNormalElements) {
                         bool has_normals = normals.contains(element);
                         std::string name = to_string(element);
