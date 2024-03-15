@@ -21,15 +21,6 @@ void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
 
-namespace PrimitiveName {
-const std::string
-    Cuboid = "Cuboid",
-    IcoSphere = "IcoSphere",
-    Rect = "Rect";
-
-const std::vector All{Cuboid, IcoSphere, Rect};
-} // namespace PrimitiveName
-
 const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
 
 using BuffersByElement = std::unordered_map<MeshElement, MeshBuffers>;
@@ -582,7 +573,7 @@ bool Scene::Render() {
                 if (mesh.FindNearestVertex(mouse_ray).is_valid()) HoveredEntities.emplace(entity);
             });
         }
-        if (IsMouseClicked(ImGuiMouseButton_Left) && !HoveredEntities.empty()) {
+        if ((GetIO().KeyCtrl || GetIO().KeySuper) && IsMouseClicked(ImGuiMouseButton_Left) && !HoveredEntities.empty()) {
             // Cycle through hovered entities.
             auto it = HoveredEntities.find(SelectedEntity);
             if (it != HoveredEntities.end()) ++it;
@@ -687,13 +678,12 @@ void Scene::RenderControls() {
         }
         if (BeginTabItem("Object")) {
             if (CollapsingHeader("Add mesh")) {
-                for (const auto &primitive : PrimitiveName::All) {
-                    if (Button(primitive.c_str())) {
-                        if (primitive == PrimitiveName::Cuboid) AddMesh(Cuboid({0.5, 0.5, 0.5}));
-                        else if (primitive == PrimitiveName::IcoSphere) AddMesh(IcoSphere(0.5, 3));
-                        else if (primitive == PrimitiveName::Rect) AddMesh(Rect({0.5, 0.5}));
+                for (const auto primitive : AllPrimitives) {
+                    if (Button(to_string(primitive).c_str())) {
+                        AddMesh(CreateDefaultPrimitive(primitive));
                         RecordAndSubmitCommandBuffer();
                     }
+                    if (primitive != AllPrimitives.back()) SameLine();
                 }
             }
             if (CollapsingHeader("Render")) {

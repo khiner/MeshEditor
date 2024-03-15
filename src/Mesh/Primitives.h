@@ -12,6 +12,20 @@ inline Mesh Rect(vec2 half_extents) {
     };
 }
 
+inline Mesh Circle(float radius = 1, uint segments = 32) {
+    std::vector<vec3> vertices;
+    vertices.reserve(segments + 1);
+    std::vector<std::vector<uint>> indices;
+    indices.reserve(segments);
+    for (uint i = 0; i < segments; ++i) {
+        const float theta = 2 * M_PI * i / segments;
+        vertices.emplace_back(radius * vec3{cos(theta), sin(theta), 0});
+        indices.push_back({i, (i + 1) % segments, segments});
+    }
+    vertices.emplace_back(0, 0, 0);
+    return {std::move(vertices), std::move(indices)};
+}
+
 inline Mesh Cuboid(vec3 half_extents) {
     const auto x = half_extents.x, y = half_extents.y, z = half_extents.z;
     return {
@@ -80,3 +94,30 @@ inline Mesh IcoSphere(float radius = 1, int recursion_level = 1) {
 
     return Mesh{std::move(vertices), std::move(indices)};
 }
+
+enum class Primitive {
+    Rect,
+    Circle,
+    Cube,
+    IcoSphere,
+};
+
+inline std::string to_string(Primitive primitive) {
+    switch (primitive) {
+        case Primitive::Rect: return "Rect";
+        case Primitive::Circle: return "Circle";
+        case Primitive::Cube: return "Cube";
+        case Primitive::IcoSphere: return "IcoSphere";
+    }
+}
+
+inline Mesh CreateDefaultPrimitive(Primitive primitive) {
+    switch (primitive) {
+        case Primitive::Rect: return Rect({0.5, 0.5});
+        case Primitive::Cube: return Cuboid({0.5, 0.5, 0.5});
+        case Primitive::IcoSphere: return IcoSphere(0.5, 3);
+        case Primitive::Circle: return Circle(0.5, 32);
+    }
+}
+
+inline const std::vector<Primitive> AllPrimitives{Primitive::Rect, Primitive::Circle, Primitive::Cube, Primitive::IcoSphere};
