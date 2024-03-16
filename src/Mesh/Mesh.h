@@ -89,11 +89,15 @@ struct Mesh {
         SetFaces(std::move(vertices), std::move(faces), color);
         UpdateNormals();
     }
-
     ~Mesh() {
         M.release_vertex_normals();
         M.release_face_normals();
         M.release_face_colors();
+    }
+
+    Mesh &operator=(const Mesh &other) {
+        M = other.M;
+        return *this;
     }
 
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);

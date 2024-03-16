@@ -161,7 +161,8 @@ struct Scene {
     const VulkanContext &VC;
     entt::registry &R;
 
-    void AddMesh(Mesh &&);
+    entt::entity AddMesh(Mesh &&);
+    void ReplaceMesh(entt::entity, Mesh &&);
     void AddInstance(entt::entity);
 
     const vk::Extent2D &GetExtent() const { return Extent; }

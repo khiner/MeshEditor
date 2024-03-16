@@ -318,12 +318,13 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
-    AddMesh(Cuboid({0.5, 0.5, 0.5}));
+    SelectedEntity = AddMesh(CreateDefaultPrimitive(Primitive::Cube));
+    R.emplace<Primitive>(SelectedEntity, Primitive::Cube);
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
-void Scene::AddMesh(Mesh &&mesh) {
+entt::entity Scene::AddMesh(Mesh &&mesh) {
     const auto entity = R.create();
 
     BuffersByElement mesh_buffers{};
@@ -344,8 +345,20 @@ void Scene::AddMesh(Mesh &&mesh) {
     R.emplace<Model>(entity, 1);
 
     UpdateTransform(entity);
-    SelectedEntity = entity;
+    return entity;
 }
+
+void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
+    R.replace<Mesh>(entity, std::move(mesh));
+    auto &mesh_buffers = MeshVkData->Main.at(entity);
+    // todo resize buffers if needed
+    for (auto element : AllElements) {
+        VC.UpdateBuffer(mesh_buffers[element].Vertices, mesh.CreateVertices(element));
+        VC.UpdateBuffer(mesh_buffers[element].Indices, mesh.CreateIndices(element));
+    }
+    // todo normals
+}
+
 void Scene::AddInstance(entt::entity parent) {
     const auto entity = R.create();
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
@@ -632,6 +645,51 @@ void DecomposeTransform(const glm::mat4 &transform, glm::vec3 &position, glm::ve
     rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
 }
 
+std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) {
+    const char *create_label = is_create ? "Add" : "Update";
+    if (primitive == Primitive::Rect) {
+        static vec2 size = {1.0, 1.0};
+        InputFloat2("Size", &size.x);
+        if (Button(create_label)) return Rect(size / 2.f);
+    } else if (primitive == Primitive::Circle) {
+        static float r = 0.5;
+        InputFloat("Radius", &r);
+        if (Button(create_label)) return Circle(r);
+    } else if (primitive == Primitive::Cube) {
+        static vec3 size = {1.0, 1.0, 1.0};
+        InputFloat3("Size", &size.x);
+        if (Button(create_label)) return Cuboid(size / 2.f);
+    } else if (primitive == Primitive::IcoSphere) {
+        static float r = 0.5;
+        static int subdivisions = 3;
+        InputFloat("Radius", &r);
+        InputInt("Subdivisions", &subdivisions);
+        if (Button(create_label)) return IcoSphere(r, uint(subdivisions));
+    } else if (primitive == Primitive::UVSphere) {
+        static float r = 0.5;
+        InputFloat("Radius", &r);
+        if (Button(create_label)) return UVSphere(r);
+    } else if (primitive == Primitive::Torus) {
+        static vec2 radii = {0.5, 0.2};
+        static glm::ivec2 n_segments = {32, 16};
+        InputFloat2("Major/minor radius", &radii.x);
+        InputInt2("Major/minor segments", &n_segments.x);
+        if (Button(create_label)) return Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
+    } else if (primitive == Primitive::Cylinder) {
+        static float r = 1, h = 1;
+        InputFloat("Radius", &r);
+        InputFloat("Height", &h);
+        if (Button(create_label)) return Cylinder(r, h);
+    } else if (primitive == Primitive::Cone) {
+        static float r = 1, h = 1;
+        InputFloat("Radius", &r);
+        InputFloat("Height", &h);
+        if (Button(create_label)) return Cone(r, h);
+    }
+
+    return std::nullopt;
+}
+
 void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Scene")) {
@@ -678,31 +736,39 @@ void Scene::RenderControls() {
         }
         if (BeginTabItem("Object")) {
             if (CollapsingHeader("Add mesh")) {
+                PushID("AddPrimitive");
+                static int current_primitive_edit = int(Primitive::Cube);
                 for (const auto primitive : AllPrimitives) {
-                    if (Button(to_string(primitive).c_str())) {
-                        AddMesh(CreateDefaultPrimitive(primitive));
-                        RecordAndSubmitCommandBuffer();
-                    }
-                    if (primitive != AllPrimitives.back()) SameLine();
+                    RadioButton(to_string(primitive).c_str(), &current_primitive_edit, int(primitive));
                 }
+                if (auto mesh = PrimitiveEditor(Primitive(current_primitive_edit), true)) {
+                    SelectedEntity = AddMesh(std::move(*mesh));
+                    R.emplace<Primitive>(SelectedEntity, Primitive(current_primitive_edit));
+                    RecordAndSubmitCommandBuffer();
+                }
+                PopID();
             }
             if (CollapsingHeader("Render")) {
                 SeparatorText("Render mode");
                 int render_mode = int(RenderMode);
-                bool render_mode_changed = RadioButton("Faces and edges##Render", &render_mode, int(RenderMode::FacesAndEdges));
+                PushID("RenderMode");
+                bool render_mode_changed = RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
                 SameLine();
-                render_mode_changed |= RadioButton("Faces##Render", &render_mode, int(RenderMode::Faces));
+                render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
                 SameLine();
-                render_mode_changed |= RadioButton("Edges##Render", &render_mode, int(RenderMode::Edges));
+                render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
                 SameLine();
-                render_mode_changed |= RadioButton("Vertices##Render", &render_mode, int(RenderMode::Vertices));
+                render_mode_changed |= RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
+                PopID();
 
                 int color_mode = int(ColorMode);
                 bool color_mode_changed = false;
                 if (RenderMode != RenderMode::Edges) {
                     SeparatorText("Fill color mode");
-                    color_mode_changed |= RadioButton("Mesh##Color", &color_mode, int(ColorMode::Mesh));
-                    color_mode_changed |= RadioButton("Normals##Color", &color_mode, int(ColorMode::Normals));
+                    PushID("ColorMode");
+                    color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
+                    color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
+                    PopID();
                 }
                 if (render_mode_changed || color_mode_changed) {
                     RenderMode = ::RenderMode(render_mode);
@@ -746,22 +812,23 @@ void Scene::RenderControls() {
                 }
             }
             if (CollapsingHeader("Selection")) {
+                PushID("SelectionMode");
                 int selection_mode = int(SelectionMode);
-                if (RadioButton("Object##Selection", &selection_mode, int(SelectionMode::Object))) SelectionMode = SelectionMode::Object;
+                if (RadioButton("Object", &selection_mode, int(SelectionMode::Object))) SelectionMode = SelectionMode::Object;
                 SameLine();
-                if (RadioButton("Edit##Selection", &selection_mode, int(SelectionMode::Edit))) SelectionMode = SelectionMode::Edit;
+                if (RadioButton("Edit", &selection_mode, int(SelectionMode::Edit))) SelectionMode = SelectionMode::Edit;
                 if (SelectionMode == SelectionMode::Edit) {
                     int element_selection_mode = int(SelectionElement);
                     for (const auto element : AllElementsWithNone) {
                         std::string name = to_string(element);
                         Capitalize(name);
-                        name += "##Selection";
                         if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
                         if (element != AllElementsWithNone.back()) SameLine();
                     }
                     const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", to_string(HighlightedElement.Element), HighlightedElement.idx()) : "Hovered: None";
                     TextUnformatted(highlight_label.c_str());
                 }
+                PopID();
             }
             if (SelectedEntity != entt::null) {
                 TextUnformatted(std::format("Selected: {}", uint(SelectedEntity)).c_str());
@@ -778,6 +845,14 @@ void Scene::RenderControls() {
                     }
                     SameLine();
                     TextUnformatted(selected_label.c_str());
+                }
+                if (const auto *maybe_primitive = R.try_get<Primitive>(SelectedEntity)) {
+                    const Primitive primitive = *maybe_primitive;
+                    // Editor for the selected entity's primitive type.
+                    if (auto new_mesh = PrimitiveEditor(primitive, false)) {
+                        ReplaceMesh(SelectedEntity, std::move(*new_mesh));
+                        RecordAndSubmitCommandBuffer();
+                    }
                 }
                 if (Button("Add instance")) {
                     AddInstance(GetMeshEntity(SelectedEntity));
