@@ -41,8 +41,14 @@ struct VulkanContext {
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
 
     template<typename T> void CreateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
-        CreateBuffer(buffer, sizeof(T) * data.size());
-        UpdateBuffer(buffer, data);
+        const uint bytes = sizeof(T) * data.size();
+        CreateBuffer(buffer, bytes);
+        UpdateBuffer(buffer, data.data(), 0, bytes);
     }
-    template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const { UpdateBuffer(buffer, data.data(), 0, buffer.Size); }
+    template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
+        const uint bytes = sizeof(T) * data.size();
+        // If the buffer is either too small or too large, recreate it.
+        if (bytes != buffer.Size) CreateBuffer(buffer, bytes);
+        UpdateBuffer(buffer, data.data(), 0, bytes);
+    }
 };

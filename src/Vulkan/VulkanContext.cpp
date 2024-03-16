@@ -159,6 +159,7 @@ void VulkanContext::CreateBuffer(VulkanBuffer &buffer, vk::DeviceSize bytes) con
 
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0) bytes = buffer.Size;
+    if (offset + bytes > buffer.Size) throw std::runtime_error("Buffer not large enough for update.");
 
     // Copy data to the staging buffer.
     void *mapped_data = Device->mapMemory(*buffer.StagingMemory, offset, bytes);

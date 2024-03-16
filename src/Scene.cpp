@@ -351,7 +351,6 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     R.replace<Mesh>(entity, std::move(mesh));
     auto &mesh_buffers = MeshVkData->Main.at(entity);
-    // todo resize buffers if needed
     for (auto element : AllElements) {
         VC.UpdateBuffer(mesh_buffers[element].Vertices, mesh.CreateVertices(element));
         VC.UpdateBuffer(mesh_buffers[element].Indices, mesh.CreateIndices(element));
