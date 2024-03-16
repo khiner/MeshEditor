@@ -4,7 +4,7 @@
 
 #include "mesh/Mesh.h"
 
-inline Mesh Rect(vec2 half_extents) {
+inline Mesh Rect(vec2 half_extents = {0.5, 0.5}) {
     const auto x = half_extents.x, y = half_extents.y;
     return {
         {{-x, -y, 0}, {x, -y, 0}, {x, y, 0}, {-x, y, 0}},
@@ -12,11 +12,12 @@ inline Mesh Rect(vec2 half_extents) {
     };
 }
 
-inline Mesh Circle(float radius = 1, uint segments = 32) {
+inline Mesh Circle(float radius = 0.5, uint segments = 32) {
     std::vector<vec3> vertices;
-    vertices.reserve(segments + 1);
     std::vector<std::vector<uint>> indices;
+    vertices.reserve(segments + 1);
     indices.reserve(segments);
+
     for (uint i = 0; i < segments; ++i) {
         const float theta = 2 * M_PI * i / segments;
         vertices.emplace_back(radius * vec3{cos(theta), sin(theta), 0});
@@ -26,7 +27,7 @@ inline Mesh Circle(float radius = 1, uint segments = 32) {
     return {std::move(vertices), std::move(indices)};
 }
 
-inline Mesh Cuboid(vec3 half_extents) {
+inline Mesh Cuboid(vec3 half_extents = {0.5, 0.5, 0.5}) {
     const auto x = half_extents.x, y = half_extents.y, z = half_extents.z;
     return {
         {
@@ -50,7 +51,7 @@ inline Mesh Cuboid(vec3 half_extents) {
     };
 }
 
-inline Mesh IcoSphere(float radius = 1, int recursion_level = 1) {
+inline Mesh IcoSphere(float radius = 0.5, uint recursion_level = 3) {
     static const float t = (1.f + sqrt(5.f)) / 2.f;
     // clang-format off
     std::vector<vec3> vertices{
@@ -80,7 +81,7 @@ inline Mesh IcoSphere(float radius = 1, int recursion_level = 1) {
         return i;
     };
 
-    for (int r = 0; r < recursion_level; ++r) {
+    for (uint r = 0; r < recursion_level; ++r) {
         std::vector<std::vector<uint>> new_indices;
         for (auto &tri : indices) {
             const uint a = tri[0], b = tri[1], c = tri[2];
@@ -95,11 +96,60 @@ inline Mesh IcoSphere(float radius = 1, int recursion_level = 1) {
     return Mesh{std::move(vertices), std::move(indices)};
 }
 
+inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16) {
+    std::vector<vec3> vertices;
+    std::vector<std::vector<uint>> indices;
+    vertices.reserve(2 + n_slices * (n_stacks - 2)); // +/- 2 for the poles
+    indices.reserve(2 * n_slices + n_slices * (n_stacks - 2)); // Top + bottom triangles + quads
+
+    vertices.emplace_back(0, radius, 0); // Top pole
+
+    // Vertices (excluding poles)
+    for (uint i = 1; i < n_stacks; ++i) {
+        const float phi = M_PI * float(i) / n_stacks;
+        for (uint j = 0; j < n_slices; ++j) {
+            const float theta = 2 * M_PI * float(j) / n_slices;
+            vertices.emplace_back(vec3{sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta)} * radius);
+        }
+    }
+
+    vertices.emplace_back(0, -radius, 0); // Bottom pole
+
+    // Top triangles
+    for (uint i = 0; i < n_slices; ++i) indices.push_back({0, 1 + (i + 1) % n_slices, 1 + i});
+
+    // Quads per stack / slice
+    for (uint j = 0; j < n_stacks - 2; ++j) {
+        const uint j0 = 1 + j * n_slices, j1 = 1 + (j + 1) * n_slices;
+        for (uint i = 0; i < n_slices; ++i) {
+            indices.push_back({
+                j0 + i,
+                j0 + (i + 1) % n_slices,
+                j1 + (i + 1) % n_slices,
+                j1 + i,
+            });
+        }
+    }
+
+    // Bottom triangles
+    const uint bottom_i = vertices.size() - 1;
+    for (uint i = 0; i < n_slices; ++i) {
+        indices.push_back({
+            bottom_i,
+            1 + (n_stacks - 2) * n_slices + i,
+            1 + (n_stacks - 2) * n_slices + (i + 1) % n_slices,
+        });
+    }
+
+    return {std::move(vertices), std::move(indices)};
+}
+
 enum class Primitive {
     Rect,
     Circle,
     Cube,
     IcoSphere,
+    UVSphere,
 };
 
 inline std::string to_string(Primitive primitive) {
@@ -108,16 +158,18 @@ inline std::string to_string(Primitive primitive) {
         case Primitive::Circle: return "Circle";
         case Primitive::Cube: return "Cube";
         case Primitive::IcoSphere: return "IcoSphere";
+        case Primitive::UVSphere: return "UVSphere";
     }
 }
 
 inline Mesh CreateDefaultPrimitive(Primitive primitive) {
     switch (primitive) {
-        case Primitive::Rect: return Rect({0.5, 0.5});
-        case Primitive::Cube: return Cuboid({0.5, 0.5, 0.5});
-        case Primitive::IcoSphere: return IcoSphere(0.5, 3);
-        case Primitive::Circle: return Circle(0.5, 32);
+        case Primitive::Rect: return Rect();
+        case Primitive::Cube: return Cuboid();
+        case Primitive::IcoSphere: return IcoSphere();
+        case Primitive::Circle: return Circle();
+        case Primitive::UVSphere: return UVSphere();
     }
 }
 
-inline const std::vector<Primitive> AllPrimitives{Primitive::Rect, Primitive::Circle, Primitive::Cube, Primitive::IcoSphere};
+inline const std::vector<Primitive> AllPrimitives{Primitive::Rect, Primitive::Circle, Primitive::Cube, Primitive::IcoSphere, Primitive::UVSphere};
