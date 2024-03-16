@@ -12,16 +12,16 @@ inline Mesh Rect(vec2 half_extents = {0.5, 0.5}) {
     };
 }
 
-inline Mesh Circle(float radius = 0.5, uint segments = 32) {
+inline Mesh Circle(float radius = 0.5, uint n = 32) {
     std::vector<vec3> vertices;
     std::vector<std::vector<uint>> indices;
-    vertices.reserve(segments + 1);
-    indices.reserve(segments);
+    vertices.reserve(n + 1);
+    indices.reserve(n);
 
-    for (uint i = 0; i < segments; ++i) {
-        const float theta = 2 * M_PI * i / segments;
+    for (uint i = 0; i < n; ++i) {
+        const float theta = 2 * M_PI * i / n;
         vertices.emplace_back(radius * vec3{cos(theta), sin(theta), 0});
-        indices.push_back({i, (i + 1) % segments, segments});
+        indices.push_back({i, (i + 1) % n, n});
     }
     vertices.emplace_back(0, 0, 0);
     return {std::move(vertices), std::move(indices)};
@@ -106,9 +106,9 @@ inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16)
 
     // Vertices (excluding poles)
     for (uint i = 1; i < n_stacks; ++i) {
-        const float phi = M_PI * float(i) / n_stacks;
+        const float phi = M_PI * float(i) / float(n_stacks);
         for (uint j = 0; j < n_slices; ++j) {
-            const float theta = 2 * M_PI * float(j) / n_slices;
+            const float theta = 2 * M_PI * float(j) / float(n_slices);
             vertices.emplace_back(vec3{sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta)} * radius);
         }
     }
@@ -151,9 +151,9 @@ inline Mesh Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_maj
     indices.reserve(n_major * n_minor);
 
     for (uint i = 0; i < n_major; ++i) {
-        const float theta = 2 * M_PI * float(i) / n_major;
+        const float theta = 2 * M_PI * float(i) / float(n_major);
         for (uint j = 0; j < n_minor; ++j) {
-            const float phi = 2 * M_PI * float(j) / n_minor;
+            const float phi = 2 * M_PI * float(j) / float(n_minor);
             const float radial_distance = major_radius + minor_radius * cos(phi);
             vertices.emplace_back(radial_distance * sin(theta), minor_radius * sin(phi), radial_distance * cos(theta));
         }
@@ -174,6 +174,36 @@ inline Mesh Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_maj
     return {std::move(vertices), std::move(indices)};
 }
 
+inline Mesh Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
+    std::vector<vec3> vertices(2 * slices);
+    std::vector<std::vector<uint>> faces(slices + 2);
+
+    for (uint i = 0; i < slices; i++) {
+        const float angle = 2 * M_PI * float(i) / float(slices);
+        const float x = cos(angle), z = sin(angle);
+        vertices[i] = {x * radius, -height / 2, z * radius}; // bottom face
+        vertices[i + slices] = {x * radius, height / 2, z * radius}; // top face
+    }
+
+    // Bottom face
+    faces[0].reserve(slices);
+    for (uint i = 0; i < slices; i++) faces[0].emplace_back(i);
+    // Side quads
+    for (uint i = 0; i < slices; ++i) {
+        faces[i + 1] = {
+            i, // bottom
+            i + slices, // top
+            (i + 1) % slices + slices, // top
+            (i + 1) % slices, // bottom
+        };
+    }
+    // Top face, reversed for winding order
+    faces[slices + 1].reserve(slices);
+    for (int i = slices - 1; i >= 0; --i) faces[slices + 1].emplace_back(i + slices);
+
+    return {std::move(vertices), std::move(faces)};
+}
+
 enum class Primitive {
     Rect,
     Circle,
@@ -181,6 +211,7 @@ enum class Primitive {
     IcoSphere,
     UVSphere,
     Torus,
+    Cylinder,
 };
 
 inline std::string to_string(Primitive primitive) {
@@ -191,6 +222,7 @@ inline std::string to_string(Primitive primitive) {
         case Primitive::IcoSphere: return "IcoSphere";
         case Primitive::UVSphere: return "UVSphere";
         case Primitive::Torus: return "Torus";
+        case Primitive::Cylinder: return "Cylinder";
     }
 }
 
@@ -202,7 +234,16 @@ inline Mesh CreateDefaultPrimitive(Primitive primitive) {
         case Primitive::Circle: return Circle();
         case Primitive::UVSphere: return UVSphere();
         case Primitive::Torus: return Torus();
+        case Primitive::Cylinder: return Cylinder();
     }
 }
 
-inline const std::vector<Primitive> AllPrimitives{Primitive::Rect, Primitive::Circle, Primitive::Cube, Primitive::IcoSphere, Primitive::UVSphere, Primitive::Torus};
+inline const std::vector<Primitive> AllPrimitives{
+    Primitive::Rect,
+    Primitive::Circle,
+    Primitive::Cube,
+    Primitive::IcoSphere,
+    Primitive::UVSphere,
+    Primitive::Torus,
+    Primitive::Cylinder,
+};
