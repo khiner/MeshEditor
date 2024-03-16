@@ -144,12 +144,43 @@ inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16)
     return {std::move(vertices), std::move(indices)};
 }
 
+inline Mesh Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_major = 32, uint n_minor = 16) {
+    std::vector<vec3> vertices;
+    std::vector<std::vector<uint>> indices;
+    vertices.reserve(n_major * n_minor);
+    indices.reserve(n_major * n_minor);
+
+    for (uint i = 0; i < n_major; ++i) {
+        const float theta = 2 * M_PI * float(i) / n_major;
+        for (uint j = 0; j < n_minor; ++j) {
+            const float phi = 2 * M_PI * float(j) / n_minor;
+            const float radial_distance = major_radius + minor_radius * cos(phi);
+            vertices.emplace_back(radial_distance * sin(theta), minor_radius * sin(phi), radial_distance * cos(theta));
+        }
+    }
+
+    // Generate quads for the torus surface, maintaining original winding order
+    for (uint i = 0; i < n_major; ++i) {
+        for (uint j = 0; j < n_minor; ++j) {
+            indices.push_back({
+                i * n_minor + j,
+                ((i + 1) % n_major) * n_minor + j,
+                ((i + 1) % n_major) * n_minor + (j + 1) % n_minor,
+                i * n_minor + (j + 1) % n_minor,
+            });
+        }
+    }
+
+    return {std::move(vertices), std::move(indices)};
+}
+
 enum class Primitive {
     Rect,
     Circle,
     Cube,
     IcoSphere,
     UVSphere,
+    Torus,
 };
 
 inline std::string to_string(Primitive primitive) {
@@ -159,6 +190,7 @@ inline std::string to_string(Primitive primitive) {
         case Primitive::Cube: return "Cube";
         case Primitive::IcoSphere: return "IcoSphere";
         case Primitive::UVSphere: return "UVSphere";
+        case Primitive::Torus: return "Torus";
     }
 }
 
@@ -169,7 +201,8 @@ inline Mesh CreateDefaultPrimitive(Primitive primitive) {
         case Primitive::IcoSphere: return IcoSphere();
         case Primitive::Circle: return Circle();
         case Primitive::UVSphere: return UVSphere();
+        case Primitive::Torus: return Torus();
     }
 }
 
-inline const std::vector<Primitive> AllPrimitives{Primitive::Rect, Primitive::Circle, Primitive::Cube, Primitive::IcoSphere, Primitive::UVSphere};
+inline const std::vector<Primitive> AllPrimitives{Primitive::Rect, Primitive::Circle, Primitive::Cube, Primitive::IcoSphere, Primitive::UVSphere, Primitive::Torus};
