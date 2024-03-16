@@ -15,8 +15,6 @@
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
-#include <print>
-
 void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
@@ -29,6 +27,17 @@ struct MeshVkData {
 };
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
+
+namespace Format {
+const auto Vec3 = vk::Format::eR32G32B32Sfloat;
+const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
+} // namespace Format
+
+namespace ImageFormat {
+const auto Color = vk::Format::eB8G8R8A8Unorm;
+const auto Float = vk::Format::eR32G32B32A32Sfloat;
+const auto Depth = vk::Format::eD32Sfloat;
+} // namespace ImageFormat
 
 static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
@@ -43,11 +52,28 @@ static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice 
     return vk::SampleCountFlagBits::e1;
 }
 
-namespace ImageFormat {
-const auto Color = vk::Format::eB8G8R8A8Unorm;
-const auto Float = vk::Format::eR32G32B32A32Sfloat;
-const auto Depth = vk::Format::eD32Sfloat;
-} // namespace ImageFormat
+vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
+    static const std::vector<vk::VertexInputBindingDescription> bindings{
+        {0, sizeof(Vertex3D), vk::VertexInputRate::eVertex},
+        {1, 2 * sizeof(mat4), vk::VertexInputRate::eInstance},
+    };
+    static const std::vector<vk::VertexInputAttributeDescription> attrs{
+        {0, 0, Format::Vec3, offsetof(Vertex3D, Position)},
+        {1, 0, Format::Vec3, offsetof(Vertex3D, Normal)},
+        {2, 0, Format::Vec4, offsetof(Vertex3D, Color)},
+        // Model mat4, one vec4 per row
+        {3, 1, Format::Vec4, 0},
+        {4, 1, Format::Vec4, sizeof(vec4)},
+        {5, 1, Format::Vec4, 2 * sizeof(vec4)},
+        {6, 1, Format::Vec4, 3 * sizeof(vec4)},
+        // Inverse model mat4, one vec4 per row
+        {7, 1, Format::Vec4, 4 * sizeof(vec4)},
+        {8, 1, Format::Vec4, 5 * sizeof(vec4)},
+        {9, 1, Format::Vec4, 6 * sizeof(vec4)},
+        {10, 1, Format::Vec4, 7 * sizeof(vec4)},
+    };
+    return {{}, bindings, attrs};
+}
 
 struct Gizmo {
     ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
@@ -65,7 +91,7 @@ struct Gizmo {
         ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
     }
 
-    void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
+    void Render(Camera &camera, bool &view_changed) const {
         using namespace ImGui;
 
         static const float ViewManipulateSize = 128;
@@ -76,7 +102,13 @@ struct Gizmo {
         const float camera_distance = camera.GetDistance();
         view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
         if (view_changed) camera.SetPositionFromView(camera_view);
+    }
 
+    void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
+        using namespace ImGui;
+
+        Render(camera, view_changed);
+        auto camera_view = camera.GetViewMatrix();
         auto camera_projection = camera.GetProjectionMatrix(aspect_ratio);
         model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
     }
@@ -164,18 +196,22 @@ MainPipeline::MainPipeline(const VulkanContext &vc)
 
     ShaderPipelines[SPT::Fill] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
+        CreateVertexInputState(),
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Line] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
+        CreateVertexInputState(),
         vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
     );
     ShaderPipelines[SPT::Grid] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
+        vk::PipelineVertexInputStateCreateInfo{},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(true), CreateDepthStencil(true, false), MsaaSamples
     );
     ShaderPipelines[SPT::Texture] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}},
+        vk::PipelineVertexInputStateCreateInfo{},
         // We render all the silhouette edge texture's pixels regardless of the tested depth value,
         // but also explicitly override the depth buffer to make edge pixels "stick" to the mesh they are derived from.
         // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers
@@ -184,6 +220,7 @@ MainPipeline::MainPipeline(const VulkanContext &vc)
     );
     ShaderPipelines[SPT::DebugNormals] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}},
+        CreateVertexInputState(),
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
     );
 }
@@ -239,6 +276,7 @@ SilhouettePipeline::SilhouettePipeline(const VulkanContext &vc) : RenderPipeline
 
     ShaderPipelines[SPT::Silhouette] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}},
+        CreateVertexInputState(),
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
@@ -271,6 +309,7 @@ EdgeDetectionPipeline::EdgeDetectionPipeline(const VulkanContext &vc) : RenderPi
 
     ShaderPipelines[SPT::EdgeDetection] = std::make_unique<ShaderPipeline>(
         *VC.Device, *VC.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "MeshEdges.frag"}}},
+        vk::PipelineVertexInputStateCreateInfo{},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
     );
 }
@@ -378,7 +417,19 @@ void Scene::AddInstance(entt::entity parent) {
     SelectedEntity = entity;
 }
 
+void Scene::DestroyEntity(entt::entity entity) {
+    if (entity == SelectedEntity) SelectedEntity = entt::null;
+
+    MeshVkData->Main.erase(entity);
+    MeshVkData->NormalIndicators.erase(entity);
+    ModelsBuffers.erase(entity); // todo handle destroying instances
+
+    R.destroy(entity);
+}
+
 entt::entity Scene::GetMeshEntity(entt::entity entity) const {
+    if (entity == entt::null) return entt::null;
+
     const auto &node = R.get<SceneNode>(entity);
     return node.parent == entt::null ? entity : GetMeshEntity(node.parent);
 }
@@ -446,6 +497,8 @@ uint GetModelIndex(const entt::registry &r, entt::entity entity) {
 }
 
 void Scene::RecordCommandBuffer() {
+    const auto &meshes = R.view<Mesh>();
+
     const auto cb = *VC.CommandBuffers[0];
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
@@ -470,20 +523,22 @@ void Scene::RecordCommandBuffer() {
     );
 
     const auto selected_mesh_entity = GetMeshEntity(SelectedEntity);
-    const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
-    const auto &selected_models_buffer = ModelsBuffers.at(selected_mesh_entity);
-    SilhouettePipeline.Begin(cb);
-    // Only render the silhouette edge texture for the selected mesh instance.
-    SilhouettePipeline.RenderBuffers(cb, SPT::Silhouette, selected_buffers.at(MeshElement::Vertex), selected_models_buffer, GetModelIndex(R, SelectedEntity));
-    cb.endRenderPass();
-    EdgeDetectionPipeline.Begin(cb);
-    EdgeDetectionPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
-    cb.endRenderPass();
+    if (selected_mesh_entity != entt::null) {
+        const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
+        const auto &selected_models_buffer = ModelsBuffers.at(selected_mesh_entity);
+        SilhouettePipeline.Begin(cb);
+        // Only render the silhouette edge texture for the selected mesh instance.
+        SilhouettePipeline.RenderBuffers(cb, SPT::Silhouette, selected_buffers.at(MeshElement::Vertex), selected_models_buffer, GetModelIndex(R, SelectedEntity));
+        cb.endRenderPass();
+        EdgeDetectionPipeline.Begin(cb);
+        EdgeDetectionPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
+        cb.endRenderPass();
+    }
 
     // todo reorganize VK buffers to reduce the number of draw calls and pipeline switches.
     //   - Use a single VK buffer per-(element_type|{index,vertex}), shared across all meshes
     MainPipeline.Begin(cb, BackgroundColor);
-    R.view<Mesh>().each([this, &cb](auto mesh_entity, auto &) {
+    meshes.each([this, &cb](auto mesh_entity, auto &) {
         const auto &buffers = MeshVkData->Main.at(mesh_entity);
         const auto &models_buffer = ModelsBuffers.at(mesh_entity);
         for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
@@ -492,9 +547,9 @@ void Scene::RecordCommandBuffer() {
     });
 
     // Render silhouette edge texture.
-    MainPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
+    if (selected_mesh_entity != entt::null) MainPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
 
-    R.view<Mesh>().each([this, &cb](auto mesh_entity, auto &) {
+    meshes.each([this, &cb](auto mesh_entity, auto &) {
         const auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
         const auto &models_buffer = ModelsBuffers.at(mesh_entity);
         for (auto normal_element : AllNormalElements) {
@@ -564,10 +619,14 @@ vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 bool Scene::Render() {
-    // Handle mouse input.
     HighlightedElement = {MeshElement::None, 0};
     HoveredEntities.clear();
     if (Extent.width != 0 && Extent.height != 0) {
+        // Handle mouse & keyboard input.
+        if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
+            DestroyEntity(SelectedEntity);
+            RecordAndSubmitCommandBuffer();
+        }
         if (SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
             auto &mesh = GetSelectedMesh();
             const auto &model = GetSelectedModel();
@@ -594,12 +653,16 @@ bool Scene::Render() {
                 if (mesh.FindNearestVertex(mouse_ray).is_valid()) HoveredEntities.emplace(entity);
             });
         }
-        if ((GetIO().KeyCtrl || GetIO().KeySuper) && IsMouseClicked(ImGuiMouseButton_Left) && !HoveredEntities.empty()) {
-            // Cycle through hovered entities.
-            auto it = HoveredEntities.find(SelectedEntity);
-            if (it != HoveredEntities.end()) ++it;
-            if (it == HoveredEntities.end()) it = HoveredEntities.begin();
-            SelectedEntity = *it;
+        if ((GetIO().KeyCtrl || GetIO().KeySuper) && IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (!HoveredEntities.empty()) {
+                // Cycle through hovered entities.
+                auto it = HoveredEntities.find(SelectedEntity);
+                if (it != HoveredEntities.end()) ++it;
+                if (it == HoveredEntities.end()) it = HoveredEntities.begin();
+                SelectedEntity = *it;
+            } else {
+                SelectedEntity = entt::null;
+            }
             RecordAndSubmitCommandBuffer();
         }
     }
@@ -634,14 +697,24 @@ void Scene::RenderGizmo() {
 
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
-    mat4 model = GetSelectedModel().Transform;
-    bool view_changed, model_changed;
-    Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
-    view_changed |= Camera.Tick();
-    if (model_changed || view_changed) {
-        if (model_changed) SetSelectedModel(std::move(model));
-        if (view_changed) UpdateViewProj();
-        SubmitCommandBuffer();
+    if (SelectedEntity != entt::null) {
+        mat4 model = GetSelectedModel().Transform;
+        bool view_changed, model_changed;
+        Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
+        view_changed |= Camera.Tick();
+        if (model_changed || view_changed) {
+            if (model_changed) SetSelectedModel(std::move(model));
+            if (view_changed) UpdateViewProj();
+            SubmitCommandBuffer();
+        }
+    } else {
+        bool view_changed;
+        Gizmo->Render(Camera, view_changed);
+        view_changed |= Camera.Tick();
+        if (view_changed) {
+            UpdateViewProj();
+            SubmitCommandBuffer();
+        }
     }
 }
 

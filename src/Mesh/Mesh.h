@@ -96,9 +96,11 @@ struct Mesh {
     }
 
     Mesh &operator=(const Mesh &other) {
-        M = other.M;
+        if (this != &other) M = other.M;
         return *this;
     }
+
+    bool operator==(const Mesh &other) const { return &M == &other.M; }
 
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 

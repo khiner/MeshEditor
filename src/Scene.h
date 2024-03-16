@@ -164,6 +164,7 @@ struct Scene {
     entt::entity AddMesh(Mesh &&);
     void ReplaceMesh(entt::entity, Mesh &&);
     void AddInstance(entt::entity);
+    void DestroyEntity(entt::entity);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }

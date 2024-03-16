@@ -8,15 +8,19 @@ For me to learn Vulkan, and to transition [mesh2audio](https://github.com/khiner
 
 ## Features
 
-Incomplete list of interesting features so far:
+List of interesting features so far:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp) with little indirection
 * Change and recompile the SPIRV shader code at runtime
+* Resource reflection: Use [`SPIRV-Cross`](https://github.com/KhronosGroup/SPIRV-Cross) to automatically create descriptor set layout bindings for all shader pipelines
+* Instanced rendering of shared geometry with many model transforms
+* Create/delete meshes and mesh instances
+* Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
 * Camera rotate & zoom mouse/scrollwheel controls
 * Simple camera + scene lighting model, visually matching Blender
-* Flat/smooth storage and rendering
+* Flat/smooth/line rendering
 * Hover-highlight vertices, edges, or faces
-* Normal debugging: Render faces as normals, show normal lines
-* Edge-detection-based silhouette outlining embedded into the scene with accurate per-pixel depth
+* Normal debugging: Render face/vertex normal lines
+* Edge-detection-based silhouette outline of selected mesh/instance, embedded into the scene with accurate per-pixel depth
 * Fast infinite grid with horizon fade
 * Camera/lighting editing
 * Object and view manipulation gizmos

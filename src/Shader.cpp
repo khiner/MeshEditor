@@ -82,45 +82,18 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
     return stages;
 }
 
-namespace Format {
-const auto Vec3 = vk::Format::eR32G32B32Sfloat;
-const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
-} // namespace Format
-
-vk::PipelineVertexInputStateCreateInfo GenerateVertex3DInputState() {
-    static const std::vector<vk::VertexInputBindingDescription> bindings{
-        {0, sizeof(Vertex3D), vk::VertexInputRate::eVertex},
-        {1, 2 * sizeof(mat4), vk::VertexInputRate::eInstance},
-    };
-    static const std::vector<vk::VertexInputAttributeDescription> attrs{
-        {0, 0, Format::Vec3, offsetof(Vertex3D, Position)},
-        {1, 0, Format::Vec3, offsetof(Vertex3D, Normal)},
-        {2, 0, Format::Vec4, offsetof(Vertex3D, Color)},
-        // Model mat4, one vec4 per row
-        {3, 1, Format::Vec4, 0},
-        {4, 1, Format::Vec4, sizeof(vec4)},
-        {5, 1, Format::Vec4, 2 * sizeof(vec4)},
-        {6, 1, Format::Vec4, 3 * sizeof(vec4)},
-        // Inverse model mat4, one vec4 per row
-        {7, 1, Format::Vec4, 4 * sizeof(vec4)},
-        {8, 1, Format::Vec4, 5 * sizeof(vec4)},
-        {9, 1, Format::Vec4, 6 * sizeof(vec4)},
-        {10, 1, Format::Vec4, 7 * sizeof(vec4)},
-    };
-    return {{}, bindings, attrs};
-}
-
 ShaderPipeline::ShaderPipeline(
     vk::Device device, vk::DescriptorPool descriptor_pool, ::Shaders &&shaders,
+    vk::PipelineVertexInputStateCreateInfo vertex_input_state,
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
     vk::PipelineColorBlendAttachmentState color_blend_attachment,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
     vk::SampleCountFlagBits msaa_samples
 ) : Device(device), Shaders(std::move(shaders)),
+    VertexInputState(std::move(vertex_input_state)),
     MultisampleState({{}, msaa_samples}),
     ColorBlendAttachment(std::move(color_blend_attachment)),
     DepthStencilState(std::move(depth_stencil_state)),
-    VertexInputState(GenerateVertex3DInputState()),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
     Shaders.CompileAll(Device); // Populates descriptor sets. todo This is done redundantly for all shaders in `Compile` at app startup.
