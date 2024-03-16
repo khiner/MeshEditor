@@ -185,7 +185,7 @@ inline Mesh Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
         vertices[i + slices] = {x * radius, height / 2, z * radius}; // top face
     }
 
-    // Bottom face
+    // Bottom n-gon
     faces[0].reserve(slices);
     for (uint i = 0; i < slices; i++) faces[0].emplace_back(i);
     // Side quads
@@ -197,11 +197,30 @@ inline Mesh Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
             (i + 1) % slices, // bottom
         };
     }
-    // Top face, reversed for winding order
+    // Top n-gon, reversed for winding order
     faces[slices + 1].reserve(slices);
     for (int i = slices - 1; i >= 0; --i) faces[slices + 1].emplace_back(i + slices);
 
     return {std::move(vertices), std::move(faces)};
+}
+
+inline Mesh Cone(float radius = 0.5, float height = 1, uint slices = 32) {
+    std::vector<vec3> vertices(slices + 1); // Base + top
+    std::vector<std::vector<uint>> indices(slices + 1); // Side triangles + base n-gon
+
+    for (uint i = 0; i < slices; ++i) { // Base
+        const float angle = 2 * M_PI * float(i) / float(slices);
+        vertices[i] = {radius * cos(angle), -height / 2, radius * sin(angle)};
+    }
+    vertices[slices] = {0, height / 2, 0}; // Top
+
+    // Side triangles
+    for (uint i = 0; i < slices; ++i) indices[i] = {slices, (i + 1) % slices, i};
+    // Base n-gon
+    indices[slices].reserve(slices);
+    for (uint i = 0; i < slices; ++i) indices[slices].emplace_back(i);
+
+    return {std::move(vertices), std::move(indices)};
 }
 
 enum class Primitive {
@@ -212,6 +231,7 @@ enum class Primitive {
     UVSphere,
     Torus,
     Cylinder,
+    Cone,
 };
 
 inline std::string to_string(Primitive primitive) {
@@ -223,6 +243,7 @@ inline std::string to_string(Primitive primitive) {
         case Primitive::UVSphere: return "UVSphere";
         case Primitive::Torus: return "Torus";
         case Primitive::Cylinder: return "Cylinder";
+        case Primitive::Cone: return "Cone";
     }
 }
 
@@ -235,6 +256,7 @@ inline Mesh CreateDefaultPrimitive(Primitive primitive) {
         case Primitive::UVSphere: return UVSphere();
         case Primitive::Torus: return Torus();
         case Primitive::Cylinder: return Cylinder();
+        case Primitive::Cone: return Cone();
     }
 }
 
@@ -246,4 +268,5 @@ inline const std::vector<Primitive> AllPrimitives{
     Primitive::UVSphere,
     Primitive::Torus,
     Primitive::Cylinder,
+    Primitive::Cone,
 };
