@@ -24,6 +24,7 @@ const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
 using BuffersByElement = std::unordered_map<MeshElement, MeshBuffers>;
 struct MeshVkData {
     std::unordered_map<entt::entity, BuffersByElement> Main, NormalIndicators;
+    std::unordered_map<entt::entity, VulkanBuffer> Models;
 };
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
@@ -363,6 +364,15 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
+uint GetModelIndex(const entt::registry &r, entt::entity entity) {
+    const auto &node = r.get<SceneNode>(entity);
+    if (node.parent == entt::null) return 0; // Mesh, model index 0
+
+    // Instance, model index 1 + index in parent's children
+    const auto &parent_node = r.get<SceneNode>(node.parent);
+    return 1 + std::distance(parent_node.children.begin(), std::ranges::find(parent_node.children, entity));
+}
+
 entt::entity Scene::AddMesh(Mesh &&mesh) {
     const auto entity = R.create();
 
@@ -376,8 +386,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
     MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
 
     VulkanBuffer models_buffer{vk::BufferUsageFlagBits::eVertexBuffer};
-    VC.CreateBuffer(models_buffer, 10 * sizeof(Model));
-    ModelsBuffers.emplace(entity, std::move(models_buffer));
+    VC.CreateBuffer(models_buffer, sizeof(Model));
+    MeshVkData->Models.emplace(entity, std::move(models_buffer));
 
     R.emplace<Mesh>(entity, std::move(mesh));
     R.emplace<SceneNode>(entity); // No parent or children.
@@ -420,11 +430,35 @@ void Scene::AddInstance(entt::entity parent) {
 void Scene::DestroyEntity(entt::entity entity) {
     if (entity == SelectedEntity) SelectedEntity = entt::null;
 
+    const auto mesh_entity = GetMeshEntity(entity);
+    if (mesh_entity != entity) return DestroyInstance(mesh_entity, entity);
+
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
-    ModelsBuffers.erase(entity); // todo handle destroying instances
+    MeshVkData->Models.erase(entity);
+
+    const auto &node = R.get<SceneNode>(entity);
+    for (const auto child : node.children) R.destroy(child);
 
     R.destroy(entity);
+}
+
+// Do _not_ use when destroying all instances of a mesh - only when destroying a single instance.
+void Scene::DestroyInstance(entt::entity mesh, entt::entity instance) {
+    if (instance == SelectedEntity) SelectedEntity = entt::null;
+
+    const auto &node = R.get<SceneNode>(instance);
+    std::erase(R.get<SceneNode>(node.parent).children, instance);
+
+    R.destroy(instance);
+    // Erase the instance model from the mesh's models buffer.
+    // (xxx silly - should be done generically in `VulkanContext`)
+    auto &models_buffer = MeshVkData->Models.at(mesh);
+    VC.CreateBuffer(models_buffer, models_buffer.Size - sizeof(Model));
+    R.view<Model>().each([this, &models_buffer](auto entity, const auto &model) {
+        const uint offset = GetModelIndex(R, entity) * sizeof(Model), bytes = sizeof(Model);
+        VC.UpdateBuffer(models_buffer, &model, offset, bytes);
+    });
 }
 
 entt::entity Scene::GetMeshEntity(entt::entity entity) const {
@@ -487,15 +521,6 @@ std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_m
     }
 }
 
-uint GetModelIndex(const entt::registry &r, entt::entity entity) {
-    const auto &node = r.get<SceneNode>(entity);
-    if (node.parent == entt::null) return 0; // Mesh, model index 0
-
-    // Instance, model index 1 + index in parent's children
-    const auto &parent_node = r.get<SceneNode>(node.parent);
-    return 1 + std::distance(parent_node.children.begin(), std::ranges::find(parent_node.children, entity));
-}
-
 void Scene::RecordCommandBuffer() {
     const auto &meshes = R.view<Mesh>();
 
@@ -525,7 +550,7 @@ void Scene::RecordCommandBuffer() {
     const auto selected_mesh_entity = GetMeshEntity(SelectedEntity);
     if (selected_mesh_entity != entt::null) {
         const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
-        const auto &selected_models_buffer = ModelsBuffers.at(selected_mesh_entity);
+        const auto &selected_models_buffer = MeshVkData->Models.at(selected_mesh_entity);
         SilhouettePipeline.Begin(cb);
         // Only render the silhouette edge texture for the selected mesh instance.
         SilhouettePipeline.RenderBuffers(cb, SPT::Silhouette, selected_buffers.at(MeshElement::Vertex), selected_models_buffer, GetModelIndex(R, SelectedEntity));
@@ -540,7 +565,7 @@ void Scene::RecordCommandBuffer() {
     MainPipeline.Begin(cb, BackgroundColor);
     meshes.each([this, &cb](auto mesh_entity, auto &) {
         const auto &buffers = MeshVkData->Main.at(mesh_entity);
-        const auto &models_buffer = ModelsBuffers.at(mesh_entity);
+        const auto &models_buffer = MeshVkData->Models.at(mesh_entity);
         for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
             MainPipeline.RenderBuffers(cb, pipeline, buffers.at(element), models_buffer);
         }
@@ -551,7 +576,7 @@ void Scene::RecordCommandBuffer() {
 
     meshes.each([this, &cb](auto mesh_entity, auto &) {
         const auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
-        const auto &models_buffer = ModelsBuffers.at(mesh_entity);
+        const auto &models_buffer = MeshVkData->Models.at(mesh_entity);
         for (auto normal_element : AllNormalElements) {
             if (auto it = normals.find(normal_element); it != normals.end()) {
                 MainPipeline.RenderBuffers(cb, SPT::Line, it->second, models_buffer);
@@ -598,7 +623,19 @@ void Scene::UpdateViewProj() {
 void Scene::UpdateTransform(entt::entity entity) {
     const auto &model = R.get<Model>(entity);
     uint i = GetModelIndex(R, entity);
-    VC.UpdateBuffer(ModelsBuffers.at(GetMeshEntity(entity)), &model, i * sizeof(Model), sizeof(Model));
+    auto &models_buffer = MeshVkData->Models.at(GetMeshEntity(entity));
+    const uint offset = i * sizeof(Model), bytes = sizeof(Model);
+    if (models_buffer.Size < offset + bytes) {
+        // Create a new buffer with the new size and copy the old model data.
+        // xxx this is silly and should be done generically in `VulkanContext::Update`.
+        VC.CreateBuffer(models_buffer, offset + bytes);
+        R.view<Model>().each([this, &models_buffer](auto entity, const auto &model) {
+            const uint offset = GetModelIndex(R, entity) * sizeof(Model), bytes = sizeof(Model);
+            VC.UpdateBuffer(models_buffer, &model, offset, bytes);
+        });
+    } else {
+        VC.UpdateBuffer(models_buffer, &model, offset, bytes);
+    }
 }
 
 using namespace ImGui;

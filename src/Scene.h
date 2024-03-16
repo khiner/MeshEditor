@@ -165,6 +165,7 @@ struct Scene {
     void ReplaceMesh(entt::entity, Mesh &&);
     void AddInstance(entt::entity);
     void DestroyEntity(entt::entity);
+    void DestroyInstance(entt::entity mesh, entt::entity instance);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
@@ -210,8 +211,6 @@ private:
         LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)},
         ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)},
         SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
-
-    std::unordered_map<entt::entity, VulkanBuffer> ModelsBuffers;
 
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
