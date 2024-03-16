@@ -349,13 +349,22 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
 }
 
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
-    R.replace<Mesh>(entity, std::move(mesh));
     auto &mesh_buffers = MeshVkData->Main.at(entity);
     for (auto element : AllElements) {
-        VC.UpdateBuffer(mesh_buffers[element].Vertices, mesh.CreateVertices(element));
-        VC.UpdateBuffer(mesh_buffers[element].Indices, mesh.CreateIndices(element));
+        auto &buffers = mesh_buffers.at(element);
+        VC.UpdateBuffer(buffers.Vertices, mesh.CreateVertices(element));
+        VC.UpdateBuffer(buffers.Indices, mesh.CreateIndices(element));
     }
-    // todo normals
+    auto &normal_buffers = MeshVkData->NormalIndicators.at(entity);
+    for (const auto element : AllNormalElements) {
+        if (auto it = normal_buffers.find(element); it != normal_buffers.end()) {
+            auto &buffers = it->second;
+            VC.UpdateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
+            VC.UpdateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
+        }
+    }
+
+    R.replace<Mesh>(entity, std::move(mesh));
 }
 
 void Scene::AddInstance(entt::entity parent) {
