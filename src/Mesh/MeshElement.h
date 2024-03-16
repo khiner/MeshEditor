@@ -10,10 +10,10 @@ enum class MeshElement {
     Edge, // Vertices are duplicated. Each vertex uses the vertex normal.
 };
 
-inline static const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
-inline static const std::vector AllElementsWithNone{MeshElement::None, MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
+inline const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
+inline const std::vector AllElementsWithNone{MeshElement::None, MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
 
-inline static std::string to_string(MeshElement element) {
+inline std::string to_string(MeshElement element) {
     switch (element) {
         case MeshElement::Face: return "face";
         case MeshElement::Vertex: return "vertex";

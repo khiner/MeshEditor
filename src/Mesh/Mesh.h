@@ -26,13 +26,13 @@ using HH = OpenMesh::HalfedgeHandle;
 using Point = OpenMesh::Vec3f;
 }; // namespace om
 
-inline static vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
-inline static vec4 ToGlm(const OpenMesh::Vec3uc &c) {
+inline vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
+inline vec4 ToGlm(const OpenMesh::Vec3uc &c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
     return {cc[0], cc[1], cc[2], 1};
 }
-inline static om::Point ToOpenMesh(vec3 v) { return {v.x, v.y, v.z}; }
-inline static OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
+inline om::Point ToOpenMesh(vec3 v) { return {v.x, v.y, v.z}; }
+inline OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
     return {cc[0], cc[1], cc[2]};
 }

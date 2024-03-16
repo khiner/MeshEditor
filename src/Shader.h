@@ -36,7 +36,7 @@ struct Shaders {
 };
 
 // Convenience generators for default pipeline states.
-inline static vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test_depth = true, bool write_depth = true, vk::CompareOp depth_compare_op = vk::CompareOp::eLess) {
+inline vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test_depth = true, bool write_depth = true, vk::CompareOp depth_compare_op = vk::CompareOp::eLess) {
     return {
         {}, // flags
         test_depth, // depthTestEnable
@@ -50,7 +50,7 @@ inline static vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool te
         1.f // maxDepthBounds
     };
 }
-inline static vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool blend = true) {
+inline vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool blend = true) {
     if (blend) {
         return {
             true,
