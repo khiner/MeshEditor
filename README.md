@@ -4,15 +4,16 @@ Real-time mesh viewer and editor, using Vulkan and ImGui.
 
 ![](screenshot.png)
 
-For me to learn Vulkan, and to transition [mesh2audio](https://github.com/khiner/mesh2audio) to Vulkan with this project as the mesh library so it's just responsible for the audio/modeling side.
+For me to learn Vulkan.
+I'm also aiming to port [mesh2audio](https://github.com/khiner/mesh2audio) from OpenGL to Vulkan directly in this project.
 
 ## Features
 
-List of interesting features so far:
+Features so far:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp) with little indirection
 * Change and recompile the SPIRV shader code at runtime
 * Resource reflection: Use [`SPIRV-Cross`](https://github.com/KhronosGroup/SPIRV-Cross) to automatically create descriptor set layout bindings for all shader pipelines
-* Instanced rendering of shared geometry with many model transforms
+* Instanced rendering of shared geometry with multiple model transforms
 * Create/delete meshes and mesh instances
 * Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
 * Camera rotate & zoom mouse/scrollwheel controls
@@ -64,14 +65,14 @@ $ sudo apt install build-essential libgtk-3-dev
 ```shell
 $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
-$ mkdir build && cd make && cmake .. && make
+$ mkdir build && cd build && cmake .. && make
 ```
 
 ## Stack
 
-- [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL) + [Vulkan](https://www.vulkan.org/): Immediate-mode UI/UX.
-- [glm](https://github.com/g-truc/glm): Graphics math.
-- [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral mesh data structure.
+- [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL) + [Vulkan](https://www.vulkan.org/): Immediate-mode UI/UX
+- [glm](https://github.com/g-truc/glm): Graphics math
+- [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral mesh data structure
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
-- [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs.
-- [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform and camera rotation gizmos.
+- [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs
+- [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform and camera rotation gizmos
