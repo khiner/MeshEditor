@@ -164,9 +164,9 @@ void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, SPT spt, const VulkanBu
 
     // Bind buffers
     static const vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
-    cb.bindVertexBuffers(0, *vertices.Buffer, vertex_buffer_offsets);
-    cb.bindIndexBuffer(*indices.Buffer, 0, vk::IndexType::eUint32);
-    cb.bindVertexBuffers(1, *models.Buffer, models_buffer_offsets);
+    cb.bindVertexBuffers(0, {*vertices.DeviceBuffer}, vertex_buffer_offsets);
+    cb.bindIndexBuffer(*indices.DeviceBuffer, 0, vk::IndexType::eUint32);
+    cb.bindVertexBuffers(1, {*models.DeviceBuffer}, models_buffer_offsets);
 
     // Draw
     const uint index_count = indices.Size / sizeof(uint);
@@ -336,19 +336,19 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
       SilhouettePipeline(VC), EdgeDetectionPipeline(VC) {
     UpdateEdgeColors();
-    TransformBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj));
-    ViewProjNearFarBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar));
+    TransformBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
+    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
     UpdateViewProj();
 
-    LightsBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{Lights});
-    SilhouetteDisplayBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{SilhouetteDisplay});
-    vk::DescriptorBufferInfo transform_buffer{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
+    LightsBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{Lights}));
+    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{SilhouetteDisplay}));
+    vk::DescriptorBufferInfo transform_buffer{*TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
     MainPipeline.UpdateDescriptors({
         {SPT::Fill, "ViewProjectionUBO", transform_buffer},
-        {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{*LightsBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+        {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{*LightsBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE}},
         {SPT::Line, "ViewProjectionUBO", transform_buffer},
-        {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{*ViewProjNearFarBuffer.Buffer, 0, VK_WHOLE_SIZE}},
-        {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{*SilhouetteDisplayBuffer.Buffer, 0, VK_WHOLE_SIZE}},
+        {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{*ViewProjNearFarBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE}},
+        {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{*SilhouetteDisplayBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE}},
         {SPT::DebugNormals, "ViewProjectionUBO", transform_buffer},
     });
     SilhouettePipeline.UpdateDescriptors({
@@ -618,9 +618,9 @@ void Scene::UpdateEdgeColors() {
 void Scene::UpdateViewProj() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
-    VC.UpdateBuffer(TransformBuffer, &view_proj);
+    VC.UpdateBuffer(*TransformBuffer, &view_proj);
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
-    VC.UpdateBuffer(ViewProjNearFarBuffer, &vpnf);
+    VC.UpdateBuffer(*ViewProjNearFarBuffer, &vpnf);
 }
 
 void Scene::UpdateTransform(entt::entity entity) {
@@ -853,7 +853,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                VC.UpdateBuffer(LightsBuffer, &Lights);
+                VC.UpdateBuffer(*LightsBuffer, &Lights);
                 SubmitCommandBuffer();
             }
             EndTabItem();
@@ -938,7 +938,7 @@ void Scene::RenderControls() {
                 }
                 SeparatorText("Silhouette");
                 if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
-                    VC.UpdateBuffer(SilhouetteDisplayBuffer, &SilhouetteDisplay);
+                    VC.UpdateBuffer(*SilhouetteDisplayBuffer, &SilhouetteDisplay);
                     SubmitCommandBuffer();
                 }
             }

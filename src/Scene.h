@@ -3,6 +3,7 @@
 #include <set>
 
 #include <entt/entity/registry.hpp>
+#include <vulkan/vulkan.hpp>
 
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"
@@ -13,13 +14,12 @@
 #include "Shader.h"
 #include "World.h"
 #include "mesh/MeshElement.h"
-#include "vulkan/VulkanBuffer.h"
 
 struct Mesh;
 struct VulkanContext;
 struct MeshBuffers;
 struct MeshVkData;
-struct VkBuffers;
+struct VulkanBuffer;
 
 struct ImageResource {
     // The `image` in the view info is overwritten.
@@ -206,7 +206,7 @@ private:
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
 
-    VulkanBuffer TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
+    std::unique_ptr<VulkanBuffer> TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 

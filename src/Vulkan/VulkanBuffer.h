@@ -1,16 +1,14 @@
 #pragma once
 
-#include <vulkan/vulkan.hpp>
+#include "VmaBuffer.h"
 
 struct VulkanBuffer {
     vk::BufferUsageFlags Usage;
-    vk::DeviceSize Size{0};
+    vk::DeviceSize Size;
 
     // Host staging buffer, used to transfer data to the GPU.
-    vk::UniqueBuffer StagingBuffer{};
-    vk::UniqueDeviceMemory StagingMemory{};
+    VmaBuffer HostBuffer;
 
     // GPU buffer.
-    vk::UniqueBuffer Buffer{};
-    vk::UniqueDeviceMemory Memory{};
+    VmaBuffer DeviceBuffer;
 };

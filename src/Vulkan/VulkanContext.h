@@ -4,13 +4,13 @@
 
 #include "VulkanBuffer.h"
 
-struct VulkanBuffer;
-
 using uint = u_int32_t;
 
 VkBool32 DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT *, void *);
 
 bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &, const char *extension);
+
+struct VulkanBufferAllocator;
 
 struct VulkanContext {
     VulkanContext(std::vector<const char *> extensions);
@@ -19,6 +19,8 @@ struct VulkanContext {
     vk::UniqueInstance Instance;
     vk::PhysicalDevice PhysicalDevice;
     vk::UniqueDevice Device;
+    std::unique_ptr<VulkanBufferAllocator> BufferAllocator;
+
     uint QueueFamily{uint(-1)};
     vk::Queue Queue;
     vk::UniquePipelineCache PipelineCache;
