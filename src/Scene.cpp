@@ -336,12 +336,12 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
       SilhouettePipeline(VC), EdgeDetectionPipeline(VC) {
     UpdateEdgeColors();
-    VC.CreateBuffer(TransformBuffer, sizeof(ViewProj));
-    VC.CreateBuffer(ViewProjNearFarBuffer, sizeof(ViewProjNearFar));
+    TransformBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj));
+    ViewProjNearFarBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar));
     UpdateViewProj();
 
-    VC.CreateBuffer(LightsBuffer, std::vector{Lights});
-    VC.CreateBuffer(SilhouetteDisplayBuffer, std::vector{SilhouetteDisplay});
+    LightsBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{Lights});
+    SilhouetteDisplayBuffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{SilhouetteDisplay});
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer.Buffer, 0, VK_WHOLE_SIZE};
     MainPipeline.UpdateDescriptors({
         {SPT::Fill, "ViewProjectionUBO", transform_buffer},
@@ -378,19 +378,18 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
 
     BuffersByElement mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        const auto vertices = mesh.CreateVertices(element);
-        const auto indices = mesh.CreateIndices(element);
-        MeshBuffers buffers{vertices.size(), indices.size()};
-        VC.CreateBuffer(buffers.Vertices, vertices);
-        VC.CreateBuffer(buffers.Indices, indices);
-        mesh_buffers.emplace(element, std::move(buffers));
+        mesh_buffers.emplace(
+            element,
+            MeshBuffers{
+                VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, mesh.CreateVertices(element)),
+                VC.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, mesh.CreateIndices(element))
+            }
+        );
     }
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
 
-    VulkanBuffer models_buffer{vk::BufferUsageFlagBits::eVertexBuffer};
-    VC.CreateBuffer(models_buffer, sizeof(Model));
-    MeshVkData->Models.emplace(entity, std::move(models_buffer));
+    MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
 
     R.emplace<Mesh>(entity, std::move(mesh));
     R.emplace<SceneNode>(entity); // No parent or children.
@@ -456,12 +455,13 @@ void Scene::DestroyInstance(entt::entity mesh, entt::entity instance) {
     R.destroy(instance);
     // Erase the instance model from the mesh's models buffer.
     // (xxx silly - should be done generically in `VulkanContext`)
-    auto &models_buffer = MeshVkData->Models.at(mesh);
-    VC.CreateBuffer(models_buffer, models_buffer.Size - sizeof(Model));
+    auto models_buffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, MeshVkData->Models.at(mesh).Size - sizeof(Model));
     R.view<Model>().each([this, &models_buffer](auto entity, const auto &model) {
         const uint offset = GetModelIndex(R, entity) * sizeof(Model), bytes = sizeof(Model);
         VC.UpdateBuffer(models_buffer, &model, offset, bytes);
     });
+    MeshVkData->Models.erase(mesh);
+    MeshVkData->Models.emplace(mesh, std::move(models_buffer));
 }
 
 entt::entity Scene::GetMeshEntity(entt::entity entity) const {
@@ -625,18 +625,21 @@ void Scene::UpdateViewProj() {
 
 void Scene::UpdateTransform(entt::entity entity) {
     const auto &model = R.get<Model>(entity);
-    uint i = GetModelIndex(R, entity);
-    auto &models_buffer = MeshVkData->Models.at(GetMeshEntity(entity));
+    const uint i = GetModelIndex(R, entity);
+    const auto mesh_entity = GetMeshEntity(entity);
     const uint offset = i * sizeof(Model), bytes = sizeof(Model);
-    if (models_buffer.Size < offset + bytes) {
+    if (MeshVkData->Models.at(mesh_entity).Size < offset + bytes) {
         // Create a new buffer with the new size and copy the old model data.
         // xxx this is silly and should be done generically in `VulkanContext::Update`.
-        VC.CreateBuffer(models_buffer, offset + bytes);
+        auto models_buffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, offset + bytes);
         R.view<Model>().each([this, &models_buffer](auto entity, const auto &model) {
             const uint offset = GetModelIndex(R, entity) * sizeof(Model), bytes = sizeof(Model);
             VC.UpdateBuffer(models_buffer, &model, offset, bytes);
         });
+        MeshVkData->Models.erase(mesh_entity);
+        MeshVkData->Models.emplace(mesh_entity, std::move(models_buffer));
     } else {
+        auto &models_buffer = MeshVkData->Models.at(mesh_entity);
         VC.UpdateBuffer(models_buffer, &model, offset, bytes);
     }
 }
@@ -906,26 +909,31 @@ void Scene::RenderControls() {
                 }
                 {
                     SeparatorText("Normal indicators");
-                    auto &normals = MeshVkData->NormalIndicators.at(GetMeshEntity(SelectedEntity));
-                    for (const auto element : AllNormalElements) {
-                        bool has_normals = normals.contains(element);
-                        std::string name = to_string(element);
-                        Capitalize(name);
-                        if (Checkbox(name.c_str(), &has_normals)) {
-                            if (has_normals) {
-                                const auto &mesh = GetSelectedMesh();
-                                const auto vertices = mesh.CreateNormalVertices(element);
-                                const auto indices = mesh.CreateNormalIndices(element);
-                                MeshBuffers buffers{vertices.size(), indices.size()};
-                                VC.CreateBuffer(buffers.Vertices, vertices);
-                                VC.CreateBuffer(buffers.Indices, indices);
-                                normals.emplace(element, std::move(buffers));
-                            } else {
-                                normals.erase(element);
+                    // todo go back to storing normal settings in a map of element type to bool,
+                    //   and ensure meshes/instances are created with the current normals
+                    if (SelectedEntity != entt::null) {
+                        auto &normals = MeshVkData->NormalIndicators.at(GetMeshEntity(SelectedEntity));
+                        for (const auto element : AllNormalElements) {
+                            bool has_normals = normals.contains(element);
+                            std::string name = to_string(element);
+                            Capitalize(name);
+                            if (Checkbox(name.c_str(), &has_normals)) {
+                                if (has_normals) {
+                                    const auto &mesh = GetSelectedMesh();
+                                    normals.emplace(
+                                        element,
+                                        MeshBuffers{
+                                            VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, mesh.CreateNormalVertices(element)),
+                                            VC.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, mesh.CreateNormalIndices(element))
+                                        }
+                                    );
+                                } else {
+                                    normals.erase(element);
+                                }
+                                RecordAndSubmitCommandBuffer();
                             }
-                            RecordAndSubmitCommandBuffer();
+                            if (element != AllNormalElements.back()) SameLine();
                         }
-                        if (element != AllNormalElements.back()) SameLine();
                     }
                 }
                 SeparatorText("Silhouette");

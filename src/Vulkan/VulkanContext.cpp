@@ -137,8 +137,8 @@ uint VulkanContext::FindMemoryType(uint type_filter, vk::MemoryPropertyFlags pro
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
-void VulkanContext::CreateBuffer(VulkanBuffer &buffer, vk::DeviceSize bytes) const {
-    buffer.Size = bytes;
+VulkanBuffer VulkanContext::CreateBuffer(vk::BufferUsageFlags flags, vk::DeviceSize bytes) const {
+    VulkanBuffer buffer{flags, bytes};
     {
         // Create the staging buffer and its memory.
         // if (buffer.StagingBuffer || buffer.StagingMemory) throw std::runtime_error("Staging buffer already exists.");
@@ -155,6 +155,7 @@ void VulkanContext::CreateBuffer(VulkanBuffer &buffer, vk::DeviceSize bytes) con
         buffer.Memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal)});
         Device->bindBufferMemory(*buffer.Buffer, *buffer.Memory, 0);
     }
+    return buffer;
 }
 
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {

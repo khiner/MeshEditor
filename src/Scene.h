@@ -206,11 +206,7 @@ private:
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
 
-    VulkanBuffer
-        TransformBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)},
-        LightsBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)},
-        ViewProjNearFarBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)},
-        SilhouetteDisplayBuffer{vk::BufferUsageFlagBits::eUniformBuffer, sizeof(SilhouetteDisplay)};
+    VulkanBuffer TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 

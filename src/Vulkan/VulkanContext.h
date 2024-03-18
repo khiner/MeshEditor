@@ -36,19 +36,20 @@ struct VulkanContext {
 
     // Create the staging and device buffers and their memory.
     // Assumes `buffer.Size` is set.
-    void CreateBuffer(VulkanBuffer &, vk::DeviceSize bytes) const;
+    VulkanBuffer CreateBuffer(vk::BufferUsageFlags, vk::DeviceSize) const;
     // Uses `buffer.Size` if `bytes` is not set.
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
 
-    template<typename T> void CreateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
+    template<typename T> VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const std::vector<T> &data) const {
         const uint bytes = sizeof(T) * data.size();
-        CreateBuffer(buffer, bytes);
+        auto buffer = CreateBuffer(flags, bytes);
         UpdateBuffer(buffer, data.data(), 0, bytes);
+        return buffer;
     }
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
         const uint bytes = sizeof(T) * data.size();
         // If the buffer is either too small or too large, recreate it.
-        if (bytes != buffer.Size) CreateBuffer(buffer, bytes);
+        if (bytes != buffer.Size) buffer = CreateBuffer(buffer.Usage, bytes);
         UpdateBuffer(buffer, data.data(), 0, bytes);
     }
 };
