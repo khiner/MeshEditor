@@ -378,9 +378,12 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
 
     BuffersByElement mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        auto &buffers = mesh_buffers[element];
-        VC.CreateBuffer(buffers.Vertices, mesh.CreateVertices(element));
-        VC.CreateBuffer(buffers.Indices, mesh.CreateIndices(element));
+        const auto vertices = mesh.CreateVertices(element);
+        const auto indices = mesh.CreateIndices(element);
+        MeshBuffers buffers{vertices.size(), indices.size()};
+        VC.CreateBuffer(buffers.Vertices, vertices);
+        VC.CreateBuffer(buffers.Indices, indices);
+        mesh_buffers.emplace(element, std::move(buffers));
     }
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
@@ -479,7 +482,7 @@ void Scene::UpdateMeshBuffers(entt::entity mesh_entity, MeshElementIndex highlig
     auto &mesh = R.get<Mesh>(mesh_entity);
     auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
     for (auto element : AllElements) { // todo only update buffers for viewed elements.
-        VC.UpdateBuffer(mesh_buffers[element].Vertices, mesh.CreateVertices(element, highlight_element));
+        VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh.CreateVertices(element, highlight_element));
     }
 }
 
@@ -911,9 +914,11 @@ void Scene::RenderControls() {
                         if (Checkbox(name.c_str(), &has_normals)) {
                             if (has_normals) {
                                 const auto &mesh = GetSelectedMesh();
-                                MeshBuffers buffers;
-                                VC.CreateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
-                                VC.CreateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
+                                const auto vertices = mesh.CreateNormalVertices(element);
+                                const auto indices = mesh.CreateNormalIndices(element);
+                                MeshBuffers buffers{vertices.size(), indices.size()};
+                                VC.CreateBuffer(buffers.Vertices, vertices);
+                                VC.CreateBuffer(buffers.Indices, indices);
                                 normals.emplace(element, std::move(buffers));
                             } else {
                                 normals.erase(element);
