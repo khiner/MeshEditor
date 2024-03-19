@@ -152,21 +152,67 @@ VulkanBuffer VulkanContext::CreateBuffer(vk::BufferUsageFlags usage, vk::DeviceS
 
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0) bytes = buffer.Size;
-    if (offset + bytes > buffer.Size) throw std::runtime_error("Buffer not large enough for update.");
+
+    const auto &cb = TransferCommandBuffers[0];
+
+    if (offset + bytes > buffer.Size) {
+        // Create a new buffer with the new size, copy the old device buffer into its device buffer, and replace the old buffer.
+        // todo we can avoid multiple cb submits by only creating a new _device buffer_ and assigning it to the old buffer,
+        // (without creating a new `VulkanBuffer` instance)
+        VulkanBuffer new_buffer = CreateBuffer(buffer.Usage, offset + bytes);
+        vk::BufferCopy copy_region{0, 0, buffer.Size};
+
+        cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        cb->copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, copy_region);
+        cb->end();
+
+        SubmitTransfer();
+
+        buffer = std::move(new_buffer);
+    }
 
     // Copy data to the host buffer
     buffer.HostBuffer.Update(data, offset, bytes);
 
     // Copy data from the staging buffer to the device buffer.
-    const auto &cb = TransferCommandBuffers[0];
     cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     const vk::BufferCopy copy_region{offset, offset, bytes}; // Same src/dst offset.
     cb->copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, copy_region);
     cb->end();
 
-    // TODO Use separate fence/semaphores for buffer updates and rendering?
+    SubmitTransfer();
+}
+
+// Create a new buffer with the new size, copy the two remaining sections from the old device buffer
+// (before and after the deleted region) into the new device buffer, and replace the old buffer.
+void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize bytes) const {
+    if (bytes == 0 || offset + bytes > buffer.Size) return;
+
+    VulkanBuffer new_buffer = CreateBuffer(buffer.Usage, buffer.Size - bytes);
+
+    const auto &cb = TransferCommandBuffers[0];
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    // Copy the region before the erased part.
+    if (offset > 0) {
+        vk::BufferCopy start_region{0, 0, offset};
+        cb->copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, start_region);
+    }
+    // Copy the region after the erased part.
+    if (offset + bytes < buffer.Size) {
+        vk::BufferCopy end_region{offset + bytes, offset, buffer.Size - (offset + bytes)};
+        cb->copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, end_region);
+    }
+    cb->end();
+
+    SubmitTransfer();
+
+    buffer = std::move(new_buffer);
+}
+
+// TODO Use separate fence/semaphores for buffer updates and rendering?
+void VulkanContext::SubmitTransfer() const {
     vk::SubmitInfo submit;
-    submit.setCommandBuffers(*cb);
+    submit.setCommandBuffers(*TransferCommandBuffers[0]);
     Queue.submit(submit, *RenderFence);
 
     auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);

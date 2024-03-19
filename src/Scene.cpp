@@ -370,7 +370,8 @@ uint GetModelIndex(const entt::registry &r, entt::entity entity) {
 
     // Instance, model index 1 + index in parent's children
     const auto &parent_node = r.get<SceneNode>(node.parent);
-    return 1 + std::distance(parent_node.children.begin(), std::ranges::find(parent_node.children, entity));
+    const auto &children = parent_node.children;
+    return 1 + std::distance(children.begin(), std::ranges::find(children, entity));
 }
 
 entt::entity Scene::AddMesh(Mesh &&mesh) {
@@ -449,19 +450,15 @@ void Scene::DestroyEntity(entt::entity entity) {
 void Scene::DestroyInstance(entt::entity mesh, entt::entity instance) {
     if (instance == SelectedEntity) SelectedEntity = entt::null;
 
+    const uint i = GetModelIndex(R, instance);
+    const uint offset = i * sizeof(Model);
+
     const auto &node = R.get<SceneNode>(instance);
     std::erase(R.get<SceneNode>(node.parent).children, instance);
-
     R.destroy(instance);
+
     // Erase the instance model from the mesh's models buffer.
-    // (xxx silly - should be done generically in `VulkanContext`)
-    auto models_buffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, MeshVkData->Models.at(mesh).Size - sizeof(Model));
-    R.view<Model>().each([this, &models_buffer](auto entity, const auto &model) {
-        const uint offset = GetModelIndex(R, entity) * sizeof(Model), bytes = sizeof(Model);
-        VC.UpdateBuffer(models_buffer, &model, offset, bytes);
-    });
-    MeshVkData->Models.erase(mesh);
-    MeshVkData->Models.emplace(mesh, std::move(models_buffer));
+    VC.EraseBufferRegion(MeshVkData->Models.at(mesh), offset, sizeof(Model));
 }
 
 entt::entity Scene::GetMeshEntity(entt::entity entity) const {
@@ -628,20 +625,7 @@ void Scene::UpdateTransform(entt::entity entity) {
     const uint i = GetModelIndex(R, entity);
     const auto mesh_entity = GetMeshEntity(entity);
     const uint offset = i * sizeof(Model), bytes = sizeof(Model);
-    if (MeshVkData->Models.at(mesh_entity).Size < offset + bytes) {
-        // Create a new buffer with the new size and copy the old model data.
-        // xxx this is silly and should be done generically in `VulkanContext::Update`.
-        auto models_buffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, offset + bytes);
-        R.view<Model>().each([this, &models_buffer](auto entity, const auto &model) {
-            const uint offset = GetModelIndex(R, entity) * sizeof(Model), bytes = sizeof(Model);
-            VC.UpdateBuffer(models_buffer, &model, offset, bytes);
-        });
-        MeshVkData->Models.erase(mesh_entity);
-        MeshVkData->Models.emplace(mesh_entity, std::move(models_buffer));
-    } else {
-        auto &models_buffer = MeshVkData->Models.at(mesh_entity);
-        VC.UpdateBuffer(models_buffer, &model, offset, bytes);
-    }
+    VC.UpdateBuffer(MeshVkData->Models.at(mesh_entity), &model, offset, bytes);
 }
 
 using namespace ImGui;

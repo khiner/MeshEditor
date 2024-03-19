@@ -41,6 +41,7 @@ struct VulkanContext {
     VulkanBuffer CreateBuffer(vk::BufferUsageFlags, vk::DeviceSize) const;
     // Uses `buffer.Size` if `bytes` is not set.
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
+    void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize bytes) const;
 
     template<typename T> VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const std::vector<T> &data) const {
         const uint bytes = sizeof(T) * data.size();
@@ -54,4 +55,6 @@ struct VulkanContext {
         if (bytes != buffer.Size) buffer = CreateBuffer(buffer.Usage, bytes);
         UpdateBuffer(buffer, data.data(), 0, bytes);
     }
+
+    void SubmitTransfer() const;
 };
