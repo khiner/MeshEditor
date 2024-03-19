@@ -10,10 +10,6 @@ I'm also aiming to port [mesh2audio](https://github.com/khiner/mesh2audio) from 
 ## Features
 
 Features so far:
-* Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp) with little indirection
-* Change and recompile the SPIRV shader code at runtime
-* Resource reflection: Use [`SPIRV-Cross`](https://github.com/KhronosGroup/SPIRV-Cross) to automatically create descriptor set layout bindings for all shader pipelines
-* Instanced rendering of shared geometry with multiple model transforms
 * Create/delete meshes and mesh instances
 * Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
 * Camera rotate & zoom mouse/scrollwheel controls
@@ -25,6 +21,12 @@ Features so far:
 * Fast infinite grid with horizon fade
 * Camera/lighting editing
 * Object and view manipulation gizmos
+
+Noteworthy dev bits:
+* Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
+* Change SPIRV shader code and trigger a runtime recompile in the UI
+* Resource reflection: Use [`SPIRV-Cross`](https://github.com/KhronosGroup/SPIRV-Cross) to automatically create descriptor set layout bindings for all shader pipelines
+* Instanced rendering of shared geometry with variable transforms
 
 ## Build app
 
