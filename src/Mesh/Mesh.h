@@ -51,14 +51,14 @@ struct Mesh {
         using MeshElementIndex::MeshElementIndex;
         ElementIndex(const MeshElementIndex &other) : MeshElementIndex(other) {}
 
-        bool operator==(FH fh) const { return Element == MeshElement::Face && Index == fh.idx(); }
         bool operator==(VH vh) const { return Element == MeshElement::Vertex && Index == vh.idx(); }
         bool operator==(EH eh) const { return Element == MeshElement::Edge && Index == eh.idx(); }
+        bool operator==(FH fh) const { return Element == MeshElement::Face && Index == fh.idx(); }
 
         // Implicit conversion to OpenMesh handles.
-        operator FH() const { return Element == MeshElement::Face ? FH(Index) : FH(-1); }
         operator VH() const { return Element == MeshElement::Vertex ? VH(Index) : VH(-1); }
         operator EH() const { return Element == MeshElement::Edge ? EH(Index) : EH(-1); }
+        operator FH() const { return Element == MeshElement::Face ? FH(Index) : FH(-1); }
     };
 
     inline static const vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
@@ -69,18 +69,18 @@ struct Mesh {
     inline static float NormalIndicatorLengthScale = 0.25f;
 
     Mesh() {
-        M.request_face_normals();
         M.request_vertex_normals();
+        M.request_face_normals();
         M.request_face_colors();
     }
     Mesh(Mesh &&mesh) : M(std::move(mesh.M)) {
-        M.request_face_normals();
         M.request_vertex_normals();
+        M.request_face_normals();
         M.request_face_colors();
     }
     Mesh(const fs::path &file_path) {
-        M.request_face_normals();
         M.request_vertex_normals();
+        M.request_face_normals();
         M.request_face_colors();
         Load(file_path, M);
         UpdateNormals();
@@ -107,9 +107,10 @@ struct Mesh {
     const float *GetPositionData() const { return (const float *)M.points(); }
 
     vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
+    vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
+
     vec3 GetFaceCenter(FH fh) const { return ToGlm(M.calc_face_centroid(fh)); }
     vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
-    vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
 
     float CalcFaceArea(FH) const;
 
@@ -162,13 +163,13 @@ struct Mesh {
     // If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
     bool RayIntersectsTriangle(const Ray &, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out = nullptr) const;
 
-    // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
-    // If `closest_intersect_point_out` is not null, sets it to the intersection point.
-    FH FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out = nullptr) const;
     // Returns a handle to the vertex nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     VH FindNearestVertex(const Ray &local_ray) const;
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     EH FindNearestEdge(const Ray &world_ray) const;
+    // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.
+    // If `closest_intersect_point_out` is not null, sets it to the intersection point.
+    FH FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out = nullptr) const;
 
 protected:
     PolyMesh M;

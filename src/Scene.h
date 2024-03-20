@@ -196,7 +196,7 @@ private:
     ColorMode ColorMode{ColorMode::Mesh};
 
     SelectionMode SelectionMode{SelectionMode::Object};
-    MeshElement SelectionElement{MeshElement::None};
+    MeshElement SelectionElement{MeshElement::Face};
     MeshElementIndex HighlightedElement{};
 
     entt::entity SelectedEntity{entt::null};
@@ -220,6 +220,11 @@ private:
     bool ShowGrid{true};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
+
+    void SetSelectionMode(::SelectionMode mode) {
+        SelectionMode = mode;
+        RecordAndSubmitCommandBuffer();
+    }
 
     entt::entity GetMeshEntity(entt::entity) const;
     Mesh &GetSelectedMesh() const;

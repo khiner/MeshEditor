@@ -5,19 +5,18 @@
 
 enum class MeshElement {
     None,
-    Face, // Vertices are duplicated for each face. Each vertex uses the face normal.
     Vertex, // Vertices are not duplicated. Each vertex uses the vertex normal.
     Edge, // Vertices are duplicated. Each vertex uses the vertex normal.
+    Face, // Vertices are duplicated for each face. Each vertex uses the face normal.
 };
 
-inline const std::vector AllElements{MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
-inline const std::vector AllElementsWithNone{MeshElement::None, MeshElement::Face, MeshElement::Vertex, MeshElement::Edge};
+inline const std::vector AllElements{MeshElement::Vertex, MeshElement::Edge, MeshElement::Face};
 
 inline std::string to_string(MeshElement element) {
     switch (element) {
-        case MeshElement::Face: return "face";
         case MeshElement::Vertex: return "vertex";
         case MeshElement::Edge: return "edge";
+        case MeshElement::Face: return "face";
         case MeshElement::None: return "none";
     }
 }

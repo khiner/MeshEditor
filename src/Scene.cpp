@@ -19,7 +19,7 @@ void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
 
-const std::vector AllNormalElements{MeshElement::Face, MeshElement::Vertex};
+const std::vector AllNormalElements{MeshElement::Vertex, MeshElement::Face};
 
 using BuffersByElement = std::unordered_map<MeshElement, MeshBuffers>;
 struct MeshVkData {
@@ -513,10 +513,10 @@ void Scene::SetExtent(vk::Extent2D extent) {
 std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_mode, ColorMode color_mode) {
     const SPT fill_pipeline = color_mode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     switch (render_mode) {
-        case RenderMode::Faces: return {{fill_pipeline, MeshElement::Face}};
-        case RenderMode::Edges: return {{SPT::Line, MeshElement::Edge}};
-        case RenderMode::FacesAndEdges: return {{fill_pipeline, MeshElement::Face}, {SPT::Line, MeshElement::Edge}};
         case RenderMode::Vertices: return {{fill_pipeline, MeshElement::Vertex}};
+        case RenderMode::Edges: return {{SPT::Line, MeshElement::Edge}};
+        case RenderMode::Faces: return {{fill_pipeline, MeshElement::Face}};
+        case RenderMode::FacesAndEdges: return {{fill_pipeline, MeshElement::Face}, {SPT::Line, MeshElement::Edge}};
         case RenderMode::None: return {};
     }
 }
@@ -548,7 +548,8 @@ void Scene::RecordCommandBuffer() {
     );
 
     const auto selected_mesh_entity = GetMeshEntity(SelectedEntity);
-    if (selected_mesh_entity != entt::null) {
+    const bool render_silhouette = selected_mesh_entity != entt::null && SelectionMode == SelectionMode::Object;
+    if (render_silhouette) {
         const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
         const auto &selected_models_buffer = MeshVkData->Models.at(selected_mesh_entity);
         SilhouettePipeline.Begin(cb);
@@ -572,7 +573,7 @@ void Scene::RecordCommandBuffer() {
     });
 
     // Render silhouette edge texture.
-    if (selected_mesh_entity != entt::null) MainPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
+    if (render_silhouette) MainPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
 
     meshes.each([this, &cb](auto mesh_entity, auto &) {
         const auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
@@ -646,32 +647,31 @@ vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 bool Scene::Render() {
-    HighlightedElement = {MeshElement::None, 0};
+    const auto before_highlighted_element = HighlightedElement;
+    HighlightedElement = {SelectionElement, -1};
     HoveredEntities.clear();
     if (Extent.width != 0 && Extent.height != 0) {
         // Handle mouse & keyboard input.
+        if (IsKeyPressed(ImGuiKey_Tab)) {
+            SetSelectionMode(SelectionMode == SelectionMode::Object ? SelectionMode::Edit : SelectionMode::Object);
+        }
         if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
             DestroyEntity(SelectedEntity);
             RecordAndSubmitCommandBuffer();
         }
-        if (SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
+        if (SelectedEntity != entt::null && SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
             auto &mesh = GetSelectedMesh();
             const auto &model = GetSelectedModel();
             const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
-            const Mesh::ElementIndex highlight_element = HighlightedElement;
-            if (SelectionElement == MeshElement::Face) {
-                const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
-                if (highlight_element != fh) HighlightedElement = {SelectionElement, fh.idx()};
-            } else if (SelectionElement == MeshElement::Vertex) {
+            if (SelectionElement == MeshElement::Vertex) {
                 const auto vh = mesh.FindNearestVertex(mouse_ray);
-                if (highlight_element != vh) HighlightedElement = {SelectionElement, vh.idx()};
+                HighlightedElement = {SelectionElement, vh.idx()};
             } else if (SelectionElement == MeshElement::Edge) {
                 const auto eh = mesh.FindNearestEdge(mouse_ray);
-                if (highlight_element != eh) HighlightedElement = {SelectionElement, eh.idx()};
-            }
-            if (HighlightedElement != highlight_element) {
-                UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
-                SubmitCommandBuffer();
+                HighlightedElement = {SelectionElement, eh.idx()};
+            } else if (SelectionElement == MeshElement::Face) {
+                const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
+                HighlightedElement = {SelectionElement, fh.idx()};
             }
         } else if (SelectionMode == SelectionMode::Object) {
             R.view<Model>().each([this](auto entity, const auto &model) {
@@ -692,8 +692,11 @@ bool Scene::Render() {
             }
             RecordAndSubmitCommandBuffer();
         }
+        if (HighlightedElement != before_highlighted_element) {
+            UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
+            SubmitCommandBuffer();
+        }
     }
-
     const vec2 content_region = ToGlm(GetContentRegionAvail());
     const auto bg_color = ToClearColor(BgColor);
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
@@ -858,15 +861,15 @@ void Scene::RenderControls() {
             }
             if (CollapsingHeader("Render")) {
                 SeparatorText("Render mode");
-                int render_mode = int(RenderMode);
                 PushID("RenderMode");
-                bool render_mode_changed = RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
-                SameLine();
-                render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
+                int render_mode = int(RenderMode);
+                bool render_mode_changed = RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
                 SameLine();
                 render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
                 SameLine();
-                render_mode_changed |= RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
+                render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
+                SameLine();
+                render_mode_changed |= RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
                 PopID();
 
                 int color_mode = int(ColorMode);
@@ -929,16 +932,18 @@ void Scene::RenderControls() {
             if (CollapsingHeader("Selection")) {
                 PushID("SelectionMode");
                 int selection_mode = int(SelectionMode);
-                if (RadioButton("Object", &selection_mode, int(SelectionMode::Object))) SelectionMode = SelectionMode::Object;
+                bool selection_mode_changed = false;
+                selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
                 SameLine();
-                if (RadioButton("Edit", &selection_mode, int(SelectionMode::Edit))) SelectionMode = SelectionMode::Edit;
+                selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
+                if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
                 if (SelectionMode == SelectionMode::Edit) {
                     int element_selection_mode = int(SelectionElement);
-                    for (const auto element : AllElementsWithNone) {
+                    for (const auto element : AllElements) {
                         std::string name = to_string(element);
                         Capitalize(name);
                         if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
-                        if (element != AllElementsWithNone.back()) SameLine();
+                        if (element != AllElements.back()) SameLine();
                     }
                     const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", to_string(HighlightedElement.Element), HighlightedElement.idx()) : "Hovered: None";
                     TextUnformatted(highlight_label.c_str());

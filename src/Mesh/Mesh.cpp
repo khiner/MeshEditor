@@ -156,9 +156,9 @@ EH Mesh::FindNearestEdge(const Ray &local_ray) const {
 
 std::vector<uint> Mesh::CreateIndices(MeshElement element) const {
     switch (element) {
-        case MeshElement::Face: return CreateTriangulatedFaceIndices();
-        case MeshElement::Edge: return CreateEdgeIndices();
         case MeshElement::Vertex: return CreateTriangleIndices();
+        case MeshElement::Edge: return CreateEdgeIndices();
+        case MeshElement::Face: return CreateTriangulatedFaceIndices();
         case MeshElement::None: return {};
     }
 }
@@ -177,17 +177,7 @@ std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
 
 std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex highlighted) const {
     std::vector<Vertex3D> vertices;
-    if (element == MeshElement::Face) {
-        vertices.reserve(M.n_faces() * 3); // Lower bound assuming all faces are triangles.
-        for (const auto &fh : M.faces()) {
-            const auto &fn = M.normal(fh);
-            const auto &fc = M.color(fh);
-            for (const auto &vh : M.fv_range(fh)) {
-                const vec4 color = vh == highlighted || fh == highlighted || VertexBelongsToFaceEdge(vh, fh, highlighted) ? HighlightColor : ToGlm(fc);
-                vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
-            }
-        }
-    } else if (element == MeshElement::Vertex) {
+    if (element == MeshElement::Vertex) {
         vertices.reserve(M.n_vertices());
         for (const auto &vh : M.vertices()) {
             const vec4 color = vh == highlighted || VertexBelongsToFace(vh, highlighted) || VertexBelongsToEdge(vh, highlighted) ? HighlightColor : vec4{1};
@@ -202,6 +192,16 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex hig
             vertices.emplace_back(GetPosition(vh0), GetVertexNormal(vh0), color);
             vertices.emplace_back(GetPosition(vh1), GetVertexNormal(vh1), color);
         }
+    } else if (element == MeshElement::Face) {
+        vertices.reserve(M.n_faces() * 3); // Lower bound assuming all faces are triangles.
+        for (const auto &fh : M.faces()) {
+            const auto &fn = M.normal(fh);
+            const auto &fc = M.color(fh);
+            for (const auto &vh : M.fv_range(fh)) {
+                const vec4 color = vh == highlighted || fh == highlighted || VertexBelongsToFaceEdge(vh, fh, highlighted) ? HighlightColor : ToGlm(fc);
+                vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
+            }
+        }
     }
 
     return vertices;
@@ -209,16 +209,7 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex hig
 
 std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
     std::vector<Vertex3D> vertices;
-    if (mode == MeshElement::Face) {
-        // Line for each face normal, with length scaled by the face area.
-        vertices.reserve(M.n_faces() * 2);
-        for (const auto &fh : M.faces()) {
-            const vec3 fn = GetFaceNormal(fh);
-            const vec3 p = ToGlm(M.calc_face_centroid(fh));
-            vertices.emplace_back(p, fn, FaceNormalIndicatorColor);
-            vertices.emplace_back(p + NormalIndicatorLengthScale * CalcFaceArea(fh) * fn, fn, FaceNormalIndicatorColor);
-        }
-    } else if (mode == MeshElement::Vertex) {
+    if (mode == MeshElement::Vertex) {
         // Line for each vertex normal, with length scaled by the average edge length.
         vertices.reserve(M.n_vertices() * 2);
         for (const auto &vh : M.vertices()) {
@@ -231,6 +222,15 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
             const vec3 p = GetPosition(vh);
             vertices.emplace_back(p, vn, VertexNormalIndicatorColor);
             vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn, VertexNormalIndicatorColor);
+        }
+    } else if (mode == MeshElement::Face) {
+        // Line for each face normal, with length scaled by the face area.
+        vertices.reserve(M.n_faces() * 2);
+        for (const auto &fh : M.faces()) {
+            const vec3 fn = GetFaceNormal(fh);
+            const vec3 p = ToGlm(M.calc_face_centroid(fh));
+            vertices.emplace_back(p, fn, FaceNormalIndicatorColor);
+            vertices.emplace_back(p + NormalIndicatorLengthScale * CalcFaceArea(fh) * fn, fn, FaceNormalIndicatorColor);
         }
     }
     return vertices;
