@@ -655,6 +655,11 @@ bool Scene::Render() {
         if (IsKeyPressed(ImGuiKey_Tab)) {
             SetSelectionMode(SelectionMode == SelectionMode::Object ? SelectionMode::Edit : SelectionMode::Object);
         }
+        if (SelectionMode == SelectionMode::Edit) {
+            if (IsKeyPressed(ImGuiKey_1)) SelectionElement = MeshElement::Vertex;
+            if (IsKeyPressed(ImGuiKey_2)) SelectionElement = MeshElement::Edge;
+            if (IsKeyPressed(ImGuiKey_3)) SelectionElement = MeshElement::Face;
+        }
         if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
             DestroyEntity(SelectedEntity);
             RecordAndSubmitCommandBuffer();
