@@ -5,6 +5,10 @@ add_compile_options(-Wno-missing-field-initializers)
 
 project(MeshEditor LANGUAGES C CXX)
 
+if(APPLE)
+    enable_language(OBJC) # Needed for nativefiledialog
+endif()
+
 add_subdirectory(lib)
 
 find_package(Vulkan REQUIRED)
@@ -33,10 +37,21 @@ include_directories(
     lib/entt/src
     src
 )
+
+set(RESOURCE_DIR "${CMAKE_SOURCE_DIR}/res")
+set(RESOURCE_DEST "${CMAKE_BINARY_DIR}/res")
+
+# Copy resources after building the project target.
+add_custom_command(
+    TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${RESOURCE_DIR} ${RESOURCE_DEST}
+    COMMENT "Copying resources to build directory"
+)
+
 find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib spirv-cross-core)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} spirv-cross-core OpenMeshCore)
-
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} spirv-cross-core nfd OpenMeshCore)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

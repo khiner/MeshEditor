@@ -11,16 +11,17 @@ I'm also aiming to port [mesh2audio](https://github.com/khiner/mesh2audio) from 
 
 Features so far:
 * Create/delete meshes and mesh instances
-* Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
+  - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
+  - Load `.obj`, `.off`, `.ply`, `.stl` and `.om` mesh files (via [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh))
+* Object and view manipulation gizmos
 * Camera rotate & zoom mouse/scrollwheel controls
 * Simple camera + scene lighting model, visually matching Blender
+* Camera/lighting editing
 * Flat/smooth/line rendering
 * Hover-highlight vertices, edges, or faces
 * Normal debugging: Render face/vertex normal lines
 * Edge-detection-based silhouette outline of selected mesh/instance, embedded into the scene with accurate per-pixel depth
 * Fast infinite grid with horizon fade
-* Camera/lighting editing
-* Object and view manipulation gizmos
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)

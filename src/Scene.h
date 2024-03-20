@@ -162,6 +162,8 @@ struct Scene {
     entt::registry &R;
 
     entt::entity AddMesh(Mesh &&);
+    entt::entity AddMesh(const fs::path &);
+
     void ReplaceMesh(entt::entity, Mesh &&);
     void AddInstance(entt::entity);
     void DestroyEntity(entt::entity);

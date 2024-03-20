@@ -20,3 +20,6 @@
 [submodule "lib/VulkanMemoryAllocator"]
 	path = lib/VulkanMemoryAllocator
 	url = git@github.com:GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "lib/nativefiledialog-extended"]
+	path = lib/nativefiledialog-extended
+	url = git@github.com:btzy/nativefiledialog-extended.git

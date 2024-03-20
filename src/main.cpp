@@ -9,6 +9,7 @@
 #include "imgui_internal.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <nfd.h>
 
 #include "numeric/vec4.h"
 
@@ -220,6 +221,8 @@ int main(int, char **) {
     // ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
     // IM_ASSERT(font != nullptr);
 
+    NFD_Init();
+
     R = std::make_unique<entt::registry>();
     MainScene = std::make_unique<Scene>(*VC, *R);
 
@@ -266,6 +269,41 @@ int main(int, char **) {
             DockBuilderDockWindow(Windows.Scene.Name, dockspace_id);
         }
 
+        if (BeginMainMenuBar()) {
+            if (BeginMenu("File")) {
+                static const std::string ResDir = "res/";
+                static const std::vector<nfdfilteritem_t> filters{{"Mesh object", "obj,off,ply,stl,om"}};
+                if (MenuItem("Load mesh", nullptr)) {
+                    nfdchar_t *path;
+                    nfdresult_t result = NFD_OpenDialog(&path, filters.data(), filters.size(), ResDir.c_str());
+                    if (result == NFD_OKAY) {
+                        MainScene->AddMesh(fs::path(path));
+                        NFD_FreePath(path);
+                    } else if (result != NFD_CANCEL) {
+                        throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));
+                    }
+                }
+                // if (MenuItem("Export mesh", nullptr, false, MainMesh != nullptr)) {
+                //     nfdchar_t *path;
+                //     nfdresult_t result = NFD_SaveDialog(&path, filtes.data(), filters.size(), nullptr, ResDir.c_str());
+                //     if (result == NFD_OKAY) {
+                //         MainScene->SaveMesh(fs::path(path));
+                //         NFD_FreePath(path);
+                //     } else if (result != NFD_CANCEL) {
+                //         throw std::runtime_error(std::format("Error saving mesh file: {}", NFD_GetError()));
+                //     }
+                // }
+                EndMenu();
+            }
+            if (BeginMenu("Windows")) {
+                MenuItem(Windows.ImGuiDemo.Name, nullptr, &Windows.ImGuiDemo.Visible);
+                MenuItem(Windows.SceneControls.Name, nullptr, &Windows.SceneControls.Visible);
+                MenuItem(Windows.Scene.Name, nullptr, &Windows.Scene.Visible);
+                EndMenu();
+            }
+            EndMainMenuBar();
+        }
+
         if (Windows.ImGuiDemo.Visible) ShowDemoWindow(&Windows.ImGuiDemo.Visible);
 
         if (Windows.SceneControls.Visible) {
@@ -291,7 +329,7 @@ int main(int, char **) {
             PopStyleVar();
         }
 
-        // Rendering
+        // Render
         ImGui::Render();
         ImDrawData *draw_data = GetDrawData();
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
@@ -307,6 +345,8 @@ int main(int, char **) {
     }
 
     // Cleanup
+    NFD_Quit();
+
     VC->Device->waitIdle();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();

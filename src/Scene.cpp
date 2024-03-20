@@ -358,8 +358,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
-    SelectedEntity = AddMesh(CreateDefaultPrimitive(Primitive::Cube));
-    R.emplace<Primitive>(SelectedEntity, Primitive::Cube);
+    R.emplace<Primitive>(AddMesh(CreateDefaultPrimitive(Primitive::Cube)), Primitive::Cube);
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -397,8 +396,11 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
     R.emplace<Model>(entity, 1);
 
     UpdateTransform(entity);
+    SelectedEntity = entity;
+    if (Extent.width > 0 && Extent.height > 0) RecordAndSubmitCommandBuffer();
     return entity;
 }
+entt::entity Scene::AddMesh(const fs::path &file_path) { return AddMesh(Mesh{file_path}); }
 
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     auto &mesh_buffers = MeshVkData->Main.at(entity);
@@ -858,9 +860,7 @@ void Scene::RenderControls() {
                     RadioButton(to_string(primitive).c_str(), &current_primitive_edit, int(primitive));
                 }
                 if (auto mesh = PrimitiveEditor(Primitive(current_primitive_edit), true)) {
-                    SelectedEntity = AddMesh(std::move(*mesh));
-                    R.emplace<Primitive>(SelectedEntity, Primitive(current_primitive_edit));
-                    RecordAndSubmitCommandBuffer();
+                    R.emplace<Primitive>(AddMesh(std::move(*mesh)), Primitive(current_primitive_edit));
                 }
                 PopID();
             }
