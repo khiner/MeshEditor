@@ -51,7 +51,7 @@ struct VmaBuffer {
     VkBuffer operator*() const { return Buffer; }
     VkBuffer Get() const { return Buffer; }
 
-    vk::DeviceSize GetSize() const { return AllocationInfo.size; }
+    vk::DeviceSize GetAllocatedSize() const { return AllocationInfo.size; }
 
     void Update(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) {
         void *mapped_data = nullptr;

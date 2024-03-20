@@ -150,16 +150,33 @@ VulkanBuffer VulkanContext::CreateBuffer(vk::BufferUsageFlags usage, vk::DeviceS
     };
 }
 
+// Adapted from https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2 for 64-bits.
+uint64_t NextPowerOfTwo(uint64_t x) {
+    if (x == 0) return 1;
+
+    x--;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    x |= x >> 32;
+    return x + 1;
+}
+
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0) bytes = buffer.Size;
 
     const auto &cb = TransferCommandBuffers[0];
 
-    if (offset + bytes > buffer.Size) {
-        // Create a new buffer with the new size, copy the old device buffer into its device buffer, and replace the old buffer.
-        // todo we can avoid multiple cb submits by only creating a new _device buffer_ and assigning it to the old buffer,
-        // (without creating a new `VulkanBuffer` instance)
-        VulkanBuffer new_buffer = CreateBuffer(buffer.Usage, offset + bytes);
+    // Note: `buffer.Size` is the _used_ size, not the allocated size.
+    if (offset + bytes > buffer.GetAllocatedSize()) {
+        // Create a new buffer with the first large enough power of two.
+        // Copy the old device buffer into its device buffer, and replace the old buffer.
+        const vk::DeviceSize required_bytes = offset + bytes;
+        const vk::DeviceSize new_bytes = NextPowerOfTwo(required_bytes);
+
+        VulkanBuffer new_buffer = CreateBuffer(buffer.Usage, new_bytes);
         cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb->copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
         cb->end();
@@ -167,6 +184,7 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         SubmitTransfer();
 
         buffer = std::move(new_buffer);
+        buffer.Size = required_bytes;
     }
 
     // Copy data to the host buffer.
@@ -180,7 +198,6 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
     SubmitTransfer();
 }
 
-// Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
 void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0 || offset + bytes > buffer.Size) return;
 

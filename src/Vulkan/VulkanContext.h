@@ -39,8 +39,13 @@ struct VulkanContext {
     // Create the staging and device buffers and their memory.
     // Assumes `buffer.Size` is set.
     VulkanBuffer CreateBuffer(vk::BufferUsageFlags, vk::DeviceSize) const;
+
     // Uses `buffer.Size` if `bytes` is not set.
+    // Automatically grows the buffer if the buffer is too small (using the nearest large enough power of 2).
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
+
+    // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
+    // This is for dynamic buffers, and it doesn't free memory, so the allocated size will be greater than the used size.
     void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize bytes) const;
 
     template<typename T> VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const std::vector<T> &data) const {
