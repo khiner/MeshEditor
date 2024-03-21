@@ -51,7 +51,6 @@ VmaBuffer &VmaBuffer::operator=(VmaBuffer &&other) noexcept {
 
         // Prevent double-free
         other.Buffer = VK_NULL_HANDLE;
-        other.Allocation = {};
     }
     return *this;
 }
