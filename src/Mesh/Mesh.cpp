@@ -49,13 +49,13 @@ static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const 
 float Mesh::CalcFaceArea(FH fh) const {
     float area{0};
     auto fv_it = M.cfv_iter(fh);
-    const auto p0 = M.point(*fv_it);
-    ++fv_it;
-    for (; fv_it != M.cfv_end(fh); ++fv_it) {
-        const Point p1 = M.point(*fv_it), p2 = M.point(*(++fv_it));
-        --fv_it;
+    const Point p0 = M.point(*fv_it++);
+    Point p1 = M.point(*fv_it++), p2;
+    for (; fv_it.is_valid(); ++fv_it) {
+        p2 = M.point(*fv_it);
         const auto cross_product = (p1 - p0) % (p2 - p0);
         area += cross_product.norm() * 0.5;
+        p1 = p2;
     }
     return area;
 }
@@ -273,12 +273,12 @@ std::vector<uint> Mesh::CreateTriangleIndices() const {
     std::vector<uint> indices;
     for (const auto &fh : M.faces()) {
         auto fv_it = M.cfv_iter(fh);
-        const VH v0 = *fv_it;
-        ++fv_it;
-        for (; fv_it != M.cfv_end(fh); ++fv_it) {
-            const VH v1 = *fv_it, v2 = *(++fv_it);
-            --fv_it;
+        const VH v0 = *fv_it++;
+        VH v1 = *fv_it++, v2;
+        for (; fv_it.is_valid(); ++fv_it) {
+            v2 = *fv_it;
             indices.insert(indices.end(), {uint(v0.idx()), uint(v1.idx()), uint(v2.idx())});
+            v1 = v2;
         }
     }
     return indices;
