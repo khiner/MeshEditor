@@ -244,7 +244,7 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
             const vec3 fn = GetFaceNormal(fh);
             const vec3 p = ToGlm(M.calc_face_centroid(fh));
             vertices.emplace_back(p, fn, FaceNormalIndicatorColor);
-            vertices.emplace_back(p + NormalIndicatorLengthScale * CalcFaceArea(fh) * fn, fn, FaceNormalIndicatorColor);
+            vertices.emplace_back(p + NormalIndicatorLengthScale * std::sqrt(CalcFaceArea(fh)) * fn, fn, FaceNormalIndicatorColor);
         }
     }
     return vertices;
