@@ -144,9 +144,9 @@ VulkanBuffer VulkanContext::CreateBuffer(vk::BufferUsageFlags usage, vk::DeviceS
     return {
         usage, bytes,
         // Host buffer: host-visible and coherent staging buffer for CPU writes.
-        BufferAllocator->CreateBuffer(bytes, vk::BufferUsageFlagBits::eTransferSrc, VMA_MEMORY_USAGE_CPU_ONLY),
+        BufferAllocator->CreateBuffer(bytes, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly),
         // Device buffer: device-local for fast GPU access.
-        BufferAllocator->CreateBuffer(bytes, vk::BufferUsageFlagBits::eTransferDst | usage, VMA_MEMORY_USAGE_GPU_ONLY)
+        BufferAllocator->CreateBuffer(bytes, vk::BufferUsageFlagBits::eTransferDst | usage, MemoryUsage::GpuOnly)
     };
 }
 
