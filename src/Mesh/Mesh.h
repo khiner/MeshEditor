@@ -83,6 +83,7 @@ struct Mesh {
         M.request_face_normals();
         M.request_face_colors();
         Load(file_path, M);
+        SetFaceColor(DefaultFaceColor);
         UpdateNormals();
     }
     Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) : Mesh() {
