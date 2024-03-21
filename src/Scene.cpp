@@ -653,7 +653,7 @@ bool Scene::Render() {
     HighlightedElement = {SelectionElement, -1};
     HoveredEntities.clear();
     if (Extent.width != 0 && Extent.height != 0) {
-        // Handle mouse & keyboard input.
+        // Handle keyboard input.
         if (IsKeyPressed(ImGuiKey_Tab)) {
             SetSelectionMode(SelectionMode == SelectionMode::Object ? SelectionMode::Edit : SelectionMode::Object);
         }
@@ -666,44 +666,49 @@ bool Scene::Render() {
             DestroyEntity(SelectedEntity);
             RecordAndSubmitCommandBuffer();
         }
-        if (SelectedEntity != entt::null && SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
-            auto &mesh = GetSelectedMesh();
-            const auto &model = GetSelectedModel();
-            const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
-            if (SelectionElement == MeshElement::Vertex) {
-                const auto vh = mesh.FindNearestVertex(mouse_ray);
-                HighlightedElement = {SelectionElement, vh.idx()};
-            } else if (SelectionElement == MeshElement::Edge) {
-                const auto eh = mesh.FindNearestEdge(mouse_ray);
-                HighlightedElement = {SelectionElement, eh.idx()};
-            } else if (SelectionElement == MeshElement::Face) {
-                const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
-                HighlightedElement = {SelectionElement, fh.idx()};
-            }
-        } else if (SelectionMode == SelectionMode::Object) {
-            R.view<Model>().each([this](auto entity, const auto &model) {
-                const auto &mesh = R.get<Mesh>(GetMeshEntity(entity));
+
+        // Handle mouse input.
+        if (IsWindowHovered()) {
+            if (SelectedEntity != entt::null && SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
+                auto &mesh = GetSelectedMesh();
+                const auto &model = GetSelectedModel();
                 const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
-                if (mesh.FindNearestVertex(mouse_ray).is_valid()) HoveredEntities.emplace(entity);
-            });
-        }
-        if ((GetIO().KeyCtrl || GetIO().KeySuper) && IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (!HoveredEntities.empty()) {
-                // Cycle through hovered entities.
-                auto it = HoveredEntities.find(SelectedEntity);
-                if (it != HoveredEntities.end()) ++it;
-                if (it == HoveredEntities.end()) it = HoveredEntities.begin();
-                SelectedEntity = *it;
-            } else {
-                SelectedEntity = entt::null;
+                if (SelectionElement == MeshElement::Vertex) {
+                    const auto vh = mesh.FindNearestVertex(mouse_ray);
+                    HighlightedElement = {SelectionElement, vh.idx()};
+                } else if (SelectionElement == MeshElement::Edge) {
+                    const auto eh = mesh.FindNearestEdge(mouse_ray);
+                    HighlightedElement = {SelectionElement, eh.idx()};
+                } else if (SelectionElement == MeshElement::Face) {
+                    const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
+                    HighlightedElement = {SelectionElement, fh.idx()};
+                }
+            } else if (SelectionMode == SelectionMode::Object) {
+                R.view<Model>().each([this](auto entity, const auto &model) {
+                    const auto &mesh = R.get<Mesh>(GetMeshEntity(entity));
+                    const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
+                    if (mesh.RayIntersects(mouse_ray)) HoveredEntities.emplace(entity);
+                });
             }
-            RecordAndSubmitCommandBuffer();
-        }
-        if (HighlightedElement != before_highlighted_element) {
-            UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
-            SubmitCommandBuffer();
+            if ((GetIO().KeyCtrl || GetIO().KeySuper) && IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (!HoveredEntities.empty()) {
+                    // Cycle through hovered entities.
+                    auto it = HoveredEntities.find(SelectedEntity);
+                    if (it != HoveredEntities.end()) ++it;
+                    if (it == HoveredEntities.end()) it = HoveredEntities.begin();
+                    SelectedEntity = *it;
+                } else {
+                    SelectedEntity = entt::null;
+                }
+                RecordAndSubmitCommandBuffer();
+            }
+            if (HighlightedElement != before_highlighted_element) {
+                UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
+                SubmitCommandBuffer();
+            }
         }
     }
+
     const vec2 content_region = ToGlm(GetContentRegionAvail());
     const auto bg_color = ToClearColor(BgColor);
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;

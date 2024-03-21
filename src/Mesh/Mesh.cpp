@@ -90,24 +90,38 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     return false;
 }
 
+bool Mesh::RayIntersects(const Ray &local_ray) const {
+    for (const auto &fh : M.faces()) {
+        auto fv_it = M.cfv_iter(fh);
+        const VH v0 = *fv_it++;
+        VH v1 = *fv_it++, v2;
+        for (; fv_it.is_valid(); ++fv_it) {
+            v2 = *fv_it;
+            if (RayIntersectsTriangle(local_ray, v0, v1, v2)) return true;
+
+            v1 = v2;
+        }
+    }
+    return false;
+}
+
 FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out) const {
     // Avoid allocations in the loop.
-    float distance;
-    float closest_distance = std::numeric_limits<float>::max();
+    float distance = 0, closest_distance = std::numeric_limits<float>::max();
     vec3 intersect_point;
     FH closest_face{};
     for (const auto &fh : M.faces()) {
         auto fv_it = M.cfv_iter(fh);
-        const VH v0 = *fv_it;
-        ++fv_it;
-        for (; fv_it != M.cfv_end(fh); ++fv_it) {
-            const VH v1 = *fv_it, v2 = *(++fv_it);
-            --fv_it;
+        const VH v0 = *fv_it++;
+        VH v1 = *fv_it++, v2;
+        for (; fv_it.is_valid(); ++fv_it) {
+            v2 = *fv_it;
             if (RayIntersectsTriangle(local_ray, v0, v1, v2, &distance, &intersect_point) && distance < closest_distance) {
                 closest_distance = distance;
                 closest_face = fh;
                 if (closest_intersect_point_out) *closest_intersect_point_out = intersect_point;
             }
+            v1 = v2;
         }
     }
 
