@@ -17,9 +17,10 @@
 
 struct Mesh;
 struct VulkanContext;
-struct MeshBuffers;
+struct RenderBuffers;
 struct MeshVkData;
 struct VulkanBuffer;
+struct BVH;
 
 struct ImageResource {
     // The `image` in the view info is overwritten.
@@ -103,8 +104,8 @@ struct RenderPipeline {
 
     // If `model_index` is set, only the model at that index is rendered.
     // Otherwise, all models are rendered.
-    void RenderBuffers(vk::CommandBuffer, SPT, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
-    void RenderBuffers(vk::CommandBuffer, SPT, const MeshBuffers &, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
+    void Render(vk::CommandBuffer, SPT, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
+    void Render(vk::CommandBuffer, SPT, const RenderBuffers &, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
 
 protected:
     vk::UniqueFramebuffer Framebuffer;
@@ -190,6 +191,7 @@ private:
     World World{};
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
+    std::unique_ptr<BVH> Bvh;
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
@@ -207,10 +209,9 @@ private:
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor;
+    vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
     std::unique_ptr<VulkanBuffer> TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
-
-    vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
     MainPipeline MainPipeline;
     SilhouettePipeline SilhouettePipeline;
@@ -219,7 +220,7 @@ private:
 
     std::unique_ptr<Gizmo> Gizmo;
 
-    bool ShowGrid{true};
+    bool ShowGrid{true}, ShowBoundingBoxes{false};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
 
@@ -243,5 +244,5 @@ private:
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
-    void UpdateMeshBuffers(entt::entity, MeshElementIndex highlight_element = {});
+    void UpdateRenderBuffers(entt::entity, MeshElementIndex highlight_element = {});
 };

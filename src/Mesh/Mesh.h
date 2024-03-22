@@ -8,6 +8,7 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
+#include "BBox.h"
 #include "MeshElement.h"
 #include "RenderMode.h"
 #include "Vertex.h"
@@ -38,7 +39,13 @@ inline OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
 }
 
 // A `Mesh` is a wrapper around an `OpenMesh::PolyMesh`, privately available as `M`.
+// Render modes:
+// - Faces: Vertices are duplicated for each face. Each vertex uses the face normal.
+// - Vertices: Vertices are not duplicated. Uses vertex normals.
+// - Edge: Vertices are duplicated. Each vertex uses the vertex normal.
 struct Mesh {
+    BBox BoundingBox;
+
     using PolyMesh = om::PolyMesh;
     using VH = om::VH;
     using FH = om::FH;
@@ -68,16 +75,6 @@ struct Mesh {
     inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Vertex Normal`.
     inline static float NormalIndicatorLengthScale = 0.25;
 
-    Mesh() {
-        M.request_vertex_normals();
-        M.request_face_normals();
-        M.request_face_colors();
-    }
-    Mesh(Mesh &&mesh) : M(std::move(mesh.M)) {
-        M.request_vertex_normals();
-        M.request_face_normals();
-        M.request_face_colors();
-    }
     Mesh(const fs::path &file_path) {
         M.request_vertex_normals();
         M.request_face_normals();
@@ -85,10 +82,15 @@ struct Mesh {
         Load(file_path, M);
         SetFaceColor(DefaultFaceColor);
         UpdateNormals();
+        BoundingBox = ComputeBbox();
     }
-    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) : Mesh() {
+    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) {
+        M.request_vertex_normals();
+        M.request_face_normals();
+        M.request_face_colors();
         SetFaces(std::move(vertices), std::move(faces), color);
         UpdateNormals();
+        BoundingBox = ComputeBbox();
     }
     ~Mesh() {
         M.release_vertex_normals();
@@ -125,10 +127,9 @@ struct Mesh {
     std::vector<Vertex3D> CreateNormalVertices(MeshElement) const;
     std::vector<uint> CreateNormalIndices(MeshElement) const;
 
-    // [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
-    std::pair<vec3, vec3> ComputeBounds() const;
+    BBox ComputeBbox() const;
 
-    // Centers the actual points to the center of gravity, not just a transform.
+    // Center of gravity
     // void Center() {
     //     auto points = OpenMesh::getPointsProperty(Mesh);
     //     auto cog = Mesh.vertices().avg(points);
@@ -174,7 +175,7 @@ struct Mesh {
     // If `closest_intersect_point_out` is not null, sets it to the intersection point.
     FH FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out = nullptr) const;
 
-protected:
+private:
     PolyMesh M;
 
     std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.

@@ -20,6 +20,7 @@ Features so far:
 * Flat/smooth/line rendering
 * Hover-highlight vertices, edges, or faces
 * Normal debugging: Render face/vertex normal lines
+* Render bounding box wireframes for all meshes/instances
 * Edge-detection-based silhouette outline of selected mesh/instance, embedded into the scene with accurate per-pixel depth
 * Fast infinite grid with horizon fade
 

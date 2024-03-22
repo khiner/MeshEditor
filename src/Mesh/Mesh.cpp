@@ -250,23 +250,14 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
     return vertices;
 }
 
-// [{min_x, min_y, min_z}, {max_x, max_y, max_z}]
-std::pair<vec3, vec3> Mesh::ComputeBounds() const {
-    static const float min_float = std::numeric_limits<float>::lowest();
-    static const float max_float = std::numeric_limits<float>::max();
-
-    vec3 min(max_float), max(min_float);
+BBox Mesh::ComputeBbox() const {
+    BBox bbox;
     for (const auto &vh : M.vertices()) {
-        const auto &p = M.point(vh);
-        min.x = std::min(min.x, p[0]);
-        min.y = std::min(min.y, p[1]);
-        min.z = std::min(min.z, p[2]);
-        max.x = std::max(max.x, p[0]);
-        max.y = std::max(max.y, p[1]);
-        max.z = std::max(max.z, p[2]);
+        const auto &v = ToGlm(M.point(vh));
+        bbox.Min = glm::min(bbox.Min, v);
+        bbox.Max = glm::max(bbox.Max, v);
     }
-
-    return {min, max};
+    return bbox;
 }
 
 std::vector<uint> Mesh::CreateTriangleIndices() const {

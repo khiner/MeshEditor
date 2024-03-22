@@ -54,6 +54,12 @@ struct VulkanContext {
         UpdateBuffer(buffer, data.data(), 0, bytes);
         return buffer;
     }
+    template<typename T, size_t N> VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const std::array<T, N> &data) const {
+        const uint bytes = N * data.size();
+        auto buffer = CreateBuffer(flags, bytes);
+        UpdateBuffer(buffer, data.data(), 0, bytes);
+        return buffer;
+    }
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
         const uint bytes = sizeof(T) * data.size();
         // If the buffer is either too small or too large, recreate it.

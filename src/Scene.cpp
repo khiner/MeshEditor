@@ -11,21 +11,42 @@
 
 #include "numeric/mat3.h"
 
-#include "mesh/MeshBuffers.h"
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
-void Capitalize(std::string &str) {
-    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
+#include "BVH.h"
+
+// Simple wrapper around vertex and index buffers.
+struct RenderBuffers {
+    VulkanBuffer Vertices, Indices;
+
+    RenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices)
+        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(vertices))),
+          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, std::move(indices))) {}
+
+    template<size_t N>
+    RenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices)
+        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(vertices))),
+          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices)) {}
+};
+
+using MeshBuffers = std::unordered_map<MeshElement, RenderBuffers>;
+struct MeshVkData {
+    std::unordered_map<entt::entity, MeshBuffers> Main, NormalIndicators;
+    std::unordered_map<entt::entity, VulkanBuffer> Models;
+    std::unordered_map<entt::entity, RenderBuffers> Boxes;
+};
+
+std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
+    const auto &corners = box.Corners();
+    std::vector<Vertex3D> vertices;
+    vertices.reserve(corners.size());
+    // Normals don't matter for wireframes.
+    for (auto &corner : corners) vertices.emplace_back(corner, vec3{}, color);
+    return vertices;
 }
 
 const std::vector AllNormalElements{MeshElement::Vertex, MeshElement::Face};
-
-using BuffersByElement = std::unordered_map<MeshElement, MeshBuffers>;
-struct MeshVkData {
-    std::unordered_map<entt::entity, BuffersByElement> Main, NormalIndicators;
-    std::unordered_map<entt::entity, VulkanBuffer> Models;
-};
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -76,9 +97,12 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
     return {{}, bindings, attrs};
 }
 
+void Capitalize(std::string &str) {
+    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
+}
+
 struct Gizmo {
     ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
-    bool ShowBounds{false};
     bool ShowModelGizmo{false};
 
     void Begin() const {
@@ -157,7 +181,7 @@ void RenderPipeline::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline->Compile(*RenderPass);
 }
 
-void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, SPT spt, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index) const {
+void RenderPipeline::Render(vk::CommandBuffer cb, SPT spt, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index) const {
     const auto &shader_pipeline = *ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
@@ -175,8 +199,8 @@ void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, SPT spt, const VulkanBu
     cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
 }
 
-void RenderPipeline::RenderBuffers(vk::CommandBuffer cb, SPT spt, const MeshBuffers &mesh_buffers, const VulkanBuffer &models, std::optional<uint> model_index) const {
-    RenderBuffers(cb, spt, mesh_buffers.Vertices, mesh_buffers.Indices, models, model_index);
+void RenderPipeline::Render(vk::CommandBuffer cb, SPT spt, const RenderBuffers &render_buffers, const VulkanBuffer &models, std::optional<uint> model_index) const {
+    Render(cb, spt, render_buffers.Vertices, render_buffers.Indices, models, model_index);
 }
 
 MainPipeline::MainPipeline(const VulkanContext &vc)
@@ -376,46 +400,45 @@ uint GetModelIndex(const entt::registry &r, entt::entity entity) {
 entt::entity Scene::AddMesh(Mesh &&mesh) {
     const auto entity = R.create();
 
-    BuffersByElement mesh_buffers{};
+    MeshBuffers mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        mesh_buffers.emplace(
-            element,
-            MeshBuffers{
-                VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, mesh.CreateVertices(element)),
-                VC.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, mesh.CreateIndices(element))
-            }
-        );
+        mesh_buffers.emplace(element, RenderBuffers{VC, mesh.CreateVertices(element), mesh.CreateIndices(element)});
     }
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
-    MeshVkData->NormalIndicators.emplace(entity, BuffersByElement{});
+    MeshVkData->NormalIndicators.emplace(entity, MeshBuffers{});
 
-    MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
+    Model model{1};
+    auto buffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model));
+    VC.UpdateBuffer(buffer, &model, 0, sizeof(Model));
+    MeshVkData->Models.emplace(entity, std::move(buffer));
 
-    R.emplace<Mesh>(entity, std::move(mesh));
+    if (ShowBoundingBoxes) {
+        MeshVkData->Boxes.emplace(entity, RenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
+    }
+
     R.emplace<SceneNode>(entity); // No parent or children.
-    R.emplace<Model>(entity, 1);
+    R.emplace<Mesh>(entity, std::move(mesh));
+    R.emplace<Model>(entity, std::move(model));
 
-    UpdateTransform(entity);
     SelectedEntity = entity;
+
     if (Extent.width > 0 && Extent.height > 0) RecordAndSubmitCommandBuffer();
     return entity;
 }
 entt::entity Scene::AddMesh(const fs::path &file_path) { return AddMesh(Mesh{file_path}); }
 
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
-    auto &mesh_buffers = MeshVkData->Main.at(entity);
-    for (auto element : AllElements) {
-        auto &buffers = mesh_buffers.at(element);
+    for (auto &[element, buffers] : MeshVkData->Main.at(entity)) {
         VC.UpdateBuffer(buffers.Vertices, mesh.CreateVertices(element));
         VC.UpdateBuffer(buffers.Indices, mesh.CreateIndices(element));
     }
-    auto &normal_buffers = MeshVkData->NormalIndicators.at(entity);
-    for (const auto element : AllNormalElements) {
-        if (auto it = normal_buffers.find(element); it != normal_buffers.end()) {
-            auto &buffers = it->second;
-            VC.UpdateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
-            VC.UpdateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
-        }
+    for (auto &[element, buffers] : MeshVkData->NormalIndicators.at(entity)) {
+        VC.UpdateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
+        VC.UpdateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
+    }
+    if (auto buffers = MeshVkData->Boxes.find(entity); buffers != MeshVkData->Boxes.end()) {
+        VC.UpdateBuffer(buffers->second.Vertices, CreateBoxVertices(mesh.BoundingBox, EdgeColor));
+        // Box indices are always the same.
     }
 
     R.replace<Mesh>(entity, std::move(mesh));
@@ -441,6 +464,7 @@ void Scene::DestroyEntity(entt::entity entity) {
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
     MeshVkData->Models.erase(entity);
+    MeshVkData->Boxes.erase(entity);
 
     const auto &node = R.get<SceneNode>(entity);
     for (const auto child : node.children) R.destroy(child);
@@ -477,7 +501,7 @@ void Scene::SetSelectedModel(mat4 &&model) {
     UpdateTransform(SelectedEntity);
 }
 
-void Scene::UpdateMeshBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
+void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
     auto &mesh = R.get<Mesh>(mesh_entity);
     auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
     for (auto element : AllElements) { // todo only update buffers for viewed elements.
@@ -552,40 +576,49 @@ void Scene::RecordCommandBuffer() {
     const auto selected_mesh_entity = GetMeshEntity(SelectedEntity);
     const bool render_silhouette = selected_mesh_entity != entt::null && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
+        // Only render the silhouette edges for the selected mesh instance.
         const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
         const auto &selected_models_buffer = MeshVkData->Models.at(selected_mesh_entity);
         SilhouettePipeline.Begin(cb);
-        // Only render the silhouette edge texture for the selected mesh instance.
-        SilhouettePipeline.RenderBuffers(cb, SPT::Silhouette, selected_buffers.at(MeshElement::Vertex), selected_models_buffer, GetModelIndex(R, SelectedEntity));
+        SilhouettePipeline.Render(cb, SPT::Silhouette, selected_buffers.at(MeshElement::Vertex), selected_models_buffer, GetModelIndex(R, SelectedEntity));
         cb.endRenderPass();
+
         EdgeDetectionPipeline.Begin(cb);
         EdgeDetectionPipeline.GetShaderPipeline(SPT::EdgeDetection)->RenderQuad(cb);
         cb.endRenderPass();
     }
 
-    // todo reorganize VK buffers to reduce the number of draw calls and pipeline switches.
-    //   - Use a single VK buffer per-(element_type|{index,vertex}), shared across all meshes
+    // Render meshes.
+    // todo reorganize mesh VK buffers to reduce the number of draw calls and pipeline switches.
     MainPipeline.Begin(cb, BackgroundColor);
-    meshes.each([this, &cb](auto mesh_entity, auto &) {
-        const auto &buffers = MeshVkData->Main.at(mesh_entity);
-        const auto &models_buffer = MeshVkData->Models.at(mesh_entity);
+    meshes.each([this, &cb](auto entity, auto &) {
+        const auto &buffers = MeshVkData->Main.at(entity);
+        const auto &models = MeshVkData->Models.at(entity);
         for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
-            MainPipeline.RenderBuffers(cb, pipeline, buffers.at(element), models_buffer);
+            MainPipeline.Render(cb, pipeline, buffers.at(element), models);
         }
     });
 
     // Render silhouette edge texture.
     if (render_silhouette) MainPipeline.GetShaderPipeline(SPT::Texture)->RenderQuad(cb);
 
-    meshes.each([this, &cb](auto mesh_entity, auto &) {
-        const auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
-        const auto &models_buffer = MeshVkData->Models.at(mesh_entity);
-        for (auto normal_element : AllNormalElements) {
-            if (auto it = normals.find(normal_element); it != normals.end()) {
-                MainPipeline.RenderBuffers(cb, SPT::Line, it->second, models_buffer);
-            }
+    // Render normal indicators.
+    meshes.each([this, &cb](auto entity, auto &) {
+        const auto &buffers = MeshVkData->NormalIndicators.at(entity);
+        const auto &models = MeshVkData->Models.at(entity);
+        for (const auto &[element, normal_indicators] : buffers) {
+            MainPipeline.Render(cb, SPT::Line, normal_indicators, models);
         }
     });
+
+    if (ShowBoundingBoxes) {
+        meshes.each([this, &cb](auto entity, auto &) {
+            if (auto buffers = MeshVkData->Boxes.find(entity); buffers != MeshVkData->Boxes.end()) {
+                const auto &models = MeshVkData->Models.at(entity);
+                MainPipeline.Render(cb, SPT::Line, buffers->second, models);
+            }
+        });
+    }
 
     if (ShowGrid) MainPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
 
@@ -612,7 +645,7 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    R.view<Mesh>().each([this](auto entity, auto &) { UpdateMeshBuffers(entity, HighlightedElement); });
+    R.view<Mesh>().each([this](auto entity, auto &) { UpdateRenderBuffers(entity, HighlightedElement); });
 }
 
 void Scene::UpdateViewProj() {
@@ -624,11 +657,16 @@ void Scene::UpdateViewProj() {
 }
 
 void Scene::UpdateTransform(entt::entity entity) {
+    const auto mesh_entity = GetMeshEntity(entity);
+    std::vector<BBox> boxes;
+    const auto &mesh_bbox = R.get<Mesh>(mesh_entity).BoundingBox;
+    R.view<Model>().each([&boxes, &mesh_bbox](const auto &model) {
+        boxes.emplace_back(mesh_bbox * model.Transform);
+    });
+    Bvh = std::make_unique<BVH>(std::move(boxes));
     const auto &model = R.get<Model>(entity);
     const uint i = GetModelIndex(R, entity);
-    const auto mesh_entity = GetMeshEntity(entity);
-    const uint offset = i * sizeof(Model), bytes = sizeof(Model);
-    VC.UpdateBuffer(MeshVkData->Models.at(mesh_entity), &model, offset, bytes);
+    VC.UpdateBuffer(MeshVkData->Models.at(mesh_entity), &model, i * sizeof(Model), sizeof(Model));
 }
 
 using namespace ImGui;
@@ -638,10 +676,10 @@ vk::ClearColorValue ToClearColor(vec4 v) { return {v.r, v.g, v.b, v.a}; }
 
 // Returns a world space ray from the mouse into the scene.
 Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
-    const vec2 mouse_pos = ToGlm(GetMousePos() - GetCursorScreenPos()), content_region = ToGlm(GetContentRegionAvail());
-    const vec2 mouse_content_pos = mouse_pos / content_region;
+    // Mouse pos in content region
+    const vec2 mouse_pos = ToGlm((GetMousePos() - GetCursorScreenPos()) / GetContentRegionAvail());
     // Normalized Device Coordinates, $\mathcal{NDC} \in [-1,1]^2$
-    const vec2 mouse_pos_ndc = vec2{2 * mouse_content_pos.x - 1, 1 - 2 * mouse_content_pos.y};
+    const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y};
     return camera.ClipPosToWorldRay(mouse_pos_ndc, view_extent.x / view_extent.y);
 }
 
@@ -703,7 +741,7 @@ bool Scene::Render() {
                 RecordAndSubmitCommandBuffer();
             }
             if (HighlightedElement != before_highlighted_element) {
-                UpdateMeshBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
+                UpdateRenderBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
                 SubmitCommandBuffer();
             }
         }
@@ -760,9 +798,9 @@ void Scene::RenderGizmo() {
     }
 }
 
-void DecomposeTransform(const glm::mat4 &transform, glm::vec3 &position, glm::vec3 &rotation, glm::vec3 &scale) {
-    glm::vec3 skew;
-    glm::vec4 perspective;
+void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, vec3 &scale) {
+    vec3 skew;
+    vec4 perspective;
     glm::quat orientation;
     glm::decompose(transform, scale, orientation, position, skew, perspective);
     rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
@@ -904,34 +942,38 @@ void Scene::RenderControls() {
                         SubmitCommandBuffer();
                     }
                 }
-                {
-                    SeparatorText("Normal indicators");
-                    // todo go back to storing normal settings in a map of element type to bool,
-                    //   and ensure meshes/instances are created with the current normals
-                    if (SelectedEntity != entt::null) {
-                        auto &normals = MeshVkData->NormalIndicators.at(GetMeshEntity(SelectedEntity));
-                        for (const auto element : AllNormalElements) {
-                            bool has_normals = normals.contains(element);
-                            std::string name = to_string(element);
-                            Capitalize(name);
-                            if (Checkbox(name.c_str(), &has_normals)) {
-                                if (has_normals) {
-                                    const auto &mesh = GetSelectedMesh();
-                                    normals.emplace(
-                                        element,
-                                        MeshBuffers{
-                                            VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, mesh.CreateNormalVertices(element)),
-                                            VC.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, mesh.CreateNormalIndices(element))
-                                        }
-                                    );
-                                } else {
-                                    normals.erase(element);
-                                }
-                                RecordAndSubmitCommandBuffer();
+                SeparatorText("Normal indicators");
+                // todo go back to storing normal settings in a map of element type to bool,
+                //   and ensure meshes/instances are created with the current normals
+                if (SelectedEntity != entt::null) {
+                    const auto mesh_entity = GetMeshEntity(SelectedEntity);
+                    const auto &mesh = R.get<Mesh>(mesh_entity);
+                    auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
+                    for (const auto element : AllNormalElements) {
+                        bool has_normals = normals.contains(element);
+                        std::string name = to_string(element);
+                        Capitalize(name);
+                        if (Checkbox(name.c_str(), &has_normals)) {
+                            if (has_normals) {
+                                normals.emplace(element, RenderBuffers{VC, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)});
+                            } else {
+                                normals.erase(element);
                             }
-                            if (element != AllNormalElements.back()) SameLine();
+                            RecordAndSubmitCommandBuffer();
                         }
+                        if (element != AllNormalElements.back()) SameLine();
                     }
+                }
+                if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
+                    auto &boxes = MeshVkData->Boxes;
+                    R.view<Mesh>().each([&](auto entity, auto &mesh) {
+                        if (ShowBoundingBoxes) {
+                            boxes.emplace(entity, RenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
+                        } else {
+                            boxes.erase(entity);
+                        }
+                    });
+                    RecordAndSubmitCommandBuffer();
                 }
                 SeparatorText("Silhouette");
                 if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
