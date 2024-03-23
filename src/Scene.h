@@ -17,10 +17,9 @@
 
 struct Mesh;
 struct VulkanContext;
-struct RenderBuffers;
+struct VkRenderBuffers;
 struct MeshVkData;
 struct VulkanBuffer;
-struct BVH;
 
 struct ImageResource {
     // The `image` in the view info is overwritten.
@@ -105,7 +104,7 @@ struct RenderPipeline {
     // If `model_index` is set, only the model at that index is rendered.
     // Otherwise, all models are rendered.
     void Render(vk::CommandBuffer, SPT, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
-    void Render(vk::CommandBuffer, SPT, const RenderBuffers &, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
+    void Render(vk::CommandBuffer, SPT, const VkRenderBuffers &, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
 
 protected:
     vk::UniqueFramebuffer Framebuffer;
@@ -191,7 +190,6 @@ private:
     World World{};
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
-    std::unique_ptr<BVH> Bvh;
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
@@ -220,7 +218,7 @@ private:
 
     std::unique_ptr<Gizmo> Gizmo;
 
-    bool ShowGrid{true}, ShowBoundingBoxes{false};
+    bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
 

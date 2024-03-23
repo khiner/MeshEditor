@@ -3,12 +3,42 @@
 #include <algorithm>
 #include <ranges>
 
+#include "BVH.h"
 #include "Ray.h"
 #include "World.h"
 
 using namespace om;
 
 using std::ranges::any_of;
+
+Mesh::Mesh(Mesh &&other)
+    : BoundingBox(other.BoundingBox), M(std::move(other.M)), Bvh(std::move(other.Bvh)) {
+    other.Bvh.reset();
+}
+Mesh::Mesh(const fs::path &file_path) {
+    M.request_vertex_normals();
+    M.request_face_normals();
+    M.request_face_colors();
+    Load(file_path, M);
+    SetFaceColor(DefaultFaceColor);
+    UpdateNormals();
+    BoundingBox = ComputeBbox();
+    Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
+}
+Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color) {
+    M.request_vertex_normals();
+    M.request_face_normals();
+    M.request_face_colors();
+    SetFaces(std::move(vertices), std::move(faces), color);
+    UpdateNormals();
+    BoundingBox = ComputeBbox();
+    Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
+}
+Mesh::~Mesh() {
+    M.release_vertex_normals();
+    M.release_face_normals();
+    M.release_face_colors();
+}
 
 bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {
     OpenMesh::IO::Options read_options; // No options used yet, but keeping this here for future use.
@@ -60,6 +90,39 @@ float Mesh::CalcFaceArea(FH fh) const {
     return area;
 }
 
+std::vector<BBox> Mesh::CreateFaceBoundingBoxes() const {
+    std::vector<BBox> boxes;
+    boxes.reserve(M.n_faces());
+    for (const auto &fh : M.faces()) {
+        BBox box;
+        for (const auto &vh : M.fv_range(fh)) {
+            const auto &point = M.point(vh);
+            box.Min = glm::min(box.Min, ToGlm(point));
+            box.Max = glm::max(box.Max, ToGlm(point));
+        }
+        boxes.push_back(box);
+    }
+    return boxes;
+}
+
+RenderBuffers Mesh::CreateBvhBuffers(vec4 color) const {
+    if (!Bvh) return {};
+
+    std::vector<BBox> boxes = Bvh->CreateBoxes();
+    std::vector<Vertex3D> vertices;
+    vertices.reserve(boxes.size() * 8);
+    std::vector<uint> indices;
+    indices.reserve(boxes.size() * BBox::EdgeIndices.size());
+    for (uint i = 0; i < boxes.size(); ++i) {
+        const auto &box = boxes[i];
+        for (auto &corner : box.Corners()) vertices.emplace_back(corner, vec3{}, color);
+
+        const uint index_offset = i * 8;
+        for (const auto &index : BBox::EdgeIndices) indices.push_back(index_offset + index);
+    }
+    return {std::move(vertices), std::move(indices)};
+}
+
 // Moller-Trumbore ray-triangle intersection algorithm.
 bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) const {
     static const float eps = 1e-7f; // Floating point error tolerance.
@@ -90,20 +153,7 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     return false;
 }
 
-bool Mesh::RayIntersects(const Ray &local_ray) const {
-    for (const auto &fh : M.faces()) {
-        auto fv_it = M.cfv_iter(fh);
-        const VH v0 = *fv_it++;
-        VH v1 = *fv_it++, v2;
-        for (; fv_it.is_valid(); ++fv_it) {
-            v2 = *fv_it;
-            if (RayIntersectsTriangle(local_ray, v0, v1, v2)) return true;
-
-            v1 = v2;
-        }
-    }
-    return false;
-}
+bool Mesh::RayIntersects(const Ray &local_ray) const { return Bvh->Intersect(local_ray).has_value(); }
 
 FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out) const {
     // Avoid allocations in the loop.

@@ -55,7 +55,7 @@ struct VulkanContext {
         return buffer;
     }
     template<typename T, size_t N> VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const std::array<T, N> &data) const {
-        const uint bytes = N * data.size();
+        const uint bytes = sizeof(T) * N;
         auto buffer = CreateBuffer(flags, bytes);
         UpdateBuffer(buffer, data.data(), 0, bytes);
         return buffer;

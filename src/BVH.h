@@ -14,6 +14,8 @@ struct BVH {
     ~BVH();
 
     const BBox &GetBox() const;
+    std::vector<BBox> CreateBoxes() const;
+
     std::optional<float> Intersect(const Ray &) const;
 
 private:

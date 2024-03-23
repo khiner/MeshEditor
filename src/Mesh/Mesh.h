@@ -15,6 +15,7 @@
 
 namespace fs = std::filesystem;
 
+struct BVH;
 struct Ray;
 
 // Aliases for OpenMesh types to support `using namespace om;`.
@@ -37,6 +38,11 @@ inline OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
     return {cc[0], cc[1], cc[2]};
 }
+
+struct RenderBuffers {
+    std::vector<Vertex3D> Vertices;
+    std::vector<uint> Indices;
+};
 
 // A `Mesh` is a wrapper around an `OpenMesh::PolyMesh`, privately available as `M`.
 // Render modes:
@@ -75,28 +81,10 @@ struct Mesh {
     inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Vertex Normal`.
     inline static float NormalIndicatorLengthScale = 0.25;
 
-    Mesh(const fs::path &file_path) {
-        M.request_vertex_normals();
-        M.request_face_normals();
-        M.request_face_colors();
-        Load(file_path, M);
-        SetFaceColor(DefaultFaceColor);
-        UpdateNormals();
-        BoundingBox = ComputeBbox();
-    }
-    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor) {
-        M.request_vertex_normals();
-        M.request_face_normals();
-        M.request_face_colors();
-        SetFaces(std::move(vertices), std::move(faces), color);
-        UpdateNormals();
-        BoundingBox = ComputeBbox();
-    }
-    ~Mesh() {
-        M.release_vertex_normals();
-        M.release_face_normals();
-        M.release_face_colors();
-    }
+    Mesh(Mesh &&);
+    Mesh(const fs::path &);
+    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor);
+    ~Mesh();
 
     Mesh &operator=(const Mesh &other) {
         if (this != &other) M = other.M;
@@ -127,7 +115,10 @@ struct Mesh {
     std::vector<Vertex3D> CreateNormalVertices(MeshElement) const;
     std::vector<uint> CreateNormalIndices(MeshElement) const;
 
-    BBox ComputeBbox() const;
+    BBox ComputeBbox() const; // This is public, but use `BoundingBox` instead.
+
+    std::vector<BBox> CreateFaceBoundingBoxes() const;
+    RenderBuffers CreateBvhBuffers(vec4 color) const;
 
     // Center of gravity
     // void Center() {
@@ -177,6 +168,7 @@ struct Mesh {
 
 private:
     PolyMesh M;
+    std::unique_ptr<BVH> Bvh;
 
     std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.

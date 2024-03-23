@@ -20,6 +20,7 @@ struct BVH::Node {
     bool IsLeaf() const { return Left == nullptr && Right == nullptr; }
 };
 
+// todo build bottom-up instead of top-down for better performance.
 BVH::Node Build(std::vector<BBox> &boxes, uint start, uint end) {
     BBox box = BBox::UnionAll(std::span(boxes.begin() + start, boxes.begin() + end));
     if (end - start <= MaxLeafNodeObjectCount) return {std::move(box), start, end};
@@ -38,6 +39,24 @@ BVH::BVH(std::vector<BBox> &&boxes) : Boxes(std::move(boxes)), Root(std::make_un
 BVH::~BVH() = default;
 
 const BBox &BVH::GetBox() const { return Root->Box; }
+
+void AddNodeBoxes(const BVH::Node *node, std::vector<BBox> &boxes) {
+    if (node == nullptr) return;
+
+    // Add the current node's box.
+    boxes.push_back(node->Box);
+
+    // Recursively add boxes from the left and right children.
+    AddNodeBoxes(node->Left.get(), boxes);
+    AddNodeBoxes(node->Right.get(), boxes);
+}
+
+std::vector<BBox> BVH::CreateBoxes() const {
+    std::vector<BBox> boxes;
+    AddNodeBoxes(Root.get(), boxes);
+    return boxes;
+}
+
 std::optional<float> BVH::Intersect(const Ray &ray) const { return IntersectNode(Root.get(), ray); }
 
 std::optional<float> BVH::IntersectNode(const Node *node, const Ray &ray) const {

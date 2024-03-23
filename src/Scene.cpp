@@ -14,27 +14,30 @@
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
-#include "BVH.h"
-
 // Simple wrapper around vertex and index buffers.
-struct RenderBuffers {
+struct VkRenderBuffers {
     VulkanBuffer Vertices, Indices;
 
-    RenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices)
+    VkRenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices)
         : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(vertices))),
           Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, std::move(indices))) {}
 
+    VkRenderBuffers(const VulkanContext &vc, RenderBuffers &&buffers)
+        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(buffers.Vertices))),
+          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, std::move(buffers.Indices))) {}
+
     template<size_t N>
-    RenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices)
+    VkRenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices)
         : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(vertices))),
           Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices)) {}
 };
 
-using MeshBuffers = std::unordered_map<MeshElement, RenderBuffers>;
+using MeshBuffers = std::unordered_map<MeshElement, VkRenderBuffers>;
 struct MeshVkData {
     std::unordered_map<entt::entity, MeshBuffers> Main, NormalIndicators;
     std::unordered_map<entt::entity, VulkanBuffer> Models;
-    std::unordered_map<entt::entity, RenderBuffers> Boxes;
+    std::unordered_map<entt::entity, VkRenderBuffers> Boxes;
+    std::unordered_map<entt::entity, VkRenderBuffers> BvhBoxes;
 };
 
 std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
@@ -199,7 +202,7 @@ void RenderPipeline::Render(vk::CommandBuffer cb, SPT spt, const VulkanBuffer &v
     cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
 }
 
-void RenderPipeline::Render(vk::CommandBuffer cb, SPT spt, const RenderBuffers &render_buffers, const VulkanBuffer &models, std::optional<uint> model_index) const {
+void RenderPipeline::Render(vk::CommandBuffer cb, SPT spt, const VkRenderBuffers &render_buffers, const VulkanBuffer &models, std::optional<uint> model_index) const {
     Render(cb, spt, render_buffers.Vertices, render_buffers.Indices, models, model_index);
 }
 
@@ -402,7 +405,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
 
     MeshBuffers mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        mesh_buffers.emplace(element, RenderBuffers{VC, mesh.CreateVertices(element), mesh.CreateIndices(element)});
+        mesh_buffers.emplace(element, VkRenderBuffers{VC, mesh.CreateVertices(element), mesh.CreateIndices(element)});
     }
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, MeshBuffers{});
@@ -413,7 +416,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
     MeshVkData->Models.emplace(entity, std::move(buffer));
 
     if (ShowBoundingBoxes) {
-        MeshVkData->Boxes.emplace(entity, RenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
+        MeshVkData->Boxes.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
     }
 
     R.emplace<SceneNode>(entity); // No parent or children.
@@ -619,6 +622,14 @@ void Scene::RecordCommandBuffer() {
             }
         });
     }
+    if (ShowBvhBoxes) {
+        meshes.each([this, &cb](auto entity, auto &) {
+            if (auto buffers = MeshVkData->BvhBoxes.find(entity); buffers != MeshVkData->BvhBoxes.end()) {
+                const auto &models = MeshVkData->Models.at(entity);
+                MainPipeline.Render(cb, SPT::Line, buffers->second, models);
+            }
+        });
+    }
 
     if (ShowGrid) MainPipeline.GetShaderPipeline(SPT::Grid)->RenderQuad(cb);
 
@@ -658,13 +669,6 @@ void Scene::UpdateViewProj() {
 
 void Scene::UpdateTransform(entt::entity entity) {
     const auto mesh_entity = GetMeshEntity(entity);
-    std::vector<BBox> boxes;
-    const auto &mesh_bbox = R.get<Mesh>(mesh_entity).BoundingBox;
-    R.view<Model>().each([&boxes, &mesh_bbox](const auto &model) {
-        boxes.emplace_back(mesh_bbox * model.Transform);
-    });
-    Bvh = std::make_unique<BVH>(std::move(boxes));
-
     const auto &model = R.get<Model>(entity);
     const uint i = GetModelIndex(R, entity);
     VC.UpdateBuffer(MeshVkData->Models.at(mesh_entity), &model, i * sizeof(Model), sizeof(Model));
@@ -956,7 +960,7 @@ void Scene::RenderControls() {
                         Capitalize(name);
                         if (Checkbox(name.c_str(), &has_normals)) {
                             if (has_normals) {
-                                normals.emplace(element, RenderBuffers{VC, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)});
+                                normals.emplace(element, VkRenderBuffers{VC, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)});
                             } else {
                                 normals.erase(element);
                             }
@@ -964,15 +968,18 @@ void Scene::RenderControls() {
                         }
                         if (element != AllNormalElements.back()) SameLine();
                     }
+                    if (Checkbox("BVH boxes", &ShowBvhBoxes)) {
+                        auto &buffers = MeshVkData->BvhBoxes;
+                        if (ShowBvhBoxes) buffers.emplace(mesh_entity, VkRenderBuffers{VC, mesh.CreateBvhBuffers(EdgeColor)});
+                        else buffers.erase(mesh_entity);
+                        RecordAndSubmitCommandBuffer();
+                    }
                 }
                 if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
-                    auto &boxes = MeshVkData->Boxes;
+                    auto &buffers = MeshVkData->Boxes;
                     R.view<Mesh>().each([&](auto entity, auto &mesh) {
-                        if (ShowBoundingBoxes) {
-                            boxes.emplace(entity, RenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
-                        } else {
-                            boxes.erase(entity);
-                        }
+                        if (ShowBoundingBoxes) buffers.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
+                        else buffers.erase(entity);
                     });
                     RecordAndSubmitCommandBuffer();
                 }
