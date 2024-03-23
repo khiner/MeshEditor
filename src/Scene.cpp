@@ -664,6 +664,7 @@ void Scene::UpdateTransform(entt::entity entity) {
         boxes.emplace_back(mesh_bbox * model.Transform);
     });
     Bvh = std::make_unique<BVH>(std::move(boxes));
+
     const auto &model = R.get<Model>(entity);
     const uint i = GetModelIndex(R, entity);
     VC.UpdateBuffer(MeshVkData->Models.at(mesh_entity), &model, i * sizeof(Model), sizeof(Model));

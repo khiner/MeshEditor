@@ -20,6 +20,8 @@ struct BBox {
     BBox(vec3 min, vec3 max) : Min(std::move(min)), Max(std::move(max)) {}
     BBox() : Min(std::numeric_limits<float>::max()), Max(-std::numeric_limits<float>::max()) {}
 
+    bool IsValid() const { return Min.x <= Max.x && Min.y <= Max.y && Min.z <= Max.z; }
+
     BBox operator*(const mat4 &transform) const {
         const auto corners = Corners();
         BBox bbox;
