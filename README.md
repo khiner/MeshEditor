@@ -2,7 +2,8 @@
 
 Real-time mesh viewer and editor, using Vulkan and ImGui.
 
-![](screenshot.png)
+![](screenshots/cube.png)
+![](screenshots/torus_bvh.png)
 
 For me to learn Vulkan.
 I'm also aiming to port [mesh2audio](https://github.com/khiner/mesh2audio) from OpenGL to Vulkan directly in this project.
@@ -13,14 +14,19 @@ Features so far:
 * Create/delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj`, `.off`, `.ply`, `.stl` and `.om` mesh files (via [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh))
-* Object and view manipulation gizmos
-* Camera rotate & zoom mouse/scrollwheel controls
-* Simple camera + scene lighting model, visually matching Blender
-* Camera/lighting editing
-* Flat/smooth/line rendering
-* Hover-highlight vertices, edges, or faces
-* Normal debugging: Render face/vertex normal lines
-* Render bounding box wireframes for all meshes/instances
+* Select meshes or mesh elements (vertices, edges, or faces) with mouse
+* Flat/smooth/wireframe mesh rendering
+* Bounding Volume Hierarchy (BVH) ray intersection acceleration structure
+  - Used for mouse interactions - this is not a ray tracing renderer :)
+* Translate / rotate / (nonuniformly) scale meshes and instances with [gizmo]([ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo)) and numeric inputs
+* Simple camera + scene lighting model, roughly matching Blender visually
+* Edit camera with:
+  - Camera rotate cube [gizmo]([ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo))
+  - Scrollwheel zoom
+  - Numeric inputs
+* Edit lighting parameters
+* Render face/vertex normals as lines for debugging
+* Render bounding box / BVH wireframes for debugging
 * Edge-detection-based silhouette outline of selected mesh/instance, embedded into the scene with accurate per-pixel depth
 * Fast infinite grid with horizon fade
 
