@@ -1,79 +1,60 @@
 #include "BVH.h"
+#include <algorithm>
+#include <numeric>
 
-// Higher values means bigger bounding boxes with more objects inside them.
-constexpr uint MaxLeafNodeObjectCount = 4;
+BVH::BVH(std::vector<BBox> &&leaf_boxes) : LeafBoxes(std::move(leaf_boxes)) {
+    std::vector<uint> indices(LeafBoxes.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    Build(std::move(indices));
+}
 
-struct BVH::Node {
-    const BBox Box;
-    // todo for a more flat memory structure, use a single array of nodes and store left/right indices instead of node pointers.
-    std::unique_ptr<Node> Left, Right;
-    // Index range for child objects into `BVH.Boxes`.
-    // Valid only for leaf nodes.
-    uint Start{uint(-1)}, End{uint(-1)};
+uint BVH::Build(std::vector<uint> &&indices) {
+    const uint start = 0, end = indices.size();
+    if (end - start == 1) {
+        Nodes.emplace_back(indices[start]);
+        return Nodes.size() - 1;
+    }
 
-    // For leaf nodes
-    Node(BBox &&box, uint start, uint end) : Box(std::move(box)), Start(start), End(end) {}
-    // For internal nodes
-    Node(BBox &&box, std::unique_ptr<Node> left, std::unique_ptr<Node> right)
-        : Box(std::move(box)), Left(std::move(left)), Right(std::move(right)) {}
-
-    bool IsLeaf() const { return Left == nullptr && Right == nullptr; }
-};
-
-// todo build bottom-up instead of top-down for better performance.
-BVH::Node Build(std::vector<BBox> &boxes, uint start, uint end) {
-    BBox box = BBox::UnionAll(std::span(boxes.begin() + start, boxes.begin() + end));
-    if (end - start <= MaxLeafNodeObjectCount) return {std::move(box), start, end};
-
-    // Sort this range of objects (in place) based on their center along the split axis.
-    const uint split_axis = box.MaxAxis();
-    std::sort(boxes.begin() + start, boxes.begin() + end, [split_axis](const auto &a, const auto &b) {
-        return a.Center()[split_axis] < b.Center()[split_axis];
+    // Partially sort the indices array around the median element, based on the box centers along the longest axis.
+    const uint mid = start + (end - start) / 2;
+    const auto split_axis = LeafBoxes[indices[start]].MaxAxis();
+    std::nth_element(indices.begin() + start, indices.begin() + mid, indices.begin() + end, [this, split_axis](auto a, auto b) {
+        return LeafBoxes[a].Center()[split_axis] < LeafBoxes[b].Center()[split_axis];
     });
 
-    const uint mid = start + (end - start) / 2;
-    return {std::move(box), std::make_unique<BVH::Node>(Build(boxes, start, mid)), std::make_unique<BVH::Node>(Build(boxes, mid, end))};
+    // Add an internal parent node encompassing both children.
+    const uint left_i = Build({indices.begin() + start, indices.begin() + mid});
+    const uint right_i = Build({indices.begin() + mid, indices.begin() + end});
+    const auto &left = Nodes[left_i], right = Nodes[right_i];
+    const auto &left_box = left.IsLeaf() ? LeafBoxes[*left.BoxIndex] : left.Internal->Box;
+    const auto &right_box = right.IsLeaf() ? LeafBoxes[*right.BoxIndex] : right.Internal->Box;
+    Nodes.emplace_back(left_i, right_i, left_box.Union(right_box));
+
+    return Nodes.size() - 1;
 }
 
-BVH::BVH(std::vector<BBox> &&boxes) : Boxes(std::move(boxes)), Root(std::make_unique<Node>(Build(Boxes, 0, Boxes.size()))) {}
-BVH::~BVH() = default;
-
-const BBox &BVH::GetBox() const { return Root->Box; }
-
-void AddNodeBoxes(const BVH::Node *node, std::vector<BBox> &boxes) {
-    if (node == nullptr) return;
-
-    // Add the current node's box.
-    boxes.push_back(node->Box);
-
-    // Recursively add boxes from the left and right children.
-    AddNodeBoxes(node->Left.get(), boxes);
-    AddNodeBoxes(node->Right.get(), boxes);
-}
-
-std::vector<BBox> BVH::CreateBoxes() const {
+std::vector<BBox> BVH::CreateInternalBoxes() const {
     std::vector<BBox> boxes;
-    AddNodeBoxes(Root.get(), boxes);
+    boxes.reserve(Nodes.size());
+    for (const auto &node : Nodes) {
+        if (node.IsInternal()) boxes.emplace_back(node.Internal->Box);
+    }
     return boxes;
 }
 
-std::optional<float> BVH::Intersect(const Ray &ray) const { return IntersectNode(Root.get(), ray); }
+std::optional<uint> BVH::Intersect(const Ray &ray, const std::function<bool(uint)> &callback) const {
+    if (Nodes.empty()) return std::nullopt;
 
-std::optional<float> BVH::IntersectNode(const Node *node, const Ray &ray) const {
-    if (node == nullptr || !node->Box.Intersect(ray)) return {};
+    const uint root_index = Nodes.size() - 1;
+    return IntersectNode(root_index, ray, callback);
+}
 
-    if (node->IsLeaf()) {
-        std::optional<float> min_dist = {};
-        for (uint i = node->Start; i < node->End; ++i) {
-            auto hit_dist = Boxes[i].Intersect(ray);
-            if (hit_dist && (!min_dist || *hit_dist < *min_dist)) min_dist = hit_dist;
-        }
-        return min_dist;
-    }
+std::optional<uint> BVH::IntersectNode(uint node_index, const Ray &ray, const std::function<bool(uint)> &callback) const {
+    const auto &node = Nodes[node_index];
+    if (node.IsLeaf()) return LeafBoxes[*node.BoxIndex].Intersect(ray) && callback(*node.BoxIndex) ? node.BoxIndex : std::nullopt;
 
-    // Recurse children.
-    const std::optional<float> left_hit = IntersectNode(node->Left.get(), ray), right_hit = IntersectNode(node->Right.get(), ray);
-    if (left_hit && right_hit) return *left_hit < *right_hit ? left_hit : right_hit;
-
-    return left_hit ? left_hit : right_hit;
+    // Internal node.
+    if (!node.Internal->Box.Intersect(ray)) return std::nullopt;
+    if (auto left_hit = IntersectNode(node.Internal->Left, ray, callback)) return left_hit;
+    return IntersectNode(node.Internal->Right, ray, callback);
 }

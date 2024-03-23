@@ -152,9 +152,7 @@ struct Mesh {
     bool VertexBelongsToFaceEdge(VH, FH, EH) const;
     bool EdgeBelongsToFace(EH, FH) const;
 
-    // Returns true if the ray intersects the given triangle.
-    // If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
-    bool RayIntersectsTriangle(const Ray &, VH v1, VH v2, VH v3, float *distance_out = nullptr, vec3 *intersect_point_out = nullptr) const;
+    bool RayIntersectsFace(const Ray &, FH, float *distance_out = nullptr, vec3 *intersect_point_out = nullptr) const;
 
     bool RayIntersects(const Ray &local_ray) const; // Intersects any face.
 

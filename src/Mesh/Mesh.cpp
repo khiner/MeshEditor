@@ -108,7 +108,7 @@ std::vector<BBox> Mesh::CreateFaceBoundingBoxes() const {
 RenderBuffers Mesh::CreateBvhBuffers(vec4 color) const {
     if (!Bvh) return {};
 
-    std::vector<BBox> boxes = Bvh->CreateBoxes();
+    std::vector<BBox> boxes = Bvh->CreateInternalBoxes();
     std::vector<Vertex3D> vertices;
     vertices.reserve(boxes.size() * 8);
     std::vector<uint> indices;
@@ -124,11 +124,13 @@ RenderBuffers Mesh::CreateBvhBuffers(vec4 color) const {
 }
 
 // Moller-Trumbore ray-triangle intersection algorithm.
-bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) const {
+// Returns true if the ray intersects the given triangle.
+// If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
+bool RayIntersectsTriangle(const Mesh::PolyMesh &m, const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) {
     static const float eps = 1e-7f; // Floating point error tolerance.
 
     const Point ray_origin = ToOpenMesh(ray.Origin), ray_dir = ToOpenMesh(ray.Direction);
-    const Point &p1 = M.point(v1), &p2 = M.point(v2), &p3 = M.point(v3);
+    const Point &p1 = m.point(v1), &p2 = m.point(v2), &p3 = m.point(v3);
     const Point edge1 = p2 - p1, edge2 = p3 - p1;
     const Point h = ray_dir % edge2;
     const float a = edge1.dot(h); // Barycentric coordinate
@@ -153,7 +155,22 @@ bool Mesh::RayIntersectsTriangle(const Ray &ray, VH v1, VH v2, VH v3, float *dis
     return false;
 }
 
-bool Mesh::RayIntersects(const Ray &local_ray) const { return Bvh->Intersect(local_ray).has_value(); }
+bool Mesh::RayIntersectsFace(const Ray &ray, FH fh, float *distance_out, vec3 *intersect_point_out) const {
+    auto fv_it = M.cfv_iter(fh);
+    const VH v0 = *fv_it++;
+    VH v1 = *fv_it++, v2;
+    for (; fv_it.is_valid(); ++fv_it) {
+        v2 = *fv_it;
+        if (RayIntersectsTriangle(M, ray, v0, v1, v2, distance_out, intersect_point_out)) return true;
+        v1 = v2;
+    }
+    return false;
+}
+
+bool Mesh::RayIntersects(const Ray &local_ray) const {
+    auto callback = [this, &local_ray](uint fi) { return RayIntersectsFace(local_ray, FH{int(fi)}); };
+    return Bvh->Intersect(local_ray, callback).has_value();
+}
 
 FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out) const {
     // Avoid allocations in the loop.
@@ -161,17 +178,10 @@ FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect
     vec3 intersect_point;
     FH closest_face{};
     for (const auto &fh : M.faces()) {
-        auto fv_it = M.cfv_iter(fh);
-        const VH v0 = *fv_it++;
-        VH v1 = *fv_it++, v2;
-        for (; fv_it.is_valid(); ++fv_it) {
-            v2 = *fv_it;
-            if (RayIntersectsTriangle(local_ray, v0, v1, v2, &distance, &intersect_point) && distance < closest_distance) {
-                closest_distance = distance;
-                closest_face = fh;
-                if (closest_intersect_point_out) *closest_intersect_point_out = intersect_point;
-            }
-            v1 = v2;
+        if (RayIntersectsFace(local_ray, fh, &distance, &intersect_point) && distance < closest_distance) {
+            closest_distance = distance;
+            closest_face = fh;
+            if (closest_intersect_point_out) *closest_intersect_point_out = intersect_point;
         }
     }
 

@@ -1,26 +1,39 @@
 #pragma once
 
-#include <memory>
+#include <functional>
 #include <optional>
 #include <vector>
 
 #include "BBox.h"
 
-// Bounding Volume Heirarchy ray intersection acceleration data structure.
 struct BVH {
-    struct Node;
+    struct Node {
+        // Leaf nodes have a valid `BoxIndex` pointing to the index of the box in `BVH::LeafBoxes`.
+        // Internal nodes have a valid `Internal` field.
+        struct InternalData {
+            uint Left, Right; // Indices of child nodes in `BVH::Nodes`.
+            BBox Box; // Union of the child boxes.
+        };
+        std::optional<uint> BoxIndex;
+        std::optional<InternalData> Internal;
 
-    BVH(std::vector<BBox> &&);
-    ~BVH();
+        Node(uint index) : BoxIndex(index) {}
+        Node(uint left, uint right, BBox box) : Internal({left, right, box}) {}
 
-    const BBox &GetBox() const;
-    std::vector<BBox> CreateBoxes() const;
+        bool IsLeaf() const { return BoxIndex.has_value(); }
+        bool IsInternal() const { return Internal.has_value(); }
+    };
 
-    std::optional<float> Intersect(const Ray &) const;
+    BVH(std::vector<BBox> &&leaf_boxes);
+    ~BVH() = default;
+
+    std::optional<uint> Intersect(const Ray &, const std::function<bool(uint)> &callback) const;
+    std::vector<BBox> CreateInternalBoxes() const; // All non-leaf boxes, for debugging.
 
 private:
-    std::vector<BBox> Boxes;
-    const std::unique_ptr<Node> Root;
+    std::vector<BBox> LeafBoxes;
+    std::vector<Node> Nodes;
 
-    std::optional<float> IntersectNode(const Node *, const Ray &) const;
+    uint Build(std::vector<uint> &&indices);
+    std::optional<uint> IntersectNode(uint node_index, const Ray &ray, const std::function<bool(uint)> &callback) const;
 };
