@@ -656,7 +656,7 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    R.view<Mesh>().each([this](auto entity, auto &) { UpdateRenderBuffers(entity, HighlightedElement); });
+    R.view<Mesh>().each([this](auto entity, auto &) { UpdateRenderBuffers(entity, SelectedElement); });
 }
 
 void Scene::UpdateViewProj() {
@@ -692,9 +692,6 @@ vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 bool Scene::Render() {
-    const auto before_highlighted_element = HighlightedElement;
-    HighlightedElement = {SelectionElement, -1};
-    HoveredEntities.clear();
     if (Extent.width != 0 && Extent.height != 0) {
         // Handle keyboard input.
         if (IsKeyPressed(ImGuiKey_Tab)) {
@@ -711,43 +708,47 @@ bool Scene::Render() {
         }
 
         // Handle mouse input.
-        if (IsWindowHovered()) {
+        if (IsWindowHovered() && IsMouseClicked(ImGuiMouseButton_Left)) {
+            const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
             if (SelectedEntity != entt::null && SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
                 auto &mesh = GetSelectedMesh();
                 const auto &model = GetSelectedModel();
-                const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
+                const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
+                const auto before_selected_element = SelectedElement;
+                SelectedElement = {SelectionElement, -1};
                 if (SelectionElement == MeshElement::Vertex) {
                     const auto vh = mesh.FindNearestVertex(mouse_ray);
-                    HighlightedElement = {SelectionElement, vh.idx()};
+                    SelectedElement = {SelectionElement, vh.idx()};
                 } else if (SelectionElement == MeshElement::Edge) {
                     const auto eh = mesh.FindNearestEdge(mouse_ray);
-                    HighlightedElement = {SelectionElement, eh.idx()};
+                    SelectedElement = {SelectionElement, eh.idx()};
                 } else if (SelectionElement == MeshElement::Face) {
                     const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
-                    HighlightedElement = {SelectionElement, fh.idx()};
+                    SelectedElement = {SelectionElement, fh.idx()};
                 }
-            } else if (SelectionMode == SelectionMode::Object) {
-                R.view<Model>().each([this](auto entity, const auto &model) {
+                if (SelectedElement != before_selected_element) {
+                    UpdateRenderBuffers(GetMeshEntity(SelectedEntity), SelectedElement);
+                    SubmitCommandBuffer();
+                }
+            } else if (SelectionMode == SelectionMode::Object && (GetIO().KeyCtrl || GetIO().KeySuper)) {
+                static std::set<entt::entity> hovered_entities{};
+                hovered_entities.clear();
+                R.view<Model>().each([this, &mouse_world_ray](auto entity, const auto &model) {
                     const auto &mesh = R.get<Mesh>(GetMeshEntity(entity));
-                    const Ray mouse_ray = GetMouseWorldRay(Camera, ToGlm(Extent)).WorldToLocal(model.Transform);
-                    if (mesh.RayIntersects(mouse_ray)) HoveredEntities.emplace(entity);
+                    const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
+                    if (mesh.RayIntersects(mouse_ray)) hovered_entities.emplace(entity);
                 });
-            }
-            if ((GetIO().KeyCtrl || GetIO().KeySuper) && IsMouseClicked(ImGuiMouseButton_Left)) {
-                if (!HoveredEntities.empty()) {
+                const auto before_selected_entity = SelectedEntity;
+                if (!hovered_entities.empty()) {
                     // Cycle through hovered entities.
-                    auto it = HoveredEntities.find(SelectedEntity);
-                    if (it != HoveredEntities.end()) ++it;
-                    if (it == HoveredEntities.end()) it = HoveredEntities.begin();
+                    auto it = hovered_entities.find(SelectedEntity);
+                    if (it != hovered_entities.end()) ++it;
+                    if (it == hovered_entities.end()) it = hovered_entities.begin();
                     SelectedEntity = *it;
                 } else {
                     SelectedEntity = entt::null;
                 }
-                RecordAndSubmitCommandBuffer();
-            }
-            if (HighlightedElement != before_highlighted_element) {
-                UpdateRenderBuffers(GetMeshEntity(SelectedEntity), HighlightedElement);
-                SubmitCommandBuffer();
+                if (SelectedEntity != before_selected_entity) RecordAndSubmitCommandBuffer();
             }
         }
     }
@@ -1005,27 +1006,13 @@ void Scene::RenderControls() {
                         if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
                         if (element != AllElements.back()) SameLine();
                     }
-                    const std::string highlight_label = HighlightedElement.is_valid() ? std::format("Hovered {}: {}", to_string(HighlightedElement.Element), HighlightedElement.idx()) : "Hovered: None";
+                    const std::string highlight_label = SelectedElement.is_valid() ? std::format("Hovered {}: {}", to_string(SelectedElement.Element), SelectedElement.idx()) : "Hovered: None";
                     TextUnformatted(highlight_label.c_str());
                 }
                 PopID();
             }
             if (SelectedEntity != entt::null) {
                 TextUnformatted(std::format("Selected: {}", uint(SelectedEntity)).c_str());
-                if (SelectionMode == SelectionMode::Object) {
-                    std::string selected_label = "Hovered: ";
-                    if (HoveredEntities.empty()) {
-                        selected_label += "None";
-                    } else {
-                        // comma-separated
-                        for (auto it = HoveredEntities.begin(); it != HoveredEntities.end(); ++it) {
-                            selected_label += std::format("{}", uint(*it));
-                            if (std::next(it) != HoveredEntities.end()) selected_label += ", ";
-                        }
-                    }
-                    SameLine();
-                    TextUnformatted(selected_label.c_str());
-                }
                 if (const auto *maybe_primitive = R.try_get<Primitive>(SelectedEntity)) {
                     const Primitive primitive = *maybe_primitive;
                     // Editor for the selected entity's primitive type.

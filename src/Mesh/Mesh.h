@@ -109,7 +109,7 @@ struct Mesh {
 
     void UpdateNormals() { M.update_normals(); }
 
-    std::vector<Vertex3D> CreateVertices(MeshElement, ElementIndex highlight_element = {}) const;
+    std::vector<Vertex3D> CreateVertices(MeshElement, ElementIndex highlight = {}) const;
     std::vector<uint> CreateIndices(MeshElement) const;
 
     std::vector<Vertex3D> CreateNormalVertices(MeshElement) const;

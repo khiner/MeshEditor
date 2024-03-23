@@ -199,10 +199,9 @@ private:
 
     SelectionMode SelectionMode{SelectionMode::Object};
     MeshElement SelectionElement{MeshElement::Face};
-    MeshElementIndex HighlightedElement{};
+    MeshElementIndex SelectedElement{};
 
     entt::entity SelectedEntity{entt::null};
-    std::set<entt::entity> HoveredEntities{entt::null};
     std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;

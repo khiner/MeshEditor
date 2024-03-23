@@ -249,12 +249,12 @@ std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
     return indices;
 }
 
-std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex highlighted) const {
+std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex highlight) const {
     std::vector<Vertex3D> vertices;
     if (element == MeshElement::Vertex) {
         vertices.reserve(M.n_vertices());
         for (const auto &vh : M.vertices()) {
-            const vec4 color = vh == highlighted || VertexBelongsToFace(vh, highlighted) || VertexBelongsToEdge(vh, highlighted) ? HighlightColor : vec4{1};
+            const vec4 color = vh == highlight || VertexBelongsToFace(vh, highlight) || VertexBelongsToEdge(vh, highlight) ? HighlightColor : vec4{1};
             vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
         }
     } else if (element == MeshElement::Edge) {
@@ -262,7 +262,7 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex hig
         for (const auto &eh : M.edges()) {
             const auto heh = M.halfedge_handle(eh, 0);
             const auto vh0 = M.from_vertex_handle(heh), vh1 = M.to_vertex_handle(heh);
-            const vec4 color = eh == highlighted || vh0 == highlighted || vh1 == highlighted || EdgeBelongsToFace(eh, highlighted) ? HighlightColor : EdgeColor;
+            const vec4 color = eh == highlight || vh0 == highlight || vh1 == highlight || EdgeBelongsToFace(eh, highlight) ? HighlightColor : EdgeColor;
             vertices.emplace_back(GetPosition(vh0), GetVertexNormal(vh0), color);
             vertices.emplace_back(GetPosition(vh1), GetVertexNormal(vh1), color);
         }
@@ -272,7 +272,7 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex hig
             const auto &fn = M.normal(fh);
             const auto &fc = M.color(fh);
             for (const auto &vh : M.fv_range(fh)) {
-                const vec4 color = vh == highlighted || fh == highlighted || VertexBelongsToFaceEdge(vh, fh, highlighted) ? HighlightColor : ToGlm(fc);
+                const vec4 color = vh == highlight || fh == highlight || VertexBelongsToFaceEdge(vh, fh, highlight) ? HighlightColor : ToGlm(fc);
                 vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
             }
         }
