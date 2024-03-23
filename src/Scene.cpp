@@ -975,6 +975,7 @@ void Scene::RenderControls() {
                         else buffers.erase(mesh_entity);
                         RecordAndSubmitCommandBuffer();
                     }
+                    SameLine(); // For Bounding boxes checkbox
                 }
                 if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
                     auto &buffers = MeshVkData->Boxes;

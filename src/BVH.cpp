@@ -9,26 +9,28 @@ BVH::BVH(std::vector<BBox> &&leaf_boxes) : LeafBoxes(std::move(leaf_boxes)) {
 }
 
 uint BVH::Build(std::vector<uint> &&indices) {
-    const uint start = 0, end = indices.size();
-    if (end - start == 1) {
-        Nodes.emplace_back(indices[start]);
+    if (indices.size() == 1) {
+        Nodes.emplace_back(indices.front());
         return Nodes.size() - 1;
     }
 
-    // Partially sort the indices array around the median element, based on the box centers along the longest axis.
-    const uint mid = start + (end - start) / 2;
-    const auto split_axis = LeafBoxes[indices[start]].MaxAxis();
-    std::nth_element(indices.begin() + start, indices.begin() + mid, indices.begin() + end, [this, split_axis](auto a, auto b) {
+    // Partially sort the indices array around the median element,
+    // based on the box centers along the longest axis of the encompassing box.
+    BBox box = std::accumulate(indices.begin(), indices.end(), BBox{}, [&](const BBox &acc, uint i) {
+        return acc.Union(LeafBoxes[i]);
+    });
+    const auto split_axis = box.MaxAxis();
+    const uint mid = indices.size() / 2;
+    std::nth_element(indices.begin(), indices.begin() + mid, indices.end(), [this, split_axis](auto a, auto b) {
         return LeafBoxes[a].Center()[split_axis] < LeafBoxes[b].Center()[split_axis];
     });
 
     // Add an internal parent node encompassing both children.
-    const uint left_i = Build({indices.begin() + start, indices.begin() + mid});
-    const uint right_i = Build({indices.begin() + mid, indices.begin() + end});
-    const auto &left = Nodes[left_i], right = Nodes[right_i];
-    const auto &left_box = left.IsLeaf() ? LeafBoxes[*left.BoxIndex] : left.Internal->Box;
-    const auto &right_box = right.IsLeaf() ? LeafBoxes[*right.BoxIndex] : right.Internal->Box;
-    Nodes.emplace_back(left_i, right_i, left_box.Union(right_box));
+    Nodes.emplace_back(
+        Build({indices.begin(), indices.begin() + mid}),
+        Build({indices.begin() + mid, indices.end()}),
+        std::move(box)
+    );
 
     return Nodes.size() - 1;
 }
