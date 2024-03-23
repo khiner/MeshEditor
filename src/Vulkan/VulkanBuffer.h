@@ -4,7 +4,7 @@
 
 struct VulkanBuffer {
     vk::BufferUsageFlags Usage;
-    vk::DeviceSize Size;
+    vk::DeviceSize Size; // Currently used size in bytes (not necessarily the allocated size).
 
     VmaBuffer HostBuffer; // Host staging buffer, used to transfer data to the GPU.
     VmaBuffer DeviceBuffer; // GPU buffer.

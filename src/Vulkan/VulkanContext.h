@@ -61,10 +61,7 @@ struct VulkanContext {
         return buffer;
     }
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
-        const uint bytes = sizeof(T) * data.size();
-        // If the buffer is either too small or too large, recreate it.
-        if (bytes != buffer.Size) buffer = CreateBuffer(buffer.Usage, bytes);
-        UpdateBuffer(buffer, data.data(), 0, bytes);
+        UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
     }
 
     void SubmitTransfer() const;
