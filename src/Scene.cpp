@@ -723,7 +723,7 @@ bool Scene::Render() {
                     const auto eh = mesh.FindNearestEdge(mouse_ray);
                     SelectedElement = {SelectionElement, eh.idx()};
                 } else if (SelectionElement == MeshElement::Face) {
-                    const auto fh = mesh.FindFirstIntersectingFace(mouse_ray);
+                    const auto fh = mesh.FindNearestIntersectingFace(mouse_ray);
                     SelectedElement = {SelectionElement, fh.idx()};
                 }
                 if (SelectedElement != before_selected_element) {

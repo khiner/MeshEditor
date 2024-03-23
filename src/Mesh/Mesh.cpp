@@ -167,39 +167,38 @@ bool Mesh::RayIntersectsFace(const Ray &ray, FH fh, float *distance_out, vec3 *i
     return false;
 }
 
+FH Mesh::FindNearestIntersectingFace(const Ray &local_ray, vec3 *nearest_intersect_point_out) const {
+    float distance = 0, min_distance = std::numeric_limits<float>::max();
+    vec3 intersect_point;
+    FH nearest_face{};
+    Bvh->Intersect(local_ray, [&](uint fi) {
+        if (RayIntersectsFace(local_ray, FH{int(fi)}, &distance, &intersect_point) && distance < min_distance) {
+            min_distance = distance;
+            nearest_face = FH{int(fi)};
+            if (nearest_intersect_point_out) *nearest_intersect_point_out = intersect_point;
+        }
+        return false; // We want the nearest face, not just any intersecting face.
+    });
+    return nearest_face;
+}
+
 bool Mesh::RayIntersects(const Ray &local_ray) const {
     auto callback = [this, &local_ray](uint fi) { return RayIntersectsFace(local_ray, FH{int(fi)}); };
     return Bvh->Intersect(local_ray, callback).has_value();
 }
 
-FH Mesh::FindFirstIntersectingFace(const Ray &local_ray, vec3 *closest_intersect_point_out) const {
-    // Avoid allocations in the loop.
-    float distance = 0, closest_distance = std::numeric_limits<float>::max();
-    vec3 intersect_point;
-    FH closest_face{};
-    for (const auto &fh : M.faces()) {
-        if (RayIntersectsFace(local_ray, fh, &distance, &intersect_point) && distance < closest_distance) {
-            closest_distance = distance;
-            closest_face = fh;
-            if (closest_intersect_point_out) *closest_intersect_point_out = intersect_point;
-        }
-    }
-
-    return closest_face;
-}
-
 VH Mesh::FindNearestVertex(const Ray &local_ray) const {
     vec3 intersection_point;
-    const auto face = FindFirstIntersectingFace(local_ray, &intersection_point);
+    const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
     if (!face.is_valid()) return VH{};
 
     VH closest_vertex;
-    float closest_distance_sq = std::numeric_limits<float>::max();
+    float min_distance_sq = std::numeric_limits<float>::max();
     for (const auto &vh : M.fv_range(face)) {
         const vec3 diff = GetPosition(vh) - intersection_point;
         const float distance_sq = glm::dot(diff, diff);
-        if (distance_sq < closest_distance_sq) {
-            closest_distance_sq = distance_sq;
+        if (distance_sq < min_distance_sq) {
+            min_distance_sq = distance_sq;
             closest_vertex = vh;
         }
     }
@@ -209,18 +208,18 @@ VH Mesh::FindNearestVertex(const Ray &local_ray) const {
 
 EH Mesh::FindNearestEdge(const Ray &local_ray) const {
     vec3 intersection_point;
-    const auto face = FindFirstIntersectingFace(local_ray, &intersection_point);
+    const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
     if (!face.is_valid()) return Mesh::EH{};
 
     Mesh::EH closest_edge;
-    float closest_distance_sq = std::numeric_limits<float>::max();
+    float min_distance_sq = std::numeric_limits<float>::max();
     for (const auto &heh : M.fh_range(face)) {
         const auto &edge_handle = M.edge_handle(heh);
         const auto &p1 = GetPosition(M.from_vertex_handle(M.halfedge_handle(edge_handle, 0)));
         const auto &p2 = GetPosition(M.to_vertex_handle(M.halfedge_handle(edge_handle, 0)));
         const float distance_sq = SquaredDistanceToLineSegment(p1, p2, intersection_point);
-        if (distance_sq < closest_distance_sq) {
-            closest_distance_sq = distance_sq;
+        if (distance_sq < min_distance_sq) {
+            min_distance_sq = distance_sq;
             closest_edge = edge_handle;
         }
     }
