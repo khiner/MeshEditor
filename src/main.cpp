@@ -14,7 +14,8 @@
 
 #include "Scene.h"
 #include "Window.h"
-#include "audio/RealImpactObject.h"
+#include "audio/AudioSourcesPlayer.h"
+#include "audio/RealImpact.h"
 #include "vulkan/VulkanContext.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
@@ -27,9 +28,10 @@ std::unique_ptr<entt::registry> R;
 WindowsState Windows;
 std::unique_ptr<VulkanContext> VC;
 std::unique_ptr<Scene> MainScene;
-std::unique_ptr<RealImpactObject> MainRealImpactObject;
 vk::DescriptorSet MainSceneDescriptorSet;
 vk::UniqueSampler MainSceneTextureSampler;
+
+std::unique_ptr<AudioSourcesPlayer> AudioSources;
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
@@ -172,6 +174,9 @@ int main(int, char **) {
     SetupVulkanWindow(wd, surface, w, h);
     MainSceneTextureSampler = VC->Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
 
+    AudioSources = std::make_unique<AudioSourcesPlayer>();
+    // AudioSources->Start();
+
     // Setup ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -299,24 +304,23 @@ int main(int, char **) {
                     nfdresult_t result = NFD_PickFolder(&path, "");
                     if (result == NFD_OKAY) {
                         MainScene->ClearMeshes();
-                        MainRealImpactObject = std::make_unique<RealImpactObject>(fs::path(path));
-                        {
-                            // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
-                            mat4 swap{1};
-                            swap[1][1] = 0;
-                            swap[1][2] = 1;
-                            swap[2][1] = 1;
-                            swap[2][2] = 0;
-                            MainScene->AddMesh(MainRealImpactObject->ObjPath, std::move(swap), false);
-                        }
+                        RealImpact real_impact{fs::path(path)};
+                        // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
+                        mat4 swap{1};
+                        swap[1][1] = 0;
+                        swap[1][2] = 1;
+                        swap[2][1] = 1;
+                        swap[2][2] = 0;
+                        auto entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
                         // 0 transform for `mic_entity` to make this parent of instanced points invisible
                         const auto mic_entity = MainScene->AddPrimitive(Primitive::IcoSphere, {0}, false);
                         // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
-                        for (const auto &listener_point : MainRealImpactObject->ListenerPoints) {
+                        for (const auto &listener_point : real_impact.ListenerPoints) {
                             // RealImpact positions are in meters, and the sphere has a 0.5 unit radius.
                             static const mat4 I{1}, scale = glm::scale(I, vec3{0.02});
                             MainScene->AddInstance(mic_entity, glm::translate(I, listener_point.Position) * scale);
                         }
+                        R->emplace<RealImpact>(entity, std::move(real_impact));
                         MainScene->RecordAndSubmitCommandBuffer();
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {

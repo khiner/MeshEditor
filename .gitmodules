@@ -23,3 +23,7 @@
 [submodule "lib/nativefiledialog-extended"]
 	path = lib/nativefiledialog-extended
 	url = git@github.com:btzy/nativefiledialog-extended.git
+[submodule "lib/miniaudio"]
+	path = lib/miniaudio
+	url = git@github.com:mackron/miniaudio.git
+	branch = dev

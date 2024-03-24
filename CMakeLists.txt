@@ -35,6 +35,7 @@ include_directories(
     lib/ImGuizmo
     lib/glm
     lib/entt/src
+    lib/miniaudio
     src
 )
 
