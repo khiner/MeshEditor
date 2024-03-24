@@ -2,6 +2,7 @@
 
 #include "numeric/vec2.h"
 
+#include "Primitive.h"
 #include "mesh/Mesh.h"
 
 inline Mesh Rect(vec2 half_extents = {0.5, 0.5}) {
@@ -222,17 +223,6 @@ inline Mesh Cone(float radius = 0.5, float height = 1, uint slices = 32) {
 
     return {std::move(vertices), std::move(indices)};
 }
-
-enum class Primitive {
-    Rect,
-    Circle,
-    Cube,
-    IcoSphere,
-    UVSphere,
-    Torus,
-    Cylinder,
-    Cone,
-};
 
 inline std::string to_string(Primitive primitive) {
     switch (primitive) {

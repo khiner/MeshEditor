@@ -7,13 +7,17 @@
 #include "imgui_internal.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <glm/gtc/matrix_transform.hpp>
 #include <nfd.h>
 
 #include "numeric/vec4.h"
 
 #include "Scene.h"
 #include "Window.h"
+#include "audio/RealImpactObject.h"
 #include "vulkan/VulkanContext.h"
+
+const std::string ResDir = "res/";
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
@@ -25,6 +29,7 @@ std::unique_ptr<entt::registry> R;
 WindowsState Windows;
 std::unique_ptr<VulkanContext> VC;
 std::unique_ptr<Scene> MainScene;
+std::unique_ptr<RealImpactObject> MainRealImpactObject;
 vk::DescriptorSet MainSceneDescriptorSet;
 vk::UniqueSampler MainSceneTextureSampler;
 
@@ -53,11 +58,11 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surfa
 
     // Create SwapChain, RenderPass, Framebuffer, etc.
     IM_ASSERT(MinImageCount >= 2);
-    ImGui_ImplVulkanH_CreateOrResizeWindow(VC->Instance.get(), VC->PhysicalDevice, VC->Device.get(), wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
 }
 
 static void CleanupVulkanWindow() {
-    ImGui_ImplVulkanH_DestroyWindow(VC->Instance.get(), VC->Device.get(), &MainWindowData, nullptr);
+    ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &MainWindowData, nullptr);
 }
 
 static void CheckVk(VkResult err) {
@@ -160,7 +165,7 @@ int main(int, char **) {
 
     // Create window surface.
     VkSurfaceKHR surface;
-    if (SDL_Vulkan_CreateSurface(Window, VC->Instance.get(), nullptr, &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
+    if (SDL_Vulkan_CreateSurface(Window, *VC->Instance, nullptr, &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
 
     // Create framebuffers.
     int w, h;
@@ -269,9 +274,8 @@ int main(int, char **) {
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                static const std::string ResDir = "res/";
-                static const std::vector<nfdfilteritem_t> filters{{"Mesh object", "obj,off,ply,stl,om"}};
                 if (MenuItem("Load mesh", nullptr)) {
+                    static const std::vector<nfdfilteritem_t> filters{{"Mesh object", "obj,off,ply,stl,om"}};
                     nfdchar_t *path;
                     nfdresult_t result = NFD_OpenDialog(&path, filters.data(), filters.size(), ResDir.c_str());
                     if (result == NFD_OKAY) {
@@ -291,6 +295,30 @@ int main(int, char **) {
                 //         throw std::runtime_error(std::format("Error saving mesh file: {}", NFD_GetError()));
                 //     }
                 // }
+                if (MenuItem("Load RealImpact", nullptr)) {
+                    static const std::vector<nfdfilteritem_t> filters{};
+                    nfdchar_t *path;
+                    nfdresult_t result = NFD_PickFolder(&path, ResDir.c_str());
+                    if (result == NFD_OKAY) {
+                        MainScene->ClearMeshes();
+                        MainRealImpactObject = std::make_unique<RealImpactObject>(fs::path(path));
+                        const auto mesh_entity = MainScene->AddMesh(MainRealImpactObject->ObjPath, false);
+                        const auto bounds = MainScene->GetBounds(mesh_entity);
+                        const auto size = bounds.Max - bounds.Min;
+                        const float max_size = std::max({size.x, size.y, size.z});
+                        const float scale = max_size < 1 ? max_size : (1.f / max_size);
+                        const auto mic_entity = MainScene->AddPrimitive(Primitive::IcoSphere, false);
+                        const auto I = mat4{1};
+                        // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
+                        for (const auto &listener_point : MainRealImpactObject->ListenerPoints) {
+                            MainScene->AddInstance(mic_entity, glm::translate(I, listener_point.Position) * glm::scale(I, vec3{scale}));
+                        }
+                        MainScene->RecordAndSubmitCommandBuffer();
+                        NFD_FreePath(path);
+                    } else if (result != NFD_CANCEL) {
+                        throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
+                    }
+                }
                 EndMenu();
             }
             if (BeginMenu("Windows")) {

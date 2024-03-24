@@ -365,7 +365,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     UpdateEdgeColors();
     TransformBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
     ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
-    UpdateViewProj();
+    UpdateTransformBuffers();
 
     LightsBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{Lights}));
     SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{SilhouetteDisplay}));
@@ -385,7 +385,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
-    R.emplace<Primitive>(AddMesh(CreateDefaultPrimitive(Primitive::Cube)), Primitive::Cube);
+    AddPrimitive(Primitive::Cube, false);
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -400,7 +400,7 @@ uint GetModelIndex(const entt::registry &r, entt::entity entity) {
     return 1 + std::distance(children.begin(), std::ranges::find(children, entity));
 }
 
-entt::entity Scene::AddMesh(Mesh &&mesh) {
+entt::entity Scene::AddMesh(Mesh &&mesh, bool submit) {
     const auto entity = R.create();
 
     MeshBuffers mesh_buffers{};
@@ -425,10 +425,24 @@ entt::entity Scene::AddMesh(Mesh &&mesh) {
 
     SelectedEntity = entity;
 
-    if (Extent.width > 0 && Extent.height > 0) RecordAndSubmitCommandBuffer();
+    if (submit) RecordAndSubmitCommandBuffer();
+
     return entity;
 }
-entt::entity Scene::AddMesh(const fs::path &file_path) { return AddMesh(Mesh{file_path}); }
+entt::entity Scene::AddMesh(const fs::path &file_path, bool submit) { return AddMesh(Mesh{file_path}, submit); }
+
+entt::entity Scene::AddPrimitive(Primitive primitive, bool submit) {
+    auto entity = AddMesh(CreateDefaultPrimitive(primitive), submit);
+    R.emplace<Primitive>(entity, primitive);
+    return entity;
+}
+
+BBox Scene::GetBounds(entt::entity mesh_entity) const { return R.get<Mesh>(mesh_entity).BoundingBox; }
+
+void Scene::ClearMeshes() {
+    for (auto entity : R.view<Mesh>()) DestroyEntity(entity);
+    RecordAndSubmitCommandBuffer();
+}
 
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     for (auto &[element, buffers] : MeshVkData->Main.at(entity)) {
@@ -447,14 +461,14 @@ void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     R.replace<Mesh>(entity, std::move(mesh));
 }
 
-void Scene::AddInstance(entt::entity parent) {
+void Scene::AddInstance(entt::entity parent, mat4 &&transform) {
     const auto entity = R.create();
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
     R.get<SceneNode>(parent).children.emplace_back(entity);
-    R.emplace<Model>(entity, 1);
+    R.emplace<Model>(entity, std::move(transform));
 
-    UpdateTransform(entity);
+    UpdateModelBuffer(entity);
     SelectedEntity = entity;
 }
 
@@ -499,9 +513,11 @@ entt::entity Scene::GetMeshEntity(entt::entity entity) const {
 
 Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetMeshEntity(SelectedEntity)); }
 Model &Scene::GetSelectedModel() const { return R.get<Model>(SelectedEntity); }
-void Scene::SetSelectedModel(mat4 &&model) {
-    R.replace<Model>(SelectedEntity, std::move(model));
-    UpdateTransform(SelectedEntity);
+
+void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
+    R.replace<Model>(entity, std::move(model));
+    UpdateModelBuffer(entity);
+    if (submit) SubmitCommandBuffer();
 }
 
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
@@ -514,7 +530,7 @@ void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highl
 
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-    UpdateViewProj(); // Depends on the aspect ratio.
+    UpdateTransformBuffers(); // Depends on the aspect ratio.
     MainPipeline.SetExtent(extent);
     SilhouettePipeline.SetExtent(extent);
     SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
@@ -659,15 +675,16 @@ void Scene::UpdateEdgeColors() {
     R.view<Mesh>().each([this](auto entity, auto &) { UpdateRenderBuffers(entity, SelectedElement); });
 }
 
-void Scene::UpdateViewProj() {
+void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
     VC.UpdateBuffer(*TransformBuffer, &view_proj);
+
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
     VC.UpdateBuffer(*ViewProjNearFarBuffer, &vpnf);
 }
 
-void Scene::UpdateTransform(entt::entity entity) {
+void Scene::UpdateModelBuffer(entt::entity entity) {
     const auto mesh_entity = GetMeshEntity(entity);
     const auto &model = R.get<Model>(entity);
     const uint i = GetModelIndex(R, entity);
@@ -789,8 +806,8 @@ void Scene::RenderGizmo() {
         Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
         view_changed |= Camera.Tick();
         if (model_changed || view_changed) {
-            if (model_changed) SetSelectedModel(std::move(model));
-            if (view_changed) UpdateViewProj();
+            if (model_changed) SetModel(SelectedEntity, std::move(model), false);
+            if (view_changed) UpdateTransformBuffers();
             SubmitCommandBuffer();
         }
     } else {
@@ -798,16 +815,16 @@ void Scene::RenderGizmo() {
         Gizmo->Render(Camera, view_changed);
         view_changed |= Camera.Tick();
         if (view_changed) {
-            UpdateViewProj();
+            UpdateTransformBuffers();
             SubmitCommandBuffer();
         }
     }
 }
 
 void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, vec3 &scale) {
-    vec3 skew;
-    vec4 perspective;
-    glm::quat orientation;
+    static vec3 skew;
+    static vec4 perspective;
+    static glm::quat orientation;
     glm::decompose(transform, scale, orientation, position, skew, perspective);
     rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
 }
@@ -880,7 +897,7 @@ void Scene::RenderControls() {
             camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
             if (camera_changed) {
                 Camera.StopMoving();
-                UpdateViewProj();
+                UpdateTransformBuffers();
                 SubmitCommandBuffer();
             }
             EndTabItem();
@@ -1035,8 +1052,7 @@ void Scene::RenderControls() {
                     model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
                     model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
                     if (model_changed) {
-                        SetSelectedModel(glm::translate(pos) * glm::mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
-                        SubmitCommandBuffer();
+                        SetModel(SelectedEntity, glm::translate(pos) * mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
                     }
                     Gizmo->RenderDebug();
                 }

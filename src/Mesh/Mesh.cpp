@@ -21,7 +21,7 @@ Mesh::Mesh(const fs::path &file_path) {
     M.request_face_colors();
     Load(file_path, M);
     SetFaceColor(DefaultFaceColor);
-    UpdateNormals();
+    M.update_normals();
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
@@ -30,7 +30,7 @@ Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces,
     M.request_face_normals();
     M.request_face_colors();
     SetFaces(std::move(vertices), std::move(faces), color);
-    UpdateNormals();
+    M.update_normals();
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
@@ -312,7 +312,7 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
 BBox Mesh::ComputeBbox() const {
     BBox bbox;
     for (const auto &vh : M.vertices()) {
-        const auto &v = ToGlm(M.point(vh));
+        const auto v = ToGlm(M.point(vh));
         bbox.Min = glm::min(bbox.Min, v);
         bbox.Max = glm::max(bbox.Max, v);
     }

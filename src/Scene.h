@@ -9,11 +9,13 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
+#include "BBox.h"
 #include "Camera.h"
 #include "RenderMode.h"
 #include "Shader.h"
 #include "World.h"
 #include "mesh/MeshElement.h"
+#include "mesh/Primitive.h"
 
 struct Mesh;
 struct VulkanContext;
@@ -161,13 +163,19 @@ struct Scene {
     const VulkanContext &VC;
     entt::registry &R;
 
-    entt::entity AddMesh(Mesh &&);
-    entt::entity AddMesh(const fs::path &);
+    entt::entity AddMesh(Mesh &&, bool submit = true);
+    entt::entity AddMesh(const fs::path &, bool submit = true);
+    entt::entity AddPrimitive(Primitive, bool submit = true);
+    BBox GetBounds(entt::entity) const;
 
     void ReplaceMesh(entt::entity, Mesh &&);
-    void AddInstance(entt::entity);
-    void DestroyEntity(entt::entity);
+    void ClearMeshes();
+
+    void SetModel(entt::entity, mat4 &&, bool submit = true);
+
+    void AddInstance(entt::entity, mat4 &&transform = {1});
     void DestroyInstance(entt::entity mesh, entt::entity instance);
+    void DestroyEntity(entt::entity);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
@@ -185,6 +193,10 @@ struct Scene {
     void CompileShaders();
 
     Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
+
+    void RecordCommandBuffer();
+    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
+    void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
 private:
     World World{};
@@ -229,17 +241,13 @@ private:
     entt::entity GetMeshEntity(entt::entity) const;
     Mesh &GetSelectedMesh() const;
     Model &GetSelectedModel() const;
-    void SetSelectedModel(mat4 &&);
 
     // VK buffer update methods.
-    void UpdateViewProj();
-    void UpdateTransform(entt::entity);
+    void UpdateTransformBuffers();
+    void UpdateModelBuffer(entt::entity);
     void UpdateEdgeColors();
 
     void SetExtent(vk::Extent2D);
-    void RecordCommandBuffer();
-    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
-    void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
     void UpdateRenderBuffers(entt::entity, MeshElementIndex highlight_element = {});
 };

@@ -107,8 +107,6 @@ struct Mesh {
 
     bool Empty() const { return M.n_vertices() == 0; }
 
-    void UpdateNormals() { M.update_normals(); }
-
     std::vector<Vertex3D> CreateVertices(MeshElement, ElementIndex highlight = {}) const;
     std::vector<uint> CreateIndices(MeshElement) const;
 
