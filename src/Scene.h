@@ -9,7 +9,6 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include "BBox.h"
 #include "Camera.h"
 #include "RenderMode.h"
 #include "Shader.h"
@@ -163,10 +162,9 @@ struct Scene {
     const VulkanContext &VC;
     entt::registry &R;
 
-    entt::entity AddMesh(Mesh &&, bool submit = true);
-    entt::entity AddMesh(const fs::path &, bool submit = true);
-    entt::entity AddPrimitive(Primitive, bool submit = true);
-    BBox GetBounds(entt::entity) const;
+    entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true);
+    entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true);
+    entt::entity AddPrimitive(Primitive, const mat4 &transform = {1}, bool submit = true);
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
@@ -192,7 +190,7 @@ struct Scene {
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
 
-    Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.1, 100}; }
+    Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.01, 100}; }
 
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;

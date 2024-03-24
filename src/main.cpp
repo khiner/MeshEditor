@@ -17,8 +17,6 @@
 #include "audio/RealImpactObject.h"
 #include "vulkan/VulkanContext.h"
 
-const std::string ResDir = "res/";
-
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 ImGui_ImplVulkanH_Window MainWindowData;
@@ -277,7 +275,7 @@ int main(int, char **) {
                 if (MenuItem("Load mesh", nullptr)) {
                     static const std::vector<nfdfilteritem_t> filters{{"Mesh object", "obj,off,ply,stl,om"}};
                     nfdchar_t *path;
-                    nfdresult_t result = NFD_OpenDialog(&path, filters.data(), filters.size(), ResDir.c_str());
+                    nfdresult_t result = NFD_OpenDialog(&path, filters.data(), filters.size(), "");
                     if (result == NFD_OKAY) {
                         MainScene->AddMesh(fs::path(path));
                         NFD_FreePath(path);
@@ -287,7 +285,7 @@ int main(int, char **) {
                 }
                 // if (MenuItem("Export mesh", nullptr, false, MainMesh != nullptr)) {
                 //     nfdchar_t *path;
-                //     nfdresult_t result = NFD_SaveDialog(&path, filtes.data(), filters.size(), nullptr, ResDir.c_str());
+                //     nfdresult_t result = NFD_SaveDialog(&path, filtes.data(), filters.size(), nullptr);
                 //     if (result == NFD_OKAY) {
                 //         MainScene->SaveMesh(fs::path(path));
                 //         NFD_FreePath(path);
@@ -298,20 +296,26 @@ int main(int, char **) {
                 if (MenuItem("Load RealImpact", nullptr)) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
-                    nfdresult_t result = NFD_PickFolder(&path, ResDir.c_str());
+                    nfdresult_t result = NFD_PickFolder(&path, "");
                     if (result == NFD_OKAY) {
                         MainScene->ClearMeshes();
                         MainRealImpactObject = std::make_unique<RealImpactObject>(fs::path(path));
-                        const auto mesh_entity = MainScene->AddMesh(MainRealImpactObject->ObjPath, false);
-                        const auto bounds = MainScene->GetBounds(mesh_entity);
-                        const auto size = bounds.Max - bounds.Min;
-                        const float max_size = std::max({size.x, size.y, size.z});
-                        const float scale = max_size < 1 ? max_size : (1.f / max_size);
-                        const auto mic_entity = MainScene->AddPrimitive(Primitive::IcoSphere, false);
-                        const auto I = mat4{1};
+                        {
+                            // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
+                            mat4 swap{1};
+                            swap[1][1] = 0;
+                            swap[1][2] = 1;
+                            swap[2][1] = 1;
+                            swap[2][2] = 0;
+                            MainScene->AddMesh(MainRealImpactObject->ObjPath, std::move(swap), false);
+                        }
+                        // 0 transform for `mic_entity` to make this parent of instanced points invisible
+                        const auto mic_entity = MainScene->AddPrimitive(Primitive::IcoSphere, {0}, false);
                         // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
                         for (const auto &listener_point : MainRealImpactObject->ListenerPoints) {
-                            MainScene->AddInstance(mic_entity, glm::translate(I, listener_point.Position) * glm::scale(I, vec3{scale}));
+                            // RealImpact positions are in meters, and the sphere has a 0.5 unit radius.
+                            static const mat4 I{1}, scale = glm::scale(I, vec3{0.02});
+                            MainScene->AddInstance(mic_entity, glm::translate(I, listener_point.Position) * scale);
                         }
                         MainScene->RecordAndSubmitCommandBuffer();
                         NFD_FreePath(path);

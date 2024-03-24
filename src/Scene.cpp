@@ -385,7 +385,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
-    AddPrimitive(Primitive::Cube, false);
+    AddPrimitive(Primitive::Cube, {1}, false);
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -400,7 +400,7 @@ uint GetModelIndex(const entt::registry &r, entt::entity entity) {
     return 1 + std::distance(children.begin(), std::ranges::find(children, entity));
 }
 
-entt::entity Scene::AddMesh(Mesh &&mesh, bool submit) {
+entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit) {
     const auto entity = R.create();
 
     MeshBuffers mesh_buffers{};
@@ -410,7 +410,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, bool submit) {
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, MeshBuffers{});
 
-    Model model{1};
+    Model model{mat4(transform)};
     auto buffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model));
     VC.UpdateBuffer(buffer, &model, 0, sizeof(Model));
     MeshVkData->Models.emplace(entity, std::move(buffer));
@@ -429,15 +429,13 @@ entt::entity Scene::AddMesh(Mesh &&mesh, bool submit) {
 
     return entity;
 }
-entt::entity Scene::AddMesh(const fs::path &file_path, bool submit) { return AddMesh(Mesh{file_path}, submit); }
+entt::entity Scene::AddMesh(const fs::path &file_path, const mat4 &transform, bool submit) { return AddMesh(Mesh{file_path}, transform, submit); }
 
-entt::entity Scene::AddPrimitive(Primitive primitive, bool submit) {
-    auto entity = AddMesh(CreateDefaultPrimitive(primitive), submit);
+entt::entity Scene::AddPrimitive(Primitive primitive, const mat4 &transform, bool submit) {
+    auto entity = AddMesh(CreateDefaultPrimitive(primitive), transform, submit);
     R.emplace<Primitive>(entity, primitive);
     return entity;
 }
-
-BBox Scene::GetBounds(entt::entity mesh_entity) const { return R.get<Mesh>(mesh_entity).BoundingBox; }
 
 void Scene::ClearMeshes() {
     for (auto entity : R.view<Mesh>()) DestroyEntity(entity);

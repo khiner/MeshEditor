@@ -29,7 +29,8 @@ std::vector<RealImpactObject::ListenerPoint> LoadListenerPoints(const fs::path &
             .Index = i,
             .AngleDeg = angles.data[i],
             .DistanceMm = distances.data[i],
-            .Position = {positions.data[i * 3], positions.data[i * 3 + 1], positions.data[i * 3 + 2]},
+            // Turn positions oriented with Z up into positions oriented with Y up.
+            .Position = {positions.data[3 * i], positions.data[3 * i + 2], -positions.data[3 * i + 1]},
         });
     }
     return listener_points;
