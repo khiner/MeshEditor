@@ -5,7 +5,6 @@
 
 #include "BVH.h"
 #include "Ray.h"
-#include "World.h"
 
 using namespace om;
 

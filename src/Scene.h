@@ -161,6 +161,7 @@ struct Scene {
 
     const VulkanContext &VC;
     entt::registry &R;
+    World World{};
 
     entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true);
     entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true);
@@ -197,7 +198,6 @@ struct Scene {
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
 private:
-    World World{};
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 

@@ -147,6 +147,8 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
 
 using namespace ImGui;
 
+#include <print>
+
 int main(int, char **) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
@@ -315,10 +317,34 @@ int main(int, char **) {
                         // 0 transform for `mic_entity` to make this parent of instanced points invisible
                         const auto mic_entity = MainScene->AddPrimitive(Primitive::IcoSphere, {0}, false);
                         // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
-                        for (const auto &listener_point : real_impact.ListenerPoints) {
-                            // RealImpact positions are in meters, and the sphere has a 0.5 unit radius.
-                            static const mat4 I{1}, scale = glm::scale(I, vec3{0.02});
-                            MainScene->AddInstance(mic_entity, glm::translate(I, listener_point.Position) * scale);
+                        for (const auto &p : real_impact.ListenerPoints) {
+                            /*
+                            See https://github.com/samuel-clarke/RealImpact/blob/main/preprocess_measurements.py
+                            Here, we reproduce the `get_mic_world_space` function, to avoid redundantly storing positions.
+                            The only difference is we use Y-up instead of Z-up.
+                                MIC_BAR_LENGTH = 1890 - 70
+                                def get_mic_world_space(angle, distance, ind):
+                                    mic_z = -(MIC_BAR_LENGTH/2) + ind/14 * MIC_BAR_LENGTH
+                                    mic_x = 230 + distance
+                                    mic_y = -((45/2) + 20.95) * np.ones_like(angle)
+                                    mic_points = np.vstack((mic_x, mic_y, mic_z)).transpose()
+                                    rot = Rotation.from_euler('z', angle, degrees=True)
+                                    pos_meters = rot.apply(mic_points) / 1000.0
+                                    return pos_meters
+                            */
+                            static const mat4 I{1}, scale = glm::scale(I, vec3{0.02}); // Sphere has a 0.5 unit radius.
+                            static const float MicBarLength = 1890 - 70;
+                            const uint index = p.MicId;
+                            const float angle = glm::radians(float(p.AngleDeg)), dist = float(p.DistanceMm);
+                            std::println("MicId: {}, DistanceMm: {}, AngleDeg: {}", p.MicId, p.DistanceMm, p.AngleDeg);
+                            const vec3 pos{
+                                230 + dist,
+                                -(MicBarLength / 2) + (float(index) / 14) * MicBarLength,
+                                -((45.f / 2.f) + 20.95f),
+                            };
+                            const mat4 rot = glm::rotate(I, angle, MainScene->World.Up);
+                            const vec3 pos_meters = glm::vec3(rot * vec4{pos, 1}) / 1000.f;
+                            MainScene->AddInstance(mic_entity, glm::translate(I, pos_meters) * scale);
                         }
                         R->emplace<RealImpact>(entity, std::move(real_impact));
                         MainScene->RecordAndSubmitCommandBuffer();

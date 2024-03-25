@@ -2,7 +2,6 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-#include "World.h"
 #include "numeric/vec4.h"
 
 mat4 Camera::GetViewMatrix() const { return glm::lookAt(Position, Target, Up); }

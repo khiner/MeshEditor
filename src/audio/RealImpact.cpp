@@ -17,20 +17,21 @@ All files (present for each object):
 */
 
 std::vector<RealImpact::ListenerPoint> LoadListenerPoints(const fs::path &directory) {
+    // static const uint NumVertexIds = 5; // Number of unique vertex IDs
+    static const uint NumListenerPositions = 600; // Number of unique listener positions
+
+    // todo only read the first `NumListenerPositions` listener positions
+    const auto mic_ids = npy::read_npy<long>(directory / "micID.npy");
     const auto angles = npy::read_npy<long>(directory / "angle.npy");
     const auto distances = npy::read_npy<long>(directory / "distance.npy");
-    const auto positions = npy::read_npy<double>(directory / "listenerXYZ.npy");
 
-    const size_t num_listeners = angles.shape[0];
     std::vector<RealImpact::ListenerPoint> listener_points;
-    listener_points.reserve(num_listeners);
-    for (uint i = 0; i < num_listeners; ++i) {
-        listener_points.push_back({
-            .Index = i,
-            .AngleDeg = angles.data[i],
+    listener_points.reserve(NumListenerPositions);
+    for (uint i = 0; i < NumListenerPositions; ++i) {
+        listener_points.push_back(RealImpact::ListenerPoint{
+            .MicId = mic_ids.data[i],
             .DistanceMm = distances.data[i],
-            // Transform Z-up positions into Y-up.
-            .Position = {positions.data[3 * i], positions.data[3 * i + 2], -positions.data[3 * i + 1]},
+            .AngleDeg = angles.data[i],
         });
     }
     return listener_points;
