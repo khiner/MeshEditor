@@ -342,7 +342,17 @@ int main(int, char **) {
 
         if (Windows.SceneControls.Visible) {
             Begin(Windows.SceneControls.Name, &Windows.SceneControls.Visible);
-            MainScene->RenderControls();
+            if (BeginTabBar("Controls")) {
+                if (BeginTabItem("Scene")) {
+                    MainScene->RenderConfig();
+                    EndTabItem();
+                }
+                if (BeginTabItem("Audio")) {
+                    AudioSources->RenderControls();
+                    EndTabItem();
+                }
+                EndTabBar();
+            }
             End();
         }
 

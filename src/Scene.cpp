@@ -872,9 +872,9 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
     return std::nullopt;
 }
 
-void Scene::RenderControls() {
+void Scene::RenderConfig() {
     if (BeginTabBar("Scene controls")) {
-        if (BeginTabItem("Scene")) {
+        if (BeginTabItem("Render")) {
             if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
             if (Button("Recompile shaders")) {
                 CompileShaders();

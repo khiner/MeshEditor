@@ -185,7 +185,7 @@ struct Scene {
     // Returns true if the scene was updated, which can happen when the window size or background color changes.
     bool Render();
     void RenderGizmo();
-    void RenderControls();
+    void RenderConfig();
 
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
