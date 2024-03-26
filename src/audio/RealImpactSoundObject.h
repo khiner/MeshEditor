@@ -1,16 +1,17 @@
 #pragma once
 
-#include "RealImpact.h"
+#include <vector>
+
 #include "SoundObject.h"
 
-using uint = unsigned int;
+struct RealImpact;
+struct RealImpactListenerPoint;
 
 struct RealImpactSoundObject : SoundObject {
-    RealImpactSoundObject(vec3 listener_position, RealImpact real_impact)
-        : SoundObject(listener_position), RealImpact(real_impact) {}
+    RealImpactSoundObject(const RealImpact &, const RealImpactListenerPoint &);
 
-    RealImpact RealImpact;
+    std::vector<std::vector<float>> ImpactSamples;
 
-    void Strike(uint vertex_index, float force = 1.0) override {} // SoundObject
-    void ProduceAudio(DeviceData *, float *output, uint frame_count); // AudioSource
+    void Strike(uint vertex_index, float force = 1.0) override;
+    void ProduceAudio(DeviceData *, float *output, uint frame_count) const override;
 };

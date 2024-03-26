@@ -10,6 +10,7 @@ I copied the bits needed for reading .npy files, with minor changes.
 #include <complex>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <sstream>
 #include <typeindex>
 #include <unordered_map>
@@ -33,9 +34,9 @@ using shape_t = std::vector<ndarray_len_t>;
 using version_t = std::pair<char, char>;
 
 template<typename Scalar> struct npy_data {
-    std::vector<Scalar> data = {};
     shape_t shape = {};
     bool fortran_order = false;
+    std::vector<Scalar> data = {};
 };
 
 struct dtype_t {
@@ -234,7 +235,7 @@ inline header_t parse_header(std::string header) {
     if (dict_map.size() == 0) throw std::runtime_error("Invalid dictionary in header");
 
     shape_t shape;
-    for (auto item : parse_tuple(dict_map["shape"])) shape.emplace_back(static_cast<ndarray_len_t>(std::stoul(item)));
+    for (auto item : parse_tuple(dict_map["shape"])) shape.emplace_back(ndarray_len_t(std::stoul(item)));
 
     return {parse_descr(parse_str(dict_map["descr"])), shape, parse_bool(dict_map["fortran_order"])};
 }
@@ -259,35 +260,27 @@ const std::unordered_map<std::type_index, dtype_t> dtype_map = {
     {std::type_index(typeid(std::complex<long double>)), {host_endian_char, 'c', sizeof(std::complex<long double>)}}
 };
 
-inline ndarray_len_t comp_size(const shape_t &shape) {
-    ndarray_len_t size = 1;
-    for (ndarray_len_t i : shape) size *= i;
-    return size;
-}
-
-template<typename Scalar> npy_data<Scalar> inline read_npy(std::istream &in) {
+template<typename Scalar> npy_data<Scalar> inline read_npy(std::istream &in, size_t offset = 0, size_t size = 0) {
     std::string header_s = read_header(in);
     header_t header = parse_header(header_s);
     dtype_t dtype = dtype_map.at(std::type_index(typeid(Scalar)));
-    if (header.dtype.tie() != dtype.tie()) {
-        throw std::runtime_error("Formatting error: typestrings do not match.");
-    }
+    if (header.dtype.tie() != dtype.tie()) throw std::runtime_error("Formatting error: typestrings do not match.");
 
-    auto size = static_cast<size_t>(comp_size(header.shape));
-    npy_data<Scalar> data;
-    data.shape = header.shape;
-    data.fortran_order = header.fortran_order;
-    data.data.resize(size);
+    auto &shape = header.shape;
+    size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());
+    size_t read_size = size == 0 || size > total_size - offset ? total_size - offset : size;
+    npy_data<Scalar> data{shape, header.fortran_order, std::vector<Scalar>(read_size)};
 
-    in.read(reinterpret_cast<char *>(data.data.data()), sizeof(Scalar) * size);
+    // Seek relative to the current position (after the header).
+    in.seekg(std::streamoff(sizeof(Scalar) * offset), std::ios_base::cur);
+    in.read(reinterpret_cast<char *>(data.data.data()), sizeof(Scalar) * read_size);
     return data;
 }
 
-template<typename Scalar>
-inline npy_data<Scalar> read_npy(const std::string &filename) {
+template<typename Scalar> inline npy_data<Scalar> read_npy(const std::string &filename, size_t offset = 0, size_t size = 0) {
     std::ifstream stream(filename, std::ifstream::binary);
     if (!stream) throw std::runtime_error("IO error: failed to open a file.");
 
-    return read_npy<Scalar>(stream);
+    return read_npy<Scalar>(stream, offset, size);
 }
 } // namespace npy

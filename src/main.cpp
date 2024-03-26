@@ -16,6 +16,7 @@
 #include "Window.h"
 #include "audio/AudioSourcesPlayer.h"
 #include "audio/RealImpact.h"
+#include "audio/RealImpactSoundObject.h"
 #include "vulkan/VulkanContext.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
@@ -311,19 +312,22 @@ int main(int, char **) {
                         swap[1][2] = 1;
                         swap[2][1] = 1;
                         swap[2][2] = 0;
-                        auto entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
-                        // 0 transform for `mic_entity` to make this parent of mic instances invisible
+                        const auto mesh_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
+                        // 0 transform for `mic_entity` to make this root entity of mic instances invisible
                         const auto mic_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);
                         // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
-                        for (const auto &p : real_impact.ListenerPoints) {
+                        for (const auto &p : real_impact.LoadListenerPoints()) {
                             static const mat4 I{1};
                             static const auto scale = glm::scale(I, vec3{RealImpact::MicWidthMm, RealImpact::MicLengthMm, RealImpact::MicWidthMm} / 1000.f);
                             static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
-                            const auto pos = real_impact.GetPosition(p, MainScene->World.Up, true);
+                            const auto pos = p.GetPosition(MainScene->World.Up, true);
                             const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-                            MainScene->AddInstance(mic_entity, glm::translate(I, pos) * rot * scale);
+                            const auto listener_pos_entity = MainScene->AddInstance(mic_entity, glm::translate(I, pos) * rot * scale);
+                            R->emplace<RealImpactListenerPoint>(listener_pos_entity, p);
                         }
-                        R->emplace<RealImpact>(entity, std::move(real_impact));
+                        // Put the RealImpact data on both the mesh and root mic entity.
+                        R->emplace<RealImpact>(mesh_entity, real_impact);
+                        R->emplace<RealImpact>(mic_entity, real_impact);
                         MainScene->RecordAndSubmitCommandBuffer();
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
@@ -352,6 +356,18 @@ int main(int, char **) {
                 }
                 if (BeginTabItem("Audio")) {
                     AudioSources->RenderControls();
+
+                    const auto selected_entity = MainScene->GetSelectedEntity();
+                    if (const auto *maybe_real_impact = R->try_get<RealImpact>(selected_entity)) {
+                    } else if (const auto *maybe_listener_point = R->try_get<RealImpactListenerPoint>(selected_entity)) {
+                        const auto listener_point = *maybe_listener_point;
+                        const auto mesh_entity = MainScene->GetMeshEntity(selected_entity);
+                        const auto &real_impact = R->get<RealImpact>(mesh_entity);
+                        if (Button("Set as listener")) {
+                            // RealImpactSoundObject(const RealImpactListenerPoint &listener_point)
+                            R->emplace<RealImpactSoundObject>(mesh_entity, real_impact, listener_point);
+                        }
+                    }
                     EndTabItem();
                 }
                 EndTabBar();

@@ -423,7 +423,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit) {
     R.emplace<Mesh>(entity, std::move(mesh));
     R.emplace<Model>(entity, std::move(model));
 
-    SelectedEntity = entity;
+    SelectEntity(entity);
 
     if (submit) RecordAndSubmitCommandBuffer();
 
@@ -459,7 +459,7 @@ void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     R.replace<Mesh>(entity, std::move(mesh));
 }
 
-void Scene::AddInstance(entt::entity parent, mat4 &&transform) {
+entt::entity Scene::AddInstance(entt::entity parent, mat4 &&transform) {
     const auto entity = R.create();
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
@@ -467,11 +467,13 @@ void Scene::AddInstance(entt::entity parent, mat4 &&transform) {
     R.emplace<Model>(entity, std::move(transform));
 
     UpdateModelBuffer(entity);
-    SelectedEntity = entity;
+    SelectEntity(entity);
+
+    return entity;
 }
 
 void Scene::DestroyEntity(entt::entity entity) {
-    if (entity == SelectedEntity) SelectedEntity = entt::null;
+    if (entity == SelectedEntity) SelectEntity(entt::null);
 
     const auto mesh_entity = GetMeshEntity(entity);
     if (mesh_entity != entity) return DestroyInstance(mesh_entity, entity);
@@ -489,7 +491,7 @@ void Scene::DestroyEntity(entt::entity entity) {
 
 // Do _not_ use when destroying all instances of a mesh - only when destroying a single instance.
 void Scene::DestroyInstance(entt::entity mesh, entt::entity instance) {
-    if (instance == SelectedEntity) SelectedEntity = entt::null;
+    if (instance == SelectedEntity) SelectEntity(entt::null);
 
     const uint i = GetModelIndex(R, instance);
     const uint offset = i * sizeof(Model);
@@ -759,9 +761,9 @@ bool Scene::Render() {
                     auto it = hovered_entities.find(SelectedEntity);
                     if (it != hovered_entities.end()) ++it;
                     if (it == hovered_entities.end()) it = hovered_entities.begin();
-                    SelectedEntity = *it;
+                    SelectEntity(*it);
                 } else {
-                    SelectedEntity = entt::null;
+                    SelectEntity(entt::null);
                 }
                 if (SelectedEntity != before_selected_entity) RecordAndSubmitCommandBuffer();
             }

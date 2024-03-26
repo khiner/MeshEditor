@@ -163,6 +163,9 @@ struct Scene {
     entt::registry &R;
     World World{};
 
+    entt::entity GetSelectedEntity() const { return SelectedEntity; }
+    entt::entity GetMeshEntity(entt::entity) const;
+
     entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true);
     entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true);
     entt::entity AddPrimitive(Primitive, const mat4 &transform = {1}, bool submit = true);
@@ -172,7 +175,7 @@ struct Scene {
 
     void SetModel(entt::entity, mat4 &&, bool submit = true);
 
-    void AddInstance(entt::entity, mat4 &&transform = {1});
+    entt::entity AddInstance(entt::entity, mat4 &&transform = {1});
     void DestroyInstance(entt::entity mesh, entt::entity instance);
     void DestroyEntity(entt::entity);
 
@@ -231,12 +234,13 @@ private:
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
 
+    void SelectEntity(entt::entity entity) { SelectedEntity = entity; }
+
     void SetSelectionMode(::SelectionMode mode) {
         SelectionMode = mode;
         RecordAndSubmitCommandBuffer();
     }
 
-    entt::entity GetMeshEntity(entt::entity) const;
     Mesh &GetSelectedMesh() const;
     Model &GetSelectedModel() const;
 

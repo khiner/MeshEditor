@@ -4,8 +4,6 @@
 
 #include "numeric/vec3.h"
 
-using uint = unsigned int;
-
 // Represents a rigid mesh object that generate an audio stream for a listener at a given position
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
@@ -14,7 +12,7 @@ struct SoundObject : AudioSource {
 
     vec3 ListenerPosition;
 
-    virtual void ProduceAudio(DeviceData *, float *output, uint frame_count) override = 0; // AudioSource
+    virtual void ProduceAudio(DeviceData *, float *output, uint frame_count) const override = 0; // AudioSource
 
     virtual void Strike(uint vertex_index, float force = 1.0) = 0;
 };
