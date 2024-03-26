@@ -4,13 +4,14 @@ Real-time mesh viewer and editor, using Vulkan and ImGui.
 
 ![](screenshots/cube.png)
 ![](screenshots/torus_bvh.png)
+![](screenshots/real_impact_skillet.png)
 
 For me to learn Vulkan.
-I'm also aiming to port [mesh2audio](https://github.com/khiner/mesh2audio) from OpenGL to Vulkan directly in this project.
+I'm also aiming to port and expand on [mesh2audio](https://github.com/khiner/mesh2audio).
 
 ## Features
 
-Features so far:
+General features:
 * Create/delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj`, `.off`, `.ply`, `.stl` and `.om` mesh files (via [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh))
@@ -29,6 +30,9 @@ Features so far:
 * Render bounding box / BVH wireframes for debugging
 * Edge-detection-based silhouette outline of selected mesh/instance, embedded into the scene with accurate per-pixel depth
 * Fast infinite grid with horizon fade
+
+Audio-specific features:
+* Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and cylinders for each microphone position.
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
