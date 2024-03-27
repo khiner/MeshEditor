@@ -10,11 +10,7 @@ void RealImpactSoundObject::ProduceAudio(DeviceData, float *output, uint frame_c
 
     const auto &impact_samples = ImpactSamples[CurrentVertexIndex];
     for (uint i = 0; i < frame_count; ++i) {
-        if (CurrentFrame < impact_samples.size()) {
-            output[i] = impact_samples[CurrentFrame++];
-        } else {
-            output[i] = 0.0f;
-        }
+        output[i] = CurrentFrame < impact_samples.size() ? impact_samples[CurrentFrame++] : 0.0f;
     }
 }
 

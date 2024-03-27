@@ -1,8 +1,8 @@
 #include "RealImpact.h"
 
-#include "npy.h"
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "helper/npy.h"
 #include "numeric/vec4.h"
 
 /**
