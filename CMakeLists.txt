@@ -9,6 +9,8 @@ if(APPLE)
     enable_language(OBJC) # Needed for nativefiledialog
 endif()
 
+set(STATIC_FAUST on CACHE BOOL "Build Static Faust library" FORCE)
+
 add_subdirectory(lib)
 
 find_package(Vulkan REQUIRED)
@@ -28,14 +30,23 @@ add_executable(${PROJECT_NAME}
     lib/ImGuizmo/ImGuizmo.cpp
     ${SOURCES}
 )
+
+set(INCLUDE_EXECUTABLE OFF CACHE STRING "Build the mesh2faust executable" FORCE)
+set(Mesh2FaustDir ${CMAKE_CURRENT_SOURCE_DIR}/lib/faust/tools/physicalModeling/mesh2faust)
+add_subdirectory(${Mesh2FaustDir})
+
 include_directories(
     ${Vulkan_INCLUDE_DIRS}
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     lib/ImGuizmo
+    lib/imspinner
     lib/glm
     lib/entt/src
     lib/miniaudio
+    lib/tetgen
+    lib/faust/architecture
+    ${Mesh2FaustDir}/src
     src
 )
 
@@ -50,9 +61,15 @@ add_custom_command(
     COMMENT "Copying resources to build directory"
 )
 
+if(APPLE)
+  target_include_directories(${PROJECT_NAME} PRIVATE /opt/homebrew/Cellar/eigen/3.4.0_1/include/eigen3)
+else()
+  target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/eigen3)
+endif()
+
 find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib spirv-cross-core)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} spirv-cross-core nfd OpenMeshCore)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} spirv-cross-core nfd OpenMeshCore faustlib mesh2faust tetgen)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -63,6 +80,7 @@ endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base)
 
+add_definitions(-DTETLIBRARY)
 add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL)
 
 # Copy shader files on every release build.

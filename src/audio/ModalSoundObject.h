@@ -1,8 +1,11 @@
 #pragma once
 
+#include <string>
+
 #include "SoundObject.h"
 
 struct Mesh;
+struct FaustDSP;
 
 // Model a rigid body's response to an impact using modal analysis/synthesis:
 // - transforming the object's geometry into a tetrahedral volume mesh
@@ -16,5 +19,8 @@ struct ModalSoundObject : SoundObject {
     void Strike(uint vertex_index, float force = 1.0) override;
     void ProduceAudio(DeviceData, float *output, uint frame_count) override;
 
+    void RenderControls();
+
+private:
     const Mesh &Mesh;
 };

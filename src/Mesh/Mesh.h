@@ -95,6 +95,9 @@ struct Mesh {
 
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 
+    uint GetVertexCount() const { return M.n_vertices(); }
+    bool Empty() const { return GetVertexCount() == 0; }
+
     const float *GetPositionData() const { return (const float *)M.points(); }
 
     vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
@@ -104,8 +107,6 @@ struct Mesh {
     vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
 
     float CalcFaceArea(FH) const;
-
-    bool Empty() const { return M.n_vertices() == 0; }
 
     std::vector<Vertex3D> CreateVertices(MeshElement, ElementIndex highlight = {}) const;
     std::vector<uint> CreateIndices(MeshElement) const;
@@ -162,11 +163,11 @@ struct Mesh {
     // If `nearest_intersect_point_out` is not null, sets it to the intersection point.
     FH FindNearestIntersectingFace(const Ray &local_ray, vec3 *nearest_intersect_point_out = nullptr) const;
 
-private:
-    PolyMesh M;
-    std::unique_ptr<BVH> Bvh;
-
     std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.
     std::vector<uint> CreateEdgeIndices() const;
+
+private:
+    PolyMesh M;
+    std::unique_ptr<BVH> Bvh;
 };
