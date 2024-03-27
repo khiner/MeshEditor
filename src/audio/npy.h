@@ -185,7 +185,6 @@ inline std::vector<std::string> parse_tuple(std::string in) {
 }
 
 constexpr char little_endian_char = '<', big_endian_char = '>', no_endian_char = '|';
-constexpr char host_endian_char = (big_endian ? big_endian_char : little_endian_char);
 constexpr std::array<char, 3> endian_chars = {little_endian_char, big_endian_char, no_endian_char};
 constexpr std::array<char, 4> numtype_chars = {'f', 'i', 'u', 'c'};
 
@@ -240,6 +239,7 @@ inline header_t parse_header(std::string header) {
     return {parse_descr(parse_str(dict_map["descr"])), shape, parse_bool(dict_map["fortran_order"])};
 }
 
+constexpr char host_endian_char = (big_endian ? big_endian_char : little_endian_char);
 const std::unordered_map<std::type_index, dtype_t> dtype_map = {
     {std::type_index(typeid(float)), {host_endian_char, 'f', sizeof(float)}},
     {std::type_index(typeid(double)), {host_endian_char, 'f', sizeof(double)}},

@@ -12,7 +12,7 @@ struct SoundObject : AudioSource {
 
     vec3 ListenerPosition;
 
-    virtual void ProduceAudio(DeviceData *, float *output, uint frame_count) const override = 0; // AudioSource
+    virtual void ProduceAudio(DeviceData, float *output, uint frame_count) override = 0; // AudioSource
 
     virtual void Strike(uint vertex_index, float force = 1.0) = 0;
 };

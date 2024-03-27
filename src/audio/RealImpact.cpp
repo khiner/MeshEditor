@@ -77,6 +77,10 @@ std::vector<std::vector<float>> RealImpactListenerPoint::LoadImpactSamples(const
         const size_t offset = i * RealImpact::NumListenerPoints + Index;
         const size_t size = 209549; // todo get from shape
         all_samples.emplace_back(npy::read_npy<float>(parent.Directory / "deconvolved_0db.npy", offset, size).data);
+
+        // Normalize audio to [-1, 1]
+        const float max_sample = std::abs(*std::max_element(all_samples.back().begin(), all_samples.back().end(), [](float a, float b) { return std::abs(a) < std::abs(b); }));
+        for (float &sample : all_samples.back()) sample /= max_sample;
     }
     return all_samples;
 }

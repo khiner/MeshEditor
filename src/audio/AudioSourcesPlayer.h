@@ -1,14 +1,10 @@
 #pragma once
 
-#include <vector>
-
-struct AudioSource;
+#include <entt/entity/registry.hpp>
 
 struct AudioSourcesPlayer {
-    AudioSourcesPlayer();
+    AudioSourcesPlayer(entt::registry &);
     ~AudioSourcesPlayer();
-
-    void Add(std::unique_ptr<AudioSource> source);
 
     void Init();
     void Start();
@@ -18,7 +14,8 @@ struct AudioSourcesPlayer {
     void RenderControls();
 
 private:
-    std::vector<std::unique_ptr<AudioSource>> AudioSources;
+    entt::registry &R;
+
     bool On{false}, Muted{false};
     float Volume{1.0};
     std::string OutDeviceName;

@@ -3,7 +3,11 @@
 #include <format>
 #include <string_view>
 
-#include "AudioSource.h"
+// todo - think about a good non-polymorphic design pattern for sound objects.
+// they share an interface, but hold different data and produce audio with different logic.
+// - maybe a single class templated on the data that holds a `ProduceAudio` lambda?
+// - maybe keep the inheritance and add a variant holding all sound object types?
+#include "RealImpactSoundObject.h"
 
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
@@ -19,8 +23,11 @@ using IO = IO_;
 constexpr IO IO_All[] = {IO_In, IO_Out};
 constexpr int IO_Count = 2;
 
-void data_callback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
-    ma_waveform_read_pcm_frames((ma_waveform *)device->pUserData, output, frame_count, nullptr);
+void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
+    auto *r = (entt::registry *)device->pUserData;
+    r->view<RealImpactSoundObject>().each([device, output, frame_count](auto, auto &audio_source) {
+        audio_source.ProduceAudio({.SampleRate = device->sampleRate, .ChannelCount = device->playback.channels}, (float *)output, frame_count);
+    });
 
     (void)input; // Unused
 }
@@ -29,7 +36,6 @@ const std::vector<uint> PrioritizedSampleRates = {std::begin(g_maStandardSampleR
 
 ma_context AudioContext;
 ma_device Device;
-ma_waveform Sinewave;
 
 std::vector<ma_device_info *> DeviceInfos[IO_Count];
 std::vector<std::string> DeviceNames[IO_Count];
@@ -51,17 +57,13 @@ std::string GetSampleRateName(IO io, const uint sample_rate) {
     return std::format("{}{}", sample_rate, is_native ? "*" : "");
 }
 
-AudioSourcesPlayer::AudioSourcesPlayer() {
+AudioSourcesPlayer::AudioSourcesPlayer(entt::registry &r) : R(r) {
     Stop();
     Init();
 }
 
 AudioSourcesPlayer::~AudioSourcesPlayer() {
     Uninit();
-}
-
-void AudioSourcesPlayer::Add(std::unique_ptr<AudioSource> source) {
-    AudioSources.emplace_back(std::move(source));
 }
 
 void AudioSourcesPlayer::Init() {
@@ -88,10 +90,10 @@ void AudioSourcesPlayer::Init() {
     ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
     device_config.playback.pDeviceID = GetDeviceId(IO_Out, OutDeviceName);
     device_config.playback.format = ma_format_f32;
-    device_config.playback.channels = 2;
+    device_config.playback.channels = 1;
     device_config.sampleRate = SampleRate;
-    device_config.dataCallback = data_callback;
-    device_config.pUserData = &Sinewave;
+    device_config.dataCallback = DataCallback;
+    device_config.pUserData = &R;
 
     if (ma_device_init(NULL, &device_config, &Device) != MA_SUCCESS) {
         throw std::runtime_error("Failed to open audio output device.");
@@ -109,11 +111,6 @@ void AudioSourcesPlayer::Init() {
 
     OutDeviceName = out_device_info.name;
     SampleRate = Device.sampleRate;
-
-    ma_waveform_config sinewave_config = ma_waveform_config_init(
-        Device.playback.format, Device.playback.channels, Device.sampleRate, ma_waveform_type_sine, 0.2, 220
-    );
-    ma_waveform_init(&sinewave_config, &Sinewave);
 }
 
 void AudioSourcesPlayer::Start() {
@@ -136,7 +133,6 @@ void AudioSourcesPlayer::Stop() {
 
 void AudioSourcesPlayer::Uninit() {
     ma_device_uninit(&Device);
-    ma_waveform_uninit(&Sinewave);
 }
 
 void AudioSourcesPlayer::OnVolumeChange() { ma_device_set_master_volume(&Device, Muted ? 0 : Volume); }

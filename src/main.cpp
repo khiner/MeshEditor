@@ -25,14 +25,14 @@ ImGui_ImplVulkanH_Window MainWindowData;
 uint MinImageCount = 2;
 bool SwapChainRebuild = false;
 
-std::unique_ptr<entt::registry> R;
 WindowsState Windows;
 std::unique_ptr<VulkanContext> VC;
 std::unique_ptr<Scene> MainScene;
 vk::DescriptorSet MainSceneDescriptorSet;
 vk::UniqueSampler MainSceneTextureSampler;
 
-std::unique_ptr<AudioSourcesPlayer> AudioSources;
+entt::registry R;
+AudioSourcesPlayer AudioSources{R};
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
@@ -175,9 +175,6 @@ int main(int, char **) {
     SetupVulkanWindow(wd, surface, w, h);
     MainSceneTextureSampler = VC->Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
 
-    AudioSources = std::make_unique<AudioSourcesPlayer>();
-    // AudioSources->Start();
-
     // Setup ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -230,8 +227,8 @@ int main(int, char **) {
 
     NFD_Init();
 
-    R = std::make_unique<entt::registry>();
-    MainScene = std::make_unique<Scene>(*VC, *R);
+    MainScene = std::make_unique<Scene>(*VC, R);
+    // AudioSources->Start();
 
     // Main loop
     bool done = false;
@@ -323,11 +320,11 @@ int main(int, char **) {
                             const auto pos = p.GetPosition(MainScene->World.Up, true);
                             const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
                             const auto listener_pos_entity = MainScene->AddInstance(mic_entity, glm::translate(I, pos) * rot * scale);
-                            R->emplace<RealImpactListenerPoint>(listener_pos_entity, p);
+                            R.emplace<RealImpactListenerPoint>(listener_pos_entity, p);
                         }
                         // Put the RealImpact data on both the mesh and root mic entity.
-                        R->emplace<RealImpact>(mesh_entity, real_impact);
-                        R->emplace<RealImpact>(mic_entity, real_impact);
+                        R.emplace<RealImpact>(mesh_entity, real_impact);
+                        R.emplace<RealImpact>(mic_entity, real_impact);
                         MainScene->RecordAndSubmitCommandBuffer();
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
@@ -355,17 +352,20 @@ int main(int, char **) {
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio")) {
-                    AudioSources->RenderControls();
+                    AudioSources.RenderControls();
 
                     const auto selected_entity = MainScene->GetSelectedEntity();
-                    if (const auto *maybe_real_impact = R->try_get<RealImpact>(selected_entity)) {
-                    } else if (const auto *maybe_listener_point = R->try_get<RealImpactListenerPoint>(selected_entity)) {
-                        const auto listener_point = *maybe_listener_point;
+                    if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {
+                    } else if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity)) {
                         const auto mesh_entity = MainScene->GetMeshEntity(selected_entity);
-                        const auto &real_impact = R->get<RealImpact>(mesh_entity);
-                        if (Button("Set as listener")) {
-                            // RealImpactSoundObject(const RealImpactListenerPoint &listener_point)
-                            R->emplace<RealImpactSoundObject>(mesh_entity, real_impact, listener_point);
+                        if (const auto *sound_object = R.try_get<RealImpactSoundObject>(mesh_entity)) {
+                            if (Button("Remove listener")) {
+                                R.remove<RealImpactSoundObject>(mesh_entity);
+                            }
+                        } else {
+                            if (Button("Set as listener")) {
+                                R.emplace<RealImpactSoundObject>(mesh_entity, R.get<RealImpact>(mesh_entity), *listener_point);
+                            }
                         }
                     }
                     EndTabItem();
@@ -418,7 +418,6 @@ int main(int, char **) {
     CleanupVulkanWindow();
     MainSceneTextureSampler.reset();
     MainScene.reset();
-    R.reset();
     VC.reset();
 
     SDL_DestroyWindow(Window);

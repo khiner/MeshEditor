@@ -1,9 +1,6 @@
 #pragma once
 
-#include <set>
-
 #include <entt/entity/registry.hpp>
-#include <vulkan/vulkan.hpp>
 
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"

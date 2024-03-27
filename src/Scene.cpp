@@ -1031,10 +1031,9 @@ void Scene::RenderConfig() {
             }
             if (SelectedEntity != entt::null) {
                 TextUnformatted(std::format("Selected: {}", uint(SelectedEntity)).c_str());
-                if (const auto *maybe_primitive = R.try_get<Primitive>(SelectedEntity)) {
-                    const Primitive primitive = *maybe_primitive;
+                if (const auto *primitive = R.try_get<Primitive>(SelectedEntity)) {
                     // Editor for the selected entity's primitive type.
-                    if (auto new_mesh = PrimitiveEditor(primitive, false)) {
+                    if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
                         ReplaceMesh(SelectedEntity, std::move(*new_mesh));
                         RecordAndSubmitCommandBuffer();
                     }
