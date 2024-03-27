@@ -9,6 +9,7 @@ struct RealImpactListenerPoint;
 
 struct RealImpactSoundObject : SoundObject {
     RealImpactSoundObject(const RealImpact &, const RealImpactListenerPoint &);
+    ~RealImpactSoundObject() override = default;
 
     std::vector<std::vector<float>> ImpactSamples;
     uint CurrentVertexIndex{0}, CurrentFrame{0};

@@ -11,6 +11,6 @@ struct AudioSource {
     AudioSource() = default;
     virtual ~AudioSource() = default;
 
-    // Fill the output buffer with floats between -1.0 and 1.0.
+    // _Add to_ the output buffer floats between -1.0 and 1.0.
     virtual void ProduceAudio(DeviceData, float *output, uint frame_count) = 0;
 };
