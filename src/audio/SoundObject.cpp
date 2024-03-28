@@ -1,6 +1,9 @@
-#include "ModalSoundObject.h"
+#include "SoundObject.h"
 
 #include <format>
+
+#include "imgui.h"
+#include "tetgen.h"
 
 #include "mesh2faust.h"
 
@@ -10,10 +13,8 @@ using Sample = float;
 #define FAUSTFLOAT Sample
 #endif
 
-#include "imgui.h"
-#include "tetgen.h"
-
 #include "Material.h"
+#include "RealImpact.h"
 #include "Worker.h"
 #include "mesh/Mesh.h"
 
@@ -157,17 +158,6 @@ FaustDSP FaustDsp;
 // Worker TetGenerator{"Generate tet mesh", "Generating tetrahedral mesh...", [&] { GenerateTets(); }};
 std::unique_ptr<tetgenio> TetGenResult;
 
-ModalSoundObject::ModalSoundObject(const ::Mesh &mesh, vec3 listener_position)
-    : SoundObject(listener_position), Mesh(mesh) {
-}
-
-void ModalSoundObject::ProduceAudio(DeviceData, Sample *output, uint frame_count) {
-    FaustDsp.Dsp->compute(frame_count, nullptr, &output);
-}
-
-void ModalSoundObject::Strike(uint vertex_index, float force) {
-}
-
 tetgenio GenerateTets(const Mesh &mesh, bool quality = false) {
     tetgenio in;
     in.firstnumber = 0;
@@ -195,14 +185,13 @@ tetgenio GenerateTets(const Mesh &mesh, bool quality = false) {
         f.polygonlist[0].vertexlist[2] = triangle_indices[i * 3 + 2];
     }
 
-    const std::string options = quality ? "pq" : "p";
+    const string options = quality ? "pq" : "p";
     std::vector<char> options_mutable(options.begin(), options.end());
     tetgenio result;
     tetrahedralize(options_mutable.data(), &in, &result);
 
     return result;
 }
-
 
 string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<int> &excitable_vertex_indices) {
     std::vector<int> tet_indices;
@@ -233,14 +222,77 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     return m2f::mesh2faust(&volumetric_mesh, args);
 }
 
+SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
+    : ListenerPosition(listener_point.GetPosition()), RealImpactData(listener_point.LoadImpactSamples(real_impact)) {}
+
+SoundObject::SoundObject(const ::Mesh &mesh, vec3 listener_position)
+    : ListenerPosition(listener_position), ModalData(mesh) {
+}
+SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point, const Mesh &mesh)
+    : ListenerPosition(listener_point.GetPosition()), RealImpactData(listener_point.LoadImpactSamples(real_impact)), ModalData(mesh) {}
+
+SoundObject::~SoundObject() = default;
+
+void SoundObject::ProduceAudio(DeviceData device, float *output, uint frame_count) {
+    if (Model == SoundObjectModel::RealImpact && RealImpactData) {
+        if (RealImpactData->CurrentVertexIndex >= RealImpactData->ImpactSamples.size()) return;
+
+        const uint sample_rate = device.SampleRate; // todo - resample from 48kHz to device sample rate if necessary
+        (void)sample_rate; // Unused
+
+        const auto &impact_samples = RealImpactData->ImpactSamples[RealImpactData->CurrentVertexIndex];
+        for (uint i = 0; i < frame_count; ++i) {
+            output[i] += RealImpactData->CurrentFrame < impact_samples.size() ? impact_samples[RealImpactData->CurrentFrame++] : 0.0f;
+        }
+    } else if (Model == SoundObjectModel::Modal) {
+        FaustDsp.Dsp->compute(frame_count, nullptr, &output);
+    }
+}
+
+void SoundObject::Strike(float force) {
+    if (RealImpactData) {
+        RealImpactData->CurrentFrame = 0;
+    }
+    if (ModalData) {
+        // todo
+    }
+    (void)force; // Unused
+}
+
+void SoundObject::SetModel(SoundObjectModel model) {
+    Model = model;
+}
+
 using namespace ImGui;
 
-void ModalSoundObject::RenderControls() {
-    if (Button("Generate")) {
-        MaterialProperties material{MaterialPresets.at("Bell")};
-        tetgenio tets = GenerateTets(Mesh);
-        const std::vector<int> excitable_vertex_indices {}; // todo
-        const string model_dsp = GenerateDsp(tets, material, excitable_vertex_indices);
-        FaustDsp.SetCode(model_dsp.empty() ? "process = _;" : GenerateModelInstrumentDsp(model_dsp, excitable_vertex_indices.size()));
+void SoundObject::RenderControls() {
+    if (Button("Strike")) {
+        Strike();
+    }
+
+    PushID("AudioModel");
+    int model = int(Model);
+    bool model_changed = RadioButton("RealImpact", &model, int(SoundObjectModel::RealImpact));
+    SameLine();
+    model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
+    PopID();
+    if (model_changed) SetModel(SoundObjectModel(model));
+    if (Model == SoundObjectModel::RealImpact && RealImpactData) {
+        if (BeginCombo("Vertex", std::to_string(RealImpactData->CurrentVertexIndex).c_str())) {
+            for (uint i = 0; i < RealImpactData->ImpactSamples.size(); ++i) {
+                if (Selectable(std::to_string(i).c_str(), i == RealImpactData->CurrentVertexIndex)) {
+                    RealImpactData->CurrentVertexIndex = i;
+                    RealImpactData->CurrentFrame = 0;
+                }
+            }
+            EndCombo();
+        }
+    } else if (Model == SoundObjectModel::Modal && ModalData) {
+        if (Button("Generate")) {
+            const auto material = MaterialPresets.at("Bell");
+            const std::vector<int> excitable_vertex_indices{}; // todo
+            const string model_dsp = GenerateDsp(GenerateTets(ModalData->Mesh), material, excitable_vertex_indices);
+            FaustDsp.SetCode(model_dsp.empty() ? "process = _;" : GenerateModelInstrumentDsp(model_dsp, excitable_vertex_indices.size()));
+        }
     }
 }

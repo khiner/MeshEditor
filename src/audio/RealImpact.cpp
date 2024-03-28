@@ -73,14 +73,18 @@ vec3 RealImpactListenerPoint::GetPosition(vec3 world_up, bool mic_center) const 
 std::vector<std::vector<float>> RealImpactListenerPoint::LoadImpactSamples(const RealImpact &parent) const {
     std::vector<std::vector<float>> all_samples;
     all_samples.reserve(RealImpact::NumImpactVertices);
+    float max_sample = 0;
     for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
         const size_t offset = i * RealImpact::NumListenerPoints + Index;
         const size_t size = 209549; // todo get from shape
         all_samples.emplace_back(npy::read_npy<float>(parent.Directory / "deconvolved_0db.npy", offset, size).data);
 
-        // Normalize audio to [-1, 1]
-        const float max_sample = std::abs(*std::max_element(all_samples.back().begin(), all_samples.back().end(), [](float a, float b) { return std::abs(a) < std::abs(b); }));
-        for (float &sample : all_samples.back()) sample /= max_sample;
+        const float max_vertex_sample = std::abs(*std::max_element(all_samples.back().begin(), all_samples.back().end(), [](float a, float b) { return std::abs(a) < std::abs(b); }));
+        max_sample = std::max(max_sample, max_vertex_sample);
+    }
+    // Normalize audio to [-1, 1]
+    for (auto &samples : all_samples) {
+        for (float &sample : samples) sample /= max_sample;
     }
     return all_samples;
 }

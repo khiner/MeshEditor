@@ -14,12 +14,12 @@
 
 #include "Scene.h"
 #include "Window.h"
+#include "mesh/Mesh.h"
 #include "vulkan/VulkanContext.h"
 
 #include "audio/AudioSourcesPlayer.h"
-#include "audio/ModalSoundObject.h"
 #include "audio/RealImpact.h"
-#include "audio/RealImpactSoundObject.h"
+#include "audio/SoundObject.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
@@ -357,16 +357,23 @@ int main(int, char **) {
                     AudioSources.RenderControls();
 
                     const auto selected_entity = MainScene->GetSelectedEntity();
-                    if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {
-                    } else if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity)) {
+                    // if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {}
+                    if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity)) {
                         const auto mesh_entity = MainScene->GetMeshEntity(selected_entity);
-                        if (const auto *sound_object = R.try_get<RealImpactSoundObject>(mesh_entity)) {
-                            if (Button("Remove listener")) {
-                                R.remove<RealImpactSoundObject>(mesh_entity);
+                        if (auto *sound_object = R.try_get<SoundObject>(mesh_entity)) {
+                            SeparatorText("Audio model");
+                            // if (sound_object->GetListenerPosition == listener_point->getPosition()) {
+                            //     if (Button("Change listener position")) {
+                            //         R.emplace<SoundObject>(mesh_entity, R.get<RealImpact>(mesh_entity), *listener_point, R.get<Mesh>(mesh_entity));
+                            //     }
+                            // }
+                            sound_object->RenderControls();
+                            if (Button("Remove audio model")) {
+                                R.remove<SoundObject>(mesh_entity);
                             }
                         } else {
-                            if (Button("Set as listener")) {
-                                R.emplace<RealImpactSoundObject>(mesh_entity, R.get<RealImpact>(mesh_entity), *listener_point);
+                            if (Button("Set listener position")) {
+                                R.emplace<SoundObject>(mesh_entity, R.get<RealImpact>(mesh_entity), *listener_point, R.get<Mesh>(mesh_entity));
                             }
                         }
                     }

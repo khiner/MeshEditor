@@ -3,8 +3,7 @@
 #include <format>
 #include <string_view>
 
-#include "ModalSoundObject.h"
-#include "RealImpactSoundObject.h"
+#include "SoundObject.h"
 
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
@@ -22,7 +21,7 @@ constexpr int IO_Count = 2;
 
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
     auto *r = (entt::registry *)device->pUserData;
-    r->view<ModalSoundObject, RealImpactSoundObject>().each([device, output, frame_count](auto, auto &audio_source) {
+    r->view<SoundObject>().each([device, output, frame_count](auto, auto &audio_source) {
         audio_source.ProduceAudio({.SampleRate = device->sampleRate, .ChannelCount = device->playback.channels}, (float *)output, frame_count);
     });
 
