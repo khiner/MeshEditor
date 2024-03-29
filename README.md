@@ -1,13 +1,10 @@
 # MeshEditor
 
-Real-time mesh viewer and editor, using Vulkan and ImGui.
+Real-time mesh viewer and editor, using Vulkan and ImGui, and in-progress rigid body audio model.
 
 ![](screenshots/cube.png)
 ![](screenshots/torus_bvh.png)
 ![](screenshots/real_impact_skillet.png)
-
-For me to learn Vulkan.
-I'm also aiming to port and expand on [mesh2audio](https://github.com/khiner/mesh2audio).
 
 ## Features
 
@@ -32,7 +29,9 @@ General features:
 * Fast infinite grid with horizon fade
 
 Audio-specific features:
-* Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and cylinders for each microphone position.
+* Enable/disable audio output and change device / native sample rate
+* Volume / Mute
+* Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and instanced cylinders for each microphone position.
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
