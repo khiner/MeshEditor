@@ -3,15 +3,19 @@
 #include <format>
 
 #include "imgui.h"
-#include "tetgen.h"
 
 #include "mesh2faust.h"
 
-#include "faust/dsp/llvm-dsp.h"
 using Sample = float;
 #ifndef FAUSTFLOAT
 #define FAUSTFLOAT Sample
 #endif
+
+#include "faust/dsp/llvm-dsp.h"
+
+#include "FaustParams.h"
+
+#include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
 #include "Material.h"
 #include "RealImpact.h"
@@ -77,6 +81,7 @@ struct FaustDSP {
 
     Box Box{nullptr};
     dsp *Dsp{nullptr};
+    std::unique_ptr<FaustParams> Ui;
 
     string ErrorMessage{""};
 
@@ -114,6 +119,11 @@ private:
                 if (ErrorMessage.empty()) {
                     Dsp = DspFactory->createDSPInstance();
                     if (!Dsp) ErrorMessage = "Successfully created Faust DSP factory, but could not create the Faust DSP instance.";
+
+                    uint sample_rate = 48000; // todo follow device sample rate
+                    Dsp->init(sample_rate);
+                    Ui = std::make_unique<FaustParams>();
+                    Dsp->buildUserInterface(Ui.get());
                 } else {
                     deleteDSPFactory(DspFactory);
                     DspFactory = nullptr;
@@ -137,6 +147,7 @@ private:
     }
 
     void DestroyDsp() {
+        Ui.reset();
         if (Dsp) {
             delete Dsp;
             Dsp = nullptr;
@@ -290,6 +301,9 @@ void SoundObject::RenderControls() {
             const std::vector<int> excitable_vertex_indices{0, 1}; // todo
             const string model_dsp = GenerateDsp(GenerateTets(ModalData->Mesh), material, excitable_vertex_indices);
             ModalData->FaustDsp->SetCode(model_dsp.empty() ? "process = 0;" : GenerateModelInstrumentDsp(model_dsp, excitable_vertex_indices.size()));
+        }
+        if (ModalData->FaustDsp->Ui) {
+            ModalData->FaustDsp->Ui->Draw();
         }
     }
 }
