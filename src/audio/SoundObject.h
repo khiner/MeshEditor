@@ -6,12 +6,13 @@
 #include "numeric/vec3.h"
 
 #include "AudioSource.h"
+#include "MaterialProperties.h"
 
 enum class SoundObjectModel {
     RealImpact,
     // Model a rigid body's response to an impact using modal analysis/synthesis:
     // - transforming the object's geometry into a tetrahedral volume mesh
-    // - using FEM to estimate the mass/spring/damping matrices from the mesh
+    // - using FEM to estimate the mass/sg/damping matrices from the mesh
     // - estimating the dominant modal frequencies and amplitudes using an eigenvalues/eigenvector solver
     // - simulating the object's response to an impact by exciting the modes associated with the impacted vertex
     Modal
@@ -58,8 +59,11 @@ struct SoundObject : AudioSource {
 
     ~SoundObject();
 
+    inline static const std::string DefaultMaterialPresetName = "Bell";
+
     vec3 ListenerPosition;
-                // Start at the end of the first sample, so it doesn't immediately play.
+    MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};
+
     std::optional<SoundObjectData::RealImpact> RealImpactData{};
     std::optional<SoundObjectData::Modal> ModalData{};
 

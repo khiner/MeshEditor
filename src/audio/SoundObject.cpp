@@ -17,7 +17,6 @@ using Sample = float;
 
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
-#include "Material.h"
 #include "RealImpact.h"
 #include "Worker.h"
 #include "mesh/Mesh.h"
@@ -191,7 +190,7 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     const string model_dsp = m2f::mesh2faust(&volumetric_mesh, args);
     if (model_dsp.empty()) return "process = 0;";
 
-    // todo a new `mesh2faust` response with the model dsp and metadata (modes, ...), and use that to compute the default frequency.
+    // todo nextup: a new `mesh2faust` response with the model dsp and metadata (modes, ...), and use that to compute the default frequency.
     //   (or add the default frequency directly to the metadata)
     const float default_freq = 220;
 
@@ -281,7 +280,6 @@ void SoundObject::RenderControls() {
     if (Button("Strike")) {
         Strike();
     }
-
     PushID("AudioModel");
     int model = int(Model);
     bool model_changed = RadioButton("RealImpact", &model, int(SoundObjectModel::RealImpact));
@@ -299,11 +297,32 @@ void SoundObject::RenderControls() {
             EndCombo();
         }
     } else if (Model == SoundObjectModel::Modal && ModalData) {
+        SeparatorText("Material properties");
+
+        static std::string selected_preset = DefaultMaterialPresetName;
+        if (BeginCombo("Presets", selected_preset.c_str())) {
+            for (const auto &[preset_name, material] : MaterialPresets) {
+                const bool is_selected = (preset_name == selected_preset);
+                if (Selectable(preset_name.c_str(), is_selected)) {
+                    selected_preset = preset_name;
+                    Material = material;
+                }
+                if (is_selected) SetItemDefaultFocus();
+            }
+            EndCombo();
+        }
+
+        Text("Young's modulus (Pa)");
+        InputDouble("##Young's modulus", &Material.YoungModulus, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        Text("Poisson's ratio");
+        InputDouble("##Poisson's ratio", &Material.PoissonRatio, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        Text("Density (kg/m^3)");
+        InputDouble("##Density", &Material.Density, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+
         if (Button("Generate")) {
-            const auto material = MaterialPresets.at("Bell");
             const std::vector<int> excitable_vertex_indices{0, 1}; // todo
             const bool freq_control = true;
-            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), material, excitable_vertex_indices, freq_control));
+            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), Material, excitable_vertex_indices, freq_control));
         }
         if (ModalData->FaustDsp->Ui) {
             ModalData->FaustDsp->Ui->Draw();
