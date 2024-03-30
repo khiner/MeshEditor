@@ -4,7 +4,7 @@ add_subdirectory(${SDL3_DIR})
 add_subdirectory(nativefiledialog-extended)
 add_subdirectory(OpenMesh)
 add_subdirectory(VulkanMemoryAllocator)
-
+add_subdirectory(tetgen)
 
 #=================== faust ===================
 # See [the docs](https://faustdoc.grame.fr/manual/embedding/#using-libfaust-with-the-llvm-backend) for general help.
@@ -24,5 +24,3 @@ add_subdirectory(faust/build EXCLUDE_FROM_ALL)
 set(FAUST_TARGET_LIB "staticlib")
 target_compile_definitions(${FAUST_TARGET_LIB} PUBLIC LLVM_BUILD_UNIVERSAL=1)
 add_library(faustlib ALIAS ${FAUST_TARGET_LIB})
-
-add_subdirectory(tetgen)

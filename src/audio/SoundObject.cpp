@@ -24,49 +24,6 @@ using Sample = float;
 
 using std::string, std::string_view;
 
-string GenerateModelInstrumentDsp(const string_view model_dsp, int num_excite_pos) {
-    static const string freq = "freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",220,60,8000,1) : ba.sAndH(gate);";
-    static const string source = "source = vslider(\"Excitation source [style:radio {'Hammer':0;'Audio input':1 }]\",0,0,1,1);";
-
-    const string exPos = std::format("exPos = nentry(\"exPos\",{},0,{},1) : ba.sAndH(gate);", (num_excite_pos - 1) / 2, num_excite_pos - 1);
-
-    static const string
-        t60Scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Resonance duration (s) of the lowest mode.]\",16,0,50,0.01) : ba.sAndH(gate);",
-        t60Decay = "t60Decay = hslider(\"t60 Decay[scale:log][tooltip: Decay of modes as a function of their frequency, in t60 units.\nAt 1, the t60 of the highest mode will be close to 0 seconds.]\",0.80,0,1,0.01) : ba.sAndH(gate);",
-        t60Slope = "t60Slope = hslider(\"t60 Slope[scale:log][tooltip: Power of the function used to compute the decay of modes t60 in function of their frequency.\nAt 1, decay is linear. At 2, decay slope has degree 2, etc.]\",2.5,1,6,0.01) : ba.sAndH(gate);",
-        hammerHardness = "hammerHardness = hslider(\"hammerHardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01) : ba.sAndH(gate);",
-        hammerSize = "hammerSize = hslider(\"hammerSize[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01) : ba.sAndH(gate);",
-        gain = "gain = hslider(\"gain[scale:log]\",0.1,0,0.5,0.01);",
-        gate = "gate = button(\"gate[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");";
-
-    // DSP code in addition to the model, to be appended to make it playable.
-    static const string instrument = R"(
-hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)
-with{
-  ctoff = (1-size)*9500+500;
-  att = (1-hardness)*0.01+0.001;
-};
-
-process = hammer(gate,hammerHardness,hammerSize),_ : select2(source) : modalModel(freq,exPos,t60Scale,t60Decay,t60Slope)*gain;
-)";
-
-    std::stringstream full_instrument;
-    full_instrument << source << '\n'
-                    << gate << '\n'
-                    << hammerHardness << '\n'
-                    << hammerSize << '\n'
-                    << gain << '\n'
-                    << freq << '\n'
-                    << exPos << '\n'
-                    << t60Scale << '\n'
-                    << t60Decay << '\n'
-                    << t60Slope << '\n'
-                    << '\n'
-                    << instrument;
-
-    return model_dsp.data() + full_instrument.str();
-}
-
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.
 struct FaustDSP {
@@ -202,7 +159,7 @@ tetgenio GenerateTets(const Mesh &mesh, bool quality = false) {
     return result;
 }
 
-string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<int> &excitable_vertex_indices) {
+string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<int> &excitable_vertex_indices, bool freq_control = false) {
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
     // Turn each tetrahedron into 4 triangles.
@@ -218,9 +175,11 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
         material.YoungModulus, material.PoissonRatio, material.Density
     };
 
+    static const string model_name = "modalModel";
+
     m2f::CommonArguments args{
-        "modalModel",
-        true, // freq control activated
+        model_name,
+        freq_control, // freqency control activated
         20, // lowest mode freq
         10000, // highest mode freq
         40, // number of synthesized modes (default is 20)
@@ -228,7 +187,51 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
         excitable_vertex_indices, // specific excitation positions
         int(excitable_vertex_indices.size()), // number of excitation positions (default is max: -1)
     };
-    return m2f::mesh2faust(&volumetric_mesh, args);
+
+    const string model_dsp = m2f::mesh2faust(&volumetric_mesh, args);
+    if (model_dsp.empty()) return "process = 0;";
+
+    // todo a new `mesh2faust` response with the model dsp and metadata (modes, ...), and use that to compute the default frequency.
+    //   (or add the default frequency directly to the metadata)
+    const float default_freq = 220;
+
+    // Static code sections.
+    static const string
+        gain = "gain = hslider(\"gain[scale:log]\",0.1,0,0.5,0.01);",
+        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Resonance duration (s) of the lowest mode.]\",16,0,50,0.01) : ba.sAndH(gate);",
+        t60_decay = "t60Decay = hslider(\"t60 Decay[scale:log][tooltip: Decay of modes as a function of their frequency, in t60 units.\nAt 1, the t60 of the highest mode will be close to 0 seconds.]\",0.80,0,1,0.01) : ba.sAndH(gate);",
+        t60_slope = "t60Slope = hslider(\"t60 Slope[scale:log][tooltip: Power of the function used to compute the decay of modes t60 in function of their frequency.\nAt 1, decay is linear. At 2, decay slope has degree 2, etc.]\",2.5,1,6,0.01) : ba.sAndH(gate);",
+        source = "source = vslider(\"Excitation source [style:radio {'Hammer':0;'Audio input':1 }]\",0,0,1,1);",
+        gate = "gate = button(\"gate[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");",
+        hammer_hardness = "hammerHardness = hslider(\"hammerHardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01) : ba.sAndH(gate);",
+        hammer_size = "hammerSize = hslider(\"hammerSize[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01) : ba.sAndH(gate);",
+        hammer = "hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; };";
+
+    // Variable code sections.
+    const uint num_excite_pos = excitable_vertex_indices.size();
+    const string
+        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,8000,1) : ba.sAndH(gate);", default_freq),
+        ex_pos = std::format("exPos = nentry(\"exPos\",{},0,{},1) : ba.sAndH(gate);", (num_excite_pos - 1) / 2, num_excite_pos - 1),
+        modal_model = std::format("{}({}exPos,t60Scale,t60Decay,t60Slope)", model_name, freq_control ? "freq," : ""),
+        process = std::format("process = hammer(gate,hammerHardness,hammerSize),_ : select2(source) : {}*gain;", modal_model);
+
+    std::stringstream instrument;
+    instrument << source << '\n'
+               << gate << '\n'
+               << hammer_hardness << '\n'
+               << hammer_size << '\n'
+               << gain << '\n'
+               << freq << '\n'
+               << ex_pos << '\n'
+               << t60_scale << '\n'
+               << t60_decay << '\n'
+               << t60_slope << '\n'
+               << '\n'
+               << hammer << '\n'
+               << '\n'
+               << process << '\n';
+
+    return model_dsp + instrument.str();
 }
 
 SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
@@ -299,8 +302,8 @@ void SoundObject::RenderControls() {
         if (Button("Generate")) {
             const auto material = MaterialPresets.at("Bell");
             const std::vector<int> excitable_vertex_indices{0, 1}; // todo
-            const string model_dsp = GenerateDsp(GenerateTets(ModalData->Mesh), material, excitable_vertex_indices);
-            ModalData->FaustDsp->SetCode(model_dsp.empty() ? "process = 0;" : GenerateModelInstrumentDsp(model_dsp, excitable_vertex_indices.size()));
+            const bool freq_control = true;
+            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), material, excitable_vertex_indices, freq_control));
         }
         if (ModalData->FaustDsp->Ui) {
             ModalData->FaustDsp->Ui->Draw();
