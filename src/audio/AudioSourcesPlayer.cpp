@@ -21,10 +21,9 @@ constexpr int IO_Count = 2;
 
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
     auto *r = (entt::registry *)device->pUserData;
-    r->view<SoundObject>().each([device, output, frame_count](auto, auto &audio_source) {
-        audio_source.ProduceAudio({.SampleRate = device->sampleRate, .ChannelCount = device->playback.channels}, (float *)output, frame_count);
-    });
-
+    for (const auto &[entity, audio_source] : std::as_const(r)->view<SoundObject>().each()) {
+        audio_source.ProduceAudio({.SampleRate = device->sampleRate, .ChannelCount = device->playback.channels}, (float *)input, (float *)output, frame_count);
+    }
     (void)input; // Unused
 }
 

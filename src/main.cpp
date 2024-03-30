@@ -148,6 +148,36 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount; // Now we can use the next set of semaphores.
 }
 
+void LoadRealImpact(const fs::path &path, entt::registry &R) {
+    if (!fs::exists(path)) throw std::runtime_error(std::format("RealImpact path does not exist: {}", path.string()));
+
+    MainScene->ClearMeshes();
+    RealImpact real_impact{fs::path(path)};
+    // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
+    mat4 swap{1};
+    swap[1][1] = 0;
+    swap[1][2] = 1;
+    swap[2][1] = 1;
+    swap[2][2] = 0;
+    const auto mesh_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
+    // 0 transform for `mic_entity` to make this root entity of mic instances invisible
+    const auto mic_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);
+    static const mat4 I{1};
+    static const auto scale = glm::scale(I, vec3{RealImpact::MicWidthMm, RealImpact::MicLengthMm, RealImpact::MicWidthMm} / 1000.f);
+    static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
+    // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
+    for (const auto &p : real_impact.LoadListenerPoints()) {
+        const auto pos = p.GetPosition(MainScene->World.Up, true);
+        const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
+        const auto listener_pos_entity = MainScene->AddInstance(mic_entity, glm::translate(I, pos) * rot * scale);
+        R.emplace<RealImpactListenerPoint>(listener_pos_entity, p);
+    }
+    // Put the RealImpact data on both the mesh and root mic entity.
+    R.emplace<RealImpact>(mesh_entity, real_impact);
+    R.emplace<RealImpact>(mic_entity, real_impact);
+    MainScene->RecordAndSubmitCommandBuffer();
+}
+
 using namespace ImGui;
 
 int main(int, char **) {
@@ -230,7 +260,7 @@ int main(int, char **) {
     NFD_Init();
 
     MainScene = std::make_unique<Scene>(*VC, R);
-    // AudioSources->Start();
+    AudioSources.Start();
 
     // Main loop
     bool done = false;
@@ -303,31 +333,7 @@ int main(int, char **) {
                     nfdchar_t *path;
                     nfdresult_t result = NFD_PickFolder(&path, "");
                     if (result == NFD_OKAY) {
-                        MainScene->ClearMeshes();
-                        RealImpact real_impact{fs::path(path)};
-                        // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
-                        mat4 swap{1};
-                        swap[1][1] = 0;
-                        swap[1][2] = 1;
-                        swap[2][1] = 1;
-                        swap[2][2] = 0;
-                        const auto mesh_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
-                        // 0 transform for `mic_entity` to make this root entity of mic instances invisible
-                        const auto mic_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);
-                        // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
-                        for (const auto &p : real_impact.LoadListenerPoints()) {
-                            static const mat4 I{1};
-                            static const auto scale = glm::scale(I, vec3{RealImpact::MicWidthMm, RealImpact::MicLengthMm, RealImpact::MicWidthMm} / 1000.f);
-                            static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
-                            const auto pos = p.GetPosition(MainScene->World.Up, true);
-                            const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-                            const auto listener_pos_entity = MainScene->AddInstance(mic_entity, glm::translate(I, pos) * rot * scale);
-                            R.emplace<RealImpactListenerPoint>(listener_pos_entity, p);
-                        }
-                        // Put the RealImpact data on both the mesh and root mic entity.
-                        R.emplace<RealImpact>(mesh_entity, real_impact);
-                        R.emplace<RealImpact>(mic_entity, real_impact);
-                        MainScene->RecordAndSubmitCommandBuffer();
+                        LoadRealImpact(fs::path(path), R);
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
@@ -399,6 +405,12 @@ int main(int, char **) {
             MainScene->RenderGizmo();
             End();
             PopStyleVar();
+
+            if (ImGui::GetFrameCount() == 1) {
+                // Initialize scene now that it has an extent.
+                static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
+                if (fs::exists(DefaultRealImpactPath)) LoadRealImpact(DefaultRealImpactPath, R);
+            }
         }
 
         // Render
@@ -428,6 +440,8 @@ int main(int, char **) {
     MainSceneTextureSampler.reset();
     MainScene.reset();
     VC.reset();
+
+    R.clear();
 
     SDL_DestroyWindow(Window);
     SDL_Quit();

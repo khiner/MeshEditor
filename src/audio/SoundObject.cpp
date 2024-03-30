@@ -66,8 +66,12 @@ process = hammer(gate,hammerHardness,hammerSize),_ : select2(source) : modalMode
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.
 struct FaustDSP {
-    FaustDSP();
-    ~FaustDSP();
+    FaustDSP() {
+        Init();
+    }
+    ~FaustDSP() {
+        Uninit();
+    }
 
     inline static const string FaustDspFileExtension = ".dsp";
 
@@ -81,78 +85,71 @@ struct FaustDSP {
         Update();
     }
 
+    void Compute(uint n, Sample **input, Sample **output) {
+        if (Dsp != nullptr) Dsp->compute(n, input, output);
+    }
+
 private:
     string Code{""};
     llvm_dsp_factory *DspFactory{nullptr};
 
-    void Init();
-    void Uninit();
-    void Update(); // Sets `Box`, `Dsp`, and `ErrorMessage` based on the current `Code`.
+    void Init() {
+        if (Code.empty()) return;
 
-    void DestroyDsp();
+        createLibContext();
+
+        static const string AppName = "MeshEditor";
+        static const string LibrariesPath = fs::relative("../lib/faust/libraries");
+        std::vector<const char *> argv = {"-I", LibrariesPath.c_str()};
+        if (std::is_same_v<Sample, double>) argv.push_back("-double");
+        const int argc = argv.size();
+
+        static int num_inputs, num_outputs;
+        Box = DSPToBoxes(AppName, Code, argc, argv.data(), &num_inputs, &num_outputs, ErrorMessage);
+
+        if (Box && ErrorMessage.empty()) {
+            static const int optimize_level = -1;
+            DspFactory = createDSPFactoryFromBoxes(AppName, Box, argc, argv.data(), "", ErrorMessage, optimize_level);
+            if (DspFactory) {
+                if (ErrorMessage.empty()) {
+                    Dsp = DspFactory->createDSPInstance();
+                    if (!Dsp) ErrorMessage = "Successfully created Faust DSP factory, but could not create the Faust DSP instance.";
+                } else {
+                    deleteDSPFactory(DspFactory);
+                    DspFactory = nullptr;
+                }
+            }
+        } else if (!Box && ErrorMessage.empty()) {
+            ErrorMessage = "`DSPToBoxes` returned no error but did not produce a result.";
+        }
+    }
+
+    void Uninit() {
+        if (Dsp || DspFactory) DestroyDsp();
+        if (Box) Box = nullptr;
+        ErrorMessage = "";
+        destroyLibContext();
+    }
+
+    void Update() {
+        Uninit();
+        Init();
+    }
+
+    void DestroyDsp() {
+        if (Dsp) {
+            delete Dsp;
+            Dsp = nullptr;
+        }
+        if (DspFactory) {
+            deleteDSPFactory(DspFactory);
+            DspFactory = nullptr;
+        }
+    }
 };
 
-FaustDSP::FaustDSP() {
-    Init();
-}
-
-FaustDSP::~FaustDSP() {
-    Uninit();
-}
-
-void FaustDSP::DestroyDsp() {
-    if (Dsp) {
-        delete Dsp;
-        Dsp = nullptr;
-    }
-    if (DspFactory) {
-        deleteDSPFactory(DspFactory);
-        DspFactory = nullptr;
-    }
-}
-
-void FaustDSP::Init() {
-    if (Code.empty()) return;
-
-    static const string libraries_path = fs::relative("../lib/faust/libraries");
-    std::vector<const char *> argv = {"-I", libraries_path.c_str()};
-    if (std::is_same_v<Sample, double>) argv.push_back("-double");
-    const int argc = argv.size();
-
-    static int num_inputs, num_outputs;
-    Box = DSPToBoxes("FlowGrid", Code, argc, argv.data(), &num_inputs, &num_outputs, ErrorMessage);
-
-    if (Box && ErrorMessage.empty()) {
-        static const int optimize_level = -1;
-        DspFactory = createDSPFactoryFromBoxes("FlowGrid", Box, argc, argv.data(), "", ErrorMessage, optimize_level);
-        if (DspFactory) {
-            if (ErrorMessage.empty()) {
-                Dsp = DspFactory->createDSPInstance();
-                if (!Dsp) ErrorMessage = "Successfully created Faust DSP factory, but could not create the Faust DSP instance.";
-            } else {
-                deleteDSPFactory(DspFactory);
-                DspFactory = nullptr;
-            }
-        }
-    } else if (!Box && ErrorMessage.empty()) {
-        ErrorMessage = "`DSPToBoxes` returned no error but did not produce a result.";
-    }
-}
-
-void FaustDSP::Uninit() {
-    if (Dsp || Box) {
-        if (Dsp) DestroyDsp();
-        if (Box) Box = nullptr;
-    }
-    ErrorMessage = "";
-}
-
-void FaustDSP::Update() {
-    Uninit();
-    Init();
-}
-
-FaustDSP FaustDsp;
+SoundObjectData::Modal::Modal(const ::Mesh &mesh) : Mesh(mesh), FaustDsp(std::make_unique<FaustDSP>()) {}
+SoundObjectData::Modal::~Modal() = default;
 
 // Worker DspGenerator{"Generate DSP code", "Generating DSP code..."};
 // Worker TetGenerator{"Generate tet mesh", "Generating tetrahedral mesh...", [&] { GenerateTets(); }};
@@ -176,6 +173,7 @@ tetgenio GenerateTets(const Mesh &mesh, bool quality = false) {
 
     for (uint i = 0; i < uint(in.numberoffacets); ++i) {
         tetgenio::facet &f = in.facetlist[i];
+        tetgenio::init(&f);
         f.numberofpolygons = 1;
         f.polygonlist = new tetgenio::polygon[f.numberofpolygons];
         f.polygonlist[0].numberofvertices = 3;
@@ -233,7 +231,7 @@ SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListener
 
 SoundObject::~SoundObject() = default;
 
-void SoundObject::ProduceAudio(DeviceData device, float *output, uint frame_count) {
+void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, uint frame_count) {
     if (Model == SoundObjectModel::RealImpact && RealImpactData) {
         if (RealImpactData->CurrentVertexIndex >= RealImpactData->ImpactSamples.size()) return;
 
@@ -244,8 +242,8 @@ void SoundObject::ProduceAudio(DeviceData device, float *output, uint frame_coun
         for (uint i = 0; i < frame_count; ++i) {
             output[i] += RealImpactData->CurrentFrame < impact_samples.size() ? impact_samples[RealImpactData->CurrentFrame++] : 0.0f;
         }
-    } else if (Model == SoundObjectModel::Modal) {
-        FaustDsp.Dsp->compute(frame_count, nullptr, &output);
+    } else if (Model == SoundObjectModel::Modal && ModalData) {
+        ModalData->FaustDsp->Compute(frame_count, &input, &output);
     }
 }
 
@@ -282,7 +280,6 @@ void SoundObject::RenderControls() {
             for (uint i = 0; i < RealImpactData->ImpactSamples.size(); ++i) {
                 if (Selectable(std::to_string(i).c_str(), i == RealImpactData->CurrentVertexIndex)) {
                     RealImpactData->CurrentVertexIndex = i;
-                    RealImpactData->CurrentFrame = 0;
                 }
             }
             EndCombo();
@@ -290,9 +287,9 @@ void SoundObject::RenderControls() {
     } else if (Model == SoundObjectModel::Modal && ModalData) {
         if (Button("Generate")) {
             const auto material = MaterialPresets.at("Bell");
-            const std::vector<int> excitable_vertex_indices{}; // todo
+            const std::vector<int> excitable_vertex_indices{0, 1}; // todo
             const string model_dsp = GenerateDsp(GenerateTets(ModalData->Mesh), material, excitable_vertex_indices);
-            FaustDsp.SetCode(model_dsp.empty() ? "process = _;" : GenerateModelInstrumentDsp(model_dsp, excitable_vertex_indices.size()));
+            ModalData->FaustDsp->SetCode(model_dsp.empty() ? "process = 0;" : GenerateModelInstrumentDsp(model_dsp, excitable_vertex_indices.size()));
         }
     }
 }

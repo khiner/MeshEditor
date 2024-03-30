@@ -20,19 +20,29 @@ enum class SoundObjectModel {
 struct RealImpact;
 struct RealImpactListenerPoint;
 struct Mesh;
+struct FaustDSP;
 
 namespace SoundObjectData {
 struct RealImpact {
-    RealImpact(std::vector<std::vector<float>> &&impact_samples) : ImpactSamples(std::move(impact_samples)) {}
+    RealImpact(std::vector<std::vector<float>> &&impact_samples)
+        : ImpactSamples(std::move(impact_samples)) {
+        if (!ImpactSamples.empty()) {
+            // Start at the end of the first sample, so it doesn't immediately play.
+            // Assume all samples have the same size.
+            CurrentFrame = ImpactSamples[0].size();
+        }
+    }
 
     std::vector<std::vector<float>> ImpactSamples;
     uint CurrentVertexIndex{0}, CurrentFrame{0};
 };
 
 struct Modal {
-    Modal(const Mesh &mesh) : Mesh(mesh) {}
+    Modal(const Mesh &);
+    ~Modal();
 
     const Mesh &Mesh;
+    std::unique_ptr<FaustDSP> FaustDsp;
 };
 } // namespace SoundObjectData
 
@@ -49,13 +59,13 @@ struct SoundObject : AudioSource {
     ~SoundObject();
 
     vec3 ListenerPosition;
-
+                // Start at the end of the first sample, so it doesn't immediately play.
     std::optional<SoundObjectData::RealImpact> RealImpactData{};
     std::optional<SoundObjectData::Modal> ModalData{};
 
     void SetModel(SoundObjectModel);
 
-    void ProduceAudio(DeviceData, float *output, uint frame_count) override;
+    void ProduceAudio(DeviceData, float *input, float *output, uint frame_count) override;
 
     void Strike(float force = 1.0);
     void RenderControls();
