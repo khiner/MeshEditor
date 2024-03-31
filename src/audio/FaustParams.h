@@ -1,8 +1,8 @@
 #pragma once
 
-#include <unordered_map>
 #include <stack>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "faust/gui/MetaDataUI.h"

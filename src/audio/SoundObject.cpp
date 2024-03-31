@@ -15,6 +15,7 @@ using Sample = float;
 
 #include "FaustParams.h"
 
+#include "tetMesh.h" // Vega
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
 #include "RealImpact.h"
@@ -191,7 +192,8 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     const string model_dsp = m2f_result.modelDsp;
     if (model_dsp.empty()) return "process = 0;";
 
-    const float fundamental_freq = m2f_result.modeFreqs.empty() ? 440.0f : m2f_result.modeFreqs.front();
+    const auto &mode_freqs = m2f_result.model.modeFreqs;
+    const float fundamental_freq = mode_freqs.empty() ? 440.0f : mode_freqs.front();
 
     // Static code sections.
     static const string
