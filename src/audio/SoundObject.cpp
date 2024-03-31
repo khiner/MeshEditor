@@ -187,12 +187,11 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
         int(excitable_vertex_indices.size()), // number of excitation positions (default is max: -1)
     };
 
-    const string model_dsp = m2f::mesh2faust(&volumetric_mesh, args);
+    const auto m2f_result = m2f::mesh2faust(&volumetric_mesh, args);
+    const string model_dsp = m2f_result.modelDsp;
     if (model_dsp.empty()) return "process = 0;";
 
-    // todo nextup: a new `mesh2faust` response with the model dsp and metadata (modes, ...), and use that to compute the default frequency.
-    //   (or add the default frequency directly to the metadata)
-    const float default_freq = 220;
+    const float fundamental_freq = m2f_result.modeFreqs.empty() ? 440.0f : m2f_result.modeFreqs.front();
 
     // Static code sections.
     static const string
@@ -209,7 +208,7 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     // Variable code sections.
     const uint num_excite_pos = excitable_vertex_indices.size();
     const string
-        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,8000,1) : ba.sAndH(gate);", default_freq),
+        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,8000,1) : ba.sAndH(gate);", fundamental_freq),
         ex_pos = std::format("exPos = nentry(\"exPos\",{},0,{},1) : ba.sAndH(gate);", (num_excite_pos - 1) / 2, num_excite_pos - 1),
         modal_model = std::format("{}({}exPos,t60Scale,t60Decay,t60Slope)", model_name, freq_control ? "freq," : ""),
         process = std::format("process = hammer(gate,hammerHardness,hammerSize),_ : select2(source) : {}*gain;", modal_model);
