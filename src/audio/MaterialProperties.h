@@ -32,3 +32,5 @@ inline const std::map<std::string, MaterialProperties> MaterialPresets = {
     {"Polycarbonate", {1190, 2.4E9, 0.37, 0.5, 4E-7}},
     {"Steel", {7850, 2.0E11, 0.29, 5, 3E-8}}
 };
+
+inline const std::string DefaultMaterialPresetName = "Ceramic";

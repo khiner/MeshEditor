@@ -260,7 +260,7 @@ const std::unordered_map<std::type_index, dtype_t> dtype_map = {
     {std::type_index(typeid(std::complex<long double>)), {host_endian_char, 'c', sizeof(std::complex<long double>)}}
 };
 
-template<typename Scalar> npy_data<Scalar> inline read_npy(std::istream &in, size_t offset = 0, size_t size = 0) {
+template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, size_t offset = 0, size_t size = 0) {
     std::string header_s = read_header(in);
     header_t header = parse_header(header_s);
     dtype_t dtype = dtype_map.at(std::type_index(typeid(Scalar)));
@@ -276,7 +276,6 @@ template<typename Scalar> npy_data<Scalar> inline read_npy(std::istream &in, siz
     in.read(reinterpret_cast<char *>(data.data.data()), sizeof(Scalar) * read_size);
     return data;
 }
-
 template<typename Scalar> inline npy_data<Scalar> read_npy(const std::string &filename, size_t offset = 0, size_t size = 0) {
     std::ifstream stream(filename, std::ifstream::binary);
     if (!stream) throw std::runtime_error("IO error: failed to open a file.");

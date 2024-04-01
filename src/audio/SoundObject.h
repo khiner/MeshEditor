@@ -23,18 +23,18 @@ struct RealImpactListenerPoint;
 struct Mesh;
 struct FaustDSP;
 
+// All model-specific data needed to render audio.
 namespace SoundObjectData {
 struct RealImpact {
-    RealImpact(std::vector<std::vector<float>> &&impact_samples)
-        : ImpactSamples(std::move(impact_samples)) {
-        if (!ImpactSamples.empty()) {
+    RealImpact(std::vector<std::vector<float>> &&impact_samples, const std::vector<uint> &vertex_indices)
+        : ImpactSamples(std::move(impact_samples)), VertexIndices(vertex_indices) {
             // Start at the end of the first sample, so it doesn't immediately play.
-            // Assume all samples have the same size.
-            CurrentFrame = ImpactSamples[0].size();
-        }
+            // All RealImpact samples are the same length.
+        if (!ImpactSamples.empty()) CurrentFrame = ImpactSamples.front().size();
     }
 
     std::vector<std::vector<float>> ImpactSamples;
+    std::vector<uint> VertexIndices;
     uint CurrentVertexIndex{0}, CurrentFrame{0};
 };
 
@@ -50,19 +50,16 @@ struct Modal {
 // Represents a rigid mesh object that generate an audio stream for a listener at a given position
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
-    // RealImpact only
-    SoundObject(const RealImpact &, const RealImpactListenerPoint &);
     // Modal only
     SoundObject(const Mesh &, vec3 listener_position);
     // RealImpact and Modal
-    SoundObject(const RealImpact &, const RealImpactListenerPoint &, const Mesh &);
+    SoundObject(const Mesh &, const RealImpact &, const RealImpactListenerPoint &);
 
     ~SoundObject();
 
-    inline static const std::string DefaultMaterialPresetName = "Ceramic";
-
     vec3 ListenerPosition;
     MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};
+    std::vector<int> ExcitableVertexIndices;
 
     std::optional<SoundObjectData::RealImpact> RealImpactData{};
     std::optional<SoundObjectData::Modal> ModalData{};

@@ -25,9 +25,10 @@ storing from bottom to top, then the array moves back away from the object along
 array rotates to the next angle, moves back to the original distance, and repeats.
 Then, the hammer is positioned at the next impact point, and the process repeats.
 */
+
 struct RealImpact;
 struct RealImpactListenerPoint {
-    const long Index;
+    const long Index; // [0, NumListenerPoints - 1]
     const long MicId; // [0, NumMics - 1], bottom -> top
     const long DistanceMm; // Distance from the microphone to the object, in (whole) mm
     const long AngleDeg; // Angle of the listener relative to the object, in (whole) degrees
@@ -55,6 +56,7 @@ struct RealImpact {
 
     const fs::path Directory;
     const fs::path ObjPath; // Path to the .obj file
+    std::vector<uint> VertexIndices{NumImpactVertices}; // Unique vertex indices of the impact points in the .obj file
     std::optional<std::string> MaterialName;
 
     RealImpact(const fs::path &directory);

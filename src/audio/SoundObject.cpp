@@ -238,20 +238,15 @@ MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
     if (real_impact.MaterialName && MaterialPresets.contains(*real_impact.MaterialName)) {
         return MaterialPresets.at(*real_impact.MaterialName);
     }
-    return MaterialPresets.at(SoundObject::DefaultMaterialPresetName);
+    return MaterialPresets.at(DefaultMaterialPresetName);
 }
-
-SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
-    : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
-      RealImpactData(listener_point.LoadImpactSamples(real_impact)) {}
-
-SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point, const Mesh &mesh)
-    : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
-      RealImpactData(listener_point.LoadImpactSamples(real_impact)), ModalData(mesh) {}
 
 SoundObject::SoundObject(const ::Mesh &mesh, vec3 listener_position)
-    : ListenerPosition(listener_position), ModalData(mesh) {
-}
+    : ListenerPosition(listener_position), ModalData(mesh) {}
+
+SoundObject::SoundObject(const Mesh &mesh, const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
+    : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
+      RealImpactData({listener_point.LoadImpactSamples(real_impact), real_impact.VertexIndices}), ModalData(mesh) {}
 
 SoundObject::~SoundObject() = default;
 
@@ -334,9 +329,8 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
         if (Button("Generate")) {
-            const std::vector<int> excitable_vertex_indices{0, 1}; // todo
             const bool freq_control = true;
-            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), Material, excitable_vertex_indices, freq_control));
+            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), Material, ExcitableVertexIndices, freq_control));
         }
         if (ModalData->FaustDsp->Ui) {
             ModalData->FaustDsp->Ui->Draw();

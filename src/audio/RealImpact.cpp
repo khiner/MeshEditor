@@ -99,20 +99,18 @@ RealImpact::RealImpact(const fs::path &directory)
             MaterialName = it->second;
         }
     }
-    // (starts with an n-digit integer followed by an underscore)
+    const auto vertex_ids = npy::read_npy<long>(Directory / "vertexID.npy").data;
+    for (uint i = 0; i < NumImpactVertices; ++i) VertexIndices[i] = vertex_ids[i * NumListenerPoints];
 }
 
 std::vector<RealImpactListenerPoint> RealImpact::LoadListenerPoints() const {
-    // static const uint NumVertexIds = 5; // Number of unique vertex IDs
-    static const uint NumListenerPositions = 600; // Number of unique listener positions
-
     const auto mic_ids = npy::read_npy<long>(Directory / "micID.npy");
     const auto angles = npy::read_npy<long>(Directory / "angle.npy");
     const auto distances = npy::read_npy<long>(Directory / "distance.npy");
 
     std::vector<RealImpactListenerPoint> listener_points;
-    listener_points.reserve(NumListenerPositions);
-    for (uint i = 0; i < NumListenerPositions; ++i) {
+    listener_points.reserve(NumListenerPoints);
+    for (uint i = 0; i < NumListenerPoints; ++i) {
         listener_points.push_back(RealImpactListenerPoint{
             .Index = i,
             .MicId = mic_ids.data[i],

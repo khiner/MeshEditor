@@ -172,7 +172,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         const auto listener_pos_entity = MainScene->AddInstance(mic_entity, glm::translate(I, pos) * rot * scale);
         R.emplace<RealImpactListenerPoint>(listener_pos_entity, p);
     }
-    // Put the RealImpact data on both the mesh and root mic entity.
+    // Store the RealImpact data on both the mesh and root mic entity.
     R.emplace<RealImpact>(mesh_entity, real_impact);
     R.emplace<RealImpact>(mic_entity, real_impact);
     MainScene->RecordAndSubmitCommandBuffer();
@@ -369,9 +369,7 @@ int main(int, char **) {
                         if (auto *sound_object = R.try_get<SoundObject>(mesh_entity)) {
                             SeparatorText("Audio model");
                             // if (sound_object->GetListenerPosition == listener_point->getPosition()) {
-                            //     if (Button("Change listener position")) {
-                            //         R.emplace<SoundObject>(mesh_entity, R.get<RealImpact>(mesh_entity), *listener_point, R.get<Mesh>(mesh_entity));
-                            //     }
+                            //     if (Button("Change listener position")) { ... }
                             // }
                             sound_object->RenderControls();
                             if (Button("Remove audio model")) {
@@ -379,7 +377,7 @@ int main(int, char **) {
                             }
                         } else {
                             if (Button("Set listener position")) {
-                                R.emplace<SoundObject>(mesh_entity, R.get<RealImpact>(mesh_entity), *listener_point, R.get<Mesh>(mesh_entity));
+                                R.emplace<SoundObject>(mesh_entity, R.get<Mesh>(mesh_entity), R.get<RealImpact>(mesh_entity), *listener_point);
                             }
                         }
                     }
