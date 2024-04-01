@@ -59,7 +59,7 @@ struct SoundObject : AudioSource {
 
     ~SoundObject();
 
-    inline static const std::string DefaultMaterialPresetName = "Bell";
+    inline static const std::string DefaultMaterialPresetName = "Ceramic";
 
     vec3 ListenerPosition;
     MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};

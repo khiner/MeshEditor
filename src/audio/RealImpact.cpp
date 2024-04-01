@@ -1,5 +1,7 @@
 #include "RealImpact.h"
 
+#include <regex>
+
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "helper/npy.h"
@@ -19,8 +21,86 @@ All files (present for each object):
   - vertexXYZ.npy (72K)
 */
 
+// A '*' indicates a guess based on the object name and the material image.
+const std::unordered_map<std::string, std::string> RealImpact::MaterialNameForObjName = {
+    {"CeramicKoiBowl", "Ceramic"},
+    {"CeramicBowlFish", "Ceramic"},
+    {"Bowl", "Ceramic"}, // *
+    {"BowlCeramic", "Ceramic"},
+    {"bowl", "Ceramic"}, // *
+    {"IronSkillet", "Iron"},
+    {"Pan", "Iron"}, // *
+    {"Cup", "Glass"}, // *
+    {"PurpleScoop", "Plastic"},
+    {"WoodPlate", "Wood"},
+    {"WoodPlateSquare", "Wood"},
+    {"WoodSlab", "Wood"},
+    {"WoodChalice", "Wood"},
+    {"WoodWineGlass", "Wood"},
+    {"WoodMug", "Wood"},
+    {"MeasuringCup", "Polycarbonate"}, // *
+    {"SmallMeasuringCup", "Polycarbonate"}, // *
+    {"PiePan", "Steel"}, // *
+    {"IronMortar", "Iron"},
+    {"PlasticBowl", "Plastic"},
+    {"PlasticBowl", "Plastic"},
+    {"PlasticBowl", "Plastic"},
+    {"ShellPlate", "Glass"}, // *
+    {"stand", "Steel"}, // *
+    {"SkullCup", "Glass"}, // *
+    {"PlanterCeramic", "Ceramic"},
+    {"Pot_Hexagonal", "Ceramic"}, // *
+    {"SmallPlanterCeramic", "Ceramic"},
+    {"CeramicMug", "Ceramic"},
+    {"PitcherCeramic", "Ceramic"},
+    {"IronPlate", "Iron"},
+    {"WoodBoard", "Wood"},
+    {"PlasticBin", "Plastic"},
+    {"FlowerPotLargeCeramic", "Ceramic"},
+    {"FlowerpotSmallCeramic", "Ceramic"},
+    {"CeramicCup", "Ceramic"},
+    {"LargeSwanCeramic", "Ceramic"},
+    {"SmallSwanCeramic", "Ceramic"},
+    {"WoodPad", "Wood"},
+    {"WoodVase", "Wood"},
+    {"MetalHoledSpoon", "Steel"}, // *
+    {"MetalSpatula", "Steel"}, // *
+    {"MetalLadle", "Steel"}, // *
+    {"MetalSpoon", "Steel"}, // *
+    {"MetalSpatula", "Steel"}, // *
+    {"GreenGoblet", "Glass"}, // *
+    {"GlassGoblet", "Glass"},
+    {"Bowl", "Ceramic"}, // *
+    {"PlasticScoop", "Plastic"},
+    {"Frisbee", "Plastic"},
+};
+
+// Ascend up ancestor directories until we find the RealImpact object name directory.
+std::optional<std::string> FindObjectNameInAncestors(const fs::path &start_path) {
+    static const std::regex pattern("^\\d+_.*"); // Integer followed by an underscore and any characters
+    for (auto path = start_path; path != path.root_path(); path = path.parent_path()) {
+        const auto dirname = path.filename().string();
+        if (std::regex_search(dirname, pattern)) {
+            // Extract the object name part after the underscore.
+            const auto underscore_pos = dirname.find('_');
+            if (underscore_pos != std::string::npos && underscore_pos + 1 < dirname.length()) {
+                return dirname.substr(underscore_pos + 1); // Extract the object name.
+            }
+        }
+    }
+
+    return {};
+}
+
 RealImpact::RealImpact(const fs::path &directory)
-    : Directory(directory), ObjPath(directory / "transformed.obj") {}
+    : Directory(directory), ObjPath(directory / "transformed.obj") {
+    if (const auto object_name = FindObjectNameInAncestors(Directory)) {
+        if (const auto it = MaterialNameForObjName.find(*object_name); it != MaterialNameForObjName.end()) {
+            MaterialName = it->second;
+        }
+    }
+    // (starts with an n-digit integer followed by an underscore)
+}
 
 std::vector<RealImpactListenerPoint> RealImpact::LoadListenerPoints() const {
     // static const uint NumVertexIds = 5; // Number of unique vertex IDs

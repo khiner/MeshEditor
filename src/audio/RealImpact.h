@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "numeric/vec2.h"
@@ -48,9 +49,13 @@ struct RealImpact {
     // Authors use a Dayton Audio EMM6 calibrated measurement microphone.
     // Measurements from https://www.amazon.com/Dayton-Audio-EMM-6-Measurement-Microphone/dp/B002KI8X40
     static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
+    // Even though the authors provide `.mtl` and `.png` material files, they don't provide the material name.
+    // However, most object names include the material name, and the rest are easy to guess.
+    static const std::unordered_map<std::string, std::string> MaterialNameForObjName;
 
     const fs::path Directory;
     const fs::path ObjPath; // Path to the .obj file
+    std::optional<std::string> MaterialName;
 
     RealImpact(const fs::path &directory);
 

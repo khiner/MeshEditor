@@ -3,16 +3,32 @@
 #include <map>
 #include <string>
 
-// Defaults to aluminum.
 struct MaterialProperties {
-    double YoungModulus, PoissonRatio, Density;
+    double Density, YoungModulus, PoissonRatio, Alpha, Beta;
 };
 
+/*
+From Table 4 in the [Kleinpat paper](https://graphics.stanford.edu/projects/kleinpat/assets/mfpat_opt.pdf).
+(The same set of materials is used in [RealImpact](https://arxiv.org/pdf/2306.09944.pdf).)
+
+| Materials     | ρ    | E      | ν   | α  | β    |
+|---------------|------|--------|-----|----|------|
+| Ceramic       | 2700 | 7.2E10 | 0.19| 6  | 1E-7 |
+| Glass         | 2600 | 6.2E10 | 0.20| 1  | 1E-7 |
+| Wood          | 750  | 1.1E10 | 0.25| 60 | 2E-6 |
+| Plastic       | 1070 | 1.4E9  | 0.35| 30 | 1E-6 |
+| Iron          | 8000 | 2.1E11 | 0.28| 5  | 1E-7 |
+| Polycarbonate | 1190 | 2.4E9  | 0.37| 0.5| 4E-7 |
+| Steel         | 7850 | 2.0E11 | 0.29| 5  | 3E-8 |
+*/
+
+// Using `map` for consistent ordering in preset selection UI.
 inline const std::map<std::string, MaterialProperties> MaterialPresets = {
-    {"Bell", {105e9f, 0.33f, 8600.0f}},
-    {"Copper", {110e9f, 0.33f, 8900.0f}},
-    {"Aluminum", {70e9f, 0.35f, 2700.0f}},
-    {"Steel", {200e9f, 0.3f, 8000.0f}},
-    {"Glass", {70e9f, 0.2f, 2500.0f}},
-    {"Wood", {10e9f, 0.3f, 500.0f}},
+    {"Ceramic", {2700, 7.2E10, 0.19, 6, 1E-7}},
+    {"Glass", {2600, 6.2E10, 0.20, 1, 1E-7}},
+    {"Wood", {750, 1.1E10, 0.25, 60, 2E-6}},
+    {"Plastic", {1070, 1.4E9, 0.35, 30, 1E-6}},
+    {"Iron", {8000, 2.1E11, 0.28, 5, 1E-7}},
+    {"Polycarbonate", {1190, 2.4E9, 0.37, 0.5, 4E-7}},
+    {"Steel", {7850, 2.0E11, 0.29, 5, 3E-8}}
 };

@@ -234,14 +234,24 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     return model_dsp + instrument.str();
 }
 
+MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
+    if (real_impact.MaterialName && MaterialPresets.contains(*real_impact.MaterialName)) {
+        return MaterialPresets.at(*real_impact.MaterialName);
+    }
+    return MaterialPresets.at(SoundObject::DefaultMaterialPresetName);
+}
+
 SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
-    : ListenerPosition(listener_point.GetPosition()), RealImpactData(listener_point.LoadImpactSamples(real_impact)) {}
+    : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
+      RealImpactData(listener_point.LoadImpactSamples(real_impact)) {}
+
+SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point, const Mesh &mesh)
+    : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
+      RealImpactData(listener_point.LoadImpactSamples(real_impact)), ModalData(mesh) {}
 
 SoundObject::SoundObject(const ::Mesh &mesh, vec3 listener_position)
     : ListenerPosition(listener_position), ModalData(mesh) {
 }
-SoundObject::SoundObject(const RealImpact &real_impact, const RealImpactListenerPoint &listener_point, const Mesh &mesh)
-    : ListenerPosition(listener_point.GetPosition()), RealImpactData(listener_point.LoadImpactSamples(real_impact)), ModalData(mesh) {}
 
 SoundObject::~SoundObject() = default;
 
@@ -313,12 +323,15 @@ void SoundObject::RenderControls() {
             EndCombo();
         }
 
+        Text("Density (kg/m^3)");
+        InputDouble("##Density", &Material.Density, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
         Text("Young's modulus (Pa)");
         InputDouble("##Young's modulus", &Material.YoungModulus, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
         Text("Poisson's ratio");
         InputDouble("##Poisson's ratio", &Material.PoissonRatio, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-        Text("Density (kg/m^3)");
-        InputDouble("##Density", &Material.Density, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        Text("Rayleigh damping alpha/beta");
+        InputDouble("##Rayleigh damping alpha", &Material.Alpha, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
         if (Button("Generate")) {
             const std::vector<int> excitable_vertex_indices{0, 1}; // todo
