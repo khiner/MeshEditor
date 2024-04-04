@@ -475,7 +475,7 @@ entt::entity Scene::AddInstance(entt::entity parent, mat4 &&transform) {
 void Scene::DestroyEntity(entt::entity entity) {
     if (entity == SelectedEntity) SelectEntity(entt::null);
 
-    const auto mesh_entity = GetMeshEntity(entity);
+    const auto mesh_entity = GetParentEntity(entity);
     if (mesh_entity != entity) return DestroyInstance(mesh_entity, entity);
 
     MeshVkData->Main.erase(entity);
@@ -504,14 +504,14 @@ void Scene::DestroyInstance(entt::entity mesh, entt::entity instance) {
     VC.EraseBufferRegion(MeshVkData->Models.at(mesh), offset, sizeof(Model));
 }
 
-entt::entity Scene::GetMeshEntity(entt::entity entity) const {
+entt::entity Scene::GetParentEntity(entt::entity entity) const {
     if (entity == entt::null) return entt::null;
 
     const auto &node = R.get<SceneNode>(entity);
-    return node.parent == entt::null ? entity : GetMeshEntity(node.parent);
+    return node.parent == entt::null ? entity : GetParentEntity(node.parent);
 }
 
-Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetMeshEntity(SelectedEntity)); }
+Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(SelectedEntity)); }
 Model &Scene::GetSelectedModel() const { return R.get<Model>(SelectedEntity); }
 
 void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
@@ -592,7 +592,7 @@ void Scene::RecordCommandBuffer() {
         }}
     );
 
-    const auto selected_mesh_entity = GetMeshEntity(SelectedEntity);
+    const auto selected_mesh_entity = GetParentEntity(SelectedEntity);
     const bool render_silhouette = selected_mesh_entity != entt::null && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
         // Only render the silhouette edges for the selected mesh instance.
@@ -685,7 +685,7 @@ void Scene::UpdateTransformBuffers() {
 }
 
 void Scene::UpdateModelBuffer(entt::entity entity) {
-    const auto mesh_entity = GetMeshEntity(entity);
+    const auto mesh_entity = GetParentEntity(entity);
     const auto &model = R.get<Model>(entity);
     const uint i = GetModelIndex(R, entity);
     VC.UpdateBuffer(MeshVkData->Models.at(mesh_entity), &model, i * sizeof(Model), sizeof(Model));
@@ -744,14 +744,14 @@ bool Scene::Render() {
                     SelectedElement = {SelectionElement, fh.idx()};
                 }
                 if (SelectedElement != before_selected_element) {
-                    UpdateRenderBuffers(GetMeshEntity(SelectedEntity), SelectedElement);
+                    UpdateRenderBuffers(GetParentEntity(SelectedEntity), SelectedElement);
                     SubmitCommandBuffer();
                 }
             } else if (SelectionMode == SelectionMode::Object && (GetIO().KeyCtrl || GetIO().KeySuper)) {
                 static std::set<entt::entity> hovered_entities{};
                 hovered_entities.clear();
                 R.view<Model>().each([this, &mouse_world_ray](auto entity, const auto &model) {
-                    const auto &mesh = R.get<Mesh>(GetMeshEntity(entity));
+                    const auto &mesh = R.get<Mesh>(GetParentEntity(entity));
                     const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
                     if (mesh.RayIntersects(mouse_ray)) hovered_entities.emplace(entity);
                 });
@@ -969,7 +969,7 @@ void Scene::RenderConfig() {
                 // todo go back to storing normal settings in a map of element type to bool,
                 //   and ensure meshes/instances are created with the current normals
                 if (SelectedEntity != entt::null) {
-                    const auto mesh_entity = GetMeshEntity(SelectedEntity);
+                    const auto mesh_entity = GetParentEntity(SelectedEntity);
                     const auto &mesh = R.get<Mesh>(mesh_entity);
                     auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
                     for (const auto element : AllNormalElements) {
@@ -1039,7 +1039,7 @@ void Scene::RenderConfig() {
                     }
                 }
                 if (Button("Add instance")) {
-                    AddInstance(GetMeshEntity(SelectedEntity));
+                    AddInstance(GetParentEntity(SelectedEntity));
                     RecordAndSubmitCommandBuffer();
                 }
                 if (CollapsingHeader("Transform")) {

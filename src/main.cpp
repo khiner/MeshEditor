@@ -160,6 +160,8 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     swap[2][1] = 1;
     swap[2][2] = 0;
     const auto mesh_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
+    real_impact.MeshEntityId = uint(mesh_entity);
+
     // 0 transform for `mic_entity` to make this root entity of mic instances invisible
     const auto mic_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);
     static const mat4 I{1};
@@ -363,9 +365,10 @@ int main(int, char **) {
                     AudioSources.RenderControls();
 
                     const auto selected_entity = MainScene->GetSelectedEntity();
-                    // if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {}
                     if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity)) {
-                        const auto mesh_entity = MainScene->GetMeshEntity(selected_entity);
+                        const auto parent_entity = MainScene->GetParentEntity(selected_entity); // Root (non-instance) mic entity
+                        const auto &real_impact = R.get<RealImpact>(parent_entity);
+                        const auto mesh_entity = entt::entity(real_impact.MeshEntityId);
                         if (auto *sound_object = R.try_get<SoundObject>(mesh_entity)) {
                             SeparatorText("Audio model");
                             // if (sound_object->GetListenerPosition == listener_point->getPosition()) {
@@ -381,6 +384,7 @@ int main(int, char **) {
                             }
                         }
                     }
+                    // else if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {}
                     EndTabItem();
                 }
                 EndTabBar();

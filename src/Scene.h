@@ -161,7 +161,7 @@ struct Scene {
     World World{};
 
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
-    entt::entity GetMeshEntity(entt::entity) const;
+    entt::entity GetParentEntity(entt::entity) const;
 
     entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true);
     entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true);

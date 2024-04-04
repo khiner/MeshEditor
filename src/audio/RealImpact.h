@@ -59,6 +59,8 @@ struct RealImpact {
     uint VertexIndices[NumImpactVertices]; // Unique vertex indices of the impact points in the .obj file
     std::optional<std::string> MaterialName;
 
+    uint MeshEntityId; // entt entity id of the mesh (xxx shouldn't know about entt here)
+
     RealImpact(const fs::path &directory);
 
     std::vector<RealImpactListenerPoint> LoadListenerPoints() const;

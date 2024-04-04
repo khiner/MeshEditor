@@ -123,38 +123,50 @@ SoundObjectData::Modal::~Modal() = default;
 // Worker TetGenerator{"Generate tet mesh", "Generating tetrahedral mesh...", [&] { GenerateTets(); }};
 std::unique_ptr<tetgenio> TetGenResult;
 
-tetgenio GenerateTets(const Mesh &mesh, bool quality = false) {
+// See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
+struct TetGenOptions {
+    // (-Y) Input boundary edges and faces of the PLC are preserved in the generated tetrahedral mesh.
+    // Steiner points appear only in the interior space of the PLC.
+    bool PreserveSurface{false};
+    // (-q) Adds new points to improve the mesh quality.
+    bool Quality{false};
+
+    string CreateFlags() const {
+        return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : "");
+    }
+};
+
+tetgenio GenerateTets(const Mesh &mesh, TetGenOptions options) {
+    static const int TriVerts = 3;
     tetgenio in;
-    in.firstnumber = 0;
     const float *vertices = mesh.GetPositionData();
     const auto triangle_indices = mesh.CreateTriangleIndices();
     in.numberofpoints = mesh.GetVertexCount();
-    in.pointlist = new REAL[in.numberofpoints * 3];
+    in.pointlist = new REAL[in.numberofpoints * TriVerts];
     for (uint i = 0; i < uint(in.numberofpoints); ++i) {
-        in.pointlist[i * 3] = vertices[i * 3];
-        in.pointlist[i * 3 + 1] = vertices[i * 3 + 1];
-        in.pointlist[i * 3 + 2] = vertices[i * 3 + 2];
+        in.pointlist[i * TriVerts] = vertices[i * TriVerts];
+        in.pointlist[i * TriVerts + 1] = vertices[i * TriVerts + 1];
+        in.pointlist[i * TriVerts + 2] = vertices[i * TriVerts + 2];
     }
-
-    in.numberoffacets = triangle_indices.size() / 3;
+    in.numberoffacets = triangle_indices.size() / TriVerts;
     in.facetlist = new tetgenio::facet[in.numberoffacets];
 
     for (uint i = 0; i < uint(in.numberoffacets); ++i) {
-        tetgenio::facet &f = in.facetlist[i];
+        auto &f = in.facetlist[i];
         tetgenio::init(&f);
         f.numberofpolygons = 1;
         f.polygonlist = new tetgenio::polygon[f.numberofpolygons];
-        f.polygonlist[0].numberofvertices = 3;
-        f.polygonlist[0].vertexlist = new int[f.polygonlist[0].numberofvertices];
-        f.polygonlist[0].vertexlist[0] = triangle_indices[i * 3];
-        f.polygonlist[0].vertexlist[1] = triangle_indices[i * 3 + 1];
-        f.polygonlist[0].vertexlist[2] = triangle_indices[i * 3 + 2];
+        f.polygonlist[0].numberofvertices = TriVerts;
+        f.polygonlist[0].vertexlist = new int[TriVerts];
+        for (int j = 0; j < TriVerts; ++j) {
+            f.polygonlist[0].vertexlist[j] = triangle_indices[i * TriVerts + j];
+        }
     }
 
-    const string options = quality ? "pq" : "p";
-    std::vector<char> options_mutable(options.begin(), options.end());
     tetgenio result;
-    tetrahedralize(options_mutable.data(), &in, &result);
+    const string flags_str = options.CreateFlags();
+    const char *flags = flags_str.c_str();
+    tetrahedralize(const_cast<char *>(flags), &in, &result);
 
     return result;
 }
@@ -335,13 +347,32 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
         if (Button("Generate")) {
+            // Ensure impact points on the tet mesh are the exact same as the surface mesh.
+            // todo UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
+            TetGenOptions options = RealImpactData ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
+            tetgenio tets = GenerateTets(ModalData->Mesh, options);
+            std::vector<uint> excitable_vertices;
+            if (RealImpactData) {
+                // RealImpact meshes can only be struck at the impact points.
+
+                // todo We can't just use the original vertices since each vertex is duplicated for each triangle face,
+                //   and even when using `-Y` to preserve the survace points, tetgen will remove duplicate vertices.
+                // - simplify the RealImpact mesh to remove duplicate vertices
+                //   - also provide options to simplify further
+                // - find the vertex indices nearest to each impact point (using `vertexXYZ.npy`)
+                // - display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+                // for (auto &[vertex, _] : RealImpactData->ImpactFramesByVertex) excitable_vertices.emplace_back(vertex);
+                excitable_vertices = {0, 1};
+            } else {
+                // Linearly distribute the vertices across the tet mesh.
+                const uint num_excitable_vertices = 5; // todo UI input
+                excitable_vertices.reserve(num_excitable_vertices);
+                for (uint i = 0; i < num_excitable_vertices; ++i) {
+                    excitable_vertices.emplace_back(i * tets.numberofpoints / num_excitable_vertices);
+                }
+            }
             const bool freq_control = true;
-            // todo determine default excitable vertices by:
-            //   - if `RealImpactData` is present, translate `RealImpactData->VertexIndices` (w length `RealImpact::NumImpactVertices`)
-            //     into the corresponding tet mesh vertices
-            //   - otherwise, linearly distribute the vertices across the tet mesh
-            std::vector<uint> excitable_vertices = {0, 1};
-            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), Material, excitable_vertices, freq_control));
+            ModalData->FaustDsp->SetCode(GenerateDsp(tets, Material, excitable_vertices, freq_control));
         }
         if (ModalData->FaustDsp->Ui) {
             ModalData->FaustDsp->Ui->Draw();
