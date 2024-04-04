@@ -39,7 +39,7 @@ struct RealImpactListenerPoint {
     vec3 GetPosition(vec3 world_up = {0, 1, 0}, bool mic_center = false) const;
 
     // Load the audio sample frames (at 48kHz) for each impact vertex at this listener point.
-    std::vector<std::vector<float>> LoadImpactSamples(const RealImpact &) const;
+    std::unordered_map<uint, std::vector<float>> LoadImpactSamples(const RealImpact &) const;
 };
 
 struct RealImpact {
@@ -56,7 +56,7 @@ struct RealImpact {
 
     const fs::path Directory;
     const fs::path ObjPath; // Path to the .obj file
-    std::vector<uint> VertexIndices{NumImpactVertices}; // Unique vertex indices of the impact points in the .obj file
+    uint VertexIndices[NumImpactVertices]; // Unique vertex indices of the impact points in the .obj file
     std::optional<std::string> MaterialName;
 
     RealImpact(const fs::path &directory);

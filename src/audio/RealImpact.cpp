@@ -92,8 +92,7 @@ std::optional<std::string> FindObjectNameInAncestors(const fs::path &start_path)
     return {};
 }
 
-RealImpact::RealImpact(const fs::path &directory)
-    : Directory(directory), ObjPath(directory / "transformed.obj") {
+RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPath(directory / "transformed.obj") {
     if (const auto object_name = FindObjectNameInAncestors(Directory)) {
         if (const auto it = MaterialNameForObjName.find(*object_name); it != MaterialNameForObjName.end()) {
             MaterialName = it->second;
@@ -148,20 +147,22 @@ vec3 RealImpactListenerPoint::GetPosition(vec3 world_up, bool mic_center) const 
     return vec3{glm::rotate({1}, angle, world_up) * vec4{pos, 1}} / 1000.f;
 }
 
-std::vector<std::vector<float>> RealImpactListenerPoint::LoadImpactSamples(const RealImpact &parent) const {
-    std::vector<std::vector<float>> all_samples;
+std::unordered_map<uint, std::vector<float>> RealImpactListenerPoint::LoadImpactSamples(const RealImpact &parent) const {
+    std::unordered_map<uint, std::vector<float>> all_samples;
     all_samples.reserve(RealImpact::NumImpactVertices);
     float max_sample = 0;
     for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
+        const uint vertex_index = parent.VertexIndices[i];
         const size_t offset = i * RealImpact::NumListenerPoints + Index;
         const size_t size = 209549; // todo get from shape
-        all_samples.emplace_back(npy::read_npy<float>(parent.Directory / "deconvolved_0db.npy", offset, size).data);
+        auto frames = npy::read_npy<float>(parent.Directory / "deconvolved_0db.npy", offset, size).data;
 
-        const float max_vertex_sample = std::abs(*std::max_element(all_samples.back().begin(), all_samples.back().end(), [](float a, float b) { return std::abs(a) < std::abs(b); }));
+        const float max_vertex_sample = std::abs(*std::max_element(frames.begin(), frames.end(), [](float a, float b) { return std::abs(a) < std::abs(b); }));
         max_sample = std::max(max_sample, max_vertex_sample);
+        all_samples.emplace(vertex_index, std::move(frames));
     }
     // Normalize audio to [-1, 1]
-    for (auto &samples : all_samples) {
+    for (auto &[_, samples] : all_samples) {
         for (float &sample : samples) sample /= max_sample;
     }
     return all_samples;

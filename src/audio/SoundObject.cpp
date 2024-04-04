@@ -159,7 +159,7 @@ tetgenio GenerateTets(const Mesh &mesh, bool quality = false) {
     return result;
 }
 
-string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<int> &excitable_vertex_indices, bool freq_control = false) {
+string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false) {
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
     // Turn each tetrahedron into 4 triangles.
@@ -177,6 +177,10 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
 
     static const string model_name = "modalModel";
 
+    std::vector<int> excitable_vertex_indices_ints; // Convert to signed integers.
+    excitable_vertex_indices_ints.reserve(excitable_vertex_indices.size());
+    for (uint i : excitable_vertex_indices) excitable_vertex_indices_ints.emplace_back(i);
+
     m2f::CommonArguments args{
         model_name,
         freq_control, // freqency control activated
@@ -184,7 +188,7 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
         10000, // highest mode freq
         40, // number of synthesized modes (default is 20)
         80, // number of modes to be computed for the finite element analysis (default is 100)
-        excitable_vertex_indices, // specific excitation positions
+        excitable_vertex_indices_ints, // specific excitation positions
         int(excitable_vertex_indices.size()), // number of excitation positions (default is max: -1)
     };
 
@@ -246,18 +250,20 @@ SoundObject::SoundObject(const ::Mesh &mesh, vec3 listener_position)
 
 SoundObject::SoundObject(const Mesh &mesh, const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
     : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
-      RealImpactData({listener_point.LoadImpactSamples(real_impact), real_impact.VertexIndices}), ModalData(mesh) {}
+      RealImpactData({listener_point.LoadImpactSamples(real_impact)}), ModalData(mesh) {
+    // `ExcitableVertices` can only be determined after tet mesh generation.
+}
 
 SoundObject::~SoundObject() = default;
 
 void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, uint frame_count) {
     if (Model == SoundObjectModel::RealImpact && RealImpactData) {
-        if (RealImpactData->CurrentVertexIndex >= RealImpactData->ImpactSamples.size()) return;
+        if (!RealImpactData->ImpactFramesByVertex.contains(RealImpactData->CurrentVertex)) return;
 
+        const auto &impact_samples = RealImpactData->ImpactFramesByVertex.at(RealImpactData->CurrentVertex);
         const uint sample_rate = device.SampleRate; // todo - resample from 48kHz to device sample rate if necessary
         (void)sample_rate; // Unused
 
-        const auto &impact_samples = RealImpactData->ImpactSamples[RealImpactData->CurrentVertexIndex];
         for (uint i = 0; i < frame_count; ++i) {
             output[i] += RealImpactData->CurrentFrame < impact_samples.size() ? impact_samples[RealImpactData->CurrentFrame++] : 0.0f;
         }
@@ -294,10 +300,10 @@ void SoundObject::RenderControls() {
     PopID();
     if (model_changed) SetModel(SoundObjectModel(model));
     if (Model == SoundObjectModel::RealImpact && RealImpactData) {
-        if (BeginCombo("Vertex", std::to_string(RealImpactData->CurrentVertexIndex).c_str())) {
-            for (uint i = 0; i < RealImpactData->ImpactSamples.size(); ++i) {
-                if (Selectable(std::to_string(i).c_str(), i == RealImpactData->CurrentVertexIndex)) {
-                    RealImpactData->CurrentVertexIndex = i;
+        if (BeginCombo("Vertex", std::to_string(RealImpactData->CurrentVertex).c_str())) {
+            for (auto &[vertex, _] : RealImpactData->ImpactFramesByVertex) {
+                if (Selectable(std::to_string(vertex).c_str(), vertex == RealImpactData->CurrentVertex)) {
+                    RealImpactData->CurrentVertex = vertex;
                 }
             }
             EndCombo();
@@ -330,7 +336,12 @@ void SoundObject::RenderControls() {
 
         if (Button("Generate")) {
             const bool freq_control = true;
-            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), Material, ExcitableVertexIndices, freq_control));
+            // todo determine default excitable vertices by:
+            //   - if `RealImpactData` is present, translate `RealImpactData->VertexIndices` (w length `RealImpact::NumImpactVertices`)
+            //     into the corresponding tet mesh vertices
+            //   - otherwise, linearly distribute the vertices across the tet mesh
+            std::vector<uint> excitable_vertices = {0, 1};
+            ModalData->FaustDsp->SetCode(GenerateDsp(GenerateTets(ModalData->Mesh), Material, excitable_vertices, freq_control));
         }
         if (ModalData->FaustDsp->Ui) {
             ModalData->FaustDsp->Ui->Draw();

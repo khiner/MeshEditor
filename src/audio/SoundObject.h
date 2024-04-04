@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "numeric/vec3.h"
@@ -26,16 +27,18 @@ struct FaustDSP;
 // All model-specific data needed to render audio.
 namespace SoundObjectData {
 struct RealImpact {
-    RealImpact(std::vector<std::vector<float>> &&impact_samples, const std::vector<uint> &vertex_indices)
-        : ImpactSamples(std::move(impact_samples)), VertexIndices(vertex_indices) {
-            // Start at the end of the first sample, so it doesn't immediately play.
-            // All RealImpact samples are the same length.
-        if (!ImpactSamples.empty()) CurrentFrame = ImpactSamples.front().size();
+    RealImpact(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex)
+        : ImpactFramesByVertex(std::move(impact_frames_by_vertex)) {
+        // Start at the end of the first sample, so it doesn't immediately play.
+        // All RealImpact samples are the same length.
+        if (!ImpactFramesByVertex.empty()) {
+            CurrentVertex = ImpactFramesByVertex.begin()->first;
+            CurrentFrame = ImpactFramesByVertex.begin()->second.size();
+        }
     }
 
-    std::vector<std::vector<float>> ImpactSamples;
-    std::vector<uint> VertexIndices;
-    uint CurrentVertexIndex{0}, CurrentFrame{0};
+    std::unordered_map<uint, std::vector<float>> ImpactFramesByVertex;
+    uint CurrentVertex{0}, CurrentFrame{0};
 };
 
 struct Modal {
@@ -59,7 +62,7 @@ struct SoundObject : AudioSource {
 
     vec3 ListenerPosition;
     MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};
-    std::vector<int> ExcitableVertexIndices;
+    std::vector<uint> ExcitableVertices;
 
     std::optional<SoundObjectData::RealImpact> RealImpactData{};
     std::optional<SoundObjectData::Modal> ModalData{};
