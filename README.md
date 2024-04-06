@@ -2,11 +2,10 @@
 
 Real-time mesh viewer and editor, using Vulkan and ImGui, and in-progress rigid body audio model.
 
-![](screenshots/cube.png)
-![](screenshots/torus_bvh.png)
-![](screenshots/real_impact_skillet.png)
-
-## Features
+![](screenshots/Cube.png)
+![](screenshots/TorusBvh.png)
+![](screenshots/RealImpact_17_IronSkillet.png)
+![](screenshots/RealImpact_27_WoodPlate.png)
 
 General features:
 * Create/delete meshes and mesh instances
