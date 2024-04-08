@@ -876,59 +876,61 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
 
 void Scene::RenderConfig() {
     if (BeginTabBar("Scene controls")) {
-        if (BeginTabItem("Render")) {
-            if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
-            if (Button("Recompile shaders")) {
-                CompileShaders();
-                RecordAndSubmitCommandBuffer();
-            }
-            EndTabItem();
-        }
-        if (BeginTabItem("Camera")) {
-            bool camera_changed = false;
-            if (Button("Reset camera")) {
-                Camera = CreateDefaultCamera();
-                camera_changed = true;
-            }
-            camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
-            camera_changed |= SliderFloat3("Target", &Camera.Target.x, -10, 10);
-            camera_changed |= SliderFloat("Field of view (deg)", &Camera.FieldOfView, 1, 180);
-            camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
-            camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
-            if (camera_changed) {
-                Camera.StopMoving();
-                UpdateTransformBuffers();
-                SubmitCommandBuffer();
-            }
-            EndTabItem();
-        }
-        if (BeginTabItem("Lights")) {
-            bool light_changed = false;
-            SeparatorText("View light");
-            light_changed |= ColorEdit3("Color", &Lights.ViewColorAndAmbient[0]);
-            SeparatorText("Ambient light");
-            light_changed |= SliderFloat("Intensity", &Lights.ViewColorAndAmbient[3], 0, 1);
-            SeparatorText("Directional light");
-            light_changed |= SliderFloat3("Direction", &Lights.Direction[0], -1, 1);
-            light_changed |= ColorEdit3("Color", &Lights.DirectionalColorAndIntensity[0]);
-            light_changed |= SliderFloat("Intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
-            if (light_changed) {
-                VC.UpdateBuffer(*LightsBuffer, &Lights);
-                SubmitCommandBuffer();
-            }
-            EndTabItem();
-        }
         if (BeginTabItem("Object")) {
-            if (CollapsingHeader("Add mesh")) {
-                PushID("AddPrimitive");
-                static int current_primitive_edit = int(Primitive::Cube);
-                for (const auto primitive : AllPrimitives) {
-                    RadioButton(to_string(primitive).c_str(), &current_primitive_edit, int(primitive));
-                }
-                if (auto mesh = PrimitiveEditor(Primitive(current_primitive_edit), true)) {
-                    R.emplace<Primitive>(AddMesh(std::move(*mesh)), Primitive(current_primitive_edit));
+            {
+                if (SelectedEntity != entt::null) Text("Selected object: 0x%08x", uint(SelectedEntity));
+                else Text("Selected object: None");
+
+                int selection_mode = int(SelectionMode);
+                bool selection_mode_changed = false;
+                PushID("SelectionMode");
+                AlignTextToFramePadding();
+                TextUnformatted("Selection mode:");
+                SameLine();
+                selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
+                SameLine();
+                selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
+                if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
+                if (SelectionMode == SelectionMode::Edit) {
+                    AlignTextToFramePadding();
+                    TextUnformatted("Edit mode:");
+                    SameLine();
+                    int element_selection_mode = int(SelectionElement);
+                    for (const auto element : AllElements) {
+                        std::string name = to_string(element);
+                        Capitalize(name);
+                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
+                        if (element != AllElements.back()) SameLine();
+                    }
+                    Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
                 }
                 PopID();
+            }
+            if (SelectedEntity != entt::null) {
+                if (const auto *primitive = R.try_get<Primitive>(SelectedEntity)) {
+                    // Editor for the selected entity's primitive type.
+                    if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
+                        ReplaceMesh(SelectedEntity, std::move(*new_mesh));
+                        RecordAndSubmitCommandBuffer();
+                    }
+                }
+                if (Button("Add instance")) {
+                    AddInstance(GetParentEntity(SelectedEntity));
+                    RecordAndSubmitCommandBuffer();
+                }
+                if (CollapsingHeader("Transform")) {
+                    const auto &model = GetSelectedModel().Transform;
+                    glm::vec3 pos, rot, scale;
+                    DecomposeTransform(model, pos, rot, scale);
+                    bool model_changed = false;
+                    model_changed |= DragFloat3("Position", &pos[0], 0.01f);
+                    model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
+                    model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
+                    if (model_changed) {
+                        SetModel(SelectedEntity, glm::translate(pos) * mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
+                    }
+                    Gizmo->RenderDebug();
+                }
             }
             if (CollapsingHeader("Render")) {
                 SeparatorText("Render mode");
@@ -1008,53 +1010,60 @@ void Scene::RenderConfig() {
                     SubmitCommandBuffer();
                 }
             }
-            if (CollapsingHeader("Selection")) {
-                PushID("SelectionMode");
-                int selection_mode = int(SelectionMode);
-                bool selection_mode_changed = false;
-                selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
-                SameLine();
-                selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
-                if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
-                if (SelectionMode == SelectionMode::Edit) {
-                    int element_selection_mode = int(SelectionElement);
-                    for (const auto element : AllElements) {
-                        std::string name = to_string(element);
-                        Capitalize(name);
-                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
-                        if (element != AllElements.back()) SameLine();
-                    }
-                    const std::string highlight_label = SelectedElement.is_valid() ? std::format("Hovered {}: {}", to_string(SelectedElement.Element), SelectedElement.idx()) : "Hovered: None";
-                    TextUnformatted(highlight_label.c_str());
+            if (CollapsingHeader("Add primitive")) {
+                PushID("AddPrimitive");
+                static int current_primitive_edit = int(Primitive::Cube);
+                uint i = 0; // For line breaks
+                for (const auto primitive : AllPrimitives) {
+                    if (i++ % 3 != 0) SameLine();
+                    RadioButton(to_string(primitive).c_str(), &current_primitive_edit, int(primitive));
+                }
+                if (auto mesh = PrimitiveEditor(Primitive(current_primitive_edit), true)) {
+                    R.emplace<Primitive>(AddMesh(std::move(*mesh)), Primitive(current_primitive_edit));
                 }
                 PopID();
             }
-            if (SelectedEntity != entt::null) {
-                TextUnformatted(std::format("Selected: {}", uint(SelectedEntity)).c_str());
-                if (const auto *primitive = R.try_get<Primitive>(SelectedEntity)) {
-                    // Editor for the selected entity's primitive type.
-                    if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
-                        ReplaceMesh(SelectedEntity, std::move(*new_mesh));
-                        RecordAndSubmitCommandBuffer();
-                    }
-                }
-                if (Button("Add instance")) {
-                    AddInstance(GetParentEntity(SelectedEntity));
-                    RecordAndSubmitCommandBuffer();
-                }
-                if (CollapsingHeader("Transform")) {
-                    const auto &model = GetSelectedModel().Transform;
-                    glm::vec3 pos, rot, scale;
-                    DecomposeTransform(model, pos, rot, scale);
-                    bool model_changed = false;
-                    model_changed |= DragFloat3("Position", &pos[0], 0.01f);
-                    model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
-                    model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
-                    if (model_changed) {
-                        SetModel(SelectedEntity, glm::translate(pos) * mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
-                    }
-                    Gizmo->RenderDebug();
-                }
+            EndTabItem();
+        }
+        if (BeginTabItem("Render")) {
+            if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
+            if (Button("Recompile shaders")) {
+                CompileShaders();
+                RecordAndSubmitCommandBuffer();
+            }
+            EndTabItem();
+        }
+        if (BeginTabItem("Camera")) {
+            bool camera_changed = false;
+            if (Button("Reset camera")) {
+                Camera = CreateDefaultCamera();
+                camera_changed = true;
+            }
+            camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
+            camera_changed |= SliderFloat3("Target", &Camera.Target.x, -10, 10);
+            camera_changed |= SliderFloat("Field of view (deg)", &Camera.FieldOfView, 1, 180);
+            camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
+            camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
+            if (camera_changed) {
+                Camera.StopMoving();
+                UpdateTransformBuffers();
+                SubmitCommandBuffer();
+            }
+            EndTabItem();
+        }
+        if (BeginTabItem("Lights")) {
+            bool light_changed = false;
+            SeparatorText("View light");
+            light_changed |= ColorEdit3("Color", &Lights.ViewColorAndAmbient[0]);
+            SeparatorText("Ambient light");
+            light_changed |= SliderFloat("Intensity", &Lights.ViewColorAndAmbient[3], 0, 1);
+            SeparatorText("Directional light");
+            light_changed |= SliderFloat3("Direction", &Lights.Direction[0], -1, 1);
+            light_changed |= ColorEdit3("Color", &Lights.DirectionalColorAndIntensity[0]);
+            light_changed |= SliderFloat("Intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
+            if (light_changed) {
+                VC.UpdateBuffer(*LightsBuffer, &Lights);
+                SubmitCommandBuffer();
             }
             EndTabItem();
         }
