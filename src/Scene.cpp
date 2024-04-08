@@ -890,6 +890,10 @@ void Scene::RenderConfig() {
                         RecordAndSubmitCommandBuffer();
                     }
                 }
+                const auto &selected_mesh = GetSelectedMesh();
+                TextUnformatted(
+                    std::format("Vertices|Edges|Faces: {:L} | {:L} | {:L}", selected_mesh.GetVertexCount(), selected_mesh.GetEdgeCount(), selected_mesh.GetFaceCount()).c_str()
+                );
                 Unindent();
                 PopID();
             } else {

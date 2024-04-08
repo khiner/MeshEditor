@@ -96,6 +96,8 @@ struct Mesh {
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 
     uint GetVertexCount() const { return M.n_vertices(); }
+    uint GetEdgeCount() const { return M.n_edges(); }
+    uint GetFaceCount() const { return M.n_faces(); }
     bool Empty() const { return GetVertexCount() == 0; }
 
     const float *GetPositionData() const { return (const float *)M.points(); }
