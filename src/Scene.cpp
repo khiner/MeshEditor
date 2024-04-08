@@ -877,35 +877,49 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
 void Scene::RenderConfig() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
-            {
-                if (SelectedEntity != entt::null) Text("Selected object: 0x%08x", uint(SelectedEntity));
-                else Text("Selected object: None");
-
-                int selection_mode = int(SelectionMode);
-                bool selection_mode_changed = false;
-                PushID("SelectionMode");
-                AlignTextToFramePadding();
-                TextUnformatted("Selection mode:");
-                SameLine();
-                selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
-                SameLine();
-                selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
-                if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
-                if (SelectionMode == SelectionMode::Edit) {
+            if (SelectedEntity != entt::null) {
+                PushID(uint(SelectedEntity));
+                Text("Selected object: 0x%08x", uint(SelectedEntity));
+                Indent();
+                if (auto parent_entity = GetParentEntity(SelectedEntity); parent_entity != SelectedEntity) {
                     AlignTextToFramePadding();
-                    TextUnformatted("Edit mode:");
+                    Text("Parent: 0x%08x", uint(parent_entity));
                     SameLine();
-                    int element_selection_mode = int(SelectionElement);
-                    for (const auto element : AllElements) {
-                        std::string name = to_string(element);
-                        Capitalize(name);
-                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
-                        if (element != AllElements.back()) SameLine();
+                    if (Button("Select")) {
+                        SelectEntity(parent_entity);
+                        RecordAndSubmitCommandBuffer();
                     }
-                    Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
                 }
+                Unindent();
                 PopID();
+            } else {
+                Text("Selected object: None");
             }
+
+            int selection_mode = int(SelectionMode);
+            bool selection_mode_changed = false;
+            PushID("SelectionMode");
+            AlignTextToFramePadding();
+            TextUnformatted("Selection mode:");
+            SameLine();
+            selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
+            SameLine();
+            selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
+            if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
+            if (SelectionMode == SelectionMode::Edit) {
+                AlignTextToFramePadding();
+                TextUnformatted("Edit mode:");
+                SameLine();
+                int element_selection_mode = int(SelectionElement);
+                for (const auto element : AllElements) {
+                    std::string name = to_string(element);
+                    Capitalize(name);
+                    if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
+                    if (element != AllElements.back()) SameLine();
+                }
+                Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
+            }
+            PopID();
             if (SelectedEntity != entt::null) {
                 if (const auto *primitive = R.try_get<Primitive>(SelectedEntity)) {
                     // Editor for the selected entity's primitive type.
