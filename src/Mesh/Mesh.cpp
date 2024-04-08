@@ -15,10 +15,12 @@ Mesh::Mesh(Mesh &&other)
     other.Bvh.reset();
 }
 Mesh::Mesh(const fs::path &file_path) {
+    Load(file_path, M);
+    if (IsTriangleSoup()) M = DeduplicateVertices(); // Assumes this is a surface mesh.
+
     M.request_vertex_normals();
     M.request_face_normals();
     M.request_face_colors();
-    Load(file_path, M);
     SetFaceColor(DefaultFaceColor);
     M.update_normals();
     BoundingBox = ComputeBbox();
@@ -46,6 +48,33 @@ bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {
         return false;
     }
     return true;
+}
+
+struct VertexHash {
+    size_t operator()(const Point &p) const {
+        return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
+    }
+};
+
+Mesh::PolyMesh Mesh::DeduplicateVertices() {
+    PolyMesh deduped;
+    std::unordered_map<Point, VH, VertexHash> unique_vertices;
+
+    // Add unique vertices.
+    for (auto v_it = M.vertices_begin(); v_it != M.vertices_end(); ++v_it) {
+        const auto p = M.point(*v_it);
+        if (auto [it, inserted] = unique_vertices.try_emplace(p, VH()); inserted) {
+            it->second = deduped.add_vertex(p);
+        }
+    }
+    // Add faces.
+    for (const auto &fh : M.faces()) {
+        std::vector<VH> new_face;
+        new_face.reserve(M.valence(fh));
+        for (const auto &vh : M.fv_range(fh)) new_face.emplace_back(unique_vertices.at(M.point(vh)));
+        deduped.add_face(new_face);
+    }
+    return deduped;
 }
 
 bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {

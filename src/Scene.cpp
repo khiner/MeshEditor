@@ -922,6 +922,11 @@ void Scene::RenderConfig() {
                     if (element != AllElements.back()) SameLine();
                 }
                 Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
+                if (SelectionElement == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
+                    const auto &mesh = GetSelectedMesh();
+                    const auto pos = mesh.GetPosition(Mesh::VH(SelectedElement.idx()));
+                    Text("Vertex %d: (%.4f, %.4f, %.4f)", SelectedElement.idx(), pos.x, pos.y, pos.z);
+                }
             }
             PopID();
             if (SelectedEntity != entt::null) {

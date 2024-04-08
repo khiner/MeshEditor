@@ -95,10 +95,13 @@ struct Mesh {
 
     static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
 
+    PolyMesh DeduplicateVertices();
+
     uint GetVertexCount() const { return M.n_vertices(); }
     uint GetEdgeCount() const { return M.n_edges(); }
     uint GetFaceCount() const { return M.n_faces(); }
     bool Empty() const { return GetVertexCount() == 0; }
+    bool IsTriangleSoup() const { return GetVertexCount() == 3 * GetFaceCount(); }
 
     const float *GetPositionData() const { return (const float *)M.points(); }
 
