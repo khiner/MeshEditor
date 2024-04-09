@@ -1,5 +1,4 @@
 #include <format>
-#include <locale>
 #include <stdexcept>
 
 #include "imgui.h"
@@ -193,8 +192,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
 using namespace ImGui;
 
 int main(int, char **) {
-    std::locale::global(std::locale("en_US.UTF-8"));
-
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
     }
