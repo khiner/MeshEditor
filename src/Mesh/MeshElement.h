@@ -33,3 +33,9 @@ struct MeshElementIndex {
     bool is_valid() const { return Index >= 0; }
     int idx() const { return Index; }
 };
+
+struct MeshElementIndexHash {
+    size_t operator()(const MeshElementIndex &mei) const {
+        return std::hash<int>{}(static_cast<int>(mei.Element)) ^ (std::hash<int>{}(mei.Index) << 1);
+    }
+};

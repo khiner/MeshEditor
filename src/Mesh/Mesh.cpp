@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <unordered_set>
 
 #include "BVH.h"
 #include "Ray.h"
@@ -314,12 +315,10 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const Ele
         }
     }
 
-    // todo next up - modify colors based on highlights _after_ creating vertices, in one pass, instead of for each element.
-    //   just the single `highlight` first, then `AllHighlights`.
-    static std::vector<ElementIndex> AllHighlights;
+    static std::unordered_set<ElementIndex, MeshElementIndexHash> AllHighlights;
     AllHighlights.clear();
-    AllHighlights.insert(AllHighlights.end(), HighlightedElements.begin(), HighlightedElements.end());
-    AllHighlights.emplace_back(highlight);
+    AllHighlights.insert(HighlightedElements.begin(), HighlightedElements.end());
+    AllHighlights.emplace(highlight);
 
     std::vector<Vertex3D> vertices;
     for (const auto &handle : handles) {
@@ -327,7 +326,12 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const Ele
         const auto normal = ToGlm(render_element == MeshElement::Vertex || render_element == MeshElement::Edge ? M.normal(handle.VHs[0]) : M.normal(FH(handle.Parent)));
         for (const auto vh : handle.VHs) {
             const bool is_highlighted =
-                vh == highlight || parent == highlight ||
+                // todo different colors for persistent/selection highlights (`HighlightedElements` vs `highlight`)
+                //   - actually, best approach may be to add a boolean `highlight` to `Vertex3D` and let the shader handle the color.
+                //   - this would enable very fast highlight color ubo updates, which we'll need for fading alpha representing strike response intensity.
+                AllHighlights.contains(vh) || AllHighlights.contains(parent) ||
+                // Note: If we want to support `HighlightedElements` having `MeshElement::Edge` or `MeshElement::Face` elements (not just the selection `highlight`),
+                // we'd need to update the methods to accept sets of `ElementIndex` instead of just one.
                 (render_element == MeshElement::Vertex && (VertexBelongsToFace(parent, highlight) || VertexBelongsToEdge(parent, highlight))) ||
                 (render_element == MeshElement::Edge && EdgeBelongsToFace(parent, highlight)) ||
                 (render_element == MeshElement::Face && VertexBelongsToFaceEdge(vh, parent, highlight));
