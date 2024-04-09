@@ -520,11 +520,12 @@ void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
     if (submit) SubmitCommandBuffer();
 }
 
-void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
+void Scene::UpdateRenderBuffers(entt::entity mesh_entity, const MeshElementIndex &highlight_element) {
     auto &mesh = R.get<Mesh>(mesh_entity);
     auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
+    const Mesh::ElementIndex highlight(highlight_element);
     for (auto element : AllElements) { // todo only update buffers for viewed elements.
-        VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh.CreateVertices(element, highlight_element));
+        VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh.CreateVertices(element, highlight));
     }
 }
 
@@ -733,16 +734,9 @@ bool Scene::Render() {
                 const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
                 const auto before_selected_element = SelectedElement;
                 SelectedElement = {SelectionElement, -1};
-                if (SelectionElement == MeshElement::Vertex) {
-                    const auto vh = mesh.FindNearestVertex(mouse_ray);
-                    SelectedElement = {SelectionElement, vh.idx()};
-                } else if (SelectionElement == MeshElement::Edge) {
-                    const auto eh = mesh.FindNearestEdge(mouse_ray);
-                    SelectedElement = {SelectionElement, eh.idx()};
-                } else if (SelectionElement == MeshElement::Face) {
-                    const auto fh = mesh.FindNearestIntersectingFace(mouse_ray);
-                    SelectedElement = {SelectionElement, fh.idx()};
-                }
+                if (SelectionElement == MeshElement::Vertex) SelectedElement = Mesh::ElementIndex{mesh.FindNearestVertex(mouse_ray)};
+                else if (SelectionElement == MeshElement::Edge) SelectedElement = Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)};
+                else if (SelectionElement == MeshElement::Face) SelectedElement = Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)};
                 if (SelectedElement != before_selected_element) {
                     UpdateRenderBuffers(GetParentEntity(SelectedEntity), SelectedElement);
                     SubmitCommandBuffer();

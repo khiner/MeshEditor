@@ -193,7 +193,7 @@ struct Scene {
 
     Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.01, 100}; }
 
-    void UpdateRenderBuffers(entt::entity, MeshElementIndex highlight_element = {});
+    void UpdateRenderBuffers(entt::entity, const MeshElementIndex &highlight_element = {});
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);

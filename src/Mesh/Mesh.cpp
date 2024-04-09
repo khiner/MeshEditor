@@ -215,6 +215,20 @@ bool Mesh::RayIntersects(const Ray &local_ray) const {
     return Bvh->Intersect(local_ray, callback).has_value();
 }
 
+VH Mesh::FindNearestVertex(vec3 world_point) const {
+    VH closest_vertex;
+    float min_distance_sq = std::numeric_limits<float>::max();
+    for (const auto &vh : M.vertices()) {
+        const vec3 diff = GetPosition(vh) - world_point;
+        const float distance_sq = glm::dot(diff, diff);
+        if (distance_sq < min_distance_sq) {
+            min_distance_sq = distance_sq;
+            closest_vertex = vh;
+        }
+    }
+    return closest_vertex;
+}
+
 VH Mesh::FindNearestVertex(const Ray &local_ray) const {
     vec3 intersection_point;
     const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
@@ -276,32 +290,52 @@ std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
     return indices;
 }
 
-std::vector<Vertex3D> Mesh::CreateVertices(MeshElement element, ElementIndex highlight) const {
-    std::vector<Vertex3D> vertices;
-    if (element == MeshElement::Vertex) {
-        vertices.reserve(M.n_vertices());
-        for (const auto &vh : M.vertices()) {
-            const vec4 color = vh == highlight || VertexBelongsToFace(vh, highlight) || VertexBelongsToEdge(vh, highlight) ? HighlightColor : vec4{1};
-            vertices.emplace_back(GetPosition(vh), GetVertexNormal(vh), color);
-        }
-    } else if (element == MeshElement::Edge) {
-        vertices.reserve(M.n_edges() * 2);
+// Used as an intermediate for creating render vertices (`Vertex3D`).
+struct VerticesHandle {
+    Mesh::ElementIndex Parent; // A vertex can belong to itself, an edge, or a face.
+    std::vector<Mesh::VH> VHs;
+};
+
+std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const ElementIndex &highlight) const {
+    std::vector<VerticesHandle> handles;
+    if (render_element == MeshElement::Vertex) {
+        handles.reserve(M.n_vertices());
+        for (const auto &vh : M.vertices()) handles.emplace_back(vh, std::vector<VH>{vh});
+    } else if (render_element == MeshElement::Edge) {
+        handles.reserve(M.n_edges() * 2);
         for (const auto &eh : M.edges()) {
             const auto heh = M.halfedge_handle(eh, 0);
-            const auto vh0 = M.from_vertex_handle(heh), vh1 = M.to_vertex_handle(heh);
-            const vec4 color = eh == highlight || vh0 == highlight || vh1 == highlight || EdgeBelongsToFace(eh, highlight) ? HighlightColor : EdgeColor;
-            vertices.emplace_back(GetPosition(vh0), GetVertexNormal(vh0), color);
-            vertices.emplace_back(GetPosition(vh1), GetVertexNormal(vh1), color);
+            handles.emplace_back(eh, std::vector<VH>{M.from_vertex_handle(heh), M.to_vertex_handle(heh)});
         }
-    } else if (element == MeshElement::Face) {
-        vertices.reserve(M.n_faces() * 3); // Lower bound assuming all faces are triangles.
+    } else if (render_element == MeshElement::Face) {
+        handles.reserve(M.n_faces() * 3); // Lower bound assuming all faces are triangles.
         for (const auto &fh : M.faces()) {
-            const auto &fn = M.normal(fh);
-            const auto &fc = M.color(fh);
-            for (const auto &vh : M.fv_range(fh)) {
-                const vec4 color = vh == highlight || fh == highlight || VertexBelongsToFaceEdge(vh, fh, highlight) ? HighlightColor : ToGlm(fc);
-                vertices.emplace_back(GetPosition(vh), ToGlm(fn), color);
-            }
+            for (const auto &vh : M.fv_range(fh)) handles.emplace_back(fh, std::vector<VH>{vh});
+        }
+    }
+
+    // todo next up - modify colors based on highlights _after_ creating vertices, in one pass, instead of for each element.
+    //   just the single `highlight` first, then `AllHighlights`.
+    static std::vector<ElementIndex> AllHighlights;
+    AllHighlights.clear();
+    AllHighlights.insert(AllHighlights.end(), HighlightedElements.begin(), HighlightedElements.end());
+    AllHighlights.emplace_back(highlight);
+
+    std::vector<Vertex3D> vertices;
+    for (const auto &handle : handles) {
+        const auto &parent = handle.Parent;
+        const auto normal = ToGlm(render_element == MeshElement::Vertex || render_element == MeshElement::Edge ? M.normal(handle.VHs[0]) : M.normal(FH(handle.Parent)));
+        for (const auto vh : handle.VHs) {
+            const bool is_highlighted =
+                vh == highlight || parent == highlight ||
+                (render_element == MeshElement::Vertex && (VertexBelongsToFace(parent, highlight) || VertexBelongsToEdge(parent, highlight))) ||
+                (render_element == MeshElement::Edge && EdgeBelongsToFace(parent, highlight)) ||
+                (render_element == MeshElement::Face && VertexBelongsToFaceEdge(vh, parent, highlight));
+            const vec4 color = is_highlighted         ? HighlightColor :
+                render_element == MeshElement::Vertex ? VertexColor :
+                render_element == MeshElement::Edge   ? EdgeColor :
+                                                        ToGlm(M.color(FH(parent)));
+            vertices.emplace_back(GetPosition(vh), normal, color);
         }
     }
 

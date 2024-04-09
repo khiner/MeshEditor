@@ -63,6 +63,11 @@ struct Mesh {
     struct ElementIndex : MeshElementIndex {
         using MeshElementIndex::MeshElementIndex;
         ElementIndex(const MeshElementIndex &other) : MeshElementIndex(other) {}
+        ElementIndex(VH vh) : MeshElementIndex(MeshElement::Vertex, vh.idx()) {}
+        ElementIndex(EH eh) : MeshElementIndex(MeshElement::Edge, eh.idx()) {}
+        ElementIndex(FH fh) : MeshElementIndex(MeshElement::Face, fh.idx()) {}
+
+        bool operator==(ElementIndex other) const { return Element == other.Element && Index == other.Index; }
 
         bool operator==(VH vh) const { return Element == MeshElement::Vertex && Index == vh.idx(); }
         bool operator==(EH eh) const { return Element == MeshElement::Edge && Index == eh.idx(); }
@@ -75,7 +80,7 @@ struct Mesh {
     };
 
     inline static const vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
-    inline static vec4 EdgeColor{0, 0, 0, 1};
+    inline static vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
     inline static vec4 HighlightColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
     inline static vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Face Normal`.
     inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Vertex Normal`.
@@ -113,7 +118,7 @@ struct Mesh {
 
     float CalcFaceArea(FH) const;
 
-    std::vector<Vertex3D> CreateVertices(MeshElement, ElementIndex highlight = {}) const;
+    std::vector<Vertex3D> CreateVertices(MeshElement, const ElementIndex &highlight = {}) const;
     std::vector<uint> CreateIndices(MeshElement) const;
 
     std::vector<Vertex3D> CreateNormalVertices(MeshElement) const;
@@ -134,9 +139,10 @@ struct Mesh {
     //     }
     // }
 
-    void SetFaceColor(FH fh, vec4 face_color) { M.set_color(fh, ToOpenMesh(face_color)); }
-    void SetFaceColor(vec4 face_color) {
-        for (const auto &fh : M.faces()) SetFaceColor(fh, face_color);
+    void HighlightVertex(VH vh) { HighlightedElements.emplace_back(MeshElement::Vertex, vh.idx()); }
+    void SetFaceColor(FH fh, vec4 color) { M.set_color(fh, ToOpenMesh(color)); }
+    void SetFaceColor(vec4 color) {
+        for (const auto &fh : M.faces()) SetFaceColor(fh, color);
     }
 
     void AddFace(const std::vector<VH> &vertices, vec4 color = DefaultFaceColor) { SetFaceColor(M.add_face(vertices), color); }
@@ -177,4 +183,5 @@ struct Mesh {
 private:
     PolyMesh M;
     std::unique_ptr<BVH> Bvh;
+    std::vector<ElementIndex> HighlightedElements; // In addition to selection highlights (xxx should combine).
 };
