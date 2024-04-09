@@ -212,22 +212,23 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     const float fundamental_freq = mode_freqs.empty() ? 440.0f : mode_freqs.front();
 
     // Static code sections.
+    static const string to_sandh = " : ba.sAndH(gate);"; // Add a sample and hold on the gate, in serial, and end the expression.
     static const string
         gain = "gain = hslider(\"gain[scale:log]\",0.1,0,0.5,0.01);",
-        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Resonance duration (s) of the lowest mode.]\",16,0,50,0.01) : ba.sAndH(gate);",
-        t60_decay = "t60Decay = hslider(\"t60 Decay[scale:log][tooltip: Decay of modes as a function of their frequency, in t60 units.\nAt 1, the t60 of the highest mode will be close to 0 seconds.]\",0.80,0,1,0.01) : ba.sAndH(gate);",
-        t60_slope = "t60Slope = hslider(\"t60 Slope[scale:log][tooltip: Power of the function used to compute the decay of modes t60 in function of their frequency.\nAt 1, decay is linear. At 2, decay slope has degree 2, etc.]\",2.5,1,6,0.01) : ba.sAndH(gate);",
+        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Resonance duration (s) of the lowest mode.]\",16,0,50,0.01)" + to_sandh,
+        t60_decay = "t60Decay = hslider(\"t60 Decay[scale:log][tooltip: Decay of modes as a function of their frequency, in t60 units.\nAt 1, the t60 of the highest mode will be close to 0 seconds.]\",0.80,0,1,0.01)" + to_sandh,
+        t60_slope = "t60Slope = hslider(\"t60 Slope[scale:log][tooltip: Power of the function used to compute the decay of modes t60 in function of their frequency.\nAt 1, decay is linear. At 2, decay slope has degree 2, etc.]\",2.5,1,6,0.01)" + to_sandh,
         source = "source = vslider(\"Excitation source [style:radio {'Hammer':0;'Audio input':1 }]\",0,0,1,1);",
         gate = "gate = button(\"gate[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");",
-        hammer_hardness = "hammerHardness = hslider(\"hammerHardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01) : ba.sAndH(gate);",
-        hammer_size = "hammerSize = hslider(\"hammerSize[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01) : ba.sAndH(gate);",
+        hammer_hardness = "hammerHardness = hslider(\"hammerHardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
+        hammer_size = "hammerSize = hslider(\"hammerSize[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01)" + to_sandh,
         hammer = "hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; };";
 
     // Variable code sections.
     const uint num_excite_pos = excitable_vertex_indices.size();
     const string
-        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,8000,1) : ba.sAndH(gate);", fundamental_freq),
-        ex_pos = std::format("exPos = nentry(\"exPos\",{},0,{},1) : ba.sAndH(gate);", (num_excite_pos - 1) / 2, num_excite_pos - 1),
+        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,8000,1){}", fundamental_freq, to_sandh),
+        ex_pos = std::format("exPos = nentry(\"exPos\",{},0,{},1){}", (num_excite_pos - 1) / 2, num_excite_pos - 1, to_sandh),
         modal_model = std::format("{}({}exPos,t60Scale,t60Decay,t60Slope)", model_name, freq_control ? "freq," : ""),
         process = std::format("process = hammer(gate,hammerHardness,hammerSize),_ : select2(source) : {}*gain;", modal_model);
 
@@ -349,20 +350,13 @@ void SoundObject::RenderControls() {
         if (Button("Generate")) {
             // Ensure impact points on the tet mesh are the exact same as the surface mesh.
             // todo UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
+            // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
             TetGenOptions options = RealImpactData ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
             tetgenio tets = GenerateTets(ModalData->Mesh, options);
             std::vector<uint> excitable_vertices;
-            if (RealImpactData) {
-                // RealImpact meshes can only be struck at the impact points.
-
-                // todo We can't just use the original vertices since each vertex is duplicated for each triangle face,
-                //   and even when using `-Y` to preserve the survace points, tetgen will remove duplicate vertices.
-                // - find the vertex indices nearest to each impact point (using `vertexXYZ.npy`)
-                // - display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
-
+            if (RealImpactData) { // RealImpact meshes can only be struck at the impact points.
                 for (auto &[vertex, _] : RealImpactData->ImpactFramesByVertex) excitable_vertices.emplace_back(vertex);
-            } else {
-                // Linearly distribute the vertices across the tet mesh.
+            } else { // Linearly distribute the vertices across the tet mesh.
                 const uint num_excitable_vertices = 5; // todo UI input
                 excitable_vertices.reserve(num_excitable_vertices);
                 for (uint i = 0; i < num_excitable_vertices; ++i) {
