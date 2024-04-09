@@ -162,6 +162,7 @@ struct Scene {
 
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
     entt::entity GetParentEntity(entt::entity) const;
+    Mesh &GetMesh(entt::entity) const;
 
     entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true);
     entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true);
@@ -170,6 +171,7 @@ struct Scene {
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
 
+    mat4 GetModel(entt::entity) const;
     void SetModel(entt::entity, mat4 &&, bool submit = true);
 
     entt::entity AddInstance(entt::entity, mat4 &&transform = {1});

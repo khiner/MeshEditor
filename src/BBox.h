@@ -62,6 +62,7 @@ struct BBox {
     }
 
     vec3 Center() const { return (Min + Max) * 0.5f; }
+    float DiagonalLength() const { return glm::length(Max - Min); }
 
     static BBox UnionAll(std::span<const BBox> boxes) {
         return std::accumulate(boxes.begin(), boxes.end(), BBox{}, [](const auto &acc, const auto &box) {

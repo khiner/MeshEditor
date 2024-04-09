@@ -32,13 +32,12 @@ struct RealImpact {
         // Start at the end of the first sample, so it doesn't immediately play.
         // All RealImpact samples are the same length.
         if (!ImpactFramesByVertex.empty()) {
-            CurrentVertex = ImpactFramesByVertex.begin()->first;
             CurrentFrame = ImpactFramesByVertex.begin()->second.size();
         }
     }
 
     std::unordered_map<uint, std::vector<float>> ImpactFramesByVertex;
-    uint CurrentVertex{0}, CurrentFrame{0};
+    uint CurrentFrame{0};
 };
 
 struct Modal {
@@ -63,6 +62,7 @@ struct SoundObject : AudioSource {
     vec3 ListenerPosition;
     MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};
     std::vector<uint> ExcitableVertices;
+    uint CurrentVertex{0};
 
     std::optional<SoundObjectData::RealImpact> RealImpactData{};
     std::optional<SoundObjectData::Modal> ModalData{};

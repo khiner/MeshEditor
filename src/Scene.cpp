@@ -400,6 +400,8 @@ uint GetModelIndex(const entt::registry &r, entt::entity entity) {
     return 1 + std::distance(children.begin(), std::ranges::find(children, entity));
 }
 
+Mesh &Scene::GetMesh(entt::entity entity) const { return R.get<Mesh>(GetParentEntity(entity)); }
+
 entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit) {
     const auto entity = R.create();
 
@@ -519,6 +521,8 @@ void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
     UpdateModelBuffer(entity);
     if (submit) SubmitCommandBuffer();
 }
+
+mat4 Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
 
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity, const MeshElementIndex &highlight_element) {
     auto &mesh = R.get<Mesh>(mesh_entity);

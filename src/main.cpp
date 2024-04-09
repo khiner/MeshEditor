@@ -8,13 +8,14 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/quaternion.hpp>
 #include <nfd.h>
 
 #include "numeric/vec4.h"
 
 #include "Scene.h"
 #include "Window.h"
-#include "mesh/Mesh.h"
+#include "mesh/Arrow.h"
 #include "vulkan/VulkanContext.h"
 
 #include "audio/AudioSourcesPlayer.h"
@@ -162,7 +163,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     const auto mesh_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
     real_impact.MeshEntityId = uint(mesh_entity);
     // Vertex indices may have changed due to deduplication.
-    auto &mesh = R.get<Mesh>(mesh_entity);
+    auto &mesh = MainScene->GetMesh(mesh_entity);
     for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
         const auto &pos = real_impact.ImpactPositions[i];
         const auto vh = mesh.FindNearestVertex(pos);
@@ -171,8 +172,8 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     }
     MainScene->UpdateRenderBuffers(mesh_entity);
 
-    // 0 transform for `mic_entity` to make this root entity of mic instances invisible
-    const auto mic_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);
+    // 0 transform for `listener_point_entity` to make this root entity of mic instances invisible
+    const auto listener_point_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);
     static const mat4 I{1};
     static const auto scale = glm::scale(I, vec3{RealImpact::MicWidthMm, RealImpact::MicLengthMm, RealImpact::MicWidthMm} / 1000.f);
     static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
@@ -180,16 +181,77 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
         const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-        const auto listener_pos_entity = MainScene->AddInstance(mic_entity, glm::translate(I, pos) * rot * scale);
-        R.emplace<RealImpactListenerPoint>(listener_pos_entity, p);
+        R.emplace<RealImpactListenerPoint>(MainScene->AddInstance(listener_point_entity, glm::translate(I, pos) * rot * scale), p);
     }
-    // Store the RealImpact data on both the mesh and root mic entity.
+    // Store the RealImpact data on both the mesh and (root, invisible) listener point entity.
     R.emplace<RealImpact>(mesh_entity, real_impact);
-    R.emplace<RealImpact>(mic_entity, real_impact);
+    R.emplace<RealImpact>(listener_point_entity, real_impact);
     MainScene->RecordAndSubmitCommandBuffer();
 }
 
 using namespace ImGui;
+
+void RenderAudioControls() {
+    AudioSources.RenderControls();
+
+    entt::entity mesh_entity = entt::null;
+    const auto selected_entity = MainScene->GetSelectedEntity();
+    const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
+    if (listener_point) {
+        // Listener point selected. RealImpact lives on root (non-instance) listener point entity.
+        mesh_entity = entt::entity(R.get<RealImpact>(MainScene->GetParentEntity(selected_entity)).MeshEntityId);
+    } else if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {
+        // Audio mesh entity selected.
+        mesh_entity = entt::entity(real_impact->MeshEntityId);
+    } else {
+        // No audio mesh-related entity selected.
+        return;
+    }
+
+    SeparatorText("Audio model");
+    auto *sound_object = R.try_get<SoundObject>(mesh_entity);
+    if (!sound_object) {
+        if (!listener_point) return;
+        if (!Button("Set listener position")) return;
+
+        R.emplace<SoundObject>(mesh_entity, MainScene->GetMesh(mesh_entity), R.get<RealImpact>(mesh_entity), *listener_point);
+        sound_object = R.try_get<SoundObject>(mesh_entity);
+    }
+
+    // if (sound_object->GetListenerPosition == listener_point->getPosition()) {
+    //     if (Button("Change listener position")) { ... }
+    // }
+
+    static entt::entity CurrentVertexIndicatorEntity = entt::null;
+
+    const auto before_current_vertex = sound_object->CurrentVertex;
+    sound_object->RenderControls(); // May change the current vertex.
+    if (CurrentVertexIndicatorEntity == entt::null || sound_object->CurrentVertex != before_current_vertex) {
+        // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
+        const auto &mesh = MainScene->GetMesh(mesh_entity);
+        const mat4 mesh_model = MainScene->GetModel(mesh_entity);
+        const auto vh = Mesh::VH(sound_object->CurrentVertex);
+        const vec3 vertex_pos = {mesh_model * vec4{mesh.GetPosition(vh), 1}};
+        const vec3 normal = {mesh_model * vec4{mesh.GetVertexNormal(vh), 0}};
+    
+        const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
+        const mat4 scale = glm::scale({1}, vec3{scale_factor});
+        const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
+        const mat4 rotate = glm::mat4_cast(glm::rotation(MainScene->World.Up, normal));
+        mat4 indicator_model{translate * rotate * scale};
+        if (CurrentVertexIndicatorEntity == entt::null) {
+            auto vertex_indicator_mesh = Arrow();
+            vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
+            CurrentVertexIndicatorEntity = MainScene->AddMesh(std::move(vertex_indicator_mesh), std::move(indicator_model), true);
+        } else {
+            MainScene->SetModel(CurrentVertexIndicatorEntity, std::move(indicator_model), true);
+        }
+    }
+
+    if (Button("Remove audio model")) {
+        R.remove<SoundObject>(mesh_entity);
+    }
+}
 
 int main(int, char **) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
@@ -371,29 +433,7 @@ int main(int, char **) {
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio")) {
-                    AudioSources.RenderControls();
-
-                    const auto selected_entity = MainScene->GetSelectedEntity();
-                    if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity)) {
-                        const auto parent_entity = MainScene->GetParentEntity(selected_entity); // Root (non-instance) mic entity
-                        const auto &real_impact = R.get<RealImpact>(parent_entity);
-                        const auto mesh_entity = entt::entity(real_impact.MeshEntityId);
-                        if (auto *sound_object = R.try_get<SoundObject>(mesh_entity)) {
-                            SeparatorText("Audio model");
-                            // if (sound_object->GetListenerPosition == listener_point->getPosition()) {
-                            //     if (Button("Change listener position")) { ... }
-                            // }
-                            sound_object->RenderControls();
-                            if (Button("Remove audio model")) {
-                                R.remove<SoundObject>(mesh_entity);
-                            }
-                        } else {
-                            if (Button("Set listener position")) {
-                                R.emplace<SoundObject>(mesh_entity, R.get<Mesh>(mesh_entity), R.get<RealImpact>(mesh_entity), *listener_point);
-                            }
-                        }
-                    }
-                    // else if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {}
+                    RenderAudioControls();
                     EndTabItem();
                 }
                 EndTabBar();
