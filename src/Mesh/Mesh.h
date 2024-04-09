@@ -160,8 +160,10 @@ struct Mesh {
 
     bool RayIntersects(const Ray &local_ray) const; // Intersects any face.
 
+    VH FindNearestVertex(vec3 world_point) const;
     // Returns a handle to the vertex nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     VH FindNearestVertex(const Ray &local_ray) const;
+
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     EH FindNearestEdge(const Ray &world_ray) const;
     // Returns a handle to the first face that intersects the world-space ray, or -1 if no face intersects.

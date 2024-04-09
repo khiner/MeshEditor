@@ -92,7 +92,7 @@ std::optional<std::string> FindObjectNameInAncestors(const fs::path &start_path)
     return {};
 }
 
-RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPath(directory / "transformed.obj") {
+RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPath(Directory / "transformed.obj") {
     if (const auto object_name = FindObjectNameInAncestors(Directory)) {
         if (const auto it = MaterialNameForObjName.find(*object_name); it != MaterialNameForObjName.end()) {
             MaterialName = it->second;
@@ -100,6 +100,11 @@ RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPat
     }
     const auto vertex_ids = npy::read_npy<long>(Directory / "vertexID.npy").data;
     for (uint i = 0; i < NumImpactVertices; ++i) VertexIndices[i] = vertex_ids[i * NumListenerPoints];
+    const auto vertex_xyzs = npy::read_npy<double>(Directory / "vertexXYZ.npy").data;
+    for (uint i = 0; i < NumImpactVertices; ++i) {
+        const size_t vi = i * 3 * NumListenerPoints;
+        ImpactPositions[i] = {vertex_xyzs[vi], vertex_xyzs[vi + 1], vertex_xyzs[vi + 2]};
+    }
 }
 
 std::vector<RealImpactListenerPoint> RealImpact::LoadListenerPoints() const {

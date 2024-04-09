@@ -162,6 +162,15 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     swap[2][2] = 0;
     const auto mesh_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
     real_impact.MeshEntityId = uint(mesh_entity);
+    // Vertex indices may have changed due to deduplication.
+    auto &mesh = R.get<Mesh>(mesh_entity);
+    for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
+        const auto &pos = real_impact.ImpactPositions[i];
+        const auto vh = mesh.FindNearestVertex(pos);
+        real_impact.VertexIndices[i] = uint(vh.idx());
+        mesh.HighlightVertex(vh);
+    }
+    MainScene->UpdateRenderBuffers(mesh_entity);
 
     // 0 transform for `mic_entity` to make this root entity of mic instances invisible
     const auto mic_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);

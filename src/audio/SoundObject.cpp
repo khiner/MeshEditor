@@ -357,12 +357,10 @@ void SoundObject::RenderControls() {
 
                 // todo We can't just use the original vertices since each vertex is duplicated for each triangle face,
                 //   and even when using `-Y` to preserve the survace points, tetgen will remove duplicate vertices.
-                // - simplify the RealImpact mesh to remove duplicate vertices
-                //   - also provide options to simplify further
                 // - find the vertex indices nearest to each impact point (using `vertexXYZ.npy`)
                 // - display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
-                // for (auto &[vertex, _] : RealImpactData->ImpactFramesByVertex) excitable_vertices.emplace_back(vertex);
-                excitable_vertices = {0, 1};
+
+                for (auto &[vertex, _] : RealImpactData->ImpactFramesByVertex) excitable_vertices.emplace_back(vertex);
             } else {
                 // Linearly distribute the vertices across the tet mesh.
                 const uint num_excitable_vertices = 5; // todo UI input
