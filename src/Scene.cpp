@@ -747,19 +747,22 @@ bool Scene::Render() {
                     SubmitCommandBuffer();
                 }
             } else if (SelectionMode == SelectionMode::Object && (GetIO().KeyCtrl || GetIO().KeySuper)) {
-                static std::set<entt::entity> hovered_entities{};
-                hovered_entities.clear();
+                static std::multimap<float, entt::entity> hovered_entities_by_distance;
+                hovered_entities_by_distance.clear();
                 R.view<Model>().each([this, &mouse_world_ray](auto entity, const auto &model) {
                     const auto &mesh = R.get<Mesh>(GetParentEntity(entity));
                     const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
-                    if (mesh.RayIntersects(mouse_ray)) hovered_entities.emplace(entity);
+                    if (auto intersect_distance = mesh.Intersect(mouse_ray)) hovered_entities_by_distance.emplace(*intersect_distance, entity);
                 });
+
+                std::vector<entt::entity> sorted_hovered_entities;
+                for (const auto &[distance, entity] : hovered_entities_by_distance) sorted_hovered_entities.emplace_back(entity);
                 const auto before_selected_entity = SelectedEntity;
-                if (!hovered_entities.empty()) {
+                if (!sorted_hovered_entities.empty()) {
                     // Cycle through hovered entities.
-                    auto it = hovered_entities.find(SelectedEntity);
-                    if (it != hovered_entities.end()) ++it;
-                    if (it == hovered_entities.end()) it = hovered_entities.begin();
+                    auto it = std::ranges::find(sorted_hovered_entities, SelectedEntity);
+                    if (it != sorted_hovered_entities.end()) ++it;
+                    if (it == sorted_hovered_entities.end()) it = sorted_hovered_entities.begin();
                     SelectEntity(*it);
                 } else {
                     SelectEntity(entt::null);

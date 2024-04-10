@@ -211,6 +211,16 @@ FH Mesh::FindNearestIntersectingFace(const Ray &local_ray, vec3 *nearest_interse
     return nearest_face;
 }
 
+std::optional<float> Mesh::Intersect(const Ray &local_ray) const {
+    float distance = 0, min_distance = std::numeric_limits<float>::max();
+    Bvh->Intersect(local_ray, [&](uint fi) {
+        if (RayIntersectsFace(local_ray, FH{int(fi)}, &distance) && distance < min_distance) {
+            min_distance = distance;
+        }
+        return false; // We want the nearest intersection, not just any intersection.
+    });
+    return min_distance < std::numeric_limits<float>::max() ? std::make_optional(min_distance) : std::nullopt;
+}
 bool Mesh::RayIntersects(const Ray &local_ray) const {
     auto callback = [this, &local_ray](uint fi) { return RayIntersectsFace(local_ray, FH{int(fi)}); };
     return Bvh->Intersect(local_ray, callback).has_value();

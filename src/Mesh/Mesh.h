@@ -164,6 +164,8 @@ struct Mesh {
 
     bool RayIntersectsFace(const Ray &, FH, float *distance_out = nullptr, vec3 *intersect_point_out = nullptr) const;
 
+    // Returns the intersection distance of the ray with the mesh, or `std::nullopt` if there is no intersection.
+    std::optional<float> Intersect(const Ray &local_ray) const;
     bool RayIntersects(const Ray &local_ray) const; // Intersects any face.
 
     VH FindNearestVertex(vec3 world_point) const;
