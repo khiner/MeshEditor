@@ -16,6 +16,7 @@
 #include "Scene.h"
 #include "Window.h"
 #include "mesh/Arrow.h"
+#include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
 #include "audio/AudioSourcesPlayer.h"
@@ -172,16 +173,16 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     }
     MainScene->UpdateRenderBuffers(mesh_entity);
 
-    // 0 transform for `listener_point_entity` to make this root entity of mic instances invisible
-    const auto listener_point_entity = MainScene->AddPrimitive(Primitive::Cylinder, {0}, false);
+    // 0 transform to make this root entity of listener points instances invisible
+    auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
+    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {0}, false);
     static const mat4 I{1};
-    static const auto scale = glm::scale(I, vec3{RealImpact::MicWidthMm, RealImpact::MicLengthMm, RealImpact::MicWidthMm} / 1000.f);
     static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
         const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-        R.emplace<RealImpactListenerPoint>(MainScene->AddInstance(listener_point_entity, glm::translate(I, pos) * rot * scale), p);
+        R.emplace<RealImpactListenerPoint>(MainScene->AddInstance(listener_point_entity, glm::translate(I, pos) * rot), p);
     }
     // Store the RealImpact data on both the mesh and (root, invisible) listener point entity.
     R.emplace<RealImpact>(mesh_entity, real_impact);
