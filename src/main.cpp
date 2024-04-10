@@ -233,7 +233,7 @@ void RenderAudioControls() {
         const auto vh = Mesh::VH(sound_object->CurrentVertex);
         const vec3 vertex_pos = {mesh_model * vec4{mesh.GetPosition(vh), 1}};
         const vec3 normal = {mesh_model * vec4{mesh.GetVertexNormal(vh), 0}};
-    
+
         const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
         const mat4 scale = glm::scale({1}, vec3{scale_factor});
         const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
@@ -242,7 +242,7 @@ void RenderAudioControls() {
         if (CurrentVertexIndicatorEntity == entt::null) {
             auto vertex_indicator_mesh = Arrow();
             vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
-            CurrentVertexIndicatorEntity = MainScene->AddMesh(std::move(vertex_indicator_mesh), std::move(indicator_model), true);
+            CurrentVertexIndicatorEntity = MainScene->AddMesh(std::move(vertex_indicator_mesh), std::move(indicator_model), true, false);
         } else {
             MainScene->SetModel(CurrentVertexIndicatorEntity, std::move(indicator_model), true);
         }

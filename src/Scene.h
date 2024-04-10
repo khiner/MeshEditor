@@ -164,9 +164,9 @@ struct Scene {
     entt::entity GetParentEntity(entt::entity) const;
     Mesh &GetMesh(entt::entity) const;
 
-    entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true);
-    entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true);
-    entt::entity AddPrimitive(Primitive, const mat4 &transform = {1}, bool submit = true);
+    entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true, bool select = true);
+    entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true, bool select = true);
+    entt::entity AddPrimitive(Primitive, const mat4 &transform = {1}, bool submit = true, bool select = true);
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();

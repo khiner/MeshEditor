@@ -402,7 +402,7 @@ uint GetModelIndex(const entt::registry &r, entt::entity entity) {
 
 Mesh &Scene::GetMesh(entt::entity entity) const { return R.get<Mesh>(GetParentEntity(entity)); }
 
-entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit) {
+entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, bool select) {
     const auto entity = R.create();
 
     MeshBuffers mesh_buffers{};
@@ -425,16 +425,17 @@ entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit) {
     R.emplace<Mesh>(entity, std::move(mesh));
     R.emplace<Model>(entity, std::move(model));
 
-    SelectEntity(entity);
-
+    if (select) SelectEntity(entity);
     if (submit) RecordAndSubmitCommandBuffer();
 
     return entity;
 }
-entt::entity Scene::AddMesh(const fs::path &file_path, const mat4 &transform, bool submit) { return AddMesh(Mesh{file_path}, transform, submit); }
+entt::entity Scene::AddMesh(const fs::path &file_path, const mat4 &transform, bool submit, bool select) {
+    return AddMesh(Mesh{file_path}, transform, submit, select);
+}
 
-entt::entity Scene::AddPrimitive(Primitive primitive, const mat4 &transform, bool submit) {
-    auto entity = AddMesh(CreateDefaultPrimitive(primitive), transform, submit);
+entt::entity Scene::AddPrimitive(Primitive primitive, const mat4 &transform, bool submit, bool select) {
+    auto entity = AddMesh(CreateDefaultPrimitive(primitive), transform, submit, select);
     R.emplace<Primitive>(entity, primitive);
     return entity;
 }
