@@ -162,30 +162,30 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     swap[1][2] = 1;
     swap[2][1] = 1;
     swap[2][2] = 0;
-    const auto mesh_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
-    real_impact.MeshEntityId = uint(mesh_entity);
+    const auto object_entity = MainScene->AddMesh(real_impact.ObjPath, std::move(swap), false);
+    real_impact.ObjectEntityId = uint(object_entity);
     // Vertex indices may have changed due to deduplication.
-    auto &mesh = MainScene->GetMesh(mesh_entity);
+    auto &object_mesh = R.get<Mesh>(object_entity);
     for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
         const auto &pos = real_impact.ImpactPositions[i];
-        const auto vh = mesh.FindNearestVertex(pos);
+        const auto vh = object_mesh.FindNearestVertex(pos);
         real_impact.VertexIndices[i] = uint(vh.idx());
-        mesh.HighlightVertex(vh);
+        object_mesh.HighlightVertex(vh);
     }
-    MainScene->UpdateRenderBuffers(mesh_entity);
+    MainScene->UpdateRenderBuffers(object_entity);
 
     static const mat4 I{1};
     auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
     const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), I, false, false, false);
     static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
-    // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
+    // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer separately for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
         const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
         R.emplace<RealImpactListenerPoint>(MainScene->AddInstance(listener_point_entity, glm::translate(I, pos) * rot), p);
     }
-    // Store the RealImpact data on both the mesh and (root, invisible) listener point entity.
-    R.emplace<RealImpact>(mesh_entity, real_impact);
+    // Store the RealImpact data on both the object and (invisible instance-parent) listener point entity.
+    R.emplace<RealImpact>(object_entity, real_impact);
     R.emplace<RealImpact>(listener_point_entity, real_impact);
     MainScene->RecordAndSubmitCommandBuffer();
 }
@@ -199,31 +199,35 @@ void RenderAudioControls() {
     AudioSources.RenderControls();
 
     const auto selected_entity = MainScene->GetSelectedEntity();
-    const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
-    // If listener point is selected, RealImpact lives on root (non-instance) listener point entity.
-    // Otherwise, it's on the selected entity if an audio mesh entity selected.
-    RealImpact *real_impact = listener_point ? &R.get<RealImpact>(MainScene->GetParentEntity(selected_entity)) : R.try_get<RealImpact>(selected_entity);
+    if (selected_entity == entt::null) return;
+
+    const auto parent_entity = MainScene->GetParentEntity(selected_entity);
+    const auto *real_impact = R.try_get<RealImpact>(parent_entity);
     if (real_impact == nullptr) return;
 
-    const entt::entity mesh_entity = entt::entity(real_impact->MeshEntityId);
-    const auto &mesh = MainScene->GetMesh(mesh_entity);
-    auto *tets = R.try_get<Tets>(mesh_entity);
-    if (tets == nullptr && Button("Generate tet mesh")) {
+    const auto object_entity = entt::entity(real_impact->ObjectEntityId);
+    const auto &object_mesh = R.get<Mesh>(object_entity);
+    auto *tets = R.try_get<Tets>(object_entity);
+    if (tets == nullptr) { // todo conditionally show "Regenerate tet mesh"
+        if (!Button("Generate tet mesh")) return;
         // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
-        // todo UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
+        // todo quality toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
         // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
         const bool is_real_impact = true; // todo support modal models on arbitrary meshes.
         auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
-        tets = &R.emplace<Tets>(mesh_entity, GenerateTets(mesh, options));
+        tets = &R.emplace<Tets>(object_entity, GenerateTets(object_mesh, options));
+        // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
+        tets->MeshEntity = uint(MainScene->AddMesh(tets->GenerateMesh(), MainScene->GetModel(object_entity), false, false, false));
+        return;
     }
-    if (tets == nullptr) return;
 
-    auto *sound_object = R.try_get<SoundObject>(mesh_entity);
+    auto *sound_object = R.try_get<SoundObject>(object_entity);
     if (!sound_object) {
+        const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
         if (!listener_point) return;
         if (!Button("Set listener position")) return;
 
-        sound_object = &R.emplace<SoundObject>(mesh_entity, *tets, R.get<RealImpact>(mesh_entity), *listener_point);
+        sound_object = &R.emplace<SoundObject>(object_entity, uint(object_entity), *tets, *real_impact, *listener_point);
     }
 
     SeparatorText("Audio model");
@@ -238,12 +242,12 @@ void RenderAudioControls() {
     sound_object->RenderControls(); // May change the current vertex.
     if (CurrentVertexIndicatorEntity == entt::null || sound_object->CurrentVertex != before_current_vertex) {
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
-        const mat4 mesh_model = MainScene->GetModel(mesh_entity);
+        const mat4 mesh_model = MainScene->GetModel(object_entity);
         const auto vh = Mesh::VH(sound_object->CurrentVertex);
-        const vec3 vertex_pos = {mesh_model * vec4{mesh.GetPosition(vh), 1}};
-        const vec3 normal = {mesh_model * vec4{mesh.GetVertexNormal(vh), 0}};
+        const vec3 vertex_pos = {mesh_model * vec4{object_mesh.GetPosition(vh), 1}};
+        const vec3 normal = {mesh_model * vec4{object_mesh.GetVertexNormal(vh), 0}};
 
-        const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
+        const float scale_factor = 0.1f * object_mesh.BoundingBox.DiagonalLength();
         const mat4 scale = glm::scale({1}, vec3{scale_factor});
         const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
         const mat4 rotate = glm::mat4_cast(glm::rotation(MainScene->World.Up, normal));
@@ -258,7 +262,7 @@ void RenderAudioControls() {
     }
 
     if (Button("Remove audio model")) {
-        R.remove<SoundObject>(mesh_entity);
+        R.remove<SoundObject>(object_entity);
     }
 }
 

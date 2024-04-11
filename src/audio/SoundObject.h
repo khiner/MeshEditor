@@ -41,10 +41,9 @@ struct RealImpact {
 };
 
 struct Modal {
-    Modal(const Tets &);
+    Modal();
     ~Modal();
 
-    const Tets &Tets;
     std::unique_ptr<FaustDSP> FaustDsp;
 };
 } // namespace SoundObjectData
@@ -53,12 +52,14 @@ struct Modal {
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
     // Modal only
-    SoundObject(const Tets &, vec3 listener_position);
+    SoundObject(uint surface_mesh_entity, const Tets &, vec3 listener_position);
     // RealImpact and Modal
-    SoundObject(const Tets &, const RealImpact &, const RealImpactListenerPoint &);
+    SoundObject(uint surface_mesh_entity, const Tets &, const RealImpact &, const RealImpactListenerPoint &);
 
     ~SoundObject();
 
+    uint SurfaceMeshEntity;
+    const Tets &Tets; // Also holds the tet mesh entity ID
     vec3 ListenerPosition;
     MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};
     std::vector<uint> ExcitableVertices;
