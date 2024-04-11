@@ -41,10 +41,9 @@ struct RealImpact {
 };
 
 struct Modal {
-    Modal(const Tets &);
+    Modal();
     ~Modal();
 
-    const Tets &Tets;
     std::unique_ptr<FaustDSP> FaustDsp;
 };
 } // namespace SoundObjectData
@@ -59,6 +58,7 @@ struct SoundObject : AudioSource {
 
     ~SoundObject();
 
+    const Tets &Tets;
     vec3 ListenerPosition;
     MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};
     std::vector<uint> ExcitableVertices;

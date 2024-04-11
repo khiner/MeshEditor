@@ -60,7 +60,7 @@ struct RealImpact {
     vec3 ImpactPositions[NumImpactVertices]; // World positions of the impact points
     std::optional<std::string> MaterialName;
 
-    uint MeshEntityId; // ID of the mesh entity in the scene
+    uint ObjectEntityId; // ID of the mesh entity in the scene
 
     RealImpact(const fs::path &directory);
 

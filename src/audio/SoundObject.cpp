@@ -116,7 +116,7 @@ private:
     }
 };
 
-SoundObjectData::Modal::Modal(const ::Tets &tets) : Tets(tets), FaustDsp(std::make_unique<FaustDSP>()) {}
+SoundObjectData::Modal::Modal() : FaustDsp(std::make_unique<FaustDSP>()) {}
 SoundObjectData::Modal::~Modal() = default;
 
 // Worker DspGenerator{"Generate DSP code", "Generating DSP code..."};
@@ -131,7 +131,7 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
         int a = result_indices[tri_i], b = result_indices[tri_i + 1], c = result_indices[tri_i + 2], d = result_indices[tri_i + 3];
         tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
     }
-    // Convert the tetrahedral mesh into a VegaFEM Tets.
+    // Convert the tetrahedral mesh into a VegaFEM TetMesh.
     TetMesh volumetric_mesh{
         tets.numberofpoints, tets.pointlist, tets.numberoftetrahedra * 3, tet_indices.data(),
         material.YoungModulus, material.PoissonRatio, material.Density
@@ -209,12 +209,12 @@ MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
 }
 
 SoundObject::SoundObject(const ::Tets &tets, vec3 listener_position)
-    : ListenerPosition(listener_position), ModalData(tets) {}
+    : Tets(tets), ListenerPosition(listener_position), ModalData(std::in_place) {}
 
 SoundObject::SoundObject(const ::Tets &tets, const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
-    : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
+    : Tets(tets), ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
       CurrentVertex(real_impact.VertexIndices[0]),
-      RealImpactData({listener_point.LoadImpactSamples(real_impact)}), ModalData(tets) {
+      RealImpactData({listener_point.LoadImpactSamples(real_impact)}), ModalData(std::in_place) {
     for (auto vertex : real_impact.VertexIndices) ExcitableVertices.emplace_back(vertex);
 }
 
@@ -304,11 +304,11 @@ void SoundObject::RenderControls() {
                 const uint num_excitable_vertices = 5; // todo UI input
                 ExcitableVertices.reserve(num_excitable_vertices);
                 for (uint i = 0; i < num_excitable_vertices; ++i) {
-                    ExcitableVertices.emplace_back(i * (*ModalData->Tets).numberofpoints / num_excitable_vertices);
+                    ExcitableVertices.emplace_back(i * (*Tets).numberofpoints / num_excitable_vertices);
                 }
             }
             const bool freq_control = true;
-            ModalData->FaustDsp->SetCode(GenerateDsp(*ModalData->Tets, Material, ExcitableVertices, freq_control));
+            ModalData->FaustDsp->SetCode(GenerateDsp(*Tets, Material, ExcitableVertices, freq_control));
         }
         if (ModalData->FaustDsp->Ui) ModalData->FaustDsp->Ui->Draw();
     }
