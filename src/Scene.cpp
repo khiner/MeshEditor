@@ -476,7 +476,7 @@ entt::entity Scene::AddPrimitive(Primitive primitive, const mat4 &transform, boo
 }
 
 void Scene::ClearMeshes() {
-    for (auto entity : R.view<Mesh>()) DestroyEntity(entity);
+    for (auto entity : R.view<Mesh>()) DestroyEntity(entity, false);
     RecordAndSubmitCommandBuffer();
 }
 
@@ -510,26 +510,31 @@ entt::entity Scene::AddInstance(entt::entity parent, mat4 &&transform, bool visi
     return entity;
 }
 
-void Scene::DestroyEntity(entt::entity entity) {
+void Scene::DestroyEntity(entt::entity entity, bool submit) {
     if (entity == SelectedEntity) SelectEntity(entt::null);
-    if (const auto mesh_entity = GetParentEntity(entity); mesh_entity != entity) return DestroyInstance(entity);
+    if (const auto mesh_entity = GetParentEntity(entity); mesh_entity != entity) return DestroyInstance(entity, submit);
 
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
     MeshVkData->Models.erase(entity);
     MeshVkData->Boxes.erase(entity);
-    const auto &node = R.get<SceneNode>(entity);
-    for (const auto child : node.children) R.destroy(child);
 
+    const auto &node = R.get<SceneNode>(entity);
+    for (const auto child : node.children) {
+        if (child == SelectedEntity) SelectEntity(entt::null);
+        R.destroy(child);
+    }
     R.destroy(entity);
+    if (submit) RecordAndSubmitCommandBuffer();
 }
 
-void Scene::DestroyInstance(entt::entity instance) {
+void Scene::DestroyInstance(entt::entity instance, bool submit) {
     if (instance == SelectedEntity) SelectEntity(entt::null);
 
     SetVisible(instance, false);
     std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).parent).children, instance);
     R.destroy(instance);
+    if (submit) RecordAndSubmitCommandBuffer();
 }
 
 entt::entity Scene::GetParentEntity(entt::entity entity) const {
@@ -758,7 +763,6 @@ bool Scene::Render() {
         }
         if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
             DestroyEntity(SelectedEntity);
-            RecordAndSubmitCommandBuffer();
         }
 
         // Handle mouse input.
@@ -1018,6 +1022,19 @@ void Scene::RenderConfig() {
                     R.emplace<Primitive>(AddMesh(std::move(*mesh)), Primitive(current_primitive_edit));
                 }
                 PopID();
+            }
+
+            if (CollapsingHeader("All objects")) {
+                for (auto entity : R.view<SceneNode>()) {
+                    const auto &node = R.get<SceneNode>(entity);
+                    if (node.parent == entt::null) {
+                        if (TreeNodeEx(&node, ImGuiTreeNodeFlags_DefaultOpen, "0x%08x", uint(entity))) {
+                            if (Button("Select")) SelectEntity(entity, true);
+                            if (Button("Delete")) DestroyEntity(entity);
+                            TreePop();
+                        }
+                    }
+                }
             }
             EndTabItem();
         }

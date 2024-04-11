@@ -175,8 +175,8 @@ struct Scene {
     void SetVisible(entt::entity, bool);
 
     entt::entity AddInstance(entt::entity, mat4 &&transform = {1}, bool visible = true);
-    void DestroyInstance(entt::entity);
-    void DestroyEntity(entt::entity);
+    void DestroyInstance(entt::entity, bool submit = true);
+    void DestroyEntity(entt::entity, bool submit = true);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
