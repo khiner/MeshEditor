@@ -19,8 +19,8 @@ using Sample = float;
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
 #include "RealImpact.h"
+#include "Tets.h"
 #include "Worker.h"
-#include "mesh/Mesh.h"
 
 using std::string, std::string_view;
 
@@ -116,60 +116,10 @@ private:
     }
 };
 
-SoundObjectData::Modal::Modal(const ::Mesh &mesh) : Mesh(mesh), FaustDsp(std::make_unique<FaustDSP>()) {}
+SoundObjectData::Modal::Modal(const ::Tets &tets) : Tets(tets), FaustDsp(std::make_unique<FaustDSP>()) {}
 SoundObjectData::Modal::~Modal() = default;
 
 // Worker DspGenerator{"Generate DSP code", "Generating DSP code..."};
-// Worker TetGenerator{"Generate tet mesh", "Generating tetrahedral mesh...", [&] { GenerateTets(); }};
-std::unique_ptr<tetgenio> TetGenResult;
-
-// See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
-struct TetGenOptions {
-    // (-Y) Input boundary edges and faces of the PLC are preserved in the generated tetrahedral mesh.
-    // Steiner points appear only in the interior space of the PLC.
-    bool PreserveSurface{false};
-    // (-q) Adds new points to improve the mesh quality.
-    bool Quality{false};
-
-    string CreateFlags() const {
-        return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : "");
-    }
-};
-
-tetgenio GenerateTets(const Mesh &mesh, TetGenOptions options) {
-    static const int TriVerts = 3;
-    tetgenio in;
-    const float *vertices = mesh.GetPositionData();
-    const auto triangle_indices = mesh.CreateTriangleIndices();
-    in.numberofpoints = mesh.GetVertexCount();
-    in.pointlist = new REAL[in.numberofpoints * TriVerts];
-    for (uint i = 0; i < uint(in.numberofpoints); ++i) {
-        in.pointlist[i * TriVerts] = vertices[i * TriVerts];
-        in.pointlist[i * TriVerts + 1] = vertices[i * TriVerts + 1];
-        in.pointlist[i * TriVerts + 2] = vertices[i * TriVerts + 2];
-    }
-    in.numberoffacets = triangle_indices.size() / TriVerts;
-    in.facetlist = new tetgenio::facet[in.numberoffacets];
-
-    for (uint i = 0; i < uint(in.numberoffacets); ++i) {
-        auto &f = in.facetlist[i];
-        tetgenio::init(&f);
-        f.numberofpolygons = 1;
-        f.polygonlist = new tetgenio::polygon[f.numberofpolygons];
-        f.polygonlist[0].numberofvertices = TriVerts;
-        f.polygonlist[0].vertexlist = new int[TriVerts];
-        for (int j = 0; j < TriVerts; ++j) {
-            f.polygonlist[0].vertexlist[j] = triangle_indices[i * TriVerts + j];
-        }
-    }
-
-    tetgenio result;
-    const string flags_str = options.CreateFlags();
-    const char *flags = flags_str.c_str();
-    tetrahedralize(const_cast<char *>(flags), &in, &result);
-
-    return result;
-}
 
 string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false) {
     std::vector<int> tet_indices;
@@ -258,13 +208,13 @@ MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
     return MaterialPresets.at(DefaultMaterialPresetName);
 }
 
-SoundObject::SoundObject(const ::Mesh &mesh, vec3 listener_position)
-    : ListenerPosition(listener_position), ModalData(mesh) {}
+SoundObject::SoundObject(const ::Tets &tets, vec3 listener_position)
+    : ListenerPosition(listener_position), ModalData(tets) {}
 
-SoundObject::SoundObject(const Mesh &mesh, const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
+SoundObject::SoundObject(const ::Tets &tets, const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
     : ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
       CurrentVertex(real_impact.VertexIndices[0]),
-      RealImpactData({listener_point.LoadImpactSamples(real_impact)}), ModalData(mesh) {
+      RealImpactData({listener_point.LoadImpactSamples(real_impact)}), ModalData(tets) {
     for (auto vertex : real_impact.VertexIndices) ExcitableVertices.emplace_back(vertex);
 }
 
@@ -346,12 +296,7 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping alpha", &Material.Alpha, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
-        if (Button("Generate")) {
-            // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
-            // todo UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
-            // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
-            TetGenOptions options = RealImpactData ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
-            tetgenio tets = GenerateTets(ModalData->Mesh, options);
+        if (Button("Generate DSP")) {
             if (!RealImpactData) {
                 // RealImpact meshes can only be struck at the impact points.
                 // Otherwise, linearly distribute the vertices across the tet mesh.
@@ -359,14 +304,12 @@ void SoundObject::RenderControls() {
                 const uint num_excitable_vertices = 5; // todo UI input
                 ExcitableVertices.reserve(num_excitable_vertices);
                 for (uint i = 0; i < num_excitable_vertices; ++i) {
-                    ExcitableVertices.emplace_back(i * tets.numberofpoints / num_excitable_vertices);
+                    ExcitableVertices.emplace_back(i * (*ModalData->Tets).numberofpoints / num_excitable_vertices);
                 }
             }
             const bool freq_control = true;
-            ModalData->FaustDsp->SetCode(GenerateDsp(tets, Material, ExcitableVertices, freq_control));
+            ModalData->FaustDsp->SetCode(GenerateDsp(*ModalData->Tets, Material, ExcitableVertices, freq_control));
         }
-        if (ModalData->FaustDsp->Ui) {
-            ModalData->FaustDsp->Ui->Draw();
-        }
+        if (ModalData->FaustDsp->Ui) ModalData->FaustDsp->Ui->Draw();
     }
 }

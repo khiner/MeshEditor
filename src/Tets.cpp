@@ -1,0 +1,47 @@
+#include "Tets.h"
+
+#include <format>
+
+#include "tetgen.h"
+
+#include "mesh/Mesh.h"
+
+std::string TetGenOptions::CreateFlags() const { return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : ""); }
+
+Tets::Tets(std::unique_ptr<tetgenio> tet_gen) : TetGen(std::move(tet_gen)) {}
+Tets::Tets(Tets &&other) = default;
+Tets::~Tets() = default;
+
+Tets GenerateTets(const Mesh &mesh, TetGenOptions options) {
+    static const int TriVerts = 3;
+    tetgenio in;
+    const float *vertices = mesh.GetPositionData();
+    const auto triangle_indices = mesh.CreateTriangleIndices();
+    in.numberofpoints = mesh.GetVertexCount();
+    in.pointlist = new REAL[in.numberofpoints * TriVerts];
+    for (uint i = 0; i < uint(in.numberofpoints); ++i) {
+        in.pointlist[i * TriVerts] = vertices[i * TriVerts];
+        in.pointlist[i * TriVerts + 1] = vertices[i * TriVerts + 1];
+        in.pointlist[i * TriVerts + 2] = vertices[i * TriVerts + 2];
+    }
+    in.numberoffacets = triangle_indices.size() / TriVerts;
+    in.facetlist = new tetgenio::facet[in.numberoffacets];
+
+    for (uint i = 0; i < uint(in.numberoffacets); ++i) {
+        auto &f = in.facetlist[i];
+        tetgenio::init(&f);
+        f.numberofpolygons = 1;
+        f.polygonlist = new tetgenio::polygon[f.numberofpolygons];
+        f.polygonlist[0].numberofvertices = TriVerts;
+        f.polygonlist[0].vertexlist = new int[TriVerts];
+        for (int j = 0; j < TriVerts; ++j) {
+            f.polygonlist[0].vertexlist[j] = triangle_indices[i * TriVerts + j];
+        }
+    }
+
+    auto result = std::make_unique<tetgenio>();
+    const std::string flags_str = options.CreateFlags();
+    const char *flags = flags_str.c_str();
+    tetrahedralize(const_cast<char *>(flags), &in, result.get());
+    return {std::move(result)};
+}

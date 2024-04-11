@@ -21,8 +21,8 @@ enum class SoundObjectModel {
 
 struct RealImpact;
 struct RealImpactListenerPoint;
-struct Mesh;
 struct FaustDSP;
+struct Tets;
 
 // All model-specific data needed to render audio.
 namespace SoundObjectData {
@@ -41,10 +41,10 @@ struct RealImpact {
 };
 
 struct Modal {
-    Modal(const Mesh &);
+    Modal(const Tets &);
     ~Modal();
 
-    const Mesh &Mesh;
+    const Tets &Tets;
     std::unique_ptr<FaustDSP> FaustDsp;
 };
 } // namespace SoundObjectData
@@ -53,9 +53,9 @@ struct Modal {
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
     // Modal only
-    SoundObject(const Mesh &, vec3 listener_position);
+    SoundObject(const Tets &, vec3 listener_position);
     // RealImpact and Modal
-    SoundObject(const Mesh &, const RealImpact &, const RealImpactListenerPoint &);
+    SoundObject(const Tets &, const RealImpact &, const RealImpactListenerPoint &);
 
     ~SoundObject();
 

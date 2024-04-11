@@ -23,6 +23,8 @@
 #include "audio/RealImpact.h"
 #include "audio/SoundObject.h"
 
+#include "Tets.h"
+
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 ImGui_ImplVulkanH_Window MainWindowData;
@@ -189,32 +191,40 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     MainScene->RecordAndSubmitCommandBuffer();
 }
 
+// Worker TetGenerator{"Generate tet mesh", "Generating tetrahedral mesh...", [&] { GenerateTets(); }};
+// std::unique_ptr<tetgenio> TetGenResult;
+
 using namespace ImGui;
 
 void RenderAudioControls() {
     AudioSources.RenderControls();
 
-    entt::entity mesh_entity = entt::null;
     const auto selected_entity = MainScene->GetSelectedEntity();
     const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
-    if (listener_point) {
-        // Listener point selected. RealImpact lives on root (non-instance) listener point entity.
-        mesh_entity = entt::entity(R.get<RealImpact>(MainScene->GetParentEntity(selected_entity)).MeshEntityId);
-    } else if (const auto *real_impact = R.try_get<RealImpact>(selected_entity)) {
-        // Audio mesh entity selected.
-        mesh_entity = entt::entity(real_impact->MeshEntityId);
-    } else {
-        // No audio mesh-related entity selected.
-        return;
+    // If listener point is selected, RealImpact lives on root (non-instance) listener point entity.
+    // Otherwise, it's on the selected entity if an audio mesh entity selected.
+    RealImpact *real_impact = listener_point ? &R.get<RealImpact>(MainScene->GetParentEntity(selected_entity)) : R.try_get<RealImpact>(selected_entity);
+    if (real_impact == nullptr) return;
+
+    const entt::entity mesh_entity = entt::entity(real_impact->MeshEntityId);
+    const auto &mesh = MainScene->GetMesh(mesh_entity);
+    auto *tets = R.try_get<Tets>(mesh_entity);
+    if (tets == nullptr && Button("Generate tet mesh")) {
+        // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
+        // todo UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
+        // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+        const bool is_real_impact = true; // todo support modal models on arbitrary meshes.
+        auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
+        tets = &R.emplace<Tets>(mesh_entity, GenerateTets(mesh, options));
     }
+    if (tets == nullptr) return;
 
     auto *sound_object = R.try_get<SoundObject>(mesh_entity);
     if (!sound_object) {
         if (!listener_point) return;
         if (!Button("Set listener position")) return;
 
-        R.emplace<SoundObject>(mesh_entity, MainScene->GetMesh(mesh_entity), R.get<RealImpact>(mesh_entity), *listener_point);
-        sound_object = R.try_get<SoundObject>(mesh_entity);
+        sound_object = &R.emplace<SoundObject>(mesh_entity, *tets, R.get<RealImpact>(mesh_entity), *listener_point);
     }
 
     SeparatorText("Audio model");
@@ -229,7 +239,6 @@ void RenderAudioControls() {
     sound_object->RenderControls(); // May change the current vertex.
     if (CurrentVertexIndicatorEntity == entt::null || sound_object->CurrentVertex != before_current_vertex) {
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
-        const auto &mesh = MainScene->GetMesh(mesh_entity);
         const mat4 mesh_model = MainScene->GetModel(mesh_entity);
         const auto vh = Mesh::VH(sound_object->CurrentVertex);
         const vec3 vertex_pos = {mesh_model * vec4{mesh.GetPosition(vh), 1}};
