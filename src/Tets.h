@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 
+#include "mesh/Mesh.h"
+
 // See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
 struct TetGenOptions {
     // (-Y) Input boundary edges and faces of the PLC are preserved in the generated tetrahedral mesh.
@@ -14,8 +16,6 @@ struct TetGenOptions {
     std::string CreateFlags() const;
 };
 
-struct Mesh;
-
 class tetgenio;
 
 struct Tets {
@@ -24,8 +24,11 @@ struct Tets {
     ~Tets();
 
     std::unique_ptr<tetgenio> TetGen;
+    uint MeshEntity{0};
 
     const tetgenio &operator*() const { return *TetGen; }
+
+    Mesh GenerateMesh() const;
 };
 
 Tets GenerateTets(const Mesh &, TetGenOptions);

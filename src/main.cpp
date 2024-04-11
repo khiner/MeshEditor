@@ -14,6 +14,7 @@
 #include "numeric/vec4.h"
 
 #include "Scene.h"
+#include "Tets.h"
 #include "Window.h"
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
@@ -22,8 +23,6 @@
 #include "audio/AudioSourcesPlayer.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundObject.h"
-
-#include "Tets.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 

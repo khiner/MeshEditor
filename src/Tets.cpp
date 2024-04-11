@@ -4,8 +4,6 @@
 
 #include "tetgen.h"
 
-#include "mesh/Mesh.h"
-
 std::string TetGenOptions::CreateFlags() const { return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : ""); }
 
 Tets::Tets(std::unique_ptr<tetgenio> tet_gen) : TetGen(std::move(tet_gen)) {}
@@ -44,4 +42,20 @@ Tets GenerateTets(const Mesh &mesh, TetGenOptions options) {
     const char *flags = flags_str.c_str();
     tetrahedralize(const_cast<char *>(flags), &in, result.get());
     return {std::move(result)};
+}
+
+Mesh Tets::GenerateMesh() const {
+    std::vector<vec3> vertices;
+    std::vector<std::vector<uint>> faces;
+    for (uint i = 0; i < uint(TetGen->numberofpoints); ++i) {
+        vertices.emplace_back(TetGen->pointlist[i * 3], TetGen->pointlist[i * 3 + 1], TetGen->pointlist[i * 3 + 2]);
+    }
+    for (uint i = 0; i < uint(TetGen->numberoftrifaces); ++i) {
+        const auto &tri_indices = TetGen->trifacelist;
+        const uint tri_i = i * 3;
+        const uint a = tri_indices[tri_i + 2], b = tri_indices[tri_i + 1], c = tri_indices[tri_i];
+        faces.push_back({a, b, c});
+    }
+
+    return {std::move(vertices), std::move(faces)};
 }
