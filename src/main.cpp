@@ -173,10 +173,9 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     }
     MainScene->UpdateRenderBuffers(mesh_entity);
 
-    // 0 transform to make this root entity of listener points instances invisible
-    auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
-    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {0}, false);
     static const mat4 I{1};
+    auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
+    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), I, false, false, false);
     static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
@@ -209,7 +208,6 @@ void RenderAudioControls() {
         return;
     }
 
-    SeparatorText("Audio model");
     auto *sound_object = R.try_get<SoundObject>(mesh_entity);
     if (!sound_object) {
         if (!listener_point) return;
@@ -218,6 +216,8 @@ void RenderAudioControls() {
         R.emplace<SoundObject>(mesh_entity, MainScene->GetMesh(mesh_entity), R.get<RealImpact>(mesh_entity), *listener_point);
         sound_object = R.try_get<SoundObject>(mesh_entity);
     }
+
+    SeparatorText("Audio model");
 
     // if (sound_object->GetListenerPosition == listener_point->getPosition()) {
     //     if (Button("Change listener position")) { ... }

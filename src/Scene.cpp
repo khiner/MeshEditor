@@ -14,6 +14,14 @@
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
+struct SceneNode {
+    entt::entity parent = entt::null;
+    std::vector<entt::entity> children;
+    // Maps entities to their index in the models buffer. Includes parent. Only present in parent nodes.
+    // This allows for contiguous storage of models in the buffer, with erases but no inserts (only appends, which avoids shuffling memory regions).
+    std::unordered_map<entt::entity, uint> model_indices;
+};
+
 // Simple wrapper around vertex and index buffers.
 struct VkRenderBuffers {
     VulkanBuffer Vertices, Indices;
@@ -390,20 +398,57 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
 
-uint GetModelIndex(const entt::registry &r, entt::entity entity) {
-    const auto &node = r.get<SceneNode>(entity);
-    if (node.parent == entt::null) return 0; // Mesh, model index 0
+// Get the model VK buffer index.
+// Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
+std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
+    if (entity == entt::null) return std::nullopt;
 
-    // Instance, model index 1 + index in parent's children
-    const auto &parent_node = r.get<SceneNode>(node.parent);
-    const auto &children = parent_node.children;
-    return 1 + std::distance(children.begin(), std::ranges::find(children, entity));
+    const auto &model_indices = R.get<SceneNode>(GetParentEntity(entity)).model_indices;
+    if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
+    return std::nullopt;
 }
 
 Mesh &Scene::GetMesh(entt::entity entity) const { return R.get<Mesh>(GetParentEntity(entity)); }
 
-entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, bool select) {
+void Scene::SetVisible(entt::entity entity, bool visible) {
+    const bool already_visible = R.all_of<Visible>(entity);
+    if ((visible && already_visible) || (!visible && !already_visible)) return;
+
+    const auto parent = GetParentEntity(entity);
+    auto &parent_node = R.get<SceneNode>(parent);
+    auto &model_indices = parent_node.model_indices;
+    if (visible) {
+        R.emplace<Visible>(entity);
+        // Insert model index as the max value + 1.
+        const uint new_model_index = entity == parent || model_indices.empty() ?
+            0 :
+            std::max_element(model_indices.begin(), model_indices.end(), [](const auto &a, const auto &b) { return a.second < b.second; })->second + 1;
+        model_indices.emplace(entity, new_model_index);
+        for (auto &[_, model_index] : model_indices) {
+            if (model_index >= new_model_index) ++model_index;
+        }
+        UpdateModelBuffer(entity);
+    } else {
+        R.remove<Visible>(entity);
+        const uint old_model_index = *GetModelBufferIndex(entity);
+        VC.EraseBufferRegion(MeshVkData->Models.at(GetParentEntity(entity)), old_model_index * sizeof(Model), sizeof(Model));
+        model_indices.erase(entity);
+        for (auto &[_, model_index] : model_indices) {
+            if (model_index > old_model_index) --model_index;
+        }
+    }
+}
+
+entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, bool select, bool visible) {
     const auto entity = R.create();
+    Model model{mat4(transform)};
+
+    auto node = R.emplace<SceneNode>(entity); // No parent or children.
+    R.emplace<Mesh>(entity, std::move(mesh));
+    R.emplace<Model>(entity, model);
+
+    MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
+    SetVisible(entity, visible);
 
     MeshBuffers mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
@@ -412,30 +457,20 @@ entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, boo
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, MeshBuffers{});
 
-    Model model{mat4(transform)};
-    auto buffer = VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model));
-    VC.UpdateBuffer(buffer, &model, 0, sizeof(Model));
-    MeshVkData->Models.emplace(entity, std::move(buffer));
-
     if (ShowBoundingBoxes) {
         MeshVkData->Boxes.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
     }
 
-    R.emplace<SceneNode>(entity); // No parent or children.
-    R.emplace<Mesh>(entity, std::move(mesh));
-    R.emplace<Model>(entity, std::move(model));
-
     if (select) SelectEntity(entity);
     if (submit) RecordAndSubmitCommandBuffer();
-
     return entity;
 }
-entt::entity Scene::AddMesh(const fs::path &file_path, const mat4 &transform, bool submit, bool select) {
-    return AddMesh(Mesh{file_path}, transform, submit, select);
+entt::entity Scene::AddMesh(const fs::path &file_path, const mat4 &transform, bool submit, bool select, bool visible) {
+    return AddMesh(Mesh{file_path}, transform, submit, select, visible);
 }
 
-entt::entity Scene::AddPrimitive(Primitive primitive, const mat4 &transform, bool submit, bool select) {
-    auto entity = AddMesh(CreateDefaultPrimitive(primitive), transform, submit, select);
+entt::entity Scene::AddPrimitive(Primitive primitive, const mat4 &transform, bool submit, bool select, bool visible) {
+    auto entity = AddMesh(CreateDefaultPrimitive(primitive), transform, submit, select, visible);
     R.emplace<Primitive>(entity, primitive);
     return entity;
 }
@@ -462,14 +497,14 @@ void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     R.replace<Mesh>(entity, std::move(mesh));
 }
 
-entt::entity Scene::AddInstance(entt::entity parent, mat4 &&transform) {
+entt::entity Scene::AddInstance(entt::entity parent, mat4 &&transform, bool visible) {
     const auto entity = R.create();
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
-    R.get<SceneNode>(parent).children.emplace_back(entity);
+    auto &parent_node = R.get<SceneNode>(parent);
+    parent_node.children.emplace_back(entity);
     R.emplace<Model>(entity, std::move(transform));
-
-    UpdateModelBuffer(entity);
+    SetVisible(entity, visible);
     SelectEntity(entity);
 
     return entity;
@@ -477,34 +512,24 @@ entt::entity Scene::AddInstance(entt::entity parent, mat4 &&transform) {
 
 void Scene::DestroyEntity(entt::entity entity) {
     if (entity == SelectedEntity) SelectEntity(entt::null);
-
-    const auto mesh_entity = GetParentEntity(entity);
-    if (mesh_entity != entity) return DestroyInstance(mesh_entity, entity);
+    if (const auto mesh_entity = GetParentEntity(entity); mesh_entity != entity) return DestroyInstance(entity);
 
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
     MeshVkData->Models.erase(entity);
     MeshVkData->Boxes.erase(entity);
-
     const auto &node = R.get<SceneNode>(entity);
     for (const auto child : node.children) R.destroy(child);
 
     R.destroy(entity);
 }
 
-// Do _not_ use when destroying all instances of a mesh - only when destroying a single instance.
-void Scene::DestroyInstance(entt::entity mesh, entt::entity instance) {
+void Scene::DestroyInstance(entt::entity instance) {
     if (instance == SelectedEntity) SelectEntity(entt::null);
 
-    const uint i = GetModelIndex(R, instance);
-    const uint offset = i * sizeof(Model);
-
-    const auto &node = R.get<SceneNode>(instance);
-    std::erase(R.get<SceneNode>(node.parent).children, instance);
+    SetVisible(instance, false);
+    std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).parent).children, instance);
     R.destroy(instance);
-
-    // Erase the instance model from the mesh's models buffer.
-    VC.EraseBufferRegion(MeshVkData->Models.at(mesh), offset, sizeof(Model));
 }
 
 entt::entity Scene::GetParentEntity(entt::entity entity) const {
@@ -515,7 +540,6 @@ entt::entity Scene::GetParentEntity(entt::entity entity) const {
 }
 
 Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(SelectedEntity)); }
-Model &Scene::GetSelectedModel() const { return R.get<Model>(SelectedEntity); }
 
 void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
     R.replace<Model>(entity, std::move(model));
@@ -573,8 +597,6 @@ std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_m
 }
 
 void Scene::RecordCommandBuffer() {
-    const auto &meshes = R.view<Mesh>();
-
     const auto cb = *VC.CommandBuffers[0];
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
@@ -599,13 +621,18 @@ void Scene::RecordCommandBuffer() {
     );
 
     const auto selected_mesh_entity = GetParentEntity(SelectedEntity);
-    const bool render_silhouette = selected_mesh_entity != entt::null && SelectionMode == SelectionMode::Object;
+    const auto selected_model_buffer_index = GetModelBufferIndex(SelectedEntity);
+    const bool render_silhouette = selected_model_buffer_index && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
-        // Only render the silhouette edges for the selected mesh instance.
-        const auto &selected_buffers = MeshVkData->Main.at(selected_mesh_entity);
-        const auto &selected_models_buffer = MeshVkData->Models.at(selected_mesh_entity);
+        // Render the silhouette edges for the selected mesh instance.
         SilhouettePipeline.Begin(cb);
-        SilhouettePipeline.Render(cb, SPT::Silhouette, selected_buffers.at(MeshElement::Vertex), selected_models_buffer, GetModelIndex(R, SelectedEntity));
+        SilhouettePipeline.Render(
+            cb,
+            SPT::Silhouette,
+            MeshVkData->Main.at(selected_mesh_entity).at(MeshElement::Vertex),
+            MeshVkData->Models.at(selected_mesh_entity),
+            *selected_model_buffer_index
+        );
         cb.endRenderPass();
 
         EdgeDetectionPipeline.Begin(cb);
@@ -615,6 +642,12 @@ void Scene::RecordCommandBuffer() {
 
     // Render meshes.
     // todo reorganize mesh VK buffers to reduce the number of draw calls and pipeline switches.
+    // todo next up:
+    //      - update `MeshVkData->Models` and `GetModelBufferIndex` to keep `Models` contiguous with only visible, or
+    //      - keep all models in the `MeshVkData` but then update `drawIndexed` to use a different strategy:
+    //        -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
+    //           vkCmdDrawIndexedIndirectCount & put the offsets in a UBO that you index with gl_DrawId.
+    const auto &meshes = R.view<Mesh>();
     MainPipeline.Begin(cb, BackgroundColor);
     meshes.each([this, &cb](auto entity, auto &) {
         const auto &buffers = MeshVkData->Main.at(entity);
@@ -639,16 +672,14 @@ void Scene::RecordCommandBuffer() {
     if (ShowBoundingBoxes) {
         meshes.each([this, &cb](auto entity, auto &) {
             if (auto buffers = MeshVkData->Boxes.find(entity); buffers != MeshVkData->Boxes.end()) {
-                const auto &models = MeshVkData->Models.at(entity);
-                MainPipeline.Render(cb, SPT::Line, buffers->second, models);
+                MainPipeline.Render(cb, SPT::Line, buffers->second, MeshVkData->Models.at(entity));
             }
         });
     }
     if (ShowBvhBoxes) {
         meshes.each([this, &cb](auto entity, auto &) {
             if (auto buffers = MeshVkData->BvhBoxes.find(entity); buffers != MeshVkData->BvhBoxes.end()) {
-                const auto &models = MeshVkData->Models.at(entity);
-                MainPipeline.Render(cb, SPT::Line, buffers->second, models);
+                MainPipeline.Render(cb, SPT::Line, buffers->second, MeshVkData->Models.at(entity));
             }
         });
     }
@@ -691,10 +722,10 @@ void Scene::UpdateTransformBuffers() {
 }
 
 void Scene::UpdateModelBuffer(entt::entity entity) {
-    const auto mesh_entity = GetParentEntity(entity);
-    const auto &model = R.get<Model>(entity);
-    const uint i = GetModelIndex(R, entity);
-    VC.UpdateBuffer(MeshVkData->Models.at(mesh_entity), &model, i * sizeof(Model), sizeof(Model));
+    if (const auto buffer_index = GetModelBufferIndex(entity)) {
+        const auto &model = R.get<Model>(entity);
+        VC.UpdateBuffer(MeshVkData->Models.at(GetParentEntity(entity)), &model, *buffer_index * sizeof(Model), sizeof(Model));
+    }
 }
 
 using namespace ImGui;
@@ -733,15 +764,17 @@ bool Scene::Render() {
         // Handle mouse input.
         if (IsWindowHovered() && IsMouseClicked(ImGuiMouseButton_Left)) {
             const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
-            if (SelectedEntity != entt::null && SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
-                auto &mesh = GetSelectedMesh();
-                const auto &model = GetSelectedModel();
+            if (SelectedEntity != entt::null && SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None && R.all_of<Visible>(SelectedEntity)) {
+                const auto &model = R.get<Model>(SelectedEntity);
                 const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
                 const auto before_selected_element = SelectedElement;
                 SelectedElement = {SelectionElement, -1};
-                if (SelectionElement == MeshElement::Vertex) SelectedElement = Mesh::ElementIndex{mesh.FindNearestVertex(mouse_ray)};
-                else if (SelectionElement == MeshElement::Edge) SelectedElement = Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)};
-                else if (SelectionElement == MeshElement::Face) SelectedElement = Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)};
+                {
+                    const auto &mesh = GetSelectedMesh();
+                    if (SelectionElement == MeshElement::Vertex) SelectedElement = Mesh::ElementIndex{mesh.FindNearestVertex(mouse_ray)};
+                    else if (SelectionElement == MeshElement::Edge) SelectedElement = Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)};
+                    else if (SelectionElement == MeshElement::Face) SelectedElement = Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)};
+                }
                 if (SelectedElement != before_selected_element) {
                     UpdateRenderBuffers(GetParentEntity(SelectedEntity), SelectedElement);
                     SubmitCommandBuffer();
@@ -750,6 +783,8 @@ bool Scene::Render() {
                 static std::multimap<float, entt::entity> hovered_entities_by_distance;
                 hovered_entities_by_distance.clear();
                 R.view<Model>().each([this, &mouse_world_ray](auto entity, const auto &model) {
+                    if (!R.all_of<Visible>(entity)) return;
+
                     const auto &mesh = R.get<Mesh>(GetParentEntity(entity));
                     const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
                     if (auto intersect_distance = mesh.Intersect(mouse_ray)) hovered_entities_by_distance.emplace(*intersect_distance, entity);
@@ -803,7 +838,7 @@ void Scene::RenderGizmo() {
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
     if (SelectedEntity != entt::null) {
-        mat4 model = GetSelectedModel().Transform;
+        mat4 model = R.get<Model>(SelectedEntity).Transform;
         bool view_changed, model_changed;
         Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
         view_changed |= Camera.Tick();
@@ -897,6 +932,11 @@ void Scene::RenderConfig() {
                     std::format("Vertices|Edges|Faces: {:L} | {:L} | {:L}", selected_mesh.GetVertexCount(), selected_mesh.GetEdgeCount(), selected_mesh.GetFaceCount()).c_str()
                 );
                 Unindent();
+                bool visible = R.all_of<Visible>(SelectedEntity);
+                if (Checkbox("Visible", &visible)) {
+                    SetVisible(SelectedEntity, visible);
+                    RecordAndSubmitCommandBuffer();
+                }
                 PopID();
             } else {
                 Text("Selected object: None");
@@ -944,7 +984,7 @@ void Scene::RenderConfig() {
                     RecordAndSubmitCommandBuffer();
                 }
                 if (CollapsingHeader("Transform")) {
-                    const auto &model = GetSelectedModel().Transform;
+                    const auto &model = R.get<Model>(SelectedEntity).Transform;
                     glm::vec3 pos, rot, scale;
                     DecomposeTransform(model, pos, rot, scale);
                     bool model_changed = false;

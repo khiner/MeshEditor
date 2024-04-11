@@ -13,6 +13,8 @@
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
 
+struct Visible {}; // A tag component to mark entities that are visible.
+
 struct Mesh;
 struct VulkanContext;
 struct VkRenderBuffers;
@@ -142,11 +144,6 @@ struct EdgeDetectionPipeline : RenderPipeline {
     void Begin(vk::CommandBuffer) const;
 };
 
-struct SceneNode {
-    entt::entity parent = entt::null;
-    std::vector<entt::entity> children;
-};
-
 enum class SelectionMode {
     Object, // Select objects
     Edit, // Select individual mesh elements (vertices, edges, faces)
@@ -160,13 +157,14 @@ struct Scene {
     entt::registry &R;
     World World{};
 
+    std::optional<uint> GetModelBufferIndex(entt::entity);
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
     entt::entity GetParentEntity(entt::entity) const;
     Mesh &GetMesh(entt::entity) const;
 
-    entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true, bool select = true);
-    entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true, bool select = true);
-    entt::entity AddPrimitive(Primitive, const mat4 &transform = {1}, bool submit = true, bool select = true);
+    entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true, bool select = true, bool visible = true);
+    entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true, bool select = true, bool visible = true);
+    entt::entity AddPrimitive(Primitive, const mat4 &transform = {1}, bool submit = true, bool select = true, bool visible = true);
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
@@ -174,8 +172,10 @@ struct Scene {
     mat4 GetModel(entt::entity) const;
     void SetModel(entt::entity, mat4 &&, bool submit = true);
 
-    entt::entity AddInstance(entt::entity, mat4 &&transform = {1});
-    void DestroyInstance(entt::entity mesh, entt::entity instance);
+    void SetVisible(entt::entity, bool);
+
+    entt::entity AddInstance(entt::entity, mat4 &&transform = {1}, bool visible = true);
+    void DestroyInstance(entt::entity);
     void DestroyEntity(entt::entity);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
@@ -242,7 +242,6 @@ private:
     }
 
     Mesh &GetSelectedMesh() const;
-    Model &GetSelectedModel() const;
 
     // VK buffer update methods.
     void UpdateTransformBuffers();
