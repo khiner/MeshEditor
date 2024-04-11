@@ -60,31 +60,29 @@ VkBuffer VmaBuffer::Get() const { return Buffer; }
 
 vk::DeviceSize VmaBuffer::GetAllocatedSize() const { return Allocation->Info.size; }
 
-void VmaBuffer::UpdateRegion(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) {
-    if (bytes == 0 || offset >= GetAllocatedSize()) return;
-
+char *VmaBuffer::MapMemory() {
     void *mapped_data = nullptr;
     if (vmaMapMemory(Allocator, Allocation->Allocation, &mapped_data) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to map VMA buffer memory for updating.");
+        throw std::runtime_error("Failed to map VMA buffer memory.");
     }
-    memcpy(static_cast<char *>(mapped_data) + offset, data, size_t(bytes));
-    vmaUnmapMemory(Allocator, Allocation->Allocation);
+    return static_cast<char *>(mapped_data);
+}
+void VmaBuffer::UnmapMemory() { vmaUnmapMemory(Allocator, Allocation->Allocation); }
+
+void VmaBuffer::WriteRegion(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) {
+    if (bytes == 0 || offset >= GetAllocatedSize()) return;
+
+    memcpy(MapMemory() + offset, data, size_t(bytes));
+    UnmapMemory();
 }
 
-void VmaBuffer::EraseRegion(vk::DeviceSize offset, vk::DeviceSize bytes) {
-    if (bytes == 0 || offset >= GetAllocatedSize()) return;
+void VmaBuffer::MoveRegion(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize bytes) {
+    if (bytes == 0 || from + bytes >= GetAllocatedSize() || to + bytes >= GetAllocatedSize()) return;
 
-    void *mapped_data = nullptr;
-    if (vmaMapMemory(Allocator, Allocation->Allocation, &mapped_data) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to map VMA buffer memory for erasing.");
-    }
-
-    if (const auto move_bytes = GetAllocatedSize() - (offset + bytes); move_bytes > 0) {
-        char *data_start = static_cast<char *>(mapped_data);
-        // Shift the data to "erase" the region (dst is first, src is second.)
-        memmove(data_start + offset, data_start + offset + bytes, size_t(move_bytes));
-    }
-    vmaUnmapMemory(Allocator, Allocation->Allocation);
+    char *data_start = MapMemory();
+    // Shift the data to "erase" the region (dst is first, src is second.)
+    memmove(data_start + to, data_start + from, size_t(bytes));
+    UnmapMemory();
 }
 
 struct VulkanBufferAllocator::AllocatorInfo {

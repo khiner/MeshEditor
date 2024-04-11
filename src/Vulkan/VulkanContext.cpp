@@ -173,9 +173,14 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
     const auto required_bytes = offset + bytes;
     if (required_bytes > buffer.GetAllocatedSize()) {
         // Create a new buffer with the first large enough power of two.
-        // Copy the old device buffer into its device buffer, and replace the old buffer.
+        // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
         const auto new_bytes = NextPowerOfTwo(required_bytes);
         VulkanBuffer new_buffer = CreateBuffer(buffer.Usage, new_bytes);
+        // Host copy:
+        char *host_data = buffer.HostBuffer.MapMemory();
+        new_buffer.HostBuffer.WriteRegion(host_data, 0, buffer.Size);
+        buffer.HostBuffer.UnmapMemory();
+        // Host->device copy:
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
         cb.end();
@@ -188,7 +193,7 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
     }
 
     // Copy data to the host buffer.
-    buffer.HostBuffer.UpdateRegion(data, offset, bytes);
+    buffer.HostBuffer.WriteRegion(data, offset, bytes);
 
     // Copy data from the staging buffer to the device buffer.
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -202,17 +207,15 @@ void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offse
     if (bytes == 0 || offset + bytes > buffer.Size) return;
 
     if (const auto move_bytes = buffer.Size - (offset + bytes); move_bytes > 0) {
-        buffer.HostBuffer.EraseRegion(offset, bytes);
+        buffer.HostBuffer.MoveRegion(offset + bytes, offset, move_bytes);
 
         const auto &cb = *TransferCommandBuffers.front();
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_bytes});
         cb.end();
-
         SubmitTransfer();
     }
-
-    buffer.Size -= bytes; // Update the buffer size to reflect the erase operation.
+    buffer.Size -= bytes;
 }
 
 // TODO Use separate fence/semaphores for buffer updates and rendering?
