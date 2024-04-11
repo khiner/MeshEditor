@@ -912,6 +912,37 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
 void Scene::RenderConfig() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
+            {
+                int selection_mode = int(SelectionMode);
+                bool selection_mode_changed = false;
+                PushID("SelectionMode");
+                AlignTextToFramePadding();
+                TextUnformatted("Selection mode:");
+                SameLine();
+                selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
+                SameLine();
+                selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
+                if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
+                if (SelectionMode == SelectionMode::Edit) {
+                    AlignTextToFramePadding();
+                    TextUnformatted("Edit mode:");
+                    SameLine();
+                    int element_selection_mode = int(SelectionElement);
+                    for (const auto element : AllElements) {
+                        std::string name = to_string(element);
+                        Capitalize(name);
+                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
+                        if (element != AllElements.back()) SameLine();
+                    }
+                    Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
+                    if (SelectionElement == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
+                        const auto &mesh = GetSelectedMesh();
+                        const auto pos = mesh.GetPosition(Mesh::VH(SelectedElement.idx()));
+                        Text("Vertex %d: (%.4f, %.4f, %.4f)", SelectedElement.idx(), pos.x, pos.y, pos.z);
+                    }
+                }
+                PopID();
+            }
             if (SelectedEntity != entt::null) {
                 PushID(uint(SelectedEntity));
                 Text("Selected object: 0x%08x", uint(SelectedEntity));
@@ -944,41 +975,7 @@ void Scene::RenderConfig() {
                     SetVisible(SelectedEntity, visible);
                     RecordAndSubmitCommandBuffer();
                 }
-                PopID();
-            } else {
-                Text("Selected object: None");
-            }
 
-            int selection_mode = int(SelectionMode);
-            bool selection_mode_changed = false;
-            PushID("SelectionMode");
-            AlignTextToFramePadding();
-            TextUnformatted("Selection mode:");
-            SameLine();
-            selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
-            SameLine();
-            selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
-            if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
-            if (SelectionMode == SelectionMode::Edit) {
-                AlignTextToFramePadding();
-                TextUnformatted("Edit mode:");
-                SameLine();
-                int element_selection_mode = int(SelectionElement);
-                for (const auto element : AllElements) {
-                    std::string name = to_string(element);
-                    Capitalize(name);
-                    if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
-                    if (element != AllElements.back()) SameLine();
-                }
-                Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
-                if (SelectionElement == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
-                    const auto &mesh = GetSelectedMesh();
-                    const auto pos = mesh.GetPosition(Mesh::VH(SelectedElement.idx()));
-                    Text("Vertex %d: (%.4f, %.4f, %.4f)", SelectedElement.idx(), pos.x, pos.y, pos.z);
-                }
-            }
-            PopID();
-            if (SelectedEntity != entt::null) {
                 if (const auto *primitive = R.try_get<Primitive>(SelectedEntity)) {
                     // Editor for the selected entity's primitive type.
                     if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
@@ -990,6 +987,7 @@ void Scene::RenderConfig() {
                     AddInstance(GetParentEntity(SelectedEntity));
                     RecordAndSubmitCommandBuffer();
                 }
+
                 if (CollapsingHeader("Transform")) {
                     const auto &model = R.get<Model>(SelectedEntity).Transform;
                     glm::vec3 pos, rot, scale;
@@ -1003,85 +1001,11 @@ void Scene::RenderConfig() {
                     }
                     Gizmo->RenderDebug();
                 }
-            }
-            if (CollapsingHeader("Render")) {
-                SeparatorText("Render mode");
-                PushID("RenderMode");
-                int render_mode = int(RenderMode);
-                bool render_mode_changed = RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
-                SameLine();
-                render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
-                SameLine();
-                render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
-                SameLine();
-                render_mode_changed |= RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
                 PopID();
-
-                int color_mode = int(ColorMode);
-                bool color_mode_changed = false;
-                if (RenderMode != RenderMode::Edges) {
-                    SeparatorText("Fill color mode");
-                    PushID("ColorMode");
-                    color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
-                    color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
-                    PopID();
-                }
-                if (render_mode_changed || color_mode_changed) {
-                    RenderMode = ::RenderMode(render_mode);
-                    ColorMode = ::ColorMode(color_mode);
-                    UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
-                    RecordAndSubmitCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
-                }
-                if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
-                    auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-                    if (ColorEdit3("Edge color", &edge_color.x)) {
-                        UpdateEdgeColors();
-                        SubmitCommandBuffer();
-                    }
-                }
-                SeparatorText("Normal indicators");
-                // todo go back to storing normal settings in a map of element type to bool,
-                //   and ensure meshes/instances are created with the current normals
-                if (SelectedEntity != entt::null) {
-                    const auto mesh_entity = GetParentEntity(SelectedEntity);
-                    const auto &mesh = R.get<Mesh>(mesh_entity);
-                    auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
-                    for (const auto element : AllNormalElements) {
-                        bool has_normals = normals.contains(element);
-                        std::string name = to_string(element);
-                        Capitalize(name);
-                        if (Checkbox(name.c_str(), &has_normals)) {
-                            if (has_normals) {
-                                normals.emplace(element, VkRenderBuffers{VC, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)});
-                            } else {
-                                normals.erase(element);
-                            }
-                            RecordAndSubmitCommandBuffer();
-                        }
-                        if (element != AllNormalElements.back()) SameLine();
-                    }
-                    if (Checkbox("BVH boxes", &ShowBvhBoxes)) {
-                        auto &buffers = MeshVkData->BvhBoxes;
-                        if (ShowBvhBoxes) buffers.emplace(mesh_entity, VkRenderBuffers{VC, mesh.CreateBvhBuffers(EdgeColor)});
-                        else buffers.erase(mesh_entity);
-                        RecordAndSubmitCommandBuffer();
-                    }
-                    SameLine(); // For Bounding boxes checkbox
-                }
-                if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
-                    auto &buffers = MeshVkData->Boxes;
-                    R.view<Mesh>().each([&](auto entity, auto &mesh) {
-                        if (ShowBoundingBoxes) buffers.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
-                        else buffers.erase(entity);
-                    });
-                    RecordAndSubmitCommandBuffer();
-                }
-                SeparatorText("Silhouette");
-                if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
-                    VC.UpdateBuffer(*SilhouetteDisplayBuffer, &SilhouetteDisplay);
-                    SubmitCommandBuffer();
-                }
+            } else {
+                Text("Selected object: None");
             }
+
             if (CollapsingHeader("Add primitive")) {
                 PushID("AddPrimitive");
                 static int current_primitive_edit = int(Primitive::Cube);
@@ -1097,14 +1021,92 @@ void Scene::RenderConfig() {
             }
             EndTabItem();
         }
+
         if (BeginTabItem("Render")) {
             if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
             if (Button("Recompile shaders")) {
                 CompileShaders();
                 RecordAndSubmitCommandBuffer();
             }
+            SeparatorText("Render mode");
+            PushID("RenderMode");
+            int render_mode = int(RenderMode);
+            bool render_mode_changed = RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
+            SameLine();
+            render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
+            SameLine();
+            render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
+            SameLine();
+            render_mode_changed |= RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
+            PopID();
+
+            int color_mode = int(ColorMode);
+            bool color_mode_changed = false;
+            if (RenderMode != RenderMode::Edges) {
+                SeparatorText("Fill color mode");
+                PushID("ColorMode");
+                color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
+                color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
+                PopID();
+            }
+            if (render_mode_changed || color_mode_changed) {
+                RenderMode = ::RenderMode(render_mode);
+                ColorMode = ::ColorMode(color_mode);
+                UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
+                RecordAndSubmitCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
+            }
+            if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
+                auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+                if (ColorEdit3("Edge color", &edge_color.x)) {
+                    UpdateEdgeColors();
+                    SubmitCommandBuffer();
+                }
+            }
+            SeparatorText("Normal indicators");
+            // todo go back to storing normal settings in a map of element type to bool,
+            //   and ensure meshes/instances are created with the current normals
+            if (SelectedEntity != entt::null) {
+                const auto mesh_entity = GetParentEntity(SelectedEntity);
+                const auto &mesh = R.get<Mesh>(mesh_entity);
+                auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
+                for (const auto element : AllNormalElements) {
+                    bool has_normals = normals.contains(element);
+                    std::string name = to_string(element);
+                    Capitalize(name);
+                    if (Checkbox(name.c_str(), &has_normals)) {
+                        if (has_normals) {
+                            normals.emplace(element, VkRenderBuffers{VC, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)});
+                        } else {
+                            normals.erase(element);
+                        }
+                        RecordAndSubmitCommandBuffer();
+                    }
+                    if (element != AllNormalElements.back()) SameLine();
+                }
+                if (Checkbox("BVH boxes", &ShowBvhBoxes)) {
+                    auto &buffers = MeshVkData->BvhBoxes;
+                    if (ShowBvhBoxes) buffers.emplace(mesh_entity, VkRenderBuffers{VC, mesh.CreateBvhBuffers(EdgeColor)});
+                    else buffers.erase(mesh_entity);
+                    RecordAndSubmitCommandBuffer();
+                }
+                SameLine(); // For Bounding boxes checkbox
+            }
+            if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
+                auto &buffers = MeshVkData->Boxes;
+                R.view<Mesh>().each([&](auto entity, auto &mesh) {
+                    if (ShowBoundingBoxes) buffers.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
+                    else buffers.erase(entity);
+                });
+                RecordAndSubmitCommandBuffer();
+            }
+            SeparatorText("Silhouette");
+            if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
+                VC.UpdateBuffer(*SilhouetteDisplayBuffer, &SilhouetteDisplay);
+                SubmitCommandBuffer();
+            }
             EndTabItem();
         }
+
         if (BeginTabItem("Camera")) {
             bool camera_changed = false;
             if (Button("Reset camera")) {
@@ -1123,6 +1125,7 @@ void Scene::RenderConfig() {
             }
             EndTabItem();
         }
+
         if (BeginTabItem("Lights")) {
             bool light_changed = false;
             SeparatorText("View light");
