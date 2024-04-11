@@ -234,7 +234,10 @@ private:
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
 
-    void SelectEntity(entt::entity entity) { SelectedEntity = entity; }
+    void SelectEntity(entt::entity entity, bool submit = false) {
+        SelectedEntity = entity;
+        if (submit) RecordAndSubmitCommandBuffer();
+    }
 
     void SetSelectionMode(::SelectionMode mode) {
         SelectionMode = mode;

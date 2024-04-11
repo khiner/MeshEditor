@@ -792,17 +792,15 @@ bool Scene::Render() {
 
                 std::vector<entt::entity> sorted_hovered_entities;
                 for (const auto &[distance, entity] : hovered_entities_by_distance) sorted_hovered_entities.emplace_back(entity);
-                const auto before_selected_entity = SelectedEntity;
                 if (!sorted_hovered_entities.empty()) {
                     // Cycle through hovered entities.
                     auto it = std::ranges::find(sorted_hovered_entities, SelectedEntity);
                     if (it != sorted_hovered_entities.end()) ++it;
                     if (it == sorted_hovered_entities.end()) it = sorted_hovered_entities.begin();
-                    SelectEntity(*it);
+                    SelectEntity(*it, true);
                 } else {
-                    SelectEntity(entt::null);
+                    SelectEntity(entt::null, true);
                 }
-                if (SelectedEntity != before_selected_entity) RecordAndSubmitCommandBuffer();
             }
         }
     }
@@ -918,13 +916,22 @@ void Scene::RenderConfig() {
                 PushID(uint(SelectedEntity));
                 Text("Selected object: 0x%08x", uint(SelectedEntity));
                 Indent();
-                if (auto parent_entity = GetParentEntity(SelectedEntity); parent_entity != SelectedEntity) {
+
+                const auto &node = R.get<SceneNode>(SelectedEntity);
+                if (auto parent_entity = node.parent; parent_entity != entt::null) {
                     AlignTextToFramePadding();
                     Text("Parent: 0x%08x", uint(parent_entity));
                     SameLine();
-                    if (Button("Select")) {
-                        SelectEntity(parent_entity);
-                        RecordAndSubmitCommandBuffer();
+                    if (Button("Select")) SelectEntity(parent_entity, true);
+                }
+                if (!node.children.empty() && CollapsingHeader("Children")) {
+                    for (const auto child : node.children) {
+                        PushID(uint(child));
+                        AlignTextToFramePadding();
+                        Text("0x%08x", uint(child));
+                        SameLine();
+                        if (Button("Select")) SelectEntity(child, true);
+                        PopID();
                     }
                 }
                 const auto &selected_mesh = GetSelectedMesh();
