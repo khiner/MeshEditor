@@ -26,7 +26,8 @@ struct VmaBuffer {
 
     vk::DeviceSize GetAllocatedSize() const;
 
-    void Update(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes);
+    void UpdateRegion(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes);
+    void EraseRegion(vk::DeviceSize offset, vk::DeviceSize bytes);
 
 private:
     const VmaAllocator &Allocator;

@@ -167,14 +167,14 @@ uint64_t NextPowerOfTwo(uint64_t x) {
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0) bytes = buffer.Size;
 
-    const auto &cb = *TransferCommandBuffers[0];
+    const auto &cb = *TransferCommandBuffers.front();
 
     // Note: `buffer.Size` is the _used_ size, not the allocated size.
-    const vk::DeviceSize required_bytes = offset + bytes;
+    const auto required_bytes = offset + bytes;
     if (required_bytes > buffer.GetAllocatedSize()) {
         // Create a new buffer with the first large enough power of two.
         // Copy the old device buffer into its device buffer, and replace the old buffer.
-        const vk::DeviceSize new_bytes = NextPowerOfTwo(required_bytes);
+        const auto new_bytes = NextPowerOfTwo(required_bytes);
         VulkanBuffer new_buffer = CreateBuffer(buffer.Usage, new_bytes);
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
@@ -188,7 +188,7 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
     }
 
     // Copy data to the host buffer.
-    buffer.HostBuffer.Update(data, offset, bytes);
+    buffer.HostBuffer.UpdateRegion(data, offset, bytes);
 
     // Copy data from the staging buffer to the device buffer.
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -201,21 +201,24 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
 void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0 || offset + bytes > buffer.Size) return;
 
-    if (const vk::DeviceSize move_bytes = buffer.Size - (offset + bytes); move_bytes > 0) {
-        const auto &cb = *TransferCommandBuffers[0];
+    if (const auto move_bytes = buffer.Size - (offset + bytes); move_bytes > 0) {
+        buffer.HostBuffer.EraseRegion(offset, bytes);
+
+        const auto &cb = *TransferCommandBuffers.front();
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        cb.copyBuffer(*buffer.DeviceBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset + bytes, offset, move_bytes});
+        cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_bytes});
         cb.end();
 
         SubmitTransfer();
     }
-    buffer.Size -= bytes;
+
+    buffer.Size -= bytes; // Update the buffer size to reflect the erase operation.
 }
 
 // TODO Use separate fence/semaphores for buffer updates and rendering?
 void VulkanContext::SubmitTransfer() const {
     vk::SubmitInfo submit;
-    submit.setCommandBuffers(*TransferCommandBuffers[0]);
+    submit.setCommandBuffers(*TransferCommandBuffers.front());
     Queue.submit(submit, *RenderFence);
 
     auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
