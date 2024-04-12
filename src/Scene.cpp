@@ -393,7 +393,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
-    AddPrimitive(Primitive::Cube, {1}, false);
+    AddPrimitive(Primitive::Cube, {.Transform = {1}, .Select = true, .Visible = true, .Submit = false});
 }
 
 Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
@@ -439,9 +439,9 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     }
 }
 
-entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, bool select, bool visible) {
+entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto entity = R.create();
-    Model model{mat4(transform)};
+    Model model{mat4(info.Transform)};
 
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
     R.emplace<Mesh>(entity, std::move(mesh));
@@ -449,7 +449,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, boo
 
     MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
-    if (!visible) SetVisible(entity, false);
+    if (!info.Visible) SetVisible(entity, false);
 
     MeshBuffers mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
@@ -462,16 +462,16 @@ entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, boo
         MeshVkData->Boxes.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
     }
 
-    if (select) SelectEntity(entity);
-    if (submit) RecordAndSubmitCommandBuffer();
+    if (info.Select) SelectEntity(entity);
+    if (info.Submit) RecordAndSubmitCommandBuffer();
     return entity;
 }
-entt::entity Scene::AddMesh(const fs::path &file_path, const mat4 &transform, bool submit, bool select, bool visible) {
-    return AddMesh(Mesh{file_path}, transform, submit, select, visible);
+entt::entity Scene::AddMesh(const fs::path &file_path, MeshCreateInfo info) {
+    return AddMesh(Mesh{file_path}, std::move(info));
 }
 
-entt::entity Scene::AddPrimitive(Primitive primitive, const mat4 &transform, bool submit, bool select, bool visible) {
-    auto entity = AddMesh(CreateDefaultPrimitive(primitive), transform, submit, select, visible);
+entt::entity Scene::AddPrimitive(Primitive primitive, MeshCreateInfo info) {
+    auto entity = AddMesh(CreateDefaultPrimitive(primitive), std::move(info));
     R.emplace<Primitive>(entity, primitive);
     return entity;
 }
@@ -498,15 +498,16 @@ void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     R.replace<Mesh>(entity, std::move(mesh));
 }
 
-entt::entity Scene::AddInstance(entt::entity parent, mat4 &&transform, bool visible) {
+entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     const auto entity = R.create();
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
     auto &parent_node = R.get<SceneNode>(parent);
     parent_node.children.emplace_back(entity);
-    R.emplace<Model>(entity, std::move(transform));
-    SetVisible(entity, visible);
+    R.emplace<Model>(entity, std::move(info.Transform));
+    SetVisible(entity, info.Visible);
     SelectEntity(entity);
+    if (info.Submit) RecordAndSubmitCommandBuffer();
 
     return entity;
 }
@@ -989,10 +990,7 @@ void Scene::RenderConfig() {
                         RecordAndSubmitCommandBuffer();
                     }
                 }
-                if (Button("Add instance")) {
-                    AddInstance(GetParentEntity(SelectedEntity));
-                    RecordAndSubmitCommandBuffer();
-                }
+                if (Button("Add instance")) AddInstance(GetParentEntity(SelectedEntity));
 
                 if (CollapsingHeader("Transform")) {
                     const auto &model = R.get<Model>(SelectedEntity).Transform;

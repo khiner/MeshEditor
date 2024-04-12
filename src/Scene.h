@@ -149,6 +149,11 @@ enum class SelectionMode {
     Edit, // Select individual mesh elements (vertices, edges, faces)
 };
 
+struct MeshCreateInfo {
+    mat4 Transform{1};
+    bool Select{true}, Visible{true}, Submit{true};
+};
+
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);
     ~Scene();
@@ -162,21 +167,21 @@ struct Scene {
     entt::entity GetParentEntity(entt::entity) const;
     Mesh &GetMesh(entt::entity) const;
 
-    entt::entity AddMesh(Mesh &&, const mat4 &transform = {1}, bool submit = true, bool select = true, bool visible = true);
-    entt::entity AddMesh(const fs::path &, const mat4 &transform = {1}, bool submit = true, bool select = true, bool visible = true);
-    entt::entity AddPrimitive(Primitive, const mat4 &transform = {1}, bool submit = true, bool select = true, bool visible = true);
+    entt::entity AddMesh(Mesh &&, MeshCreateInfo info = {});
+    entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
+    entt::entity AddPrimitive(Primitive, MeshCreateInfo info = {});
+    entt::entity AddInstance(entt::entity, MeshCreateInfo info = {});
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
+
+    void DestroyInstance(entt::entity, bool submit = true);
+    void DestroyEntity(entt::entity, bool submit = true);
 
     mat4 GetModel(entt::entity) const;
     void SetModel(entt::entity, mat4 &&, bool submit = true);
 
     void SetVisible(entt::entity, bool);
-
-    entt::entity AddInstance(entt::entity, mat4 &&transform = {1}, bool visible = true);
-    void DestroyInstance(entt::entity, bool submit = true);
-    void DestroyEntity(entt::entity, bool submit = true);
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
