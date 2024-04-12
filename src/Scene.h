@@ -185,6 +185,11 @@ struct Scene {
 
     void SetVisible(entt::entity, bool);
 
+    void SelectEntity(entt::entity entity, bool submit = true) {
+        SelectedEntity = entity;
+        if (submit) RecordAndSubmitCommandBuffer();
+    }
+
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
     vk::ImageView GetResolveImageView() const { return *MainPipeline.ResolveImage.View; }
@@ -240,11 +245,6 @@ private:
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 BgColor{0.22, 0.22, 0.22, 1.};
-
-    void SelectEntity(entt::entity entity, bool submit = false) {
-        SelectedEntity = entity;
-        if (submit) RecordAndSubmitCommandBuffer();
-    }
 
     void SetSelectionMode(::SelectionMode mode) {
         SelectionMode = mode;

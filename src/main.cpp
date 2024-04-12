@@ -231,20 +231,30 @@ void RenderAudioControls() {
         return;
     }
 
+    const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
+    if (listener_point) {
+        if (Button("Select sound object")) {
+            MainScene->SelectEntity(object_entity);
+            return;
+        }
+    }
+
     auto *sound_object = R.try_get<SoundObject>(object_entity);
     if (!sound_object) {
-        const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
         if (!listener_point) return;
         if (!Button("Set listener position")) return;
 
         sound_object = &R.emplace<SoundObject>(object_entity, *tets, R.get<RealImpact>(object_entity), *listener_point);
     }
 
-    SeparatorText("Audio model");
+    if (listener_point && listener_point->GetPosition() != sound_object->ListenerPosition) {
+        // todo: Refactor to remove realimpact dep from SoundObject, store the uint listener pos ID on SoundObject instead.
+        // Buttons:
+        // - change the listener position to the selected one
+        // - select the current listener position
+    }
 
-    // if (sound_object->GetListenerPosition == listener_point->getPosition()) {
-    //     if (Button("Change listener position")) { ... }
-    // }
+    SeparatorText("Audio model");
 
     static entt::entity CurrentVertexIndicatorEntity = entt::null;
 

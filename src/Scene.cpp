@@ -465,7 +465,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         MeshVkData->Boxes.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
     }
 
-    if (info.Select) SelectEntity(entity);
+    if (info.Select) SelectEntity(entity, false);
     if (info.Submit) RecordAndSubmitCommandBuffer();
     return entity;
 }
@@ -510,14 +510,14 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     R.emplace<Model>(entity, std::move(info.Transform));
     R.emplace<std::string>(entity, info.Name);
     SetVisible(entity, info.Visible);
-    SelectEntity(entity);
+    SelectEntity(entity, false);
     if (info.Submit) RecordAndSubmitCommandBuffer();
 
     return entity;
 }
 
 void Scene::DestroyEntity(entt::entity entity, bool submit) {
-    if (entity == SelectedEntity) SelectEntity(entt::null);
+    if (entity == SelectedEntity) SelectEntity(entt::null, false);
     if (const auto mesh_entity = GetParentEntity(entity); mesh_entity != entity) return DestroyInstance(entity, submit);
 
     MeshVkData->Main.erase(entity);
@@ -527,7 +527,7 @@ void Scene::DestroyEntity(entt::entity entity, bool submit) {
 
     const auto &node = R.get<SceneNode>(entity);
     for (const auto child : node.children) {
-        if (child == SelectedEntity) SelectEntity(entt::null);
+        if (child == SelectedEntity) SelectEntity(entt::null, false);
         R.destroy(child);
     }
     R.destroy(entity);
@@ -535,7 +535,7 @@ void Scene::DestroyEntity(entt::entity entity, bool submit) {
 }
 
 void Scene::DestroyInstance(entt::entity instance, bool submit) {
-    if (instance == SelectedEntity) SelectEntity(entt::null);
+    if (instance == SelectedEntity) SelectEntity(entt::null, false);
 
     SetVisible(instance, false);
     std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).parent).children, instance);
@@ -815,9 +815,9 @@ bool Scene::Render() {
                     auto it = std::ranges::find(sorted_hovered_entities, SelectedEntity);
                     if (it != sorted_hovered_entities.end()) ++it;
                     if (it == sorted_hovered_entities.end()) it = sorted_hovered_entities.begin();
-                    SelectEntity(*it, true);
+                    SelectEntity(*it);
                 } else {
-                    SelectEntity(entt::null, true);
+                    SelectEntity(entt::null);
                 }
             }
         }
@@ -971,7 +971,7 @@ void Scene::RenderConfig() {
                     AlignTextToFramePadding();
                     Text("Parent: %s", GetName(parent_entity).c_str());
                     SameLine();
-                    if (Button("Select")) SelectEntity(parent_entity, true);
+                    if (Button("Select")) SelectEntity(parent_entity);
                 }
                 if (!node.children.empty() && CollapsingHeader("Children")) {
                     RenderEntitiesTable("Children", node.children);
@@ -1185,7 +1185,7 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
             if (Button("Delete")) entity_to_delete = entity;
             PopID();
         }
-        if (entity_to_select != entt::null) SelectEntity(entity_to_select, true);
+        if (entity_to_select != entt::null) SelectEntity(entity_to_select);
         if (entity_to_delete != entt::null) DestroyEntity(entity_to_delete);
         EndTable();
     }
