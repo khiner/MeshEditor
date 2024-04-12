@@ -33,6 +33,8 @@ struct RealImpactListenerPoint {
     const long DistanceMm; // Distance from the microphone to the object, in (whole) mm
     const long AngleDeg; // Angle of the listener relative to the object, in (whole) degrees
 
+    const uint ObjectEntityId; // ID of the object entity in the scene
+
     // Optionally add half the mic length to the distance so that placing a mic mesh with its origin
     // at the returned point results in the front of the mic head at the correct distance.
     // Pass `false` to get the mic head position (listener position) instead of the mic center.
@@ -61,7 +63,7 @@ struct RealImpact {
     vec3 ImpactPositions[NumImpactVertices]; // World positions of the impact points
     std::optional<std::string> MaterialName;
 
-    uint ObjectEntityId; // ID of the mesh entity in the scene
+    uint ObjectEntityId; // ID of the object entity in the scene
 
     RealImpact(const fs::path &directory);
 

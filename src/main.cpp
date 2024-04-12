@@ -195,8 +195,8 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         );
     }
     // Store the RealImpact data on both the mesh and (root, invisible) listener point entity.
-    R.emplace<RealImpact>(object_entity, real_impact);
-    R.emplace<RealImpact>(listener_point_entity, real_impact);
+    // todo only store real_impact on the mesh entity
+    R.emplace<RealImpact>(object_entity, std::move(real_impact));
     MainScene->RecordAndSubmitCommandBuffer();
 }
 
@@ -218,12 +218,13 @@ void RenderAudioControls() {
     const auto selected_entity = MainScene->GetSelectedEntity();
     if (selected_entity == entt::null) return;
 
-    const auto parent_entity = MainScene->GetParentEntity(selected_entity);
-    const auto *real_impact = R.try_get<RealImpact>(parent_entity);
-    if (real_impact == nullptr) return;
+    auto *real_impact = R.try_get<RealImpact>(selected_entity);
+    const auto *selected_listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
+    if (real_impact == nullptr && selected_listener_point == nullptr) return;
 
-    const entt::entity object_entity = entt::entity(real_impact->ObjectEntityId);
-    const auto &object_mesh = MainScene->GetMesh(object_entity);
+    const entt::entity object_entity = entt::entity(real_impact ? real_impact->ObjectEntityId : selected_listener_point->ObjectEntityId);
+    real_impact = &R.get<RealImpact>(object_entity);
+    const auto &object_mesh = R.get<Mesh>(object_entity);
     auto *tets = R.try_get<Tets>(object_entity);
     if (tets == nullptr) {
         if (!Button("Generate tet mesh")) return; // todo conditionally show "Regenerate tet mesh"
@@ -238,32 +239,32 @@ void RenderAudioControls() {
         return;
     }
 
-    const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
-    if (listener_point) {
+    auto *sound_object = R.try_get<SoundObject>(object_entity);
+    if (!selected_listener_point && !sound_object) return;
+
+    SeparatorText("Audio model");
+
+    if (selected_listener_point) {
         if (Button("Select sound object")) {
             MainScene->SelectEntity(object_entity);
             return;
         }
     }
-
-    auto *sound_object = R.try_get<SoundObject>(object_entity);
     if (!sound_object) {
-        if (!listener_point) return;
         if (!Button("Set listener position")) return;
 
         sound_object = &R.emplace<SoundObject>(
-            object_entity, *tets, GetMaterialPreset(*real_impact), listener_point->GetPosition(),
-            uint(object_entity), uint(selected_entity), listener_point->LoadImpactSamples(*real_impact)
+            object_entity, *tets, GetMaterialPreset(*real_impact), selected_listener_point->GetPosition(),
+            uint(object_entity), uint(selected_entity), selected_listener_point->LoadImpactSamples(*real_impact)
         );
     }
-
-    if (listener_point && listener_point->GetPosition() != sound_object->ListenerPosition) {
-        // todo Buttons:
-        // - change the listener position to the selected one
-        // - select the current listener position
+    if ((selected_entity == object_entity) || (selected_listener_point && uint(selected_entity) != sound_object->ListenerEntityId)) {
+        if (Button("Select listener position")) {
+            MainScene->SelectEntity(entt::entity(sound_object->ListenerEntityId));
+            return;
+        }
+        // todo change the listener position to the selected one
     }
-
-    SeparatorText("Audio model");
 
     static entt::entity CurrentVertexIndicatorEntity = entt::null;
 
