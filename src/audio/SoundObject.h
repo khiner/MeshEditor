@@ -50,21 +50,23 @@ struct Modal {
 // Represents a rigid mesh object that generate an audio stream for a listener at a given position
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
-    // Modal only
-    SoundObject(const Tets &, MaterialProperties &&, vec3 listener_position);
-    // ImpactAudio and Modal
-    SoundObject(const Tets &, MaterialProperties &&, vec3 listener_position, std::unordered_map<uint, std::vector<float>> &&impace_frames_by_vertex);
+    // All SoundObjects have a modal audio model. If `impact_frames_by_vertex` is non-empty, the object also has an impact audio model.
+    SoundObject(
+        const Tets &, MaterialProperties &&, vec3 listener_position, uint object_entity_id, uint listener_entity_id,
+        std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex = {}
+    );
 
     ~SoundObject();
 
     const Tets &Tets;
-    vec3 ListenerPosition;
     MaterialProperties Material{MaterialPresets.at(DefaultMaterialPresetName)};
+    vec3 ListenerPosition;
+    uint ObjectEntityId{0}, ListenerEntityId{0};
     std::vector<uint> ExcitableVertices;
     uint CurrentVertex{0};
 
-    std::optional<SoundObjectData::ImpactAudio> ImpactAudioData{};
     std::optional<SoundObjectData::Modal> ModalData{};
+    std::optional<SoundObjectData::ImpactAudio> ImpactAudioData{};
 
     void SetModel(SoundObjectModel);
 

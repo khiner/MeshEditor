@@ -24,7 +24,6 @@ struct Tets {
     ~Tets();
 
     std::unique_ptr<tetgenio> TetGen;
-    uint MeshEntity{0};
 
     const tetgenio &operator*() const { return *TetGen; }
 

@@ -234,7 +234,7 @@ void RenderAudioControls() {
         auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
         tets = &R.emplace<Tets>(object_entity, GenerateTets(object_mesh, options));
         // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
-        tets->MeshEntity = uint(MainScene->AddMesh(tets->GenerateMesh(), {"Tet Mesh", MainScene->GetModel(object_entity), false, false, false}));
+        MainScene->AddMesh(tets->GenerateMesh(), {"Tet Mesh", MainScene->GetModel(object_entity), false, false, false});
         return;
     }
 
@@ -252,13 +252,13 @@ void RenderAudioControls() {
         if (!Button("Set listener position")) return;
 
         sound_object = &R.emplace<SoundObject>(
-            object_entity, *tets, GetMaterialPreset(*real_impact), listener_point->GetPosition(), listener_point->LoadImpactSamples(*real_impact)
+            object_entity, *tets, GetMaterialPreset(*real_impact), listener_point->GetPosition(),
+            uint(object_entity), uint(selected_entity), listener_point->LoadImpactSamples(*real_impact)
         );
     }
 
     if (listener_point && listener_point->GetPosition() != sound_object->ListenerPosition) {
-        // todo: store the uint listener pos ID on SoundObject instead.
-        // Buttons:
+        // todo Buttons:
         // - change the listener position to the selected one
         // - select the current listener position
     }

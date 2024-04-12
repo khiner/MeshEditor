@@ -200,14 +200,16 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     return model_dsp + instrument.str();
 }
 
-SoundObject::SoundObject(const ::Tets &tets, MaterialProperties &&material, vec3 listener_position)
-    : Tets(tets), ListenerPosition(std::move(listener_position)), Material(std::move(material)), ModalData(std::in_place) {}
-
-SoundObject::SoundObject(const ::Tets &tets, MaterialProperties &&material, vec3 listener_position, std::unordered_map<uint, std::vector<float>> &&impace_frames_by_vertex)
-    : Tets(tets), ListenerPosition(std::move(listener_position)), Material(std::move(material)),
-      ImpactAudioData({std::move(impace_frames_by_vertex)}), ModalData(std::in_place) {
-    for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);
-    CurrentVertex = ExcitableVertices.front();
+SoundObject::SoundObject(
+    const ::Tets &tets, MaterialProperties &&material, vec3 listener_position, uint object_entity_id, uint listener_entity_id,
+    std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex
+) : Tets(tets), Material(std::move(material)), ListenerPosition(std::move(listener_position)),
+    ObjectEntityId(object_entity_id), ListenerEntityId(listener_entity_id), ModalData(std::in_place) {
+    if (!impact_frames_by_vertex.empty()) {
+        ImpactAudioData = {std::move(impact_frames_by_vertex)};
+        for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);
+        CurrentVertex = ExcitableVertices.front();
+    }
 }
 
 SoundObject::~SoundObject() = default;
