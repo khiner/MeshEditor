@@ -18,7 +18,6 @@ using Sample = float;
 #include "tetMesh.h" // Vega
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
-#include "RealImpact.h"
 #include "Tets.h"
 #include "Worker.h"
 
@@ -201,35 +200,28 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
     return model_dsp + instrument.str();
 }
 
-MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
-    if (real_impact.MaterialName && MaterialPresets.contains(*real_impact.MaterialName)) {
-        return MaterialPresets.at(*real_impact.MaterialName);
-    }
-    return MaterialPresets.at(DefaultMaterialPresetName);
-}
+SoundObject::SoundObject(const ::Tets &tets, MaterialProperties &&material, vec3 listener_position)
+    : Tets(tets), ListenerPosition(std::move(listener_position)), Material(std::move(material)), ModalData(std::in_place) {}
 
-SoundObject::SoundObject(const ::Tets &tets, vec3 listener_position)
-    : Tets(tets), ListenerPosition(listener_position), ModalData(std::in_place) {}
-
-SoundObject::SoundObject(const ::Tets &tets, const RealImpact &real_impact, const RealImpactListenerPoint &listener_point)
-    : Tets(tets), ListenerPosition(listener_point.GetPosition()), Material(GetMaterialPreset(real_impact)),
-      CurrentVertex(real_impact.VertexIndices[0]),
-      RealImpactData({listener_point.LoadImpactSamples(real_impact)}), ModalData(std::in_place) {
-    for (auto vertex : real_impact.VertexIndices) ExcitableVertices.emplace_back(vertex);
+SoundObject::SoundObject(const ::Tets &tets, MaterialProperties &&material, vec3 listener_position, std::unordered_map<uint, std::vector<float>> &&impace_frames_by_vertex)
+    : Tets(tets), ListenerPosition(std::move(listener_position)), Material(std::move(material)),
+      ImpactAudioData({std::move(impace_frames_by_vertex)}), ModalData(std::in_place) {
+    for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);
+    CurrentVertex = ExcitableVertices.front();
 }
 
 SoundObject::~SoundObject() = default;
 
 void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, uint frame_count) {
-    if (Model == SoundObjectModel::RealImpact && RealImpactData) {
-        if (!RealImpactData->ImpactFramesByVertex.contains(CurrentVertex)) return;
+    if (Model == SoundObjectModel::ImpactAudio && ImpactAudioData) {
+        if (!ImpactAudioData->ImpactFramesByVertex.contains(CurrentVertex)) return;
 
-        const auto &impact_samples = RealImpactData->ImpactFramesByVertex.at(CurrentVertex);
+        const auto &impact_samples = ImpactAudioData->ImpactFramesByVertex.at(CurrentVertex);
         const uint sample_rate = device.SampleRate; // todo - resample from 48kHz to device sample rate if necessary
         (void)sample_rate; // Unused
 
         for (uint i = 0; i < frame_count; ++i) {
-            output[i] += RealImpactData->CurrentFrame < impact_samples.size() ? impact_samples[RealImpactData->CurrentFrame++] : 0.0f;
+            output[i] += ImpactAudioData->CurrentFrame < impact_samples.size() ? impact_samples[ImpactAudioData->CurrentFrame++] : 0.0f;
         }
     } else if (Model == SoundObjectModel::Modal && ModalData) {
         ModalData->FaustDsp->Compute(frame_count, &input, &output);
@@ -237,8 +229,8 @@ void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, u
 }
 
 void SoundObject::Strike(float force) {
-    if (RealImpactData) {
-        RealImpactData->CurrentFrame = 0;
+    if (ImpactAudioData) {
+        ImpactAudioData->CurrentFrame = 0;
     }
     if (ModalData) {
         // todo
@@ -258,14 +250,14 @@ void SoundObject::RenderControls() {
     }
     PushID("AudioModel");
     int model = int(Model);
-    bool model_changed = RadioButton("RealImpact", &model, int(SoundObjectModel::RealImpact));
+    bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::ImpactAudio));
     SameLine();
     model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
     PopID();
     if (model_changed) SetModel(SoundObjectModel(model));
-    if (Model == SoundObjectModel::RealImpact && RealImpactData) {
+    if (Model == SoundObjectModel::ImpactAudio && ImpactAudioData) {
         if (BeginCombo("Vertex", std::to_string(CurrentVertex).c_str())) {
-            for (auto &[vertex, _] : RealImpactData->ImpactFramesByVertex) {
+            for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) CurrentVertex = vertex;
             }
             EndCombo();
@@ -297,8 +289,8 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
         if (Button("Generate DSP")) {
-            if (!RealImpactData) {
-                // RealImpact meshes can only be struck at the impact points.
+            if (!ImpactAudioData) {
+                // ImpactAudio objects can only be struck at the impact points.
                 // Otherwise, linearly distribute the vertices across the tet mesh.
                 ExcitableVertices.clear();
                 const uint num_excitable_vertices = 5; // todo UI input

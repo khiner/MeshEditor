@@ -10,27 +10,26 @@
 #include "MaterialProperties.h"
 
 enum class SoundObjectModel {
-    RealImpact,
+    // Play back recordings of impacts on the object at provided listener points/vertices.
+    ImpactAudio,
     // Model a rigid body's response to an impact using modal analysis/synthesis:
     // - transforming the object's geometry into a tetrahedral volume mesh
     // - using FEM to estimate the mass/sg/damping matrices from the mesh
     // - estimating the dominant modal frequencies and amplitudes using an eigenvalues/eigenvector solver
     // - simulating the object's response to an impact by exciting the modes associated with the impacted vertex
-    Modal
+    Modal,
 };
 
-struct RealImpact;
-struct RealImpactListenerPoint;
 struct FaustDSP;
 struct Tets;
 
 // All model-specific data needed to render audio.
 namespace SoundObjectData {
-struct RealImpact {
-    RealImpact(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex)
+struct ImpactAudio {
+    ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex)
         : ImpactFramesByVertex(std::move(impact_frames_by_vertex)) {
         // Start at the end of the first sample, so it doesn't immediately play.
-        // All RealImpact samples are the same length.
+        // All samples are the same length.
         if (!ImpactFramesByVertex.empty()) {
             CurrentFrame = ImpactFramesByVertex.begin()->second.size();
         }
@@ -52,9 +51,9 @@ struct Modal {
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
     // Modal only
-    SoundObject(const Tets &, vec3 listener_position);
-    // RealImpact and Modal
-    SoundObject(const Tets &, const RealImpact &, const RealImpactListenerPoint &);
+    SoundObject(const Tets &, MaterialProperties &&, vec3 listener_position);
+    // ImpactAudio and Modal
+    SoundObject(const Tets &, MaterialProperties &&, vec3 listener_position, std::unordered_map<uint, std::vector<float>> &&impace_frames_by_vertex);
 
     ~SoundObject();
 
@@ -64,7 +63,7 @@ struct SoundObject : AudioSource {
     std::vector<uint> ExcitableVertices;
     uint CurrentVertex{0};
 
-    std::optional<SoundObjectData::RealImpact> RealImpactData{};
+    std::optional<SoundObjectData::ImpactAudio> ImpactAudioData{};
     std::optional<SoundObjectData::Modal> ModalData{};
 
     void SetModel(SoundObjectModel);
@@ -75,5 +74,5 @@ struct SoundObject : AudioSource {
     void RenderControls();
 
 private:
-    SoundObjectModel Model{SoundObjectModel::RealImpact};
+    SoundObjectModel Model{SoundObjectModel::ImpactAudio};
 };

@@ -203,6 +203,13 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
 // Worker TetGenerator{"Generate tet mesh", "Generating tetrahedral mesh...", [&] { GenerateTets(); }};
 // std::unique_ptr<tetgenio> TetGenResult;
 
+MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
+    if (real_impact.MaterialName && MaterialPresets.contains(*real_impact.MaterialName)) {
+        return MaterialPresets.at(*real_impact.MaterialName);
+    }
+    return MaterialPresets.at(DefaultMaterialPresetName);
+}
+
 using namespace ImGui;
 
 void RenderAudioControls() {
@@ -244,11 +251,13 @@ void RenderAudioControls() {
         if (!listener_point) return;
         if (!Button("Set listener position")) return;
 
-        sound_object = &R.emplace<SoundObject>(object_entity, *tets, R.get<RealImpact>(object_entity), *listener_point);
+        sound_object = &R.emplace<SoundObject>(
+            object_entity, *tets, GetMaterialPreset(*real_impact), listener_point->GetPosition(), listener_point->LoadImpactSamples(*real_impact)
+        );
     }
 
     if (listener_point && listener_point->GetPosition() != sound_object->ListenerPosition) {
-        // todo: Refactor to remove realimpact dep from SoundObject, store the uint listener pos ID on SoundObject instead.
+        // todo: store the uint listener pos ID on SoundObject instead.
         // Buttons:
         // - change the listener position to the selected one
         // - select the current listener position
