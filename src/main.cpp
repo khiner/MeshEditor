@@ -162,7 +162,12 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     swap[1][2] = 1;
     swap[2][1] = 1;
     swap[2][2] = 0;
-    const auto object_entity = MainScene->AddMesh(real_impact.ObjPath, {.Transform = std::move(swap), .Submit = false});
+
+    const auto object_name = real_impact.ObjectName;
+    const auto object_entity = MainScene->AddMesh(
+        real_impact.ObjPath,
+        {.Name = std::format("RealImpact Object: {}", object_name), .Transform = std::move(swap), .Submit = false}
+    );
     real_impact.ObjectEntityId = uint(object_entity);
     // Vertex indices may have changed due to deduplication.
     auto &mesh = MainScene->GetMesh(object_entity);
@@ -176,13 +181,18 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
 
     static const mat4 I{1};
     auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
-    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {I, false, false, false});
+    const auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
+    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {std::move(listener_points_name), I, false, false, false});
     static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
         const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-        R.emplace<RealImpactListenerPoint>(MainScene->AddInstance(listener_point_entity, {.Transform = glm::translate(I, pos) * rot, .Submit = false}), p);
+        const auto listener_point_name = std::format("RealImpact Listener: {}", p.MicId);
+        R.emplace<RealImpactListenerPoint>(
+            MainScene->AddInstance(listener_point_entity, {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Submit = false}),
+            p
+        );
     }
     // Store the RealImpact data on both the mesh and (root, invisible) listener point entity.
     R.emplace<RealImpact>(object_entity, real_impact);
@@ -217,7 +227,7 @@ void RenderAudioControls() {
         auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
         tets = &R.emplace<Tets>(object_entity, GenerateTets(object_mesh, options));
         // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
-        tets->MeshEntity = uint(MainScene->AddMesh(tets->GenerateMesh(), {MainScene->GetModel(object_entity), false, false, false}));
+        tets->MeshEntity = uint(MainScene->AddMesh(tets->GenerateMesh(), {"Tet Mesh", MainScene->GetModel(object_entity), false, false, false}));
         return;
     }
 
@@ -255,7 +265,10 @@ void RenderAudioControls() {
         if (CurrentVertexIndicatorEntity == entt::null) {
             auto vertex_indicator_mesh = Arrow();
             vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
-            CurrentVertexIndicatorEntity = MainScene->AddMesh(std::move(vertex_indicator_mesh), {.Transform = std::move(indicator_model), .Select = false, .Submit = true});
+            CurrentVertexIndicatorEntity = MainScene->AddMesh(
+                std::move(vertex_indicator_mesh),
+                {.Name = "Excite vertex indicator", .Transform = std::move(indicator_model), .Select = false, .Submit = true}
+            );
         } else {
             MainScene->SetModel(CurrentVertexIndicatorEntity, std::move(indicator_model), true);
         }
@@ -395,11 +408,12 @@ int main(int, char **) {
             if (BeginMenu("File")) {
                 if (MenuItem("Load mesh", nullptr)) {
                     static const std::vector<nfdfilteritem_t> filters{{"Mesh object", "obj,off,ply,stl,om"}};
-                    nfdchar_t *path;
-                    nfdresult_t result = NFD_OpenDialog(&path, filters.data(), filters.size(), "");
+                    nfdchar_t *nfd_path;
+                    nfdresult_t result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), "");
                     if (result == NFD_OKAY) {
-                        MainScene->AddMesh(fs::path(path));
-                        NFD_FreePath(path);
+                        const auto path = fs::path(nfd_path);
+                        MainScene->AddMesh(path, {.Name = path.filename().string()});
+                        NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));
                     }

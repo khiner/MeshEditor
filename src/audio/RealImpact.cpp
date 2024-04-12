@@ -76,7 +76,7 @@ const std::unordered_map<std::string, std::string> RealImpact::MaterialNameForOb
 };
 
 // Ascend up ancestor directories until we find the RealImpact object name directory.
-std::optional<std::string> FindObjectNameInAncestors(const fs::path &start_path) {
+std::optional<std::string> FindObjectName(const fs::path &start_path) {
     static const std::regex pattern("^\\d+_.*"); // Integer followed by an underscore and any characters
     for (auto path = start_path; path != path.root_path(); path = path.parent_path()) {
         const auto dirname = path.filename().string();
@@ -92,12 +92,8 @@ std::optional<std::string> FindObjectNameInAncestors(const fs::path &start_path)
     return {};
 }
 
-RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPath(Directory / "transformed.obj") {
-    if (const auto object_name = FindObjectNameInAncestors(Directory)) {
-        if (const auto it = MaterialNameForObjName.find(*object_name); it != MaterialNameForObjName.end()) {
-            MaterialName = it->second;
-        }
-    }
+RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPath(Directory / "transformed.obj"), ObjectName(*FindObjectName(Directory)) {
+    if (const auto it = MaterialNameForObjName.find(ObjectName); it != MaterialNameForObjName.end()) MaterialName = it->second;
     const auto vertex_ids = npy::read_npy<long>(Directory / "vertexID.npy").data;
     for (uint i = 0; i < NumImpactVertices; ++i) VertexIndices[i] = vertex_ids[i * NumListenerPoints];
     const auto vertex_xyzs = npy::read_npy<double>(Directory / "vertexXYZ.npy").data;

@@ -56,6 +56,7 @@ struct RealImpact {
 
     const fs::path Directory;
     const fs::path ObjPath; // Path to the .obj file
+    const std::string ObjectName;
     uint VertexIndices[NumImpactVertices]; // Unique vertex indices of the impact points in the .obj file
     vec3 ImpactPositions[NumImpactVertices]; // World positions of the impact points
     std::optional<std::string> MaterialName;

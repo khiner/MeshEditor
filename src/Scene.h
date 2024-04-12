@@ -150,6 +150,7 @@ enum class SelectionMode {
 };
 
 struct MeshCreateInfo {
+    std::string Name{};
     mat4 Transform{1};
     bool Select{true}, Visible{true}, Submit{true};
 };
@@ -178,6 +179,7 @@ struct Scene {
     void DestroyInstance(entt::entity, bool submit = true);
     void DestroyEntity(entt::entity, bool submit = true);
 
+    std::string GetName(entt::entity) const; // Returns name if present, otherwise hex ID.
     mat4 GetModel(entt::entity) const;
     void SetModel(entt::entity, mat4 &&, bool submit = true);
 
@@ -250,6 +252,8 @@ private:
     }
 
     Mesh &GetSelectedMesh() const;
+
+    void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
 
     // VK buffer update methods.
     void UpdateTransformBuffers();

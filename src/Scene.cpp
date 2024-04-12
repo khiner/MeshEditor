@@ -14,6 +14,8 @@
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
+std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
+
 struct SceneNode {
     entt::entity parent = entt::null;
     std::vector<entt::entity> children;
@@ -446,6 +448,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
     R.emplace<Mesh>(entity, std::move(mesh));
     R.emplace<Model>(entity, model);
+    R.emplace<std::string>(entity, info.Name);
 
     MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
@@ -466,11 +469,10 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     if (info.Submit) RecordAndSubmitCommandBuffer();
     return entity;
 }
-entt::entity Scene::AddMesh(const fs::path &file_path, MeshCreateInfo info) {
-    return AddMesh(Mesh{file_path}, std::move(info));
-}
+entt::entity Scene::AddMesh(const fs::path &file_path, MeshCreateInfo info) { return AddMesh(Mesh{file_path}, std::move(info)); }
 
 entt::entity Scene::AddPrimitive(Primitive primitive, MeshCreateInfo info) {
+    if (info.Name.empty()) info.Name = to_string(primitive);
     auto entity = AddMesh(CreateDefaultPrimitive(primitive), std::move(info));
     R.emplace<Primitive>(entity, primitive);
     return entity;
@@ -503,8 +505,10 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
     auto &parent_node = R.get<SceneNode>(parent);
+    if (info.Name.empty()) info.Name = std::format("{} instance {}", GetName(parent), parent_node.children.size());
     parent_node.children.emplace_back(entity);
     R.emplace<Model>(entity, std::move(info.Transform));
+    R.emplace<std::string>(entity, info.Name);
     SetVisible(entity, info.Visible);
     SelectEntity(entity);
     if (info.Submit) RecordAndSubmitCommandBuffer();
@@ -554,12 +558,20 @@ void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
     if (submit) SubmitCommandBuffer();
 }
 
+std::string Scene::GetName(entt::entity entity) const {
+    if (entity == entt::null) return "null";
+    if (const auto *name = R.try_get<std::string>(entity)) {
+        if (!name->empty()) return *name;
+    }
+    return IdString(entity);
+}
+
 mat4 Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
 
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity, const MeshElementIndex &highlight_element) {
-    auto &mesh = R.get<Mesh>(mesh_entity);
+    const auto &mesh = R.get<Mesh>(mesh_entity);
     auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
-    const Mesh::ElementIndex highlight(highlight_element);
+    const Mesh::ElementIndex highlight{highlight_element};
     for (auto element : AllElements) { // todo only update buffers for viewed elements.
         VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh.CreateVertices(element, highlight));
     }
@@ -951,25 +963,18 @@ void Scene::RenderConfig() {
             }
             if (SelectedEntity != entt::null) {
                 PushID(uint(SelectedEntity));
-                Text("Selected object: 0x%08x", uint(SelectedEntity));
+                Text("Selected object: %s", GetName(SelectedEntity).c_str());
                 Indent();
 
                 const auto &node = R.get<SceneNode>(SelectedEntity);
                 if (auto parent_entity = node.parent; parent_entity != entt::null) {
                     AlignTextToFramePadding();
-                    Text("Parent: 0x%08x", uint(parent_entity));
+                    Text("Parent: %s", GetName(parent_entity).c_str());
                     SameLine();
                     if (Button("Select")) SelectEntity(parent_entity, true);
                 }
                 if (!node.children.empty() && CollapsingHeader("Children")) {
-                    for (const auto child : node.children) {
-                        PushID(uint(child));
-                        AlignTextToFramePadding();
-                        Text("0x%08x", uint(child));
-                        SameLine();
-                        if (Button("Select")) SelectEntity(child, true);
-                        PopID();
-                    }
+                    RenderEntitiesTable("Children", node.children);
                 }
                 const auto &selected_mesh = GetSelectedMesh();
                 TextUnformatted(
@@ -1019,22 +1024,17 @@ void Scene::RenderConfig() {
                     RadioButton(to_string(primitive).c_str(), &current_primitive_edit, int(primitive));
                 }
                 if (auto mesh = PrimitiveEditor(Primitive(current_primitive_edit), true)) {
-                    R.emplace<Primitive>(AddMesh(std::move(*mesh)), Primitive(current_primitive_edit));
+                    R.emplace<Primitive>(AddMesh(std::move(*mesh), {.Name = to_string(Primitive(current_primitive_edit))}), Primitive(current_primitive_edit));
                 }
                 PopID();
             }
 
             if (CollapsingHeader("All objects")) {
-                for (auto entity : R.view<SceneNode>()) {
-                    const auto &node = R.get<SceneNode>(entity);
-                    if (node.parent == entt::null) {
-                        if (TreeNodeEx(&node, ImGuiTreeNodeFlags_DefaultOpen, "0x%08x", uint(entity))) {
-                            if (Button("Select")) SelectEntity(entity, true);
-                            if (Button("Delete")) DestroyEntity(entity);
-                            TreePop();
-                        }
-                    }
-                }
+                std::vector<entt::entity> table_entities;
+                R.view<SceneNode>().each([&](auto entity, const auto &node) {
+                    if (node.parent == entt::null) table_entities.emplace_back(entity);
+                });
+                RenderEntitiesTable("All objects", table_entities);
             }
             EndTabItem();
         }
@@ -1160,5 +1160,33 @@ void Scene::RenderConfig() {
             EndTabItem();
         }
         EndTabBar();
+    }
+}
+
+void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity> &entities) {
+    if (BeginTable(name.c_str(), 3)) {
+        const static float CharWidth = CalcTextSize("A").x;
+        TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
+        TableSetupColumn("Name");
+        TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
+        TableHeadersRow();
+        entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
+        for (const auto entity : entities) {
+            PushID(uint(entity));
+            TableNextColumn();
+            AlignTextToFramePadding();
+            if (entity == SelectedEntity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+            TextUnformatted(IdString(entity).c_str());
+            TableNextColumn();
+            TextUnformatted(R.get<std::string>(entity).c_str());
+            TableNextColumn();
+            if (Button("Select")) entity_to_select = entity;
+            SameLine();
+            if (Button("Delete")) entity_to_delete = entity;
+            PopID();
+        }
+        if (entity_to_select != entt::null) SelectEntity(entity_to_select, true);
+        if (entity_to_delete != entt::null) DestroyEntity(entity_to_delete);
+        EndTable();
     }
 }
