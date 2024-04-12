@@ -423,10 +423,10 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         const uint new_model_index = entity == parent || model_indices.empty() ?
             0 :
             std::max_element(model_indices.begin(), model_indices.end(), [](const auto &a, const auto &b) { return a.second < b.second; })->second + 1;
-        model_indices.emplace(entity, new_model_index);
         for (auto &[_, model_index] : model_indices) {
             if (model_index >= new_model_index) ++model_index;
         }
+        model_indices.emplace(entity, new_model_index);
         UpdateModelBuffer(entity);
     } else {
         R.remove<Visible>(entity);
@@ -448,7 +448,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh, const mat4 &transform, bool submit, boo
     R.emplace<Model>(entity, model);
 
     MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
-    SetVisible(entity, visible);
+    SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
+    if (!visible) SetVisible(entity, false);
 
     MeshBuffers mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
@@ -973,6 +974,7 @@ void Scene::RenderConfig() {
                 TextUnformatted(
                     std::format("Vertices|Edges|Faces: {:L} | {:L} | {:L}", selected_mesh.GetVertexCount(), selected_mesh.GetEdgeCount(), selected_mesh.GetFaceCount()).c_str()
                 );
+                Text("Model buffer index: %s", GetModelBufferIndex(SelectedEntity) ? std::to_string(*GetModelBufferIndex(SelectedEntity)).c_str() : "None");
                 Unindent();
                 bool visible = R.all_of<Visible>(SelectedEntity);
                 if (Checkbox("Visible", &visible)) {

@@ -217,8 +217,7 @@ void RenderAudioControls() {
         auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
         tets = &R.emplace<Tets>(object_entity, GenerateTets(object_mesh, options));
         // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
-        // todo this currently causes an extra large arrow to be drawn after adding the vertex indicator arrow...
-        // tets->MeshEntity = uint(MainScene->AddMesh(tets->GenerateMesh(), MainScene->GetModel(object_entity), false, false, false));
+        tets->MeshEntity = uint(MainScene->AddMesh(tets->GenerateMesh(), MainScene->GetModel(object_entity), false, false, false));
         return;
     }
 
