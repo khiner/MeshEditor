@@ -36,3 +36,6 @@
 [submodule "lib/imspinner"]
 	path = lib/imspinner
 	url = git@github.com:dalerank/imspinner.git
+[submodule "lib/implot"]
+	path = lib/implot
+	url = git@github.com:epezent/implot.git

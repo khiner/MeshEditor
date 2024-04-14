@@ -5,6 +5,7 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
+#include "implot.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -334,6 +335,7 @@ int main(int, char **) {
     // Setup ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
 
     ImGuiIO &io = GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
@@ -425,6 +427,7 @@ int main(int, char **) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.25f, nullptr, &dockspace_id);
             auto demo_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
             DockBuilderDockWindow(Windows.ImGuiDemo.Name, demo_node_id);
+            DockBuilderDockWindow(Windows.ImPlotDemo.Name, demo_node_id);
             DockBuilderDockWindow(Windows.SceneControls.Name, controls_node_id);
             DockBuilderDockWindow(Windows.Scene.Name, dockspace_id);
         }
@@ -468,6 +471,7 @@ int main(int, char **) {
             }
             if (BeginMenu("Windows")) {
                 MenuItem(Windows.ImGuiDemo.Name, nullptr, &Windows.ImGuiDemo.Visible);
+                MenuItem(Windows.ImPlotDemo.Name, nullptr, &Windows.ImPlotDemo.Visible);
                 MenuItem(Windows.SceneControls.Name, nullptr, &Windows.SceneControls.Visible);
                 MenuItem(Windows.Scene.Name, nullptr, &Windows.Scene.Visible);
                 EndMenu();
@@ -475,7 +479,8 @@ int main(int, char **) {
             EndMainMenuBar();
         }
 
-        if (Windows.ImGuiDemo.Visible) ShowDemoWindow(&Windows.ImGuiDemo.Visible);
+        if (Windows.ImGuiDemo.Visible) ImGui::ShowDemoWindow(&Windows.ImGuiDemo.Visible);
+        if (Windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&Windows.ImPlotDemo.Visible);
 
         if (Windows.SceneControls.Visible) {
             Begin(Windows.SceneControls.Name, &Windows.SceneControls.Visible);
@@ -537,7 +542,9 @@ int main(int, char **) {
     VC->Device->waitIdle();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
-    DestroyContext();
+
+    ImPlot::DestroyContext();
+    ImGui::DestroyContext();
 
     CleanupVulkanWindow();
     MainSceneTextureSampler.reset();

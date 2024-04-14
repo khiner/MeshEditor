@@ -18,6 +18,7 @@ find_package(Vulkan REQUIRED)
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
 set(IMGUI_DIR lib/imgui)
+set(IMPLOT_DIR lib/implot)
 
 add_executable(${PROJECT_NAME}
     ${IMGUI_DIR}/imgui_demo.cpp
@@ -27,6 +28,9 @@ add_executable(${PROJECT_NAME}
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
+    ${IMPLOT_DIR}/implot.cpp
+    ${IMPLOT_DIR}/implot_items.cpp
+    ${IMPLOT_DIR}/implot_demo.cpp
     lib/ImGuizmo/ImGuizmo.cpp
     ${SOURCES}
 )
@@ -39,6 +43,7 @@ include_directories(
     ${Vulkan_INCLUDE_DIRS}
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
+    ${IMPLOT_DIR}
     lib/ImGuizmo
     lib/imspinner
     lib/glm
