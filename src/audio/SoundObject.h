@@ -24,6 +24,12 @@ struct FaustDSP;
 struct Tets;
 template<typename Result> struct Worker;
 
+struct Mesh2FaustResult {
+    std::string ModelDsp; // Faust DSP code defining the model function.
+    std::vector<float> ModeFreqs; // Mode frequencies
+    std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
+};
+
 // All model-specific data needed to render audio.
 namespace SoundObjectData {
 struct ImpactAudio {
@@ -78,5 +84,5 @@ struct SoundObject : AudioSource {
 
 private:
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
-    std::unique_ptr<Worker<std::string>> DspGenerator;
+    std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
 };

@@ -3,6 +3,7 @@
 #include <format>
 
 #include "imgui.h"
+#include "implot.h"
 
 #include "mesh2faust.h"
 
@@ -120,7 +121,7 @@ SoundObjectData::Modal::~Modal() = default;
 
 // Worker DspGenerator{"Generate DSP code", "Generating DSP code..."};
 
-string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false) {
+Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false) {
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
     // Turn each tetrahedron into 4 triangles.
@@ -155,9 +156,9 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
 
     const auto m2f_result = m2f::mesh2faust(&volumetric_mesh, args);
     const string model_dsp = m2f_result.modelDsp;
-    if (model_dsp.empty()) return "process = 0;";
+    if (model_dsp.empty()) return {"process = 0;", {}, {}};
 
-    const auto &mode_freqs = m2f_result.model.modeFreqs;
+    auto &mode_freqs = m2f_result.model.modeFreqs;
     const float fundamental_freq = mode_freqs.empty() ? 440.0f : mode_freqs.front();
 
     // Static code sections.
@@ -197,7 +198,11 @@ string GenerateDsp(const tetgenio &tets, const MaterialProperties &material, con
                << '\n'
                << process << '\n';
 
-    return model_dsp + instrument.str();
+    return {
+        .ModelDsp = model_dsp + instrument.str(),
+        .ModeFreqs = std::move(mode_freqs),
+        .ModeGains = std::move(m2f_result.model.modeGains)
+    };
 }
 
 SoundObject::SoundObject(
@@ -246,10 +251,18 @@ void SoundObject::SetModel(SoundObjectModel model) {
 
 using namespace ImGui;
 
-void SoundObject::RenderControls() {
-    if (Button("Strike")) {
-        Strike();
+void RenderBarPlot() {
+    static float data[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    if (ImPlot::BeginPlot("Bar Plot")) {
+        ImPlot::PlotBars("Vertical", data, 10, 0.7, 1);
+        ImPlot::EndPlot();
     }
+}
+
+void SoundObject::RenderControls() {
+    RenderBarPlot();
+
+    if (Button("Strike")) Strike();
     PushID("AudioModel");
     int model = int(Model);
     bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::ImpactAudio));
@@ -294,8 +307,8 @@ void SoundObject::RenderControls() {
             ModalData->FaustDsp->Ui->Draw();
         } else {
             if (DspGenerator) {
-                if (auto dsp_code = DspGenerator->Render()) {
-                    ModalData->FaustDsp->SetCode(*dsp_code);
+                if (auto m2f_result = DspGenerator->Render()) {
+                    ModalData->FaustDsp->SetCode(m2f_result->ModelDsp);
                     DspGenerator.reset();
                 }
             } else if (Button("Generate DSP")) {
@@ -309,7 +322,9 @@ void SoundObject::RenderControls() {
                         ExcitableVertices.emplace_back(i * Tets->numberofpoints / num_excitable_vertices);
                     }
                 }
-                DspGenerator = std::make_unique<Worker<string>>("Generating DSP code...", [&] { return GenerateDsp(*Tets, Material, ExcitableVertices, true); });
+                DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
+                    return GenerateDsp(*Tets, Material, ExcitableVertices, true);
+                });
             }
         }
     }
