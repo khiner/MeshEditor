@@ -7,10 +7,19 @@
 std::string TetGenOptions::CreateFlags() const { return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : ""); }
 
 Tets::Tets(std::unique_ptr<tetgenio> tet_gen) : TetGen(std::move(tet_gen)) {}
+Tets::Tets(const Mesh &mesh, TetGenOptions options) : Tets(CreateTets(mesh, options)) {}
 Tets::Tets(Tets &&other) = default;
 Tets::~Tets() = default;
 
-Tets GenerateTets(const Mesh &mesh, TetGenOptions options) {
+Tets &Tets::operator=(Tets &&other) noexcept {
+    if (this != &other) {
+        TetGen = std::move(other.TetGen);
+        // Move or reassign other member variables if necessary
+    }
+    return *this;
+}
+
+Tets Tets::CreateTets(const Mesh &mesh, TetGenOptions options) {
     static const int TriVerts = 3;
     tetgenio in;
     const float *vertices = mesh.GetPositionData();
@@ -44,7 +53,7 @@ Tets GenerateTets(const Mesh &mesh, TetGenOptions options) {
     return {std::move(result)};
 }
 
-Mesh Tets::GenerateMesh() const {
+Mesh Tets::CreateMesh() const {
     std::vector<vec3> vertices;
     std::vector<std::vector<uint>> faces;
     for (uint i = 0; i < uint(TetGen->numberofpoints); ++i) {

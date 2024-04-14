@@ -16,6 +16,7 @@
 #include "Scene.h"
 #include "Tets.h"
 #include "Window.h"
+#include "Worker.h"
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
@@ -200,9 +201,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     MainScene->RecordAndSubmitCommandBuffer();
 }
 
-// Worker TetGenerator{"Generate tet mesh", "Generating tetrahedral mesh...", [&] { GenerateTets(); }};
-// std::unique_ptr<tetgenio> TetGenResult;
-
 MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
     if (real_impact.MaterialName && MaterialPresets.contains(*real_impact.MaterialName)) {
         return MaterialPresets.at(*real_impact.MaterialName);
@@ -211,6 +209,8 @@ MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
 }
 
 using namespace ImGui;
+
+std::unique_ptr<Worker<Tets>> TetGenerator;
 
 void RenderAudioControls() {
     AudioSources.RenderControls();
@@ -225,17 +225,22 @@ void RenderAudioControls() {
     const entt::entity object_entity = entt::entity(real_impact ? real_impact->ObjectEntityId : selected_listener_point->ObjectEntityId);
     real_impact = &R.get<RealImpact>(object_entity);
     const auto &object_mesh = R.get<Mesh>(object_entity);
-    auto *tets = R.try_get<Tets>(object_entity);
-    if (tets == nullptr) {
-        if (!Button("Generate tet mesh")) return; // todo conditionally show "Regenerate tet mesh"
-        // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
-        // todo quality UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
-        // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
-        const bool is_real_impact = true; // todo support modal models on arbitrary meshes.
-        auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
-        tets = &R.emplace<Tets>(object_entity, GenerateTets(object_mesh, options));
-        // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
-        MainScene->AddMesh(tets->GenerateMesh(), {"Tet Mesh", MainScene->GetModel(object_entity), false, false, false});
+    if (!R.all_of<Tets>(object_entity)) {
+        if (TetGenerator) {
+            if (auto tets = TetGenerator->Render()) {
+                // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
+                MainScene->AddMesh(tets->CreateMesh(), {"Tet Mesh", MainScene->GetModel(object_entity), false, false, false});
+                R.emplace<Tets>(object_entity, std::move(*tets));
+                TetGenerator.reset();
+            }
+        } else if (Button("Generate tet mesh")) { // todo conditionally show "Regenerate tet mesh"
+            // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
+            // todo quality UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
+            // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+            const bool is_real_impact = true; // todo support modal models on arbitrary meshes.
+            auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
+            TetGenerator = std::make_unique<Worker<Tets>>("Generating tetrahedral mesh...", [&] { return Tets::CreateTets(object_mesh, options); });
+        }
         return;
     }
 
@@ -254,7 +259,7 @@ void RenderAudioControls() {
         if (!Button("Set listener position")) return;
 
         sound_object = &R.emplace<SoundObject>(
-            object_entity, *tets, GetMaterialPreset(*real_impact), selected_listener_point->GetPosition(),
+            object_entity, R.get<Tets>(object_entity), GetMaterialPreset(*real_impact), selected_listener_point->GetPosition(),
             uint(object_entity), uint(selected_entity), selected_listener_point->LoadImpactSamples(*real_impact)
         );
     }

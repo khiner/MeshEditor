@@ -298,7 +298,7 @@ void SoundObject::RenderControls() {
                 const uint num_excitable_vertices = 5; // todo UI input
                 ExcitableVertices.reserve(num_excitable_vertices);
                 for (uint i = 0; i < num_excitable_vertices; ++i) {
-                    ExcitableVertices.emplace_back(i * (*Tets).numberofpoints / num_excitable_vertices);
+                    ExcitableVertices.emplace_back(i * Tets->numberofpoints / num_excitable_vertices);
                 }
             }
             const bool freq_control = true;

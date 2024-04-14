@@ -1,31 +1,43 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
+#include <future>
 #include <string>
 #include <string_view>
 #include <thread>
 
+#include "imgui.h"
+#include "imspinner.h"
+
+template<typename Result>
 struct Worker {
-    Worker(std::string_view launch_label, std::string_view working_message, std::function<void()> work = {})
-        : LaunchLabel(launch_label), WorkingMessage(working_message), Work(work) {}
-
-    ~Worker() {
-        if (Thread.joinable()) Thread.join();
+    Worker(std::string_view working_message, std::function<Result()> work = {})
+        : WorkingMessage(working_message) {
+        ImGui::OpenPopup(WorkingMessage.c_str());
+        ResultFuture = std::async(std::launch::async, [work]() -> Result { return work(); });
     }
 
-    bool Render(); // Returns `true` if the work completed.
-    void RenderLauncher(const std::function<void()> &work);
-    void RenderLauncher(std::string_view launch_label) {
-        LaunchLabel = launch_label;
-        RenderLauncher(Work);
+    ~Worker() = default;
+
+    std::optional<Result> Render() {
+        std::optional<Result> result = {};
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+        ImGui::SetNextWindowSize(ImGui::GetMainViewport()->Size / 4);
+        if (ImGui::BeginPopupModal(WorkingMessage.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            const auto &ws = ImGui::GetWindowSize();
+            const float spinner_size = std::min(ws.x, ws.y) / 2;
+            ImGui::SetCursorPos((ws - ImVec2{spinner_size, spinner_size}) / 2 + ImVec2(0, ImGui::GetTextLineHeight()));
+            ImSpinner::SpinnerMultiFadeDots(WorkingMessage.c_str(), spinner_size / 2, 3);
+            if (ResultFuture.valid() && ResultFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                result = std::make_optional(std::move(ResultFuture.get()));
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        return result;
     }
-    void RenderLauncher() { RenderLauncher(Work); }
 
-    void Launch();
-    void Launch(const std::function<void()> &work);
-
-    std::thread Thread;
-    std::string LaunchLabel, WorkingMessage;
-    std::function<void()> Work;
-    std::atomic<bool> Working = false;
+    std::string WorkingMessage;
+    std::future<Result> ResultFuture;
 };

@@ -19,15 +19,19 @@ struct TetGenOptions {
 class tetgenio;
 
 struct Tets {
+    Tets(const Mesh &, TetGenOptions);
     Tets(Tets &&);
     Tets(std::unique_ptr<tetgenio>);
     ~Tets();
 
+    Tets &operator=(Tets &&) noexcept;
+
     std::unique_ptr<tetgenio> TetGen;
 
+    static Tets CreateTets(const Mesh &, TetGenOptions);
+
     const tetgenio &operator*() const { return *TetGen; }
+    const tetgenio *operator->() const { return TetGen.get(); }
 
-    Mesh GenerateMesh() const;
+    Mesh CreateMesh() const;
 };
-
-Tets GenerateTets(const Mesh &, TetGenOptions);
