@@ -22,6 +22,7 @@ enum class SoundObjectModel {
 
 struct FaustDSP;
 struct Tets;
+template<typename Result> struct Worker;
 
 // All model-specific data needed to render audio.
 namespace SoundObjectData {
@@ -77,4 +78,5 @@ struct SoundObject : AudioSource {
 
 private:
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
+    std::unique_ptr<Worker<std::string>> DspGenerator;
 };

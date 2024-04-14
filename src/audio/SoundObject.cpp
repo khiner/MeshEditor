@@ -290,20 +290,27 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping alpha", &Material.Alpha, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
-        if (Button("Generate DSP")) {
-            if (!ImpactAudioData) {
-                // ImpactAudio objects can only be struck at the impact points.
-                // Otherwise, linearly distribute the vertices across the tet mesh.
-                ExcitableVertices.clear();
-                const uint num_excitable_vertices = 5; // todo UI input
-                ExcitableVertices.reserve(num_excitable_vertices);
-                for (uint i = 0; i < num_excitable_vertices; ++i) {
-                    ExcitableVertices.emplace_back(i * Tets->numberofpoints / num_excitable_vertices);
+        if (ModalData->FaustDsp->Ui) {
+            ModalData->FaustDsp->Ui->Draw();
+        } else {
+            if (DspGenerator) {
+                if (auto dsp_code = DspGenerator->Render()) {
+                    ModalData->FaustDsp->SetCode(*dsp_code);
+                    DspGenerator.reset();
                 }
+            } else if (Button("Generate DSP")) {
+                if (!ImpactAudioData) {
+                    // ImpactAudio objects can only be struck at the impact points.
+                    // Otherwise, linearly distribute the vertices across the tet mesh.
+                    ExcitableVertices.clear();
+                    const uint num_excitable_vertices = 5; // todo UI input
+                    ExcitableVertices.reserve(num_excitable_vertices);
+                    for (uint i = 0; i < num_excitable_vertices; ++i) {
+                        ExcitableVertices.emplace_back(i * Tets->numberofpoints / num_excitable_vertices);
+                    }
+                }
+                DspGenerator = std::make_unique<Worker<string>>("Generating DSP code...", [&] { return GenerateDsp(*Tets, Material, ExcitableVertices, true); });
             }
-            const bool freq_control = true;
-            ModalData->FaustDsp->SetCode(GenerateDsp(*Tets, Material, ExcitableVertices, freq_control));
         }
-        if (ModalData->FaustDsp->Ui) ModalData->FaustDsp->Ui->Draw();
     }
 }
