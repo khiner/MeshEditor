@@ -295,6 +295,10 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
         if (ModalData->FaustDsp->Ui) {
+            // Poll the Faust DSP UI to see if the current excitation vertex has changed.
+            const auto ui_vertex = uint(*ModalData->FaustDsp->Ui->getZoneForLabel("exPos"));
+            if (ui_vertex < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[ui_vertex];
+
             ModalData->FaustDsp->Ui->Draw();
             if (ImPlot::BeginPlot("Mode frequencies")) {
                 const auto &mode_freqs = ModalData->ModeFreqs;
@@ -310,9 +314,8 @@ void SoundObject::RenderControls() {
                 const auto curr_vertex_it = std::ranges::find(ExcitableVertices, CurrentVertex);
                 const auto current_mode = std::distance(ExcitableVertices.begin(), curr_vertex_it);
                 const auto &mode_gains = ModalData->ModeGains[current_mode];
-                const float max_gain = *std::max_element(mode_gains.begin(), mode_gains.end());
                 ImPlot::SetupAxes("Mode index", "Gain");
-                ImPlot::SetupAxesLimits(-0.5f, mode_gains.size() - 0.5f, 0, max_gain);
+                ImPlot::SetupAxesLimits(-0.5f, mode_gains.size() - 0.5f, 0, 1);
                 ImPlot::PlotBars("", mode_gains.data(), mode_gains.size(), 0.9);
                 ImPlot::EndPlot();
             }
