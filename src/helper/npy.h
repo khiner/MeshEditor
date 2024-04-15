@@ -260,25 +260,35 @@ const std::unordered_map<std::type_index, dtype_t> dtype_map = {
     {std::type_index(typeid(std::complex<long double>)), {host_endian_char, 'c', sizeof(std::complex<long double>)}}
 };
 
-template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, size_t offset = 0, size_t size = 0) {
-    std::string header_s = read_header(in);
-    header_t header = parse_header(header_s);
-    dtype_t dtype = dtype_map.at(std::type_index(typeid(Scalar)));
+// `in` stream position will be after the header after returning.
+template<typename Scalar> inline header_t read_header(std::istream &in) {
+    auto header = parse_header(read_header(in));
+    auto dtype = dtype_map.at(std::type_index(typeid(Scalar)));
     if (header.dtype.tie() != dtype.tie()) throw std::runtime_error("Formatting error: typestrings do not match.");
 
+    return header;
+}
+
+// `advance` is relative to the current `in` read position.
+// `in` stream position will be after the read data after returning.
+template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, const header_t &header, size_t advance = 0, size_t size = 0) {
     auto &shape = header.shape;
     size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());
-    size_t read_size = size == 0 || size > total_size - offset ? total_size - offset : size;
+    size_t read_size = size == 0 || size > total_size - advance ? total_size - advance : size;
     npy_data<Scalar> data{shape, header.fortran_order, std::vector<Scalar>(read_size)};
-
-    // Seek relative to the current position (after the header).
-    in.seekg(std::streamoff(sizeof(Scalar) * offset), std::ios_base::cur);
+    // Seek relative to the current position.
+    in.seekg(std::streamoff(sizeof(Scalar) * advance), std::ios_base::cur);
     in.read(reinterpret_cast<char *>(data.data.data()), sizeof(Scalar) * read_size);
     return data;
 }
+template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, size_t advance = 0, size_t size = 0) {
+    auto header = read_header<Scalar>(in);
+    return read_npy<Scalar>(in, header, advance, size);
+}
+
 template<typename Scalar> inline npy_data<Scalar> read_npy(const std::string &filename, size_t offset = 0, size_t size = 0) {
     std::ifstream stream(filename, std::ifstream::binary);
-    if (!stream) throw std::runtime_error("IO error: failed to open a file.");
+    if (!stream) throw std::runtime_error("IO error: failed to open file.");
 
     return read_npy<Scalar>(stream, offset, size);
 }

@@ -150,18 +150,23 @@ vec3 RealImpactListenerPoint::GetPosition(vec3 world_up, bool mic_center) const 
 }
 
 std::unordered_map<uint, std::vector<float>> RealImpactListenerPoint::LoadImpactSamples(const RealImpact &parent) const {
+    float max_sample = 0;
+
+    std::ifstream stream{parent.Directory / "deconvolved_0db.npy", std::ifstream::binary};
+    if (!stream) throw std::runtime_error("IO error: failed to open file.");
+    const auto header = npy::read_header<float>(stream);
+
+    const size_t frames_per_impact = header.shape[1];
     std::unordered_map<uint, std::vector<float>> all_samples;
     all_samples.reserve(RealImpact::NumImpactVertices);
-    float max_sample = 0;
     for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
-        const uint vertex_index = parent.VertexIndices[i];
-        const size_t offset = i * RealImpact::NumListenerPoints + Index;
-        const size_t size = 209549; // todo get from shape
-        auto frames = npy::read_npy<float>(parent.Directory / "deconvolved_0db.npy", offset, size).data;
-
+        // All listener points are recorded before the vertex moves.
+        // The offset is calculated relative to the current stream read position.
+        const size_t advance_frames = (i == 0 ? Index : (RealImpact::NumListenerPoints - 1)) * frames_per_impact;
+        auto frames = npy::read_npy<float>(stream, header, advance_frames, frames_per_impact).data;
         const float max_vertex_sample = std::abs(*std::max_element(frames.begin(), frames.end(), [](float a, float b) { return std::abs(a) < std::abs(b); }));
         max_sample = std::max(max_sample, max_vertex_sample);
-        all_samples.emplace(vertex_index, std::move(frames));
+        all_samples.emplace(parent.VertexIndices[i], std::move(frames));
     }
     // Normalize audio to [-1, 1]
     for (auto &[_, samples] : all_samples) {

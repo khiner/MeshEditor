@@ -16,7 +16,7 @@ Holds all listener point data except the audio samples.
 There are 2.3G of audio sample data for each object.
   - 15 microphones * 4 distances * 10 angles = 600 listener points for each impact point
   - 5 impact points per listener points = 3000 impact samples
-  - ~4.37s at 48kHz = 209,549 frames for each recording
+  - ~4.37s at 48kHz = 208,592 frames for each recording
 
 The `ListenerPoints` vector holds the first 600 listener points, representing all unique listener positions.
 The values vary first by MicId, then by DistanceMm, and finally by AngleDeg.
