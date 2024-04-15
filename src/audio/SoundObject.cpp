@@ -143,18 +143,27 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     excitable_vertex_indices_ints.reserve(excitable_vertex_indices.size());
     for (uint i : excitable_vertex_indices) excitable_vertex_indices_ints.emplace_back(i);
 
-    m2f::CommonArguments args{
-        model_name,
-        freq_control, // freqency control activated
-        20, // lowest mode freq
-        18000, // highest mode freq
-        40, // number of synthesized modes (default is 20)
-        80, // number of modes to be computed for the finite element analysis (default is 100)
-        excitable_vertex_indices_ints, // specific excitation positions
-        int(excitable_vertex_indices.size()), // number of excitation positions (default is max: -1)
-    };
-
-    const auto m2f_result = m2f::mesh2faust(&volumetric_mesh, args);
+    const auto m2f_result = m2f::mesh2faust(
+        &volumetric_mesh,
+        m2f::MaterialProperties{
+            .youngModulus = material.YoungModulus,
+            .poissonRatio = material.PoissonRatio,
+            .density = material.Density,
+            .alpha = material.Alpha,
+            .beta = material.Beta
+        },
+        m2f::CommonArguments{
+            .modelName = model_name,
+            .freqControl = freq_control,
+            .modesMinFreq = 20,
+            .modesMaxFreq = 18000,
+            .targetNModes = 40, // number of synthesized modes
+            .femNModes = 80, // number of modes to be computed for the finite element analysis
+            .exPos = excitable_vertex_indices_ints,
+            .nExPos = int(excitable_vertex_indices.size()),
+            .debugMode = false,
+        }
+    );
     const string model_dsp = m2f_result.modelDsp;
     if (model_dsp.empty()) return {"process = 0;", {}, {}};
 
