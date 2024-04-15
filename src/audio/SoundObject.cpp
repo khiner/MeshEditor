@@ -257,6 +257,21 @@ void SoundObject::SetModel(SoundObjectModel model) {
 
 using namespace ImGui;
 
+static const ImVec2 ChartSize = {-1, 160};
+
+static void RenderWaveform(const std::vector<float> &frames) {
+    if (ImPlot::BeginPlot("Waveform", ChartSize)) {
+        const auto N = frames.size();
+        ImPlot::SetupAxes("Frame", "Value");
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, N, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
+        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
+        ImPlot::PlotLine("", frames.data(), N);
+        ImPlot::PopStyleVar();
+        ImPlot::EndPlot();
+    }
+}
+
 void SoundObject::RenderControls() {
     PushID("AudioModel");
     if (Button("Strike")) Strike();
@@ -274,6 +289,7 @@ void SoundObject::RenderControls() {
             }
             EndCombo();
         }
+        RenderWaveform(ImpactAudioData->ImpactFramesByVertex.at(CurrentVertex));
     } else if (Model == SoundObjectModel::Modal && ModalData) {
         SeparatorText("Material properties");
 
@@ -306,31 +322,33 @@ void SoundObject::RenderControls() {
             if (ui_vertex < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[ui_vertex];
 
             ModalData->FaustDsp->Ui->Draw();
-            if (ImPlot::BeginPlot("Mode frequencies")) {
-                const auto &mode_freqs = ModalData->ModeFreqs;
-                const float max_value = *std::max_element(mode_freqs.begin(), mode_freqs.end());
-                ImPlot::SetupAxes("Mode index", "Frequency (Hz)");
-                // ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-                ImPlot::SetupAxesLimits(-0.5f, mode_freqs.size() - 0.5f, 0, max_value, ImPlotCond_Always);
-                ImPlot::PlotBars("", mode_freqs.data(), mode_freqs.size(), 0.9);
-                ImPlot::EndPlot();
-            }
-            if (ImPlot::BeginPlot("Mode T60s")) {
-                const auto &mode_t60s = ModalData->ModeT60s;
-                const float max_value = *std::max_element(mode_t60s.begin(), mode_t60s.end());
-                ImPlot::SetupAxes("Mode index", "T60 decay time (s)");
-                ImPlot::SetupAxesLimits(-0.5f, mode_t60s.size() - 0.5f, 0, max_value, ImPlotCond_Always);
-                ImPlot::PlotBars("", mode_t60s.data(), mode_t60s.size(), 0.9);
-                ImPlot::EndPlot();
-            }
-            if (ImPlot::BeginPlot("Mode gains")) {
-                const auto curr_vertex_it = std::ranges::find(ExcitableVertices, CurrentVertex);
-                const auto current_mode = std::distance(ExcitableVertices.begin(), curr_vertex_it);
-                const auto &mode_gains = ModalData->ModeGains[current_mode];
-                ImPlot::SetupAxes("Mode index", "Gain");
-                ImPlot::SetupAxesLimits(-0.5f, mode_gains.size() - 0.5f, 0, 1, ImPlotCond_Always);
-                ImPlot::PlotBars("", mode_gains.data(), mode_gains.size(), 0.9);
-                ImPlot::EndPlot();
+            if (CollapsingHeader("Modal data charts")) {
+                if (ImPlot::BeginPlot("Mode frequencies", ChartSize)) {
+                    const auto &mode_freqs = ModalData->ModeFreqs;
+                    const float max_value = *std::max_element(mode_freqs.begin(), mode_freqs.end());
+                    ImPlot::SetupAxes("Mode index", "Frequency (Hz)");
+                    // ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+                    ImPlot::SetupAxesLimits(-0.5f, mode_freqs.size() - 0.5f, 0, max_value, ImPlotCond_Always);
+                    ImPlot::PlotBars("", mode_freqs.data(), mode_freqs.size(), 0.9);
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Mode T60s", ChartSize)) {
+                    const auto &mode_t60s = ModalData->ModeT60s;
+                    const float max_value = *std::max_element(mode_t60s.begin(), mode_t60s.end());
+                    ImPlot::SetupAxes("Mode index", "T60 decay time (s)");
+                    ImPlot::SetupAxesLimits(-0.5f, mode_t60s.size() - 0.5f, 0, max_value, ImPlotCond_Always);
+                    ImPlot::PlotBars("", mode_t60s.data(), mode_t60s.size(), 0.9);
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Mode gains", ChartSize)) {
+                    const auto curr_vertex_it = std::ranges::find(ExcitableVertices, CurrentVertex);
+                    const auto current_mode = std::distance(ExcitableVertices.begin(), curr_vertex_it);
+                    const auto &mode_gains = ModalData->ModeGains[current_mode];
+                    ImPlot::SetupAxes("Mode index", "Gain");
+                    ImPlot::SetupAxesLimits(-0.5f, mode_gains.size() - 0.5f, 0, 1, ImPlotCond_Always);
+                    ImPlot::PlotBars("", mode_gains.data(), mode_gains.size(), 0.9);
+                    ImPlot::EndPlot();
+                }
             }
         } else {
             if (DspGenerator) {
