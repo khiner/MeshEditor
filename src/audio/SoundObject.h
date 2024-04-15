@@ -51,6 +51,8 @@ struct Modal {
     ~Modal();
 
     std::unique_ptr<FaustDSP> FaustDsp;
+    std::vector<float> ModeFreqs{}; // Mode frequencies
+    std::vector<std::vector<float>> ModeGains{}; // Mode gains by [exitation position][mode]
 };
 } // namespace SoundObjectData
 

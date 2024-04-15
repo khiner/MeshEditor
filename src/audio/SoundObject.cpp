@@ -147,7 +147,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
         model_name,
         freq_control, // freqency control activated
         20, // lowest mode freq
-        10000, // highest mode freq
+        18000, // highest mode freq
         40, // number of synthesized modes (default is 20)
         80, // number of modes to be computed for the finite element analysis (default is 100)
         excitable_vertex_indices_ints, // specific excitation positions
@@ -251,19 +251,21 @@ void SoundObject::SetModel(SoundObjectModel model) {
 
 using namespace ImGui;
 
-void RenderBarPlot() {
-    static float data[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    if (ImPlot::BeginPlot("Bar Plot")) {
-        ImPlot::PlotBars("Vertical", data, 10, 0.7, 1);
+void RenderBarPlot(std::vector<float> mode_freqs) {
+    const float max_freq = *std::max_element(mode_freqs.begin(), mode_freqs.end());
+    if (ImPlot::BeginPlot("Mode frequencies")) {
+        ImPlot::SetupAxes("Mode index", "Frequency (Hz)");
+        // ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+        ImPlot::SetupAxesLimits(-0.5f, mode_freqs.size() - 0.5f, 0, max_freq);
+        ImPlot::PlotBars("", mode_freqs.data(), mode_freqs.size(), 0.9);
         ImPlot::EndPlot();
     }
 }
 
 void SoundObject::RenderControls() {
-    RenderBarPlot();
-
-    if (Button("Strike")) Strike();
     PushID("AudioModel");
+    if (Button("Strike")) Strike();
+
     int model = int(Model);
     bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::ImpactAudio));
     SameLine();
@@ -305,10 +307,13 @@ void SoundObject::RenderControls() {
 
         if (ModalData->FaustDsp->Ui) {
             ModalData->FaustDsp->Ui->Draw();
+            RenderBarPlot(ModalData->ModeFreqs);
         } else {
             if (DspGenerator) {
                 if (auto m2f_result = DspGenerator->Render()) {
                     ModalData->FaustDsp->SetCode(m2f_result->ModelDsp);
+                    ModalData->ModeFreqs = std::move(m2f_result->ModeFreqs);
+                    ModalData->ModeGains = std::move(m2f_result->ModeGains);
                     DspGenerator.reset();
                 }
             } else if (Button("Generate DSP")) {

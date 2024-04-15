@@ -213,6 +213,17 @@ using namespace ImGui;
 
 std::unique_ptr<Worker<Tets>> TetGenerator;
 
+static void HelpMarker(const char *desc) {
+    SameLine();
+    TextDisabled("(?)");
+    if (BeginItemTooltip()) {
+        PushTextWrapPos(GetFontSize() * 35.0f);
+        TextUnformatted(desc);
+        PopTextWrapPos();
+        EndTooltip();
+    }
+}
+
 void RenderAudioControls() {
     AudioSources.RenderControls();
 
@@ -234,13 +245,25 @@ void RenderAudioControls() {
                 R.emplace<Tets>(object_entity, std::move(*tets));
                 TetGenerator.reset();
             }
-        } else if (Button("Generate tet mesh")) { // todo conditionally show "Regenerate tet mesh"
-            // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
-            // todo quality UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
-            // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+        } else { // todo conditionally show "Regenerate tet mesh"
+            SeparatorText("Tet mesh generation");
+
             const bool is_real_impact = true; // todo support modal models on arbitrary meshes.
-            auto options = is_real_impact ? TetGenOptions{.PreserveSurface = true} : TetGenOptions{};
-            TetGenerator = std::make_unique<Worker<Tets>>("Generating tetrahedral mesh...", [&] { return Tets::CreateTets(object_mesh, options); });
+            static bool preserve_surface = is_real_impact;
+            static bool quality = false;
+            Checkbox("Preserve surface", &preserve_surface);
+            HelpMarker("Input boundary edges and faces of the mesh are preserved in the generated tetrahedral mesh.\nSteiner points appear only in the interior space of the mesh.");
+            SameLine();
+            Checkbox("Quality", &quality);
+            HelpMarker("Adds new points to improve the mesh quality.");
+            if (Button("Generate tet mesh")) {
+                // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
+                // todo quality UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
+                // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+                TetGenerator = std::make_unique<Worker<Tets>>("Generating tetrahedral mesh...", [&] {
+                    return Tets::CreateTets(object_mesh, {.PreserveSurface = preserve_surface, .Quality = quality});
+                });
+            }
         }
         return;
     }
