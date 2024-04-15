@@ -211,10 +211,16 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     };
 }
 
+MaterialProperties GetMaterialPreset(const std::string &name) {
+    if (MaterialPresets.contains(name)) return MaterialPresets.at(name);
+    return MaterialPresets.at(DefaultMaterialPresetName);
+}
+
 SoundObject::SoundObject(
-    const ::Tets &tets, MaterialProperties &&material, vec3 listener_position, uint object_entity_id, uint listener_entity_id,
+    const ::Tets &tets, const std::optional<std::string> &material_name, vec3 listener_position, uint object_entity_id, uint listener_entity_id,
     std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex
-) : Tets(tets), Material(std::move(material)), ListenerPosition(std::move(listener_position)),
+) : Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
+    ListenerPosition(std::move(listener_position)),
     ObjectEntityId(object_entity_id), ListenerEntityId(listener_entity_id), ModalData(std::in_place) {
     if (!impact_frames_by_vertex.empty()) {
         ImpactAudioData = {std::move(impact_frames_by_vertex)};
@@ -293,12 +299,11 @@ void SoundObject::RenderControls() {
     } else if (Model == SoundObjectModel::Modal && ModalData) {
         SeparatorText("Material properties");
 
-        static std::string selected_preset = DefaultMaterialPresetName;
-        if (BeginCombo("Presets", selected_preset.c_str())) {
+        if (BeginCombo("Presets", MaterialName.c_str())) {
             for (const auto &[preset_name, material] : MaterialPresets) {
-                const bool is_selected = (preset_name == selected_preset);
+                const bool is_selected = (preset_name == MaterialName);
                 if (Selectable(preset_name.c_str(), is_selected)) {
-                    selected_preset = preset_name;
+                    MaterialName = preset_name;
                     Material = material;
                 }
                 if (is_selected) SetItemDefaultFocus();

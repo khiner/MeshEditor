@@ -202,13 +202,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     MainScene->RecordAndSubmitCommandBuffer();
 }
 
-MaterialProperties GetMaterialPreset(const RealImpact &real_impact) {
-    if (real_impact.MaterialName && MaterialPresets.contains(*real_impact.MaterialName)) {
-        return MaterialPresets.at(*real_impact.MaterialName);
-    }
-    return MaterialPresets.at(DefaultMaterialPresetName);
-}
-
 using namespace ImGui;
 
 std::unique_ptr<Worker<Tets>> TetGenerator;
@@ -283,7 +276,7 @@ void RenderAudioControls() {
         if (!Button("Set listener position")) return;
 
         sound_object = &R.emplace<SoundObject>(
-            object_entity, R.get<Tets>(object_entity), GetMaterialPreset(*real_impact), selected_listener_point->GetPosition(),
+            object_entity, R.get<Tets>(object_entity), real_impact->MaterialName, selected_listener_point->GetPosition(),
             uint(object_entity), uint(selected_entity), selected_listener_point->LoadImpactSamples(*real_impact)
         );
     }
