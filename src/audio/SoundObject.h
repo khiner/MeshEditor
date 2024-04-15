@@ -27,6 +27,7 @@ template<typename Result> struct Worker;
 struct Mesh2FaustResult {
     std::string ModelDsp; // Faust DSP code defining the model function.
     std::vector<float> ModeFreqs; // Mode frequencies
+    std::vector<float> ModeT60s; // Mode T60 decay times
     std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
 };
 
@@ -50,9 +51,11 @@ struct Modal {
     Modal();
     ~Modal();
 
+    // todo use Mesh2FaustResult
     std::unique_ptr<FaustDSP> FaustDsp;
-    std::vector<float> ModeFreqs{}; // Mode frequencies
-    std::vector<std::vector<float>> ModeGains{}; // Mode gains by [exitation position][mode]
+    std::vector<float> ModeFreqs{};
+    std::vector<float> ModeT60s{};
+    std::vector<std::vector<float>> ModeGains{};
 };
 } // namespace SoundObjectData
 

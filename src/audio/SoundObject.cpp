@@ -165,7 +165,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
         }
     );
     const string model_dsp = m2f_result.modelDsp;
-    if (model_dsp.empty()) return {"process = 0;", {}, {}};
+    if (model_dsp.empty()) return {"process = 0;", {}, {}, {}};
 
     auto &mode_freqs = m2f_result.model.modeFreqs;
     const float fundamental_freq = mode_freqs.empty() ? 440.0f : mode_freqs.front();
@@ -174,9 +174,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     static const string to_sandh = " : ba.sAndH(gate);"; // Add a sample and hold on the gate, in serial, and end the expression.
     static const string
         gain = "gain = hslider(\"gain[scale:log]\",0.1,0,0.5,0.01);",
-        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Resonance duration (s) of the lowest mode.]\",16,0,50,0.01)" + to_sandh,
-        t60_decay = "t60Decay = hslider(\"t60 Decay[scale:log][tooltip: Decay of modes as a function of their frequency, in t60 units.\nAt 1, the t60 of the highest mode will be close to 0 seconds.]\",0.80,0,1,0.01)" + to_sandh,
-        t60_slope = "t60Slope = hslider(\"t60 Slope[scale:log][tooltip: Power of the function used to compute the decay of modes t60 in function of their frequency.\nAt 1, decay is linear. At 2, decay slope has degree 2, etc.]\",2.5,1,6,0.01)" + to_sandh,
+        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
         source = "source = vslider(\"Excitation source [style:radio {'Hammer':0;'Audio input':1 }]\",0,0,1,1);",
         gate = "gate = button(\"gate[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");",
         hammer_hardness = "hammerHardness = hslider(\"hammerHardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
@@ -186,9 +184,9 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     // Variable code sections.
     const uint num_excite_pos = excitable_vertex_indices.size();
     const string
-        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,8000,1){}", fundamental_freq, to_sandh),
+        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, to_sandh),
         ex_pos = std::format("exPos = nentry(\"exPos\",{},0,{},1){}", (num_excite_pos - 1) / 2, num_excite_pos - 1, to_sandh),
-        modal_model = std::format("{}({}exPos,t60Scale,t60Decay,t60Slope)", model_name, freq_control ? "freq," : ""),
+        modal_model = std::format("{}({}exPos,t60Scale)", model_name, freq_control ? "freq," : ""),
         process = std::format("process = hammer(gate,hammerHardness,hammerSize),_ : select2(source) : {}*gain;", modal_model);
 
     std::stringstream instrument;
@@ -200,8 +198,6 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
                << freq << '\n'
                << ex_pos << '\n'
                << t60_scale << '\n'
-               << t60_decay << '\n'
-               << t60_slope << '\n'
                << '\n'
                << hammer << '\n'
                << '\n'
@@ -210,6 +206,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     return {
         .ModelDsp = model_dsp + instrument.str(),
         .ModeFreqs = std::move(mode_freqs),
+        .ModeT60s = std::move(m2f_result.model.modeT60s),
         .ModeGains = std::move(m2f_result.model.modeGains)
     };
 }
@@ -311,20 +308,27 @@ void SoundObject::RenderControls() {
             ModalData->FaustDsp->Ui->Draw();
             if (ImPlot::BeginPlot("Mode frequencies")) {
                 const auto &mode_freqs = ModalData->ModeFreqs;
-                const float max_freq = *std::max_element(mode_freqs.begin(), mode_freqs.end());
+                const float max_value = *std::max_element(mode_freqs.begin(), mode_freqs.end());
                 ImPlot::SetupAxes("Mode index", "Frequency (Hz)");
                 // ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-                ImPlot::SetupAxesLimits(-0.5f, mode_freqs.size() - 0.5f, 0, max_freq);
+                ImPlot::SetupAxesLimits(-0.5f, mode_freqs.size() - 0.5f, 0, max_value, ImPlotCond_Always);
                 ImPlot::PlotBars("", mode_freqs.data(), mode_freqs.size(), 0.9);
                 ImPlot::EndPlot();
             }
-
+            if (ImPlot::BeginPlot("Mode T60s")) {
+                const auto &mode_t60s = ModalData->ModeT60s;
+                const float max_value = *std::max_element(mode_t60s.begin(), mode_t60s.end());
+                ImPlot::SetupAxes("Mode index", "T60 decay time (s)");
+                ImPlot::SetupAxesLimits(-0.5f, mode_t60s.size() - 0.5f, 0, max_value, ImPlotCond_Always);
+                ImPlot::PlotBars("", mode_t60s.data(), mode_t60s.size(), 0.9);
+                ImPlot::EndPlot();
+            }
             if (ImPlot::BeginPlot("Mode gains")) {
                 const auto curr_vertex_it = std::ranges::find(ExcitableVertices, CurrentVertex);
                 const auto current_mode = std::distance(ExcitableVertices.begin(), curr_vertex_it);
                 const auto &mode_gains = ModalData->ModeGains[current_mode];
                 ImPlot::SetupAxes("Mode index", "Gain");
-                ImPlot::SetupAxesLimits(-0.5f, mode_gains.size() - 0.5f, 0, 1);
+                ImPlot::SetupAxesLimits(-0.5f, mode_gains.size() - 0.5f, 0, 1, ImPlotCond_Always);
                 ImPlot::PlotBars("", mode_gains.data(), mode_gains.size(), 0.9);
                 ImPlot::EndPlot();
             }
@@ -333,6 +337,7 @@ void SoundObject::RenderControls() {
                 if (auto m2f_result = DspGenerator->Render()) {
                     ModalData->FaustDsp->SetCode(m2f_result->ModelDsp);
                     ModalData->ModeFreqs = std::move(m2f_result->ModeFreqs);
+                    ModalData->ModeT60s = std::move(m2f_result->ModeT60s);
                     ModalData->ModeGains = std::move(m2f_result->ModeGains);
                     DspGenerator.reset();
                 }
