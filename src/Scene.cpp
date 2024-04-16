@@ -410,8 +410,6 @@ std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
     return std::nullopt;
 }
 
-Mesh &Scene::GetMesh(entt::entity entity) const { return R.get<Mesh>(GetParentEntity(entity)); }
-
 void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<Visible>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
@@ -443,11 +441,9 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto entity = R.create();
-    Model model{mat4(info.Transform)};
 
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
-    R.emplace<Mesh>(entity, std::move(mesh));
-    R.emplace<Model>(entity, model);
+    R.emplace<Model>(entity, mat4(info.Transform));
     R.emplace<std::string>(entity, info.Name);
 
     MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
@@ -465,6 +461,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         MeshVkData->Boxes.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
     }
 
+    R.emplace<Mesh>(entity, std::move(mesh));
+
     if (info.Select) SelectEntity(entity, false);
     if (info.Submit) RecordAndSubmitCommandBuffer();
     return entity;
@@ -479,7 +477,9 @@ entt::entity Scene::AddPrimitive(Primitive primitive, MeshCreateInfo info) {
 }
 
 void Scene::ClearMeshes() {
-    for (auto entity : R.view<Mesh>()) DestroyEntity(entity, false);
+    std::vector<entt::entity> entities;
+    for (auto entity : R.view<Mesh>()) entities.emplace_back(entity);
+    for (auto entity : entities) DestroyEntity(entity, false);
     RecordAndSubmitCommandBuffer();
 }
 
@@ -518,7 +518,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
 
 void Scene::DestroyEntity(entt::entity entity, bool submit) {
     if (entity == SelectedEntity) SelectEntity(entt::null, false);
-    if (const auto mesh_entity = GetParentEntity(entity); mesh_entity != entity) return DestroyInstance(entity, submit);
+    if (const auto parent_entity = GetParentEntity(entity); parent_entity != entity) return DestroyInstance(entity, submit);
 
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
@@ -550,7 +550,7 @@ entt::entity Scene::GetParentEntity(entt::entity entity) const {
     return node.parent == entt::null ? entity : GetParentEntity(node.parent);
 }
 
-Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(SelectedEntity)); }
+const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(SelectedEntity)); }
 
 void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
     R.replace<Model>(entity, std::move(model));
@@ -807,7 +807,9 @@ bool Scene::Render() {
 
                     const auto &mesh = R.get<Mesh>(GetParentEntity(entity));
                     const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
-                    if (auto intersect_distance = mesh.Intersect(mouse_ray)) hovered_entities_by_distance.emplace(*intersect_distance, entity);
+                    if (auto intersect_distance = mesh.Intersect(mouse_ray)) {
+                        hovered_entities_by_distance.emplace(*intersect_distance, entity);
+                    }
                 });
 
                 std::vector<entt::entity> sorted_hovered_entities;

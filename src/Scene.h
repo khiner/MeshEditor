@@ -168,7 +168,6 @@ struct Scene {
     std::optional<uint> GetModelBufferIndex(entt::entity);
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
     entt::entity GetParentEntity(entt::entity) const;
-    Mesh &GetMesh(entt::entity) const;
 
     entt::entity AddMesh(Mesh &&, MeshCreateInfo info = {});
     entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
@@ -253,7 +252,7 @@ private:
         RecordAndSubmitCommandBuffer();
     }
 
-    Mesh &GetSelectedMesh() const;
+    const Mesh &GetSelectedMesh() const;
 
     void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
 

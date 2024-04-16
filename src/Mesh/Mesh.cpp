@@ -11,10 +11,6 @@ using namespace om;
 
 using std::ranges::any_of;
 
-Mesh::Mesh(Mesh &&other)
-    : BoundingBox(other.BoundingBox), M(std::move(other.M)), Bvh(std::move(other.Bvh)) {
-    other.Bvh.reset();
-}
 Mesh::Mesh(const fs::path &file_path) {
     Load(file_path, M);
     if (IsTriangleSoup()) M = DeduplicateVertices(); // Assumes this is a surface mesh.
@@ -36,10 +32,24 @@ Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces,
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
+Mesh::Mesh(Mesh &&other)
+    : BoundingBox(other.BoundingBox), M(std::move(other.M)), Bvh(std::move(other.Bvh)), HighlightedElements(std::move(other.HighlightedElements)) {
+    other.Bvh.reset();
+}
 Mesh::~Mesh() {
     M.release_vertex_normals();
     M.release_face_normals();
     M.release_face_colors();
+}
+
+const Mesh &Mesh::operator=(Mesh &&other) {
+    if (this != &other) {
+        BoundingBox = std::move(other.BoundingBox);
+        M = std::move(other.M);
+        Bvh = std::move(other.Bvh);
+        HighlightedElements = std::move(other.HighlightedElements);
+    }
+    return *this;
 }
 
 bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {

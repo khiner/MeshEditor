@@ -91,10 +91,8 @@ struct Mesh {
     Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor);
     ~Mesh();
 
-    Mesh &operator=(const Mesh &other) {
-        if (this != &other) M = other.M;
-        return *this;
-    }
+    Mesh(const Mesh &) = delete;
+    const Mesh &operator=(Mesh &&);
 
     bool operator==(const Mesh &other) const { return &M == &other.M; }
 
@@ -181,6 +179,7 @@ struct Mesh {
     std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.
     std::vector<uint> CreateEdgeIndices() const;
+
 
 private:
     PolyMesh M;

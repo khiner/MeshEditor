@@ -171,7 +171,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         {.Name = std::format("RealImpact Object: {}", object_name), .Transform = std::move(swap), .Submit = false}
     );
     // Vertex indices may have changed due to deduplication.
-    auto &mesh = MainScene->GetMesh(object_entity);
+    auto &mesh = R.get<Mesh>(object_entity);
     for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
         const auto &pos = real_impact.ImpactPositions[i];
         const auto vh = mesh.FindNearestVertex(pos);
@@ -182,7 +182,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
 
     static const mat4 I{1};
     auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
-    const auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
+    auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
     const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {std::move(listener_points_name), I, false, false, false});
     static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
@@ -195,8 +195,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
             p
         );
     }
-    // Store the RealImpact data on both the mesh and (root, invisible) listener point entity.
-    // todo only store real_impact on the mesh entity
     R.emplace<RealImpact>(object_entity, std::move(real_impact));
     MainScene->RecordAndSubmitCommandBuffer();
 }
