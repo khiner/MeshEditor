@@ -59,6 +59,13 @@ struct Modal {
 };
 } // namespace SoundObjectData
 
+struct ImpactRecording {
+    static constexpr uint FrameCount = 208592; // Same length as RealImpact recordings.
+    float Frames[FrameCount];
+    uint CurrentFrame{0};
+    bool Complete{false};
+};
+
 // Represents a rigid mesh object that generate an audio stream for a listener at a given position
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
@@ -91,4 +98,5 @@ struct SoundObject : AudioSource {
 private:
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
     std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
+    std::unique_ptr<ImpactRecording> ImpactRecording;
 };

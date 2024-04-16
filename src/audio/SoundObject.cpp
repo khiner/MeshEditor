@@ -121,8 +121,6 @@ private:
 SoundObjectData::Modal::Modal() : FaustDsp(std::make_unique<FaustDSP>()) {}
 SoundObjectData::Modal::~Modal() = default;
 
-// Worker DspGenerator{"Generate DSP code", "Generating DSP code..."};
-
 Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false) {
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
@@ -245,7 +243,21 @@ void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, u
             output[i] += ImpactAudioData->CurrentFrame < impact_samples.size() ? impact_samples[ImpactAudioData->CurrentFrame++] : 0.0f;
         }
     } else if (ModalData && ModalData->FaustDsp) {
+        if (ImpactRecording && ImpactRecording->CurrentFrame == 0) {
+            auto &zone = *ModalData->FaustDsp->Ui->getZoneForLabel("gate");
+            zone = 1;
+        }
         ModalData->FaustDsp->Compute(frame_count, &input, &output);
+        if (ImpactRecording && !ImpactRecording->Complete) {
+            for (uint i = 0; i < frame_count && ImpactRecording->CurrentFrame < ImpactRecording::FrameCount; ++i, ++ImpactRecording->CurrentFrame) {
+                ImpactRecording->Frames[ImpactRecording->CurrentFrame] = output[i];
+            }
+            if (ImpactRecording->CurrentFrame == ImpactRecording::FrameCount) {
+                ImpactRecording->Complete = true;
+                auto &zone = *ModalData->FaustDsp->Ui->getZoneForLabel("gate");
+                zone = 0;
+            }
+        }
     }
 }
 
@@ -257,14 +269,13 @@ using namespace ImGui;
 
 static const ImVec2 ChartSize = {-1, 160};
 
-static void RenderWaveform(const std::vector<float> &frames) {
-    if (ImPlot::BeginPlot("Waveform", ChartSize)) {
-        const auto N = frames.size();
-        ImPlot::SetupAxes("Frame", "Value");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, N, ImGuiCond_Always);
+static void RenderWaveform(const float *frames, uint frame_count, const std::string &label = "Waveform") {
+    if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
+        ImPlot::SetupAxes("Frame", "Amplitude");
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, frame_count, ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
-        ImPlot::PlotLine("", frames.data(), N);
+        ImPlot::PlotLine("", frames, frame_count);
         ImPlot::PopStyleVar();
         ImPlot::EndPlot();
     }
@@ -288,13 +299,24 @@ void SoundObject::RenderControls() {
             }
             EndCombo();
         }
-        RenderWaveform(ImpactAudioData->ImpactFramesByVertex.at(CurrentVertex));
+        const auto &frames = ImpactAudioData->ImpactFramesByVertex.at(CurrentVertex);
+        RenderWaveform(frames.data(), frames.size(), "Real-world impact recording");
     } else if (ModalData) {
         if (ModalData->FaustDsp && ModalData->FaustDsp->Ui) {
+            const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
+            if (is_recording) BeginDisabled();
             Button("Strike");
             auto &zone = *ModalData->FaustDsp->Ui->getZoneForLabel("gate");
             if (IsItemActivated() && zone == 0.0) zone = 1.0;
             else if (IsItemDeactivated() && zone == 1.0) zone = 0.0;
+
+            SameLine();
+            if (Button("Record strike")) ImpactRecording = std::make_unique<::ImpactRecording>();
+            if (is_recording) EndDisabled();
+
+            if (ImpactRecording && ImpactRecording->Complete) {
+                RenderWaveform(ImpactRecording->Frames, ImpactRecording::FrameCount, "Modal impact recording");
+            }
         }
 
         SeparatorText("Material properties");
