@@ -180,7 +180,6 @@ struct Mesh {
     std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.
     std::vector<uint> CreateEdgeIndices() const;
 
-
 private:
     PolyMesh M;
     std::unique_ptr<BVH> Bvh;

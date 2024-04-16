@@ -1,6 +1,7 @@
 #include "SoundObject.h"
 
 #include <format>
+#include <print>
 
 #include "imgui.h"
 #include "implot.h"
@@ -46,6 +47,7 @@ struct FaustDSP {
         Code = std::move(code);
         Update();
     }
+    std::string GetCode() const { return Code; }
 
     void Compute(uint n, Sample **input, Sample **output) {
         if (Dsp != nullptr) Dsp->compute(n, input, output);
@@ -323,7 +325,6 @@ void SoundObject::RenderControls() {
             const auto ui_vertex = uint(*ModalData->FaustDsp->Ui->getZoneForLabel("exPos"));
             if (ui_vertex < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[ui_vertex];
 
-            ModalData->FaustDsp->Ui->Draw();
             if (CollapsingHeader("Modal data charts")) {
                 if (ImPlot::BeginPlot("Mode frequencies", ChartSize)) {
                     const auto &mode_freqs = ModalData->ModeFreqs;
@@ -352,6 +353,9 @@ void SoundObject::RenderControls() {
                     ImPlot::EndPlot();
                 }
             }
+            SeparatorText("DSP control");
+            if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", ModalData->FaustDsp->GetCode());
+            ModalData->FaustDsp->Ui->Draw();
         } else {
             if (DspGenerator) {
                 if (auto m2f_result = DspGenerator->Render()) {
