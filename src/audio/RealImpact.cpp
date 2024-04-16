@@ -116,7 +116,6 @@ std::vector<RealImpactListenerPoint> RealImpact::LoadListenerPoints() const {
             .MicId = mic_ids.data[i],
             .DistanceMm = distances.data[i],
             .AngleDeg = angles.data[i],
-            .ObjectEntityId = ObjectEntityId,
         });
     }
     return listener_points;

@@ -64,7 +64,7 @@ struct Modal {
 struct SoundObject : AudioSource {
     // All SoundObjects have a modal audio model. If `impact_frames_by_vertex` is non-empty, the object also has an impact audio model.
     SoundObject(
-        const Tets &, const std::optional<std::string> &material_name, vec3 listener_position, uint object_entity_id, uint listener_entity_id,
+        const Tets &, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id,
         std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex = {}
     );
 
@@ -74,9 +74,10 @@ struct SoundObject : AudioSource {
     std::string MaterialName;
     MaterialProperties Material;
     vec3 ListenerPosition;
-    uint ObjectEntityId{0}, ListenerEntityId{0};
+    uint ListenerEntityId{0};
     std::vector<uint> ExcitableVertices;
     uint CurrentVertex{0};
+    uint CurrentVertexIndicatorEntityId{0};
 
     std::optional<SoundObjectData::Modal> ModalData{};
     std::optional<SoundObjectData::ImpactAudio> ImpactAudioData{};

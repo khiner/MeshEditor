@@ -155,6 +155,8 @@ struct MeshCreateInfo {
     bool Select{true}, Visible{true}, Submit{true};
 };
 
+std::string IdString(entt::entity);
+
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);
     ~Scene();

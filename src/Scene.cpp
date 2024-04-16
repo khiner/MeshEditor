@@ -16,6 +16,10 @@
 
 std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
 
+void Capitalize(std::string &str) {
+    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
+}
+
 struct SceneNode {
     entt::entity parent = entt::null;
     std::vector<entt::entity> children;
@@ -108,10 +112,6 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
         {10, 1, Format::Vec4, 7 * sizeof(vec4)},
     };
     return {{}, bindings, attrs};
-}
-
-void Capitalize(std::string &str) {
-    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
 
 struct Gizmo {

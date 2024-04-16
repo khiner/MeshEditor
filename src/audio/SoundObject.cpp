@@ -217,11 +217,11 @@ MaterialProperties GetMaterialPreset(const std::string &name) {
 }
 
 SoundObject::SoundObject(
-    const ::Tets &tets, const std::optional<std::string> &material_name, vec3 listener_position, uint object_entity_id, uint listener_entity_id,
+    const ::Tets &tets, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id,
     std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex
 ) : Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
     ListenerPosition(std::move(listener_position)),
-    ObjectEntityId(object_entity_id), ListenerEntityId(listener_entity_id), ModalData(std::in_place) {
+    ListenerEntityId(listener_entity_id), ModalData(std::in_place) {
     if (!impact_frames_by_vertex.empty()) {
         ImpactAudioData = {std::move(impact_frames_by_vertex)};
         for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);

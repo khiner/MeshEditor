@@ -170,7 +170,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         real_impact.ObjPath,
         {.Name = std::format("RealImpact Object: {}", object_name), .Transform = std::move(swap), .Submit = false}
     );
-    real_impact.ObjectEntityId = uint(object_entity);
     // Vertex indices may have changed due to deduplication.
     auto &mesh = MainScene->GetMesh(object_entity);
     for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
@@ -190,7 +189,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
         const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-        const auto listener_point_name = std::format("RealImpact Listener: {}", p.MicId);
+        const auto listener_point_name = std::format("RealImpact Listener: {}", p.Index);
         R.emplace<RealImpactListenerPoint>(
             MainScene->AddInstance(listener_point_entity, {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Submit = false}),
             p
@@ -217,32 +216,94 @@ static void HelpMarker(const char *desc) {
     }
 }
 
-void RenderAudioControls() {
-    AudioSources.RenderControls();
+void AudioModelControls() {
+    const static float CharWidth = CalcTextSize("A").x;
 
     const auto selected_entity = MainScene->GetSelectedEntity();
+    const auto sound_objects = R.view<SoundObject>();
+    if (sound_objects.begin() != sound_objects.end() && CollapsingHeader("Sound objects")) {
+        if (BeginTable("Sound objects", 3)) {
+            TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
+            TableSetupColumn("Name");
+            TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 20);
+            TableHeadersRow();
+            entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
+            for (const auto &[entity, sound_object] : sound_objects.each()) {
+                PushID(uint(entity));
+                TableNextColumn();
+                AlignTextToFramePadding();
+                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+                TextUnformatted(IdString(entity).c_str());
+                TableNextColumn();
+                TextUnformatted(R.get<std::string>(entity).c_str());
+                TableNextColumn();
+                if (Button("Select")) entity_to_select = entity;
+                SameLine();
+                if (Button("Delete")) entity_to_delete = entity;
+                if (Button("Select listener point")) entity_to_select = entt::entity(sound_object.ListenerEntityId);
+                PopID();
+            }
+            if (entity_to_select != entt::null) MainScene->SelectEntity(entity_to_select);
+            if (entity_to_delete != entt::null) MainScene->DestroyEntity(entity_to_delete);
+            EndTable();
+        }
+    }
+    const auto listener_points = R.view<RealImpactListenerPoint>();
+    if (listener_points.begin() != listener_points.end() && CollapsingHeader("Listener points")) {
+        if (BeginTable("Listener points", 3)) {
+            TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
+            TableSetupColumn("Name");
+            TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
+            TableHeadersRow();
+            entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
+            for (const auto entity : listener_points) {
+                PushID(uint(entity));
+                TableNextColumn();
+                AlignTextToFramePadding();
+                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+                TextUnformatted(IdString(entity).c_str());
+                TableNextColumn();
+                TextUnformatted(R.get<std::string>(entity).c_str());
+                TableNextColumn();
+                if (Button("Select")) entity_to_select = entity;
+                SameLine();
+                if (Button("Delete")) entity_to_delete = entity;
+                PopID();
+            }
+            if (entity_to_select != entt::null) MainScene->SelectEntity(entity_to_select);
+            if (entity_to_delete != entt::null) MainScene->DestroyEntity(entity_to_delete);
+            EndTable();
+        }
+    }
+
     if (selected_entity == entt::null) return;
 
-    auto *real_impact = R.try_get<RealImpact>(selected_entity);
-    const auto *selected_listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
-    if (real_impact == nullptr && selected_listener_point == nullptr) return;
-
-    const entt::entity object_entity = entt::entity(real_impact ? real_impact->ObjectEntityId : selected_listener_point->ObjectEntityId);
-    real_impact = &R.get<RealImpact>(object_entity);
-    const auto &object_mesh = R.get<Mesh>(object_entity);
-    if (!R.all_of<Tets>(object_entity)) {
+    if (R.all_of<Mesh>(selected_entity) && !R.all_of<Tets>(selected_entity) && !R.all_of<RealImpactListenerPoint>(selected_entity)) {
         if (TetGenerator) {
             if (auto tets = TetGenerator->Render()) {
                 // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
-                MainScene->AddMesh(tets->CreateMesh(), {"Tet Mesh", MainScene->GetModel(object_entity), false, false, false});
-                R.emplace<Tets>(object_entity, std::move(*tets));
+                MainScene->AddMesh(tets->CreateMesh(), {"Tet Mesh", MainScene->GetModel(selected_entity), false, false, false});
                 TetGenerator.reset();
+
+                const auto *real_impact = R.try_get<RealImpact>(selected_entity);
+                const auto material_name = real_impact ? real_impact->MaterialName : DefaultMaterialPresetName;
+                const entt::entity listener_point_entity = R.all_of<RealImpactListenerPoint>(selected_entity) ?
+                    selected_entity :
+                    listener_points.begin() != listener_points.end() ?
+                    *listener_points.begin() :
+                    entt::null;
+                const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
+                const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
+                R.emplace<SoundObject>(
+                    selected_entity, registry_tets, material_name, listener_point ? listener_point->GetPosition() : vec3{0},
+                    uint(listener_point_entity),
+                    real_impact && listener_point ? listener_point->LoadImpactSamples(*real_impact) : std::unordered_map<uint, std::vector<float>>{}
+                );
             }
         } else { // todo conditionally show "Regenerate tet mesh"
             SeparatorText("Tet mesh generation");
 
-            const bool is_real_impact = true; // todo support modal models on arbitrary meshes.
-            static bool preserve_surface = is_real_impact;
+            static bool preserve_surface = true;
             static bool quality = false;
             Checkbox("Preserve surface", &preserve_surface);
             HelpMarker("Input boundary edges and faces of the mesh are preserved in the generated tetrahedral mesh.\nSteiner points appear only in the interior space of the mesh.");
@@ -253,71 +314,61 @@ void RenderAudioControls() {
                 // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
                 // todo quality UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+                const auto &surface_mesh = R.get<Mesh>(selected_entity);
                 TetGenerator = std::make_unique<Worker<Tets>>("Generating tetrahedral mesh...", [&] {
-                    return Tets::CreateTets(object_mesh, {.PreserveSurface = preserve_surface, .Quality = quality});
+                    return Tets::CreateTets(surface_mesh, {.PreserveSurface = preserve_surface, .Quality = quality});
                 });
             }
         }
         return;
     }
 
-    auto *sound_object = R.try_get<SoundObject>(object_entity);
-    if (!selected_listener_point && !sound_object) return;
+    // Display the selected sound object, or the first one if any are present.
+    if (sound_objects.begin() == sound_objects.end()) return;
 
     SeparatorText("Audio model");
-
-    if (selected_listener_point) {
-        if (Button("Select sound object")) {
-            MainScene->SelectEntity(object_entity);
-            return;
+    entt::entity sound_object_entity = entt::null;
+    for (const auto entity : sound_objects) {
+        if (entity == selected_entity || R.get<SoundObject>(entity).ListenerEntityId == uint(selected_entity)) {
+            sound_object_entity = entity;
+            break;
         }
     }
-    if (!sound_object) {
-        if (!Button("Set listener position")) return;
+    if (sound_object_entity == entt::null) sound_object_entity = *sound_objects.begin();
 
-        sound_object = &R.emplace<SoundObject>(
-            object_entity, R.get<Tets>(object_entity), real_impact->MaterialName, selected_listener_point->GetPosition(),
-            uint(object_entity), uint(selected_entity), selected_listener_point->LoadImpactSamples(*real_impact)
-        );
-    }
-    if ((selected_entity == object_entity) || (selected_listener_point && uint(selected_entity) != sound_object->ListenerEntityId)) {
-        if (Button("Select listener position")) {
-            MainScene->SelectEntity(entt::entity(sound_object->ListenerEntityId));
-            return;
-        }
-        // todo change the listener position to the selected one
-    }
+    const auto &mesh = R.get<Mesh>(sound_object_entity);
+    auto &sound_object = R.get<SoundObject>(sound_object_entity);
 
-    static entt::entity CurrentVertexIndicatorEntity = entt::null;
+    // todo change the listener position if one is selected
 
-    const auto before_current_vertex = sound_object->CurrentVertex;
-    sound_object->RenderControls(); // May change the current vertex.
-    if (CurrentVertexIndicatorEntity == entt::null || sound_object->CurrentVertex != before_current_vertex) {
+    const auto before_current_vertex = sound_object.CurrentVertex;
+    sound_object.RenderControls(); // May change the current vertex.
+    if (!sound_object.CurrentVertexIndicatorEntityId || sound_object.CurrentVertex != before_current_vertex) {
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
-        const mat4 object_model = MainScene->GetModel(object_entity);
-        const auto vh = Mesh::VH(sound_object->CurrentVertex);
-        const vec3 vertex_pos = {object_model * vec4{object_mesh.GetPosition(vh), 1}};
-        const vec3 normal = {object_model * vec4{object_mesh.GetVertexNormal(vh), 0}};
+        const mat4 model = MainScene->GetModel(sound_object_entity);
+        const auto vh = Mesh::VH(sound_object.CurrentVertex);
+        const vec3 vertex_pos = {model * vec4{mesh.GetPosition(vh), 1}};
+        const vec3 normal = {model * vec4{mesh.GetVertexNormal(vh), 0}};
 
-        const float scale_factor = 0.1f * object_mesh.BoundingBox.DiagonalLength();
+        const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
         const mat4 scale = glm::scale({1}, vec3{scale_factor});
         const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
         const mat4 rotate = glm::mat4_cast(glm::rotation(MainScene->World.Up, normal));
         mat4 indicator_model{translate * rotate * scale};
-        if (CurrentVertexIndicatorEntity == entt::null) {
+        if (!sound_object.CurrentVertexIndicatorEntityId) {
             auto vertex_indicator_mesh = Arrow();
             vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
-            CurrentVertexIndicatorEntity = MainScene->AddMesh(
+            sound_object.CurrentVertexIndicatorEntityId = uint(MainScene->AddMesh(
                 std::move(vertex_indicator_mesh),
                 {.Name = "Excite vertex indicator", .Transform = std::move(indicator_model), .Select = false, .Submit = true}
-            );
+            ));
         } else {
-            MainScene->SetModel(CurrentVertexIndicatorEntity, std::move(indicator_model), true);
+            MainScene->SetModel(entt::entity(sound_object.CurrentVertexIndicatorEntityId), std::move(indicator_model), true);
         }
     }
 
     if (Button("Remove audio model")) {
-        R.remove<SoundObject>(object_entity);
+        R.remove<SoundObject>(sound_object_entity);
     }
 }
 
@@ -506,7 +557,17 @@ int main(int, char **) {
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio")) {
-                    RenderAudioControls();
+                    if (BeginTabBar("Audio")) {
+                        if (BeginTabItem("Device")) {
+                            AudioSources.RenderControls();
+                            EndTabItem();
+                        }
+                        if (BeginTabItem("Model")) {
+                            AudioModelControls();
+                            EndTabItem();
+                        }
+                        EndTabBar();
+                    }
                     EndTabItem();
                 }
                 EndTabBar();
