@@ -15,6 +15,7 @@ using Sample = float;
 
 #include "faust/dsp/llvm-dsp.h"
 
+#include "FFTData.h"
 #include "FaustParams.h"
 
 #include "tetMesh.h" // Vega
@@ -24,6 +25,14 @@ using Sample = float;
 #include "Worker.h"
 
 using std::string, std::string_view;
+
+struct Waveform {
+    float *Frames;
+    const uint FrameCount;
+    const FFTData FftData;
+
+    Waveform(float *frames, uint frame_count) : Frames(frames), FrameCount(frame_count), FftData(Frames, FrameCount) {}
+};
 
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.
@@ -118,6 +127,30 @@ private:
     }
 };
 
+SoundObjectData::ImpactAudio::ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex)
+    : ImpactFramesByVertex(std::move(impact_frames_by_vertex)) {
+    // Start at the end of the first sample, so it doesn't immediately play.
+    // All samples are the same length.
+    if (!ImpactFramesByVertex.empty()) CurrentFrame = ImpactFramesByVertex.begin()->second.size();
+}
+SoundObjectData::ImpactAudio::~ImpactAudio() = default;
+
+const SoundObjectData::ImpactAudio &SoundObjectData::ImpactAudio::operator=(ImpactAudio &&other) noexcept {
+    if (this != &other) {
+        ImpactFramesByVertex = std::move(other.ImpactFramesByVertex);
+        CurrentFrame = other.CurrentFrame;
+        Waveform = std::move(other.Waveform);
+    }
+    return *this;
+}
+
+void SoundObjectData::ImpactAudio::SetVertex(uint vertex) {
+    if (ImpactFramesByVertex.contains(vertex)) {
+        auto &frames = ImpactFramesByVertex.at(vertex);
+        Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
+    }
+}
+
 SoundObjectData::Modal::Modal() : FaustDsp(std::make_unique<FaustDSP>()) {}
 SoundObjectData::Modal::~Modal() = default;
 
@@ -173,7 +206,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     // Static code sections.
     static const string to_sandh = " : ba.sAndH(gate);"; // Add a sample and hold on the gate, in serial, and end the expression.
     static const string
-        gain = "gain = hslider(\"gain[scale:log]\",0.1,0,0.5,0.01);",
+        gain = "gain = hslider(\"gain[scale:log]\",0.2,0,0.5,0.01);",
         t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
         source = "source = vslider(\"Excitation source [style:radio {'Hammer':0;'Audio input':1 }]\",0,0,1,1);",
         gate = "gate = button(\"gate[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");",
@@ -223,9 +256,10 @@ SoundObject::SoundObject(
     ListenerPosition(std::move(listener_position)),
     ListenerEntityId(listener_entity_id), ModalData(std::in_place) {
     if (!impact_frames_by_vertex.empty()) {
-        ImpactAudioData = {std::move(impact_frames_by_vertex)};
+        ImpactAudioData = std::move(impact_frames_by_vertex);
         for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);
         CurrentVertex = ExcitableVertices.front();
+        ImpactAudioData->SetVertex(CurrentVertex);
     }
 }
 
@@ -269,13 +303,48 @@ using namespace ImGui;
 
 static const ImVec2 ChartSize = {-1, 160};
 
-static void RenderWaveform(const float *frames, uint frame_count, const std::string &label = "Waveform") {
+static void RenderWaveform(const Waveform &waveform, const std::string &label = "Waveform") {
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         ImPlot::SetupAxes("Frame", "Amplitude");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, frame_count, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, waveform.FrameCount, ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
-        ImPlot::PlotLine("", frames, frame_count);
+        ImPlot::PlotLine("", waveform.Frames, waveform.FrameCount);
+        ImPlot::PopStyleVar();
+        ImPlot::EndPlot();
+    }
+}
+
+static float LinearToDb(float linear) { return 20.0f * log10f(linear); }
+
+static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string &label = "Magnitude spectrum") {
+    if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
+        static const float MIN_DB = -200;
+        const FFTData &fft = waveform.FftData;
+        const uint N = waveform.FrameCount;
+        const uint N_2 = N / 2;
+        const float fs = 48000; // todo flexible sample rate
+        const float fs_n = fs / float(N);
+
+        static std::vector<float> frequency(N_2);
+        static std::vector<float> magnitude(N_2);
+        frequency.resize(N_2);
+        magnitude.resize(N_2);
+
+        const auto *data = fft.Complex;
+        for (uint i = 0; i < N_2; i++) {
+            frequency[i] = fs_n * float(i);
+            const float mag_linear = sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N_2);
+            magnitude[i] = LinearToDb(mag_linear);
+        }
+
+        ImPlot::SetupAxes("Frequency bin", "Magnitude (dB)");
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, fs / 2, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
+        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
+        ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
+        ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N_2, MIN_DB);
+        ImPlot::PopStyleColor();
         ImPlot::PopStyleVar();
         ImPlot::EndPlot();
     }
@@ -295,12 +364,17 @@ void SoundObject::RenderControls() {
         if (Button("Strike")) ImpactAudioData->CurrentFrame = 0;
         if (BeginCombo("Vertex", std::to_string(CurrentVertex).c_str())) {
             for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) {
-                if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) CurrentVertex = vertex;
+                if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) {
+                    CurrentVertex = vertex;
+                    ImpactAudioData->SetVertex(CurrentVertex);
+                }
             }
             EndCombo();
         }
-        const auto &frames = ImpactAudioData->ImpactFramesByVertex.at(CurrentVertex);
-        RenderWaveform(frames.data(), frames.size(), "Real-world impact recording");
+        if (ImpactAudioData->Waveform) {
+            RenderWaveform(*ImpactAudioData->Waveform, "Real-world impact waveform");
+            RenderMagnitudeSpectrum(*ImpactAudioData->Waveform, "Real-world impact spectrum");
+        }
     } else if (ModalData) {
         if (ModalData->FaustDsp && ModalData->FaustDsp->Ui) {
             const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
@@ -315,7 +389,12 @@ void SoundObject::RenderControls() {
             if (is_recording) EndDisabled();
 
             if (ImpactRecording && ImpactRecording->Complete) {
-                RenderWaveform(ImpactRecording->Frames, ImpactRecording::FrameCount, "Modal impact recording");
+                ModalData->Waveform = std::make_unique<Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
+                ImpactRecording.reset();
+            }
+            if (ModalData->Waveform) {
+                RenderWaveform(*ModalData->Waveform, "Modal impact waveform");
+                RenderMagnitudeSpectrum(*ModalData->Waveform, "Modal impact spectrum");
             }
         }
 

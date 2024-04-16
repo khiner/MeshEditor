@@ -22,6 +22,7 @@ enum class SoundObjectModel {
 
 struct FaustDSP;
 struct Tets;
+struct Waveform;
 template<typename Result> struct Worker;
 
 struct Mesh2FaustResult {
@@ -34,17 +35,16 @@ struct Mesh2FaustResult {
 // All model-specific data needed to render audio.
 namespace SoundObjectData {
 struct ImpactAudio {
-    ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex)
-        : ImpactFramesByVertex(std::move(impact_frames_by_vertex)) {
-        // Start at the end of the first sample, so it doesn't immediately play.
-        // All samples are the same length.
-        if (!ImpactFramesByVertex.empty()) {
-            CurrentFrame = ImpactFramesByVertex.begin()->second.size();
-        }
-    }
+    ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
+    ~ImpactAudio();
+
+    const ImpactAudio &operator=(ImpactAudio &&) noexcept;
 
     std::unordered_map<uint, std::vector<float>> ImpactFramesByVertex;
     uint CurrentFrame{0};
+    std::unique_ptr<Waveform> Waveform; // Current vertex's waveform
+
+    void SetVertex(uint);
 };
 
 struct Modal {
@@ -56,6 +56,8 @@ struct Modal {
     std::vector<float> ModeFreqs{};
     std::vector<float> ModeT60s{};
     std::vector<std::vector<float>> ModeGains{};
+
+    std::unique_ptr<Waveform> Waveform; // Recorded waveform
 };
 } // namespace SoundObjectData
 
@@ -90,9 +92,7 @@ struct SoundObject : AudioSource {
     std::optional<SoundObjectData::ImpactAudio> ImpactAudioData{};
 
     void SetModel(SoundObjectModel);
-
     void ProduceAudio(DeviceData, float *input, float *output, uint frame_count) override;
-
     void RenderControls();
 
 private:

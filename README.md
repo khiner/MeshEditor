@@ -52,7 +52,8 @@ Noteworthy dev bits:
 #### Mac
 
 ```shell
-$ brew install cmake pkgconfig llvm
+$ git clone --recursive git@github.com:khiner/MeshEditor.git
+$ brew install cmake pkgconfig llvm fftw
 $ brew link llvm --force
 ```
 
@@ -87,6 +88,7 @@ $ mkdir build && cd build && cmake .. && make
 - [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral (half-edge) mesh data structure
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
+- [fftw](https://www.fftw.org/) for computing spectrograms (visualized with ImPlot)
 - [Faust](https://github.com/grame-cncm/faust): Functional audio programming language, used to render an object audio model to an audio graph
 - [tetgen](https://github.com/libigl/tetgen): Fast conversion of triangular 3D surface meshes into tetrahedral volume meshes
 - 3D FEM: [VegaFEM](https://github.com/grame-cncm/faust/tree/master-dev/tools/physicalModeling/mesh2faust/vega) for generating mass/stiffness matrices from tet mesh + [Spectra](https://github.com/yixuan/spectra) for estimating eigenvalues/vectors

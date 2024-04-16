@@ -13,6 +13,8 @@ set(STATIC_FAUST on CACHE BOOL "Build Static Faust library" FORCE)
 
 add_subdirectory(lib)
 
+find_package(PkgConfig REQUIRED)
+pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
 find_package(Vulkan REQUIRED)
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
@@ -51,6 +53,7 @@ include_directories(
     lib/miniaudio
     lib/tetgen
     lib/faust/architecture
+    PkgConfig::FFTW3F
     ${Mesh2FaustDir}/src
     src
 )
@@ -74,7 +77,7 @@ endif()
 
 find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib spirv-cross-core)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} spirv-cross-core nfd OpenMeshCore faustlib mesh2faust tetgen)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} spirv-cross-core nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
