@@ -510,7 +510,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     R.emplace<Model>(entity, std::move(info.Transform));
     R.emplace<std::string>(entity, info.Name);
     SetVisible(entity, info.Visible);
-    SelectEntity(entity, false);
+    if (info.Select) SelectEntity(entity, false);
     if (info.Submit) RecordAndSubmitCommandBuffer();
 
     return entity;

@@ -191,7 +191,10 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
         const auto listener_point_name = std::format("RealImpact Listener: {}", p.Index);
         R.emplace<RealImpactListenerPoint>(
-            MainScene->AddInstance(listener_point_entity, {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Submit = false}),
+            MainScene->AddInstance(
+                listener_point_entity,
+                {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Select = false, .Submit = false}
+            ),
             p
         );
     }
@@ -308,7 +311,7 @@ void AudioModelControls() {
             SameLine();
             Checkbox("Quality", &quality);
             HelpMarker("Adds new points to improve the mesh quality.");
-            if (Button("Generate tet mesh")) {
+            if (Button("Create sound object")) {
                 // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
                 // todo quality UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)

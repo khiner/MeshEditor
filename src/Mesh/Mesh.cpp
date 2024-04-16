@@ -13,7 +13,9 @@ using std::ranges::any_of;
 
 Mesh::Mesh(const fs::path &file_path) {
     Load(file_path, M);
-    if (IsTriangleSoup()) M = DeduplicateVertices(); // Assumes this is a surface mesh.
+    // if (IsTriangleSoup()) M = DeduplicateVertices();
+    // Deduplicate even if not strictly triangle soup. Assumes this is a surface mesh.
+    M = DeduplicateVertices();
 
     M.request_vertex_normals();
     M.request_face_normals();
