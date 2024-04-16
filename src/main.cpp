@@ -295,11 +295,10 @@ void AudioModelControls() {
                     entt::null;
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
                 const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
-                R.emplace<SoundObject>(
-                    selected_entity, registry_tets, material_name, listener_point ? listener_point->GetPosition() : vec3{0},
-                    uint(listener_point_entity),
-                    real_impact && listener_point ? listener_point->LoadImpactSamples(*real_impact) : std::unordered_map<uint, std::vector<float>>{}
+                auto &sound_object = R.emplace<SoundObject>(
+                    selected_entity, registry_tets, material_name, listener_point ? listener_point->GetPosition() : vec3{0}, uint(listener_point_entity)
                 );
+                if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
             }
         } else { // todo conditionally show "Regenerate tet mesh"
             SeparatorText("Tet mesh generation");
@@ -340,7 +339,31 @@ void AudioModelControls() {
     const auto &mesh = R.get<Mesh>(sound_object_entity);
     auto &sound_object = R.get<SoundObject>(sound_object_entity);
 
-    // todo change the listener position if one is selected
+    if (R.all_of<RealImpactListenerPoint>(selected_entity)) {
+        if (sound_object.ListenerEntityId != uint(selected_entity)) {
+            if (Button("Set listener point")) {
+                const auto &real_impact = R.get<RealImpact>(sound_object_entity);
+                const auto &listener_point = R.get<RealImpactListenerPoint>(selected_entity);
+                sound_object.ListenerPosition = listener_point.GetPosition(MainScene->World.Up, true);
+                sound_object.SetImpactFrames(listener_point.LoadImpactSamples(real_impact));
+                sound_object.ListenerEntityId = uint(selected_entity);
+            }
+            if (Button("Select listener point")) {
+                MainScene->SelectEntity(entt::entity(sound_object.ListenerEntityId));
+            }
+        } else {
+            if (Button("Select sound object")) {
+                MainScene->SelectEntity(sound_object_entity);
+            }
+        }
+    } else {
+        if (Button("Select listener point")) {
+            MainScene->SelectEntity(entt::entity(sound_object.ListenerEntityId));
+        }
+    }
+    if (Button("Remove audio model")) {
+        R.remove<SoundObject>(sound_object_entity);
+    }
 
     const auto before_current_vertex = sound_object.CurrentVertex;
     sound_object.RenderControls(); // May change the current vertex.
@@ -366,10 +389,6 @@ void AudioModelControls() {
         } else {
             MainScene->SetModel(entt::entity(sound_object.CurrentVertexIndicatorEntityId), std::move(indicator_model), true);
         }
-    }
-
-    if (Button("Remove audio model")) {
-        R.remove<SoundObject>(sound_object_entity);
     }
 }
 

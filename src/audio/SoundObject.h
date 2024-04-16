@@ -72,11 +72,7 @@ struct ImpactRecording {
 // in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
     // All SoundObjects have a modal audio model. If `impact_frames_by_vertex` is non-empty, the object also has an impact audio model.
-    SoundObject(
-        const Tets &, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id,
-        std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex = {}
-    );
-
+    SoundObject(const Tets &, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id);
     ~SoundObject();
 
     const Tets &Tets;
@@ -94,6 +90,7 @@ struct SoundObject : AudioSource {
     void SetModel(SoundObjectModel);
     void ProduceAudio(DeviceData, float *input, float *output, uint frame_count) override;
     void RenderControls();
+    void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
 
 private:
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
