@@ -26,12 +26,34 @@ using Sample = float;
 
 using std::string, std::string_view;
 
+void CosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
+    if (n == 1) {
+        w[0] = 1.0;
+        return;
+    }
+
+    const uint wlength = n;
+    for (uint i = 0; i < n; ++i) {
+        float wi = 0.0;
+        for (uint j = 0; j < ncoeff; ++j) wi += coeff[j] * __cospi(float(2 * i * j) / float(wlength));
+        w[i] = wi;
+    }
+}
+// Apply Blackman-Harris window
+std::vector<float> BlackmanHarris(const float *w, uint n) {
+    std::vector<float> windowed(w, w + n);
+    static const float coeff[4] = {0.35875, -0.48829, 0.14128, -0.01168};
+    CosineWindow(windowed.data(), n, coeff, sizeof(coeff) / sizeof(float));
+    return windowed;
+}
+
 struct Waveform {
-    float *Frames;
-    const uint FrameCount;
+    const std::vector<float> Frames;
     const FFTData FftData;
 
-    Waveform(float *frames, uint frame_count) : Frames(frames), FrameCount(frame_count), FftData(Frames, FrameCount) {}
+    Waveform(const float *frames, uint frame_count)
+        : Frames(frames, frames + frame_count),
+          FftData(BlackmanHarris(Frames.data(), Frames.size())) {}
 };
 
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
@@ -308,10 +330,10 @@ static const ImVec2 ChartSize = {-1, 160};
 static void RenderWaveform(const Waveform &waveform, const std::string &label = "Waveform") {
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         ImPlot::SetupAxes("Frame", "Amplitude");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, waveform.FrameCount, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, waveform.Frames.size(), ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
-        ImPlot::PlotLine("", waveform.Frames, waveform.FrameCount);
+        ImPlot::PlotLine("", waveform.Frames.data(), waveform.Frames.size());
         ImPlot::PopStyleVar();
         ImPlot::EndPlot();
     }
@@ -323,7 +345,7 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         static const float MIN_DB = -200;
         const FFTData &fft = waveform.FftData;
-        const uint N = waveform.FrameCount;
+        const uint N = waveform.Frames.size();
         const uint N_2 = N / 2;
         const float fs = 48000; // todo flexible sample rate
         const float fs_n = fs / float(N);
