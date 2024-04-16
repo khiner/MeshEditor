@@ -85,7 +85,6 @@ struct SoundObject : AudioSource {
 
     void ProduceAudio(DeviceData, float *input, float *output, uint frame_count) override;
 
-    void Strike(float force = 1.0);
     void RenderControls();
 
 private:

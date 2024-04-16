@@ -242,19 +242,9 @@ void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, u
         for (uint i = 0; i < frame_count; ++i) {
             output[i] += ImpactAudioData->CurrentFrame < impact_samples.size() ? impact_samples[ImpactAudioData->CurrentFrame++] : 0.0f;
         }
-    } else if (Model == SoundObjectModel::Modal && ModalData) {
+    } else if (ModalData && ModalData->FaustDsp) {
         ModalData->FaustDsp->Compute(frame_count, &input, &output);
     }
-}
-
-void SoundObject::Strike(float force) {
-    if (ImpactAudioData) {
-        ImpactAudioData->CurrentFrame = 0;
-    }
-    if (ModalData) {
-        // todo
-    }
-    (void)force; // Unused
 }
 
 void SoundObject::SetModel(SoundObjectModel model) {
@@ -279,16 +269,17 @@ static void RenderWaveform(const std::vector<float> &frames) {
 }
 
 void SoundObject::RenderControls() {
-    PushID("AudioModel");
-    if (Button("Strike")) Strike();
-
-    int model = int(Model);
-    bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::ImpactAudio));
-    SameLine();
-    model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
-    PopID();
-    if (model_changed) SetModel(SoundObjectModel(model));
+    if (ImpactAudioData) {
+        PushID("AudioModel");
+        int model = int(Model);
+        bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::ImpactAudio));
+        SameLine();
+        model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
+        PopID();
+        if (model_changed) SetModel(SoundObjectModel(model));
+    }
     if (Model == SoundObjectModel::ImpactAudio && ImpactAudioData) {
+        if (Button("Strike")) ImpactAudioData->CurrentFrame = 0;
         if (BeginCombo("Vertex", std::to_string(CurrentVertex).c_str())) {
             for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) CurrentVertex = vertex;
@@ -296,9 +287,15 @@ void SoundObject::RenderControls() {
             EndCombo();
         }
         RenderWaveform(ImpactAudioData->ImpactFramesByVertex.at(CurrentVertex));
-    } else if (Model == SoundObjectModel::Modal && ModalData) {
-        SeparatorText("Material properties");
+    } else if (ModalData) {
+        if (ModalData->FaustDsp && ModalData->FaustDsp->Ui) {
+            Button("Strike");
+            auto &zone = *ModalData->FaustDsp->Ui->getZoneForLabel("gate");
+            if (IsItemActivated() && zone == 0.0) zone = 1.0;
+            else if (IsItemDeactivated() && zone == 1.0) zone = 0.0;
+        }
 
+        SeparatorText("Material properties");
         if (BeginCombo("Presets", MaterialName.c_str())) {
             for (const auto &[preset_name, material] : MaterialPresets) {
                 const bool is_selected = (preset_name == MaterialName);
