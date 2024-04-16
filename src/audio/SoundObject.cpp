@@ -26,7 +26,7 @@ using Sample = float;
 
 using std::string, std::string_view;
 
-void CosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
+void ApplyCosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
     if (n == 1) {
         w[0] = 1.0;
         return;
@@ -39,21 +39,34 @@ void CosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
         w[i] = wi;
     }
 }
-// Apply Blackman-Harris window
-std::vector<float> BlackmanHarris(const float *w, uint n) {
-    std::vector<float> windowed(w, w + n);
+// Create Blackman-Harris window
+std::vector<float> CreateBlackmanHarris(uint n) {
+    std::vector<float> window(n);
     static const float coeff[4] = {0.35875, -0.48829, 0.14128, -0.01168};
-    CosineWindow(windowed.data(), n, coeff, sizeof(coeff) / sizeof(float));
-    return windowed;
+    ApplyCosineWindow(window.data(), n, coeff, sizeof(coeff) / sizeof(float));
+    return window;
 }
 
+std::vector<float> ApplyWindow(const std::vector<float> &window, const float *data) {
+    std::vector<float> windowed_data(window.size());
+    for (uint i = 0; i < window.size(); ++i) windowed_data[i] = window[i] * data[i];
+    return windowed_data;
+}
+
+constexpr uint SampleRate = 48000; // todo respect device sample rate
+
 struct Waveform {
+    // Capture a short audio segment just after the impact for FFT.
+    inline static const uint FftStartFrame = SampleRate / 100, FftEndFrame = SampleRate / 10;
+    inline static auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
     const std::vector<float> Frames;
+    std::vector<float> WindowedFrames;
     const FFTData FftData;
 
     Waveform(const float *frames, uint frame_count)
         : Frames(frames, frames + frame_count),
-          FftData(BlackmanHarris(Frames.data(), Frames.size())) {}
+          WindowedFrames(ApplyWindow(BHWindow, Frames.data() + FftStartFrame)),
+          FftData(WindowedFrames) {}
 };
 
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
@@ -110,8 +123,7 @@ private:
                     Dsp = DspFactory->createDSPInstance();
                     if (!Dsp) ErrorMessage = "Successfully created Faust DSP factory, but could not create the Faust DSP instance.";
 
-                    uint sample_rate = 48000; // todo follow device sample rate
-                    Dsp->init(sample_rate);
+                    Dsp->init(SampleRate); // todo follow device sample rate
                     Ui = std::make_unique<FaustParams>();
                     Dsp->buildUserInterface(Ui.get());
                 } else {
@@ -123,7 +135,6 @@ private:
             ErrorMessage = "`DSPToBoxes` returned no error but did not produce a result.";
         }
     }
-
     void Uninit() {
         if (Dsp || DspFactory) DestroyDsp();
         if (Box) Box = nullptr;
@@ -345,13 +356,12 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         static const float MIN_DB = -200;
         const FFTData &fft = waveform.FftData;
-        const uint N = waveform.Frames.size();
+        const uint N = waveform.WindowedFrames.size();
         const uint N_2 = N / 2;
-        const float fs = 48000; // todo flexible sample rate
+        const float fs = SampleRate; // todo flexible sample rate
         const float fs_n = fs / float(N);
 
-        static std::vector<float> frequency(N_2);
-        static std::vector<float> magnitude(N_2);
+        static std::vector<float> frequency(N_2), magnitude(N_2);
         frequency.resize(N_2);
         magnitude.resize(N_2);
 
