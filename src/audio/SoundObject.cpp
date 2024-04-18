@@ -57,7 +57,7 @@ constexpr uint SampleRate = 48000; // todo respect device sample rate
 
 struct Waveform {
     // Capture a short audio segment just after the impact for FFT.
-    inline static const uint FftStartFrame = SampleRate / 100, FftEndFrame = SampleRate / 10;
+    inline static const uint FftStartFrame = 20, FftEndFrame = SampleRate / 20;
     inline static auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
     const std::vector<float> Frames;
     std::vector<float> WindowedFrames;
@@ -241,7 +241,6 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     static const string
         gain = "gain = hslider(\"gain[scale:log]\",0.2,0,0.5,0.01);",
         t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
-        source = "source = vslider(\"Excitation source [style:radio {'Hammer':0;'Audio input':1 }]\",0,0,1,1);",
         gate = "gate = button(\"gate[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");",
         hammer_hardness = "hammerHardness = hslider(\"hammerHardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
         hammer_size = "hammerSize = hslider(\"hammerSize[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01)" + to_sandh,
@@ -253,11 +252,10 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
         freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, to_sandh),
         ex_pos = std::format("exPos = nentry(\"exPos\",{},0,{},1){}", (num_excite_pos - 1) / 2, num_excite_pos - 1, to_sandh),
         modal_model = std::format("{}({}exPos,t60Scale)", model_name, freq_control ? "freq," : ""),
-        process = std::format("process = hammer(gate,hammerHardness,hammerSize),_ : select2(source) : {}*gain;", modal_model);
+        process = std::format("process = hammer(gate,hammerHardness,hammerSize) : {}*gain;", modal_model);
 
     std::stringstream instrument;
-    instrument << source << '\n'
-               << gate << '\n'
+    instrument << gate << '\n'
                << hammer_hardness << '\n'
                << hammer_size << '\n'
                << gain << '\n'
@@ -372,7 +370,7 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
             magnitude[i] = LinearToDb(mag_linear);
         }
 
-        ImPlot::SetupAxes("Frequency bin", "Magnitude (dB)");
+        ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, fs / 2, ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
