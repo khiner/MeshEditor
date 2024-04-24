@@ -1,6 +1,12 @@
 #include "BVH.h"
+
 #include <algorithm>
 #include <numeric>
+#include <ranges>
+
+using std::ranges::to;
+using std::views::filter;
+using std::views::transform;
 
 BVH::BVH(std::vector<BBox> &&leaf_boxes) : LeafBoxes(std::move(leaf_boxes)) {
     std::vector<uint> indices(LeafBoxes.size());
@@ -36,12 +42,8 @@ uint BVH::Build(std::vector<uint> &&indices) {
 }
 
 std::vector<BBox> BVH::CreateInternalBoxes() const {
-    std::vector<BBox> boxes;
-    boxes.reserve(Nodes.size());
-    for (const auto &node : Nodes) {
-        if (node.IsInternal()) boxes.emplace_back(node.Internal->Box);
-    }
-    return boxes;
+    return Nodes | filter([](const auto &node) { return node.IsInternal(); }) |
+        transform([](const auto &node) { return node.Internal->Box; }) | to<std::vector>();
 }
 
 std::optional<uint> BVH::Intersect(const Ray &ray, const std::function<bool(uint)> &callback) const {

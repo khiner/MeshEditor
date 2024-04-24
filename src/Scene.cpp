@@ -14,6 +14,9 @@
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
+using std::ranges::to;
+using std::views::transform;
+
 std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
 
 void Capitalize(std::string &str) {
@@ -55,12 +58,10 @@ struct MeshVkData {
 };
 
 std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
-    const auto &corners = box.Corners();
-    std::vector<Vertex3D> vertices;
-    vertices.reserve(corners.size());
-    // Normals don't matter for wireframes.
-    for (auto &corner : corners) vertices.emplace_back(corner, vec3{}, color);
-    return vertices;
+    return box.Corners() |
+        // Normals don't matter for wireframes.
+        transform([&color](const auto &corner) { return Vertex3D(corner, vec3{}, color); }) |
+        to<std::vector>();
 }
 
 const std::vector AllNormalElements{MeshElement::Vertex, MeshElement::Face};
@@ -398,7 +399,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     AddPrimitive(Primitive::Cube, {.Transform = {1}, .Select = true, .Visible = true, .Submit = false});
 }
 
-Scene::~Scene(){}; // Using unique handles, so no need to manually destroy anything.
+Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
 
 // Get the model VK buffer index.
 // Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).

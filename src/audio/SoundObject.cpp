@@ -2,6 +2,7 @@
 
 #include <format>
 #include <print>
+#include <ranges>
 
 #include "imgui.h"
 #include "implot.h"
@@ -25,6 +26,9 @@ using Sample = float;
 #include "Worker.h"
 
 using std::string, std::string_view;
+using std::ranges::iota_view;
+using std::ranges::to;
+using std::views::transform;
 
 void ApplyCosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
     if (n == 1) {
@@ -204,11 +208,6 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     };
 
     static const string model_name = "modalModel";
-
-    std::vector<int> excitable_vertex_indices_ints; // Convert to signed integers.
-    excitable_vertex_indices_ints.reserve(excitable_vertex_indices.size());
-    for (uint i : excitable_vertex_indices) excitable_vertex_indices_ints.emplace_back(i);
-
     const auto m2f_result = m2f::mesh2faust(
         &volumetric_mesh,
         m2f::MaterialProperties{
@@ -222,10 +221,11 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
             .modelName = model_name,
             .freqControl = freq_control,
             .modesMinFreq = 20,
-            .modesMaxFreq = 18000,
-            .targetNModes = 40, // number of synthesized modes
-            .femNModes = 80, // number of modes to be computed for the finite element analysis
-            .exPos = excitable_vertex_indices_ints,
+            .modesMaxFreq = 20000,
+            .targetNModes = 50, // number of synthesized modes
+            .femNModes = 100, // number of modes to be computed for the finite element analysis
+            // Convert to signed ints.
+            .exPos = excitable_vertex_indices | transform([](uint i) { return int(i); }) | to<std::vector>(),
             .nExPos = int(excitable_vertex_indices.size()),
             .debugMode = false,
         }
@@ -502,12 +502,8 @@ void SoundObject::RenderControls() {
                 if (!ImpactAudioData) {
                     // ImpactAudio objects can only be struck at the impact points.
                     // Otherwise, linearly distribute the vertices across the tet mesh.
-                    ExcitableVertices.clear();
                     const uint num_excitable_vertices = 5; // todo UI input
-                    ExcitableVertices.reserve(num_excitable_vertices);
-                    for (uint i = 0; i < num_excitable_vertices; ++i) {
-                        ExcitableVertices.emplace_back(i * Tets->numberofpoints / num_excitable_vertices);
-                    }
+                    ExcitableVertices = iota_view{0u, num_excitable_vertices} | transform([&](uint i) { return i * Tets->numberofpoints / num_excitable_vertices; }) | to<std::vector>();
                 }
                 DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
                     return GenerateDsp(*Tets, Material, ExcitableVertices, true);

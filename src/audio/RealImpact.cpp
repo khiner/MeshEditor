@@ -1,11 +1,16 @@
 #include "RealImpact.h"
 
+#include <ranges>
 #include <regex>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "helper/npy.h"
 #include "numeric/vec4.h"
+
+using std::ranges::iota_view;
+using std::ranges::to;
+using std::views::transform;
 
 /**
 All files (present for each object):
@@ -107,18 +112,15 @@ std::vector<RealImpactListenerPoint> RealImpact::LoadListenerPoints() const {
     const auto mic_ids = npy::read_npy<long>(Directory / "micID.npy");
     const auto angles = npy::read_npy<long>(Directory / "angle.npy");
     const auto distances = npy::read_npy<long>(Directory / "distance.npy");
-
-    std::vector<RealImpactListenerPoint> listener_points;
-    listener_points.reserve(NumListenerPoints);
-    for (uint i = 0; i < NumListenerPoints; ++i) {
-        listener_points.push_back(RealImpactListenerPoint{
-            .Index = i,
-            .MicId = mic_ids.data[i],
-            .DistanceMm = distances.data[i],
-            .AngleDeg = angles.data[i],
-        });
-    }
-    return listener_points;
+    return iota_view{0u, NumListenerPoints} | transform([&](uint i) {
+               return RealImpactListenerPoint{
+                   .Index = i,
+                   .MicId = mic_ids.data[i],
+                   .DistanceMm = distances.data[i],
+                   .AngleDeg = angles.data[i]
+               };
+           }) |
+        to<std::vector>();
 }
 
 /*
