@@ -1,9 +1,15 @@
 #pragma once
 
+#include <ranges>
+
 #include "numeric/vec2.h"
 
 #include "Primitive.h"
 #include "mesh/Mesh.h"
+
+using std::ranges::iota_view;
+using std::ranges::to;
+using std::views::transform;
 
 inline Mesh Rect(vec2 half_extents = {0.5, 0.5}) {
     const auto x = half_extents.x, y = half_extents.y;
@@ -14,18 +20,16 @@ inline Mesh Rect(vec2 half_extents = {0.5, 0.5}) {
 }
 
 inline Mesh Circle(float radius = 0.5, uint n = 32) {
-    std::vector<vec3> vertices;
-    std::vector<std::vector<uint>> indices;
-    vertices.reserve(n + 1);
-    indices.reserve(n);
+    std::vector<vec3> vertices =
+        iota_view{0u, n} |
+        transform([radius, n](uint i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
+        to<std::vector>();
+    vertices.emplace_back(0, 0, 0); // Center vertex
 
-    for (uint i = 0; i < n; ++i) {
-        const float theta = 2 * M_PI * i / n;
-        vertices.emplace_back(radius * vec3{cos(theta), sin(theta), 0});
-        indices.push_back({i, (i + 1) % n, n});
-    }
-    vertices.emplace_back(0, 0, 0);
-    return {std::move(vertices), std::move(indices)};
+    return {
+        std::move(vertices),
+        iota_view{0u, n} | transform([n](uint i) { return std::vector<uint>{i, (i + 1) % n, n}; }) | to<std::vector>()
+    };
 }
 
 inline Mesh Cuboid(vec3 half_extents = {0.5, 0.5, 0.5}) {
@@ -84,6 +88,7 @@ inline Mesh IcoSphere(float radius = 0.5, uint recursion_level = 3) {
 
     for (uint r = 0; r < recursion_level; ++r) {
         std::vector<std::vector<uint>> new_indices;
+        new_indices.reserve(indices.size() * 4);
         for (auto &tri : indices) {
             const uint a = tri[0], b = tri[1], c = tri[2];
             const uint ab = AddMidVertex(a, b), bc = AddMidVertex(b, c), ca = AddMidVertex(c, a);
@@ -99,26 +104,22 @@ inline Mesh IcoSphere(float radius = 0.5, uint recursion_level = 3) {
 
 inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16) {
     std::vector<vec3> vertices;
-    std::vector<std::vector<uint>> indices;
     vertices.reserve(2 + n_slices * (n_stacks - 2)); // +/- 2 for the poles
-    indices.reserve(2 * n_slices + n_slices * (n_stacks - 2)); // Top + bottom triangles + quads
-
     vertices.emplace_back(0, radius, 0); // Top pole
-
     // Vertices (excluding poles)
     for (uint i = 1; i < n_stacks; ++i) {
-        const float phi = M_PI * float(i) / float(n_stacks);
+        const float p = float(i) / float(n_stacks);
         for (uint j = 0; j < n_slices; ++j) {
-            const float theta = 2 * M_PI * float(j) / float(n_slices);
-            vertices.emplace_back(vec3{sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta)} * radius);
+            const float t = 2.f * j / n_slices;
+            vertices.emplace_back(vec3{__sinpi(p) * __cospi(t), __cospi(p), __sinpi(p) * __sinpi(t)} * radius);
         }
     }
-
     vertices.emplace_back(0, -radius, 0); // Bottom pole
 
+    std::vector<std::vector<uint>> indices;
+    indices.reserve(2 * n_slices + n_slices * (n_stacks - 2)); // Top + bottom triangles + quads
     // Top triangles
     for (uint i = 0; i < n_slices; ++i) indices.push_back({0, 1 + (i + 1) % n_slices, 1 + i});
-
     // Quads per stack / slice
     for (uint j = 0; j < n_stacks - 2; ++j) {
         const uint j0 = 1 + j * n_slices, j1 = 1 + (j + 1) * n_slices;
@@ -131,7 +132,6 @@ inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16)
             });
         }
     }
-
     // Bottom triangles
     const uint bottom_i = vertices.size() - 1;
     for (uint i = 0; i < n_slices; ++i) {
@@ -147,19 +147,18 @@ inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16)
 
 inline Mesh Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_major = 32, uint n_minor = 16) {
     std::vector<vec3> vertices;
-    std::vector<std::vector<uint>> indices;
     vertices.reserve(n_major * n_minor);
-    indices.reserve(n_major * n_minor);
-
     for (uint i = 0; i < n_major; ++i) {
-        const float theta = 2 * M_PI * float(i) / float(n_major);
+        const float t = 2.f * i / n_major;
         for (uint j = 0; j < n_minor; ++j) {
-            const float phi = 2 * M_PI * float(j) / float(n_minor);
-            const float radial_distance = major_radius + minor_radius * cos(phi);
-            vertices.emplace_back(radial_distance * sin(theta), minor_radius * sin(phi), radial_distance * cos(theta));
+            const float p = 2.f * j / n_minor;
+            const float r = major_radius + minor_radius * __cospi(p);
+            vertices.emplace_back(r * __sinpi(t), minor_radius * __sinpi(p), r * __cospi(t));
         }
     }
 
+    std::vector<std::vector<uint>> indices;
+    indices.reserve(n_major * n_minor);
     // Generate quads for the torus surface, maintaining original winding order
     for (uint i = 0; i < n_major; ++i) {
         for (uint j = 0; j < n_minor; ++j) {
@@ -177,18 +176,16 @@ inline Mesh Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_maj
 
 inline Mesh Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
     std::vector<vec3> vertices(2 * slices);
-    std::vector<std::vector<uint>> faces(slices + 2);
-
     for (uint i = 0; i < slices; i++) {
-        const float angle = 2 * M_PI * float(i) / float(slices);
-        const float x = cos(angle), z = sin(angle);
+        const float a = 2.f * i / slices;
+        const float x = __cospi(a), z = __sinpi(a);
         vertices[i] = {x * radius, -height / 2, z * radius}; // bottom face
         vertices[i + slices] = {x * radius, height / 2, z * radius}; // top face
     }
 
+    std::vector<std::vector<uint>> faces(slices + 2);
     // Bottom n-gon
-    faces[0].reserve(slices);
-    for (uint i = 0; i < slices; i++) faces[0].emplace_back(i);
+    faces[0] = iota_view{0u, slices} | to<std::vector>();
     // Side quads
     for (uint i = 0; i < slices; ++i) {
         faces[i + 1] = {
@@ -199,27 +196,25 @@ inline Mesh Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
         };
     }
     // Top n-gon, reversed for winding order
-    faces[slices + 1].reserve(slices);
-    for (int i = slices - 1; i >= 0; --i) faces[slices + 1].emplace_back(i + slices);
+    faces[slices + 1] = iota_view{0u, slices} |
+        transform([slices](int i) { return slices + i; }) |
+        std::views::reverse | to<std::vector>();
 
     return {std::move(vertices), std::move(faces)};
 }
 
 inline Mesh Cone(float radius = 0.5, float height = 1, uint slices = 32) {
-    std::vector<vec3> vertices(slices + 1); // Base + top
-    std::vector<std::vector<uint>> indices(slices + 1); // Side triangles + base n-gon
+    std::vector<vec3> vertices = // Base
+        iota_view{0u, slices} | transform([&](uint i) {
+            return vec3{radius * __cospi(2.f * i / slices), -height / 2, radius * __sinpi(2.f * i / slices)};
+        }) |
+        to<std::vector>();
+    vertices.emplace_back(0, height / 2, 0); // Top
 
-    for (uint i = 0; i < slices; ++i) { // Base
-        const float angle = 2 * M_PI * float(i) / float(slices);
-        vertices[i] = {radius * cos(angle), -height / 2, radius * sin(angle)};
-    }
-    vertices[slices] = {0, height / 2, 0}; // Top
-
-    // Side triangles
-    for (uint i = 0; i < slices; ++i) indices[i] = {slices, (i + 1) % slices, i};
-    // Base n-gon
-    indices[slices].reserve(slices);
-    for (uint i = 0; i < slices; ++i) indices[slices].emplace_back(i);
+    std::vector<std::vector<uint>> indices = // Side triangles
+        iota_view{0u, slices} |
+        transform([slices](uint i) { return std::vector<uint>{slices, (i + 1) % slices, i}; }) | to<std::vector>();
+    indices.emplace_back(iota_view{0u, slices} | to<std::vector>()); // Base n-gon
 
     return {std::move(vertices), std::move(indices)};
 }
