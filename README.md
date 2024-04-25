@@ -4,8 +4,9 @@ Real-time mesh viewer and editor, using Vulkan and ImGui, and in-progress rigid 
 
 ![](screenshots/Cube.png)
 ![](screenshots/TorusBvh.png)
+![](screenshots/TorusAudioPanel.png)
 ![](screenshots/RealImpact_17_IronSkillet.png)
-![](screenshots/RealImpact_27_WoodPlate.png)
+![](screenshots/CeramicPitcherAudioPanel.png)
 
 General features:
 * Create/delete meshes and mesh instances
