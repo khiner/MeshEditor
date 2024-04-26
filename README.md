@@ -8,6 +8,10 @@ Real-time mesh viewer and editor, using Vulkan and ImGui, and in-progress rigid 
 ![](screenshots/RealImpact_17_IronSkillet.png)
 ![](screenshots/CeramicPitcherAudioPanel.png)
 
+### 36X48 Project poster on modal physical audio modeling
+
+![](screenshots/PhysicalAudioModelingPoster.png)
+
 General features:
 * Create/delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
