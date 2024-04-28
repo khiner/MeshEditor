@@ -7,6 +7,7 @@ Real-time mesh viewer and editor, using Vulkan and ImGui, and in-progress rigid 
 ![](screenshots/TorusAudioPanel.png)
 ![](screenshots/RealImpact_17_IronSkillet.png)
 ![](screenshots/CeramicPitcherAudioPanel.png)
+![](screenshots/HighlightedModeIndex.png)
 
 ### 36X48 Project poster on modal physical audio modeling
 
