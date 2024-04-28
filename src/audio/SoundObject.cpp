@@ -59,18 +59,42 @@ std::vector<float> ApplyWindow(const std::vector<float> &window, const float *da
 
 constexpr uint SampleRate = 48000; // todo respect device sample rate
 
+static std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_bins, uint n_peaks) {
+    const uint N_2 = n_bins / 2;
+
+    std::vector<std::pair<float, uint>> peaks;
+    for (uint i = 1; i < N_2 - 1; i++) {
+        float mag_sq = data[i][0] * data[i][0] + data[i][1] * data[i][1];
+        float left_mag_sq = data[i - 1][0] * data[i - 1][0] + data[i - 1][1] * data[i - 1][1];
+        float right_mag_sq = data[i + 1][0] * data[i + 1][0] + data[i + 1][1] * data[i + 1][1];
+        if (mag_sq > left_mag_sq && mag_sq > right_mag_sq) peaks.emplace_back(mag_sq, i);
+    }
+
+    // Sort descending by magnitude and convert to frequency.
+    std::ranges::sort(peaks, [](const auto &a, const auto &b) { return a.first > b.first; });
+    return peaks | std::views::take(n_peaks) |
+        transform([n_bins](const auto &p) { return float(p.second * SampleRate / n_bins); }) | to<std::vector>();
+}
+
 struct Waveform {
-    // Capture a short audio segment just after the impact for FFT.
-    inline static const uint FftStartFrame = 20, FftEndFrame = SampleRate / 20;
+    // Capture a short audio segment shortly after the impact for FFT.
+    static constexpr uint FftStartFrame = 30, FftEndFrame = SampleRate / 16;
     inline static auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
     const std::vector<float> Frames;
     std::vector<float> WindowedFrames;
     const FFTData FftData;
+    std::vector<float> PeakFrequencies;
 
     Waveform(const float *frames, uint frame_count)
         : Frames(frames, frames + frame_count),
-          WindowedFrames(ApplyWindow(BHWindow, Frames.data() + FftStartFrame)),
-          FftData(WindowedFrames) {}
+          WindowedFrames(ApplyWindow(BHWindow, Frames.data() + FftStartFrame)), FftData(WindowedFrames) {}
+
+    void PlotFrames(const std::string &label = "Waveform") const;
+    void PlotMagnitudeSpectrum(const std::string &label = "Magnitude spectrum", std::optional<float> highlight_freq = std::nullopt) const;
+
+    void FindPeakFrequencies(uint n_peaks) {
+        PeakFrequencies = ::FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks);
+    }
 };
 
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
@@ -185,6 +209,7 @@ void SoundObjectData::ImpactAudio::SetVertex(uint vertex) {
     if (ImpactFramesByVertex.contains(vertex)) {
         auto &frames = ImpactFramesByVertex.at(vertex);
         Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
+        Waveform->FindPeakFrequencies(10);
     }
 }
 
@@ -336,28 +361,28 @@ using namespace ImGui;
 
 static const ImVec2 ChartSize = {-1, 160};
 
-static void RenderWaveform(const Waveform &waveform, const std::string &label = "Waveform") {
+static float LinearToDb(float linear) { return 20.0f * log10f(linear); }
+
+void Waveform::PlotFrames(const std::string &label) const {
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         ImPlot::SetupAxes("Frame", "Amplitude");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, waveform.Frames.size(), ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, Frames.size(), ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
-        ImPlot::PlotLine("", waveform.Frames.data(), waveform.Frames.size());
+        ImPlot::PlotLine("", Frames.data(), Frames.size());
         ImPlot::PopStyleVar();
         ImPlot::EndPlot();
     }
 }
 
-static float LinearToDb(float linear) { return 20.0f * log10f(linear); }
-
-static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string &label = "Magnitude spectrum", std::optional<float> highlight_freq = std::nullopt) {
+void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<float> highlight_freq) const {
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         static const float MIN_DB = -200;
-        const FFTData &fft = waveform.FftData;
-        const uint N = waveform.WindowedFrames.size();
+        const FFTData &fft = FftData;
+        const uint N = WindowedFrames.size();
         const uint N_2 = N / 2;
         const float fs = SampleRate; // todo flexible sample rate
-        const float fs_n = fs / float(N);
+        const float fs_n = SampleRate / float(N);
 
         static std::vector<float> frequency(N_2), magnitude(N_2);
         frequency.resize(N_2);
@@ -366,8 +391,7 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
         const auto *data = fft.Complex;
         for (uint i = 0; i < N_2; i++) {
             frequency[i] = fs_n * float(i);
-            const float mag_linear = sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N_2);
-            magnitude[i] = LinearToDb(mag_linear);
+            magnitude[i] = LinearToDb(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N_2));
         }
 
         ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");
@@ -375,9 +399,12 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
         ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
         ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
+        for (uint freq : PeakFrequencies) ImPlot::PlotInfLines("##Peak", &freq, 1);
         if (highlight_freq) {
+            ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
             const float freq = *highlight_freq;
             ImPlot::PlotInfLines("##Highlight", &freq, 1);
+            ImPlot::PopStyleColor();
         }
         ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N_2, MIN_DB);
         ImPlot::PopStyleColor();
@@ -387,7 +414,7 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
 }
 
 // Returns the index of the hovered mode, if any.
-static std::optional<size_t> RenderModePlot(
+static std::optional<size_t> PlotModeData(
     const std::vector<float> &data, const std::string &label, const std::string &x_label, const std::string &y_label,
     std::optional<size_t> highlight_index = std::nullopt, std::optional<float> max_value_opt = std::nullopt
 ) {
@@ -436,8 +463,8 @@ void SoundObject::RenderControls() {
             EndCombo();
         }
         if (ImpactAudioData->Waveform) {
-            RenderWaveform(*ImpactAudioData->Waveform, "Real-world impact waveform");
-            RenderMagnitudeSpectrum(*ImpactAudioData->Waveform, "Real-world impact spectrum");
+            ImpactAudioData->Waveform->PlotFrames("Real-world impact waveform");
+            ImpactAudioData->Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
         }
     } else if (ModalData) {
         if (ModalData->FaustDsp && ModalData->FaustDsp->Ui) {
@@ -454,11 +481,12 @@ void SoundObject::RenderControls() {
 
             if (ImpactRecording && ImpactRecording->Complete) {
                 ModalData->Waveform = std::make_unique<Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
+                ModalData->Waveform->PeakFrequencies = {ModalData->ModeFreqs.begin(), ModalData->ModeFreqs.begin() + ModalData->ModeFreqs.size()};
                 ImpactRecording.reset();
             }
             if (ModalData->Waveform) {
-                RenderWaveform(*ModalData->Waveform, "Modal impact waveform");
-                RenderMagnitudeSpectrum(*ModalData->Waveform, "Modal impact spectrum", HoveredModeIndex ? std::optional{ModalData->ModeFreqs[*HoveredModeIndex]} : std::nullopt);
+                ModalData->Waveform->PlotFrames("Modal impact waveform");
+                ModalData->Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", HoveredModeIndex ? std::optional{ModalData->ModeFreqs[*HoveredModeIndex]} : std::nullopt);
             }
 
             // Poll the Faust DSP UI to see if the current excitation vertex has changed.
@@ -467,9 +495,9 @@ void SoundObject::RenderControls() {
 
             if (CollapsingHeader("Modal data charts")) {
                 std::optional<size_t> new_hovered_index;
-                if (auto hovered = RenderModePlot(ModalData->ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
-                if (auto hovered = RenderModePlot(ModalData->ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-                if (auto hovered = RenderModePlot(ModalData->ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+                if (auto hovered = PlotModeData(ModalData->ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = PlotModeData(ModalData->ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = PlotModeData(ModalData->ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
                 HoveredModeIndex = new_hovered_index;
                 if (HoveredModeIndex && *HoveredModeIndex < ModalData->ModeFreqs.size()) {
                     const auto hovered_index = *HoveredModeIndex;
