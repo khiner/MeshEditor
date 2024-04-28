@@ -350,7 +350,7 @@ static void RenderWaveform(const Waveform &waveform, const std::string &label = 
 
 static float LinearToDb(float linear) { return 20.0f * log10f(linear); }
 
-static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string &label = "Magnitude spectrum") {
+static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string &label = "Magnitude spectrum", std::optional<float> highlight_freq = std::nullopt) {
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         static const float MIN_DB = -200;
         const FFTData &fft = waveform.FftData;
@@ -375,6 +375,10 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
         ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
         ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
+        if (highlight_freq) {
+            const float freq = *highlight_freq;
+            ImPlot::PlotInfLines("##Highlight", &freq, 1);
+        }
         ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N_2, MIN_DB);
         ImPlot::PopStyleColor();
         ImPlot::PopStyleVar();
@@ -454,7 +458,28 @@ void SoundObject::RenderControls() {
             }
             if (ModalData->Waveform) {
                 RenderWaveform(*ModalData->Waveform, "Modal impact waveform");
-                RenderMagnitudeSpectrum(*ModalData->Waveform, "Modal impact spectrum");
+                RenderMagnitudeSpectrum(*ModalData->Waveform, "Modal impact spectrum", HoveredModeIndex ? std::optional{ModalData->ModeFreqs[*HoveredModeIndex]} : std::nullopt);
+            }
+
+            // Poll the Faust DSP UI to see if the current excitation vertex has changed.
+            const auto vertex_index = uint(*ModalData->FaustDsp->Ui->getZoneForLabel("exPos"));
+            if (vertex_index < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[vertex_index];
+
+            if (CollapsingHeader("Modal data charts")) {
+                std::optional<size_t> new_hovered_index;
+                if (auto hovered = RenderModePlot(ModalData->ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = RenderModePlot(ModalData->ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = RenderModePlot(ModalData->ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+                HoveredModeIndex = new_hovered_index;
+                if (HoveredModeIndex && *HoveredModeIndex < ModalData->ModeFreqs.size()) {
+                    const auto hovered_index = *HoveredModeIndex;
+                    Text(
+                        "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", hovered_index,
+                        ModalData->ModeFreqs[hovered_index],
+                        ModalData->ModeT60s[hovered_index],
+                        ModalData->ModeGains[vertex_index][hovered_index]
+                    );
+                }
             }
         }
 
@@ -482,26 +507,6 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
 
         if (ModalData->FaustDsp->Ui) {
-            // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-            const auto vertex_index = uint(*ModalData->FaustDsp->Ui->getZoneForLabel("exPos"));
-            if (vertex_index < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[vertex_index];
-
-            if (CollapsingHeader("Modal data charts")) {
-                std::optional<size_t> new_hovered_index;
-                if (auto hovered = RenderModePlot(ModalData->ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
-                if (auto hovered = RenderModePlot(ModalData->ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-                if (auto hovered = RenderModePlot(ModalData->ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
-                HoveredModeIndex = new_hovered_index;
-                if (HoveredModeIndex && *HoveredModeIndex < ModalData->ModeFreqs.size()) {
-                    const auto hovered_index = *HoveredModeIndex;
-                    Text(
-                        "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", hovered_index,
-                        ModalData->ModeFreqs[hovered_index],
-                        ModalData->ModeT60s[hovered_index],
-                        ModalData->ModeGains[vertex_index][hovered_index]
-                    );
-                }
-            }
             SeparatorText("DSP control");
             if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", ModalData->FaustDsp->GetCode());
             ModalData->FaustDsp->Ui->Draw();
