@@ -59,6 +59,7 @@ std::vector<float> ApplyWindow(const std::vector<float> &window, const float *da
 
 constexpr uint SampleRate = 48000; // todo respect device sample rate
 
+// Ordered by lowest to highest frequency.
 static std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_bins, uint n_peaks) {
     const uint N_2 = n_bins / 2;
 
@@ -72,8 +73,10 @@ static std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_
 
     // Sort descending by magnitude and convert to frequency.
     std::ranges::sort(peaks, [](const auto &a, const auto &b) { return a.first > b.first; });
-    return peaks | std::views::take(n_peaks) |
+    auto peak_freqs = peaks | std::views::take(n_peaks) |
         transform([n_bins](const auto &p) { return float(p.second * SampleRate / n_bins); }) | to<std::vector>();
+    std::ranges::sort(peak_freqs);
+    return peak_freqs;
 }
 
 struct Waveform {
@@ -90,7 +93,7 @@ struct Waveform {
           WindowedFrames(ApplyWindow(BHWindow, Frames.data() + FftStartFrame)), FftData(WindowedFrames) {}
 
     void PlotFrames(const std::string &label = "Waveform") const;
-    void PlotMagnitudeSpectrum(const std::string &label = "Magnitude spectrum", std::optional<float> highlight_freq = std::nullopt) const;
+    void PlotMagnitudeSpectrum(const std::string &label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = std::nullopt) const;
 
     void FindPeakFrequencies(uint n_peaks) {
         PeakFrequencies = ::FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks);
@@ -216,7 +219,7 @@ void SoundObjectData::ImpactAudio::SetVertex(uint vertex) {
 SoundObjectData::Modal::Modal() : FaustDsp(std::make_unique<FaustDSP>()) {}
 SoundObjectData::Modal::~Modal() = default;
 
-Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false) {
+Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false, std::optional<float> fundamental_freq_opt = std::nullopt) {
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
     // Turn each tetrahedron into 4 triangles.
@@ -259,7 +262,10 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     if (model_dsp.empty()) return {"process = 0;", {}, {}, {}};
 
     auto &mode_freqs = m2f_result.model.modeFreqs;
-    const float fundamental_freq = mode_freqs.empty() ? 440.0f : mode_freqs.front();
+    const float fundamental_freq = fundamental_freq_opt ?
+        *fundamental_freq_opt :
+        !mode_freqs.empty() ? mode_freqs.front() :
+                              440.0f;
 
     // Static code sections.
     static const string to_sandh = " : ba.sAndH(gate);"; // Add a sample and hold on the gate, in serial, and end the expression.
@@ -375,7 +381,7 @@ void Waveform::PlotFrames(const std::string &label) const {
     }
 }
 
-void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<float> highlight_freq) const {
+void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<uint> highlight_peak_freq_index) const {
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         static const float MIN_DB = -200;
         const FFTData &fft = FftData;
@@ -399,12 +405,16 @@ void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<flo
         ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
         ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
-        for (uint freq : PeakFrequencies) ImPlot::PlotInfLines("##Peak", &freq, 1);
-        if (highlight_freq) {
-            ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
-            const float freq = *highlight_freq;
-            ImPlot::PlotInfLines("##Highlight", &freq, 1);
-            ImPlot::PopStyleColor();
+        for (uint i = 0; i < PeakFrequencies.size(); ++i) {
+            const bool is_highlighted = highlight_peak_freq_index && i == *highlight_peak_freq_index;
+            const float freq = PeakFrequencies[i];
+            if (is_highlighted) {
+                ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
+                ImPlot::PlotInfLines("##Highlight", &freq, 1);
+                ImPlot::PopStyleColor();
+            } else {
+                ImPlot::PlotInfLines("##Peak", &freq, 1);
+            }
         }
         ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N_2, MIN_DB);
         ImPlot::PopStyleColor();
@@ -481,12 +491,12 @@ void SoundObject::RenderControls() {
 
             if (ImpactRecording && ImpactRecording->Complete) {
                 ModalData->Waveform = std::make_unique<Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
-                ModalData->Waveform->PeakFrequencies = {ModalData->ModeFreqs.begin(), ModalData->ModeFreqs.begin() + ModalData->ModeFreqs.size()};
+                ModalData->Waveform->FindPeakFrequencies(ModalData->ModeFreqs.size());
                 ImpactRecording.reset();
             }
             if (ModalData->Waveform) {
                 ModalData->Waveform->PlotFrames("Modal impact waveform");
-                ModalData->Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", HoveredModeIndex ? std::optional{ModalData->ModeFreqs[*HoveredModeIndex]} : std::nullopt);
+                ModalData->Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", HoveredModeIndex ? std::optional{*HoveredModeIndex} : std::nullopt);
             }
 
             // Poll the Faust DSP UI to see if the current excitation vertex has changed.
@@ -554,8 +564,9 @@ void SoundObject::RenderControls() {
                     const uint num_excitable_vertices = 5; // todo UI input
                     ExcitableVertices = iota_view{0u, num_excitable_vertices} | transform([&](uint i) { return i * Tets->numberofpoints / num_excitable_vertices; }) | to<std::vector>();
                 }
+                std::optional<float> fundamental_freq = ImpactAudioData && ImpactAudioData->Waveform ? std::optional{ImpactAudioData->Waveform->PeakFrequencies.front()} : std::nullopt;
                 DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
-                    return GenerateDsp(*Tets, Material, ExcitableVertices, true);
+                    return GenerateDsp(*Tets, Material, ExcitableVertices, true, fundamental_freq);
                 });
             }
         }
