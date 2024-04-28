@@ -96,4 +96,5 @@ private:
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
     std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
     std::unique_ptr<ImpactRecording> ImpactRecording;
+    std::optional<size_t> HoveredModeIndex;
 };

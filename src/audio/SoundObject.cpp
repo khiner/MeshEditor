@@ -382,6 +382,34 @@ static void RenderMagnitudeSpectrum(const Waveform &waveform, const std::string 
     }
 }
 
+// Returns the index of the hovered mode, if any.
+static std::optional<size_t> RenderModePlot(
+    const std::vector<float> &data, const std::string &label, const std::string &x_label, const std::string &y_label,
+    std::optional<size_t> highlight_index = std::nullopt, std::optional<float> max_value_opt = std::nullopt
+) {
+    std::optional<size_t> hovered_index;
+    if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
+        static const double BarSize = 0.9;
+        const float max_value = max_value_opt.value_or(*std::max_element(data.begin(), data.end()));
+        ImPlot::SetupAxes(x_label.c_str(), y_label.c_str());
+        ImPlot::SetupAxesLimits(-0.5f, data.size() - 0.5f, 0, max_value, ImPlotCond_Always);
+        if (ImPlot::IsPlotHovered()) {
+            if (auto i = size_t(ImPlot::GetPlotMousePos().x + 0.5f); i >= 0 && i < data.size()) hovered_index = i;
+        }
+        if (!highlight_index) {
+            ImPlot::PlotBars("", data.data(), data.size(), BarSize);
+        } else {
+            for (size_t i = 0; i < data.size(); ++i) {
+                // Use the first colormap color for the highlighted mode.
+                ImPlot::PlotBars(i == *highlight_index ? "##0" : "", &data[i], 1, BarSize, i);
+            }
+        }
+        ImPlot::EndPlot();
+    }
+
+    return hovered_index;
+}
+
 void SoundObject::RenderControls() {
     if (ImpactAudioData) {
         PushID("AudioModel");
@@ -455,35 +483,23 @@ void SoundObject::RenderControls() {
 
         if (ModalData->FaustDsp->Ui) {
             // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-            const auto ui_vertex = uint(*ModalData->FaustDsp->Ui->getZoneForLabel("exPos"));
-            if (ui_vertex < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[ui_vertex];
+            const auto vertex_index = uint(*ModalData->FaustDsp->Ui->getZoneForLabel("exPos"));
+            if (vertex_index < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[vertex_index];
 
             if (CollapsingHeader("Modal data charts")) {
-                if (ImPlot::BeginPlot("Mode frequencies", ChartSize)) {
-                    const auto &mode_freqs = ModalData->ModeFreqs;
-                    const float max_value = *std::max_element(mode_freqs.begin(), mode_freqs.end());
-                    ImPlot::SetupAxes("Mode index", "Frequency (Hz)");
-                    // ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-                    ImPlot::SetupAxesLimits(-0.5f, mode_freqs.size() - 0.5f, 0, max_value, ImPlotCond_Always);
-                    ImPlot::PlotBars("", mode_freqs.data(), mode_freqs.size(), 0.9);
-                    ImPlot::EndPlot();
-                }
-                if (ImPlot::BeginPlot("Mode T60s", ChartSize)) {
-                    const auto &mode_t60s = ModalData->ModeT60s;
-                    const float max_value = *std::max_element(mode_t60s.begin(), mode_t60s.end());
-                    ImPlot::SetupAxes("Mode index", "T60 decay time (s)");
-                    ImPlot::SetupAxesLimits(-0.5f, mode_t60s.size() - 0.5f, 0, max_value, ImPlotCond_Always);
-                    ImPlot::PlotBars("", mode_t60s.data(), mode_t60s.size(), 0.9);
-                    ImPlot::EndPlot();
-                }
-                if (ImPlot::BeginPlot("Mode gains", ChartSize)) {
-                    const auto curr_vertex_it = std::ranges::find(ExcitableVertices, CurrentVertex);
-                    const auto current_mode = std::distance(ExcitableVertices.begin(), curr_vertex_it);
-                    const auto &mode_gains = ModalData->ModeGains[current_mode];
-                    ImPlot::SetupAxes("Mode index", "Gain");
-                    ImPlot::SetupAxesLimits(-0.5f, mode_gains.size() - 0.5f, 0, 1, ImPlotCond_Always);
-                    ImPlot::PlotBars("", mode_gains.data(), mode_gains.size(), 0.9);
-                    ImPlot::EndPlot();
+                std::optional<size_t> new_hovered_index;
+                if (auto hovered = RenderModePlot(ModalData->ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = RenderModePlot(ModalData->ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = RenderModePlot(ModalData->ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+                HoveredModeIndex = new_hovered_index;
+                if (HoveredModeIndex && *HoveredModeIndex < ModalData->ModeFreqs.size()) {
+                    const auto hovered_index = *HoveredModeIndex;
+                    Text(
+                        "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", hovered_index,
+                        ModalData->ModeFreqs[hovered_index],
+                        ModalData->ModeT60s[hovered_index],
+                        ModalData->ModeGains[vertex_index][hovered_index]
+                    );
                 }
             }
             SeparatorText("DSP control");
