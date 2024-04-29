@@ -58,6 +58,11 @@ struct Modal {
     std::vector<std::vector<float>> ModeGains{};
 
     std::unique_ptr<Waveform> Waveform; // Recorded waveform
+
+    void ProduceAudio(float *input, float *output, uint frame_count) const;
+    void Draw() const;
+
+    void Set(const Mesh2FaustResult &);
 };
 } // namespace SoundObjectData
 
@@ -81,11 +86,10 @@ struct SoundObject : AudioSource {
     vec3 ListenerPosition;
     uint ListenerEntityId{0};
     std::vector<uint> ExcitableVertices;
-    uint CurrentVertex{0};
-    uint CurrentVertexIndicatorEntityId{0};
+    uint CurrentVertex{0}, CurrentVertexIndicatorEntityId{0};
 
-    std::optional<SoundObjectData::Modal> ModalData{};
-    std::optional<SoundObjectData::ImpactAudio> ImpactAudioData{};
+    std::optional<SoundObjectData::Modal> ModalModel{};
+    std::optional<SoundObjectData::ImpactAudio> ImpactAudioModel{};
 
     void SetModel(SoundObjectModel);
     void ProduceAudio(DeviceData, float *input, float *output, uint frame_count) override;

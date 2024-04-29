@@ -103,8 +103,8 @@ struct Waveform {
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.
 struct FaustDSP {
-    FaustDSP() {
-        Init();
+    FaustDSP(string_view code) {
+        SetCode(std::move(code));
     }
     ~FaustDSP() {
         Uninit();
@@ -114,7 +114,7 @@ struct FaustDSP {
 
     Box Box{nullptr};
     dsp *Dsp{nullptr};
-    std::unique_ptr<FaustParams> Ui;
+    std::unique_ptr<FaustParams> Params;
 
     string ErrorMessage{""};
 
@@ -127,6 +127,21 @@ struct FaustDSP {
     void Compute(uint n, Sample **input, Sample **output) {
         if (Dsp != nullptr) Dsp->compute(n, input, output);
     }
+
+    void DrawParams() {
+        if (Params) Params->Draw();
+    }
+
+    Sample Get(std::string_view param_label) {
+        if (auto *zone = GetZone(param_label)) return *zone;
+        return 0;
+    }
+
+    void Set(std::string_view param_label, Sample value) {
+        if (auto *zone = GetZone(param_label); zone) *zone = value;
+    }
+
+    Sample *GetZone(std::string_view param_label) { return Params ? Params->getZoneForLabel(param_label.data()) : nullptr; }
 
 private:
     string Code{""};
@@ -155,8 +170,8 @@ private:
                     if (!Dsp) ErrorMessage = "Successfully created Faust DSP factory, but could not create the Faust DSP instance.";
 
                     Dsp->init(SampleRate); // todo follow device sample rate
-                    Ui = std::make_unique<FaustParams>();
-                    Dsp->buildUserInterface(Ui.get());
+                    Params = std::make_unique<FaustParams>();
+                    Dsp->buildUserInterface(Params.get());
                 } else {
                     deleteDSPFactory(DspFactory);
                     DspFactory = nullptr;
@@ -179,7 +194,7 @@ private:
     }
 
     void DestroyDsp() {
-        Ui.reset();
+        Params.reset();
         if (Dsp) {
             delete Dsp;
             Dsp = nullptr;
@@ -216,8 +231,15 @@ void SoundObjectData::ImpactAudio::SetVertex(uint vertex) {
     }
 }
 
-SoundObjectData::Modal::Modal() : FaustDsp(std::make_unique<FaustDSP>()) {}
+SoundObjectData::Modal::Modal() {}
 SoundObjectData::Modal::~Modal() = default;
+
+void SoundObjectData::Modal::Set(const Mesh2FaustResult &m2f) {
+    FaustDsp = std::make_unique<FaustDSP>(m2f.ModelDsp);
+    ModeFreqs = std::move(m2f.ModeFreqs);
+    ModeT60s = std::move(m2f.ModeT60s);
+    ModeGains = std::move(m2f.ModeGains);
+}
 
 Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false, std::optional<float> fundamental_freq_opt = std::nullopt) {
     std::vector<int> tet_indices;
@@ -315,45 +337,46 @@ SoundObject::SoundObject(
     const ::Tets &tets, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id
 ) : Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
     ListenerPosition(std::move(listener_position)),
-    ListenerEntityId(listener_entity_id), ModalData(std::in_place) {}
+    ListenerEntityId(listener_entity_id), ModalModel(std::in_place) {}
 
 SoundObject::~SoundObject() = default;
 
 void SoundObject::SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex) {
     ExcitableVertices.clear();
     if (!impact_frames_by_vertex.empty()) {
-        ImpactAudioData = std::move(impact_frames_by_vertex);
-        for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);
+        ImpactAudioModel = std::move(impact_frames_by_vertex);
+        for (auto &[vertex, _] : ImpactAudioModel->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);
         CurrentVertex = ExcitableVertices.front();
-        ImpactAudioData->SetVertex(CurrentVertex);
+        ImpactAudioModel->SetVertex(CurrentVertex);
     }
 }
 
-void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, uint frame_count) {
-    if (Model == SoundObjectModel::ImpactAudio && ImpactAudioData) {
-        if (!ImpactAudioData->ImpactFramesByVertex.contains(CurrentVertex)) return;
+void SoundObjectData::Modal::ProduceAudio(float *input, float *output, uint frame_count) const {
+    if (FaustDsp) FaustDsp->Compute(frame_count, &input, &output);
+}
 
-        const auto &impact_samples = ImpactAudioData->ImpactFramesByVertex.at(CurrentVertex);
+void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, uint frame_count) {
+    if (Model == SoundObjectModel::ImpactAudio && ImpactAudioModel) {
+        if (!ImpactAudioModel->ImpactFramesByVertex.contains(CurrentVertex)) return;
+
+        const auto &impact_samples = ImpactAudioModel->ImpactFramesByVertex.at(CurrentVertex);
         const uint sample_rate = device.SampleRate; // todo - resample from 48kHz to device sample rate if necessary
         (void)sample_rate; // Unused
 
         for (uint i = 0; i < frame_count; ++i) {
-            output[i] += ImpactAudioData->CurrentFrame < impact_samples.size() ? impact_samples[ImpactAudioData->CurrentFrame++] : 0.0f;
+            output[i] += ImpactAudioModel->CurrentFrame < impact_samples.size() ? impact_samples[ImpactAudioModel->CurrentFrame++] : 0.0f;
         }
-    } else if (ModalData && ModalData->FaustDsp) {
-        if (ImpactRecording && ImpactRecording->CurrentFrame == 0) {
-            auto &zone = *ModalData->FaustDsp->Ui->getZoneForLabel("gate");
-            zone = 1;
-        }
-        ModalData->FaustDsp->Compute(frame_count, &input, &output);
+    } else if (Model == SoundObjectModel::Modal && ModalModel) {
+        auto *dsp = ModalModel->FaustDsp.get();
+        if (dsp && ImpactRecording && ImpactRecording->CurrentFrame == 0) dsp->Set("gate", 1);
+        ModalModel->ProduceAudio(input, output, frame_count);
         if (ImpactRecording && !ImpactRecording->Complete) {
             for (uint i = 0; i < frame_count && ImpactRecording->CurrentFrame < ImpactRecording::FrameCount; ++i, ++ImpactRecording->CurrentFrame) {
                 ImpactRecording->Frames[ImpactRecording->CurrentFrame] = output[i];
             }
             if (ImpactRecording->CurrentFrame == ImpactRecording::FrameCount) {
                 ImpactRecording->Complete = true;
-                auto &zone = *ModalData->FaustDsp->Ui->getZoneForLabel("gate");
-                zone = 0;
+                dsp->Set("gate", 0);
             }
         }
     }
@@ -364,6 +387,14 @@ void SoundObject::SetModel(SoundObjectModel model) {
 }
 
 using namespace ImGui;
+
+void SoundObjectData::Modal::Draw() const {
+    if (!FaustDsp) return;
+
+    SeparatorText("DSP");
+    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", FaustDsp->GetCode());
+    FaustDsp->DrawParams();
+}
 
 static const ImVec2 ChartSize = {-1, 160};
 
@@ -452,7 +483,7 @@ static std::optional<size_t> PlotModeData(
 }
 
 void SoundObject::RenderControls() {
-    if (ImpactAudioData) {
+    if (ImpactAudioModel) {
         PushID("AudioModel");
         int model = int(Model);
         bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::ImpactAudio));
@@ -461,65 +492,66 @@ void SoundObject::RenderControls() {
         PopID();
         if (model_changed) SetModel(SoundObjectModel(model));
     }
-    if (Model == SoundObjectModel::ImpactAudio && ImpactAudioData) {
-        if (Button("Strike")) ImpactAudioData->CurrentFrame = 0;
+    if (Model == SoundObjectModel::ImpactAudio && ImpactAudioModel) {
+        if (Button("Strike")) ImpactAudioModel->CurrentFrame = 0;
         if (BeginCombo("Vertex", std::to_string(CurrentVertex).c_str())) {
-            for (auto &[vertex, _] : ImpactAudioData->ImpactFramesByVertex) {
+            for (auto &[vertex, _] : ImpactAudioModel->ImpactFramesByVertex) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) {
                     CurrentVertex = vertex;
-                    ImpactAudioData->SetVertex(CurrentVertex);
+                    ImpactAudioModel->SetVertex(CurrentVertex);
                 }
             }
             EndCombo();
         }
-        if (ImpactAudioData->Waveform) {
-            ImpactAudioData->Waveform->PlotFrames("Real-world impact waveform");
-            ImpactAudioData->Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
+        if (ImpactAudioModel->Waveform) {
+            ImpactAudioModel->Waveform->PlotFrames("Real-world impact waveform");
+            ImpactAudioModel->Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
         }
-    } else if (ModalData) {
-        if (ModalData->FaustDsp && ModalData->FaustDsp->Ui) {
+    } else if (Model == SoundObjectModel::Modal && ModalModel) {
+        if (auto &dsp = ModalModel->FaustDsp) {
             const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
             if (is_recording) BeginDisabled();
             Button("Strike");
-            auto &zone = *ModalData->FaustDsp->Ui->getZoneForLabel("gate");
-            if (IsItemActivated() && zone == 0.0) zone = 1.0;
-            else if (IsItemDeactivated() && zone == 1.0) zone = 0.0;
+            if (IsItemActivated() && dsp->Get("gate") == 0) dsp->Set("gate", 1);
+            else if (IsItemDeactivated() && dsp->Get("gate") == 1) dsp->Set("gate", 0);
 
             SameLine();
             if (Button("Record strike")) ImpactRecording = std::make_unique<::ImpactRecording>();
             if (is_recording) EndDisabled();
 
             if (ImpactRecording && ImpactRecording->Complete) {
-                ModalData->Waveform = std::make_unique<Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
-                ModalData->Waveform->FindPeakFrequencies(ModalData->ModeFreqs.size());
+                ModalModel->Waveform = std::make_unique<Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
+                ModalModel->Waveform->FindPeakFrequencies(ModalModel->ModeFreqs.size());
                 ImpactRecording.reset();
             }
-            if (ModalData->Waveform) {
-                ModalData->Waveform->PlotFrames("Modal impact waveform");
-                ModalData->Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", HoveredModeIndex ? std::optional{*HoveredModeIndex} : std::nullopt);
+            if (ModalModel->Waveform) {
+                ModalModel->Waveform->PlotFrames("Modal impact waveform");
+                ModalModel->Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", HoveredModeIndex ? std::optional{*HoveredModeIndex} : std::nullopt);
             }
 
             // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-            const auto vertex_index = uint(*ModalData->FaustDsp->Ui->getZoneForLabel("exPos"));
+            const auto vertex_index = uint(dsp->Get("exPos"));
             if (vertex_index < ExcitableVertices.size()) CurrentVertex = ExcitableVertices[vertex_index];
 
             if (CollapsingHeader("Modal data charts")) {
                 std::optional<size_t> new_hovered_index;
-                if (auto hovered = PlotModeData(ModalData->ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
-                if (auto hovered = PlotModeData(ModalData->ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-                if (auto hovered = PlotModeData(ModalData->ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+                if (auto hovered = PlotModeData(ModalModel->ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = PlotModeData(ModalModel->ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
+                if (auto hovered = PlotModeData(ModalModel->ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
                 HoveredModeIndex = new_hovered_index;
-                if (HoveredModeIndex && *HoveredModeIndex < ModalData->ModeFreqs.size()) {
+                if (HoveredModeIndex && *HoveredModeIndex < ModalModel->ModeFreqs.size()) {
                     const auto hovered_index = *HoveredModeIndex;
                     Text(
                         "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", hovered_index,
-                        ModalData->ModeFreqs[hovered_index],
-                        ModalData->ModeT60s[hovered_index],
-                        ModalData->ModeGains[vertex_index][hovered_index]
+                        ModalModel->ModeFreqs[hovered_index],
+                        ModalModel->ModeT60s[hovered_index],
+                        ModalModel->ModeGains[vertex_index][hovered_index]
                     );
                 }
             }
         }
+
+        if (ModalModel) ModalModel->Draw();
 
         SeparatorText("Material properties");
         if (BeginCombo("Presets", MaterialName.c_str())) {
@@ -543,28 +575,21 @@ void SoundObject::RenderControls() {
         Text("Rayleigh damping alpha/beta");
         InputDouble("##Rayleigh damping alpha", &Material.Alpha, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-
-        if (ModalData->FaustDsp->Ui) {
-            SeparatorText("DSP control");
-            if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", ModalData->FaustDsp->GetCode());
-            ModalData->FaustDsp->Ui->Draw();
-        } else {
-            if (DspGenerator) {
-                if (auto m2f_result = DspGenerator->Render()) {
-                    ModalData->FaustDsp->SetCode(m2f_result->ModelDsp);
-                    ModalData->ModeFreqs = std::move(m2f_result->ModeFreqs);
-                    ModalData->ModeT60s = std::move(m2f_result->ModeT60s);
-                    ModalData->ModeGains = std::move(m2f_result->ModeGains);
-                    DspGenerator.reset();
-                }
-            } else if (Button("Generate DSP")) {
-                if (!ImpactAudioData) {
+        if (DspGenerator) {
+            if (const auto m2f_result = DspGenerator->Render()) {
+                ModalModel->Set(*m2f_result);
+                DspGenerator.reset();
+            }
+        }
+        if (ModalModel) {
+            if (Button(std::format("{} DSP", ModalModel->FaustDsp ? "Regenerate" : "Generate").c_str())) {
+                if (!ImpactAudioModel) {
                     // ImpactAudio objects can only be struck at the impact points.
                     // Otherwise, linearly distribute the vertices across the tet mesh.
                     const uint num_excitable_vertices = 5; // todo UI input
                     ExcitableVertices = iota_view{0u, num_excitable_vertices} | transform([&](uint i) { return i * Tets->numberofpoints / num_excitable_vertices; }) | to<std::vector>();
                 }
-                std::optional<float> fundamental_freq = ImpactAudioData && ImpactAudioData->Waveform ? std::optional{ImpactAudioData->Waveform->PeakFrequencies.front()} : std::nullopt;
+                std::optional<float> fundamental_freq = ImpactAudioModel && ImpactAudioModel->Waveform ? std::optional{ImpactAudioModel->Waveform->PeakFrequencies.front()} : std::nullopt;
                 DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
                     return GenerateDsp(*Tets, Material, ExcitableVertices, true, fundamental_freq);
                 });

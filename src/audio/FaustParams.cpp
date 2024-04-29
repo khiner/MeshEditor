@@ -27,7 +27,8 @@ void FaustParams::DrawItem(const FaustParams::Item &item) {
     const auto type = item.type;
     const auto *label = item.label.c_str();
     if (!item.items.empty()) {
-        if (!item.label.empty()) SeparatorText(label);
+        // if (!item.label.empty()) SeparatorText(label); // turning off to not render model title
+        // xxx Relying on the knowledge that no groups are used in the modal audio Faust UI.
         for (const auto &child_item : item.items) DrawItem(child_item);
     }
     if (type == ItemType_Button) {
