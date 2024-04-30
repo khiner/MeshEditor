@@ -9,6 +9,11 @@
 #include "AudioSource.h"
 #include "MaterialProperties.h"
 
+using Sample = float;
+#ifndef FAUSTFLOAT
+#define FAUSTFLOAT Sample
+#endif
+
 enum class SoundObjectModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.
     ImpactAudio,
@@ -30,6 +35,14 @@ struct Mesh2FaustResult {
     std::vector<float> ModeFreqs; // Mode frequencies
     std::vector<float> ModeT60s; // Mode T60 decay times
     std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
+    std::vector<uint> ExcitableVertices; // Copy of the excitable vertices used for model generation.
+};
+
+struct ImpactRecording {
+    static constexpr uint FrameCount = 208592; // Same length as RealImpact recordings.
+    float Frames[FrameCount];
+    uint CurrentFrame{0};
+    bool Complete{false};
 };
 
 // All model-specific data needed to render audio.
@@ -48,9 +61,17 @@ struct ImpactAudio {
 };
 
 struct Modal {
-    Modal();
+    Modal(Mesh2FaustResult &&);
     ~Modal();
 
+    void ProduceAudio(float *input, float *output, uint frame_count) const;
+    void Draw(uint *selected_vertex_index); // Renders a vertex index dropdown.
+
+    void SetParam(std::string_view param_label, Sample param_value) const;
+
+    std::vector<uint> ExcitableVertices;
+
+private:
     // todo use Mesh2FaustResult
     std::unique_ptr<FaustDSP> FaustDsp;
     std::vector<float> ModeFreqs{};
@@ -58,20 +79,10 @@ struct Modal {
     std::vector<std::vector<float>> ModeGains{};
 
     std::unique_ptr<Waveform> Waveform; // Recorded waveform
-
-    void ProduceAudio(float *input, float *output, uint frame_count) const;
-    void Draw() const;
-
-    void Set(const Mesh2FaustResult &);
+    std::unique_ptr<ImpactRecording> ImpactRecording;
+    std::optional<size_t> HoveredModeIndex;
 };
 } // namespace SoundObjectData
-
-struct ImpactRecording {
-    static constexpr uint FrameCount = 208592; // Same length as RealImpact recordings.
-    float Frames[FrameCount];
-    uint CurrentFrame{0};
-    bool Complete{false};
-};
 
 // Represents a rigid mesh object that generate an audio stream for a listener at a given position
 // in response to an impact at a given vertex.
@@ -99,6 +110,4 @@ struct SoundObject : AudioSource {
 private:
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
     std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
-    std::unique_ptr<ImpactRecording> ImpactRecording;
-    std::optional<size_t> HoveredModeIndex;
 };

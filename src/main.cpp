@@ -363,6 +363,7 @@ void AudioModelControls() {
     }
     if (Button("Remove audio model")) {
         R.remove<SoundObject>(sound_object_entity);
+        R.remove<Tets>(sound_object_entity);
     }
 
     const auto before_current_vertex = sound_object.CurrentVertex;
