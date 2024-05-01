@@ -46,12 +46,11 @@ struct ImpactRecording {
 };
 
 // All model-specific data.
-namespace SoundObjectData {
-struct ImpactAudio {
-    ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex, uint vertex);
-    ~ImpactAudio();
+struct ImpactAudioModel {
+    ImpactAudioModel(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex, uint vertex);
+    ~ImpactAudioModel();
 
-    const ImpactAudio &operator=(ImpactAudio &&) noexcept;
+    const ImpactAudioModel &operator=(ImpactAudioModel &&) noexcept;
 
     std::unordered_map<uint, std::vector<float>> ImpactFramesByVertex;
     uint MaxFrame;
@@ -67,9 +66,9 @@ struct ImpactAudio {
     void SetVertex(uint);
 };
 
-struct Modal {
-    Modal(Mesh2FaustResult &&, uint vertex);
-    ~Modal();
+struct ModalAudioModel {
+    ModalAudioModel(Mesh2FaustResult &&, uint vertex);
+    ~ModalAudioModel();
 
     void ProduceAudio(float *input, float *output, uint frame_count) const;
     void Draw(uint *selected_vertex_index); // Renders a vertex index dropdown.
@@ -93,7 +92,6 @@ private:
     std::unique_ptr<ImpactRecording> ImpactRecording;
     std::optional<size_t> HoveredModeIndex;
 };
-} // namespace SoundObjectData
 
 // Represents a rigid mesh object that generate an audio stream for a listener at a given position
 // in response to an impact at a given vertex.
@@ -110,8 +108,8 @@ struct SoundObject : AudioSource {
     std::vector<uint> ExcitableVertices;
     uint CurrentVertex{0}, CurrentVertexIndicatorEntityId{0};
 
-    std::optional<SoundObjectData::Modal> ModalModel{};
-    std::optional<SoundObjectData::ImpactAudio> ImpactAudioModel{};
+    std::optional<ModalAudioModel> ModalModel{};
+    std::optional<ImpactAudioModel> ImpactModel{};
 
     void SetModel(SoundObjectModel);
     void ProduceAudio(DeviceData, float *input, float *output, uint frame_count) override;
