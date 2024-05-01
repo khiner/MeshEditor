@@ -275,9 +275,11 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
             .modelName = model_name,
             .freqControl = freq_control,
             .modesMinFreq = 20,
-            .modesMaxFreq = 20000,
-            .targetNModes = 50, // number of synthesized modes
-            .femNModes = 100, // number of modes to be computed for the finite element analysis
+            // 20k is the upper limit of human hearing, but we often need to pitch down to match the
+            // fundamental frequency of the true recording, so we double the upper limit.
+            .modesMaxFreq = 40000,
+            .targetNModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
+            .femNModes = 80, // number of modes to be computed for the finite element analysis
             // Convert to signed ints.
             .exPos = excitable_vertex_indices | transform([](uint i) { return int(i); }) | to<std::vector>(),
             .nExPos = int(excitable_vertex_indices.size()),
