@@ -90,8 +90,9 @@ struct Waveform {
     void PlotFrames(const std::string &label = "Waveform", std::optional<uint> highlight_frame = std::nullopt) const;
     void PlotMagnitudeSpectrum(const std::string &label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = std::nullopt) const;
 
-    void FindPeakFrequencies(uint n_peaks) {
-        PeakFrequencies = ::FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks);
+    std::vector<float> GetPeakFrequencies(uint n_peaks) {
+        if (n_peaks != PeakFrequencies.size()) PeakFrequencies = ::FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks);
+        return PeakFrequencies;
     }
 };
 
@@ -223,7 +224,6 @@ void ImpactAudioModel::SetVertex(uint vertex) {
     if (ImpactFramesByVertex.contains(vertex)) {
         auto &frames = ImpactFramesByVertex.at(vertex);
         Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
-        Waveform->FindPeakFrequencies(10);
     }
 }
 
@@ -442,10 +442,12 @@ void ImpactAudioModel::Draw() const {
 void ModalAudioModel::Draw(uint *selected_vertex_index) {
     if (!FaustDsp) return;
 
+    const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
+    if (is_recording) BeginDisabled();
     if (Button("Record strike")) ImpactRecording = std::make_unique<::ImpactRecording>();
+    if (is_recording) EndDisabled();
     if (ImpactRecording && ImpactRecording->Complete) {
         Waveform = std::make_unique<::Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
-        Waveform->FindPeakFrequencies(ModeFreqs.size());
         ImpactRecording.reset();
     }
     if (Waveform) {
@@ -544,6 +546,13 @@ void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<uin
     }
 }
 
+// Assumes a and b are the same length.
+static float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
+    float sum = 0;
+    for (size_t i = 0; i < a.size(); ++i) sum += (a[i] - b[i]) * (a[i] - b[i]);
+    return sqrtf(sum / a.size());
+}
+
 void SoundObject::RenderControls() {
     if (ImpactModel) {
         PushID("AudioModel");
@@ -584,7 +593,18 @@ void SoundObject::RenderControls() {
     if (impact_mode && model_present) {
         ImpactModel->Draw();
     } else if (modal_mode) {
-        if (ModalModel) ModalModel->Draw(&CurrentVertex);
+        if (model_present) {
+            if (ModalModel->Waveform && ImpactModel && ImpactModel->Waveform) {
+                const auto &a = ModalModel->Waveform, &b = ImpactModel->Waveform;
+                const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
+                // RMSE is abyssmal in most cases, so for now just caching the peak frequencies for display.
+                a->GetPeakFrequencies(n_test_modes);
+                b->GetPeakFrequencies(n_test_modes);
+                // const float rmse = RMSE(a->GetPeakFrequencies(n_test_modes), b->GetPeakFrequencies(n_test_modes));
+                // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
+            }
+            ModalModel->Draw(&CurrentVertex);
+        }
 
         SeparatorText("Material properties");
         if (BeginCombo("Presets", MaterialName.c_str())) {
@@ -621,7 +641,7 @@ void SoundObject::RenderControls() {
                 const uint num_excitable_vertices = 5; // todo UI input
                 ExcitableVertices = iota_view{0u, num_excitable_vertices} | transform([&](uint i) { return i * Tets->numberofpoints / num_excitable_vertices; }) | to<std::vector>();
             }
-            std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->PeakFrequencies.front()} : std::nullopt;
+            std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
             DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
                 return GenerateDsp(*Tets, Material, ExcitableVertices, true, fundamental_freq);
             });

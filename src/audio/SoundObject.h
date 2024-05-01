@@ -70,6 +70,8 @@ struct ModalAudioModel {
     ModalAudioModel(Mesh2FaustResult &&, uint vertex);
     ~ModalAudioModel();
 
+    uint ModeCount() const { return ModeFreqs.size(); }
+
     void ProduceAudio(float *input, float *output, uint frame_count) const;
     void Draw(uint *selected_vertex_index); // Renders a vertex index dropdown.
 
@@ -79,16 +81,17 @@ struct ModalAudioModel {
 
     void SetParam(std::string_view param_label, Sample param_value) const;
 
-    std::vector<uint> ExcitableVertices;
+    std::unique_ptr<Waveform> Waveform; // Recorded waveform
 
 private:
+    std::vector<uint> ExcitableVertices;
+
     // todo use Mesh2FaustResult
     std::unique_ptr<FaustDSP> FaustDsp;
     std::vector<float> ModeFreqs{};
     std::vector<float> ModeT60s{};
     std::vector<std::vector<float>> ModeGains{};
 
-    std::unique_ptr<Waveform> Waveform; // Recorded waveform
     std::unique_ptr<ImpactRecording> ImpactRecording;
     std::optional<size_t> HoveredModeIndex;
 };
