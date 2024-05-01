@@ -87,7 +87,7 @@ struct Waveform {
         : Frames(frames, frames + frame_count),
           WindowedFrames(ApplyWindow(BHWindow, Frames.data() + FftStartFrame)), FftData(WindowedFrames) {}
 
-    void PlotFrames(const std::string &label = "Waveform") const;
+    void PlotFrames(const std::string &label = "Waveform", std::optional<uint> highlight_frame = std::nullopt) const;
     void PlotMagnitudeSpectrum(const std::string &label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = std::nullopt) const;
 
     void FindPeakFrequencies(uint n_peaks) {
@@ -435,7 +435,7 @@ static std::optional<size_t> PlotModeData(
 void ImpactAudioModel::Draw() const {
     if (!Waveform) return;
 
-    Waveform->PlotFrames("Real-world impact waveform");
+    Waveform->PlotFrames("Real-world impact waveform", CurrentFrame);
     Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
 }
 
@@ -484,11 +484,17 @@ void ModalAudioModel::Draw(uint *selected_vertex_index) {
 
 static float LinearToDb(float linear) { return 20.0f * log10f(linear); }
 
-void Waveform::PlotFrames(const std::string &label) const {
+void Waveform::PlotFrames(const std::string &label, std::optional<uint> highlight_frame) const {
     if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
         ImPlot::SetupAxes("Frame", "Amplitude");
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, Frames.size(), ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
+
+        if (highlight_frame) {
+            ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
+            ImPlot::PlotInfLines("##Highlight", &*highlight_frame, 1);
+            ImPlot::PopStyleColor();
+        }
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
         ImPlot::PlotLine("", Frames.data(), Frames.size());
         ImPlot::PopStyleVar();
