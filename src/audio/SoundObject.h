@@ -45,27 +45,38 @@ struct ImpactRecording {
     bool Complete{false};
 };
 
-// All model-specific data needed to render audio.
+// All model-specific data.
 namespace SoundObjectData {
 struct ImpactAudio {
-    ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
+    ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex, uint vertex);
     ~ImpactAudio();
 
     const ImpactAudio &operator=(ImpactAudio &&) noexcept;
 
     std::unordered_map<uint, std::vector<float>> ImpactFramesByVertex;
-    uint CurrentFrame{0};
+    uint MaxFrame;
+    uint CurrentFrame{MaxFrame}; // Start at the end, so it doesn't immediately play.
     std::unique_ptr<Waveform> Waveform; // Current vertex's waveform
 
+    void Draw() const;
+
+    bool CanStrike() const { return bool(Waveform); }
+    void SetVertexForce(float force) {
+        if (force > 0) CurrentFrame = 0;
+    }
     void SetVertex(uint);
 };
 
 struct Modal {
-    Modal(Mesh2FaustResult &&);
+    Modal(Mesh2FaustResult &&, uint vertex);
     ~Modal();
 
     void ProduceAudio(float *input, float *output, uint frame_count) const;
     void Draw(uint *selected_vertex_index); // Renders a vertex index dropdown.
+
+    bool CanStrike() const;
+    void SetVertexForce(float);
+    void SetVertex(uint);
 
     void SetParam(std::string_view param_label, Sample param_value) const;
 

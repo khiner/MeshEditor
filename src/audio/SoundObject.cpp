@@ -201,12 +201,13 @@ private:
     }
 };
 
-SoundObjectData::ImpactAudio::ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex)
-    : ImpactFramesByVertex(std::move(impact_frames_by_vertex)) {
-    // Start at the end of the first sample, so it doesn't immediately play.
-    // All samples are the same length.
-    if (!ImpactFramesByVertex.empty()) CurrentFrame = ImpactFramesByVertex.begin()->second.size();
+SoundObjectData::ImpactAudio::ImpactAudio(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex, uint vertex)
+    : ImpactFramesByVertex(std::move(impact_frames_by_vertex)),
+      // All samples are the same length.
+      MaxFrame(ImpactFramesByVertex.empty() ? 0 : ImpactFramesByVertex.begin()->second.size()) {
+    SetVertex(vertex);
 }
+
 SoundObjectData::ImpactAudio::~ImpactAudio() = default;
 
 const SoundObjectData::ImpactAudio &SoundObjectData::ImpactAudio::operator=(ImpactAudio &&other) noexcept {
@@ -226,11 +227,12 @@ void SoundObjectData::ImpactAudio::SetVertex(uint vertex) {
     }
 }
 
-SoundObjectData::Modal::Modal(Mesh2FaustResult &&m2f) : ExcitableVertices(m2f.ExcitableVertices) {
+SoundObjectData::Modal::Modal(Mesh2FaustResult &&m2f, uint vertex) : ExcitableVertices(m2f.ExcitableVertices) {
     FaustDsp = std::make_unique<FaustDSP>(m2f.ModelDsp);
     ModeFreqs = std::move(m2f.ModeFreqs);
     ModeT60s = std::move(m2f.ModeT60s);
     ModeGains = std::move(m2f.ModeGains);
+    SetVertex(vertex);
 }
 
 SoundObjectData::Modal::~Modal() = default;
@@ -238,6 +240,10 @@ SoundObjectData::Modal::~Modal() = default;
 void SoundObjectData::Modal::SetParam(std::string_view param_label, Sample param_value) const {
     if (FaustDsp) FaustDsp->Set(std::move(param_label), param_value);
 }
+
+static const std::string
+    ExciteIndexParamName = "Excite index",
+    GateParamName = "Gate";
 
 Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false, std::optional<float> fundamental_freq_opt = std::nullopt) {
     std::vector<int> tet_indices;
@@ -290,18 +296,18 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     // Static code sections.
     static const string to_sandh = " : ba.sAndH(gate);"; // Add a sample and hold on the gate, in serial, and end the expression.
     static const string
-        gain = "gain = hslider(\"gain[scale:log]\",0.2,0,0.5,0.01);",
+        gain = "gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01);",
         t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
-        gate = "gate = button(\"gate[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");",
-        hammer_hardness = "hammerHardness = hslider(\"hammerHardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
-        hammer_size = "hammerSize = hslider(\"hammerSize[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01)" + to_sandh,
+        gate = std::format("gate = button(\"{}[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");", GateParamName),
+        hammer_hardness = "hammerHardness = hslider(\"Hammer hardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
+        hammer_size = "hammerSize = hslider(\"Hammer size[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01)" + to_sandh,
         hammer = "hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; };";
 
     // Variable code sections.
     const uint num_excite_pos = excitable_vertex_indices.size();
     const string
         freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, to_sandh),
-        ex_pos = std::format("exPos = nentry(\"exPos\",{},0,{},1){}", (num_excite_pos - 1) / 2, num_excite_pos - 1, to_sandh),
+        ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excite_pos - 1) / 2, num_excite_pos - 1, to_sandh),
         modal_model = std::format("{}({}exPos,t60Scale)", model_name, freq_control ? "freq," : ""),
         process = std::format("process = hammer(gate,hammerHardness,hammerSize) : {}*gain;", modal_model);
 
@@ -343,15 +349,21 @@ SoundObject::~SoundObject() = default;
 void SoundObject::SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex) {
     ExcitableVertices.clear();
     if (!impact_frames_by_vertex.empty()) {
-        ImpactAudioModel = std::move(impact_frames_by_vertex);
-        for (auto &[vertex, _] : ImpactAudioModel->ImpactFramesByVertex) ExcitableVertices.emplace_back(vertex);
+        for (auto &[vertex, _] : impact_frames_by_vertex) ExcitableVertices.emplace_back(vertex);
         CurrentVertex = ExcitableVertices.front();
-        ImpactAudioModel->SetVertex(CurrentVertex);
+        ImpactAudioModel.emplace(std::move(impact_frames_by_vertex), CurrentVertex);
+    }
+}
+bool SoundObjectData::Modal::CanStrike() const { return FaustDsp && (!ImpactRecording || ImpactRecording->Complete); }
+void SoundObjectData::Modal::SetVertexForce(float force) { SetParam(GateParamName, force); }
+void SoundObjectData::Modal::SetVertex(uint vertex) {
+    if (auto it = std::ranges::find(ExcitableVertices, vertex); it != ExcitableVertices.end()) {
+        SetParam(ExciteIndexParamName, std::ranges::distance(ExcitableVertices.begin(), it));
     }
 }
 
 void SoundObjectData::Modal::ProduceAudio(float *input, float *output, uint frame_count) const {
-    if (ImpactRecording && ImpactRecording->CurrentFrame == 0) SetParam("gate", 1);
+    if (ImpactRecording && ImpactRecording->CurrentFrame == 0) SetParam(GateParamName, 1);
 
     if (FaustDsp) FaustDsp->Compute(frame_count, &input, &output);
 
@@ -361,7 +373,7 @@ void SoundObjectData::Modal::ProduceAudio(float *input, float *output, uint fram
         }
         if (ImpactRecording->CurrentFrame == ImpactRecording::FrameCount) {
             ImpactRecording->Complete = true;
-            SetParam("gate", 0);
+            SetParam(GateParamName, 0);
         }
     }
 }
@@ -418,57 +430,54 @@ static std::optional<size_t> PlotModeData(
     return hovered_index;
 }
 
+void SoundObjectData::ImpactAudio::Draw() const {
+    if (!Waveform) return;
+
+    Waveform->PlotFrames("Real-world impact waveform");
+    Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
+}
+
 void SoundObjectData::Modal::Draw(uint *selected_vertex_index) {
-    if (auto &dsp = FaustDsp) {
-        const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
-        if (is_recording) BeginDisabled();
-        Button("Strike");
-        if (IsItemActivated() && dsp->Get("gate") == 0) dsp->Set("gate", 1);
-        else if (IsItemDeactivated() && dsp->Get("gate") == 1) dsp->Set("gate", 0);
+    if (!FaustDsp) return;
 
-        SameLine();
-        if (Button("Record strike")) ImpactRecording = std::make_unique<::ImpactRecording>();
-        if (is_recording) EndDisabled();
+    if (Button("Record strike")) ImpactRecording = std::make_unique<::ImpactRecording>();
+    if (ImpactRecording && ImpactRecording->Complete) {
+        Waveform = std::make_unique<::Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
+        Waveform->FindPeakFrequencies(ModeFreqs.size());
+        ImpactRecording.reset();
+    }
+    if (Waveform) {
+        Waveform->PlotFrames("Modal impact waveform");
+        Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", HoveredModeIndex ? std::optional{*HoveredModeIndex} : std::nullopt);
+    }
 
-        if (ImpactRecording && ImpactRecording->Complete) {
-            Waveform = std::make_unique<::Waveform>(ImpactRecording->Frames, ImpactRecording::FrameCount);
-            Waveform->FindPeakFrequencies(ModeFreqs.size());
-            ImpactRecording.reset();
-        }
-        if (Waveform) {
-            Waveform->PlotFrames("Modal impact waveform");
-            Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", HoveredModeIndex ? std::optional{*HoveredModeIndex} : std::nullopt);
-        }
+    auto &dsp = *FaustDsp;
+    // Poll the Faust DSP UI to see if the current excitation vertex has changed.
+    const auto vertex_index = uint(dsp.Get(ExciteIndexParamName));
+    if (vertex_index < ExcitableVertices.size() && selected_vertex_index != nullptr) {
+        *selected_vertex_index = ExcitableVertices[vertex_index];
+    }
 
-        // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-        const auto vertex_index = uint(dsp->Get("exPos"));
-        if (vertex_index < ExcitableVertices.size() && selected_vertex_index != nullptr) {
-            *selected_vertex_index = ExcitableVertices[vertex_index];
-        }
-
-        if (CollapsingHeader("Modal data charts")) {
-            std::optional<size_t> new_hovered_index;
-            if (auto hovered = PlotModeData(ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
-            HoveredModeIndex = new_hovered_index;
-            if (HoveredModeIndex && *HoveredModeIndex < ModeFreqs.size()) {
-                const auto hovered_index = *HoveredModeIndex;
-                Text(
-                    "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", hovered_index,
-                    ModeFreqs[hovered_index],
-                    ModeT60s[hovered_index],
-                    ModeGains[vertex_index][hovered_index]
-                );
-            }
+    if (CollapsingHeader("Modal data charts")) {
+        std::optional<size_t> new_hovered_index;
+        if (auto hovered = PlotModeData(ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(ModeGains[vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+        HoveredModeIndex = new_hovered_index;
+        if (HoveredModeIndex && *HoveredModeIndex < ModeFreqs.size()) {
+            const auto hovered_index = *HoveredModeIndex;
+            Text(
+                "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", hovered_index,
+                ModeFreqs[hovered_index],
+                ModeT60s[hovered_index],
+                ModeGains[vertex_index][hovered_index]
+            );
         }
     }
 
-    if (!FaustDsp) return;
-
     SeparatorText("DSP");
-    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", FaustDsp->GetCode());
-    FaustDsp->DrawParams();
+    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", dsp.GetCode());
+    dsp.DrawParams();
 }
 
 static float LinearToDb(float linear) { return 20.0f * log10f(linear); }
@@ -537,22 +546,36 @@ void SoundObject::RenderControls() {
         PopID();
         if (model_changed) SetModel(SoundObjectModel(model));
     }
-    if (Model == SoundObjectModel::ImpactAudio && ImpactAudioModel) {
-        if (Button("Strike")) ImpactAudioModel->CurrentFrame = 0;
+
+    const bool impact_mode = Model == SoundObjectModel::ImpactAudio, modal_mode = Model == SoundObjectModel::Modal;
+    const bool model_present = (impact_mode && ImpactAudioModel) || (modal_mode && ModalModel);
+    if (model_present) {
+        const bool can_strike = (impact_mode && ImpactAudioModel->CanStrike()) || (modal_mode && ModalModel->CanStrike());
+        if (can_strike) {
+            Button("Strike");
+            if (IsItemActivated()) {
+                if (impact_mode) ImpactAudioModel->SetVertexForce(1);
+                else ModalModel->SetVertexForce(1);
+            } else if (IsItemDeactivated()) {
+                if (impact_mode) ImpactAudioModel->SetVertexForce(0);
+                else ModalModel->SetVertexForce(0);
+            }
+        }
         if (BeginCombo("Vertex", std::to_string(CurrentVertex).c_str())) {
-            for (auto &[vertex, _] : ImpactAudioModel->ImpactFramesByVertex) {
+            for (uint vertex : ExcitableVertices) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) {
                     CurrentVertex = vertex;
-                    ImpactAudioModel->SetVertex(CurrentVertex);
+                    // Update vertex in all present models.
+                    if (ImpactAudioModel) ImpactAudioModel->SetVertex(CurrentVertex);
+                    if (ModalModel) ModalModel->SetVertex(CurrentVertex);
                 }
             }
             EndCombo();
         }
-        if (ImpactAudioModel->Waveform) {
-            ImpactAudioModel->Waveform->PlotFrames("Real-world impact waveform");
-            ImpactAudioModel->Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
-        }
-    } else if (Model == SoundObjectModel::Modal) {
+    }
+    if (impact_mode && model_present) {
+        ImpactAudioModel->Draw();
+    } else if (modal_mode) {
         if (ModalModel) ModalModel->Draw(&CurrentVertex);
 
         SeparatorText("Material properties");
@@ -579,7 +602,7 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
         if (DspGenerator) {
             if (auto m2f_result = DspGenerator->Render()) {
-                ModalModel.emplace(std::move(*m2f_result));
+                ModalModel.emplace(std::move(*m2f_result), CurrentVertex);
                 DspGenerator.reset();
             }
         }
