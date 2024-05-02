@@ -236,6 +236,7 @@ const ImpactAudioModel &ImpactAudioModel::operator=(ImpactAudioModel &&other) no
 }
 
 void ImpactAudioModel::SetVertex(uint vertex) {
+    Stop();
     if (ImpactFramesByVertex.contains(vertex)) {
         auto &frames = ImpactFramesByVertex.at(vertex);
         Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
@@ -374,6 +375,7 @@ void SoundObject::SetImpactFrames(std::unordered_map<uint, std::vector<float>> &
 bool ModalAudioModel::CanStrike() const { return FaustDsp && (!ImpactRecording || ImpactRecording->Complete); }
 void ModalAudioModel::SetVertexForce(float force) { SetParam(GateParamName, force); }
 void ModalAudioModel::SetVertex(uint vertex) {
+    Stop();
     if (auto it = std::ranges::find(ExcitableVertices, vertex); it != ExcitableVertices.end()) {
         SetParam(ExciteIndexParamName, std::ranges::distance(ExcitableVertices.begin(), it));
     }
@@ -412,6 +414,9 @@ void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, u
 }
 
 void SoundObject::SetModel(SoundObjectModel model) {
+    // Stop any ongoing impacts.
+    if (ImpactModel) ImpactModel->Stop();
+    if (ModalModel) ModalModel->Stop();
     Model = model;
 }
 

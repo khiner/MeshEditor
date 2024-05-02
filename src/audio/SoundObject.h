@@ -64,6 +64,7 @@ struct ImpactAudioModel {
         if (force > 0) CurrentFrame = 0;
     }
     void SetVertex(uint);
+    void Stop() { CurrentFrame = MaxFrame; }
 };
 
 struct ModalAudioModel {
@@ -78,6 +79,7 @@ struct ModalAudioModel {
     bool CanStrike() const;
     void SetVertexForce(float);
     void SetVertex(uint);
+    void Stop() { SetVertexForce(0); }
 
     void SetParam(std::string_view param_label, Sample param_value) const;
 
