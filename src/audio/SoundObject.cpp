@@ -322,7 +322,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
         t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
         gate = std::format("gate = button(\"{}[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");", GateParamName),
         hammer_hardness = "hammerHardness = hslider(\"Hammer hardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
-        hammer_size = "hammerSize = hslider(\"Hammer size[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.3,0,1,0.01)" + to_sandh,
+        hammer_size = "hammerSize = hslider(\"Hammer size[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.1,0,1,0.01)" + to_sandh,
         hammer = "hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; };";
 
     // Variable code sections.
@@ -553,17 +553,18 @@ void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<uin
         ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
         ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
-        for (uint i = 0; i < PeakFrequencies.size(); ++i) {
-            const bool is_highlighted = highlight_peak_freq_index && i == *highlight_peak_freq_index;
-            const float freq = PeakFrequencies[i];
-            if (is_highlighted) {
-                ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
-                ImPlot::PlotInfLines("##Highlight", &freq, 1);
-                ImPlot::PopStyleColor();
-            } else {
-                ImPlot::PlotInfLines("##Peak", &freq, 1);
-            }
-        }
+        // Disabling peak frequency display for now.
+        // for (uint i = 0; i < PeakFrequencies.size(); ++i) {
+        //     const bool is_highlighted = highlight_peak_freq_index && i == *highlight_peak_freq_index;
+        //     const float freq = PeakFrequencies[i];
+        //     if (is_highlighted) {
+        //         ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
+        //         ImPlot::PlotInfLines("##Highlight", &freq, 1);
+        //         ImPlot::PopStyleColor();
+        //     } else {
+        //         ImPlot::PlotInfLines("##Peak", &freq, 1);
+        //     }
+        // }
         ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N_2, MIN_DB);
         ImPlot::PopStyleColor();
         ImPlot::PopStyleVar();
@@ -621,10 +622,11 @@ void SoundObject::RenderControls() {
         if (model_present) {
             if (ModalModel->Waveform && ImpactModel && ImpactModel->Waveform) {
                 auto &modal = *ModalModel->Waveform, &impact = *ImpactModel->Waveform;
-                const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
-                // RMSE is abyssmal in most cases, so for now just caching the peak frequencies for display.
-                modal.GetPeakFrequencies(n_test_modes);
-                impact.GetPeakFrequencies(n_test_modes);
+                // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
+                // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
+                // modal.GetPeakFrequencies(n_test_modes);
+                // impact.GetPeakFrequencies(n_test_modes);
+                // RMSE is abyssmal in most cases...
                 // const float rmse = RMSE(a->GetPeakFrequencies(n_test_modes), b->GetPeakFrequencies(n_test_modes));
                 // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
                 SameLine();
