@@ -96,18 +96,22 @@ struct Waveform {
         return PeakFrequencies;
     }
 
-    void WriteWav(const std::string &file_name) const {
-        WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
-        const std::string wav_filename = std::format("{}.wav", file_name);
-        if (ma_encoder_init_file(wav_filename.c_str(), &WavEncoderConfig, &WavEncoder) != MA_SUCCESS) {
-            throw std::runtime_error(std::format("Failed to initialize wav file {}", wav_filename));
+    float GetMaxValue() const { return *std::max_element(Frames.begin(), Frames.end()); }
+
+    // If `normalize_max` is set, normalize the data to this maximum value.
+    void WriteWav(const std::string &file_name, std::optional<float> normalize_max = std::nullopt) const {
+        const std::string wav_filename = std::format("../audio_samples/{}.wav", file_name);
+        if (auto status = ma_encoder_init_file(wav_filename.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
+            throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", wav_filename, uint(status)));
         }
-        ma_encoder_write_pcm_frames(&WavEncoder, Frames.data(), Frames.size(), nullptr);
+        const float mult = normalize_max ? *normalize_max / *std::max_element(Frames.begin(), Frames.end()) : 1.0f;
+        const auto frames = Frames | transform([mult](float f) { return f * mult; }) | to<std::vector>();
+        ma_encoder_write_pcm_frames(&WavEncoder, frames.data(), frames.size(), nullptr);
         ma_encoder_uninit(&WavEncoder);
     }
 
 private:
-    inline static ma_encoder_config WavEncoderConfig;
+    inline static ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
     inline static ma_encoder WavEncoder;
 };
 
@@ -626,8 +630,8 @@ void SoundObject::RenderControls() {
                 SameLine();
                 if (Button("Save wav files")) {
                     // Save wav files for both the modal and real-world impact sounds.
-                    modal.WriteWav(std::format("../audio_samples/{}-modal", Name));
-                    impact.WriteWav(std::format("../audio_samples/{}-impact", Name));
+                    modal.WriteWav(std::format("{}-modal", Name, impact.GetMaxValue()));
+                    impact.WriteWav(std::format("{}-impact", Name));
                 }
             }
             ModalModel->Draw(&CurrentVertex);
