@@ -153,7 +153,14 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount; // Now we can use the next set of semaphores.
 }
 
-void LoadRealImpact(const fs::path &path, entt::registry &R) {
+static entt::entity FindListenerEntityWithIndex(uint index) {
+    for (const auto entity : R.view<RealImpactListenerPoint>()) {
+        if (R.get<RealImpactListenerPoint>(entity).Index == index) return entity;
+    }
+    return entt::null;
+}
+
+static void LoadRealImpact(const fs::path &path, entt::registry &R) {
     if (!fs::exists(path)) throw std::runtime_error(std::format("RealImpact path does not exist: {}", path.string()));
 
     MainScene->ClearMeshes();
@@ -288,11 +295,7 @@ void AudioModelControls() {
 
                 const auto *real_impact = R.try_get<RealImpact>(selected_entity);
                 const auto material_name = real_impact ? real_impact->MaterialName : DefaultMaterialPresetName;
-                const entt::entity listener_point_entity = R.all_of<RealImpactListenerPoint>(selected_entity) ?
-                    selected_entity :
-                    listener_points.begin() != listener_points.end() ?
-                    *listener_points.begin() :
-                    entt::null;
+                const auto listener_point_entity = FindListenerEntityWithIndex(263); // This listener point is roughly centered.
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
                 const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
                 auto &sound_object = R.emplace<SoundObject>(
