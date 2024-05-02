@@ -6,6 +6,7 @@
 
 #include "imgui.h"
 #include "implot.h"
+#include "miniaudio.h"
 
 #include "mesh2faust.h"
 
@@ -94,6 +95,20 @@ struct Waveform {
         if (n_peaks != PeakFrequencies.size()) PeakFrequencies = ::FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks);
         return PeakFrequencies;
     }
+
+    void WriteWav(const std::string &file_name) const {
+        WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
+        const std::string wav_filename = std::format("{}.wav", file_name);
+        if (ma_encoder_init_file(wav_filename.c_str(), &WavEncoderConfig, &WavEncoder) != MA_SUCCESS) {
+            throw std::runtime_error(std::format("Failed to initialize wav file {}", wav_filename));
+        }
+        ma_encoder_write_pcm_frames(&WavEncoder, Frames.data(), Frames.size(), nullptr);
+        ma_encoder_uninit(&WavEncoder);
+    }
+
+private:
+    inline static ma_encoder_config WavEncoderConfig;
+    inline static ma_encoder WavEncoder;
 };
 
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
@@ -341,8 +356,8 @@ MaterialProperties GetMaterialPreset(const std::string &name) {
 }
 
 SoundObject::SoundObject(
-    const ::Tets &tets, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id
-) : Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
+    const std::string &name, const ::Tets &tets, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id
+) : Name(name), Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
     ListenerPosition(std::move(listener_position)),
     ListenerEntityId(listener_entity_id) {}
 
@@ -444,6 +459,7 @@ void ModalAudioModel::Draw(uint *selected_vertex_index) {
 
     const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
     if (is_recording) BeginDisabled();
+    SameLine();
     if (Button("Record strike")) ImpactRecording = std::make_unique<::ImpactRecording>();
     if (is_recording) EndDisabled();
     if (ImpactRecording && ImpactRecording->Complete) {
@@ -567,17 +583,6 @@ void SoundObject::RenderControls() {
     const bool impact_mode = Model == SoundObjectModel::ImpactAudio, modal_mode = Model == SoundObjectModel::Modal;
     const bool model_present = (impact_mode && ImpactModel) || (modal_mode && ModalModel);
     if (model_present) {
-        const bool can_strike = (impact_mode && ImpactModel->CanStrike()) || (modal_mode && ModalModel->CanStrike());
-        if (can_strike) {
-            Button("Strike");
-            if (IsItemActivated()) {
-                if (impact_mode) ImpactModel->SetVertexForce(1);
-                else ModalModel->SetVertexForce(1);
-            } else if (IsItemDeactivated()) {
-                if (impact_mode) ImpactModel->SetVertexForce(0);
-                else ModalModel->SetVertexForce(0);
-            }
-        }
         if (BeginCombo("Vertex", std::to_string(CurrentVertex).c_str())) {
             for (uint vertex : ExcitableVertices) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) {
@@ -589,19 +594,36 @@ void SoundObject::RenderControls() {
             }
             EndCombo();
         }
+        const bool can_strike = (impact_mode && ImpactModel->CanStrike()) || (modal_mode && ModalModel->CanStrike());
+        if (!can_strike) BeginDisabled();
+        Button("Strike");
+        if (IsItemActivated()) {
+            if (impact_mode) ImpactModel->SetVertexForce(1);
+            else ModalModel->SetVertexForce(1);
+        } else if (IsItemDeactivated()) {
+            if (impact_mode) ImpactModel->SetVertexForce(0);
+            else ModalModel->SetVertexForce(0);
+        }
+        if (!can_strike) EndDisabled();
     }
     if (impact_mode && model_present) {
         ImpactModel->Draw();
     } else if (modal_mode) {
         if (model_present) {
             if (ModalModel->Waveform && ImpactModel && ImpactModel->Waveform) {
-                const auto &a = ModalModel->Waveform, &b = ImpactModel->Waveform;
+                auto &modal = *ModalModel->Waveform, &impact = *ImpactModel->Waveform;
                 const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
                 // RMSE is abyssmal in most cases, so for now just caching the peak frequencies for display.
-                a->GetPeakFrequencies(n_test_modes);
-                b->GetPeakFrequencies(n_test_modes);
+                modal.GetPeakFrequencies(n_test_modes);
+                impact.GetPeakFrequencies(n_test_modes);
                 // const float rmse = RMSE(a->GetPeakFrequencies(n_test_modes), b->GetPeakFrequencies(n_test_modes));
                 // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
+                SameLine();
+                if (Button("Save wav files")) {
+                    // Save wav files for both the modal and real-world impact sounds.
+                    modal.WriteWav(std::format("../audio_samples/{}-modal", Name));
+                    impact.WriteWav(std::format("../audio_samples/{}-impact", Name));
+                }
             }
             ModalModel->Draw(&CurrentVertex);
         }

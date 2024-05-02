@@ -5,7 +5,6 @@
 
 #include "SoundObject.h"
 
-#define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
 #include "imgui.h"
@@ -27,7 +26,27 @@ void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 
     (void)input; // Unused
 }
 
-const std::vector<uint> PrioritizedSampleRates = {std::begin(g_maStandardSampleRatePriorities), std::end(g_maStandardSampleRatePriorities)};
+// Copied from `miniaudio.c::g_maStandardSampleRatePriorities`.
+static const std::vector<uint> PrioritizedSampleRates = {
+    ma_standard_sample_rate_48000,
+    ma_standard_sample_rate_44100,
+
+    ma_standard_sample_rate_32000,
+    ma_standard_sample_rate_24000,
+    ma_standard_sample_rate_22050,
+
+    ma_standard_sample_rate_88200,
+    ma_standard_sample_rate_96000,
+    ma_standard_sample_rate_176400,
+    ma_standard_sample_rate_192000,
+
+    ma_standard_sample_rate_16000,
+    ma_standard_sample_rate_11025,
+    ma_standard_sample_rate_8000,
+
+    ma_standard_sample_rate_352800,
+    ma_standard_sample_rate_384000,
+};
 
 ma_context AudioContext;
 ma_device Device;

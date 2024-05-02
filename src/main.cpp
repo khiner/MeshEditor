@@ -296,7 +296,8 @@ void AudioModelControls() {
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
                 const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
                 auto &sound_object = R.emplace<SoundObject>(
-                    selected_entity, registry_tets, material_name, listener_point ? listener_point->GetPosition() : vec3{0}, uint(listener_point_entity)
+                    selected_entity, MainScene->GetName(selected_entity), registry_tets, material_name,
+                    listener_point ? listener_point->GetPosition() : vec3{0}, uint(listener_point_entity)
                 );
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
             }

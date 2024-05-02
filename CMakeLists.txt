@@ -34,6 +34,7 @@ add_executable(${PROJECT_NAME}
     ${IMPLOT_DIR}/implot_items.cpp
     ${IMPLOT_DIR}/implot_demo.cpp
     lib/ImGuizmo/ImGuizmo.cpp
+    lib/miniaudio/extras/miniaudio_split/miniaudio.c
     ${SOURCES}
 )
 
@@ -50,7 +51,7 @@ include_directories(
     lib/imspinner
     lib/glm
     lib/entt/src
-    lib/miniaudio
+    lib/miniaudio/extras/miniaudio_split
     lib/tetgen
     lib/faust/architecture
     PkgConfig::FFTW3F
@@ -90,6 +91,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enu
 
 add_definitions(-DTETLIBRARY)
 add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL)
+add_definitions(-DMA_NO_ENGINE) # Reduce MA build size
 
 # Copy shader files on every release build.
 if(CMAKE_BUILD_TYPE MATCHES Release)
