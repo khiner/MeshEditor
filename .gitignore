@@ -1,3 +1,13 @@
 build*
 .vscode/
 .DS_Store
+
+# Latex
+**/**.aux
+**/**.fdb_latexmk
+**/**.fls
+**/**.log
+**/**.bbl
+**/**.blg
+**/**.out
+**/**.synctex.gz
