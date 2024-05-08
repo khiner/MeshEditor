@@ -588,6 +588,8 @@ void SoundObject::RenderControls() {
         model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
         PopID();
         if (model_changed) SetModel(SoundObjectModel(model));
+    } else {
+        Model = SoundObjectModel::Modal;
     }
 
     const bool impact_mode = Model == SoundObjectModel::ImpactAudio, modal_mode = Model == SoundObjectModel::Modal;
