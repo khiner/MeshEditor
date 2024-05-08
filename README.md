@@ -1,6 +1,6 @@
-# MeshEditor
+# Mesh Audio Editor
 
-Real-time mesh viewer and editor, using Vulkan and ImGui, and in-progress rigid body audio model.
+Real-time mesh viewer and editor supporting conversion of meshes to rigid body audio models using Linear Modal Analysis/Synthesis.
 
 ![](screenshots/Cube.png)
 ![](screenshots/TorusBvh.png)

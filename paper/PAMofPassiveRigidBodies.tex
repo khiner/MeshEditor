@@ -14,7 +14,6 @@
 \usepackage{subcaption}
 \usepackage{enumitem}
 
-
 \newcommand{\vct}[1]{\mathbf{#1}}
 \newcommand{\mtx}[1]{\mathbf{#1}}
 
@@ -28,7 +27,7 @@
 }
 
 \author{Karl Hiner\\khiner6@gatech.edu}
-\date{\today}
+\date{May 3, 2024}
 
 \begin{document}
 
@@ -115,7 +114,7 @@ This work is a continuation of a prior project, \textit{Mesh2Audio} \cite{mesh2a
 \begin{itemize}
   \item Provides an OpenGL-based interface for axisymmetric mesh generation, immediate-mode Faust DSP parameter interface, interactive vertex excitation, and more.
   \item Implements a complete, independent 2D axisymmetric FEM model.
-  \item Dramatically improves slow Finite Element and eigenvalue solving times during when deriving modal parameters.
+  \item Dramatically speeds up Finite Element and eigenvalue estimation.
   \item Many other improvements to the original \textit{Mesh2Faust} work, which were \href{https://github.com/grame-cncm/faust/pull/870}{contributed to the Faust project}.
 \end{itemize}
 
@@ -128,8 +127,7 @@ The present work further extends on \textit{Mesh2Audio} with the following major
   \item Ability to create mesh primitives (cube, sphere, torus, cylinder, etc.) and generate modal audio models from them.
   \item Improvements to eigenvalue estimation accuracy.
 \end{itemize}
-
-In addition to the \href{https://github.com/khiner/MeshEditor}{project code}, the authors plan to contribute the \href{https://github.com/grame-cncm/faust/compare/master-dev...khiner:faust:master-dev}{code implementing} the above-mentioned additions and improvements to the Faust project, with damping modeling being the chief contribution.
+In addition to the \href{https://github.com/khiner/MeshEditor}{project code}, we \href{https://github.com/grame-cncm/faust/pull/1019}{contributed} the above-mentioned additions and improvements to the Faust project.
 
 \subsection{Finite Element Method}
 
@@ -353,12 +351,11 @@ Although the synthesized samples are by no means perceptually identical to the r
 \section{Summary and conclusions}
 
 Overall, these results show that Linear Modal Analysis/Synthesis is an effective and highly efficient method for physically plausible audio synthesis of rigid body.
+However, in addition to the many issues outlined above, the linear assumption has perceptible impact on physical accuracy, especially when few modes are estimated.
 
-In addition to the many issues outlined above, the linear assumption has perceptible impact on physical accuracy, especially few modes are estimated.
-
-These experiments seem to indicate that it is possible to acheive an overall impression of perceived audio similarity while failing to achieve close alignment in spectral composition.
+These experiments seem to indicate that it is possible to acheive an overall impression of perceived audio similarity while failing to achieve close spectral alignment.
 This is testament to the perceptual importance of non-spectral aspects such as fundamental frequency and dynamic envelope, and underlines the crucial importance of developing suitable datasets.
-As immersive environments such as augmented and virtual realities become increasingly capable and visual rendering fidelity improves, rigourous testing of simulated acoustics against real-world will become increasingly important to ensure that acoustic realism keeps pace.
+As immersive environments such as augmented and virtual realities become increasingly capable and visual rendering fidelity improves, rigourous testing of simulated acoustics against the real-world will become increasingly important to ensure that acoustic realism keeps pace.
 
 Continuing to develop real-world audio datasets alongside model improvements will also provide opportunities for data-driven audio generation models, for example by nudging fully differentiable physically-informed models \cite{engel_ddsp_2019} \cite{wang_neural_2019} towards natural audio manifolds.
 
