@@ -5,7 +5,7 @@ project(MeshEditor LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++ -fexperimental-library")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib -lunwind -lc++abi")
 
 add_compile_options(-Wno-missing-field-initializers)
@@ -15,6 +15,7 @@ if(APPLE)
 endif()
 
 set(STATIC_FAUST on CACHE BOOL "Build Static Faust library" FORCE)
+set(SDL_STATIC ON CACHE BOOL "Build SDL3 statically" FORCE)
 
 add_subdirectory(lib)
 
@@ -86,7 +87,7 @@ find_library(SPIRV_CROSS_CORE_LIB spirv-cross-core $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 message(STATUS "Found spirv-cross-core in: ${SPIRV_CROSS_CORE_LIB}")
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3-static ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -95,8 +96,11 @@ elseif(CMAKE_BUILD_TYPE MATCHES Release)
 endif()
 
 # Disable lib warnings
-target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
-target_compile_options(SDL3-shared PRIVATE -w)
+# staticlib is faustlib (can't use alias target)
+set(disable_warning_targets staticlib SDL3-static mesh2faust OpenMeshCore)
+foreach(target IN LISTS disable_warning_targets)
+    target_compile_options(${target} PRIVATE -w)
+endforeach()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base)
