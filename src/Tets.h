@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "mesh/Mesh.h"
+#include "Mesh/Mesh.h"
 
 // See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
 struct TetGenOptions {

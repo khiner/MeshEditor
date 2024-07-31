@@ -14,13 +14,13 @@
 
 #include "numeric/vec4.h"
 
+#include "Mesh/Arrow.h"
+#include "Mesh/Primitives.h"
 #include "Scene.h"
 #include "Tets.h"
+#include "Vulkan/VulkanContext.h"
 #include "Window.h"
 #include "Worker.h"
-#include "mesh/Arrow.h"
-#include "mesh/Primitives.h"
-#include "vulkan/VulkanContext.h"
 
 #include "audio/AudioSourcesPlayer.h"
 #include "audio/RealImpact.h"

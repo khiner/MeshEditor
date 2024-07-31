@@ -10,8 +10,8 @@
 #include "RenderMode.h"
 #include "Shader.h"
 #include "World.h"
-#include "mesh/MeshElement.h"
-#include "mesh/Primitive.h"
+#include "Mesh/MeshElement.h"
+#include "Mesh/Primitive.h"
 
 struct Visible {}; // A tag component to mark entities that are visible.
 

@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++ -fexperimental-library")
-add_compile_options(-Wno-missing-field-initializers)
 
 project(MeshEditor LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++ -fexperimental-library")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib -lunwind -lc++abi")
+
+add_compile_options(-Wno-missing-field-initializers)
 
 if(APPLE)
     enable_language(OBJC) # Needed for nativefiledialog
@@ -47,15 +52,15 @@ include_directories(
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${IMPLOT_DIR}
-    lib/ImGuizmo
-    lib/imspinner
-    lib/glm
-    lib/entt/src
-    lib/miniaudio/extras/miniaudio_split
-    lib/tetgen
-    lib/faust/architecture
-    PkgConfig::FFTW3F
-    ${Mesh2FaustDir}/src
+    SYSTEM lib/ImGuizmo
+    SYSTEM lib/imspinner
+    SYSTEM lib/glm
+    SYSTEM lib/entt/src
+    SYSTEM lib/miniaudio/extras/miniaudio_split
+    SYSTEM lib/tetgen
+    SYSTEM lib/faust/architecture
+    SYSTEM PkgConfig::FFTW3F
+    SYSTEM ${Mesh2FaustDir}/src
     src
 )
 
@@ -76,15 +81,22 @@ else()
   target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/eigen3)
 endif()
 
-find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib spirv-cross-core)
+find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
+find_library(SPIRV_CROSS_CORE_LIB spirv-cross-core $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} spirv-cross-core nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F)
+message(STATUS "Found spirv-cross-core in: ${SPIRV_CROSS_CORE_LIB}")
+
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
 elseif(CMAKE_BUILD_TYPE MATCHES Release)
     target_compile_definitions(${PROJECT_NAME} PRIVATE RELEASE_BUILD)
 endif()
+
+# Disable lib warnings
+target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
+target_compile_options(SDL3-shared PRIVATE -w)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base)

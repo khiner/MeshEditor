@@ -4,8 +4,8 @@
 
 #include "numeric/vec2.h"
 
+#include "Mesh/Mesh.h"
 #include "Primitive.h"
-#include "mesh/Mesh.h"
 
 using std::ranges::iota_view;
 using std::ranges::to;

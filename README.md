@@ -111,7 +111,8 @@ $ sudo apt install build-essential libgtk-3-dev
 ```shell
 $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
-$ mkdir build && cd build && cmake .. && make
+$ CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+$ cmake --build build --config Release
 ```
 
 ## Stack
