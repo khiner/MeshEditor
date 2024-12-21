@@ -31,6 +31,19 @@ void Camera::SetTargetDistance(float distance) {
     IsMoving = true;
 }
 
+void Camera::Rotate(vec2 angles_delta) {
+    const auto dir = glm::normalize(Target - Position);
+    // Convert to spherical coordinates, apply deltas, and clamp elevation.
+    static constexpr float MaxElevationRad = glm::radians(89.0f);
+    const vec2 angles{
+        atan2(dir.z, dir.x) + angles_delta.x,
+        glm::clamp(asin(dot(dir, Up)) - angles_delta.y, -MaxElevationRad, MaxElevationRad)
+    };
+    // Convert spherical back to Cartesian and update position.
+    const vec3 new_dir{cos(angles.y) * cos(angles.x), sin(angles.y), cos(angles.y) * sin(angles.x)};
+    Position = Target - new_dir * GetDistance();
+}
+
 bool Camera::Tick() {
     if (!IsMoving) return false;
 

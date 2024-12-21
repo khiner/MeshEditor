@@ -139,8 +139,9 @@ struct Gizmo {
         const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
         auto camera_view = camera.GetViewMatrix();
         const float camera_distance = camera.GetDistance();
-        view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0);
-        if (view_changed) camera.SetPositionFromView(camera_view);
+        if (view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0); view_changed) {
+            camera.SetPositionFromView(camera_view);
+        }
     }
 
     void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
@@ -852,10 +853,16 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    // Handle mouse wheel zoom.
-    const float mouse_wheel = GetIO().MouseWheel;
-    if (mouse_wheel != 0 && IsWindowHovered()) Camera.SetTargetDistance(Camera.GetDistance() * (1.f - mouse_wheel / 16.f));
-
+    // We adopt Blender's mouse wheel for camera rotation, and Alt+wheel to zoom.
+    if (const vec2 mouse_wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; mouse_wheel != vec2{0, 0} && IsWindowHovered()) {
+        if (GetIO().KeyAlt) {
+            Camera.SetTargetDistance(Camera.GetDistance() * (1.f - mouse_wheel.y / 16.f));
+        } else {
+            Camera.Rotate(mouse_wheel * 0.1f);
+            UpdateTransformBuffers();
+            SubmitCommandBuffer();
+        }
+    }
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
     if (SelectedEntity != entt::null) {

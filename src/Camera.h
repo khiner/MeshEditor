@@ -26,7 +26,10 @@ struct Camera {
     Ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
 
     void SetPositionFromView(const mat4 &view);
-    void SetTargetDistance(float distance); // Start moving camera to provided distance.
+    void SetTargetDistance(float); // Start moving camera to provided distance.
+    // Rotate camera around target by the given delta in spherical coordinates.
+    // (azimuth, elevation) / (yaw, pitch) / (x, y) / (phi, theta)
+    void Rotate(vec2 angles_delta);
 
     bool Tick(); // Move camera to target distance. Returns true if camera moved.
     void StopMoving(); // Stop target distance movement.
