@@ -655,14 +655,14 @@ void SoundObject::RenderControls() {
         }
 
         Text("Density (kg/m^3)");
-        InputDouble("##Density", &Material.Density, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        InputDouble("##Density", &Material.Density, 0.0f, 0.0f, "%.3f");
         Text("Young's modulus (Pa)");
-        InputDouble("##Young's modulus", &Material.YoungModulus, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        InputDouble("##Young's modulus", &Material.YoungModulus, 0.0f, 0.0f, "%.3f");
         Text("Poisson's ratio");
-        InputDouble("##Poisson's ratio", &Material.PoissonRatio, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        InputDouble("##Poisson's ratio", &Material.PoissonRatio, 0.0f, 0.0f, "%.3f");
         Text("Rayleigh damping alpha/beta");
-        InputDouble("##Rayleigh damping alpha", &Material.Alpha, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-        InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        InputDouble("##Rayleigh damping alpha", &Material.Alpha, 0.0f, 0.0f, "%.3f");
+        InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f");
         if (DspGenerator) {
             if (auto m2f_result = DspGenerator->Render()) {
                 ModalModel.emplace(std::move(*m2f_result), CurrentVertex);
