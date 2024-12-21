@@ -2,6 +2,8 @@
 
 #include <entt/entity/registry.hpp>
 
+using uint = uint32_t;
+
 struct AudioSourcesPlayer {
     AudioSourcesPlayer(entt::registry &);
     ~AudioSourcesPlayer();

@@ -12,7 +12,7 @@
 
 #include "Ray.h"
 
-using uint = unsigned int;
+using uint = uint32_t;
 
 struct BBox {
     vec3 Min, Max;

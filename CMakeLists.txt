@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib -lunwind -lc++abi")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib -lc++abi")
 
 add_compile_options(-Wno-missing-field-initializers)
 
@@ -18,6 +18,12 @@ set(STATIC_FAUST on CACHE BOOL "Build Static Faust library" FORCE)
 set(SDL_STATIC ON CACHE BOOL "Build SDL3 statically" FORCE)
 
 add_subdirectory(lib)
+
+# Ignore lib warnings
+target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
+target_compile_options(SDL3-shared PRIVATE -w)
+file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
+set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
 find_package(PkgConfig REQUIRED)
 pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)

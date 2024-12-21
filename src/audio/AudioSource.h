@@ -1,6 +1,6 @@
 #pragma once
 
-using uint = unsigned int;
+using uint = uint32_t;
 
 struct DeviceData {
     const uint SampleRate;

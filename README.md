@@ -95,8 +95,8 @@ $ brew link llvm --force
 (Only tested on Ubuntu.)
 
 ```shell
-$ sudo apt install llvm libc++-dev libc++abi-dev
-$ ln -s llvm-config-17 llvm-config
+$ sudo apt install llvm
+$ ln -s llvm-config-19 llvm-config
 $ export PATH="$(llvm-config --bindir):$PATH"
 ```
 
