@@ -11,8 +11,8 @@
 
 #include "numeric/mat3.h"
 
-#include "Mesh/Primitives.h"
-#include "Vulkan/VulkanContext.h"
+#include "mesh/Primitives.h"
+#include "vulkan/VulkanContext.h"
 
 using std::ranges::to;
 using std::views::transform;

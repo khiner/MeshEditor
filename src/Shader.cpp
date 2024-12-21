@@ -8,7 +8,7 @@
 #include "numeric/mat4.h"
 
 #include "File.h"
-#include "Mesh/Vertex.h"
+#include "mesh/Vertex.h"
 
 #ifdef DEBUG_BUILD
 static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.

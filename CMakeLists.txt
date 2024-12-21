@@ -21,7 +21,7 @@ add_subdirectory(lib)
 
 # Ignore lib warnings
 target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
-target_compile_options(SDL3-shared PRIVATE -w)
+target_compile_options(SDL3-static PRIVATE -w)
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 

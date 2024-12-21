@@ -14,13 +14,13 @@
 
 #include "numeric/vec4.h"
 
-#include "Mesh/Arrow.h"
-#include "Mesh/Primitives.h"
+#include "mesh/Arrow.h"
+#include "mesh/Primitives.h"
 #include "Scene.h"
 #include "Tets.h"
-#include "Vulkan/VulkanContext.h"
 #include "Window.h"
 #include "Worker.h"
+#include "vulkan/VulkanContext.h"
 
 #include "audio/AudioSourcesPlayer.h"
 #include "audio/RealImpact.h"
@@ -398,11 +398,9 @@ void AudioModelControls() {
 }
 
 int main(int, char **) {
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMEPAD) != 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
     }
-
-    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
 
     // Create window with Vulkan graphics context.
     const auto window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -415,7 +413,7 @@ int main(int, char **) {
 
     // Create window surface.
     VkSurfaceKHR surface;
-    if (SDL_Vulkan_CreateSurface(Window, *VC->Instance, nullptr, &surface) == 0) throw std::runtime_error("Failed to create Vulkan surface.\n");
+    if (!SDL_Vulkan_CreateSurface(Window, *VC->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
 
     // Create framebuffers.
     int w, h;
@@ -514,7 +512,7 @@ int main(int, char **) {
         ImGui_ImplSDL3_NewFrame();
         NewFrame();
 
-        auto dockspace_id = DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
+        auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (GetFrameCount() == 1) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.35f, nullptr, &dockspace_id);
             auto demo_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
@@ -610,7 +608,7 @@ int main(int, char **) {
 
             const auto &cursor = GetCursorPos();
             const auto &scene_extent = MainScene->GetExtent();
-            Image((ImTextureID)MainSceneDescriptorSet, {float(scene_extent.width), float(scene_extent.height)}, {0, 1}, {1, 0});
+            Image((ImTextureID)(void *)MainSceneDescriptorSet, {float(scene_extent.width), float(scene_extent.height)}, {0, 1}, {1, 0});
             SetCursorPos(cursor);
             MainScene->RenderGizmo();
             End();
