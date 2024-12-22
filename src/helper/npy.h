@@ -8,8 +8,8 @@ I copied the bits needed for reading .npy files, with minor changes.
 #include <algorithm>
 #include <array>
 #include <complex>
+#include <format>
 #include <fstream>
-#include <iostream>
 #include <numeric>
 #include <sstream>
 #include <typeindex>
@@ -60,7 +60,7 @@ struct header_t {
 };
 
 constexpr size_t magic_string_length = 6;
-constexpr std::array<char, magic_string_length> magic_string = {'\x93', 'N', 'U', 'M', 'P', 'Y'};
+constexpr std::array<char, magic_string_length> magic_string{'\x93', 'N', 'U', 'M', 'P', 'Y'};
 
 inline version_t read_magic(std::istream &istream) {
     std::array<char, magic_string_length + 2> buf{};
@@ -97,23 +97,21 @@ inline std::string read_header(std::istream &istream) {
 
     auto buf_v = std::vector<char>(header_length);
     istream.read(buf_v.data(), header_length);
-    std::string header(buf_v.data(), header_length);
-
-    return header;
+    return {buf_v.data(), header_length};
 }
 
 // Remove leading and trailing whitespace
-inline std::string trim(const std::string &str) {
-    static const std::string whitespace = " \t";
+constexpr std::string_view trim(std::string_view str) {
+    constexpr std::string_view whitespace = " \t";
 
     auto begin = str.find_first_not_of(whitespace);
-    if (begin == std::string::npos) return "";
+    if (begin == std::string_view::npos) return "";
 
     auto end = str.find_last_not_of(whitespace);
     return str.substr(begin, end - begin + 1);
 }
 
-inline std::string get_value_from_map(const std::string &mapstr) {
+constexpr std::string_view get_value_from_map(std::string_view mapstr) {
     size_t sep_pos = mapstr.find_first_of(":");
     if (sep_pos == std::string::npos) return "";
 
@@ -122,9 +120,8 @@ inline std::string get_value_from_map(const std::string &mapstr) {
 
 // Parse the string representation of a Python dict.
 // The keys need to be known and may not appear anywhere else in the data.
-inline std::unordered_map<std::string, std::string> parse_dict(std::string in, const std::vector<std::string> &keys) {
-    std::unordered_map<std::string, std::string> map;
-    if (keys.size() == 0) return map;
+std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_view in, const std::vector<std::string_view> &keys) {
+    if (keys.size() == 0) return {};
 
     // Unwrap dictionary
     in = trim(in);
@@ -132,32 +129,30 @@ inline std::unordered_map<std::string, std::string> parse_dict(std::string in, c
 
     in = in.substr(1, in.length() - 2);
 
-    std::vector<std::pair<size_t, std::string>> positions;
-    for (const auto &value : keys) {
-        size_t pos = in.find("'" + value + "'");
-        if (pos == std::string::npos) throw std::runtime_error("Missing '" + value + "' key.");
+    std::vector<std::pair<size_t, std::string_view>> positions;
+    for (auto value : keys) {
+        const size_t pos = in.find(std::format("'{}'", value));
+        if (pos == std::string::npos) throw std::runtime_error(std::format("Missing '{}' key.", value));
 
-        positions.emplace_back(pos, value);
+        positions.emplace_back(pos, std::move(value));
     }
 
     std::sort(positions.begin(), positions.end());
+    std::unordered_map<std::string_view, std::string_view> map;
     for (size_t i = 0; i < positions.size(); ++i) {
-        size_t begin{positions[i].first}, end{std::string::npos};
-
-        std::string key = positions[i].second;
+        size_t begin{positions[i].first}, end{std::string_view::npos};
+        auto key = positions[i].second;
         if (i + 1 < positions.size()) end = positions[i + 1].first;
 
-        std::string raw_value = trim(in.substr(begin, end - begin));
-        if (raw_value.back() == ',') raw_value.pop_back();
-
-        map.emplace(key, get_value_from_map(raw_value));
+        auto raw_value = trim(in.substr(begin, end - begin));
+        map.emplace(key, get_value_from_map(raw_value.back() == ',' ? raw_value.substr(0, raw_value.length() - 1) : raw_value));
     }
 
     return map;
 }
 
 // Parse the string representation of a Python boolean
-inline bool parse_bool(const std::string &in) {
+constexpr bool parse_bool(std::string_view in) {
     if (in == "True") return true;
     if (in == "False") return false;
 
@@ -165,22 +160,20 @@ inline bool parse_bool(const std::string &in) {
 }
 
 // Parse the string representation of a Python str
-inline std::string parse_str(const std::string &in) {
+constexpr std::string_view parse_str(std::string_view in) {
     if (in.front() != '\'' || in.back() != '\'') throw std::runtime_error("Invalid python string.");
 
     return in.substr(1, in.length() - 2);
 }
 
 // Parse the string represenatation of a Python tuple into a vector of its items
-inline std::vector<std::string> parse_tuple(std::string in) {
-    static const char seperator = ',';
-
+inline std::vector<std::string> parse_tuple(std::string_view in) {
     in = trim(in);
     if (in.front() != '(' || in.back() != ')') throw std::runtime_error("Invalid Python tuple.");
 
-    std::istringstream iss(in.substr(1, in.length() - 2));
+    std::istringstream iss(std::string{in.substr(1, in.length() - 2)});
     std::vector<std::string> v;
-    for (std::string token; std::getline(iss, token, seperator);) v.emplace_back(token);
+    for (std::string token; std::getline(iss, token, ',');) v.emplace_back(token);
     return v;
 }
 
@@ -188,21 +181,21 @@ constexpr char little_endian_char = '<', big_endian_char = '>', no_endian_char =
 constexpr std::array<char, 3> endian_chars = {little_endian_char, big_endian_char, no_endian_char};
 constexpr std::array<char, 4> numtype_chars = {'f', 'i', 'u', 'c'};
 
-template<typename T, size_t N> inline bool in_array(T val, const std::array<T, N> &arr) {
+template<typename T, size_t N> constexpr bool in_array(T val, const std::array<T, N> &arr) {
     return std::find(std::begin(arr), std::end(arr), val) != std::end(arr);
 }
 
-inline dtype_t parse_descr(std::string typestring) {
+constexpr dtype_t parse_descr(std::string_view typestring) {
     if (typestring.length() < 3) throw std::runtime_error("Invalid typestring (length)");
 
-    char byteorder_c = typestring.at(0);
-    char kind_c = typestring.at(1);
-    std::string itemsize_s = typestring.substr(2);
+    const char byteorder_c = typestring.at(0);
+    const char kind_c = typestring.at(1);
+    const auto itemsize_s = typestring.substr(2);
     if (!in_array(byteorder_c, endian_chars)) throw std::runtime_error("Invalid typestring (byteorder)");
     if (!in_array(kind_c, numtype_chars)) throw std::runtime_error("Invalid typestring (kind)");
     if (!std::all_of(itemsize_s.begin(), itemsize_s.end(), ::isdigit)) throw std::runtime_error("Invalid typestring (itemsize)");
 
-    unsigned int itemsize = std::stoul(itemsize_s);
+    unsigned int itemsize = std::stoul(std::string{itemsize_s});
     return {byteorder_c, kind_c, itemsize};
 }
 
@@ -226,11 +219,9 @@ The dictionary contains three keys:
         The shape of the array.
         For repeatability and readability, this dictionary is formatted using pprint.pformat() so the keys are in alphabetic order.
  */
-inline header_t parse_header(std::string header) {
-    if (header.back() == '\n') header.pop_back();
-
-    static const std::vector<std::string> keys{"descr", "fortran_order", "shape"};
-    auto dict_map = parse_dict(header, keys);
+constexpr header_t parse_header(std::string_view header) {
+    static const std::vector<std::string_view> keys{"descr", "fortran_order", "shape"};
+    auto dict_map = parse_dict(header.back() == '\n' ? header.substr(0, header.length() - 1) : header, keys);
     if (dict_map.size() == 0) throw std::runtime_error("Invalid dictionary in header");
 
     shape_t shape;
@@ -240,7 +231,7 @@ inline header_t parse_header(std::string header) {
 }
 
 constexpr char host_endian_char = (big_endian ? big_endian_char : little_endian_char);
-const std::unordered_map<std::type_index, dtype_t> dtype_map = {
+const std::unordered_map<std::type_index, dtype_t> dtype_map{
     {std::type_index(typeid(float)), {host_endian_char, 'f', sizeof(float)}},
     {std::type_index(typeid(double)), {host_endian_char, 'f', sizeof(double)}},
     {std::type_index(typeid(long double)), {host_endian_char, 'f', sizeof(long double)}},
@@ -286,10 +277,11 @@ template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, siz
     return read_npy<Scalar>(in, header, advance, size);
 }
 
-template<typename Scalar> inline npy_data<Scalar> read_npy(const std::string &filename, size_t offset = 0, size_t size = 0) {
-    std::ifstream stream(filename, std::ifstream::binary);
+template<typename Scalar> inline npy_data<Scalar> read_npy(std::string filename, size_t offset = 0, size_t size = 0) {
+    std::ifstream stream(std::move(filename), std::ifstream::binary);
     if (!stream) throw std::runtime_error("IO error: failed to open file.");
 
     return read_npy<Scalar>(stream, offset, size);
 }
+
 } // namespace npy

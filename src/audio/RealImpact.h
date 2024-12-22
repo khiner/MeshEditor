@@ -52,14 +52,14 @@ struct RealImpact {
     static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
     // Even though the authors provide `.mtl` and `.png` material files, they don't provide the material name.
     // However, most object names include the material name, and the rest are easy to guess.
-    static const std::unordered_map<std::string, std::string> MaterialNameForObjName;
+    static const std::unordered_map<std::string_view, std::string_view> MaterialNameForObjName;
 
     const fs::path Directory;
     const fs::path ObjPath; // Path to the .obj file
     const std::string ObjectName;
     uint VertexIndices[NumImpactVertices]; // Unique vertex indices of the impact points in the .obj file
     vec3 ImpactPositions[NumImpactVertices]; // World positions of the impact points
-    std::optional<std::string> MaterialName;
+    std::optional<std::string_view> MaterialName;
 
     RealImpact(const fs::path &directory);
 

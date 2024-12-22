@@ -19,10 +19,6 @@ using std::views::transform;
 
 std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
 
-void Capitalize(std::string &str) {
-    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
-}
-
 struct SceneNode {
     entt::entity parent = entt::null;
     std::vector<entt::entity> children;
@@ -79,7 +75,8 @@ const auto Float = vk::Format::eR32G32B32A32Sfloat;
 const auto Depth = vk::Format::eD32Sfloat;
 } // namespace ImageFormat
 
-static vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
+namespace {
+vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
     const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
     if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
@@ -114,6 +111,7 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
     };
     return {{}, bindings, attrs};
 }
+} // namespace
 
 struct Gizmo {
     ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
@@ -133,7 +131,7 @@ struct Gizmo {
     void Render(Camera &camera, bool &view_changed) const {
         using namespace ImGui;
 
-        static const float ViewManipulateSize = 128;
+        static constexpr float ViewManipulateSize = 128;
 
         const auto &window_pos = GetWindowPos();
         const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
@@ -900,6 +898,11 @@ void Scene::RenderGizmo() {
     }
 }
 
+namespace {
+void Capitalize(std::string &str) {
+    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
+}
+
 void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, vec3 &scale) {
     static vec3 skew;
     static vec4 perspective;
@@ -952,6 +955,7 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
 
     return std::nullopt;
 }
+} // namespace
 
 void Scene::RenderConfig() {
     if (BeginTabBar("Scene controls")) {
@@ -1191,7 +1195,7 @@ void Scene::RenderConfig() {
 
 void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity> &entities) {
     if (BeginTable(name.c_str(), 3)) {
-        const static float CharWidth = CalcTextSize("A").x;
+        static const float CharWidth = CalcTextSize("A").x;
         TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
         TableSetupColumn("Name");
         TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);

@@ -27,7 +27,7 @@ void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 
 }
 
 // Copied from `miniaudio.c::g_maStandardSampleRatePriorities`.
-static const std::vector<uint> PrioritizedSampleRates = {
+static const std::vector<uint> PrioritizedSampleRates{
     ma_standard_sample_rate_48000,
     ma_standard_sample_rate_44100,
 

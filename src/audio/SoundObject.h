@@ -108,12 +108,12 @@ private:
 struct SoundObject : AudioSource {
     // All SoundObjects have a modal audio model.
     // If `impact_frames_by_vertex` is non-empty, the object also has an impact audio model.
-    SoundObject(const std::string &name, const Tets &, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id);
+    SoundObject(std::string_view name, const Tets &, const std::optional<std::string_view> &material_name, vec3 listener_position, uint listener_entity_id);
     ~SoundObject();
 
     const std::string Name;
     const Tets &Tets;
-    std::string MaterialName;
+    std::string_view MaterialName;
     MaterialProperties Material;
     vec3 ListenerPosition;
     uint ListenerEntityId{0};

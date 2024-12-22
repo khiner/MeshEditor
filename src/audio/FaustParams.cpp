@@ -10,9 +10,9 @@ bool RadioButtons(const char *label, float *value, const FaustParams::NamesAndVa
     Text("%s", label);
     bool changed = false;
     for (int i = 0; i < int(names_and_values.names.size()); i++) {
-        const std::string &choice_name = names_and_values.names[i];
+        std::string_view choice_name = names_and_values.names[i];
         const Real choice_value = names_and_values.values[i];
-        if (RadioButton(choice_name.c_str(), *value == choice_value)) {
+        if (RadioButton(choice_name.data(), *value == choice_value)) {
             *value = float(choice_value);
             changed = true;
         }

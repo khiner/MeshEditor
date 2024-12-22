@@ -45,7 +45,8 @@ AudioSourcesPlayer AudioSources{R};
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
-static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int width, int height) {
+namespace {
+void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int width, int height) {
     wd->Surface = surface;
 
     // Check for WSI support
@@ -71,15 +72,15 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surfa
     ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
 }
 
-static void CleanupVulkanWindow() {
+void CleanupVulkanWindow() {
     ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &MainWindowData, nullptr);
 }
 
-static void CheckVk(VkResult err) {
+void CheckVk(VkResult err) {
     if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
 }
 
-static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
+void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
     const VkResult err = vkAcquireNextImageKHR(*VC->Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
@@ -135,7 +136,7 @@ static void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     }
 }
 
-static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
+void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     if (SwapChainRebuild) return;
 
     VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
@@ -155,14 +156,14 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount; // Now we can use the next set of semaphores.
 }
 
-static entt::entity FindListenerEntityWithIndex(uint index) {
+entt::entity FindListenerEntityWithIndex(uint index) {
     for (const auto entity : R.view<RealImpactListenerPoint>()) {
         if (R.get<RealImpactListenerPoint>(entity).Index == index) return entity;
     }
     return entt::null;
 }
 
-static void LoadRealImpact(const fs::path &path, entt::registry &R) {
+void LoadRealImpact(const fs::path &path, entt::registry &R) {
     if (!fs::exists(path)) throw std::runtime_error(std::format("RealImpact path does not exist: {}", path.string()));
 
     MainScene->ClearMeshes();
@@ -189,7 +190,7 @@ static void LoadRealImpact(const fs::path &path, entt::registry &R) {
     }
     MainScene->UpdateRenderBuffers(object_entity);
 
-    static const mat4 I{1};
+    static constexpr mat4 I{1};
     auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
     auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
     const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {std::move(listener_points_name), I, false, false, false});
@@ -210,12 +211,14 @@ static void LoadRealImpact(const fs::path &path, entt::registry &R) {
     R.emplace<RealImpact>(object_entity, std::move(real_impact));
     MainScene->RecordAndSubmitCommandBuffer();
 }
+} // namespace
 
 using namespace ImGui;
 
+namespace {
 std::unique_ptr<Worker<Tets>> TetGenerator;
 
-static void HelpMarker(const char *desc) {
+void HelpMarker(const char *desc) {
     SameLine();
     TextDisabled("(?)");
     if (BeginItemTooltip()) {
@@ -227,7 +230,7 @@ static void HelpMarker(const char *desc) {
 }
 
 void AudioModelControls() {
-    const static float CharWidth = CalcTextSize("A").x;
+    static const float CharWidth = CalcTextSize("A").x;
 
     const auto selected_entity = MainScene->GetSelectedEntity();
     const auto sound_objects = R.view<SoundObject>();
@@ -405,6 +408,7 @@ void AudioModelControls() {
         }
     }
 }
+} // namespace
 
 int main(int, char **) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {

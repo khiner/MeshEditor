@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -25,18 +26,18 @@ struct Shaders {
     std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(vk::Device);
     std::vector<uint> Compile(ShaderType) const;
 
-    bool HasBinding(const std::string &name) const { return BindingByName.contains(name); }
-    uint GetBinding(const std::string &name) const { return BindingByName.at(name); }
+    bool HasBinding(std::string_view name) const { return BindingByName.contains(name); }
+    uint GetBinding(std::string_view name) const { return BindingByName.at(name); }
 
     std::unordered_map<ShaderType, fs::path> Paths; // Paths are relative to the `Shaders` directory.
     std::unordered_map<ShaderType, vk::UniqueShaderModule> Modules;
     std::unordered_map<ShaderType, std::unique_ptr<spirv_cross::ShaderResources>> Resources;
     std::vector<vk::DescriptorSetLayoutBinding> LayoutBindings; // Sorted by binding number.
-    std::unordered_map<std::string, uint> BindingByName;
+    std::unordered_map<std::string_view, uint> BindingByName;
 };
 
 // Convenience generators for default pipeline states.
-inline vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test_depth = true, bool write_depth = true, vk::CompareOp depth_compare_op = vk::CompareOp::eLess) {
+constexpr vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test_depth = true, bool write_depth = true, vk::CompareOp depth_compare_op = vk::CompareOp::eLess) {
     return {
         {}, // flags
         test_depth, // depthTestEnable
@@ -50,7 +51,7 @@ inline vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test_dept
         1.f // maxDepthBounds
     };
 }
-inline vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool blend = true) {
+constexpr vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool blend = true) {
     if (blend) {
         return {
             true,
@@ -105,7 +106,7 @@ struct ShaderPipeline {
 
     void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
 
-    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(const std::string &binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
+    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
 
     void RenderQuad(vk::CommandBuffer cb) const;
 };

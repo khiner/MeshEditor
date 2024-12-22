@@ -23,7 +23,7 @@ From Table 4 in the [Kleinpat paper](https://graphics.stanford.edu/projects/klei
 */
 
 // Using `map` for consistent ordering in preset selection UI.
-inline const std::map<std::string, MaterialProperties> MaterialPresets = {
+const std::map<std::string_view, MaterialProperties> MaterialPresets{
     {"Ceramic", {2700, 7.2E10, 0.19, 6, 1E-7}},
     {"Glass", {2600, 6.2E10, 0.20, 1, 1E-7}},
     {"Wood", {750, 1.1E10, 0.25, 60, 2E-6}},
@@ -33,4 +33,4 @@ inline const std::map<std::string, MaterialProperties> MaterialPresets = {
     {"Steel", {7850, 2.0E11, 0.29, 5, 3E-8}}
 };
 
-inline const std::string DefaultMaterialPresetName = "Ceramic";
+constexpr std::string_view DefaultMaterialPresetName{"Ceramic"};

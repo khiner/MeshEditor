@@ -28,13 +28,13 @@ using HH = OpenMesh::HalfedgeHandle;
 using Point = OpenMesh::Vec3f;
 }; // namespace om
 
-inline vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
-inline vec4 ToGlm(const OpenMesh::Vec3uc &c) {
+static constexpr vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
+static constexpr vec4 ToGlm(const OpenMesh::Vec3uc &c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
     return {cc[0], cc[1], cc[2], 1};
 }
-inline om::Point ToOpenMesh(vec3 v) { return {v.x, v.y, v.z}; }
-inline OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
+static constexpr om::Point ToOpenMesh(vec3 v) { return {v.x, v.y, v.z}; }
+static constexpr OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
     return {cc[0], cc[1], cc[2]};
 }
@@ -79,12 +79,12 @@ struct Mesh {
         operator FH() const { return Element == MeshElement::Face ? FH{Index} : FH{-1}; }
     };
 
-    inline static const vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
+    inline static const vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
     inline static vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
     inline static vec4 HighlightColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
     inline static vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Face Normal`.
     inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Vertex Normal`.
-    inline static float NormalIndicatorLengthScale = 0.25;
+    static constexpr float NormalIndicatorLengthScale = 0.25;
 
     Mesh(Mesh &&);
     Mesh(const fs::path &);

@@ -103,7 +103,7 @@ ShaderPipeline::ShaderPipeline(
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());
 }
 
-std::optional<vk::WriteDescriptorSet> ShaderPipeline::CreateWriteDescriptorSet(const std::string &binding_name, const vk::DescriptorBufferInfo *buffer_info, const vk::DescriptorImageInfo *image_info) const {
+std::optional<vk::WriteDescriptorSet> ShaderPipeline::CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *buffer_info, const vk::DescriptorImageInfo *image_info) const {
     if (!Shaders.HasBinding(binding_name)) return std::nullopt;
 
     const auto binding = Shaders.GetBinding(binding_name);
@@ -114,8 +114,8 @@ std::optional<vk::WriteDescriptorSet> ShaderPipeline::CreateWriteDescriptorSet(c
 void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     const auto shader_stages = Shaders.CompileAll(Device);
 
-    static const vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
-    static const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    static constexpr vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
+    static constexpr std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
 
     const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &ColorBlendAttachment};

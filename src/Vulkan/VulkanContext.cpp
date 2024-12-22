@@ -91,7 +91,7 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
 
     // Create logical device (with one queue).
     static const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
-    static const std::array queue_priority{1.0f};
+    static constexpr std::array queue_priority{1.0f};
     const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
     Device = PhysicalDevice.createDeviceUnique({{}, queue_info, {}, device_extensions, &device_features});
 

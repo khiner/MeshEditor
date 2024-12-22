@@ -27,7 +27,7 @@ All files (present for each object):
 */
 
 // A '*' indicates a guess based on the object name and the material image.
-const std::unordered_map<std::string, std::string> RealImpact::MaterialNameForObjName = {
+const std::unordered_map<std::string_view, std::string_view> RealImpact::MaterialNameForObjName = {
     {"CeramicKoiBowl", "Ceramic"},
     {"CeramicBowlFish", "Ceramic"},
     {"Bowl", "Ceramic"}, // *

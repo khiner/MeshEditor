@@ -46,7 +46,7 @@ struct BBox {
         }};
     }
 
-    inline static const std::array<uint, 24> EdgeIndices = {
+    static constexpr std::array<uint, 24> EdgeIndices{
         // clang-format off
         0, 1, 1, 3, 3, 2, 2, 0,
         4, 5, 5, 7, 7, 6, 6, 4,
@@ -64,7 +64,7 @@ struct BBox {
     vec3 Center() const { return (Min + Max) * 0.5f; }
     float DiagonalLength() const { return glm::length(Max - Min); }
 
-    static BBox UnionAll(std::span<const BBox> boxes) {
+    static constexpr BBox UnionAll(std::span<const BBox> boxes) {
         return std::accumulate(boxes.begin(), boxes.end(), BBox{}, [](const auto &acc, const auto &box) {
             return acc.Union(box);
         });
@@ -73,7 +73,7 @@ struct BBox {
     BBox Union(const BBox &o) const { return {glm::min(Min, o.Min), glm::max(Max, o.Max)}; }
 
     vec3 Normal(const vec3 &p) const {
-        static const float eps = 1e-4f;
+        static constexpr float eps = 1e-4f;
 
         if (std::abs(p.x - Min.x) < eps) return {-1, 0, 0};
         if (std::abs(p.x - Max.x) < eps) return {1, 0, 0};

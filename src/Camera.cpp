@@ -26,9 +26,11 @@ void Camera::SetPositionFromView(const mat4 &view) {
 }
 
 // Direction vector to spherical angles (azimuth and elevation).
-static vec2 DirToAngles(const vec3 &dir, const vec3 &up) {
+namespace {
+constexpr vec2 DirToAngles(const vec3 &dir, const vec3 &up) {
     return {atan2(dir.z, dir.x), asin(glm::clamp(glm::dot(dir, up), -1.0f, 1.0f))};
 }
+} // namespace
 
 void Camera::OrbitDelta(vec2 angles_delta) {
     const auto dir = glm::normalize(Target - Position);

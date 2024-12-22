@@ -219,7 +219,7 @@ inline Mesh Cone(float radius = 0.5, float height = 1, uint slices = 32) {
     return {std::move(vertices), std::move(indices)};
 }
 
-inline std::string to_string(Primitive primitive) {
+constexpr std::string to_string(Primitive primitive) {
     switch (primitive) {
         case Primitive::Rect: return "Rect";
         case Primitive::Circle: return "Circle";

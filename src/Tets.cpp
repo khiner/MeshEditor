@@ -20,7 +20,7 @@ Tets &Tets::operator=(Tets &&other) noexcept {
 }
 
 Tets Tets::CreateTets(const Mesh &mesh, TetGenOptions options) {
-    static const int TriVerts = 3;
+    static constexpr int TriVerts = 3;
     tetgenio in;
     const float *vertices = mesh.GetPositionData();
     const auto triangle_indices = mesh.CreateTriangleIndices();

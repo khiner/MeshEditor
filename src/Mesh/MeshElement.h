@@ -12,7 +12,7 @@ enum class MeshElement {
 
 inline const std::vector AllElements{MeshElement::Vertex, MeshElement::Edge, MeshElement::Face};
 
-inline std::string to_string(MeshElement element) {
+constexpr std::string to_string(MeshElement element) {
     switch (element) {
         case MeshElement::Vertex: return "vertex";
         case MeshElement::Edge: return "edge";

@@ -21,12 +21,12 @@
 #include "Tets.h"
 #include "Worker.h"
 
-using std::string, std::string_view;
 using std::ranges::iota_view;
 using std::ranges::to;
 using std::views::transform;
 
-void ApplyCosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
+namespace {
+constexpr void ApplyCosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
     if (n == 1) {
         w[0] = 1.0;
         return;
@@ -39,15 +39,16 @@ void ApplyCosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
         w[i] = wi;
     }
 }
+
 // Create Blackman-Harris window
-std::vector<float> CreateBlackmanHarris(uint n) {
+constexpr std::vector<float> CreateBlackmanHarris(uint n) {
     std::vector<float> window(n);
-    static const float coeff[4] = {0.35875, -0.48829, 0.14128, -0.01168};
+    static constexpr float coeff[4] = {0.35875, -0.48829, 0.14128, -0.01168};
     ApplyCosineWindow(window.data(), n, coeff, sizeof(coeff) / sizeof(float));
     return window;
 }
 
-std::vector<float> ApplyWindow(const std::vector<float> &window, const float *data) {
+constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const float *data) {
     std::vector<float> windowed_data(window.size());
     for (uint i = 0; i < window.size(); ++i) windowed_data[i] = window[i] * data[i];
     return windowed_data;
@@ -56,7 +57,7 @@ std::vector<float> ApplyWindow(const std::vector<float> &window, const float *da
 constexpr uint SampleRate = 48000; // todo respect device sample rate
 
 // Ordered by lowest to highest frequency.
-static std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_bins, uint n_peaks) {
+constexpr std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_bins, uint n_peaks) {
     const uint N_2 = n_bins / 2;
 
     std::vector<std::pair<float, uint>> peaks;
@@ -74,11 +75,12 @@ static std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_
     std::ranges::sort(peak_freqs);
     return peak_freqs;
 }
+} // namespace
 
 struct Waveform {
     // Capture a short audio segment shortly after the impact for FFT.
     static constexpr uint FftStartFrame = 30, FftEndFrame = SampleRate / 16;
-    inline static auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
+    inline static const auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
     const std::vector<float> Frames;
     std::vector<float> WindowedFrames;
     const FFTData FftData;
@@ -88,8 +90,8 @@ struct Waveform {
         : Frames(frames, frames + frame_count),
           WindowedFrames(ApplyWindow(BHWindow, Frames.data() + FftStartFrame)), FftData(WindowedFrames) {}
 
-    void PlotFrames(const std::string &label = "Waveform", std::optional<uint> highlight_frame = std::nullopt) const;
-    void PlotMagnitudeSpectrum(const std::string &label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = std::nullopt) const;
+    void PlotFrames(std::string_view label = "Waveform", std::optional<uint> highlight_frame = std::nullopt) const;
+    void PlotMagnitudeSpectrum(std::string_view label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = std::nullopt) const;
 
     std::vector<float> GetPeakFrequencies(uint n_peaks) {
         if (n_peaks != PeakFrequencies.size()) PeakFrequencies = ::FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks);
@@ -99,7 +101,7 @@ struct Waveform {
     float GetMaxValue() const { return *std::max_element(Frames.begin(), Frames.end()); }
 
     // If `normalize_max` is set, normalize the data to this maximum value.
-    void WriteWav(const std::string &file_name, std::optional<float> normalize_max = std::nullopt) const {
+    void WriteWav(std::string_view file_name, std::optional<float> normalize_max = std::nullopt) const {
         const std::string wav_filename = std::format("../audio_samples/{}.wav", file_name);
         if (auto status = ma_encoder_init_file(wav_filename.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
             throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", wav_filename, uint(status)));
@@ -118,22 +120,20 @@ private:
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.
 struct FaustDSP {
-    FaustDSP(string_view code) {
+    FaustDSP(std::string_view code) {
         SetCode(std::move(code));
     }
     ~FaustDSP() {
         Uninit();
     }
 
-    inline static const string FaustDspFileExtension = ".dsp";
-
     Box Box{nullptr};
     dsp *Dsp{nullptr};
     std::unique_ptr<FaustParams> Params;
 
-    string ErrorMessage{""};
+    std::string ErrorMessage{""};
 
-    void SetCode(string_view code) {
+    void SetCode(std::string_view code) {
         Code = std::move(code);
         Update();
     }
@@ -159,7 +159,7 @@ struct FaustDSP {
     Sample *GetZone(std::string_view param_label) { return Params ? Params->getZoneForLabel(param_label.data()) : nullptr; }
 
 private:
-    string Code{""};
+    std::string Code{""};
     llvm_dsp_factory *DspFactory{nullptr};
 
     void Init() {
@@ -167,8 +167,8 @@ private:
 
         createLibContext();
 
-        static const string AppName = "MeshEditor";
-        static const string LibrariesPath = fs::relative("../lib/faust/libraries");
+        static constexpr std::string AppName{"MeshEditor"};
+        static const std::string LibrariesPath{fs::relative("../lib/faust/libraries")};
         std::vector<const char *> argv = {"-I", LibrariesPath.c_str()};
         if (std::is_same_v<Sample, double>) argv.push_back("-double");
         const int argc = argv.size();
@@ -177,7 +177,7 @@ private:
         Box = DSPToBoxes(AppName, Code, argc, argv.data(), &num_inputs, &num_outputs, ErrorMessage);
 
         if (Box && ErrorMessage.empty()) {
-            static const int optimize_level = -1;
+            static constexpr int optimize_level = -1;
             DspFactory = createDSPFactoryFromBoxes(AppName, Box, argc, argv.data(), "", ErrorMessage, optimize_level);
             if (DspFactory) {
                 if (ErrorMessage.empty()) {
@@ -261,9 +261,10 @@ void ModalAudioModel::SetParam(std::string_view param_label, Sample param_value)
     if (FaustDsp) FaustDsp->Set(std::move(param_label), param_value);
 }
 
-static const std::string
-    ExciteIndexParamName = "Excite index",
-    GateParamName = "Gate";
+namespace {
+constexpr std::string ExciteIndexParamName{"Excite index"};
+constexpr std::string GateParamName{"Gate"};
+} // namespace
 
 Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false, std::optional<float> fundamental_freq_opt = std::nullopt) {
     std::vector<int> tet_indices;
@@ -281,7 +282,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
         material.YoungModulus, material.PoissonRatio, material.Density
     };
 
-    static const string model_name = "modalModel";
+    static constexpr std::string model_name{"modalModel"};
     const auto m2f_result = m2f::mesh2faust(
         &volumetric_mesh,
         m2f::MaterialProperties{
@@ -306,7 +307,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
             .debugMode = false,
         }
     );
-    const string model_dsp = m2f_result.modelDsp;
+    const std::string model_dsp = m2f_result.modelDsp;
     if (model_dsp.empty()) return {"process = 0;", {}, {}, {}, {}};
 
     auto &mode_freqs = m2f_result.model.modeFreqs;
@@ -316,8 +317,8 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
                               440.0f;
 
     // Static code sections.
-    static const string to_sandh = " : ba.sAndH(gate);"; // Add a sample and hold on the gate, in serial, and end the expression.
-    static const string
+    static constexpr std::string to_sandh{" : ba.sAndH(gate);"}; // Add a sample and hold on the gate, in serial, and end the expression.
+    static const std::string
         gain = "gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01);",
         t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
         gate = std::format("gate = button(\"{}[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");", GateParamName),
@@ -327,7 +328,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
 
     // Variable code sections.
     const uint num_excite_pos = excitable_vertex_indices.size();
-    const string
+    const std::string
         freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, to_sandh),
         ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excite_pos - 1) / 2, num_excite_pos - 1, to_sandh),
         modal_model = std::format("{}({}exPos,t60Scale)", model_name, freq_control ? "freq," : ""),
@@ -355,13 +356,13 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     };
 }
 
-MaterialProperties GetMaterialPreset(const std::string &name) {
+MaterialProperties GetMaterialPreset(std::string_view name) {
     if (MaterialPresets.contains(name)) return MaterialPresets.at(name);
     return MaterialPresets.at(DefaultMaterialPresetName);
 }
 
 SoundObject::SoundObject(
-    const std::string &name, const ::Tets &tets, const std::optional<std::string> &material_name, vec3 listener_position, uint listener_entity_id
+    std::string_view name, const ::Tets &tets, const std::optional<std::string_view> &material_name, vec3 listener_position, uint listener_entity_id
 ) : Name(name), Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
     ListenerPosition(std::move(listener_position)),
     ListenerEntityId(listener_entity_id) {}
@@ -441,18 +442,19 @@ std::optional<uint> SoundObject::FindNearestExcitableVertex(vec3 position) {
 
 using namespace ImGui;
 
-static const ImVec2 ChartSize = {-1, 160};
+namespace {
+constexpr ImVec2 ChartSize = {-1, 160};
 
 // Returns the index of the hovered mode, if any.
-static std::optional<size_t> PlotModeData(
-    const std::vector<float> &data, const std::string &label, const std::string &x_label, const std::string &y_label,
+std::optional<size_t> PlotModeData(
+    const std::vector<float> &data, std::string_view label, std::string_view x_label, std::string_view y_label,
     std::optional<size_t> highlight_index = std::nullopt, std::optional<float> max_value_opt = std::nullopt
 ) {
     std::optional<size_t> hovered_index;
-    if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
-        static const double BarSize = 0.9;
+    if (ImPlot::BeginPlot(label.data(), ChartSize)) {
+        static constexpr double BarSize = 0.9;
         const float max_value = max_value_opt.value_or(*std::max_element(data.begin(), data.end()));
-        ImPlot::SetupAxes(x_label.c_str(), y_label.c_str());
+        ImPlot::SetupAxes(x_label.data(), y_label.data());
         ImPlot::SetupAxesLimits(-0.5f, data.size() - 0.5f, 0, max_value, ImPlotCond_Always);
         if (ImPlot::IsPlotHovered()) {
             if (auto i = size_t(ImPlot::GetPlotMousePos().x + 0.5f); i >= 0 && i < data.size()) hovered_index = i;
@@ -470,6 +472,9 @@ static std::optional<size_t> PlotModeData(
 
     return hovered_index;
 }
+
+float LinearToDb(float linear) { return 20.0f * log10f(linear); }
+} // namespace
 
 void ImpactAudioModel::Draw() const {
     if (!Waveform) return;
@@ -524,10 +529,8 @@ void ModalAudioModel::Draw(uint *selected_vertex_index) {
     dsp.DrawParams();
 }
 
-static float LinearToDb(float linear) { return 20.0f * log10f(linear); }
-
-void Waveform::PlotFrames(const std::string &label, std::optional<uint> highlight_frame) const {
-    if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
+void Waveform::PlotFrames(std::string_view label, std::optional<uint> highlight_frame) const {
+    if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         ImPlot::SetupAxes("Frame", "Amplitude");
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, Frames.size(), ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
@@ -544,9 +547,9 @@ void Waveform::PlotFrames(const std::string &label, std::optional<uint> highligh
     }
 }
 
-void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<uint> highlight_peak_freq_index) const {
-    if (ImPlot::BeginPlot(label.c_str(), ChartSize)) {
-        static const float MIN_DB = -200;
+void Waveform::PlotMagnitudeSpectrum(std::string_view label, std::optional<uint> highlight_peak_freq_index) const {
+    if (ImPlot::BeginPlot(label.data(), ChartSize)) {
+        static constexpr float MIN_DB = -200;
         const FFTData &fft = FftData;
         const uint N = WindowedFrames.size();
         const uint N_2 = N / 2;
@@ -588,11 +591,13 @@ void Waveform::PlotMagnitudeSpectrum(const std::string &label, std::optional<uin
 }
 
 // Assumes a and b are the same length.
-static float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
+namespace {
+constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
     float sum = 0;
     for (size_t i = 0; i < a.size(); ++i) sum += (a[i] - b[i]) * (a[i] - b[i]);
     return sqrtf(sum / a.size());
 }
+} // namespace
 
 void SoundObject::SetVertex(uint vertex) {
     if (CurrentVertex == vertex) return;
@@ -664,10 +669,10 @@ void SoundObject::RenderControls() {
         }
 
         SeparatorText("Material properties");
-        if (BeginCombo("Presets", MaterialName.c_str())) {
-            for (const auto &[preset_name, material] : MaterialPresets) {
+        if (BeginCombo("Presets", MaterialName.data())) {
+            for (const auto [preset_name, material] : MaterialPresets) {
                 const bool is_selected = (preset_name == MaterialName);
-                if (Selectable(preset_name.c_str(), is_selected)) {
+                if (Selectable(preset_name.data(), is_selected)) {
                     MaterialName = preset_name;
                     Material = material;
                 }
