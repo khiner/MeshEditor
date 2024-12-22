@@ -74,9 +74,9 @@ struct Mesh {
         bool operator==(FH fh) const { return Element == MeshElement::Face && Index == fh.idx(); }
 
         // Implicit conversion to OpenMesh handles.
-        operator VH() const { return Element == MeshElement::Vertex ? VH(Index) : VH(-1); }
-        operator EH() const { return Element == MeshElement::Edge ? EH(Index) : EH(-1); }
-        operator FH() const { return Element == MeshElement::Face ? FH(Index) : FH(-1); }
+        operator VH() const { return Element == MeshElement::Vertex ? VH{Index} : VH{-1}; }
+        operator EH() const { return Element == MeshElement::Edge ? EH{Index} : EH{-1}; }
+        operator FH() const { return Element == MeshElement::Face ? FH{Index} : FH{-1}; }
     };
 
     inline static const vec4 DefaultFaceColor = {0.7, 0.7, 0.7, 1};
@@ -150,7 +150,7 @@ struct Mesh {
         for (const auto &face : faces) {
             std::vector<VH> face_vhs;
             face_vhs.reserve(face.size());
-            for (const auto &vi : face) face_vhs.push_back(VH(vi));
+            for (auto vi : face) face_vhs.push_back(VH(vi));
             AddFace(std::move(face_vhs), color);
         }
     }

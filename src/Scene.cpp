@@ -568,7 +568,7 @@ std::string Scene::GetName(entt::entity entity) const {
     return IdString(entity);
 }
 
-mat4 Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
+const mat4 &Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
 
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity, const MeshElementIndex &highlight_element) {
     const auto &mesh = R.get<Mesh>(mesh_entity);
@@ -837,6 +837,11 @@ bool Scene::Render() {
             R.erase<SelectedVertex>(SelectedEntity);
         }
     }
+    if (auto *selected_vertex = R.try_get<SelectedVertex>(SelectedEntity)) {
+        const auto &selected_position = selected_vertex->Position;
+        const auto &selected_model = GetModel(SelectedEntity);
+        Camera.SetTargetDirection(glm::normalize(vec3{selected_model * vec4{selected_position, 1}} - Camera.Target));
+    }
 
     const vec2 content_region = ToGlm(GetContentRegionAvail());
     const auto bg_color = ToClearColor(BgColor);
@@ -863,11 +868,11 @@ bool Scene::Render() {
 
 void Scene::RenderGizmo() {
     // We adopt Blender's mouse wheel for camera rotation, and Alt+wheel to zoom.
-    if (const vec2 mouse_wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; mouse_wheel != vec2{0, 0} && IsWindowHovered()) {
+    if (const vec2 wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; wheel != vec2{0, 0} && IsWindowHovered()) {
         if (GetIO().KeyAlt) {
-            Camera.SetTargetDistance(Camera.GetDistance() * (1.f - mouse_wheel.y / 16.f));
+            Camera.SetTargetDistance(Camera.GetDistance() * (1.f - wheel.y / 16.f));
         } else {
-            Camera.Rotate(mouse_wheel * 0.1f);
+            Camera.OrbitDelta(wheel * 0.1f);
             UpdateTransformBuffers();
             SubmitCommandBuffer();
         }
@@ -976,7 +981,7 @@ void Scene::RenderConfig() {
                     Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
                     if (SelectionElement == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
                         const auto &mesh = GetSelectedMesh();
-                        const auto pos = mesh.GetPosition(Mesh::VH(SelectedElement.idx()));
+                        const auto pos = mesh.GetPosition(Mesh::VH{SelectedElement.idx()});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", SelectedElement.idx(), pos.x, pos.y, pos.z);
                     }
                 }

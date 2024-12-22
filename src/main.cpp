@@ -381,7 +381,7 @@ void AudioModelControls() {
     }
     if (!sound_object.CurrentVertexIndicatorEntityId || sound_object.CurrentVertex != before_current_vertex) {
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
-        const mat4 model = MainScene->GetModel(sound_object_entity);
+        const auto &model = MainScene->GetModel(sound_object_entity);
         const auto vh = Mesh::VH(sound_object.CurrentVertex);
         const vec3 vertex_pos = {model * vec4{mesh.GetPosition(vh), 1}};
         const vec3 normal = {model * vec4{mesh.GetVertexNormal(vh), 0}};

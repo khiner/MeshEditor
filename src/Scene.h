@@ -187,7 +187,7 @@ struct Scene {
     void DestroyEntity(entt::entity, bool submit = true);
 
     std::string GetName(entt::entity) const; // Returns name if present, otherwise hex ID.
-    mat4 GetModel(entt::entity) const;
+    const mat4 &GetModel(entt::entity) const;
     void SetModel(entt::entity, mat4 &&, bool submit = true);
 
     void SetVisible(entt::entity, bool);
