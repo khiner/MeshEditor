@@ -1,17 +1,18 @@
 #pragma once
 
 /*
-This code is from [libnpy](https://github.com/llohse/libnpy/blob/master/include/npy.hpp) (MIT License).
-I copied the bits needed for reading .npy files, with minor changes.
+Copied and heavily modified the bits needed for reading .npy files from
+[libnpy](https://github.com/llohse/libnpy/blob/master/include/npy.hpp) (MIT License).
 */
 
 #include <algorithm>
 #include <array>
 #include <complex>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <numeric>
-#include <sstream>
+#include <ranges>
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
@@ -29,7 +30,7 @@ constexpr bool big_endian = true;
 constexpr bool big_endian = false;
 #endif
 
-using ndarray_len_t = unsigned long int;
+using ndarray_len_t = uint64_t;
 using shape_t = std::vector<ndarray_len_t>;
 using version_t = std::pair<char, char>;
 
@@ -37,26 +38,6 @@ template<typename Scalar> struct npy_data {
     shape_t shape = {};
     bool fortran_order = false;
     std::vector<Scalar> data = {};
-};
-
-struct dtype_t {
-    char byteorder, kind;
-    unsigned int itemsize;
-
-    inline std::string str() const {
-        std::stringstream ss;
-        ss << byteorder << kind << itemsize;
-        return ss.str();
-    }
-    inline std::tuple<const char, const char, const unsigned int> tie() const {
-        return std::tie(byteorder, kind, itemsize);
-    }
-};
-
-struct header_t {
-    dtype_t dtype;
-    shape_t shape;
-    bool fortran_order;
 };
 
 constexpr size_t magic_string_length = 6;
@@ -137,7 +118,7 @@ std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_vi
         positions.emplace_back(pos, std::move(value));
     }
 
-    std::sort(positions.begin(), positions.end());
+    std::ranges::sort(positions);
     std::unordered_map<std::string_view, std::string_view> map;
     for (size_t i = 0; i < positions.size(); ++i) {
         size_t begin{positions[i].first}, end{std::string_view::npos};
@@ -178,12 +159,15 @@ inline std::vector<std::string> parse_tuple(std::string_view in) {
 }
 
 constexpr char little_endian_char = '<', big_endian_char = '>', no_endian_char = '|';
-constexpr std::array<char, 3> endian_chars = {little_endian_char, big_endian_char, no_endian_char};
-constexpr std::array<char, 4> numtype_chars = {'f', 'i', 'u', 'c'};
+constexpr std::array<char, 3> endian_chars{little_endian_char, big_endian_char, no_endian_char};
+constexpr std::array<char, 4> numtype_chars{'f', 'i', 'u', 'c'};
 
-template<typename T, size_t N> constexpr bool in_array(T val, const std::array<T, N> &arr) {
-    return std::find(std::begin(arr), std::end(arr), val) != std::end(arr);
-}
+struct dtype_t {
+    char byteorder, kind;
+    uint32_t itemsize;
+
+    auto operator<=>(const dtype_t &) const = default;
+};
 
 constexpr dtype_t parse_descr(std::string_view typestring) {
     if (typestring.length() < 3) throw std::runtime_error("Invalid typestring (length)");
@@ -191,12 +175,11 @@ constexpr dtype_t parse_descr(std::string_view typestring) {
     const char byteorder_c = typestring.at(0);
     const char kind_c = typestring.at(1);
     const auto itemsize_s = typestring.substr(2);
-    if (!in_array(byteorder_c, endian_chars)) throw std::runtime_error("Invalid typestring (byteorder)");
-    if (!in_array(kind_c, numtype_chars)) throw std::runtime_error("Invalid typestring (kind)");
+    if (!std::ranges::contains(endian_chars, byteorder_c)) throw std::runtime_error("Invalid typestring (byteorder)");
+    if (!std::ranges::contains(numtype_chars, kind_c)) throw std::runtime_error("Invalid typestring (kind)");
     if (!std::all_of(itemsize_s.begin(), itemsize_s.end(), ::isdigit)) throw std::runtime_error("Invalid typestring (itemsize)");
 
-    unsigned int itemsize = std::stoul(std::string{itemsize_s});
-    return {byteorder_c, kind_c, itemsize};
+    return {byteorder_c, kind_c, uint32_t(std::stoul(std::string{itemsize_s}))};
 }
 
 /*
@@ -219,6 +202,12 @@ The dictionary contains three keys:
         The shape of the array.
         For repeatability and readability, this dictionary is formatted using pprint.pformat() so the keys are in alphabetic order.
  */
+struct header_t {
+    dtype_t dtype;
+    shape_t shape;
+    bool fortran_order;
+};
+
 constexpr header_t parse_header(std::string_view header) {
     static const std::vector<std::string_view> keys{"descr", "fortran_order", "shape"};
     auto dict_map = parse_dict(header.back() == '\n' ? header.substr(0, header.length() - 1) : header, keys);
@@ -230,32 +219,39 @@ constexpr header_t parse_header(std::string_view header) {
     return {parse_descr(parse_str(dict_map["descr"])), shape, parse_bool(dict_map["fortran_order"])};
 }
 
-constexpr char host_endian_char = (big_endian ? big_endian_char : little_endian_char);
+template<typename T>
+constexpr std::type_index type_idx() { return std::type_index(typeid(T)); }
+template<typename T>
+constexpr std::pair<std::type_index, dtype_t> dtype_entry(char endian, char kind) {
+    return {type_idx<T>(), {endian, kind, sizeof(T)}};
+}
+
+constexpr char endian_char = (big_endian ? big_endian_char : little_endian_char);
 const std::unordered_map<std::type_index, dtype_t> dtype_map{
-    {std::type_index(typeid(float)), {host_endian_char, 'f', sizeof(float)}},
-    {std::type_index(typeid(double)), {host_endian_char, 'f', sizeof(double)}},
-    {std::type_index(typeid(long double)), {host_endian_char, 'f', sizeof(long double)}},
-    {std::type_index(typeid(char)), {no_endian_char, 'i', sizeof(char)}},
-    {std::type_index(typeid(signed char)), {no_endian_char, 'i', sizeof(signed char)}},
-    {std::type_index(typeid(short)), {host_endian_char, 'i', sizeof(short)}},
-    {std::type_index(typeid(int)), {host_endian_char, 'i', sizeof(int)}},
-    {std::type_index(typeid(long)), {host_endian_char, 'i', sizeof(long)}},
-    {std::type_index(typeid(long long)), {host_endian_char, 'i', sizeof(long long)}},
-    {std::type_index(typeid(unsigned char)), {no_endian_char, 'u', sizeof(unsigned char)}},
-    {std::type_index(typeid(unsigned short)), {host_endian_char, 'u', sizeof(unsigned short)}},
-    {std::type_index(typeid(unsigned int)), {host_endian_char, 'u', sizeof(unsigned int)}},
-    {std::type_index(typeid(unsigned long)), {host_endian_char, 'u', sizeof(unsigned long)}},
-    {std::type_index(typeid(unsigned long long)), {host_endian_char, 'u', sizeof(unsigned long long)}},
-    {std::type_index(typeid(std::complex<float>)), {host_endian_char, 'c', sizeof(std::complex<float>)}},
-    {std::type_index(typeid(std::complex<double>)), {host_endian_char, 'c', sizeof(std::complex<double>)}},
-    {std::type_index(typeid(std::complex<long double>)), {host_endian_char, 'c', sizeof(std::complex<long double>)}}
+    dtype_entry<char>(no_endian_char, 'i'),
+    dtype_entry<signed char>(no_endian_char, 'i'),
+    dtype_entry<short>(endian_char, 'i'),
+    dtype_entry<int>(endian_char, 'i'),
+    dtype_entry<long>(endian_char, 'i'),
+    dtype_entry<long long>(endian_char, 'i'),
+    dtype_entry<unsigned char>(no_endian_char, 'u'),
+    dtype_entry<unsigned short>(endian_char, 'u'),
+    dtype_entry<unsigned int>(endian_char, 'u'),
+    dtype_entry<unsigned long>(endian_char, 'u'),
+    dtype_entry<unsigned long long>(endian_char, 'u'),
+    dtype_entry<float>(endian_char, 'f'),
+    dtype_entry<double>(endian_char, 'f'),
+    dtype_entry<long double>(endian_char, 'f'),
+    dtype_entry<std::complex<float>>(endian_char, 'c'),
+    dtype_entry<std::complex<double>>(endian_char, 'c'),
+    dtype_entry<std::complex<long double>>(endian_char, 'c'),
 };
 
 // `in` stream position will be after the header after returning.
 template<typename Scalar> inline header_t read_header(std::istream &in) {
     auto header = parse_header(read_header(in));
-    auto dtype = dtype_map.at(std::type_index(typeid(Scalar)));
-    if (header.dtype.tie() != dtype.tie()) throw std::runtime_error("Formatting error: typestrings do not match.");
+    auto dtype = dtype_map.at(type_idx<Scalar>());
+    if (header.dtype != dtype) throw std::runtime_error("Formatting error: typestrings do not match.");
 
     return header;
 }
@@ -263,7 +259,7 @@ template<typename Scalar> inline header_t read_header(std::istream &in) {
 // `advance` is relative to the current `in` read position.
 // `in` stream position will be after the read data after returning.
 template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, const header_t &header, size_t advance = 0, size_t size = 0) {
-    auto &shape = header.shape;
+    const auto &shape = header.shape;
     size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());
     size_t read_size = size == 0 || size > total_size - advance ? total_size - advance : size;
     npy_data<Scalar> data{shape, header.fortran_order, std::vector<Scalar>(read_size)};
@@ -273,15 +269,13 @@ template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, con
     return data;
 }
 template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, size_t advance = 0, size_t size = 0) {
-    auto header = read_header<Scalar>(in);
-    return read_npy<Scalar>(in, header, advance, size);
+    return read_npy<Scalar>(in, read_header<Scalar>(in), advance, size);
 }
 
-template<typename Scalar> inline npy_data<Scalar> read_npy(std::string filename, size_t offset = 0, size_t size = 0) {
-    std::ifstream stream(std::move(filename), std::ifstream::binary);
-    if (!stream) throw std::runtime_error("IO error: failed to open file.");
+template<typename Scalar> inline npy_data<Scalar> read_npy(std::filesystem::path path, size_t offset = 0, size_t size = 0) {
+    std::ifstream in{path, std::ifstream::binary};
+    if (!in) throw std::runtime_error(std::format("IO error: failed to open file: {}", path.string()));
 
-    return read_npy<Scalar>(stream, offset, size);
+    return read_npy<Scalar>(in, offset, size);
 }
-
 } // namespace npy
