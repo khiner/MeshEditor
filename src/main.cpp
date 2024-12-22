@@ -12,6 +12,8 @@
 #include <glm/gtx/quaternion.hpp>
 #include <nfd.h>
 
+#include "lunasvg.h"
+
 #include "numeric/vec4.h"
 
 #include "Scene.h"

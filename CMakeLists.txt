@@ -93,7 +93,7 @@ find_library(SPIRV_CROSS_CORE_LIB spirv-cross-core $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 message(STATUS "Found spirv-cross-core in: ${SPIRV_CROSS_CORE_LIB}")
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3-static ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3-static ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F lunasvg)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

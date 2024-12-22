@@ -39,3 +39,6 @@
 [submodule "lib/implot"]
 	path = lib/implot
 	url = git@github.com:epezent/implot.git
+[submodule "lib/lunasvg"]
+	path = lib/lunasvg
+	url = git@github.com:sammycage/lunasvg.git
