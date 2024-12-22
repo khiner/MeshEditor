@@ -14,21 +14,29 @@
 
 #include "lunasvg.h"
 
-#include "numeric/vec4.h"
-
 #include "Scene.h"
 #include "Tets.h"
 #include "Window.h"
 #include "Worker.h"
-#include "mesh/Arrow.h"
-#include "mesh/Primitives.h"
-#include "vulkan/VulkanContext.h"
-
 #include "audio/AudioSourcesPlayer.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundObject.h"
+#include "mesh/Arrow.h"
+#include "mesh/Primitives.h"
+#include "numeric/vec4.h"
+#include "vulkan/VulkanContext.h"
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
+
+struct ImGuiTextureBinding {
+    vk::DescriptorSet DescriptorSet;
+    vk::UniqueSampler Sampler;
+
+    void Update(vk::ImageView image_view) {
+        ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
+        DescriptorSet = ImGui_ImplVulkan_AddTexture(*Sampler, image_view, VkImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal));
+    }
+};
 
 ImGui_ImplVulkanH_Window MainWindowData;
 uint MinImageCount = 2;
@@ -37,8 +45,7 @@ bool SwapChainRebuild = false;
 WindowsState Windows;
 std::unique_ptr<VulkanContext> VC;
 std::unique_ptr<Scene> MainScene;
-vk::DescriptorSet MainSceneDescriptorSet;
-vk::UniqueSampler MainSceneTextureSampler;
+ImGuiTextureBinding MainSceneTexture;
 
 entt::registry R;
 AudioSourcesPlayer AudioSources{R};
@@ -81,56 +88,59 @@ void CheckVk(VkResult err) {
 }
 
 void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
-    VkSemaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
-    VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
-    const VkResult err = vkAcquireNextImageKHR(*VC->Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+    auto image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
+    auto render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+    const auto err = vkAcquireNextImageKHR(*VC->Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         SwapChainRebuild = true;
         return;
     }
     CheckVk(err);
 
-    ImGui_ImplVulkanH_Frame *fd = &wd->Frames[wd->FrameIndex];
+    auto *fd = &wd->Frames[wd->FrameIndex];
     {
         CheckVk(vkWaitForFences(*VC->Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
         CheckVk(vkResetFences(*VC->Device, 1, &fd->Fence));
     }
     {
         CheckVk(vkResetCommandPool(*VC->Device, fd->CommandPool, 0));
-        VkCommandBufferBeginInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        info.flags |= VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VkCommandBufferBeginInfo info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            .pInheritanceInfo = nullptr,
+        };
         CheckVk(vkBeginCommandBuffer(fd->CommandBuffer, &info));
     }
     {
-        VkRenderPassBeginInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        info.renderPass = wd->RenderPass;
-        info.framebuffer = fd->Framebuffer;
-        info.renderArea.extent.width = wd->Width;
-        info.renderArea.extent.height = wd->Height;
-        info.clearValueCount = 1;
-        info.pClearValues = &wd->ClearValue;
+        VkRenderPassBeginInfo info{
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .pNext = nullptr,
+            .renderPass = wd->RenderPass,
+            .framebuffer = fd->Framebuffer,
+            .renderArea = {{0, 0}, {uint32_t(wd->Width), uint32_t(wd->Height)}},
+            .clearValueCount = 1,
+            .pClearValues = &wd->ClearValue,
+        };
         vkCmdBeginRenderPass(fd->CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
     }
-
     // Record dear imgui primitives into command buffer
     ImGui_ImplVulkan_RenderDrawData(draw_data, fd->CommandBuffer);
-
     // Submit command buffer
     vkCmdEndRenderPass(fd->CommandBuffer);
     {
         VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        VkSubmitInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        info.waitSemaphoreCount = 1;
-        info.pWaitSemaphores = &image_acquired_semaphore;
-        info.pWaitDstStageMask = &wait_stage;
-        info.commandBufferCount = 1;
-        info.pCommandBuffers = &fd->CommandBuffer;
-        info.signalSemaphoreCount = 1;
-        info.pSignalSemaphores = &render_complete_semaphore;
-
+        VkSubmitInfo info{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .pNext = nullptr,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &image_acquired_semaphore,
+            .pWaitDstStageMask = &wait_stage,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &fd->CommandBuffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &render_complete_semaphore,
+        };
         CheckVk(vkEndCommandBuffer(fd->CommandBuffer));
         CheckVk(vkQueueSubmit(VC->Queue, 1, &info, fd->Fence));
     }
@@ -139,15 +149,17 @@ void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
 void FramePresent(ImGui_ImplVulkanH_Window *wd) {
     if (SwapChainRebuild) return;
 
-    VkSemaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
-    VkPresentInfoKHR info = {};
-    info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    info.waitSemaphoreCount = 1;
-    info.pWaitSemaphores = &render_complete_semaphore;
-    info.swapchainCount = 1;
-    info.pSwapchains = &wd->Swapchain;
-    info.pImageIndices = &wd->FrameIndex;
-    VkResult err = vkQueuePresentKHR(VC->Queue, &info);
+    VkPresentInfoKHR info{
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &wd->Swapchain,
+        .pImageIndices = &wd->FrameIndex,
+        .pResults = nullptr,
+    };
+    auto err = vkQueuePresentKHR(VC->Queue, &info);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         SwapChainRebuild = true;
         return;
@@ -191,10 +203,10 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     MainScene->UpdateRenderBuffers(object_entity);
 
     static constexpr mat4 I{1};
-    auto listener_point_mesh = Cylinder(0.5 * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
+    auto listener_point_mesh = Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
     auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
     const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {std::move(listener_points_name), I, false, false, false});
-    static const auto rot_z = glm::rotate(I, float(M_PI / 2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
+    static const auto rot_z = glm::rotate(I, float(M_PI_2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
@@ -433,7 +445,7 @@ int main(int, char **) {
     SDL_GetWindowSize(Window, &w, &h);
     ImGui_ImplVulkanH_Window *wd = &MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
-    MainSceneTextureSampler = VC->Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
+    MainSceneTexture.Sampler = VC->Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
 
     // Setup ImGui context.
     IMGUI_CHECKVERSION();
@@ -615,13 +627,13 @@ int main(int, char **) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
             if (MainScene->Render()) {
-                ImGui_ImplVulkan_RemoveTexture(MainSceneDescriptorSet);
-                MainSceneDescriptorSet = ImGui_ImplVulkan_AddTexture(*MainSceneTextureSampler, MainScene->GetResolveImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                // Extent changed. Update the scene texture.
+                MainSceneTexture.Update(MainScene->GetResolveImageView());
             }
 
             const auto &cursor = GetCursorPos();
             const auto &scene_extent = MainScene->GetExtent();
-            Image((ImTextureID)(void *)MainSceneDescriptorSet, {float(scene_extent.width), float(scene_extent.height)}, {0, 1}, {1, 0});
+            Image((ImTextureID)(void *)MainSceneTexture.DescriptorSet, {float(scene_extent.width), float(scene_extent.height)}, {0, 1}, {1, 0});
             SetCursorPos(cursor);
             MainScene->RenderGizmo();
             End();
@@ -659,7 +671,7 @@ int main(int, char **) {
     ImGui::DestroyContext();
 
     CleanupVulkanWindow();
-    MainSceneTextureSampler.reset();
+    MainSceneTexture.Sampler.reset();
     MainScene.reset();
     VC.reset();
 
