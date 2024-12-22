@@ -786,20 +786,27 @@ bool Scene::Render() {
         // Handle mouse input.
         if (IsWindowHovered() && IsMouseClicked(ImGuiMouseButton_Left)) {
             const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
-            if (SelectedEntity != entt::null && SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None && R.all_of<Visible>(SelectedEntity)) {
+            if (SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
+                // We always find the clicked vertex on the selected mesh and store it in the registry.
                 const auto &model = R.get<Model>(SelectedEntity);
                 const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
-                const auto before_selected_element = SelectedElement;
-                SelectedElement = {SelectionElement, -1};
-                {
-                    const auto &mesh = GetSelectedMesh();
-                    if (SelectionElement == MeshElement::Vertex) SelectedElement = Mesh::ElementIndex{mesh.FindNearestVertex(mouse_ray)};
-                    else if (SelectionElement == MeshElement::Edge) SelectedElement = Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)};
-                    else if (SelectionElement == MeshElement::Face) SelectedElement = Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)};
+                const auto &mesh = GetSelectedMesh();
+                const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
+                if (nearest_vertex.is_valid()) {
+                    R.emplace<SelectedVertex>(SelectedEntity, nearest_vertex.idx(), mesh.GetPosition(nearest_vertex));
                 }
-                if (SelectedElement != before_selected_element) {
-                    UpdateRenderBuffers(GetParentEntity(SelectedEntity), SelectedElement);
-                    SubmitCommandBuffer();
+                if (SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
+                    const auto before_selected_element = SelectedElement;
+                    SelectedElement = {SelectionElement, -1};
+                    {
+                        if (SelectionElement == MeshElement::Vertex) SelectedElement = Mesh::ElementIndex{nearest_vertex};
+                        else if (SelectionElement == MeshElement::Edge) SelectedElement = Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)};
+                        else if (SelectionElement == MeshElement::Face) SelectedElement = Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)};
+                    }
+                    if (SelectedElement != before_selected_element) {
+                        UpdateRenderBuffers(GetParentEntity(SelectedEntity), SelectedElement);
+                        SubmitCommandBuffer();
+                    }
                 }
             } else if (SelectionMode == SelectionMode::Object && (GetIO().KeyCtrl || GetIO().KeySuper)) {
                 static std::multimap<float, entt::entity> hovered_entities_by_distance;
@@ -826,6 +833,8 @@ bool Scene::Render() {
                     SelectEntity(entt::null);
                 }
             }
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<SelectedVertex>(SelectedEntity)) {
+            R.erase<SelectedVertex>(SelectedEntity);
         }
     }
 

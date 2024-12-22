@@ -53,6 +53,10 @@ Tets Tets::CreateTets(const Mesh &mesh, TetGenOptions options) {
     return {std::move(result)};
 }
 
+vec3 Tets::GetVertexPosition(uint vertex) const {
+    return {TetGen->pointlist[vertex * 3], TetGen->pointlist[vertex * 3 + 1], TetGen->pointlist[vertex * 3 + 2]};
+}
+
 Mesh Tets::CreateMesh() const {
     std::vector<vec3> vertices;
     std::vector<std::vector<uint>> faces;

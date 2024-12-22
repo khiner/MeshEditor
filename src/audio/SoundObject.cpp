@@ -424,6 +424,21 @@ void SoundObject::SetModel(SoundObjectModel model) {
     Model = model;
 }
 
+std::optional<uint> SoundObject::FindNearestExcitableVertex(vec3 position) {
+    if (ExcitableVertices.empty()) return {};
+
+    std::optional<uint> nearest_excite_vertex{};
+    float min_dist = FLT_MAX;
+    for (uint excite_vertex : ExcitableVertices) {
+        const float dist = glm::distance(position, Tets.GetVertexPosition(excite_vertex));
+        if (dist < min_dist) {
+            min_dist = dist;
+            nearest_excite_vertex = {excite_vertex};
+        }
+    }
+    return nearest_excite_vertex;
+}
+
 using namespace ImGui;
 
 static const ImVec2 ChartSize = {-1, 160};
@@ -579,6 +594,21 @@ static float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
     return sqrtf(sum / a.size());
 }
 
+void SoundObject::SetVertex(uint vertex) {
+    if (CurrentVertex == vertex) return;
+
+    CurrentVertex = vertex;
+    // Update vertex in all present models.
+    if (ImpactModel) ImpactModel->SetVertex(CurrentVertex);
+    if (ModalModel) ModalModel->SetVertex(CurrentVertex);
+}
+
+void SoundObject::SetVertexForce(float force) {
+    // Update vertex force in the active model.
+    if (Model == SoundObjectModel::ImpactAudio && ImpactModel) ImpactModel->SetVertexForce(force);
+    else if (Model == SoundObjectModel::Modal && ModalModel) ModalModel->SetVertexForce(force);
+}
+
 void SoundObject::RenderControls() {
     if (ImpactModel) {
         PushID("AudioModel");
@@ -598,10 +628,7 @@ void SoundObject::RenderControls() {
         if (BeginCombo("Vertex", std::to_string(CurrentVertex).c_str())) {
             for (uint vertex : ExcitableVertices) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == CurrentVertex)) {
-                    CurrentVertex = vertex;
-                    // Update vertex in all present models.
-                    if (ImpactModel) ImpactModel->SetVertex(CurrentVertex);
-                    if (ModalModel) ModalModel->SetVertex(CurrentVertex);
+                    SetVertex(vertex);
                 }
             }
             EndCombo();
@@ -609,13 +636,8 @@ void SoundObject::RenderControls() {
         const bool can_strike = (impact_mode && ImpactModel->CanStrike()) || (modal_mode && ModalModel->CanStrike());
         if (!can_strike) BeginDisabled();
         Button("Strike");
-        if (IsItemActivated()) {
-            if (impact_mode) ImpactModel->SetVertexForce(1);
-            else ModalModel->SetVertexForce(1);
-        } else if (IsItemDeactivated()) {
-            if (impact_mode) ImpactModel->SetVertexForce(0);
-            else ModalModel->SetVertexForce(0);
-        }
+        if (IsItemActivated()) SetVertexForce(1);
+        else if (IsItemDeactivated()) SetVertexForce(0);
         if (!can_strike) EndDisabled();
     }
     if (impact_mode && model_present) {

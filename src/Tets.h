@@ -34,4 +34,5 @@ struct Tets {
     const tetgenio *operator->() const { return TetGen.get(); }
 
     Mesh CreateMesh() const;
+    vec3 GetVertexPosition(uint vertex) const;
 };

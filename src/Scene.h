@@ -66,6 +66,12 @@ struct SilhouetteDisplay {
     vec4 Color;
 };
 
+// If an entity has this component, the screen is being clicked at a point nearest to this vertex on the entity's mesh.
+struct SelectedVertex {
+    uint Vertex;
+    vec3 Position;
+};
+
 struct Gizmo;
 
 enum class ShaderPipelineType {

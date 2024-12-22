@@ -14,12 +14,12 @@
 
 #include "numeric/vec4.h"
 
-#include "mesh/Arrow.h"
-#include "mesh/Primitives.h"
 #include "Scene.h"
 #include "Tets.h"
 #include "Window.h"
 #include "Worker.h"
+#include "mesh/Arrow.h"
+#include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
 #include "audio/AudioSourcesPlayer.h"
@@ -342,7 +342,6 @@ void AudioModelControls() {
 
     const auto &mesh = R.get<Mesh>(sound_object_entity);
     auto &sound_object = R.get<SoundObject>(sound_object_entity);
-
     if (R.all_of<RealImpactListenerPoint>(selected_entity)) {
         if (sound_object.ListenerEntityId != uint(selected_entity)) {
             if (Button("Set listener point")) {
@@ -372,6 +371,14 @@ void AudioModelControls() {
 
     const auto before_current_vertex = sound_object.CurrentVertex;
     sound_object.RenderControls(); // May change the current vertex.
+    if (const auto *selected_vertex = R.try_get<SelectedVertex>(sound_object_entity)) {
+        if (const auto nearest_excite_vertex = sound_object.FindNearestExcitableVertex(selected_vertex->Position)) {
+            sound_object.SetVertex(*nearest_excite_vertex);
+            sound_object.SetVertexForce(1);
+        }
+    } else {
+        sound_object.SetVertexForce(0);
+    }
     if (!sound_object.CurrentVertexIndicatorEntityId || sound_object.CurrentVertex != before_current_vertex) {
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
         const mat4 model = MainScene->GetModel(sound_object_entity);
@@ -623,14 +630,13 @@ int main(int, char **) {
 
         // Render
         ImGui::Render();
-        ImDrawData *draw_data = GetDrawData();
-        const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
-        if (!is_minimized) {
-            static const vec4 clear_color{0.45f, 0.55f, 0.60f, 1.f};
-            wd->ClearValue.color.float32[0] = clear_color.r * clear_color.a;
-            wd->ClearValue.color.float32[1] = clear_color.g * clear_color.a;
-            wd->ClearValue.color.float32[2] = clear_color.b * clear_color.a;
-            wd->ClearValue.color.float32[3] = clear_color.a;
+        auto *draw_data = GetDrawData();
+        if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
+            static constexpr vec4 ClearColor{0.45f, 0.55f, 0.60f, 1.f};
+            wd->ClearValue.color.float32[0] = ClearColor.r * ClearColor.a;
+            wd->ClearValue.color.float32[1] = ClearColor.g * ClearColor.a;
+            wd->ClearValue.color.float32[2] = ClearColor.b * ClearColor.a;
+            wd->ClearValue.color.float32[3] = ClearColor.a;
             FrameRender(wd, draw_data);
             FramePresent(wd);
         }

@@ -57,14 +57,18 @@ struct ImpactAudioModel {
     uint CurrentFrame{MaxFrame}; // Start at the end, so it doesn't immediately play.
     std::unique_ptr<Waveform> Waveform; // Current vertex's waveform
 
-    void Draw() const;
+    void Start() { CurrentFrame = 0; }
+    void Stop() { CurrentFrame = MaxFrame; }
+    bool IsStarted() const { return CurrentFrame != MaxFrame; }
 
     bool CanStrike() const { return bool(Waveform); }
-    void SetVertexForce(float force) {
-        if (force > 0) CurrentFrame = 0;
-    }
     void SetVertex(uint);
-    void Stop() { CurrentFrame = MaxFrame; }
+    void SetVertexForce(float force) {
+        if (force > 0 && !IsStarted()) Start();
+        else if (force == 0 && IsStarted()) Stop();
+    }
+
+    void Draw() const;
 };
 
 struct ModalAudioModel {
@@ -74,14 +78,15 @@ struct ModalAudioModel {
     uint ModeCount() const { return ModeFreqs.size(); }
 
     void ProduceAudio(float *input, float *output, uint frame_count) const;
-    void Draw(uint *selected_vertex_index); // Renders a vertex index dropdown.
 
     bool CanStrike() const;
-    void SetVertexForce(float);
     void SetVertex(uint);
+    void SetVertexForce(float);
     void Stop() { SetVertexForce(0); }
 
     void SetParam(std::string_view param_label, Sample param_value) const;
+
+    void Draw(uint *selected_vertex_index); // Renders a vertex index dropdown.
 
     std::unique_ptr<Waveform> Waveform; // Recorded waveform
 
@@ -123,6 +128,10 @@ struct SoundObject : AudioSource {
 
     void SetModel(SoundObjectModel);
     void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
+
+    void SetVertex(uint);
+    void SetVertexForce(float);
+    std::optional<uint> FindNearestExcitableVertex(vec3 position);
 
 private:
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
