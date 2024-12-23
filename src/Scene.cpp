@@ -69,12 +69,6 @@ const auto Vec3 = vk::Format::eR32G32B32Sfloat;
 const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
-namespace ImageFormat {
-const auto Color = vk::Format::eB8G8R8A8Unorm;
-const auto Float = vk::Format::eR32G32B32A32Sfloat;
-const auto Depth = vk::Format::eD32Sfloat;
-} // namespace ImageFormat
-
 namespace {
 vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
@@ -177,16 +171,6 @@ struct Gizmo {
     }
 };
 
-void ImageResource::Create(const VulkanContext &vc, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_props) {
-    const auto &device = vc.Device;
-    Image = device->createImageUnique(image_info);
-    const auto mem_reqs = device->getImageMemoryRequirements(*Image);
-    Memory = device->allocateMemoryUnique({mem_reqs.size, vc.FindMemoryType(mem_reqs.memoryTypeBits, mem_props)});
-    device->bindImageMemory(*Image, *Memory, 0);
-    view_info.image = *Image;
-    View = device->createImageViewUnique(view_info);
-}
-
 RenderPipeline::RenderPipeline(const VulkanContext &vc) : VC(vc) {}
 RenderPipeline::~RenderPipeline() = default;
 
@@ -279,22 +263,22 @@ void RenderPipeline::UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&de
 void MainPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     const vk::Extent3D e3d{Extent, 1};
-    DepthImage.Create(
+    DepthImage = std::make_unique<ImageResource>(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat::Depth, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Depth, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
+        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
     );
-    OffscreenImage.Create(
+    OffscreenImage = std::make_unique<ImageResource>(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
-    ResolveImage.Create(
+    ResolveImage = std::make_unique<ImageResource>(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
-    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
+    const std::array image_views{*DepthImage->View, *OffscreenImage->View, *ResolveImage->View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
@@ -321,13 +305,13 @@ SilhouettePipeline::SilhouettePipeline(const VulkanContext &vc) : RenderPipeline
 
 void SilhouettePipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-    OffscreenImage.Create(
+    OffscreenImage = std::make_unique<ImageResource>(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
-    const std::array image_views{*OffscreenImage.View};
+    const std::array image_views{*OffscreenImage->View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
@@ -354,13 +338,13 @@ EdgeDetectionPipeline::EdgeDetectionPipeline(const VulkanContext &vc) : RenderPi
 
 void EdgeDetectionPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-    OffscreenImage.Create(
+    OffscreenImage = std::make_unique<ImageResource>(
         VC,
-        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
-    const std::array image_views{*OffscreenImage.View};
+    const std::array image_views{*OffscreenImage->View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
 }
 
@@ -595,12 +579,12 @@ void Scene::SetExtent(vk::Extent2D extent) {
     });
 
     EdgeDetectionPipeline.UpdateDescriptors({
-        {SPT::EdgeDetection, "Tex", std::nullopt, vk::DescriptorImageInfo{*SilhouetteFillImageSampler, *SilhouettePipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
+        {SPT::EdgeDetection, "Tex", std::nullopt, vk::DescriptorImageInfo{*SilhouetteFillImageSampler, *SilhouettePipeline.OffscreenImage->View, vk::ImageLayout::eShaderReadOnlyOptimal}},
     });
     EdgeDetectionPipeline.SetExtent(extent);
     SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
     MainPipeline.UpdateDescriptors({
-        {SPT::Texture, "SilhouetteEdgeTexture", std::nullopt, vk::DescriptorImageInfo{*SilhouetteEdgeImageSampler, *EdgeDetectionPipeline.OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
+        {SPT::Texture, "SilhouetteEdgeTexture", std::nullopt, vk::DescriptorImageInfo{*SilhouetteEdgeImageSampler, *EdgeDetectionPipeline.OffscreenImage->View, vk::ImageLayout::eShaderReadOnlyOptimal}},
     });
 }
 
@@ -616,7 +600,7 @@ std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_m
 }
 
 void Scene::RecordCommandBuffer() {
-    const auto cb = *VC.CommandBuffers[0];
+    const auto cb = *VC.CommandBuffers.front();
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
@@ -634,7 +618,7 @@ void Scene::RecordCommandBuffer() {
             vk::ImageLayout::eColorAttachmentOptimal,
             VK_QUEUE_FAMILY_IGNORED,
             VK_QUEUE_FAMILY_IGNORED,
-            *MainPipeline.ResolveImage,
+            *MainPipeline.ResolveImage->Image,
             {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
         }}
     );

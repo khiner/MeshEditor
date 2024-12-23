@@ -28,13 +28,35 @@
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
-struct ImGuiTextureBinding {
-    vk::DescriptorSet DescriptorSet;
-    vk::UniqueSampler Sampler;
+struct ImGuiTexture {
+    ImGuiTexture(vk::Device device, vk::ImageView image_view, ImVec2 uv0 = {0, 0}, ImVec2 uv1 = {1, 1})
+        : Sampler(device.createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
+          Uv0{uv0}, Uv1{uv1} {
+        AddTexture(image_view);
+    }
+    ~ImGuiTexture() {
+        ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
+    }
 
     void Update(vk::ImageView image_view) {
-        ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
+        RemoveTexture();
+        AddTexture(image_view);
+    }
+
+    void Render(ImVec2 size) {
+        ImGui::Image((ImTextureID)(void *)DescriptorSet, std::move(size), Uv0, Uv1);
+    }
+
+private:
+    vk::DescriptorSet DescriptorSet;
+    vk::UniqueSampler Sampler;
+    const ImVec2 Uv0, Uv1; // UV coordinates.
+
+    void AddTexture(vk::ImageView image_view) {
         DescriptorSet = ImGui_ImplVulkan_AddTexture(*Sampler, image_view, VkImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal));
+    }
+    void RemoveTexture() {
+        ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
     }
 };
 
@@ -45,7 +67,9 @@ bool SwapChainRebuild = false;
 WindowsState Windows;
 std::unique_ptr<VulkanContext> VC;
 std::unique_ptr<Scene> MainScene;
-ImGuiTextureBinding MainSceneTexture;
+std::unique_ptr<ImGuiTexture> MainSceneTexture;
+std::unique_ptr<ImGuiTexture> SvgTexture;
+std::unique_ptr<ImageResource> SvgImage;
 
 entt::registry R;
 AudioSourcesPlayer AudioSources{R};
@@ -57,11 +81,12 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int
     wd->Surface = surface;
 
     // Check for WSI support
-    auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd->Surface);
-    if (res != VK_TRUE) throw std::runtime_error("Error no WSI support on physical device 0\n");
+    if (auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd->Surface); res != VK_TRUE) {
+        throw std::runtime_error("Error no WSI support on physical device 0\n");
+    }
 
     // Select surface format.
-    const VkFormat requestSurfaceImageFormat[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
+    const VkFormat requestSurfaceImageFormat[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
     const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
     wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC->PhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
@@ -77,10 +102,6 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int
     // Create SwapChain, RenderPass, Framebuffer, etc.
     IM_ASSERT(MinImageCount >= 2);
     ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
-}
-
-void CleanupVulkanWindow() {
-    ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &MainWindowData, nullptr);
 }
 
 void CheckVk(VkResult err) {
@@ -241,7 +262,94 @@ void HelpMarker(const char *desc) {
     }
 }
 
+ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
+    ImageResource image{
+        *VC,
+        {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    };
+    // Write the bitmap into a staging buffer.
+    const auto buffer_size = width * height * 4; // 4 bytes per pixel
+    auto staging_buffer = VC->BufferAllocator->CreateBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
+    staging_buffer.WriteRegion(data, 0, buffer_size);
+
+    // Record commands to copy from staging buffer to Vulkan image.
+    const auto &cb = *VC->TransferCommandBuffers.front();
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Transition the image layout to be ready for data transfer.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eTransfer,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            {}, // srcAccessMask
+            vk::AccessFlagBits::eTransferWrite, // dstAccessMask
+            vk::ImageLayout::eUndefined, // oldLayout
+            vk::ImageLayout::eTransferDstOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image.Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    // Copy buffer to image.
+    cb.copyBufferToImage(
+        *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
+        vk::BufferImageCopy{
+            0, // bufferOffset
+            0, // bufferRowLength (tightly packed)
+            0, // bufferImageHeight
+            {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
+            {0, 0, 0}, // imageOffset
+            image.Extent // imageExtent
+        }
+    );
+
+    // Transition the image layout to be ready for shader sampling.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eFragmentShader,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            vk::AccessFlagBits::eTransferWrite, // srcAccessMask
+            vk::AccessFlagBits::eShaderRead, // dstAccessMask
+            vk::ImageLayout::eTransferDstOptimal, // oldLayout
+            vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image.Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    cb.end();
+    VC->SubmitTransfer();
+
+    return image;
+}
+
+// Temporary, prep for Faust graph SVG
+void SvgLoader() {
+    if (SvgTexture && SvgImage) {
+        const auto extent = SvgImage->Extent;
+        const auto content_region = ImGui::GetContentRegionAvail();
+        SvgTexture->Render({content_region.x, content_region.x * extent.height / extent.width});
+        return;
+    }
+    if (Button("Show Tiger SVG")) {
+        if (auto document = lunasvg::Document::loadFromFile("res/svg/tiger.svg")) {
+            if (auto bitmap = document->renderToBitmap(); !bitmap.isNull()) {
+                SvgImage = std::make_unique<ImageResource>(RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
+                SvgTexture = std::make_unique<ImGuiTexture>(*VC->Device, *SvgImage->View);
+            }
+        }
+    }
+}
+
 void AudioModelControls() {
+    SvgLoader();
     static const float CharWidth = CalcTextSize("A").x;
 
     const auto selected_entity = MainScene->GetSelectedEntity();
@@ -433,8 +541,7 @@ int main(int, char **) {
 
     uint extensions_count = 0;
     const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
-    const std::vector<const char *> instance_extensions(instance_extensions_raw, instance_extensions_raw + extensions_count);
-    VC = std::make_unique<VulkanContext>(instance_extensions);
+    VC = std::make_unique<VulkanContext>(std::vector<const char *>{instance_extensions_raw, instance_extensions_raw + extensions_count});
 
     // Create window surface.
     VkSurfaceKHR surface;
@@ -445,7 +552,6 @@ int main(int, char **) {
     SDL_GetWindowSize(Window, &w, &h);
     ImGui_ImplVulkanH_Window *wd = &MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
-    MainSceneTexture.Sampler = VC->Device->createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear});
 
     // Setup ImGui context.
     IMGUI_CHECKVERSION();
@@ -628,12 +734,15 @@ int main(int, char **) {
             Begin(Windows.Scene.Name, &Windows.Scene.Visible);
             if (MainScene->Render()) {
                 // Extent changed. Update the scene texture.
-                MainSceneTexture.Update(MainScene->GetResolveImageView());
+                MainSceneTexture.reset(); // Ensure destruction before creation.
+                MainSceneTexture = std::make_unique<ImGuiTexture>(*VC->Device, MainScene->GetResolveImageView(), ImVec2{0, 1}, ImVec2{1, 0});
             }
 
             const auto &cursor = GetCursorPos();
-            const auto &scene_extent = MainScene->GetExtent();
-            Image((ImTextureID)(void *)MainSceneTexture.DescriptorSet, {float(scene_extent.width), float(scene_extent.height)}, {0, 1}, {1, 0});
+            if (MainSceneTexture) {
+                const auto &scene_extent = MainScene->GetExtent();
+                MainSceneTexture->Render({float(scene_extent.width), float(scene_extent.height)});
+            }
             SetCursorPos(cursor);
             MainScene->RenderGizmo();
             End();
@@ -664,15 +773,19 @@ int main(int, char **) {
     NFD_Quit();
 
     VC->Device->waitIdle();
+
+    MainSceneTexture.reset();
+    SvgTexture.reset();
+    SvgImage.reset();
+    MainScene.reset();
+
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
 
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
 
-    CleanupVulkanWindow();
-    MainSceneTexture.Sampler.reset();
-    MainScene.reset();
+    ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &MainWindowData, nullptr);
     VC.reset();
 
     R.clear();

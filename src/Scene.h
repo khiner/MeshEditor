@@ -12,6 +12,7 @@
 #include "World.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
+#include "vulkan/ImageResource.h"
 
 struct Visible {}; // A tag component to mark entities that are visible.
 
@@ -20,18 +21,6 @@ struct VulkanContext;
 struct VkRenderBuffers;
 struct MeshVkData;
 struct VulkanBuffer;
-
-struct ImageResource {
-    // The `image` in the view info is overwritten.
-    void Create(const VulkanContext &, vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags flags = vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-    // Dereference forwards to the image.
-    const vk::Image &operator*() const { return *Image; }
-
-    vk::UniqueImage Image;
-    vk::UniqueImageView View;
-    vk::UniqueDeviceMemory Memory;
-};
 
 struct Model {
     Model(mat4 &&transform)
@@ -124,7 +113,7 @@ struct MainPipeline : RenderPipeline {
     vk::SampleCountFlagBits MsaaSamples;
     vk::Extent2D Extent;
     // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
-    ImageResource DepthImage, OffscreenImage, ResolveImage;
+    std::unique_ptr<ImageResource> DepthImage, OffscreenImage, ResolveImage;
 
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
@@ -134,7 +123,7 @@ struct SilhouettePipeline : RenderPipeline {
     SilhouettePipeline(const VulkanContext &);
 
     vk::Extent2D Extent;
-    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+    std::unique_ptr<ImageResource> OffscreenImage; // Single-sampled image without a depth buffer.
 
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
@@ -144,7 +133,7 @@ struct EdgeDetectionPipeline : RenderPipeline {
     EdgeDetectionPipeline(const VulkanContext &);
 
     vk::Extent2D Extent;
-    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+    std::unique_ptr<ImageResource> OffscreenImage; // Single-sampled image without a depth buffer.
 
     void SetExtent(vk::Extent2D) override;
     void Begin(vk::CommandBuffer) const;
@@ -199,7 +188,7 @@ struct Scene {
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
-    vk::ImageView GetResolveImageView() const { return *MainPipeline.ResolveImage.View; }
+    vk::ImageView GetResolveImageView() const { return *MainPipeline.ResolveImage->View; }
 
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
