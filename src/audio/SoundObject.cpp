@@ -10,6 +10,7 @@
 
 #include "mesh2faust.h"
 
+#include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
 
 #include "FFTData.h"
@@ -157,6 +158,10 @@ struct FaustDSP {
     }
 
     Sample *GetZone(std::string_view param_label) { return Params ? Params->getZoneForLabel(param_label.data()) : nullptr; }
+
+    void SaveSvg() {
+        drawSchema(Box, "MeshEditor-svg", "svg");
+    }
 
 private:
     std::string Code{""};
@@ -485,6 +490,8 @@ void ImpactAudioModel::Draw() const {
 
 void ModalAudioModel::Draw(uint *selected_vertex_index) {
     if (!FaustDsp) return;
+
+    if (Button("Save DSP SVG")) FaustDsp->SaveSvg();
 
     const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
     if (is_recording) BeginDisabled();

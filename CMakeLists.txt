@@ -66,6 +66,10 @@ include_directories(
     SYSTEM lib/miniaudio/extras/miniaudio_split
     SYSTEM lib/tetgen
     SYSTEM lib/faust/architecture
+    SYSTEM lib/faust/compiler
+    SYSTEM lib/faust/compiler/errors
+    SYSTEM lib/faust/compiler/tlib
+    SYSTEM lib/faust/compiler/boxes
     SYSTEM PkgConfig::FFTW3F
     SYSTEM ${Mesh2FaustDir}/src
     src

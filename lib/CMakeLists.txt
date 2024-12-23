@@ -18,8 +18,6 @@ set(INCLUDE_EMCC off CACHE BOOL "Include emcc targets" FORCE)
 set(INCLUDE_STATIC on CACHE BOOL "Include static Faust library" FORCE)
 set(LLVM_BACKEND COMPILER STATIC DYNAMIC CACHE STRING "Include LLVM backend" FORCE)
 
-include_directories(faust/compiler/generator/c)
-include_directories(faust/compiler/generator/cpp)
 add_subdirectory(faust/build EXCLUDE_FROM_ALL)
 
 set(FAUST_TARGET_LIB "staticlib")

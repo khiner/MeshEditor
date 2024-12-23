@@ -6,13 +6,12 @@
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include "implot.h"
+#include "lunasvg.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <nfd.h>
-
-#include "lunasvg.h"
 
 #include "Scene.h"
 #include "Tets.h"
