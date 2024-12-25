@@ -27,6 +27,9 @@
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
+namespace {
+std::unique_ptr<VulkanContext> VC;
+
 struct ImGuiTexture {
     ImGuiTexture(vk::Device device, vk::ImageView image_view, ImVec2 uv0 = {0, 0}, ImVec2 uv1 = {1, 1})
         : Sampler(device.createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
@@ -42,7 +45,7 @@ struct ImGuiTexture {
         AddTexture(image_view);
     }
 
-    void Render(ImVec2 size) {
+    void Render(ImVec2 size) const {
         ImGui::Image((ImTextureID)(void *)DescriptorSet, std::move(size), Uv0, Uv1);
     }
 
@@ -59,23 +62,163 @@ private:
     }
 };
 
+ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
+    ImageResource image{
+        *VC,
+        {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    };
+    // Write the bitmap into a staging buffer.
+    const auto buffer_size = width * height * 4; // 4 bytes per pixel
+    auto staging_buffer = VC->BufferAllocator->CreateBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
+    staging_buffer.WriteRegion(data, 0, buffer_size);
+
+    // Record commands to copy from staging buffer to Vulkan image.
+    const auto &cb = *VC->TransferCommandBuffers.front();
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Transition the image layout to be ready for data transfer.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eTransfer,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            {}, // srcAccessMask
+            vk::AccessFlagBits::eTransferWrite, // dstAccessMask
+            vk::ImageLayout::eUndefined, // oldLayout
+            vk::ImageLayout::eTransferDstOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image.Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    // Copy buffer to image.
+    cb.copyBufferToImage(
+        *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
+        vk::BufferImageCopy{
+            0, // bufferOffset
+            0, // bufferRowLength (tightly packed)
+            0, // bufferImageHeight
+            {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
+            {0, 0, 0}, // imageOffset
+            image.Extent // imageExtent
+        }
+    );
+
+    // Transition the image layout to be ready for shader sampling.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eFragmentShader,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            vk::AccessFlagBits::eTransferWrite, // srcAccessMask
+            vk::AccessFlagBits::eShaderRead, // dstAccessMask
+            vk::ImageLayout::eTransferDstOptimal, // oldLayout
+            vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image.Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    cb.end();
+    VC->SubmitTransfer();
+
+    return image;
+}
+
+// Find the attribute value of the first descendant element with the given attribute that contains the given point.
+std::optional<std::string> findAttributeAtPoint(const lunasvg::Element &element, const std::string &attributeName, ImVec2 point, float scale) {
+    constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
+        // return box.x <= point.x && point.x <= box.x + box.w &&
+        // box.y <= point.y && point.y <= box.y + box.h;
+        return box.x * scale <= point.x && point.x <= (box.x + box.w) * scale &&
+            box.y * scale <= point.y && point.y <= (box.y + box.h) * scale;
+    };
+
+    if (contains(element.getBoundingBox(), point, scale) && element.hasAttribute(attributeName)) {
+        return element.getAttribute(attributeName);
+    }
+    for (const auto &childNode : element.children()) {
+        if (auto result = findAttributeAtPoint(childNode.toElement(), attributeName, point, scale)) {
+            return result;
+        }
+    }
+    return {};
+}
+
+using namespace ImGui;
+
+// For debugging
+void RenderSvgAttributeRects(const lunasvg::Element &element, const std::string &attributeName, ImVec2 offset, float scale) {
+    for (const auto &node : element.children()) {
+        const auto element = node.toElement();
+        if (element.hasAttribute(attributeName)) {
+            const auto box = element.getBoundingBox();
+            GetWindowDrawList()->AddRect(
+                offset + ImVec2{box.x, box.y} * scale,
+                offset + ImVec2{box.x + box.w, box.y + box.h} * scale,
+                IM_COL32(255, 0, 0, 255)
+            );
+        }
+        RenderSvgAttributeRects(element, attributeName, offset, scale);
+    }
+}
+
+struct SvgResource {
+    SvgResource(const fs::path &path) {
+        if (Document = lunasvg::Document::loadFromFile(path); Document) {
+            if (auto bitmap = Document->renderToBitmap(); !bitmap.isNull()) {
+                Image = std::make_unique<ImageResource>(RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
+                Texture = std::make_unique<ImGuiTexture>(*VC->Device, *Image->View);
+            }
+        }
+    }
+
+    void Render(bool show_link_rects = false) {
+        const ImVec2 image_size{float(Image->Extent.width), float(Image->Extent.height)};
+        const auto display_width = GetContentRegionAvail().x;
+        const float image_ratio = image_size.x / image_size.y;
+        const ImVec2 display_size{display_width, display_width / image_ratio};
+        Texture->Render(display_size);
+        const auto element = Document->documentElement();
+        const auto doc_bounds = element.getBoundingBox();
+        const auto offset = GetItemRectMin();
+        const float scale = display_size.x / doc_bounds.w;
+        if (show_link_rects) RenderSvgAttributeRects(element, "xlink:href", offset, scale);
+        if (IsItemHovered()) {
+            const auto mouse_pos = GetMousePos() - offset;
+            if (IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (auto link = findAttributeAtPoint(element, "xlink:href", mouse_pos, scale); link) {
+                    std::println("Clicked on link: {}", *link);
+                }
+            }
+        }
+    }
+
+    std::unique_ptr<ImGuiTexture> Texture;
+    std::unique_ptr<ImageResource> Image;
+    std::unique_ptr<lunasvg::Document> Document;
+};
+
 ImGui_ImplVulkanH_Window MainWindowData;
 uint MinImageCount = 2;
 bool SwapChainRebuild = false;
 
 WindowsState Windows;
-std::unique_ptr<VulkanContext> VC;
 std::unique_ptr<Scene> MainScene;
 std::unique_ptr<ImGuiTexture> MainSceneTexture;
-std::unique_ptr<ImGuiTexture> SvgTexture;
-std::unique_ptr<ImageResource> SvgImage;
+
+std::unique_ptr<SvgResource> FaustSvg;
 
 entt::registry R;
 AudioSourcesPlayer AudioSources{R};
 
 // All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
 // Your real engine/app may not use them.
-namespace {
 void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int width, int height) {
     wd->Surface = surface;
 
@@ -245,8 +388,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
 }
 } // namespace
 
-using namespace ImGui;
-
 namespace {
 std::unique_ptr<Worker<Tets>> TetGenerator;
 
@@ -261,94 +402,19 @@ void HelpMarker(const char *desc) {
     }
 }
 
-ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
-    ImageResource image{
-        *VC,
-        {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    };
-    // Write the bitmap into a staging buffer.
-    const auto buffer_size = width * height * 4; // 4 bytes per pixel
-    auto staging_buffer = VC->BufferAllocator->CreateBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
-    staging_buffer.WriteRegion(data, 0, buffer_size);
-
-    // Record commands to copy from staging buffer to Vulkan image.
-    const auto &cb = *VC->TransferCommandBuffers.front();
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    // Transition the image layout to be ready for data transfer.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe,
-        vk::PipelineStageFlagBits::eTransfer,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{
-            {}, // srcAccessMask
-            vk::AccessFlagBits::eTransferWrite, // dstAccessMask
-            vk::ImageLayout::eUndefined, // oldLayout
-            vk::ImageLayout::eTransferDstOptimal, // newLayout
-            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
-            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image.Image, // image
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
-        }
-    );
-
-    // Copy buffer to image.
-    cb.copyBufferToImage(
-        *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
-        vk::BufferImageCopy{
-            0, // bufferOffset
-            0, // bufferRowLength (tightly packed)
-            0, // bufferImageHeight
-            {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
-            {0, 0, 0}, // imageOffset
-            image.Extent // imageExtent
-        }
-    );
-
-    // Transition the image layout to be ready for shader sampling.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer,
-        vk::PipelineStageFlagBits::eFragmentShader,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{
-            vk::AccessFlagBits::eTransferWrite, // srcAccessMask
-            vk::AccessFlagBits::eShaderRead, // dstAccessMask
-            vk::ImageLayout::eTransferDstOptimal, // oldLayout
-            vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
-            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
-            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image.Image, // image
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
-        }
-    );
-
-    cb.end();
-    VC->SubmitTransfer();
-
-    return image;
-}
-
-// Temporary, prep for Faust graph SVG
-void SvgLoader() {
-    if (SvgTexture && SvgImage) {
-        const auto extent = SvgImage->Extent;
-        const auto content_region = ImGui::GetContentRegionAvail();
-        SvgTexture->Render({content_region.x, content_region.x * extent.height / extent.width});
+void RenderFaustSvg() {
+    if (FaustSvg) {
+        FaustSvg->Render(true);
         return;
     }
-    if (Button("Show Tiger SVG")) {
-        if (auto document = lunasvg::Document::loadFromFile("res/svg/tiger.svg")) {
-            if (auto bitmap = document->renderToBitmap(); !bitmap.isNull()) {
-                SvgImage = std::make_unique<ImageResource>(RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
-                SvgTexture = std::make_unique<ImGuiTexture>(*VC->Device, *SvgImage->View);
-            }
-        }
+    const fs::path faust_graph_svg_path = "MeshEditor-svg/process.svg";
+    if (fs::exists(faust_graph_svg_path) && Button("Show Faust Graph SVG")) {
+        FaustSvg = std::make_unique<SvgResource>(faust_graph_svg_path);
     }
 }
 
 void AudioModelControls() {
-    SvgLoader();
+    RenderFaustSvg();
     static const float CharWidth = CalcTextSize("A").x;
 
     const auto selected_entity = MainScene->GetSelectedEntity();
@@ -774,8 +840,7 @@ int main(int, char **) {
     VC->Device->waitIdle();
 
     MainSceneTexture.reset();
-    SvgTexture.reset();
-    SvgImage.reset();
+    FaustSvg.reset();
     MainScene.reset();
 
     ImGui_ImplVulkan_Shutdown();
