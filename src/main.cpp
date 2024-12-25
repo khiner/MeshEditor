@@ -1,4 +1,5 @@
 #include <format>
+#include <stack>
 #include <stdexcept>
 
 #include "imgui.h"
@@ -129,7 +130,7 @@ ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t hei
     return image;
 }
 
-// Find the attribute value of the first descendant element with the given attribute that contains the given point.
+// Find the attribute value of the deepest descendant element with the given attribute that contains the given point.
 std::optional<std::string> findAttributeAtPoint(const lunasvg::Element &element, const std::string &attributeName, ImVec2 point, float scale) {
     constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
         // return box.x <= point.x && point.x <= box.x + box.w &&
@@ -138,15 +139,16 @@ std::optional<std::string> findAttributeAtPoint(const lunasvg::Element &element,
             box.y * scale <= point.y && point.y <= (box.y + box.h) * scale;
     };
 
+    std::optional<std::string> attr;
     if (contains(element.getBoundingBox(), point, scale) && element.hasAttribute(attributeName)) {
-        return element.getAttribute(attributeName);
+        attr = element.getAttribute(attributeName);
     }
     for (const auto &childNode : element.children()) {
         if (auto result = findAttributeAtPoint(childNode.toElement(), attributeName, point, scale)) {
-            return result;
+            attr = *result;
         }
     }
-    return {};
+    return attr;
 }
 
 using namespace ImGui;
@@ -168,8 +170,8 @@ void RenderSvgAttributeRects(const lunasvg::Element &element, const std::string 
 }
 
 struct SvgResource {
-    SvgResource(const fs::path &path) {
-        if (Document = lunasvg::Document::loadFromFile(path); Document) {
+    SvgResource(fs::path path) : Path(std::move(path)) {
+        if (Document = lunasvg::Document::loadFromFile(Path); Document) {
             if (auto bitmap = Document->renderToBitmap(); !bitmap.isNull()) {
                 Image = std::make_unique<ImageResource>(RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
                 Texture = std::make_unique<ImGuiTexture>(*VC->Device, *Image->View);
@@ -177,7 +179,8 @@ struct SvgResource {
         }
     }
 
-    void Render(bool show_link_rects = false) {
+    // Returns the clicked link path.
+    std::optional<fs::path> Render(bool show_link_rects = false) {
         const ImVec2 image_size{float(Image->Extent.width), float(Image->Extent.height)};
         const auto display_width = GetContentRegionAvail().x;
         const float image_ratio = image_size.x / image_size.y;
@@ -191,13 +194,13 @@ struct SvgResource {
         if (IsItemHovered()) {
             const auto mouse_pos = GetMousePos() - offset;
             if (IsMouseClicked(ImGuiMouseButton_Left)) {
-                if (auto link = findAttributeAtPoint(element, "xlink:href", mouse_pos, scale); link) {
-                    std::println("Clicked on link: {}", *link);
-                }
+                return findAttributeAtPoint(element, "xlink:href", mouse_pos, scale);
             }
         }
+        return {};
     }
 
+    const fs::path Path;
     std::unique_ptr<ImGuiTexture> Texture;
     std::unique_ptr<ImageResource> Image;
     std::unique_ptr<lunasvg::Document> Document;
@@ -401,13 +404,16 @@ void HelpMarker(const char *desc) {
 }
 
 void RenderFaustSvg() {
-    if (FaustSvg) {
-        FaustSvg->Render(true);
-        return;
-    }
-    const fs::path faust_graph_svg_path = "MeshEditor-svg/process.svg";
-    if (fs::exists(faust_graph_svg_path) && Button("Show Faust Graph SVG")) {
-        FaustSvg = std::make_unique<SvgResource>(faust_graph_svg_path);
+    const static fs::path FaustSvgDir = "MeshEditor-svg";
+    static fs::path SelectedSvg = "process.svg";
+    if (const auto faust_svg_path = FaustSvgDir / SelectedSvg; fs::exists(faust_svg_path)) {
+        if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
+            FaustSvg.reset(); // Ensure destruction before creation.
+            FaustSvg = std::make_unique<SvgResource>(faust_svg_path);
+        }
+        if (auto clickedLinkOpt = FaustSvg->Render(true)) {
+            SelectedSvg = std::move(*clickedLinkOpt);
+        }
     }
 }
 
