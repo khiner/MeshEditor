@@ -9,7 +9,6 @@
 #include "lunasvg.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
-#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <nfd.h>
 
@@ -46,7 +45,7 @@ struct ImGuiTexture {
     }
 
     void Render(ImVec2 size) const {
-        ImGui::Image((ImTextureID)(void *)DescriptorSet, std::move(size), Uv0, Uv1);
+        ImGui::Image(ImTextureID((void *)DescriptorSet), std::move(size), Uv0, Uv1);
     }
 
 private:
@@ -211,7 +210,6 @@ bool SwapChainRebuild = false;
 WindowsState Windows;
 std::unique_ptr<Scene> MainScene;
 std::unique_ptr<ImGuiTexture> MainSceneTexture;
-
 std::unique_ptr<SvgResource> FaustSvg;
 
 entt::registry R;
@@ -430,7 +428,7 @@ void AudioModelControls() {
                 PushID(uint(entity));
                 TableNextColumn();
                 AlignTextToFramePadding();
-                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
                 TextUnformatted(IdString(entity).c_str());
                 TableNextColumn();
                 TextUnformatted(R.get<std::string>(entity).c_str());
@@ -458,7 +456,7 @@ void AudioModelControls() {
                 PushID(uint(entity));
                 TableNextColumn();
                 AlignTextToFramePadding();
-                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
                 TextUnformatted(IdString(entity).c_str());
                 TableNextColumn();
                 TextUnformatted(R.get<std::string>(entity).c_str());
@@ -615,7 +613,7 @@ int main(int, char **) {
     // Create framebuffers.
     int w, h;
     SDL_GetWindowSize(Window, &w, &h);
-    ImGui_ImplVulkanH_Window *wd = &MainWindowData;
+    auto *wd = &MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
 
     // Setup ImGui context.
@@ -623,7 +621,7 @@ int main(int, char **) {
     ImGui::CreateContext();
     ImPlot::CreateContext();
 
-    ImGuiIO &io = GetIO();
+    auto &io = GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
@@ -636,21 +634,26 @@ int main(int, char **) {
 
     // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(Window);
-    ImGui_ImplVulkan_InitInfo init_info = {};
-    init_info.Instance = *VC->Instance;
-    init_info.PhysicalDevice = VC->PhysicalDevice;
-    init_info.Device = *VC->Device;
-    init_info.QueueFamily = VC->QueueFamily;
-    init_info.Queue = VC->Queue;
-    init_info.PipelineCache = *VC->PipelineCache;
-    init_info.DescriptorPool = *VC->DescriptorPool;
-    init_info.RenderPass = wd->RenderPass;
-    init_info.Subpass = 0;
-    init_info.MinImageCount = MinImageCount;
-    init_info.ImageCount = wd->ImageCount;
-    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.Allocator = nullptr;
-    init_info.CheckVkResultFn = CheckVk;
+    ImGui_ImplVulkan_InitInfo init_info{
+        .Instance = *VC->Instance,
+        .PhysicalDevice = VC->PhysicalDevice,
+        .Device = *VC->Device,
+        .QueueFamily = VC->QueueFamily,
+        .Queue = VC->Queue,
+        .DescriptorPool = *VC->DescriptorPool,
+        .RenderPass = wd->RenderPass,
+        .MinImageCount = MinImageCount,
+        .ImageCount = wd->ImageCount,
+        .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+        .PipelineCache = *VC->PipelineCache,
+        .Subpass = 0,
+        .DescriptorPoolSize = 0,
+        .UseDynamicRendering = false,
+        .PipelineRenderingCreateInfo = {},
+        .Allocator = nullptr,
+        .CheckVkResultFn = CheckVk,
+        .MinAllocationSize = {},
+    };
     ImGui_ImplVulkan_Init(&init_info);
 
     // Load fonts.
@@ -685,10 +688,8 @@ int main(int, char **) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
-            if (event.type == SDL_EVENT_QUIT)
-                done = true;
-            if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(Window))
-                done = true;
+            done = event.type == SDL_EVENT_QUIT ||
+                (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(Window));
         }
 
         // Resize swap chain?
@@ -723,8 +724,7 @@ int main(int, char **) {
                 if (MenuItem("Load mesh", nullptr)) {
                     static const std::vector<nfdfilteritem_t> filters{{"Mesh object", "obj,off,ply,stl,om"}};
                     nfdchar_t *nfd_path;
-                    nfdresult_t result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), "");
-                    if (result == NFD_OKAY) {
+                    if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
                         const auto path = fs::path(nfd_path);
                         MainScene->AddMesh(path, {.Name = path.filename().string()});
                         NFD_FreePath(nfd_path);
@@ -734,8 +734,7 @@ int main(int, char **) {
                 }
                 // if (MenuItem("Export mesh", nullptr, false, MainMesh != nullptr)) {
                 //     nfdchar_t *path;
-                //     nfdresult_t result = NFD_SaveDialog(&path, filtes.data(), filters.size(), nullptr);
-                //     if (result == NFD_OKAY) {
+                //     if (auto result = NFD_SaveDialog(&path, filtes.data(), filters.size(), nullptr); result == NFD_OKAY) {
                 //         MainScene->SaveMesh(fs::path(path));
                 //         NFD_FreePath(path);
                 //     } else if (result != NFD_CANCEL) {
@@ -745,8 +744,7 @@ int main(int, char **) {
                 if (MenuItem("Load RealImpact", nullptr)) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
-                    nfdresult_t result = NFD_PickFolder(&path, "");
-                    if (result == NFD_OKAY) {
+                    if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
                         LoadRealImpact(fs::path(path), R);
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
@@ -813,7 +811,7 @@ int main(int, char **) {
             End();
             PopStyleVar();
 
-            if (ImGui::GetFrameCount() == 1) {
+            if (GetFrameCount() == 1) {
                 // Initialize scene now that it has an extent.
                 static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
                 if (fs::exists(DefaultRealImpactPath)) LoadRealImpact(DefaultRealImpactPath, R);
