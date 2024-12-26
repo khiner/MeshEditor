@@ -118,7 +118,7 @@ std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t wi
 }
 
 // Find the deepest descendant element with the given attribute containing the given point.
-std::optional<lunasvg::Element> findElementAtPoint(const lunasvg::Element &element, const std::string &attribute, ImVec2 point, float scale = 1.f) {
+std::optional<lunasvg::Element> FindElementAtPoint(const lunasvg::Element &element, const std::string &attribute, ImVec2 point, float scale = 1.f) {
     constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
         return box.x * scale <= point.x && point.x <= (box.x + box.w) * scale &&
             box.y * scale <= point.y && point.y <= (box.y + box.h) * scale;
@@ -129,17 +129,27 @@ std::optional<lunasvg::Element> findElementAtPoint(const lunasvg::Element &eleme
         found = element;
     }
     for (const auto &childNode : element.children()) {
-        if (auto descendent = findElementAtPoint(childNode.toElement(), attribute, point, scale)) {
+        if (auto descendent = FindElementAtPoint(childNode.toElement(), attribute, point, scale)) {
             found = *descendent;
         }
     }
     return found;
 }
 
+lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale = 1.f) {
+    const int width = std::ceil(doc.width()) * scale;
+    const int height = std::ceil(doc.height()) * scale;
+    if (width == 0 || height == 0) return {};
+
+    lunasvg::Bitmap bitmap{width, height};
+    doc.render(bitmap, {scale, 0, 0, scale, 0, 0});
+    return bitmap;
+}
+
 struct SvgResource {
     SvgResource(fs::path path) : Path(std::move(path)) {
         if (Document = lunasvg::Document::loadFromFile(Path); Document) {
-            if (auto bitmap = Document->renderToBitmap(); !bitmap.isNull()) {
+            if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
                 Image = RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height()));
                 Texture = std::make_unique<ImGuiTexture>(*VC->Device, *Image->View);
             }
@@ -149,14 +159,16 @@ struct SvgResource {
     // Returns the clicked link path.
     std::optional<fs::path> Render() {
         using namespace ImGui;
-        const auto display_width = GetContentRegionAvail().x;
+
+        const auto doc = Document->documentElement();
+        const float doc_width = doc.getBoundingBox().w * Scale;
+        const auto display_width = std::min(GetContentRegionAvail().x, doc_width);
         Texture->Render({display_width, display_width * float(Image->Extent.height) / float(Image->Extent.width)});
         if (IsItemHovered()) {
             static constexpr std::string LinkAttribute = "xlink:href";
-            const auto doc = Document->documentElement();
-            const auto scale = display_width / doc.getBoundingBox().w;
+            const auto scale = Scale * display_width / doc_width;
             const auto offset = GetItemRectMin();
-            if (auto element = findElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, scale)) {
+            if (auto element = FindElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, scale)) {
                 const auto box = element->getBoundingBox();
                 GetWindowDrawList()->AddRect(
                     offset + ImVec2{box.x, box.y} * scale,
@@ -169,6 +181,7 @@ struct SvgResource {
         return {};
     }
 
+    const float Scale{1.5}; // Scale factor for rendering SVG to bitmap.
     const fs::path Path;
     std::unique_ptr<lunasvg::Document> Document;
     std::unique_ptr<ImageResource> Image;
