@@ -117,42 +117,23 @@ std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t wi
     return image;
 }
 
-// Find the attribute value of the deepest descendant element with the given attribute that contains the given point.
-std::optional<std::string> findAttributeAtPoint(const lunasvg::Element &element, const std::string &attributeName, ImVec2 point, float scale) {
+// Find the deepest descendant element with the given attribute containing the given point.
+std::optional<lunasvg::Element> findElementAtPoint(const lunasvg::Element &element, const std::string &attribute, ImVec2 point, float scale = 1.f) {
     constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
-        // return box.x <= point.x && point.x <= box.x + box.w &&
-        // box.y <= point.y && point.y <= box.y + box.h;
         return box.x * scale <= point.x && point.x <= (box.x + box.w) * scale &&
             box.y * scale <= point.y && point.y <= (box.y + box.h) * scale;
     };
 
-    std::optional<std::string> attr;
-    if (contains(element.getBoundingBox(), point, scale) && element.hasAttribute(attributeName)) {
-        attr = element.getAttribute(attributeName);
+    std::optional<lunasvg::Element> found;
+    if (contains(element.getBoundingBox(), point, scale) && element.hasAttribute(attribute)) {
+        found = element;
     }
     for (const auto &childNode : element.children()) {
-        if (auto result = findAttributeAtPoint(childNode.toElement(), attributeName, point, scale)) {
-            attr = *result;
+        if (auto descendent = findElementAtPoint(childNode.toElement(), attribute, point, scale)) {
+            found = *descendent;
         }
     }
-    return attr;
-}
-
-// For debugging
-void RenderSvgAttributeRects(const lunasvg::Element &element, const std::string &attributeName, ImVec2 offset, float scale) {
-    using namespace ImGui;
-    for (const auto &node : element.children()) {
-        const auto element = node.toElement();
-        if (element.hasAttribute(attributeName)) {
-            const auto box = element.getBoundingBox();
-            GetWindowDrawList()->AddRect(
-                offset + ImVec2{box.x, box.y} * scale,
-                offset + ImVec2{box.x + box.w, box.y + box.h} * scale,
-                IM_COL32(255, 0, 0, 255)
-            );
-        }
-        RenderSvgAttributeRects(element, attributeName, offset, scale);
-    }
+    return found;
 }
 
 struct SvgResource {
@@ -166,22 +147,23 @@ struct SvgResource {
     }
 
     // Returns the clicked link path.
-    std::optional<fs::path> Render(bool show_link_rects = false) {
+    std::optional<fs::path> Render() {
         using namespace ImGui;
-        const ImVec2 image_size{float(Image->Extent.width), float(Image->Extent.height)};
         const auto display_width = GetContentRegionAvail().x;
-        const float image_ratio = image_size.x / image_size.y;
-        const ImVec2 display_size{display_width, display_width / image_ratio};
-        Texture->Render(display_size);
-        const auto element = Document->documentElement();
-        const auto doc_bounds = element.getBoundingBox();
-        const auto offset = GetItemRectMin();
-        const float scale = display_size.x / doc_bounds.w;
-        if (show_link_rects) RenderSvgAttributeRects(element, "xlink:href", offset, scale);
+        Texture->Render({display_width, display_width * float(Image->Extent.height) / float(Image->Extent.width)});
         if (IsItemHovered()) {
-            const auto mouse_pos = GetMousePos() - offset;
-            if (IsMouseClicked(ImGuiMouseButton_Left)) {
-                return findAttributeAtPoint(element, "xlink:href", mouse_pos, scale);
+            static constexpr std::string LinkAttribute = "xlink:href";
+            const auto doc = Document->documentElement();
+            const auto scale = display_width / doc.getBoundingBox().w;
+            const auto offset = GetItemRectMin();
+            if (auto element = findElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, scale)) {
+                const auto box = element->getBoundingBox();
+                GetWindowDrawList()->AddRect(
+                    offset + ImVec2{box.x, box.y} * scale,
+                    offset + ImVec2{box.x + box.w, box.y + box.h} * scale,
+                    IM_COL32(0, 255, 0, 255)
+                );
+                if (IsMouseClicked(ImGuiMouseButton_Left)) return element->getAttribute(LinkAttribute);
             }
         }
         return {};
@@ -384,7 +366,7 @@ void RenderFaustSvg() {
             FaustSvg.reset(); // Ensure destruction before creation.
             FaustSvg = std::make_unique<SvgResource>(faust_svg_path);
         }
-        if (auto clickedLinkOpt = FaustSvg->Render(true)) {
+        if (auto clickedLinkOpt = FaustSvg->Render()) {
             SelectedSvg = std::move(*clickedLinkOpt);
         }
     }
