@@ -7,6 +7,8 @@
 
 #include "VulkanBuffer.h"
 
+ImageResource::~ImageResource() = default;
+
 VkBool32 DebugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type,
@@ -228,4 +230,80 @@ void VulkanContext::SubmitTransfer() const {
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
     }
     Device->resetFences(*RenderFence);
+}
+
+std::unique_ptr<ImageResource> VulkanContext::CreateImage(vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags) const {
+    auto image = Device->createImageUnique(image_info);
+    const auto mem_reqs = Device->getImageMemoryRequirements(*image);
+    auto memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, mem_flags)});
+    Device->bindImageMemory(*image, *memory, 0);
+    view_info.image = *image;
+    auto view = Device->createImageViewUnique(view_info);
+    return std::make_unique<ImageResource>(std::move(memory), std::move(image), std::move(view));
+}
+std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
+    auto image = CreateImage(
+        {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
+    // Write the bitmap into a staging buffer.
+    const auto buffer_size = width * height * 4; // 4 bytes per pixel
+    auto staging_buffer = BufferAllocator->CreateBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
+    staging_buffer.WriteRegion(data, 0, buffer_size);
+
+    // Record commands to copy from staging buffer to Vulkan image.
+    const auto &cb = *TransferCommandBuffers.front();
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Transition the image layout to be ready for data transfer.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eTransfer,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            {}, // srcAccessMask
+            vk::AccessFlagBits::eTransferWrite, // dstAccessMask
+            vk::ImageLayout::eUndefined, // oldLayout
+            vk::ImageLayout::eTransferDstOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image->Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    // Copy buffer to image.
+    cb.copyBufferToImage(
+        *staging_buffer, *image->Image, vk::ImageLayout::eTransferDstOptimal,
+        vk::BufferImageCopy{
+            0, // bufferOffset
+            0, // bufferRowLength (tightly packed)
+            0, // bufferImageHeight
+            {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
+            {0, 0, 0}, // imageOffset
+            {width, height, 1} // imageExtent
+        }
+    );
+
+    // Transition the image layout to be ready for shader sampling.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eFragmentShader,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            vk::AccessFlagBits::eTransferWrite, // srcAccessMask
+            vk::AccessFlagBits::eShaderRead, // dstAccessMask
+            vk::ImageLayout::eTransferDstOptimal, // oldLayout
+            vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image->Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    cb.end();
+    SubmitTransfer();
+
+    return image;
 }

@@ -263,20 +263,17 @@ void RenderPipeline::UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&de
 void MainPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     const vk::Extent3D e3d{Extent, 1};
-    DepthImage = std::make_unique<ImageResource>(
-        VC,
-        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Depth, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
-        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+    DepthImage = VC.CreateImage(
+        {{}, vk::ImageType::e2D, ImageFormat::Depth, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
     );
-    OffscreenImage = std::make_unique<ImageResource>(
-        VC,
-        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    OffscreenImage = VC.CreateImage(
+        {{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
-    ResolveImage = std::make_unique<ImageResource>(
-        VC,
-        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    ResolveImage = VC.CreateImage(
+        {{}, vk::ImageType::e2D, ImageFormat::Color, e3d, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
     const std::array image_views{*DepthImage->View, *OffscreenImage->View, *ResolveImage->View};
     Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
@@ -305,10 +302,9 @@ SilhouettePipeline::SilhouettePipeline(const VulkanContext &vc) : RenderPipeline
 
 void SilhouettePipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-    OffscreenImage = std::make_unique<ImageResource>(
-        VC,
-        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    OffscreenImage = VC.CreateImage(
+        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
     const std::array image_views{*OffscreenImage->View};
@@ -338,10 +334,9 @@ EdgeDetectionPipeline::EdgeDetectionPipeline(const VulkanContext &vc) : RenderPi
 
 void EdgeDetectionPipeline::SetExtent(vk::Extent2D extent) {
     Extent = extent;
-    OffscreenImage = std::make_unique<ImageResource>(
-        VC,
-        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    OffscreenImage = VC.CreateImage(
+        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
     const std::array image_views{*OffscreenImage->View};
@@ -383,6 +378,8 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 }
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
+
+vk::ImageView Scene::GetResolveImageView() const { return *MainPipeline.ResolveImage->View; }
 
 // Get the model VK buffer index.
 // Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).

@@ -12,15 +12,15 @@
 #include "World.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
-#include "vulkan/ImageResource.h"
 
 struct Visible {}; // A tag component to mark entities that are visible.
 
 struct Mesh;
+struct MeshVkData;
 struct VulkanContext;
 struct VkRenderBuffers;
-struct MeshVkData;
 struct VulkanBuffer;
+struct ImageResource;
 
 struct Model {
     Model(mat4 &&transform)
@@ -188,7 +188,7 @@ struct Scene {
 
     const vk::Extent2D &GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
-    vk::ImageView GetResolveImageView() const { return *MainPipeline.ResolveImage->View; }
+    vk::ImageView GetResolveImageView() const;
 
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,

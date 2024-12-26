@@ -12,6 +12,20 @@ bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &, const ch
 
 struct VulkanBufferAllocator;
 
+struct ImageResource {
+    ~ImageResource();
+
+    vk::UniqueDeviceMemory Memory;
+    vk::UniqueImage Image;
+    vk::UniqueImageView View;
+};
+
+namespace ImageFormat {
+const auto Color = vk::Format::eB8G8R8A8Unorm;
+const auto Float = vk::Format::eR32G32B32A32Sfloat;
+const auto Depth = vk::Format::eD32Sfloat;
+} // namespace ImageFormat
+
 struct VulkanContext {
     VulkanContext(std::vector<const char *> extensions);
     ~VulkanContext() = default; // Using unique handles, so no need to manually destroy anything.
@@ -65,4 +79,7 @@ struct VulkanContext {
     }
 
     void SubmitTransfer() const;
+
+    std::unique_ptr<ImageResource> CreateImage(vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags mem_flags = vk::MemoryPropertyFlagBits::eDeviceLocal) const;
+    std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t width, uint32_t height);
 };

@@ -49,74 +49,6 @@ private:
     const ImVec2 Uv0, Uv1; // UV coordinates.
 };
 
-std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
-    std::unique_ptr<ImageResource> image = std::make_unique<ImageResource>(
-        *VC,
-        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
-        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    );
-    // Write the bitmap into a staging buffer.
-    const auto buffer_size = width * height * 4; // 4 bytes per pixel
-    auto staging_buffer = VC->BufferAllocator->CreateBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
-    staging_buffer.WriteRegion(data, 0, buffer_size);
-
-    // Record commands to copy from staging buffer to Vulkan image.
-    const auto &cb = *VC->TransferCommandBuffers.front();
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    // Transition the image layout to be ready for data transfer.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe,
-        vk::PipelineStageFlagBits::eTransfer,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{
-            {}, // srcAccessMask
-            vk::AccessFlagBits::eTransferWrite, // dstAccessMask
-            vk::ImageLayout::eUndefined, // oldLayout
-            vk::ImageLayout::eTransferDstOptimal, // newLayout
-            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
-            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image->Image, // image
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
-        }
-    );
-
-    // Copy buffer to image.
-    cb.copyBufferToImage(
-        *staging_buffer, *image->Image, vk::ImageLayout::eTransferDstOptimal,
-        vk::BufferImageCopy{
-            0, // bufferOffset
-            0, // bufferRowLength (tightly packed)
-            0, // bufferImageHeight
-            {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
-            {0, 0, 0}, // imageOffset
-            image->Extent // imageExtent
-        }
-    );
-
-    // Transition the image layout to be ready for shader sampling.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer,
-        vk::PipelineStageFlagBits::eFragmentShader,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{
-            vk::AccessFlagBits::eTransferWrite, // srcAccessMask
-            vk::AccessFlagBits::eShaderRead, // dstAccessMask
-            vk::ImageLayout::eTransferDstOptimal, // oldLayout
-            vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
-            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
-            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image->Image, // image
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
-        }
-    );
-
-    cb.end();
-    VC->SubmitTransfer();
-
-    return image;
-}
-
 // Find the deepest descendant element with the given attribute containing the given point.
 std::optional<lunasvg::Element> FindElementAtPoint(const lunasvg::Element &element, const std::string &attribute, ImVec2 point, float scale = 1.f) {
     constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
@@ -150,7 +82,7 @@ struct SvgResource {
     SvgResource(fs::path path) : Path(std::move(path)) {
         if (Document = lunasvg::Document::loadFromFile(Path); Document) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
-                Image = RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height()));
+                Image = VC->RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height()));
                 Texture = std::make_unique<ImGuiTexture>(*VC->Device, *Image->View);
             }
         }
@@ -161,18 +93,18 @@ struct SvgResource {
         using namespace ImGui;
 
         const auto doc = Document->documentElement();
-        const float doc_width = doc.getBoundingBox().w * Scale;
-        const auto display_width = std::min(GetContentRegionAvail().x, doc_width);
-        Texture->Render({display_width, display_width * float(Image->Extent.height) / float(Image->Extent.width)});
+        const auto doc_box = doc.getBoundingBox();
+        const auto display_width = std::min(GetContentRegionAvail().x, doc_box.w * Scale);
+        Texture->Render({display_width, display_width * doc_box.h / doc_box.w});
         if (IsItemHovered()) {
             static constexpr std::string LinkAttribute = "xlink:href";
-            const auto scale = Scale * display_width / doc_width;
+            const auto display_scale = display_width / doc_box.w;
             const auto offset = GetItemRectMin();
-            if (auto element = FindElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, scale)) {
+            if (auto element = FindElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, display_scale)) {
                 const auto box = element->getBoundingBox();
                 GetWindowDrawList()->AddRect(
-                    offset + ImVec2{box.x, box.y} * scale,
-                    offset + ImVec2{box.x + box.w, box.y + box.h} * scale,
+                    offset + ImVec2{box.x, box.y} * display_scale,
+                    offset + ImVec2{box.x + box.w, box.y + box.h} * display_scale,
                     IM_COL32(0, 255, 0, 255)
                 );
                 if (IsMouseClicked(ImGuiMouseButton_Left)) return element->getAttribute(LinkAttribute);
