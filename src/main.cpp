@@ -33,16 +33,10 @@ std::unique_ptr<VulkanContext> VC;
 struct ImGuiTexture {
     ImGuiTexture(vk::Device device, vk::ImageView image_view, ImVec2 uv0 = {0, 0}, ImVec2 uv1 = {1, 1})
         : Sampler(device.createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
-          Uv0{uv0}, Uv1{uv1} {
-        AddTexture(image_view);
-    }
+          DescriptorSet(ImGui_ImplVulkan_AddTexture(*Sampler, image_view, VkImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal))),
+          Uv0{uv0}, Uv1{uv1} {}
     ~ImGuiTexture() {
         ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
-    }
-
-    void Update(vk::ImageView image_view) {
-        RemoveTexture();
-        AddTexture(image_view);
     }
 
     void Render(ImVec2 size) const {
@@ -50,24 +44,17 @@ struct ImGuiTexture {
     }
 
 private:
-    vk::DescriptorSet DescriptorSet;
     vk::UniqueSampler Sampler;
+    vk::DescriptorSet DescriptorSet;
     const ImVec2 Uv0, Uv1; // UV coordinates.
-
-    void AddTexture(vk::ImageView image_view) {
-        DescriptorSet = ImGui_ImplVulkan_AddTexture(*Sampler, image_view, VkImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal));
-    }
-    void RemoveTexture() {
-        ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
-    }
 };
 
-ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
-    ImageResource image{
+std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
+    std::unique_ptr<ImageResource> image = std::make_unique<ImageResource>(
         *VC,
-        {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-    };
+        vk::ImageCreateInfo{{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
+        vk::ImageViewCreateInfo{{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
     // Write the bitmap into a staging buffer.
     const auto buffer_size = width * height * 4; // 4 bytes per pixel
     auto staging_buffer = VC->BufferAllocator->CreateBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
@@ -89,21 +76,21 @@ ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t hei
             vk::ImageLayout::eTransferDstOptimal, // newLayout
             VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
             VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image.Image, // image
+            *image->Image, // image
             {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
         }
     );
 
     // Copy buffer to image.
     cb.copyBufferToImage(
-        *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
+        *staging_buffer, *image->Image, vk::ImageLayout::eTransferDstOptimal,
         vk::BufferImageCopy{
             0, // bufferOffset
             0, // bufferRowLength (tightly packed)
             0, // bufferImageHeight
             {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
             {0, 0, 0}, // imageOffset
-            image.Extent // imageExtent
+            image->Extent // imageExtent
         }
     );
 
@@ -119,7 +106,7 @@ ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t hei
             vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
             VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
             VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image.Image, // image
+            *image->Image, // image
             {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
         }
     );
@@ -151,10 +138,9 @@ std::optional<std::string> findAttributeAtPoint(const lunasvg::Element &element,
     return attr;
 }
 
-using namespace ImGui;
-
 // For debugging
 void RenderSvgAttributeRects(const lunasvg::Element &element, const std::string &attributeName, ImVec2 offset, float scale) {
+    using namespace ImGui;
     for (const auto &node : element.children()) {
         const auto element = node.toElement();
         if (element.hasAttribute(attributeName)) {
@@ -173,7 +159,7 @@ struct SvgResource {
     SvgResource(fs::path path) : Path(std::move(path)) {
         if (Document = lunasvg::Document::loadFromFile(Path); Document) {
             if (auto bitmap = Document->renderToBitmap(); !bitmap.isNull()) {
-                Image = std::make_unique<ImageResource>(RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
+                Image = RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height()));
                 Texture = std::make_unique<ImGuiTexture>(*VC->Device, *Image->View);
             }
         }
@@ -181,6 +167,7 @@ struct SvgResource {
 
     // Returns the clicked link path.
     std::optional<fs::path> Render(bool show_link_rects = false) {
+        using namespace ImGui;
         const ImVec2 image_size{float(Image->Extent.width), float(Image->Extent.height)};
         const auto display_width = GetContentRegionAvail().x;
         const float image_ratio = image_size.x / image_size.y;
@@ -201,9 +188,9 @@ struct SvgResource {
     }
 
     const fs::path Path;
-    std::unique_ptr<ImGuiTexture> Texture;
-    std::unique_ptr<ImageResource> Image;
     std::unique_ptr<lunasvg::Document> Document;
+    std::unique_ptr<ImageResource> Image;
+    std::unique_ptr<ImGuiTexture> Texture;
 };
 
 ImGui_ImplVulkanH_Window MainWindowData;
@@ -387,10 +374,23 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     R.emplace<RealImpact>(object_entity, std::move(real_impact));
     MainScene->RecordAndSubmitCommandBuffer();
 }
-} // namespace
 
-namespace {
-std::unique_ptr<Worker<Tets>> TetGenerator;
+void RenderFaustSvg() {
+    const static fs::path FaustSvgDir = "MeshEditor-svg";
+    static fs::path SelectedSvg = "process.svg";
+    if (const auto faust_svg_path = FaustSvgDir / SelectedSvg; fs::exists(faust_svg_path)) {
+        if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
+            VC->Device->waitIdle();
+            FaustSvg.reset(); // Ensure destruction before creation.
+            FaustSvg = std::make_unique<SvgResource>(faust_svg_path);
+        }
+        if (auto clickedLinkOpt = FaustSvg->Render(true)) {
+            SelectedSvg = std::move(*clickedLinkOpt);
+        }
+    }
+}
+
+using namespace ImGui;
 
 void HelpMarker(const char *desc) {
     SameLine();
@@ -403,21 +403,9 @@ void HelpMarker(const char *desc) {
     }
 }
 
-void RenderFaustSvg() {
-    const static fs::path FaustSvgDir = "MeshEditor-svg";
-    static fs::path SelectedSvg = "process.svg";
-    if (const auto faust_svg_path = FaustSvgDir / SelectedSvg; fs::exists(faust_svg_path)) {
-        if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
-            FaustSvg.reset(); // Ensure destruction before creation.
-            FaustSvg = std::make_unique<SvgResource>(faust_svg_path);
-        }
-        if (auto clickedLinkOpt = FaustSvg->Render(true)) {
-            SelectedSvg = std::move(*clickedLinkOpt);
-        }
-    }
-}
-
 void AudioModelControls() {
+    static std::unique_ptr<Worker<Tets>> TetGenerator;
+
     RenderFaustSvg();
     static const float CharWidth = CalcTextSize("A").x;
 

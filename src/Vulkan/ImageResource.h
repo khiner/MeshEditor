@@ -7,10 +7,10 @@ struct VulkanContext;
 struct ImageResource {
     ImageResource(const VulkanContext &, vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags flags = vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-    vk::UniqueImage Image;
     vk::Extent3D Extent;
-    vk::UniqueImageView View;
     vk::UniqueDeviceMemory Memory;
+    vk::UniqueImage Image;
+    vk::UniqueImageView View;
 };
 
 namespace ImageFormat {

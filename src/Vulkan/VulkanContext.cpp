@@ -59,7 +59,7 @@ VulkanContext::VulkanContext(std::vector<const char *> extensions) {
     const vk::ApplicationInfo app{"", {}, "", {}, VK_API_VERSION_1_3};
     Instance = vk::createInstanceUnique({flags, &app, validation_layers, extensions});
 
-    const auto messenger = Instance->createDebugUtilsMessengerEXTUnique(
+    const auto _ = Instance->createDebugUtilsMessengerEXTUnique(
         {
             {},
             vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
@@ -224,9 +224,8 @@ void VulkanContext::SubmitTransfer() const {
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*TransferCommandBuffers.front());
     Queue.submit(submit, *RenderFence);
-
-    auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX);
-    if (wait_result != vk::Result::eSuccess) throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-
+    if (auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
     Device->resetFences(*RenderFence);
 }
