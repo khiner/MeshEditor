@@ -27,6 +27,11 @@
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
+// If an entity has this, it is being listened to by `Listener`.
+struct SoundObjectListener {
+    entt::entity Listener;
+};
+
 namespace {
 std::unique_ptr<VulkanContext> VC;
 
@@ -290,13 +295,11 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
         const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
         const auto listener_point_name = std::format("RealImpact Listener: {}", p.Index);
-        R.emplace<RealImpactListenerPoint>(
-            MainScene->AddInstance(
-                listener_point_entity,
-                {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Select = false, .Submit = false}
-            ),
-            p
+        const auto listener_point_instance_entity = MainScene->AddInstance(
+            listener_point_entity,
+            {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Select = false, .Submit = false}
         );
+        R.emplace<RealImpactListenerPoint>(listener_point_instance_entity, p);
     }
     R.emplace<RealImpact>(object_entity, std::move(real_impact));
     MainScene->RecordAndSubmitCommandBuffer();
@@ -346,18 +349,23 @@ void AudioModelControls() {
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
             for (const auto &[entity, sound_object] : sound_objects.each()) {
+                const bool is_selected = entity == selected_entity;
                 PushID(uint(entity));
                 TableNextColumn();
                 AlignTextToFramePadding();
-                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
+                if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
                 TextUnformatted(IdString(entity).c_str());
                 TableNextColumn();
                 TextUnformatted(R.get<std::string>(entity).c_str());
                 TableNextColumn();
+                if (is_selected) BeginDisabled();
                 if (Button("Select")) entity_to_select = entity;
+                if (is_selected) EndDisabled();
                 SameLine();
                 if (Button("Delete")) entity_to_delete = entity;
-                if (Button("Select listener point")) entity_to_select = entt::entity(sound_object.ListenerEntityId);
+                if (const auto *sound_listener = R.try_get<SoundObjectListener>(entity); sound_listener) {
+                    if (Button("Select listener point")) entity_to_select = sound_listener->Listener;
+                }
                 PopID();
             }
             if (entity_to_select != entt::null) MainScene->SelectEntity(entity_to_select);
@@ -365,8 +373,7 @@ void AudioModelControls() {
             EndTable();
         }
     }
-    const auto listener_points = R.view<RealImpactListenerPoint>();
-    if (listener_points.begin() != listener_points.end() && CollapsingHeader("Listener points")) {
+    if (const auto listener_points = R.view<RealImpactListenerPoint>(); listener_points.begin() != listener_points.end() && CollapsingHeader("Listener points")) {
         if (BeginTable("Listener points", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
             TableSetupColumn("Name");
@@ -374,15 +381,18 @@ void AudioModelControls() {
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
             for (const auto entity : listener_points) {
+                const bool is_selected = entity == selected_entity;
                 PushID(uint(entity));
                 TableNextColumn();
                 AlignTextToFramePadding();
-                if (entity == selected_entity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
+                if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
                 TextUnformatted(IdString(entity).c_str());
                 TableNextColumn();
                 TextUnformatted(R.get<std::string>(entity).c_str());
                 TableNextColumn();
+                if (is_selected) BeginDisabled();
                 if (Button("Select")) entity_to_select = entity;
+                if (is_selected) EndDisabled();
                 SameLine();
                 if (Button("Delete")) entity_to_delete = entity;
                 PopID();
@@ -392,7 +402,6 @@ void AudioModelControls() {
             EndTable();
         }
     }
-
     if (selected_entity == entt::null) return;
 
     if (R.all_of<Mesh>(selected_entity) && !R.all_of<Tets>(selected_entity) && !R.all_of<RealImpactListenerPoint>(selected_entity)) {
@@ -409,8 +418,9 @@ void AudioModelControls() {
                 const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
                 auto &sound_object = R.emplace<SoundObject>(
                     selected_entity, MainScene->GetName(selected_entity), registry_tets, material_name,
-                    listener_point ? listener_point->GetPosition() : vec3{0}, uint(listener_point_entity)
+                    listener_point ? listener_point->GetPosition() : vec3{0}
                 );
+                if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
             }
         } else { // todo conditionally show "Regenerate tet mesh"
@@ -440,47 +450,43 @@ void AudioModelControls() {
     if (sound_objects.begin() == sound_objects.end()) return;
 
     SeparatorText("Audio model");
-    entt::entity sound_object_entity = entt::null;
-    for (const auto entity : sound_objects) {
-        if (entity == selected_entity || R.get<SoundObject>(entity).ListenerEntityId == uint(selected_entity)) {
-            sound_object_entity = entity;
-            break;
-        }
-    }
-    if (sound_object_entity == entt::null) sound_object_entity = *sound_objects.begin();
 
-    const auto &mesh = R.get<Mesh>(sound_object_entity);
-    auto &sound_object = R.get<SoundObject>(sound_object_entity);
-    if (R.all_of<RealImpactListenerPoint>(selected_entity)) {
-        if (sound_object.ListenerEntityId != uint(selected_entity)) {
-            if (Button("Set listener point")) {
-                const auto &real_impact = R.get<RealImpact>(sound_object_entity);
-                const auto &listener_point = R.get<RealImpactListenerPoint>(selected_entity);
-                sound_object.ListenerPosition = listener_point.GetPosition(MainScene->World.Up, true);
-                sound_object.SetImpactFrames(listener_point.LoadImpactSamples(real_impact));
-                sound_object.ListenerEntityId = uint(selected_entity);
-            }
-            if (Button("Select listener point")) {
-                MainScene->SelectEntity(entt::entity(sound_object.ListenerEntityId));
-            }
-        } else {
-            if (Button("Select sound object")) {
-                MainScene->SelectEntity(sound_object_entity);
-            }
+    const auto FindSelectedSoundEntity = [&]() {
+        for (const auto entity : sound_objects) {
+            if (entity == selected_entity) return entity;
+            if (const auto *listener = R.try_get<SoundObjectListener>(entity);
+                listener && listener->Listener == selected_entity) return entity;
         }
-    } else {
+        return *sound_objects.begin();
+    };
+    const auto sound_entity = FindSelectedSoundEntity();
+    auto &sound_object = R.get<SoundObject>(sound_entity);
+    if (sound_entity != selected_entity && Button("Select sound object")) {
+        MainScene->SelectEntity(sound_entity);
+    }
+
+    const auto *listener = R.try_get<SoundObjectListener>(sound_entity);
+    if (listener && listener->Listener != selected_entity) {
         if (Button("Select listener point")) {
-            MainScene->SelectEntity(entt::entity(sound_object.ListenerEntityId));
+            MainScene->SelectEntity(listener->Listener);
         }
     }
+    if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
+        listener_point && (!listener || selected_entity != listener->Listener)) {
+        if (Button("Set listener point")) {
+            sound_object.ListenerPosition = listener_point->GetPosition(MainScene->World.Up, true);
+            sound_object.SetImpactFrames(listener_point->LoadImpactSamples(R.get<RealImpact>(sound_entity)));
+            R.emplace_or_replace<SoundObjectListener>(sound_entity, selected_entity);
+        }
+    }
+
     if (Button("Remove audio model")) {
-        R.remove<SoundObject>(sound_object_entity);
-        R.remove<Tets>(sound_object_entity);
+        R.remove<SoundObjectListener, SoundObject, Tets>(sound_entity);
     }
 
     const auto before_current_vertex = sound_object.CurrentVertex;
     sound_object.RenderControls(); // May change the current vertex.
-    if (const auto *selected_vertex = R.try_get<SelectedVertex>(sound_object_entity)) {
+    if (const auto *selected_vertex = R.try_get<SelectedVertex>(sound_entity)) {
         if (const auto nearest_excite_vertex = sound_object.FindNearestExcitableVertex(selected_vertex->Position)) {
             sound_object.SetVertex(*nearest_excite_vertex);
             sound_object.SetVertexForce(1);
@@ -488,9 +494,11 @@ void AudioModelControls() {
     } else {
         sound_object.SetVertexForce(0);
     }
+
     if (!sound_object.CurrentVertexIndicatorEntityId || sound_object.CurrentVertex != before_current_vertex) {
+        const auto &mesh = R.get<Mesh>(sound_entity);
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
-        const auto &model = MainScene->GetModel(sound_object_entity);
+        const auto &model = MainScene->GetModel(sound_entity);
         const auto vh = Mesh::VH(sound_object.CurrentVertex);
         const vec3 vertex_pos = {model * vec4{mesh.GetPosition(vh), 1}};
         const vec3 normal = {model * vec4{mesh.GetVertexNormal(vh), 0}};

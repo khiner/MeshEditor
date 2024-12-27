@@ -603,10 +603,10 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 } // namespace
 
 SoundObject::SoundObject(
-    std::string_view name, const ::Tets &tets, const std::optional<std::string_view> &material_name, vec3 listener_position, uint listener_entity_id
-) : Name(name), Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
-    ListenerPosition(std::move(listener_position)),
-    ListenerEntityId(listener_entity_id) {}
+    std::string_view name, const ::Tets &tets, const std::optional<std::string_view> &material_name, vec3 listener_position
+)
+    : Name(name), Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)),
+      ListenerPosition(std::move(listener_position)) {}
 
 SoundObject::~SoundObject() = default;
 
