@@ -1,12 +1,15 @@
 #pragma once
 
-#include <entt/entity/registry.hpp>
+#include <functional>
+#include <string>
 
 using uint = uint32_t;
 
-struct AudioSourcesPlayer {
-    AudioSourcesPlayer(entt::registry &);
-    ~AudioSourcesPlayer();
+struct AudioDevice {
+    using audio_callback_t = std::function<void(uint sample_rate, uint channels, float *output, const float *input, uint frames)>;
+
+    AudioDevice(audio_callback_t);
+    ~AudioDevice();
 
     void Init();
     void Start();
@@ -16,7 +19,7 @@ struct AudioSourcesPlayer {
     void RenderControls();
 
 private:
-    entt::registry &R;
+    audio_callback_t Callback;
 
     bool On{false}, Muted{false};
     float Volume{1.0};

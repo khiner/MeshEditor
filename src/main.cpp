@@ -17,7 +17,7 @@
 #include "Tets.h"
 #include "Window.h"
 #include "Worker.h"
-#include "audio/AudioSourcesPlayer.h"
+#include "audio/AudioDevice.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundObject.h"
 #include "mesh/Arrow.h"
@@ -134,8 +134,15 @@ std::unique_ptr<Scene> MainScene;
 std::unique_ptr<ImGuiTexture> MainSceneTexture;
 std::unique_ptr<SvgResource> FaustSvg;
 
+struct ma_device;
+
 entt::registry R;
-AudioSourcesPlayer AudioSources{R};
+
+void AudioCallback(uint sample_rate, uint channels, float *output, const float *input, uint frame_count) {
+    for (const auto &[entity, audio_source] : R.view<SoundObject>().each()) {
+        audio_source.ProduceAudio({.SampleRate = sample_rate, .ChannelCount = channels}, (float *)input, (float *)output, frame_count);
+    }
+}
 
 void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int width, int height) {
     wd->Surface = surface;
@@ -585,7 +592,9 @@ int main(int, char **) {
     }>();
 
     MainScene = std::make_unique<Scene>(*VC, R);
-    AudioSources.Start();
+
+    AudioDevice audio_device{AudioCallback};
+    audio_device.Start();
 
     // Main loop
     bool done = false;
@@ -681,7 +690,7 @@ int main(int, char **) {
                 if (BeginTabItem("Audio")) {
                     if (BeginTabBar("Audio")) {
                         if (BeginTabItem("Device")) {
-                            AudioSources.RenderControls();
+                            audio_device.RenderControls();
                             EndTabItem();
                         }
                         if (BeginTabItem("Model")) {

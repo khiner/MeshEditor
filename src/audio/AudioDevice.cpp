@@ -1,4 +1,4 @@
-#include "AudioSourcesPlayer.h"
+#include "AudioDevice.h"
 
 #include <format>
 #include <string_view>
@@ -9,25 +9,22 @@
 
 #include "imgui.h"
 
-enum IO_ {
+namespace {
+void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
+    auto cb = *reinterpret_cast<AudioDevice::audio_callback_t *>(device->pUserData);
+    cb(device->sampleRate, device->playback.channels, (float *)output, (const float *)input, frame_count);
+}
+
+enum IO {
     IO_None = -1,
     IO_In,
     IO_Out
 };
-using IO = IO_;
 constexpr IO IO_All[] = {IO_In, IO_Out};
-constexpr int IO_Count = 2;
-
-void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
-    auto *r = (entt::registry *)device->pUserData;
-    for (const auto &[entity, audio_source] : std::as_const(r)->view<SoundObject>().each()) {
-        audio_source.ProduceAudio({.SampleRate = device->sampleRate, .ChannelCount = device->playback.channels}, (float *)input, (float *)output, frame_count);
-    }
-    (void)input; // Unused
-}
+constexpr uint IO_Count = 2;
 
 // Copied from `miniaudio.c::g_maStandardSampleRatePriorities`.
-static const std::vector<uint> PrioritizedSampleRates{
+const std::vector<uint> PrioritizedSampleRates{
     ma_standard_sample_rate_48000,
     ma_standard_sample_rate_44100,
 
@@ -70,17 +67,17 @@ std::string GetSampleRateName(IO io, const uint sample_rate) {
     const bool is_native = std::find(NativeSampleRates[io].begin(), NativeSampleRates[io].end(), sample_rate) != NativeSampleRates[io].end();
     return std::format("{}{}", sample_rate, is_native ? "*" : "");
 }
+} // namespace
 
-AudioSourcesPlayer::AudioSourcesPlayer(entt::registry &r) : R(r) {
+AudioDevice::AudioDevice(audio_callback_t data_callback) : Callback(std::move(data_callback)) {
     Stop();
     Init();
 }
-
-AudioSourcesPlayer::~AudioSourcesPlayer() {
+AudioDevice::~AudioDevice() {
     Uninit();
 }
 
-void AudioSourcesPlayer::Init() {
+void AudioDevice::Init() {
     if (ma_context_init(nullptr, 0, nullptr, &AudioContext) != MA_SUCCESS) throw std::runtime_error(std::format("Failed to initialize audio context."));
     static uint PlaybackDeviceCount, CaptureDeviceCount;
     static ma_device_info *PlaybackDeviceInfos, *CaptureDeviceInfos;
@@ -107,7 +104,7 @@ void AudioSourcesPlayer::Init() {
     device_config.playback.channels = 1;
     device_config.sampleRate = SampleRate;
     device_config.dataCallback = DataCallback;
-    device_config.pUserData = &R;
+    device_config.pUserData = &Callback;
 
     if (ma_device_init(NULL, &device_config, &Device) != MA_SUCCESS) {
         throw std::runtime_error("Failed to open audio output device.");
@@ -127,7 +124,7 @@ void AudioSourcesPlayer::Init() {
     SampleRate = Device.sampleRate;
 }
 
-void AudioSourcesPlayer::Start() {
+void AudioDevice::Start() {
     if (!ma_device_is_started(&Device) && ma_device_start(&Device) != MA_SUCCESS) {
         ma_device_uninit(&Device);
         throw std::runtime_error("Failed to start audio output device.");
@@ -135,7 +132,7 @@ void AudioSourcesPlayer::Start() {
     On = true;
 }
 
-void AudioSourcesPlayer::Stop() {
+void AudioDevice::Stop() {
     On = false;
     if (!ma_device_is_started(&Device)) return;
 
@@ -145,13 +142,13 @@ void AudioSourcesPlayer::Stop() {
     }
 }
 
-void AudioSourcesPlayer::Uninit() {
+void AudioDevice::Uninit() {
     ma_device_uninit(&Device);
 }
 
-void AudioSourcesPlayer::OnVolumeChange() { ma_device_set_master_volume(&Device, Muted ? 0 : Volume); }
+void AudioDevice::OnVolumeChange() { ma_device_set_master_volume(&Device, Muted ? 0 : Volume); }
 
-void AudioSourcesPlayer::RestartDevice() {
+void AudioDevice::RestartDevice() {
     const bool was_on = On;
     Stop();
     Uninit();
@@ -161,7 +158,7 @@ void AudioSourcesPlayer::RestartDevice() {
 
 using namespace ImGui;
 
-void AudioSourcesPlayer::RenderControls() {
+void AudioDevice::RenderControls() {
     if (Checkbox("On", &On)) {
         if (On) Start();
         else Stop();
