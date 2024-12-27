@@ -482,15 +482,6 @@ void AudioModelControls() {
 
     const auto before_current_vertex = sound_object.CurrentVertex;
     sound_object.RenderControls(); // May change the current vertex.
-    if (const auto *selected_vertex = R.try_get<SelectedVertex>(sound_entity)) {
-        if (const auto nearest_excite_vertex = sound_object.FindNearestExcitableVertex(selected_vertex->Position)) {
-            sound_object.SetVertex(*nearest_excite_vertex);
-            sound_object.SetVertexForce(1);
-        }
-    } else {
-        sound_object.SetVertexForce(0);
-    }
-
     if (!sound_object.CurrentVertexIndicatorEntityId || sound_object.CurrentVertex != before_current_vertex) {
         const auto &mesh = R.get<Mesh>(sound_entity);
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
@@ -598,6 +589,22 @@ int main(int, char **) {
     // IM_ASSERT(font != nullptr);
 
     NFD_Init();
+
+    // EnTT listeners
+    R.on_construct<SelectedVertex>().connect<[&](entt::registry &r, entt::entity entity) {
+        const auto &selected_vertex = r.get<SelectedVertex>(entity);
+        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
+            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(selected_vertex.Position)) {
+                sound_object->SetVertex(*nearest_excite_vertex);
+                sound_object->SetVertexForce(1);
+            }
+        }
+    }>();
+    R.on_destroy<SelectedVertex>().connect<[&](entt::registry &r, entt::entity entity) {
+        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
+            sound_object->SetVertexForce(0);
+        }
+    }>();
 
     MainScene = std::make_unique<Scene>(*VC, R);
     AudioSources.Start();

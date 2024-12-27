@@ -645,8 +645,7 @@ std::optional<uint> SoundObject::FindNearestExcitableVertex(vec3 position) {
     std::optional<uint> nearest_excite_vertex{};
     float min_dist = FLT_MAX;
     for (uint excite_vertex : ExcitableVertices) {
-        const float dist = glm::distance(position, Tets.GetVertexPosition(excite_vertex));
-        if (dist < min_dist) {
+        if (const float dist = glm::distance(position, Tets.GetVertexPosition(excite_vertex)); dist < min_dist) {
             min_dist = dist;
             nearest_excite_vertex = {excite_vertex};
         }
