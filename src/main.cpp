@@ -137,8 +137,6 @@ std::unique_ptr<SvgResource> FaustSvg;
 entt::registry R;
 AudioSourcesPlayer AudioSources{R};
 
-// All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
-// Your real engine/app may not use them.
 void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int width, int height) {
     wd->Surface = surface;
 
@@ -159,9 +157,7 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int
     VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 #endif
     wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
-    // printf("[vulkan] Selected PresentMode = %d\n", wd->PresentMode);
 
-    // Create SwapChain, RenderPass, Framebuffer, etc.
     IM_ASSERT(MinImageCount >= 2);
     ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
 }
@@ -515,8 +511,10 @@ int main(int, char **) {
     }
 
     // Create window with Vulkan graphics context.
-    const auto window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    auto *Window = SDL_CreateWindow("MeshEditor", 1280, 720, window_flags);
+    auto *window = SDL_CreateWindow(
+        "MeshEditor", 1280, 720,
+        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
+    );
 
     uint extensions_count = 0;
     const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
@@ -524,11 +522,11 @@ int main(int, char **) {
 
     // Create window surface.
     VkSurfaceKHR surface;
-    if (!SDL_Vulkan_CreateSurface(Window, *VC->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
+    if (!SDL_Vulkan_CreateSurface(window, *VC->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
 
     // Create framebuffers.
     int w, h;
-    SDL_GetWindowSize(Window, &w, &h);
+    SDL_GetWindowSize(window, &w, &h);
     auto *wd = &MainWindowData;
     SetupVulkanWindow(wd, surface, w, h);
 
@@ -538,18 +536,14 @@ int main(int, char **) {
     ImPlot::CreateContext();
 
     auto &io = GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
-
     io.IniFilename = nullptr; // Disable ImGui's .ini file saving
 
     StyleColorsDark();
-    // StyleColorsLight();
 
     // Setup Platform/Renderer backends
-    ImGui_ImplSDL3_InitForVulkan(Window);
+    ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo init_info{
         .Instance = *VC->Instance,
         .PhysicalDevice = VC->PhysicalDevice,
@@ -571,22 +565,6 @@ int main(int, char **) {
         .MinAllocationSize = {},
     };
     ImGui_ImplVulkan_Init(&init_info);
-
-    // Load fonts.
-    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use PushFont()/PopFont() to select them.
-    // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
-    // - If the file cannot be loaded, the function will return a nullptr. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-    // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-    // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
-    // - Read 'docs/FONTS.md' for more instructions and details.
-    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-    // io.Fonts->AddFontDefault();
-    // io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
-    // io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-    // io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
-    // io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-    // ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
-    // IM_ASSERT(font != nullptr);
 
     NFD_Init();
 
@@ -612,22 +590,17 @@ int main(int, char **) {
     // Main loop
     bool done = false;
     while (!done) {
-        // Poll and handle events (inputs, window resize, etc.)
-        // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-        // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
-        // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
-        // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
             done = event.type == SDL_EVENT_QUIT ||
-                (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(Window));
+                (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
         }
 
         // Resize swap chain?
         if (SwapChainRebuild) {
             int width, height;
-            SDL_GetWindowSize(Window, &width, &height);
+            SDL_GetWindowSize(window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
                 ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &MainWindowData, VC->QueueFamily, nullptr, width, height, MinImageCount);
@@ -784,7 +757,7 @@ int main(int, char **) {
 
     R.clear();
 
-    SDL_DestroyWindow(Window);
+    SDL_DestroyWindow(window);
     SDL_Quit();
 
     return 0;
