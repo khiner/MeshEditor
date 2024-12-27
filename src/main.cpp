@@ -416,11 +416,8 @@ void AudioModelControls() {
                 const auto listener_point_entity = FindListenerEntityWithIndex(263); // This listener point is roughly centered.
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
                 const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
-                auto &sound_object = R.emplace<SoundObject>(
-                    selected_entity, MainScene->GetName(selected_entity), registry_tets, material_name,
-                    listener_point ? listener_point->GetPosition() : vec3{0}
-                );
                 if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
+                auto &sound_object = R.emplace<SoundObject>(selected_entity, MainScene->GetName(selected_entity), registry_tets, material_name);
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
             }
         } else { // todo conditionally show "Regenerate tet mesh"
@@ -474,7 +471,6 @@ void AudioModelControls() {
     if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
         listener_point && (!listener || selected_entity != listener->Listener)) {
         if (Button("Set listener point")) {
-            sound_object.ListenerPosition = listener_point->GetPosition(MainScene->World.Up, true);
             sound_object.SetImpactFrames(listener_point->LoadImpactSamples(R.get<RealImpact>(sound_entity)));
             R.emplace_or_replace<SoundObjectListener>(sound_entity, selected_entity);
         }

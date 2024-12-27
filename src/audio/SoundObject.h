@@ -33,14 +33,13 @@ struct Mesh2FaustResult;
 struct SoundObject : AudioSource {
     // All SoundObjects have a modal audio model.
     // If `impact_frames_by_vertex` is non-empty, the object also has an impact audio model.
-    SoundObject(std::string_view name, const Tets &, const std::optional<std::string_view> &material_name, vec3 listener_position);
+    SoundObject(std::string_view name, const Tets &, const std::optional<std::string_view> &material_name);
     ~SoundObject();
 
     const std::string Name;
     const Tets &Tets;
     std::string_view MaterialName;
     MaterialProperties Material;
-    vec3 ListenerPosition;
     std::vector<uint> ExcitableVertices;
     uint CurrentVertex{0}, CurrentVertexIndicatorEntityId{0};
 
