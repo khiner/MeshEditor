@@ -77,16 +77,23 @@ include_directories(
     src
 )
 
+# Copy resources after building the project target.
 set(RESOURCE_DIR "${CMAKE_SOURCE_DIR}/res")
 set(RESOURCE_DEST "${CMAKE_BINARY_DIR}/res")
-
-# Copy resources after building the project target.
 add_custom_command(
     TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${RESOURCE_DIR} ${RESOURCE_DEST}
     COMMENT "Copying resources to build directory"
 )
+
+# Delete SVG output directory.
+set(SVG_OUTPUT_DIR "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-svg")
+add_custom_target(remove_svg_output_dir
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${SVG_OUTPUT_DIR}
+    COMMENT "Removing SVG output directory"
+)
+add_dependencies(${PROJECT_NAME} remove_svg_output_dir)
 
 if(APPLE)
   target_include_directories(${PROJECT_NAME} PRIVATE /opt/homebrew/Cellar/eigen/3.4.0_1/include/eigen3)
