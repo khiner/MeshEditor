@@ -106,70 +106,6 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
 }
 } // namespace
 
-struct Gizmo {
-    ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
-    bool ShowModelGizmo{false};
-
-    void Begin() const {
-        using namespace ImGui;
-
-        const auto content_region = GetContentRegionAvail();
-        const auto &window_pos = GetWindowPos();
-        ImGuizmo::BeginFrame();
-        ImGuizmo::SetDrawlist();
-        ImGuizmo::SetOrthographic(false);
-        ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
-    }
-
-    void Render(Camera &camera, bool &view_changed) const {
-        using namespace ImGui;
-
-        static constexpr float ViewManipulateSize = 128;
-
-        const auto &window_pos = GetWindowPos();
-        const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
-        auto camera_view = camera.GetViewMatrix();
-        const float camera_distance = camera.GetDistance();
-        if (view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0); view_changed) {
-            camera.SetPositionFromView(camera_view);
-        }
-    }
-
-    void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
-        using namespace ImGui;
-
-        Render(camera, view_changed);
-        auto camera_view = camera.GetViewMatrix();
-        auto camera_projection = camera.GetProjectionMatrix(aspect_ratio);
-        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
-    }
-
-    void RenderDebug() {
-        using namespace ImGui;
-        using namespace ImGuizmo;
-
-        Checkbox("Gizmo", &ShowModelGizmo);
-        if (!ShowModelGizmo) return;
-
-        const char *interaction_text =
-            IsUsing()         ? "Using Gizmo" :
-            IsOver(TRANSLATE) ? "Translate hovered" :
-            IsOver(ROTATE)    ? "Rotate hovered" :
-            IsOver(SCALE)     ? "Scale hovered" :
-            IsOver()          ? "Hovered" :
-                                "Not interacting";
-        Text("Interaction: %s", interaction_text);
-
-        if (IsKeyPressed(ImGuiKey_T)) ActiveOp = TRANSLATE;
-        if (IsKeyPressed(ImGuiKey_R)) ActiveOp = ROTATE;
-        if (IsKeyPressed(ImGuiKey_S)) ActiveOp = SCALE;
-        if (RadioButton("Translate (T)", ActiveOp == TRANSLATE)) ActiveOp = TRANSLATE;
-        if (RadioButton("Rotate (R)", ActiveOp == ROTATE)) ActiveOp = ROTATE;
-        if (RadioButton("Scale (S)", ActiveOp == SCALE)) ActiveOp = SCALE;
-        if (RadioButton("Universal", ActiveOp == UNIVERSAL)) ActiveOp = UNIVERSAL;
-    }
-};
-
 RenderPipeline::RenderPipeline(const VulkanContext &vc) : VC(vc) {}
 RenderPipeline::~RenderPipeline() = default;
 
@@ -346,6 +282,70 @@ void EdgeDetectionPipeline::Begin(vk::CommandBuffer cb) const {
     static const std::vector<vk::ClearValue> clear_values{{Transparent}};
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
+
+struct Gizmo {
+    ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
+    bool ShowModelGizmo{false};
+
+    void Begin() const {
+        using namespace ImGui;
+
+        const auto content_region = GetContentRegionAvail();
+        const auto &window_pos = GetWindowPos();
+        ImGuizmo::BeginFrame();
+        ImGuizmo::SetDrawlist();
+        ImGuizmo::SetOrthographic(false);
+        ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
+    }
+
+    void Render(Camera &camera, bool &view_changed) const {
+        using namespace ImGui;
+
+        static constexpr float ViewManipulateSize = 128;
+
+        const auto &window_pos = GetWindowPos();
+        const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
+        auto camera_view = camera.GetViewMatrix();
+        const float camera_distance = camera.GetDistance();
+        if (view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0); view_changed) {
+            camera.SetPositionFromView(camera_view);
+        }
+    }
+
+    void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
+        using namespace ImGui;
+
+        Render(camera, view_changed);
+        auto camera_view = camera.GetViewMatrix();
+        auto camera_projection = camera.GetProjectionMatrix(aspect_ratio);
+        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
+    }
+
+    void RenderDebug() {
+        using namespace ImGui;
+        using namespace ImGuizmo;
+
+        Checkbox("Gizmo", &ShowModelGizmo);
+        if (!ShowModelGizmo) return;
+
+        const char *interaction_text =
+            IsUsing()         ? "Using Gizmo" :
+            IsOver(TRANSLATE) ? "Translate hovered" :
+            IsOver(ROTATE)    ? "Rotate hovered" :
+            IsOver(SCALE)     ? "Scale hovered" :
+            IsOver()          ? "Hovered" :
+                                "Not interacting";
+        Text("Interaction: %s", interaction_text);
+
+        if (IsKeyPressed(ImGuiKey_T)) ActiveOp = TRANSLATE;
+        if (IsKeyPressed(ImGuiKey_R)) ActiveOp = ROTATE;
+        if (IsKeyPressed(ImGuiKey_S)) ActiveOp = SCALE;
+        if (RadioButton("Translate (T)", ActiveOp == TRANSLATE)) ActiveOp = TRANSLATE;
+        if (RadioButton("Rotate (R)", ActiveOp == ROTATE)) ActiveOp = ROTATE;
+        if (RadioButton("Scale (S)", ActiveOp == SCALE)) ActiveOp = SCALE;
+        if (RadioButton("Universal", ActiveOp == UNIVERSAL)) ActiveOp = UNIVERSAL;
+    }
+};
 
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
@@ -729,7 +729,11 @@ void Scene::UpdateModelBuffer(entt::entity entity) {
 
 using namespace ImGui;
 
+namespace {
 vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
+vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
+vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
+
 vk::ClearColorValue ToClearColor(vec4 v) { return {v.r, v.g, v.b, v.a}; }
 
 // Returns a world space ray from the mouse into the scene.
@@ -741,8 +745,18 @@ Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
     return camera.ClipPosToWorldRay(mouse_pos_ndc, view_extent.x / view_extent.y);
 }
 
-vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
-vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
+void Capitalize(std::string &str) {
+    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
+}
+
+void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, vec3 &scale) {
+    static vec3 skew;
+    static vec4 perspective;
+    static glm::quat orientation;
+    glm::decompose(transform, scale, orientation, position, skew, perspective);
+    rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
+}
+} // namespace
 
 bool Scene::Render() {
     if (Extent.width != 0 && Extent.height != 0) {
@@ -879,18 +893,6 @@ void Scene::RenderGizmo() {
 }
 
 namespace {
-void Capitalize(std::string &str) {
-    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
-}
-
-void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, vec3 &scale) {
-    static vec3 skew;
-    static vec4 perspective;
-    static glm::quat orientation;
-    glm::decompose(transform, scale, orientation, position, skew, perspective);
-    rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
-}
-
 std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) {
     const char *create_label = is_create ? "Add" : "Update";
     if (primitive == Primitive::Rect) {
@@ -1016,7 +1018,7 @@ void Scene::RenderConfig() {
                     model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
                     model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
                     if (model_changed) {
-                        SetModel(SelectedEntity, glm::translate(pos) * mat4{glm::quat{{glm::radians(rot.x), glm::radians(rot.y), glm::radians(rot.z)}}} * glm::scale(scale));
+                        SetModel(SelectedEntity, glm::translate(pos) * mat4{glm::quat{glm::radians(rot)}} * glm::scale(scale));
                     }
                     Gizmo->RenderDebug();
                 }
