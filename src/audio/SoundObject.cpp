@@ -8,22 +8,23 @@
 #include "implot.h"
 #include "miniaudio.h"
 
-#include "mesh2faust.h"
-
 using Sample = float;
 #ifndef FAUSTFLOAT
 #define FAUSTFLOAT Sample
 #endif
 
+#include "mesh2faust.h"
+
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
 
-#include "FFTData.h"
 #include "FaustParams.h"
 
 #include "tetMesh.h" // Vega
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
+#include "FFTData.h"
+#include "SvgResource.h"
 #include "Tets.h"
 #include "Worker.h"
 
@@ -391,7 +392,8 @@ constexpr std::string GateParamName{"Gate"};
 } // namespace
 
 struct ModalAudioModel {
-    ModalAudioModel(Mesh2FaustResult &&m2f, uint vertex) : ExcitableVertices(m2f.ExcitableVertices) {
+    ModalAudioModel(Mesh2FaustResult &&m2f, uint vertex, CreateSvgResource create_svg)
+        : ExcitableVertices(m2f.ExcitableVertices), CreateSvg(std::move(create_svg)) {
         FaustDsp = std::make_unique<FaustDSP>(m2f.ModelDsp);
         ModeFreqs = std::move(m2f.ModeFreqs);
         ModeT60s = std::move(m2f.ModeT60s);
@@ -433,12 +435,25 @@ struct ModalAudioModel {
         if (FaustDsp) FaustDsp->Set(std::move(param_label), param_value);
     }
 
+    void DrawDspGraph() {
+        const static fs::path FaustSvgDir = "MeshEditor-svg";
+        if (!fs::exists(FaustSvgDir)) FaustDsp->SaveSvg();
+
+        static fs::path SelectedSvg = "process.svg";
+        if (const auto faust_svg_path = FaustSvgDir / SelectedSvg; fs::exists(faust_svg_path)) {
+            if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
+                CreateSvg(FaustSvg, faust_svg_path);
+            }
+            if (auto clickedLinkOpt = FaustSvg->Render()) {
+                SelectedSvg = std::move(*clickedLinkOpt);
+            }
+        }
+    }
+
     void Draw(uint *selected_vertex_index) {
         using namespace ImGui;
 
         if (!FaustDsp) return;
-
-        if (Button("Save DSP SVG")) FaustDsp->SaveSvg();
 
         const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
         if (is_recording) BeginDisabled();
@@ -478,18 +493,19 @@ struct ModalAudioModel {
             }
         }
 
-        SeparatorText("DSP");
+        if (CollapsingHeader("DSP parameters")) dsp.DrawParams();
+        if (CollapsingHeader("DSP graph")) DrawDspGraph();
         if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", dsp.GetCode());
-        dsp.DrawParams();
     }
 
-    std::unique_ptr<Waveform> Waveform; // Recorded waveform
+    std::unique_ptr<Waveform> Waveform{}; // Recorded waveform
 
 private:
     std::vector<uint> ExcitableVertices;
+    CreateSvgResource CreateSvg;
 
-    // todo use Mesh2FaustResult
     std::unique_ptr<FaustDSP> FaustDsp;
+    std::unique_ptr<SvgResource> FaustSvg;
     std::vector<float> ModeFreqs{};
     std::vector<float> ModeT60s{};
     std::vector<std::vector<float>> ModeGains{};
@@ -602,8 +618,8 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 }
 } // namespace
 
-SoundObject::SoundObject(std::string_view name, const ::Tets &tets, const std::optional<std::string_view> &material_name)
-    : Name(name), Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)) {}
+SoundObject::SoundObject(std::string_view name, const ::Tets &tets, const std::optional<std::string_view> &material_name, CreateSvgResource create_svg)
+    : Name(name), Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)), CreateSvg(std::move(create_svg)) {}
 
 SoundObject::~SoundObject() = default;
 
@@ -748,7 +764,7 @@ void SoundObject::RenderControls() {
         InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f");
         if (DspGenerator) {
             if (auto m2f_result = DspGenerator->Render()) {
-                ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CurrentVertex);
+                ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CurrentVertex, CreateSvg);
                 DspGenerator.reset();
             }
         }

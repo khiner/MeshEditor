@@ -7,13 +7,13 @@
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include "implot.h"
-#include "lunasvg.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <glm/gtx/quaternion.hpp>
 #include <nfd.h>
 
 #include "Scene.h"
+#include "SvgResource.h"
 #include "Tets.h"
 #include "Window.h"
 #include "Worker.h"
@@ -41,9 +41,6 @@ bool SwapChainRebuild = false;
 WindowsState Windows;
 std::unique_ptr<Scene> MainScene;
 std::unique_ptr<ImGuiTexture> MainSceneTexture;
-std::unique_ptr<SvgResource> FaustSvg;
-
-struct ma_device;
 
 entt::registry R;
 
@@ -217,21 +214,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     MainScene->RecordAndSubmitCommandBuffer();
 }
 
-void RenderFaustSvg() {
-    const static fs::path FaustSvgDir = "MeshEditor-svg";
-    static fs::path SelectedSvg = "process.svg";
-    if (const auto faust_svg_path = FaustSvgDir / SelectedSvg; fs::exists(faust_svg_path)) {
-        if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
-            VC->Device->waitIdle();
-            FaustSvg.reset(); // Ensure destruction before creation.
-            FaustSvg = std::make_unique<SvgResource>(faust_svg_path);
-        }
-        if (auto clickedLinkOpt = FaustSvg->Render()) {
-            SelectedSvg = std::move(*clickedLinkOpt);
-        }
-    }
-}
-
 using namespace ImGui;
 
 void HelpMarker(const char *desc) {
@@ -246,9 +228,11 @@ void HelpMarker(const char *desc) {
 }
 
 void AudioModelControls() {
-    static std::unique_ptr<Worker<Tets>> TetGenerator;
-
-    RenderFaustSvg();
+    static const CreateSvgResource CreateSvg = [](std::unique_ptr<SvgResource> &svg, fs::path path) {
+        VC->Device->waitIdle();
+        svg.reset(); // Ensure destruction before creation.
+        svg = std::make_unique<SvgResource>(*VC, std::move(path));
+    };
     static const float CharWidth = CalcTextSize("A").x;
 
     const auto selected_entity = MainScene->GetSelectedEntity();
@@ -316,6 +300,7 @@ void AudioModelControls() {
     }
     if (selected_entity == entt::null) return;
 
+    static std::unique_ptr<Worker<Tets>> TetGenerator;
     if (R.all_of<Mesh>(selected_entity) && !R.all_of<Tets>(selected_entity) && !R.all_of<RealImpactListenerPoint>(selected_entity)) {
         if (TetGenerator) {
             if (auto tets = TetGenerator->Render()) {
@@ -329,7 +314,7 @@ void AudioModelControls() {
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
                 const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
                 if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
-                auto &sound_object = R.emplace<SoundObject>(selected_entity, MainScene->GetName(selected_entity), registry_tets, material_name);
+                auto &sound_object = R.emplace<SoundObject>(selected_entity, MainScene->GetName(selected_entity), registry_tets, material_name, CreateSvg);
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
             }
         } else { // todo conditionally show "Regenerate tet mesh"
@@ -622,7 +607,7 @@ int main(int, char **) {
             if (MainScene->Render()) {
                 // Extent changed. Update the scene texture.
                 MainSceneTexture.reset(); // Ensure destruction before creation.
-                MainSceneTexture = std::make_unique<ImGuiTexture>(*VC->Device, MainScene->GetResolveImageView(), ImVec2{0, 1}, ImVec2{1, 0});
+                MainSceneTexture = std::make_unique<ImGuiTexture>(*VC->Device, MainScene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
             }
 
             const auto &cursor = GetCursorPos();
@@ -661,8 +646,8 @@ int main(int, char **) {
 
     VC->Device->waitIdle();
 
+    R.clear();
     MainSceneTexture.reset();
-    FaustSvg.reset();
     MainScene.reset();
 
     ImGui_ImplVulkan_Shutdown();
@@ -673,8 +658,6 @@ int main(int, char **) {
 
     ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &wd, nullptr);
     VC.reset();
-
-    R.clear();
 
     SDL_DestroyWindow(window);
     SDL_Quit();

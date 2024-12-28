@@ -7,8 +7,6 @@
 
 #include "VulkanBuffer.h"
 
-ImageResource::~ImageResource() = default;
-
 VkBool32 DebugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type,
@@ -241,7 +239,7 @@ std::unique_ptr<ImageResource> VulkanContext::CreateImage(vk::ImageCreateInfo im
     auto view = Device->createImageViewUnique(view_info);
     return std::make_unique<ImageResource>(std::move(memory), std::move(image), std::move(view));
 }
-std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) {
+std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
     auto image = CreateImage(
         {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
@@ -306,4 +304,19 @@ std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *da
     SubmitTransfer();
 
     return image;
+}
+
+#include "imgui_impl_vulkan.h"
+
+ImGuiTexture::ImGuiTexture(vk::Device device, vk::ImageView image_view, vec2 uv0, vec2 uv1)
+    : Sampler(device.createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
+      DescriptorSet(ImGui_ImplVulkan_AddTexture(*Sampler, image_view, VkImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal))),
+      Uv0{uv0}, Uv1{uv1} {}
+
+ImGuiTexture::~ImGuiTexture() {
+    ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
+}
+
+void ImGuiTexture::Render(vec2 size) const {
+    ImGui::Image(ImTextureID((void *)DescriptorSet), {size.x, size.y}, {Uv0.x, Uv0.y}, {Uv1.x, Uv1.y});
 }

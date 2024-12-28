@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "VulkanBuffer.h"
+#include "numeric/vec2.h"
 
 using uint = u_int32_t;
 
@@ -10,14 +11,22 @@ VkBool32 DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessa
 
 bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &, const char *extension);
 
-struct VulkanBufferAllocator;
-
 struct ImageResource {
-    ~ImageResource();
-
     vk::UniqueDeviceMemory Memory;
     vk::UniqueImage Image;
     vk::UniqueImageView View;
+};
+
+struct ImGuiTexture {
+    ImGuiTexture(vk::Device, vk::ImageView, vec2 uv0 = {0, 0}, vec2 uv1 = {1, 1});
+    ~ImGuiTexture();
+
+    void Render(vec2 size) const;
+
+private:
+    vk::UniqueSampler Sampler;
+    vk::DescriptorSet DescriptorSet;
+    const vec2 Uv0, Uv1; // UV coordinates.
 };
 
 namespace ImageFormat {
@@ -25,6 +34,8 @@ const auto Color = vk::Format::eB8G8R8A8Unorm;
 const auto Float = vk::Format::eR32G32B32A32Sfloat;
 const auto Depth = vk::Format::eD32Sfloat;
 } // namespace ImageFormat
+
+struct VulkanBufferAllocator;
 
 struct VulkanContext {
     VulkanContext(std::vector<const char *> extensions);
@@ -81,5 +92,5 @@ struct VulkanContext {
     void SubmitTransfer() const;
 
     std::unique_ptr<ImageResource> CreateImage(vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags mem_flags = vk::MemoryPropertyFlagBits::eDeviceLocal) const;
-    std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t width, uint32_t height);
+    std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const;
 };

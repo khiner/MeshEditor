@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -22,18 +23,18 @@ enum class SoundObjectModel {
 };
 
 struct Tets;
-template<typename Result> struct Worker;
-
 struct ModalAudioModel;
 struct ImpactAudioModel;
 struct Mesh2FaustResult;
 
-// Represents a rigid mesh object that generate an audio stream for a listener at a given position
-// in response to an impact at a given vertex.
+template<typename Result> struct Worker;
+
+struct SvgResource;
+using CreateSvgResource = std::function<void(std::unique_ptr<SvgResource> &, std::filesystem::path)>;
+
+// Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
 struct SoundObject : AudioSource {
-    // All SoundObjects have a modal audio model.
-    // If `impact_frames_by_vertex` is non-empty, the object also has an impact audio model.
-    SoundObject(std::string_view name, const Tets &, const std::optional<std::string_view> &material_name);
+    SoundObject(std::string_view name, const Tets &, const std::optional<std::string_view> &material_name, CreateSvgResource);
     ~SoundObject();
 
     const std::string Name;
@@ -59,4 +60,5 @@ private:
 
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
     std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
+    CreateSvgResource CreateSvg;
 };
