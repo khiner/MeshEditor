@@ -377,13 +377,13 @@ void AudioModelControls() {
         R.remove<SoundObjectListener, SoundObject, Tets>(sound_entity);
     }
 
-    const auto before_current_vertex = sound_object.CurrentVertex;
-    sound_object.RenderControls(); // May change the current vertex.
-    if (!sound_object.CurrentVertexIndicatorEntityId || sound_object.CurrentVertex != before_current_vertex) {
+    const auto before_vertex = sound_object.SelectedVertex;
+    sound_object.RenderControls(); // May change the selected vertex.
+    if (!sound_object.SelectedVertexIndicatorEntityId || sound_object.SelectedVertex != before_vertex) {
         const auto &mesh = R.get<Mesh>(sound_entity);
         // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
         const auto &model = MainScene->GetModel(sound_entity);
-        const auto vh = Mesh::VH(sound_object.CurrentVertex);
+        const auto vh = Mesh::VH(sound_object.SelectedVertex);
         const vec3 vertex_pos = {model * vec4{mesh.GetPosition(vh), 1}};
         const vec3 normal = {model * vec4{mesh.GetVertexNormal(vh), 0}};
 
@@ -392,15 +392,15 @@ void AudioModelControls() {
         const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
         const mat4 rotate = glm::mat4_cast(glm::rotation(MainScene->World.Up, normal));
         mat4 indicator_model{translate * rotate * scale};
-        if (!sound_object.CurrentVertexIndicatorEntityId) {
+        if (!sound_object.SelectedVertexIndicatorEntityId) {
             auto vertex_indicator_mesh = Arrow();
             vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
-            sound_object.CurrentVertexIndicatorEntityId = uint(MainScene->AddMesh(
+            sound_object.SelectedVertexIndicatorEntityId = uint(MainScene->AddMesh(
                 std::move(vertex_indicator_mesh),
                 {.Name = "Excite vertex indicator", .Transform = std::move(indicator_model), .Select = false, .Submit = true}
             ));
         } else {
-            MainScene->SetModel(entt::entity(sound_object.CurrentVertexIndicatorEntityId), std::move(indicator_model), true);
+            MainScene->SetModel(entt::entity(sound_object.SelectedVertexIndicatorEntityId), std::move(indicator_model), true);
         }
     }
 }
@@ -471,16 +471,16 @@ int main(int, char **) {
     NFD_Init();
 
     // EnTT listeners
-    R.on_construct<SelectedVertex>().connect<[&](entt::registry &r, entt::entity entity) {
-        const auto &selected_vertex = r.get<SelectedVertex>(entity);
+    R.on_construct<ActiveVertex>().connect<[&](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
-            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(selected_vertex.Position)) {
+            const auto &active_vertex = r.get<ActiveVertex>(entity);
+            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(active_vertex.Position)) {
                 sound_object->SetVertex(*nearest_excite_vertex);
                 sound_object->SetVertexForce(1);
             }
         }
     }>();
-    R.on_destroy<SelectedVertex>().connect<[&](entt::registry &r, entt::entity entity) {
+    R.on_destroy<ActiveVertex>().connect<[&](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
             sound_object->SetVertexForce(0);
         }

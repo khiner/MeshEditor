@@ -42,7 +42,8 @@ struct SoundObject {
     std::string_view MaterialName;
     MaterialProperties Material;
     std::vector<uint> ExcitableVertices;
-    uint CurrentVertex{0}, CurrentVertexIndicatorEntityId{0};
+    // The vertex currently selected for excitation.
+    uint SelectedVertex{0}, SelectedVertexIndicatorEntityId{0};
 
     void ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const;
     void RenderControls();

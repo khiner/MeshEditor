@@ -785,7 +785,7 @@ bool Scene::Render() {
                 const auto &mesh = GetSelectedMesh();
                 const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
                 if (nearest_vertex.is_valid()) {
-                    R.emplace<SelectedVertex>(SelectedEntity, nearest_vertex.idx(), mesh.GetPosition(nearest_vertex));
+                    R.emplace<ActiveVertex>(SelectedEntity, nearest_vertex.idx(), mesh.GetPosition(nearest_vertex));
                 }
                 if (SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
                     const auto before_selected_element = SelectedElement;
@@ -825,12 +825,12 @@ bool Scene::Render() {
                     SelectEntity(entt::null);
                 }
             }
-        } else if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<SelectedVertex>(SelectedEntity)) {
-            R.erase<SelectedVertex>(SelectedEntity);
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ActiveVertex>(SelectedEntity)) {
+            R.erase<ActiveVertex>(SelectedEntity);
         }
     }
-    if (auto *selected_vertex = R.try_get<SelectedVertex>(SelectedEntity)) {
-        const auto &selected_position = selected_vertex->Position;
+    if (auto *active_vertex = R.try_get<ActiveVertex>(SelectedEntity)) {
+        const auto &selected_position = active_vertex->Position;
         const auto &selected_model = GetModel(SelectedEntity);
         Camera.SetTargetDirection(glm::normalize(vec3{selected_model * vec4{selected_position, 1}} - Camera.Target));
     }

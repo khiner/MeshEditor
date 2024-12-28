@@ -56,7 +56,7 @@ struct SilhouetteDisplay {
 };
 
 // If an entity has this component, the screen is being clicked at a point nearest to this vertex on the entity's mesh.
-struct SelectedVertex {
+struct ActiveVertex {
     uint Vertex;
     vec3 Position;
 };
