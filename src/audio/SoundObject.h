@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "AudioSource.h"
+#include "FrameInfo.h"
 #include "MaterialProperties.h"
 #include "numeric/vec3.h"
 
@@ -33,7 +33,7 @@ struct SvgResource;
 using CreateSvgResource = std::function<void(std::unique_ptr<SvgResource> &, std::filesystem::path)>;
 
 // Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
-struct SoundObject : AudioSource {
+struct SoundObject {
     SoundObject(std::string_view name, const Tets &, const std::optional<std::string_view> &material_name, CreateSvgResource);
     ~SoundObject();
 
@@ -44,7 +44,7 @@ struct SoundObject : AudioSource {
     std::vector<uint> ExcitableVertices;
     uint CurrentVertex{0}, CurrentVertexIndicatorEntityId{0};
 
-    void ProduceAudio(DeviceData, float *input, float *output, uint frame_count) override;
+    void ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const;
     void RenderControls();
 
     void SetModel(SoundObjectModel);

@@ -273,8 +273,8 @@ struct FaustDSP {
     }
     std::string GetCode() const { return Code; }
 
-    void Compute(uint n, Sample **input, Sample **output) {
-        if (Dsp != nullptr) Dsp->compute(n, input, output);
+    void Compute(uint n, const Sample **input, Sample **output) {
+        if (Dsp) Dsp->compute(n, const_cast<Sample **>(input), output);
     }
 
     void DrawParams() {
@@ -405,7 +405,7 @@ struct ModalAudioModel {
 
     uint ModeCount() const { return ModeFreqs.size(); }
 
-    void ProduceAudio(float *input, float *output, uint frame_count) const {
+    void ProduceAudio(const float *input, float *output, uint frame_count) const {
         if (ImpactRecording && ImpactRecording->CurrentFrame == 0) SetParam(GateParamName, 1);
 
         if (FaustDsp) FaustDsp->Compute(frame_count, &input, &output);
@@ -632,14 +632,12 @@ void SoundObject::SetImpactFrames(std::unordered_map<uint, std::vector<float>> &
     }
 }
 
-void SoundObject::ProduceAudio(DeviceData device, float *input, float *output, uint frame_count) {
+void SoundObject::ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const {
     if (Model == SoundObjectModel::ImpactAudio && ImpactModel) {
         if (!ImpactModel->ImpactFramesByVertex.contains(CurrentVertex)) return;
 
         const auto &impact_samples = ImpactModel->ImpactFramesByVertex.at(CurrentVertex);
-        const uint sample_rate = device.SampleRate; // todo - resample from 48kHz to device sample rate if necessary
-        (void)sample_rate; // Unused
-
+        // todo - resample from 48kHz to device sample rate if necessary
         for (uint i = 0; i < frame_count; ++i) {
             output[i] += ImpactModel->CurrentFrame < impact_samples.size() ? impact_samples[ImpactModel->CurrentFrame++] : 0.0f;
         }

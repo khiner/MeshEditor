@@ -3,10 +3,10 @@
 #include <functional>
 #include <string>
 
-using uint = uint32_t;
+#include "FrameInfo.h"
 
 struct AudioDevice {
-    using audio_callback_t = std::function<void(uint sample_rate, uint channels, float *output, const float *input, uint frames)>;
+    using audio_callback_t = std::function<void(FrameInfo, float *output, const float *input, uint32_t frames)>;
 
     AudioDevice(audio_callback_t);
     ~AudioDevice();
@@ -24,7 +24,7 @@ private:
     bool On{false}, Muted{false};
     float Volume{1.0};
     std::string OutDeviceName;
-    uint SampleRate{48000};
+    uint32_t SampleRate{48'000};
 
     void OnVolumeChange();
     void RestartDevice();

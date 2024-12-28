@@ -44,9 +44,9 @@ std::unique_ptr<ImGuiTexture> MainSceneTexture;
 
 entt::registry R;
 
-void AudioCallback(uint sample_rate, uint channels, float *output, const float *input, uint frame_count) {
-    for (const auto &[entity, audio_source] : R.view<SoundObject>().each()) {
-        audio_source.ProduceAudio({.SampleRate = sample_rate, .ChannelCount = channels}, (float *)input, (float *)output, frame_count);
+void AudioCallback(FrameInfo device_data, float *output, const float *input, uint frame_count) {
+    for (const auto &[entity, audio_source] : R.view<const SoundObject>().each()) {
+        audio_source.ProduceAudio(device_data, (float *)input, (float *)output, frame_count);
     }
 }
 
