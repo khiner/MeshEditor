@@ -35,97 +35,6 @@ struct SoundObjectListener {
 namespace {
 std::unique_ptr<VulkanContext> VC;
 
-struct ImGuiTexture {
-    ImGuiTexture(vk::Device device, vk::ImageView image_view, ImVec2 uv0 = {0, 0}, ImVec2 uv1 = {1, 1})
-        : Sampler(device.createSamplerUnique({{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear})),
-          DescriptorSet(ImGui_ImplVulkan_AddTexture(*Sampler, image_view, VkImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal))),
-          Uv0{uv0}, Uv1{uv1} {}
-    ~ImGuiTexture() {
-        ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
-    }
-
-    void Render(ImVec2 size) const {
-        ImGui::Image(ImTextureID((void *)DescriptorSet), std::move(size), Uv0, Uv1);
-    }
-
-private:
-    vk::UniqueSampler Sampler;
-    vk::DescriptorSet DescriptorSet;
-    const ImVec2 Uv0, Uv1; // UV coordinates.
-};
-
-// Find the deepest descendant element with the given attribute containing the given point.
-std::optional<lunasvg::Element> FindElementAtPoint(const lunasvg::Element &element, const std::string &attribute, ImVec2 point, float scale = 1.f) {
-    constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
-        return box.x * scale <= point.x && point.x <= (box.x + box.w) * scale &&
-            box.y * scale <= point.y && point.y <= (box.y + box.h) * scale;
-    };
-
-    std::optional<lunasvg::Element> found;
-    if (contains(element.getBoundingBox(), point, scale) && element.hasAttribute(attribute)) {
-        found = element;
-    }
-    for (const auto &childNode : element.children()) {
-        if (auto descendent = FindElementAtPoint(childNode.toElement(), attribute, point, scale)) {
-            found = *descendent;
-        }
-    }
-    return found;
-}
-
-lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale = 1.f) {
-    const int width = std::ceil(doc.width()) * scale;
-    const int height = std::ceil(doc.height()) * scale;
-    if (width == 0 || height == 0) return {};
-
-    lunasvg::Bitmap bitmap{width, height};
-    doc.render(bitmap, {scale, 0, 0, scale, 0, 0});
-    return bitmap;
-}
-
-struct SvgResource {
-    SvgResource(fs::path path) : Path(std::move(path)) {
-        if (Document = lunasvg::Document::loadFromFile(Path); Document) {
-            if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
-                Image = VC->RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height()));
-                Texture = std::make_unique<ImGuiTexture>(*VC->Device, *Image->View);
-            }
-        }
-    }
-
-    // Returns the clicked link path.
-    std::optional<fs::path> Render() {
-        using namespace ImGui;
-
-        const auto doc = Document->documentElement();
-        const auto doc_box = doc.getBoundingBox();
-        const auto display_width = std::min(GetContentRegionAvail().x, doc_box.w * Scale);
-        Texture->Render({display_width, display_width * doc_box.h / doc_box.w});
-        if (IsItemHovered()) {
-            static constexpr std::string LinkAttribute = "xlink:href";
-            const auto display_scale = display_width / doc_box.w;
-            const auto offset = GetItemRectMin();
-            if (auto element = FindElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, display_scale)) {
-                const auto box = element->getBoundingBox();
-                GetWindowDrawList()->AddRect(
-                    offset + ImVec2{box.x, box.y} * display_scale,
-                    offset + ImVec2{box.x + box.w, box.y + box.h} * display_scale,
-                    IM_COL32(0, 255, 0, 255)
-                );
-                if (IsMouseClicked(ImGuiMouseButton_Left)) return element->getAttribute(LinkAttribute);
-            }
-        }
-        return {};
-    }
-
-    const float Scale{1.5}; // Scale factor for rendering SVG to bitmap.
-    const fs::path Path;
-    std::unique_ptr<lunasvg::Document> Document;
-    std::unique_ptr<ImageResource> Image;
-    std::unique_ptr<ImGuiTexture> Texture;
-};
-
-ImGui_ImplVulkanH_Window MainWindowData;
 uint MinImageCount = 2;
 bool SwapChainRebuild = false;
 
@@ -144,18 +53,18 @@ void AudioCallback(uint sample_rate, uint channels, float *output, const float *
     }
 }
 
-void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int width, int height) {
-    wd->Surface = surface;
+void SetupVulkanWindow(ImGui_ImplVulkanH_Window &wd, vk::SurfaceKHR surface, int width, int height) {
+    wd.Surface = surface;
 
     // Check for WSI support
-    if (auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd->Surface); res != VK_TRUE) {
+    if (auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd.Surface); res != VK_TRUE) {
         throw std::runtime_error("Error no WSI support on physical device 0\n");
     }
 
     // Select surface format.
     const VkFormat requestSurfaceImageFormat[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
     const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC->PhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
+    wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
     // Select present mode.
 #ifdef IMGUI_UNLIMITED_FRAME_RATE
@@ -163,27 +72,27 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, vk::SurfaceKHR surface, int
 #else
     VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 #endif
-    wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
+    wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd.Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
 
     IM_ASSERT(MinImageCount >= 2);
-    ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
+    ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
 }
 
 void CheckVk(VkResult err) {
     if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
 }
 
-void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
-    auto image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
-    auto render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
-    const auto err = vkAcquireNextImageKHR(*VC->Device, wd->Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd->FrameIndex);
+void FrameRender(ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
+    auto image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
+    auto render_complete_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore;
+    const auto err = vkAcquireNextImageKHR(*VC->Device, wd.Swapchain, UINT64_MAX, image_acquired_semaphore, VK_NULL_HANDLE, &wd.FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR) {
         SwapChainRebuild = true;
         return;
     }
     CheckVk(err);
 
-    auto *fd = &wd->Frames[wd->FrameIndex];
+    auto *fd = &wd.Frames[wd.FrameIndex];
     {
         CheckVk(vkWaitForFences(*VC->Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX)); // wait indefinitely instead of periodically checking
         CheckVk(vkResetFences(*VC->Device, 1, &fd->Fence));
@@ -202,11 +111,11 @@ void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
         VkRenderPassBeginInfo info{
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .pNext = nullptr,
-            .renderPass = wd->RenderPass,
+            .renderPass = wd.RenderPass,
             .framebuffer = fd->Framebuffer,
-            .renderArea = {{0, 0}, {uint32_t(wd->Width), uint32_t(wd->Height)}},
+            .renderArea = {{0, 0}, {uint32_t(wd.Width), uint32_t(wd.Height)}},
             .clearValueCount = 1,
-            .pClearValues = &wd->ClearValue,
+            .pClearValues = &wd.ClearValue,
         };
         vkCmdBeginRenderPass(fd->CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
     }
@@ -232,17 +141,17 @@ void FrameRender(ImGui_ImplVulkanH_Window *wd, ImDrawData *draw_data) {
     }
 }
 
-void FramePresent(ImGui_ImplVulkanH_Window *wd) {
+void FramePresent(ImGui_ImplVulkanH_Window &wd) {
     if (SwapChainRebuild) return;
 
     VkPresentInfoKHR info{
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext = nullptr,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore,
+        .pWaitSemaphores = &wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore,
         .swapchainCount = 1,
-        .pSwapchains = &wd->Swapchain,
-        .pImageIndices = &wd->FrameIndex,
+        .pSwapchains = &wd.Swapchain,
+        .pImageIndices = &wd.FrameIndex,
         .pResults = nullptr,
     };
     auto err = vkQueuePresentKHR(VC->Queue, &info);
@@ -251,7 +160,7 @@ void FramePresent(ImGui_ImplVulkanH_Window *wd) {
         return;
     }
     CheckVk(err);
-    wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount; // Now we can use the next set of semaphores.
+    wd.SemaphoreIndex = (wd.SemaphoreIndex + 1) % wd.SemaphoreCount; // Now we can use the next set of semaphores.
 }
 
 entt::entity FindListenerEntityWithIndex(uint index) {
@@ -534,7 +443,8 @@ int main(int, char **) {
     // Create framebuffers.
     int w, h;
     SDL_GetWindowSize(window, &w, &h);
-    auto *wd = &MainWindowData;
+
+    ImGui_ImplVulkanH_Window wd;
     SetupVulkanWindow(wd, surface, w, h);
 
     // Setup ImGui context.
@@ -558,9 +468,9 @@ int main(int, char **) {
         .QueueFamily = VC->QueueFamily,
         .Queue = VC->Queue,
         .DescriptorPool = *VC->DescriptorPool,
-        .RenderPass = wd->RenderPass,
+        .RenderPass = wd.RenderPass,
         .MinImageCount = MinImageCount,
-        .ImageCount = wd->ImageCount,
+        .ImageCount = wd.ImageCount,
         .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
         .PipelineCache = *VC->PipelineCache,
         .Subpass = 0,
@@ -612,8 +522,8 @@ int main(int, char **) {
             SDL_GetWindowSize(window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &MainWindowData, VC->QueueFamily, nullptr, width, height, MinImageCount);
-                MainWindowData.FrameIndex = 0;
+                ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
+                wd.FrameIndex = 0;
                 SwapChainRebuild = false;
             }
         }
@@ -737,10 +647,10 @@ int main(int, char **) {
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             static constexpr vec4 ClearColor{0.45f, 0.55f, 0.60f, 1.f};
-            wd->ClearValue.color.float32[0] = ClearColor.r * ClearColor.a;
-            wd->ClearValue.color.float32[1] = ClearColor.g * ClearColor.a;
-            wd->ClearValue.color.float32[2] = ClearColor.b * ClearColor.a;
-            wd->ClearValue.color.float32[3] = ClearColor.a;
+            wd.ClearValue.color.float32[0] = ClearColor.r * ClearColor.a;
+            wd.ClearValue.color.float32[1] = ClearColor.g * ClearColor.a;
+            wd.ClearValue.color.float32[2] = ClearColor.b * ClearColor.a;
+            wd.ClearValue.color.float32[3] = ClearColor.a;
             FrameRender(wd, draw_data);
             FramePresent(wd);
         }
@@ -761,7 +671,7 @@ int main(int, char **) {
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
 
-    ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &MainWindowData, nullptr);
+    ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &wd, nullptr);
     VC.reset();
 
     R.clear();
