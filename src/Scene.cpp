@@ -709,7 +709,7 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (auto entity : R.view<Mesh>()) UpdateRenderBuffers(entity, SelectedElement); 
+    for (auto entity : R.view<Mesh>()) UpdateRenderBuffers(entity, SelectedElement);
 }
 
 void Scene::UpdateTransformBuffers() {

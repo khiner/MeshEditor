@@ -5,11 +5,10 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-#include "helper/npy.h"
+#include "npy.h"
 #include "numeric/vec4.h"
 
-using std::ranges::iota_view;
-using std::ranges::to;
+using std::ranges::iota_view, std::ranges::to;
 using std::views::transform;
 
 /**
@@ -26,8 +25,11 @@ All files (present for each object):
   - vertexXYZ.npy (72K)
 */
 
+namespace {
+// The authors provide `.mtl` and `.png` material files, but they don't provide the material name.
+// However, most object names include the material name, and the rest are easy to guess.
 // A '*' indicates a guess based on the object name and the material image.
-const std::unordered_map<std::string_view, std::string_view> RealImpact::MaterialNameForObjName = {
+const std::unordered_map<std::string_view, std::string_view> MaterialNameForObjName{
     {"CeramicKoiBowl", "Ceramic"},
     {"CeramicBowlFish", "Ceramic"},
     {"Bowl", "Ceramic"}, // *
@@ -96,6 +98,7 @@ std::optional<std::string> FindObjectName(const fs::path &start_path) {
 
     return {};
 }
+} // namespace
 
 RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPath(Directory / "transformed.obj"), ObjectName(*FindObjectName(Directory)) {
     if (const auto it = MaterialNameForObjName.find(ObjectName); it != MaterialNameForObjName.end()) MaterialName = it->second;
