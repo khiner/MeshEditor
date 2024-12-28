@@ -89,6 +89,7 @@ struct VulkanContext {
         UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
     }
 
+    void WaitForRender() const;
     void SubmitTransfer() const;
 
     std::unique_ptr<ImageResource> CreateImage(vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags mem_flags = vk::MemoryPropertyFlagBits::eDeviceLocal) const;

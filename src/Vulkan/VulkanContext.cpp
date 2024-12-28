@@ -219,15 +219,19 @@ void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offse
     buffer.Size -= bytes;
 }
 
+void VulkanContext::WaitForRender() const {
+    if (auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    Device->resetFences(*RenderFence);
+}
+
 // TODO Use separate fence/semaphores for buffer updates and rendering?
 void VulkanContext::SubmitTransfer() const {
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*TransferCommandBuffers.front());
     Queue.submit(submit, *RenderFence);
-    if (auto wait_result = Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    Device->resetFences(*RenderFence);
+    WaitForRender();
 }
 
 std::unique_ptr<ImageResource> VulkanContext::CreateImage(vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags) const {

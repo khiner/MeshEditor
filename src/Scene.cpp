@@ -500,6 +500,7 @@ void Scene::DestroyEntity(entt::entity entity, bool submit) {
     if (entity == SelectedEntity) SelectEntity(entt::null, false);
     if (const auto parent_entity = GetParentEntity(entity); parent_entity != entity) return DestroyInstance(entity, submit);
 
+    if (submit) VC.Device->waitIdle(); // xxx device blocking should be more targetted
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
     MeshVkData->Models.erase(entity);
@@ -829,11 +830,6 @@ bool Scene::Render() {
             R.erase<ActiveVertex>(SelectedEntity);
         }
     }
-    if (auto *active_vertex = R.try_get<ActiveVertex>(SelectedEntity)) {
-        const auto &selected_position = active_vertex->Position;
-        const auto &selected_model = GetModel(SelectedEntity);
-        Camera.SetTargetDirection(glm::normalize(vec3{selected_model * vec4{selected_position, 1}} - Camera.Target));
-    }
 
     const vec2 content_region = ToGlm(GetContentRegionAvail());
     const auto bg_color = ToClearColor(BgColor);
@@ -849,12 +845,7 @@ bool Scene::Render() {
 
     // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
-    auto wait_result = VC.Device->waitForFences(*VC.RenderFence, VK_TRUE, UINT64_MAX);
-    if (wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    VC.Device->resetFences(*VC.RenderFence);
-
+    VC.WaitForRender();
     return extent_changed;
 }
 
@@ -1139,7 +1130,7 @@ void Scene::RenderConfig() {
         if (BeginTabItem("Camera")) {
             bool camera_changed = false;
             if (Button("Reset camera")) {
-                Camera = CreateDefaultCamera();
+                Camera = CreateDefaultCamera(World);
                 camera_changed = true;
             }
             camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);

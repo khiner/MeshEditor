@@ -28,9 +28,17 @@
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
-// If an entity has this, it is being listened to by `Listener`.
+// If an entity has this component, it is being listened to by `Listener`.
 struct SoundObjectListener {
     entt::entity Listener;
+};
+// If an entity has this component, it is being excited at this vertex/force.
+struct SoundObjectExcitation {
+    uint Vertex;
+    float Force;
+};
+struct SoundObjectExcitationIndicator {
+    entt::entity Entity;
 };
 
 namespace {
@@ -377,31 +385,29 @@ void AudioModelControls() {
         R.remove<SoundObjectListener, SoundObject, Tets>(sound_entity);
     }
 
-    const auto before_vertex = sound_object.SelectedVertex;
-    sound_object.RenderControls(); // May change the selected vertex.
-    if (!sound_object.SelectedVertexIndicatorEntityId || sound_object.SelectedVertex != before_vertex) {
-        const auto &mesh = R.get<Mesh>(sound_entity);
-        // Vertex indicator arrow mesh needs to be created or moved to point at the current excitable vertex.
-        const auto &model = MainScene->GetModel(sound_entity);
-        const auto vh = Mesh::VH(sound_object.SelectedVertex);
-        const vec3 vertex_pos = {model * vec4{mesh.GetPosition(vh), 1}};
-        const vec3 normal = {model * vec4{mesh.GetVertexNormal(vh), 0}};
-
-        const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
-        const mat4 scale = glm::scale({1}, vec3{scale_factor});
-        const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
-        const mat4 rotate = glm::mat4_cast(glm::rotation(MainScene->World.Up, normal));
-        mat4 indicator_model{translate * rotate * scale};
-        if (!sound_object.SelectedVertexIndicatorEntityId) {
-            auto vertex_indicator_mesh = Arrow();
-            vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
-            sound_object.SelectedVertexIndicatorEntityId = uint(MainScene->AddMesh(
-                std::move(vertex_indicator_mesh),
-                {.Name = "Excite vertex indicator", .Transform = std::move(indicator_model), .Select = false, .Submit = true}
-            ));
-        } else {
-            MainScene->SetModel(entt::entity(sound_object.SelectedVertexIndicatorEntityId), std::move(indicator_model), true);
-        }
+    if (auto sound_object_action = sound_object.RenderControls()) {
+        // We introduce this component indirection since excitations have multiple scene effects
+        // (vertex indicator arrow, applying the excitation), and can be triggered in multiple ways
+        // (from the control UI or clicking on the mesh).
+        std::visit(
+            Match{
+                [&](SoundObjectAction::SelectVertex action) {
+                    sound_object.Apply(action);
+                    R.remove<SoundObjectExcitation>(sound_entity);
+                },
+                [&](SoundObjectAction::SetExciteForce action) {
+                    if (action.Force == 0) {
+                        R.remove<SoundObjectExcitation>(sound_entity);
+                    } else {
+                        R.emplace<SoundObjectExcitation>(sound_entity, sound_object.SelectedVertex, action.Force);
+                    }
+                },
+                [&](auto action) {
+                    sound_object.Apply(action);
+                }
+            },
+            *sound_object_action
+        );
     }
 }
 } // namespace
@@ -471,19 +477,52 @@ int main(int, char **) {
     NFD_Init();
 
     // EnTT listeners
+    R.on_construct<SoundObjectExcitation>().connect<[&](entt::registry &r, entt::entity entity) {
+        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
+            const auto &excitation = r.get<SoundObjectExcitation>(entity);
+            sound_object->Apply(SoundObjectAction::Excite{excitation.Vertex, excitation.Force});
+
+            // Orient the camera towards the excited vertex.
+            const auto &mesh = R.get<Mesh>(entity);
+            const auto &model = MainScene->GetModel(entity);
+            const auto vh = Mesh::VH(sound_object->SelectedVertex);
+            const vec3 vertex_pos{model * vec4{mesh.GetPosition(vh), 1}};
+            MainScene->Camera.SetTargetDirection(glm::normalize(vertex_pos - MainScene->Camera.Target));
+
+            // Create vertex indicator arrow pointing at the excited vertex.
+            const vec3 normal{model * vec4{mesh.GetVertexNormal(vh), 0}};
+            const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
+            const mat4 scale = glm::scale({1}, vec3{scale_factor});
+            const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
+            const mat4 rotate = glm::mat4_cast(glm::rotation(MainScene->World.Up, normal));
+            auto vertex_indicator_mesh = Arrow();
+            vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
+            const auto indicator_entity = MainScene->AddMesh(
+                std::move(vertex_indicator_mesh),
+                {.Name = "Excite vertex indicator", .Transform = mat4{translate * rotate * scale}, .Select = false, .Submit = true}
+            );
+            r.emplace<SoundObjectExcitationIndicator>(entity, indicator_entity);
+        }
+    }>();
+    R.on_destroy<SoundObjectExcitation>().connect<[&](entt::registry &r, entt::entity entity) {
+        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
+            sound_object->Apply(SoundObjectAction::SetExciteForce{0.f});
+        }
+        if (auto *excitation_indicator = r.try_get<SoundObjectExcitationIndicator>(entity)) {
+            MainScene->DestroyEntity(excitation_indicator->Entity);
+        }
+        r.remove<SoundObjectExcitationIndicator>(entity);
+    }>();
     R.on_construct<ActiveVertex>().connect<[&](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
             const auto &active_vertex = r.get<ActiveVertex>(entity);
             if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(active_vertex.Position)) {
-                sound_object->SetVertex(*nearest_excite_vertex);
-                sound_object->SetVertexForce(1);
+                r.emplace<SoundObjectExcitation>(entity, *nearest_excite_vertex, 1.f);
             }
         }
     }>();
     R.on_destroy<ActiveVertex>().connect<[&](entt::registry &r, entt::entity entity) {
-        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
-            sound_object->SetVertexForce(0);
-        }
+        r.remove<SoundObjectExcitation>(entity);
     }>();
 
     MainScene = std::make_unique<Scene>(*VC, R);

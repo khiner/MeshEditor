@@ -152,6 +152,8 @@ struct MeshCreateInfo {
 
 std::string IdString(entt::entity);
 
+static constexpr Camera CreateDefaultCamera(const World &world) { return {world.Up, {0, 0, 2}, world.Origin, 60, 0.01, 100}; }
+
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);
     ~Scene();
@@ -159,6 +161,7 @@ struct Scene {
     const VulkanContext &VC;
     entt::registry &R;
     World World{};
+    Camera Camera{CreateDefaultCamera(World)};
 
     std::optional<uint> GetModelBufferIndex(entt::entity);
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
@@ -201,15 +204,12 @@ struct Scene {
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
 
-    Camera CreateDefaultCamera() const { return {World.Up, {0, 0, 2}, World.Origin, 60, 0.01, 100}; }
-
     void UpdateRenderBuffers(entt::entity, const MeshElementIndex &highlight_element = {});
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
 private:
-    Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.

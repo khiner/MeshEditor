@@ -9,6 +9,7 @@
 
 #include "FrameInfo.h"
 #include "MaterialProperties.h"
+#include "Variant.h"
 #include "numeric/vec3.h"
 
 enum class SoundObjectModel {
@@ -21,6 +22,24 @@ enum class SoundObjectModel {
     // - simulating the object's response to an impact by exciting the modes associated with the impacted vertex
     Modal,
 };
+
+// Actions
+namespace SoundObjectAction {
+struct SetModel {
+    SoundObjectModel Model;
+};
+struct SelectVertex {
+    uint Vertex;
+};
+struct Excite {
+    uint Vertex;
+    float Force;
+};
+struct SetExciteForce {
+    float Force;
+};
+using Any = std::variant<SetModel, SelectVertex, Excite, SetExciteForce>;
+} // namespace SoundObjectAction
 
 struct Tets;
 struct ModalAudioModel;
@@ -43,19 +62,21 @@ struct SoundObject {
     MaterialProperties Material;
     std::vector<uint> ExcitableVertices;
     // The vertex currently selected for excitation.
-    uint SelectedVertex{0}, SelectedVertexIndicatorEntityId{0};
+    uint SelectedVertex{0};
+
+    void Apply(SoundObjectAction::Any);
 
     void ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const;
-    void RenderControls();
+    std::optional<SoundObjectAction::Any> RenderControls();
 
-    void SetModel(SoundObjectModel);
     void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
 
-    void SetVertex(uint);
-    void SetVertexForce(float);
     std::optional<uint> FindNearestExcitableVertex(vec3 position);
 
 private:
+    void SetVertex(uint);
+    void SetVertexForce(float);
+
     std::unique_ptr<ModalAudioModel> ModalModel;
     std::unique_ptr<ImpactAudioModel> ImpactModel;
 
