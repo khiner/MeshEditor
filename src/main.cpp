@@ -2,7 +2,8 @@
 #include <stack>
 #include <stdexcept>
 
-#include "imgui.h"
+#include "Widgets.h"
+
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
@@ -237,7 +238,7 @@ void AudioModelControls() {
 
     const auto selected_entity = MainScene->GetSelectedEntity();
     if (!R.storage<SoundObject>().empty() && CollapsingHeader("Sound objects")) {
-        if (BeginTable("Sound objects", 3)) {
+        if (MeshEditor::BeginTable("Sound objects", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
             TableSetupColumn("Name");
             TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 20);
@@ -269,7 +270,7 @@ void AudioModelControls() {
         }
     }
     if (!R.storage<RealImpactListenerPoint>().empty() && CollapsingHeader("Listener points")) {
-        if (BeginTable("Listener points", 3)) {
+        if (MeshEditor::BeginTable("Listener points", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
             TableSetupColumn("Name");
             TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);

@@ -5,14 +5,13 @@
 
 #include <glm/gtx/matrix_decompose.hpp>
 
-#include "imgui.h"
-
-#include "ImGuizmo.h" // imgui must be included before imguizmo.
-
 #include "numeric/mat3.h"
 
+#include "Widgets.h"
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
+
+#include "ImGuizmo.h" // imgui must be included before imguizmo.
 
 using std::ranges::to;
 using std::views::transform;
@@ -1175,7 +1174,7 @@ void Scene::RenderConfig() {
 }
 
 void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity> &entities) {
-    if (BeginTable(name.c_str(), 3)) {
+    if (MeshEditor::BeginTable(name.c_str(), 3)) {
         static const float CharWidth = CalcTextSize("A").x;
         TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
         TableSetupColumn("Name");
