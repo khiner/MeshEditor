@@ -45,7 +45,7 @@ std::unique_ptr<ImGuiTexture> MainSceneTexture;
 entt::registry R;
 
 void AudioCallback(FrameInfo device_data, float *output, const float *input, uint frame_count) {
-    for (const auto &[entity, audio_source] : R.view<const SoundObject>().each()) {
+    for (const auto &audio_source : R.storage<SoundObject>()) {
         audio_source.ProduceAudio(device_data, (float *)input, (float *)output, frame_count);
     }
 }
@@ -161,8 +161,8 @@ void FramePresent(ImGui_ImplVulkanH_Window &wd) {
 }
 
 entt::entity FindListenerEntityWithIndex(uint index) {
-    for (const auto entity : R.view<RealImpactListenerPoint>()) {
-        if (R.get<RealImpactListenerPoint>(entity).Index == index) return entity;
+    for (const auto &[entity, listener_point] : R.view<const RealImpactListenerPoint>().each()) {
+        if (listener_point.Index == index) return entity;
     }
     return entt::null;
 }
@@ -236,15 +236,14 @@ void AudioModelControls() {
     static const float CharWidth = CalcTextSize("A").x;
 
     const auto selected_entity = MainScene->GetSelectedEntity();
-    const auto sound_objects = R.view<SoundObject>();
-    if (sound_objects.begin() != sound_objects.end() && CollapsingHeader("Sound objects")) {
+    if (!R.storage<SoundObject>().empty() && CollapsingHeader("Sound objects")) {
         if (BeginTable("Sound objects", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
             TableSetupColumn("Name");
             TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 20);
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
-            for (const auto &[entity, sound_object] : sound_objects.each()) {
+            for (const auto &[entity, sound_object] : R.view<const SoundObject>().each()) {
                 const bool is_selected = entity == selected_entity;
                 PushID(uint(entity));
                 TableNextColumn();
@@ -269,14 +268,14 @@ void AudioModelControls() {
             EndTable();
         }
     }
-    if (const auto listener_points = R.view<RealImpactListenerPoint>(); listener_points.begin() != listener_points.end() && CollapsingHeader("Listener points")) {
+    if (!R.storage<RealImpactListenerPoint>().empty() && CollapsingHeader("Listener points")) {
         if (BeginTable("Listener points", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
             TableSetupColumn("Name");
             TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
-            for (const auto entity : listener_points) {
+            for (const auto entity : R.view<RealImpactListenerPoint>()) {
                 const bool is_selected = entity == selected_entity;
                 PushID(uint(entity));
                 TableNextColumn();
@@ -341,17 +340,17 @@ void AudioModelControls() {
     }
 
     // Display the selected sound object, or the first one if any are present.
-    if (sound_objects.begin() == sound_objects.end()) return;
+    if (R.storage<SoundObject>().empty()) return;
 
     SeparatorText("Audio model");
 
     const auto FindSelectedSoundEntity = [&]() {
-        for (const auto entity : sound_objects) {
+        for (const auto entity : R.view<SoundObject>()) {
             if (entity == selected_entity) return entity;
             if (const auto *listener = R.try_get<SoundObjectListener>(entity);
                 listener && listener->Listener == selected_entity) return entity;
         }
-        return *sound_objects.begin();
+        return *R.view<const SoundObject>().begin();
     };
     const auto sound_entity = FindSelectedSoundEntity();
     auto &sound_object = R.get<SoundObject>(sound_entity);

@@ -647,7 +647,7 @@ void Scene::RecordCommandBuffer() {
     //      - keep all models in the `MeshVkData` but then update `drawIndexed` to use a different strategy:
     //        -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
     //           vkCmdDrawIndexedIndirectCount & put the offsets in a UBO that you index with gl_DrawId.
-    const auto &meshes = R.view<Mesh>();
+    const auto &meshes = R.view<const Mesh>();
     MainPipeline.Begin(cb, BackgroundColor);
     meshes.each([this, &cb](auto entity, auto &) {
         const auto &buffers = MeshVkData->Main.at(entity);
@@ -709,7 +709,7 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    R.view<Mesh>().each([this](auto entity, auto &) { UpdateRenderBuffers(entity, SelectedElement); });
+    for (auto entity : R.view<Mesh>()) UpdateRenderBuffers(entity, SelectedElement); 
 }
 
 void Scene::UpdateTransformBuffers() {
@@ -790,15 +790,15 @@ bool Scene::Render() {
             } else if (SelectionMode == SelectionMode::Object && (GetIO().KeyCtrl || GetIO().KeySuper)) {
                 static std::multimap<float, entt::entity> hovered_entities_by_distance;
                 hovered_entities_by_distance.clear();
-                R.view<Model>().each([this, &mouse_world_ray](auto entity, const auto &model) {
-                    if (!R.all_of<Visible>(entity)) return;
+                for (const auto &[entity, model] : R.view<const Model>().each()) {
+                    if (!R.all_of<Visible>(entity)) continue;
 
                     const auto &mesh = R.get<Mesh>(GetParentEntity(entity));
                     const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
                     if (auto intersect_distance = mesh.Intersect(mouse_ray)) {
                         hovered_entities_by_distance.emplace(*intersect_distance, entity);
                     }
-                });
+                }
 
                 std::vector<entt::entity> sorted_hovered_entities;
                 for (const auto &[distance, entity] : hovered_entities_by_distance) sorted_hovered_entities.emplace_back(entity);
@@ -1042,9 +1042,9 @@ void Scene::RenderConfig() {
 
             if (CollapsingHeader("All objects")) {
                 std::vector<entt::entity> table_entities;
-                R.view<SceneNode>().each([&](auto entity, const auto &node) {
+                for (const auto &[entity, node] : R.view<const SceneNode>().each()) {
                     if (node.parent == entt::null) table_entities.emplace_back(entity);
-                });
+                }
                 RenderEntitiesTable("All objects", table_entities);
             }
             EndTabItem();
@@ -1121,10 +1121,10 @@ void Scene::RenderConfig() {
             }
             if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
                 auto &buffers = MeshVkData->Boxes;
-                R.view<Mesh>().each([&](auto entity, auto &mesh) {
+                for (const auto &[entity, mesh] : R.view<const Mesh>().each()) {
                     if (ShowBoundingBoxes) buffers.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
                     else buffers.erase(entity);
-                });
+                }
                 RecordAndSubmitCommandBuffer();
             }
             SeparatorText("Silhouette");
