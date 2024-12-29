@@ -191,7 +191,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     const auto object_name = real_impact.ObjectName;
     const auto object_entity = MainScene->AddMesh(
         real_impact.ObjPath,
-        {.Name = std::format("RealImpact Object: {}", object_name), .Transform = std::move(swap), .Submit = false}
+        {.Name = std::format("RealImpact Object: {}", object_name), .Transform = std::move(swap)}
     );
     // Vertex indices may have changed due to deduplication.
     auto &mesh = R.get<Mesh>(object_entity);
@@ -206,7 +206,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     static constexpr mat4 I{1};
     auto listener_point_mesh = Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
     auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
-    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {std::move(listener_points_name), I, false, false, false});
+    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {std::move(listener_points_name), I, false, false});
     static const auto rot_z = glm::rotate(I, float(M_PI_2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
@@ -215,12 +215,12 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         const auto listener_point_name = std::format("RealImpact Listener: {}", p.Index);
         const auto listener_point_instance_entity = MainScene->AddInstance(
             listener_point_entity,
-            {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Select = false, .Submit = false}
+            {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Select = false}
         );
         R.emplace<RealImpactListenerPoint>(listener_point_instance_entity, p);
     }
     R.emplace<RealImpact>(object_entity, std::move(real_impact));
-    MainScene->RecordAndSubmitCommandBuffer();
+    MainScene->InvalidateCommandBuffer();
 }
 
 using namespace ImGui;
@@ -313,7 +313,7 @@ void AudioModelControls() {
         if (TetGenerator) {
             if (auto tets = TetGenerator->Render()) {
                 // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
-                MainScene->AddMesh(tets->CreateMesh(), {"Tet Mesh", MainScene->GetModel(selected_entity), false, false, false});
+                MainScene->AddMesh(tets->CreateMesh(), {"Tet Mesh", MainScene->GetModel(selected_entity), false, false});
                 TetGenerator.reset();
 
                 const auto *real_impact = R.try_get<RealImpact>(selected_entity);
@@ -502,7 +502,7 @@ int main(int, char **) {
             vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
             const auto indicator_entity = MainScene->AddMesh(
                 std::move(vertex_indicator_mesh),
-                {.Name = "Excite vertex indicator", .Transform = mat4{translate * rotate * scale}, .Select = false, .Submit = true}
+                {.Name = "Excite vertex indicator", .Transform = mat4{translate * rotate * scale}, .Select = false}
             );
             r.emplace<SoundObjectExcitationIndicator>(entity, indicator_entity);
         }

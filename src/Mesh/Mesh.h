@@ -62,7 +62,7 @@ struct Mesh {
     // Adds OpenMesh handle comparison/conversion to `MeshElementIndex`.
     struct ElementIndex : MeshElementIndex {
         using MeshElementIndex::MeshElementIndex;
-        ElementIndex(const MeshElementIndex &other) : MeshElementIndex(other) {}
+        ElementIndex(MeshElementIndex other) : MeshElementIndex(std::move(other)) {}
         ElementIndex(VH vh) : MeshElementIndex(MeshElement::Vertex, vh.idx()) {}
         ElementIndex(EH eh) : MeshElementIndex(MeshElement::Edge, eh.idx()) {}
         ElementIndex(FH fh) : MeshElementIndex(MeshElement::Face, fh.idx()) {}

@@ -162,7 +162,7 @@ inline std::string to_string(SelectionMode mode) {
 struct MeshCreateInfo {
     std::string Name{};
     mat4 Transform{1};
-    bool Select{true}, Visible{true}, Submit{true};
+    bool Select{true}, Visible{true};
 };
 
 std::string IdString(entt::entity);
@@ -191,17 +191,17 @@ struct Scene {
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
 
-    void DestroyInstance(entt::entity, bool submit = true);
-    void DestroyEntity(entt::entity, bool submit = true);
+    void DestroyInstance(entt::entity);
+    void DestroyEntity(entt::entity);
 
     const mat4 &GetModel(entt::entity) const;
-    void SetModel(entt::entity, mat4 &&, bool submit = true);
+    void SetModel(entt::entity, mat4 &&);
 
     void SetVisible(entt::entity, bool);
 
-    void SelectEntity(entt::entity entity, bool submit = true) {
+    void SelectEntity(entt::entity entity) {
         SelectedEntity = entity;
-        if (submit) RecordAndSubmitCommandBuffer();
+        InvalidateCommandBuffer();
     }
 
     const vk::Extent2D &GetExtent() const { return Extent; }
@@ -219,10 +219,10 @@ struct Scene {
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
 
-    void UpdateRenderBuffers(entt::entity, const MeshElementIndex &highlight_element = {});
+    void UpdateRenderBuffers(entt::entity, MeshElementIndex highlight_element = {});
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
-    void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
+    void InvalidateCommandBuffer();
 
     void OnExciteCreate(entt::registry &, entt::entity);
     void OnExciteDestroy(entt::registry &, entt::entity);
@@ -245,7 +245,7 @@ private:
     std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;
-    vk::ClearColorValue BackgroundColor;
+    vk::ClearColorValue BackgroundColor{0.22, 0.22, 0.22, 1.f};
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
     std::unique_ptr<VulkanBuffer> TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
@@ -259,11 +259,12 @@ private:
 
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
-    vec4 BgColor{0.22, 0.22, 0.22, 1.};
+
+    bool CommandBufferDirty{false};
 
     void SetSelectionMode(::SelectionMode mode) {
         SelectionMode = mode;
-        RecordAndSubmitCommandBuffer();
+        InvalidateCommandBuffer();
     }
 
     const Mesh &GetSelectedMesh() const;

@@ -17,16 +17,17 @@ using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;
 
 struct SceneNode {
-    entt::entity parent = entt::null;
-    std::vector<entt::entity> children;
+    entt::entity Parent = entt::null;
+    std::vector<entt::entity> Children;
     // Maps entities to their index in the models buffer. Includes parent. Only present in parent nodes.
     // This allows for contiguous storage of models in the buffer, with erases but no inserts (only appends, which avoids shuffling memory regions).
-    std::unordered_map<entt::entity, uint> model_indices;
+    std::unordered_map<entt::entity, uint> ModelIndices;
 };
 
 std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
 std::string GetName(const entt::registry &r, entt::entity entity) {
     if (entity == entt::null) return "null";
+
     if (const auto *name = r.try_get<Name>(entity)) {
         if (!name->Value.empty()) return name->Value;
     }
@@ -36,9 +37,9 @@ entt::entity GetParentEntity(const entt::registry &r, entt::entity entity) {
     if (entity == entt::null) return entt::null;
 
     if (const auto *node = r.try_get<SceneNode>(entity)) {
-        return node->parent == entt::null ? entity : GetParentEntity(r, node->parent);
+        return node->Parent == entt::null ? entity : GetParentEntity(r, node->Parent);
     }
-    return entt::null;
+    return entity;
 }
 
 // Simple wrapper around vertex and index buffers.
@@ -393,7 +394,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
-    AddPrimitive(Primitive::Cube, {.Transform = {1}, .Select = true, .Visible = true, .Submit = false});
+    AddPrimitive(Primitive::Cube, {.Transform = {1}, .Select = true, .Visible = true});
 }
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
@@ -419,8 +420,10 @@ std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
     const auto parent_entity = GetParentEntity(R, entity);
     if (parent_entity == entt::null) return std::nullopt;
 
-    const auto &model_indices = R.get<SceneNode>(GetParentEntity(R, entity)).model_indices;
-    if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
+    if (const auto *scene_node = R.try_get<SceneNode>(GetParentEntity(R, entity))) {
+        const auto &model_indices = scene_node->ModelIndices;
+        if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
+    }
     return std::nullopt;
 }
 
@@ -430,7 +433,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
     const auto parent = GetParentEntity(R, entity);
     auto &parent_node = R.get<SceneNode>(parent);
-    auto &model_indices = parent_node.model_indices;
+    auto &model_indices = parent_node.ModelIndices;
     if (visible) {
         R.emplace<Visible>(entity);
         // Insert model index as the max value + 1.
@@ -477,8 +480,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
     R.emplace<Mesh>(entity, std::move(mesh));
 
-    if (info.Select) SelectEntity(entity, false);
-    if (info.Submit) RecordAndSubmitCommandBuffer();
+    if (info.Select) SelectEntity(entity);
+    InvalidateCommandBuffer();
     return entity;
 }
 entt::entity Scene::AddMesh(const fs::path &file_path, MeshCreateInfo info) { return AddMesh(Mesh{file_path}, std::move(info)); }
@@ -493,8 +496,8 @@ entt::entity Scene::AddPrimitive(Primitive primitive, MeshCreateInfo info) {
 void Scene::ClearMeshes() {
     std::vector<entt::entity> entities;
     for (auto entity : R.view<Mesh>()) entities.emplace_back(entity);
-    for (auto entity : entities) DestroyEntity(entity, false);
-    RecordAndSubmitCommandBuffer();
+    for (auto entity : entities) DestroyEntity(entity);
+    InvalidateCommandBuffer();
 }
 
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
@@ -519,56 +522,56 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
     auto &parent_node = R.get<SceneNode>(parent);
-    if (info.Name.empty()) info.Name = std::format("{} instance {}", GetName(R, parent), parent_node.children.size());
-    parent_node.children.emplace_back(entity);
+    if (info.Name.empty()) info.Name = std::format("{} instance {}", GetName(R, parent), parent_node.Children.size());
+    parent_node.Children.emplace_back(entity);
     R.emplace<Model>(entity, std::move(info.Transform));
     R.emplace<Name>(entity, info.Name);
     SetVisible(entity, info.Visible);
-    if (info.Select) SelectEntity(entity, false);
-    if (info.Submit) RecordAndSubmitCommandBuffer();
+    if (info.Select) SelectEntity(entity);
+    InvalidateCommandBuffer();
 
     return entity;
 }
 
-void Scene::DestroyEntity(entt::entity entity, bool submit) {
-    if (entity == SelectedEntity) SelectEntity(entt::null, false);
-    if (const auto parent_entity = GetParentEntity(R, entity); parent_entity != entity) return DestroyInstance(entity, submit);
+void Scene::DestroyEntity(entt::entity entity) {
+    if (entity == SelectedEntity) SelectEntity(entt::null);
+    if (const auto parent_entity = GetParentEntity(R, entity); parent_entity != entity) return DestroyInstance(entity);
 
-    if (submit) VC.Device->waitIdle(); // xxx device blocking should be more targetted
+    VC.Device->waitIdle(); // xxx device blocking should be more targetted
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
     MeshVkData->Models.erase(entity);
     MeshVkData->Boxes.erase(entity);
 
     const auto &node = R.get<SceneNode>(entity);
-    for (const auto child : node.children) {
-        if (child == SelectedEntity) SelectEntity(entt::null, false);
+    for (const auto child : node.Children) {
+        if (child == SelectedEntity) SelectEntity(entt::null);
         R.destroy(child);
     }
     R.destroy(entity);
-    if (submit) RecordAndSubmitCommandBuffer();
+    InvalidateCommandBuffer();
 }
 
-void Scene::DestroyInstance(entt::entity instance, bool submit) {
-    if (instance == SelectedEntity) SelectEntity(entt::null, false);
+void Scene::DestroyInstance(entt::entity instance) {
+    if (instance == SelectedEntity) SelectEntity(entt::null);
 
     SetVisible(instance, false);
-    std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).parent).children, instance);
+    std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).Parent).Children, instance);
     R.destroy(instance);
-    if (submit) RecordAndSubmitCommandBuffer();
+    InvalidateCommandBuffer();
 }
 
 const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(R, SelectedEntity)); }
 
-void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
+void Scene::SetModel(entt::entity entity, mat4 &&model) {
     R.replace<Model>(entity, std::move(model));
     UpdateModelBuffer(entity);
-    if (submit) SubmitCommandBuffer();
+    SubmitCommandBuffer();
 }
 
 const mat4 &Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
 
-void Scene::UpdateRenderBuffers(entt::entity mesh_entity, const MeshElementIndex &highlight_element) {
+void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
     const auto &mesh = R.get<Mesh>(mesh_entity);
     auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
     const Mesh::ElementIndex highlight{highlight_element};
@@ -713,10 +716,7 @@ void Scene::SubmitCommandBuffer(vk::Fence fence) const {
     VC.Queue.submit(submit, fence);
 }
 
-void Scene::RecordAndSubmitCommandBuffer(vk::Fence fence) {
-    RecordCommandBuffer();
-    SubmitCommandBuffer(fence);
-}
+void Scene::InvalidateCommandBuffer() { CommandBufferDirty = true; }
 
 void Scene::CompileShaders() {
     MainPipeline.CompileShaders();
@@ -751,8 +751,6 @@ namespace {
 vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
 vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
-
-vk::ClearColorValue ToClearColor(vec4 v) { return {v.r, v.g, v.b, v.a}; }
 
 // Returns a world space ray from the mouse into the scene.
 Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
@@ -827,7 +825,7 @@ bool Scene::Render() {
                     }
                     if (SelectedElement != before_selected_element) {
                         UpdateRenderBuffers(GetParentEntity(R, SelectedEntity), SelectedElement);
-                        SubmitCommandBuffer();
+                        CommandBufferDirty = true;
                     }
                 }
             } else if (SelectionMode == SelectionMode::Object) {
@@ -854,16 +852,13 @@ bool Scene::Render() {
     }
 
     const vec2 content_region = ToGlm(GetContentRegionAvail());
-    const auto bg_color = ToClearColor(BgColor);
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
-    const bool bg_color_changed = BackgroundColor.float32 != bg_color.float32;
-    if (!extent_changed && !bg_color_changed) return false;
-
-    BackgroundColor = bg_color;
+    if (!extent_changed && !CommandBufferDirty) return false;
 
     if (extent_changed) SetExtent(ToVkExtent(content_region));
-    if (extent_changed || bg_color_changed) RecordCommandBuffer();
+    RecordCommandBuffer();
     SubmitCommandBuffer(*VC.RenderFence);
+    CommandBufferDirty = false;
 
     // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
@@ -890,7 +885,7 @@ void Scene::RenderGizmo() {
         Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
         view_changed |= Camera.Tick();
         if (model_changed || view_changed) {
-            if (model_changed) SetModel(SelectedEntity, std::move(model), false);
+            if (model_changed) SetModel(SelectedEntity, std::move(model));
             if (view_changed) UpdateTransformBuffers();
             SubmitCommandBuffer();
         }
@@ -969,13 +964,12 @@ void Scene::RenderConfig() {
                 if (SelectionMode == SelectionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    SameLine();
                     int element_selection_mode = int(SelectionElement);
                     for (const auto element : AllElements) {
                         std::string name = to_string(element);
                         Capitalize(name);
-                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = MeshElement(element);
-                        if (element != AllElements.back()) SameLine();
+                        SameLine();
+                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = element;
                     }
                     Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
                     if (SelectionElement == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
@@ -992,14 +986,14 @@ void Scene::RenderConfig() {
                 Indent();
 
                 const auto &node = R.get<SceneNode>(SelectedEntity);
-                if (auto parent_entity = node.parent; parent_entity != entt::null) {
+                if (auto parent_entity = node.Parent; parent_entity != entt::null) {
                     AlignTextToFramePadding();
                     Text("Parent: %s", GetName(R, parent_entity).c_str());
                     SameLine();
                     if (Button("Select")) SelectEntity(parent_entity);
                 }
-                if (!node.children.empty() && CollapsingHeader("Children")) {
-                    RenderEntitiesTable("Children", node.children);
+                if (!node.Children.empty() && CollapsingHeader("Children")) {
+                    RenderEntitiesTable("Children", node.Children);
                 }
                 const auto &selected_mesh = GetSelectedMesh();
                 TextUnformatted(
@@ -1010,14 +1004,14 @@ void Scene::RenderConfig() {
                 bool visible = R.all_of<Visible>(SelectedEntity);
                 if (Checkbox("Visible", &visible)) {
                     SetVisible(SelectedEntity, visible);
-                    RecordAndSubmitCommandBuffer();
+                    InvalidateCommandBuffer();
                 }
 
                 if (const auto *primitive = R.try_get<Primitive>(SelectedEntity)) {
                     // Editor for the selected entity's primitive type.
                     if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
                         ReplaceMesh(SelectedEntity, std::move(*new_mesh));
-                        RecordAndSubmitCommandBuffer();
+                        InvalidateCommandBuffer();
                     }
                 }
                 if (Button("Add instance")) AddInstance(GetParentEntity(R, SelectedEntity));
@@ -1057,7 +1051,7 @@ void Scene::RenderConfig() {
             if (CollapsingHeader("All objects")) {
                 std::vector<entt::entity> table_entities;
                 for (const auto &[entity, node] : R.view<const SceneNode>().each()) {
-                    if (node.parent == entt::null) table_entities.emplace_back(entity);
+                    if (node.Parent == entt::null) table_entities.emplace_back(entity);
                 }
                 RenderEntitiesTable("All objects", table_entities);
             }
@@ -1065,10 +1059,10 @@ void Scene::RenderConfig() {
         }
 
         if (BeginTabItem("Render")) {
-            if (Checkbox("Show grid", &ShowGrid)) RecordAndSubmitCommandBuffer();
+            if (Checkbox("Show grid", &ShowGrid)) InvalidateCommandBuffer();
             if (Button("Recompile shaders")) {
                 CompileShaders();
-                RecordAndSubmitCommandBuffer();
+                InvalidateCommandBuffer();
             }
             SeparatorText("Render mode");
             PushID("RenderMode");
@@ -1081,6 +1075,8 @@ void Scene::RenderConfig() {
             SameLine();
             render_mode_changed |= RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
             PopID();
+
+            if (ColorEdit3("Background color", BackgroundColor.float32)) InvalidateCommandBuffer();
 
             int color_mode = int(ColorMode);
             bool color_mode_changed = false;
@@ -1095,7 +1091,7 @@ void Scene::RenderConfig() {
                 RenderMode = ::RenderMode(render_mode);
                 ColorMode = ::ColorMode(color_mode);
                 UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
-                RecordAndSubmitCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
+                InvalidateCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
             }
             if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
                 auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
@@ -1121,7 +1117,7 @@ void Scene::RenderConfig() {
                         } else {
                             normals.erase(element);
                         }
-                        RecordAndSubmitCommandBuffer();
+                        InvalidateCommandBuffer();
                     }
                     if (element != AllNormalElements.back()) SameLine();
                 }
@@ -1129,7 +1125,7 @@ void Scene::RenderConfig() {
                     auto &buffers = MeshVkData->BvhBoxes;
                     if (ShowBvhBoxes) buffers.emplace(mesh_entity, VkRenderBuffers{VC, mesh.CreateBvhBuffers(EdgeColor)});
                     else buffers.erase(mesh_entity);
-                    RecordAndSubmitCommandBuffer();
+                    InvalidateCommandBuffer();
                 }
                 SameLine(); // For Bounding boxes checkbox
             }
@@ -1139,7 +1135,7 @@ void Scene::RenderConfig() {
                     if (ShowBoundingBoxes) buffers.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
                     else buffers.erase(entity);
                 }
-                RecordAndSubmitCommandBuffer();
+                InvalidateCommandBuffer();
             }
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {

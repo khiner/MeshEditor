@@ -257,7 +257,7 @@ VH Mesh::FindNearestVertex(const Ray &local_ray) const {
     const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
     if (!face.is_valid()) return VH{};
 
-    VH closest_vertex;
+    VH closest_vertex{};
     float min_distance_sq = std::numeric_limits<float>::max();
     for (const auto &vh : M.fv_range(face)) {
         const vec3 diff = GetPosition(vh) - intersection_point;
