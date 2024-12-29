@@ -17,6 +17,13 @@ using std::ranges::to;
 using std::views::transform;
 
 std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
+std::string GetName(const entt::registry &r, entt::entity entity) {
+    if (entity == entt::null) return "null";
+    if (const auto *name = r.try_get<Name>(entity)) {
+        if (!name->Value.empty()) return name->Value;
+    }
+    return IdString(entity);
+}
 
 struct SceneNode {
     entt::entity parent = entt::null;
@@ -424,7 +431,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
     R.emplace<Model>(entity, mat4(info.Transform));
-    R.emplace<std::string>(entity, info.Name);
+    R.emplace<Name>(entity, info.Name);
 
     MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
@@ -485,10 +492,10 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
     auto &parent_node = R.get<SceneNode>(parent);
-    if (info.Name.empty()) info.Name = std::format("{} instance {}", GetName(parent), parent_node.children.size());
+    if (info.Name.empty()) info.Name = std::format("{} instance {}", GetName(R, parent), parent_node.children.size());
     parent_node.children.emplace_back(entity);
     R.emplace<Model>(entity, std::move(info.Transform));
-    R.emplace<std::string>(entity, info.Name);
+    R.emplace<Name>(entity, info.Name);
     SetVisible(entity, info.Visible);
     if (info.Select) SelectEntity(entity, false);
     if (info.Submit) RecordAndSubmitCommandBuffer();
@@ -537,14 +544,6 @@ void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
     R.replace<Model>(entity, std::move(model));
     UpdateModelBuffer(entity);
     if (submit) SubmitCommandBuffer();
-}
-
-std::string Scene::GetName(entt::entity entity) const {
-    if (entity == entt::null) return "null";
-    if (const auto *name = R.try_get<std::string>(entity)) {
-        if (!name->empty()) return *name;
-    }
-    return IdString(entity);
 }
 
 const mat4 &Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
@@ -964,13 +963,13 @@ void Scene::RenderConfig() {
             }
             if (SelectedEntity != entt::null) {
                 PushID(uint(SelectedEntity));
-                Text("Selected object: %s", GetName(SelectedEntity).c_str());
+                Text("Selected object: %s", GetName(R, SelectedEntity).c_str());
                 Indent();
 
                 const auto &node = R.get<SceneNode>(SelectedEntity);
                 if (auto parent_entity = node.parent; parent_entity != entt::null) {
                     AlignTextToFramePadding();
-                    Text("Parent: %s", GetName(parent_entity).c_str());
+                    Text("Parent: %s", GetName(R, parent_entity).c_str());
                     SameLine();
                     if (Button("Select")) SelectEntity(parent_entity);
                 }
@@ -1179,7 +1178,7 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
             if (entity == SelectedEntity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
             TextUnformatted(IdString(entity).c_str());
             TableNextColumn();
-            TextUnformatted(R.get<std::string>(entity).c_str());
+            TextUnformatted(R.get<Name>(entity).Value.c_str());
             TableNextColumn();
             if (Button("Select")) entity_to_select = entity;
             SameLine();

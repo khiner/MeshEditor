@@ -13,7 +13,10 @@
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
 
-struct Visible {}; // A tag to mark entities that are visible.
+struct Visible {}; // A tag to mark entities as visible.
+struct Name {
+    std::string Value;
+};
 
 // If an entity has this component, the entity's mesh being excited at a point nearest to this vertex.
 struct ExcitedVertex {
@@ -150,6 +153,7 @@ struct MeshCreateInfo {
 };
 
 std::string IdString(entt::entity);
+std::string GetName(const entt::registry &, entt::entity); // Returns name if present, otherwise hex ID.
 
 static constexpr Camera CreateDefaultCamera(const World &world) { return {world.Up, {0, 0, 2}, world.Origin, 60, 0.01, 100}; }
 
@@ -177,7 +181,6 @@ struct Scene {
     void DestroyInstance(entt::entity, bool submit = true);
     void DestroyEntity(entt::entity, bool submit = true);
 
-    std::string GetName(entt::entity) const; // Returns name if present, otherwise hex ID.
     const mat4 &GetModel(entt::entity) const;
     void SetModel(entt::entity, mat4 &&, bool submit = true);
 

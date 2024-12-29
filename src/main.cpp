@@ -260,7 +260,7 @@ void AudioModelControls() {
                 if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
                 TextUnformatted(IdString(entity).c_str());
                 TableNextColumn();
-                TextUnformatted(R.get<std::string>(entity).c_str());
+                TextUnformatted(R.get<Name>(entity).Value.c_str());
                 TableNextColumn();
                 if (is_selected) BeginDisabled();
                 if (Button("Select")) entity_to_select = entity;
@@ -292,7 +292,7 @@ void AudioModelControls() {
                 if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
                 TextUnformatted(IdString(entity).c_str());
                 TableNextColumn();
-                TextUnformatted(R.get<std::string>(entity).c_str());
+                TextUnformatted(R.get<Name>(entity).Value.c_str());
                 TableNextColumn();
                 if (is_selected) BeginDisabled();
                 if (Button("Select")) entity_to_select = entity;
@@ -322,7 +322,7 @@ void AudioModelControls() {
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
                 const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
                 if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
-                auto &sound_object = R.emplace<SoundObject>(selected_entity, MainScene->GetName(selected_entity), registry_tets, material_name, CreateSvg);
+                auto &sound_object = R.emplace<SoundObject>(selected_entity, GetName(R, selected_entity), registry_tets, material_name, CreateSvg);
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
             }
         } else { // todo conditionally show "Regenerate tet mesh"
