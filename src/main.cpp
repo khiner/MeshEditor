@@ -320,10 +320,13 @@ void AudioModelControls() {
                 const auto material_name = real_impact ? real_impact->MaterialName : DefaultMaterialPresetName;
                 const auto listener_point_entity = FindListenerEntityWithIndex(263); // This listener point is roughly centered.
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
-                const auto &registry_tets = R.emplace<Tets>(selected_entity, std::move(*tets));
+                const auto &tets_component = R.emplace<Tets>(selected_entity, std::move(*tets));
                 if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
-                auto &sound_object = R.emplace<SoundObject>(selected_entity, GetName(R, selected_entity), registry_tets, material_name, CreateSvg);
+
+                auto &sound_object = R.emplace<SoundObject>(selected_entity, GetName(R, selected_entity), tets_component, material_name, CreateSvg);
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
+
+                R.emplace<Excitable>(selected_entity); // Let the scene know this object is excitable.
             }
         } else { // todo conditionally show "Regenerate tet mesh"
             SeparatorText("Tet mesh generation");
@@ -382,7 +385,7 @@ void AudioModelControls() {
     }
 
     if (Button("Remove audio model")) {
-        R.remove<SoundObjectListener, SoundObject, Tets>(sound_entity);
+        R.remove<Excitable, SoundObjectListener, SoundObject, Tets>(sound_entity);
     }
 
     if (auto sound_object_action = sound_object.RenderControls()) {

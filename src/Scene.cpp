@@ -13,8 +13,16 @@
 
 #include "ImGuizmo.h" // imgui must be included before imguizmo.
 
-using std::ranges::to;
+using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;
+
+struct SceneNode {
+    entt::entity parent = entt::null;
+    std::vector<entt::entity> children;
+    // Maps entities to their index in the models buffer. Includes parent. Only present in parent nodes.
+    // This allows for contiguous storage of models in the buffer, with erases but no inserts (only appends, which avoids shuffling memory regions).
+    std::unordered_map<entt::entity, uint> model_indices;
+};
 
 std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
 std::string GetName(const entt::registry &r, entt::entity entity) {
@@ -24,14 +32,14 @@ std::string GetName(const entt::registry &r, entt::entity entity) {
     }
     return IdString(entity);
 }
+entt::entity GetParentEntity(const entt::registry &r, entt::entity entity) {
+    if (entity == entt::null) return entt::null;
 
-struct SceneNode {
-    entt::entity parent = entt::null;
-    std::vector<entt::entity> children;
-    // Maps entities to their index in the models buffer. Includes parent. Only present in parent nodes.
-    // This allows for contiguous storage of models in the buffer, with erases but no inserts (only appends, which avoids shuffling memory regions).
-    std::unordered_map<entt::entity, uint> model_indices;
-};
+    if (const auto *node = r.try_get<SceneNode>(entity)) {
+        return node->parent == entt::null ? entity : GetParentEntity(r, node->parent);
+    }
+    return entt::null;
+}
 
 // Simple wrapper around vertex and index buffers.
 struct VkRenderBuffers {
@@ -76,6 +84,7 @@ const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
 namespace {
+
 vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
     const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
@@ -357,6 +366,10 @@ struct Gizmo {
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
       SilhouettePipeline(VC), EdgeDetectionPipeline(VC) {
+    // EnTT listeners
+    R.on_construct<Excitable>().connect<&Scene::OnExciteCreate>(*this);
+    R.on_destroy<Excitable>().connect<&Scene::OnExciteDestroy>(*this);
+
     UpdateEdgeColors();
     TransformBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
     ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
@@ -385,6 +398,17 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
 
+void Scene::OnExciteCreate(entt::registry &, entt::entity) {
+    SelectionModes.insert(SelectionMode::Excite);
+}
+void Scene::OnExciteDestroy(entt::registry &r, entt::entity) {
+    // The last excitable entity is being destroyed.
+    if (r.storage<Excitable>().size() == 1) {
+        if (SelectionMode == SelectionMode::Excite) SetSelectionMode(*SelectionModes.begin());
+        SelectionModes.erase(SelectionMode::Excite);
+    }
+}
+
 vk::ImageView Scene::GetResolveImageView() const { return *MainPipeline.ResolveImage->View; }
 
 // Get the model VK buffer index.
@@ -392,7 +416,10 @@ vk::ImageView Scene::GetResolveImageView() const { return *MainPipeline.ResolveI
 std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
     if (entity == entt::null) return std::nullopt;
 
-    const auto &model_indices = R.get<SceneNode>(GetParentEntity(entity)).model_indices;
+    const auto parent_entity = GetParentEntity(R, entity);
+    if (parent_entity == entt::null) return std::nullopt;
+
+    const auto &model_indices = R.get<SceneNode>(GetParentEntity(R, entity)).model_indices;
     if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
     return std::nullopt;
 }
@@ -401,7 +428,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<Visible>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
-    const auto parent = GetParentEntity(entity);
+    const auto parent = GetParentEntity(R, entity);
     auto &parent_node = R.get<SceneNode>(parent);
     auto &model_indices = parent_node.model_indices;
     if (visible) {
@@ -418,7 +445,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     } else {
         R.remove<Visible>(entity);
         const uint old_model_index = *GetModelBufferIndex(entity);
-        VC.EraseBufferRegion(MeshVkData->Models.at(GetParentEntity(entity)), old_model_index * sizeof(Model), sizeof(Model));
+        VC.EraseBufferRegion(MeshVkData->Models.at(GetParentEntity(R, entity)), old_model_index * sizeof(Model), sizeof(Model));
         model_indices.erase(entity);
         for (auto &[_, model_index] : model_indices) {
             if (model_index > old_model_index) --model_index;
@@ -505,7 +532,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
 
 void Scene::DestroyEntity(entt::entity entity, bool submit) {
     if (entity == SelectedEntity) SelectEntity(entt::null, false);
-    if (const auto parent_entity = GetParentEntity(entity); parent_entity != entity) return DestroyInstance(entity, submit);
+    if (const auto parent_entity = GetParentEntity(R, entity); parent_entity != entity) return DestroyInstance(entity, submit);
 
     if (submit) VC.Device->waitIdle(); // xxx device blocking should be more targetted
     MeshVkData->Main.erase(entity);
@@ -531,14 +558,7 @@ void Scene::DestroyInstance(entt::entity instance, bool submit) {
     if (submit) RecordAndSubmitCommandBuffer();
 }
 
-entt::entity Scene::GetParentEntity(entt::entity entity) const {
-    if (entity == entt::null) return entt::null;
-
-    const auto &node = R.get<SceneNode>(entity);
-    return node.parent == entt::null ? entity : GetParentEntity(node.parent);
-}
-
-const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(SelectedEntity)); }
+const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(R, SelectedEntity)); }
 
 void Scene::SetModel(entt::entity entity, mat4 &&model, bool submit) {
     R.replace<Model>(entity, std::move(model));
@@ -617,7 +637,7 @@ void Scene::RecordCommandBuffer() {
         }}
     );
 
-    const auto selected_mesh_entity = GetParentEntity(SelectedEntity);
+    const auto selected_mesh_entity = GetParentEntity(R, SelectedEntity);
     const auto selected_model_buffer_index = GetModelBufferIndex(SelectedEntity);
     const bool render_silhouette = selected_model_buffer_index && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
@@ -721,7 +741,7 @@ void Scene::UpdateTransformBuffers() {
 void Scene::UpdateModelBuffer(entt::entity entity) {
     if (const auto buffer_index = GetModelBufferIndex(entity)) {
         const auto &model = R.get<Model>(entity);
-        VC.UpdateBuffer(MeshVkData->Models.at(GetParentEntity(entity)), &model, *buffer_index * sizeof(Model), sizeof(Model));
+        VC.UpdateBuffer(MeshVkData->Models.at(GetParentEntity(R, entity)), &model, *buffer_index * sizeof(Model), sizeof(Model));
     }
 }
 
@@ -754,6 +774,20 @@ void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, v
     glm::decompose(transform, scale, orientation, position, skew, perspective);
     rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
 }
+
+std::multimap<float, entt::entity> HoveredEntitiesByDistance(const entt::registry &r, const Ray &mouse_world_ray) {
+    std::multimap<float, entt::entity> hovered_entities_by_distance;
+    for (const auto &[entity, model] : r.view<const Model>().each()) {
+        if (!r.all_of<Visible>(entity)) continue;
+
+        const auto &mesh = r.get<Mesh>(GetParentEntity(r, entity));
+        const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
+        if (auto intersect_distance = mesh.Intersect(mouse_ray)) {
+            hovered_entities_by_distance.emplace(*intersect_distance, entity);
+        }
+    }
+    return hovered_entities_by_distance;
+}
 } // namespace
 
 bool Scene::Render() {
@@ -761,7 +795,9 @@ bool Scene::Render() {
         // Handle keyboard input.
         if (IsWindowFocused()) {
             if (IsKeyPressed(ImGuiKey_Tab)) {
-                SetSelectionMode(SelectionMode == SelectionMode::Object ? SelectionMode::Edit : SelectionMode::Object);
+                // Cycle to the next selection mode, wrapping around to the first.
+                auto it = find(SelectionModes, SelectionMode);
+                SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
             }
             if (SelectionMode == SelectionMode::Edit) {
                 if (IsKeyPressed(ImGuiKey_1)) SelectionElement = MeshElement::Vertex;
@@ -776,51 +812,42 @@ bool Scene::Render() {
         // Handle mouse input.
         if (IsWindowHovered() && IsMouseClicked(ImGuiMouseButton_Left)) {
             const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
-            if (SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
-                // We always find the clicked vertex on the selected mesh and store it in the registry.
-                const auto &model = R.get<Model>(SelectedEntity);
-                const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
-                const auto &mesh = GetSelectedMesh();
-                const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
-                if (nearest_vertex.is_valid()) {
-                    R.emplace<ExcitedVertex>(SelectedEntity, nearest_vertex.idx());
-                }
-                if (SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
+            if (SelectionMode == SelectionMode::Edit) {
+                if (SelectionElement != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
+                    const auto &model = R.get<Model>(SelectedEntity);
+                    const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
+                    const auto &mesh = GetSelectedMesh();
                     const auto before_selected_element = SelectedElement;
                     SelectedElement = {SelectionElement, -1};
                     {
+                        const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
                         if (SelectionElement == MeshElement::Vertex) SelectedElement = Mesh::ElementIndex{nearest_vertex};
                         else if (SelectionElement == MeshElement::Edge) SelectedElement = Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)};
                         else if (SelectionElement == MeshElement::Face) SelectedElement = Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)};
                     }
                     if (SelectedElement != before_selected_element) {
-                        UpdateRenderBuffers(GetParentEntity(SelectedEntity), SelectedElement);
+                        UpdateRenderBuffers(GetParentEntity(R, SelectedEntity), SelectedElement);
                         SubmitCommandBuffer();
                     }
                 }
-            } else if (SelectionMode == SelectionMode::Object && (GetIO().KeyCtrl || GetIO().KeySuper)) {
-                static std::multimap<float, entt::entity> hovered_entities_by_distance;
-                hovered_entities_by_distance.clear();
-                for (const auto &[entity, model] : R.view<const Model>().each()) {
-                    if (!R.all_of<Visible>(entity)) continue;
-
-                    const auto &mesh = R.get<Mesh>(GetParentEntity(entity));
-                    const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
-                    if (auto intersect_distance = mesh.Intersect(mouse_ray)) {
-                        hovered_entities_by_distance.emplace(*intersect_distance, entity);
+            } else if (SelectionMode == SelectionMode::Object) {
+                if (GetIO().KeyCtrl || GetIO().KeySuper) {
+                    if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
+                        // Cycle through hovered entities.
+                        auto it = find_if(entities_by_distance, [&](const auto &entry) { return entry.second == SelectedEntity; });
+                        if (it != entities_by_distance.end()) ++it;
+                        if (it == entities_by_distance.end()) it = entities_by_distance.begin();
+                        SelectEntity(it->second);
+                    } else {
+                        SelectEntity(entt::null);
                     }
                 }
-
-                std::vector<entt::entity> sorted_hovered_entities;
-                for (const auto &[distance, entity] : hovered_entities_by_distance) sorted_hovered_entities.emplace_back(entity);
-                if (!sorted_hovered_entities.empty()) {
-                    // Cycle through hovered entities.
-                    auto it = std::ranges::find(sorted_hovered_entities, SelectedEntity);
-                    if (it != sorted_hovered_entities.end()) ++it;
-                    if (it == sorted_hovered_entities.end()) it = sorted_hovered_entities.begin();
-                    SelectEntity(*it);
-                } else {
-                    SelectEntity(entt::null);
+            } else if (SelectionMode == SelectionMode::Excite) {
+                // Excite the nearest entity if it's excitable.
+                if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
+                    if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
+                        R.emplace<ExcitedVertex>(nearest_entity);
+                    }
                 }
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ExcitedVertex>(SelectedEntity)) {
@@ -931,15 +958,15 @@ void Scene::RenderConfig() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
-                int selection_mode = int(SelectionMode);
-                bool selection_mode_changed = false;
                 PushID("SelectionMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Selection mode:");
-                SameLine();
-                selection_mode_changed |= RadioButton("Object", &selection_mode, int(SelectionMode::Object));
-                SameLine();
-                selection_mode_changed |= RadioButton("Edit", &selection_mode, int(SelectionMode::Edit));
+                int selection_mode = int(SelectionMode);
+                bool selection_mode_changed = false;
+                for (const auto mode : SelectionModes) {
+                    SameLine();
+                    selection_mode_changed |= RadioButton(to_string(mode).c_str(), &selection_mode, int(mode));
+                }
                 if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
                 if (SelectionMode == SelectionMode::Edit) {
                     AlignTextToFramePadding();
@@ -995,7 +1022,7 @@ void Scene::RenderConfig() {
                         RecordAndSubmitCommandBuffer();
                     }
                 }
-                if (Button("Add instance")) AddInstance(GetParentEntity(SelectedEntity));
+                if (Button("Add instance")) AddInstance(GetParentEntity(R, SelectedEntity));
 
                 if (CollapsingHeader("Transform")) {
                     const auto &model = R.get<Model>(SelectedEntity).Transform;
@@ -1083,7 +1110,7 @@ void Scene::RenderConfig() {
             // todo go back to storing normal settings in a map of element type to bool,
             //   and ensure meshes/instances are created with the current normals
             if (SelectedEntity != entt::null) {
-                const auto mesh_entity = GetParentEntity(SelectedEntity);
+                const auto mesh_entity = GetParentEntity(R, SelectedEntity);
                 const auto &mesh = R.get<Mesh>(mesh_entity);
                 auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
                 for (const auto element : AllNormalElements) {

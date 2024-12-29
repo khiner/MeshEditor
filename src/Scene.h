@@ -1,6 +1,7 @@
 #pragma once
 
 #include <entt/entity/registry.hpp>
+#include <set>
 
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"
@@ -18,7 +19,8 @@ struct Name {
     std::string Value;
 };
 
-// If an entity has this component, the entity's mesh being excited at a point nearest to this vertex.
+struct Excitable {}; // A tag to mark objects as excitable.
+// If an entity has this component, the entity's mesh is being excited at a point nearest to this vertex.
 struct ExcitedVertex {
     uint Vertex;
 };
@@ -144,7 +146,18 @@ struct EdgeDetectionPipeline : RenderPipeline {
 enum class SelectionMode {
     Object, // Select objects
     Edit, // Select individual mesh elements (vertices, edges, faces)
+    // Available when any `Excitable` objects are present.
+    // Mouse-down on an excitable object adds an `ExcitedVertex` component to the object entity, and mouse-up removes it.
+    Excite,
 };
+
+inline std::string to_string(SelectionMode mode) {
+    switch (mode) {
+        case SelectionMode::Object: return "Object";
+        case SelectionMode::Edit: return "Edit";
+        case SelectionMode::Excite: return "Excite";
+    }
+}
 
 struct MeshCreateInfo {
     std::string Name{};
@@ -154,6 +167,7 @@ struct MeshCreateInfo {
 
 std::string IdString(entt::entity);
 std::string GetName(const entt::registry &, entt::entity); // Returns name if present, otherwise hex ID.
+entt::entity GetParentEntity(const entt::registry &, entt::entity);
 
 static constexpr Camera CreateDefaultCamera(const World &world) { return {world.Up, {0, 0, 2}, world.Origin, 60, 0.01, 100}; }
 
@@ -168,7 +182,6 @@ struct Scene {
 
     std::optional<uint> GetModelBufferIndex(entt::entity);
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
-    entt::entity GetParentEntity(entt::entity) const;
 
     entt::entity AddMesh(Mesh &&, MeshCreateInfo info = {});
     entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
@@ -211,6 +224,9 @@ struct Scene {
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void RecordAndSubmitCommandBuffer(vk::Fence fence = nullptr);
 
+    void OnExciteCreate(entt::registry &, entt::entity);
+    void OnExciteDestroy(entt::registry &, entt::entity);
+
 private:
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
@@ -220,6 +236,7 @@ private:
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
 
+    std::set<SelectionMode> SelectionModes{SelectionMode::Object, SelectionMode::Edit};
     SelectionMode SelectionMode{SelectionMode::Object};
     MeshElement SelectionElement{MeshElement::Face};
     MeshElementIndex SelectedElement{};
