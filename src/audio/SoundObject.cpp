@@ -670,7 +670,7 @@ void SoundObject::ProduceAudio(FrameInfo, const float *input, float *output, uin
     }
 }
 
-std::optional<uint> SoundObject::FindNearestExcitableVertex(vec3 position) {
+std::optional<uint> SoundObject::FindNearestExcitableVertex(vec3 position) const {
     if (ExcitableVertices.empty()) return {};
 
     std::optional<uint> nearest_excite_vertex{};

@@ -13,7 +13,12 @@
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
 
-struct Visible {}; // A tag component to mark entities that are visible.
+struct Visible {}; // A tag to mark entities that are visible.
+
+// If an entity has this component, the entity's mesh being excited at a point nearest to this vertex.
+struct ExcitedVertex {
+    uint Vertex;
+};
 
 struct Mesh;
 struct MeshVkData;
@@ -23,7 +28,7 @@ struct VulkanBuffer;
 struct ImageResource;
 
 struct Model {
-    Model(mat4 &&transform)
+    Model(mat4 transform)
         : Transform{std::move(transform)}, InvTransform{glm::transpose(glm::inverse(Transform))} {}
 
     mat4 Transform{1};
@@ -53,12 +58,6 @@ struct Lights {
 
 struct SilhouetteDisplay {
     vec4 Color;
-};
-
-// If an entity has this component, the screen is being clicked at a point nearest to this vertex on the entity's mesh.
-struct ActiveVertex {
-    uint Vertex;
-    vec3 Position;
 };
 
 struct Gizmo;

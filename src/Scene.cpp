@@ -605,9 +605,7 @@ void Scene::RecordCommandBuffer() {
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        {}, // No dependency flags.
-        {}, // No memory barriers.
-        {}, // No buffer memory barriers.
+        {}, {}, {}, // No dependency flags, memory barriers, or buffer memory barriers
         std::vector<vk::ImageMemoryBarrier>{{
             {},
             {},
@@ -641,12 +639,12 @@ void Scene::RecordCommandBuffer() {
     }
 
     // Render meshes.
-    // todo reorganize mesh VK buffers to reduce the number of draw calls and pipeline switches.
-    // todo next up:
-    //      - update `MeshVkData->Models` and `GetModelBufferIndex` to keep `Models` contiguous with only visible, or
-    //      - keep all models in the `MeshVkData` but then update `drawIndexed` to use a different strategy:
-    //        -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
-    //           vkCmdDrawIndexedIndirectCount & put the offsets in a UBO that you index with gl_DrawId.
+    // todo:
+    //   - reorganize mesh VK buffers to reduce the number of draw calls and pipeline switches.
+    //   - update `MeshVkData->Models` and `GetModelBufferIndex` to keep `Models` contiguous with only visible, or
+    //   - keep all models in the `MeshVkData` but then update `drawIndexed` to use a different strategy:
+    //     -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
+    //        vkCmdDrawIndexedIndirectCount & put the offsets in a UBO indexed with gl_DrawId.
     const auto &meshes = R.view<const Mesh>();
     MainPipeline.Begin(cb, BackgroundColor);
     meshes.each([this, &cb](auto entity, auto &) {
@@ -786,7 +784,7 @@ bool Scene::Render() {
                 const auto &mesh = GetSelectedMesh();
                 const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
                 if (nearest_vertex.is_valid()) {
-                    R.emplace<ActiveVertex>(SelectedEntity, nearest_vertex.idx(), mesh.GetPosition(nearest_vertex));
+                    R.emplace<ExcitedVertex>(SelectedEntity, nearest_vertex.idx());
                 }
                 if (SelectionMode == SelectionMode::Edit && SelectionElement != MeshElement::None) {
                     const auto before_selected_element = SelectedElement;
@@ -826,8 +824,8 @@ bool Scene::Render() {
                     SelectEntity(entt::null);
                 }
             }
-        } else if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ActiveVertex>(SelectedEntity)) {
-            R.erase<ActiveVertex>(SelectedEntity);
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ExcitedVertex>(SelectedEntity)) {
+            R.erase<ExcitedVertex>(SelectedEntity);
         }
     }
 

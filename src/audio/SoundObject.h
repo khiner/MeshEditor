@@ -71,7 +71,7 @@ struct SoundObject {
 
     void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
 
-    std::optional<uint> FindNearestExcitableVertex(vec3 position);
+    std::optional<uint> FindNearestExcitableVertex(vec3 position) const;
 
 private:
     void SetVertex(uint);

@@ -477,13 +477,13 @@ int main(int, char **) {
     NFD_Init();
 
     // EnTT listeners
-    R.on_construct<SoundObjectExcitation>().connect<[&](entt::registry &r, entt::entity entity) {
+    R.on_construct<SoundObjectExcitation>().connect<[](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
             const auto &excitation = r.get<SoundObjectExcitation>(entity);
             sound_object->Apply(SoundObjectAction::Excite{excitation.Vertex, excitation.Force});
 
             // Orient the camera towards the excited vertex.
-            const auto &mesh = R.get<Mesh>(entity);
+            const auto &mesh = r.get<Mesh>(entity);
             const auto &model = MainScene->GetModel(entity);
             const auto vh = Mesh::VH(sound_object->SelectedVertex);
             const vec3 vertex_pos{model * vec4{mesh.GetPosition(vh), 1}};
@@ -504,24 +504,26 @@ int main(int, char **) {
             r.emplace<SoundObjectExcitationIndicator>(entity, indicator_entity);
         }
     }>();
-    R.on_destroy<SoundObjectExcitation>().connect<[&](entt::registry &r, entt::entity entity) {
+    R.on_destroy<SoundObjectExcitation>().connect<[](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
             sound_object->Apply(SoundObjectAction::SetExciteForce{0.f});
         }
-        if (auto *excitation_indicator = r.try_get<SoundObjectExcitationIndicator>(entity)) {
+        if (const auto *excitation_indicator = r.try_get<SoundObjectExcitationIndicator>(entity)) {
             MainScene->DestroyEntity(excitation_indicator->Entity);
         }
         r.remove<SoundObjectExcitationIndicator>(entity);
     }>();
-    R.on_construct<ActiveVertex>().connect<[&](entt::registry &r, entt::entity entity) {
-        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
-            const auto &active_vertex = r.get<ActiveVertex>(entity);
-            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(active_vertex.Position)) {
+    R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
+        if (const auto *sound_object = r.try_get<SoundObject>(entity)) {
+            const auto &excited_vertex = r.get<ExcitedVertex>(entity);
+            const auto &mesh = r.get<Mesh>(entity);
+            const auto position = mesh.GetPosition(Mesh::VH(excited_vertex.Vertex));
+            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(position)) {
                 r.emplace<SoundObjectExcitation>(entity, *nearest_excite_vertex, 1.f);
             }
         }
     }>();
-    R.on_destroy<ActiveVertex>().connect<[&](entt::registry &r, entt::entity entity) {
+    R.on_destroy<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         r.remove<SoundObjectExcitation>(entity);
     }>();
 
