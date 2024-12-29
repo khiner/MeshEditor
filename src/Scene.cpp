@@ -831,16 +831,14 @@ bool Scene::Render() {
                     }
                 }
             } else if (SelectionMode == SelectionMode::Object) {
-                if (GetIO().KeyCtrl || GetIO().KeySuper) {
-                    if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
-                        // Cycle through hovered entities.
-                        auto it = find_if(entities_by_distance, [&](const auto &entry) { return entry.second == SelectedEntity; });
-                        if (it != entities_by_distance.end()) ++it;
-                        if (it == entities_by_distance.end()) it = entities_by_distance.begin();
-                        SelectEntity(it->second);
-                    } else {
-                        SelectEntity(entt::null);
-                    }
+                if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
+                    // Cycle through hovered entities.
+                    auto it = find_if(entities_by_distance, [&](const auto &entry) { return entry.second == SelectedEntity; });
+                    if (it != entities_by_distance.end()) ++it;
+                    if (it == entities_by_distance.end()) it = entities_by_distance.begin();
+                    SelectEntity(it->second);
+                } else {
+                    SelectEntity(entt::null);
                 }
             } else if (SelectionMode == SelectionMode::Excite) {
                 // Excite the nearest entity if it's excitable.
@@ -874,9 +872,9 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    // We adopt Blender's mouse wheel for camera rotation, and Alt+wheel to zoom.
+    // We adopt Blender's mouse wheel for camera rotation, and Cmd+wheel to zoom.
     if (const vec2 wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; wheel != vec2{0, 0} && IsWindowHovered()) {
-        if (GetIO().KeyAlt) {
+        if (GetIO().KeyCtrl || GetIO().KeySuper) {
             Camera.SetTargetDistance(Camera.GetDistance() * (1.f - wheel.y / 16.f));
         } else {
             Camera.OrbitDelta(wheel * 0.1f);
