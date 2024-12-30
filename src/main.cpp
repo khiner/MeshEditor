@@ -412,7 +412,44 @@ void AudioModelControls() {
         );
     }
 }
+
+enum class FontFamily {
+    Main,
+    Monospace,
+};
+
+constexpr float FontAtlasScale = 2; // Rasterize to a scaled-up texture and scale down the font size globally, for sharper text.
+ImFont *MainFont{nullptr}, *MonospaceFont{nullptr};
+ImFont *AddFont(FontFamily family, const std::string_view font_file) {
+    static const auto FontsPath = fs::path("./") / "res" / "fonts";
+    // These are eyeballed.
+    static const std::unordered_map<FontFamily, uint> PixelsForFamily{
+        {FontFamily::Main, 15},
+        {FontFamily::Monospace, 17},
+    };
+
+    return GetIO().Fonts->AddFontFromFileTTF((FontsPath / font_file).c_str(), PixelsForFamily.at(family) * FontAtlasScale);
+}
+void InitFonts(float scale = 1.f) {
+    MainFont = AddFont(FontFamily::Main, "Inter-Regular.ttf");
+    MonospaceFont = AddFont(FontFamily::Monospace, "JetBrainsMono-Regular.ttf");
+    ImGui::GetIO().FontGlobalScale = scale / FontAtlasScale;
+}
 } // namespace
+
+/*
+namespace MeshEditor {
+// Returns true if the font was changed.
+// **Only call `ImGui::PopFont` if `PushFont` returns true.**
+bool PushFont(FontFamily family) {
+    auto *new_font = family == FontFamily::Main ? MainFont : MonospaceFont;
+    if (ImGui::GetFont() == new_font) return false;
+
+    ImGui::PushFont(new_font);
+    return true;
+}
+} // namespace MeshEditor
+*/
 
 int main(int, char **) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -475,6 +512,8 @@ int main(int, char **) {
         .MinAllocationSize = {},
     };
     ImGui_ImplVulkan_Init(&init_info);
+
+    InitFonts();
 
     NFD_Init();
 
