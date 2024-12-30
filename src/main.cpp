@@ -220,7 +220,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         R.emplace<RealImpactListenerPoint>(listener_point_instance_entity, p);
     }
     R.emplace<RealImpact>(object_entity, std::move(real_impact));
-    MainScene->InvalidateCommandBuffer();
 }
 
 using namespace ImGui;

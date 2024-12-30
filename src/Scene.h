@@ -238,8 +238,7 @@ private:
 
     std::set<SelectionMode> SelectionModes{SelectionMode::Object, SelectionMode::Edit};
     SelectionMode SelectionMode{SelectionMode::Object};
-    MeshElement SelectionElement{MeshElement::Face};
-    MeshElementIndex SelectedElement{};
+    MeshElementIndex SelectedElement{MeshElement::Face, -1};
 
     entt::entity SelectedEntity{entt::null};
     std::unique_ptr<MeshVkData> MeshVkData;
@@ -265,6 +264,12 @@ private:
     void SetSelectionMode(::SelectionMode mode) {
         SelectionMode = mode;
         InvalidateCommandBuffer();
+    }
+    void SetSelectedElement(MeshElementIndex element) {
+        if (SelectedEntity == entt::null) return;
+
+        SelectedElement = element;
+        UpdateRenderBuffers(GetParentEntity(R, SelectedEntity), SelectedElement);
     }
 
     const Mesh &GetSelectedMesh() const;

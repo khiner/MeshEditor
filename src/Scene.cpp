@@ -578,6 +578,7 @@ void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highl
     for (auto element : AllElements) { // todo only update buffers for viewed elements.
         VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh.CreateVertices(element, highlight));
     }
+    InvalidateCommandBuffer();
 }
 
 void Scene::SetExtent(vk::Extent2D extent) {
@@ -726,7 +727,7 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (auto entity : R.view<Mesh>()) UpdateRenderBuffers(entity, SelectedElement);
+    for (auto entity : R.view<Mesh>()) UpdateRenderBuffers(entity, entity == SelectedEntity ? SelectedElement : MeshElementIndex{});
 }
 
 void Scene::UpdateTransformBuffers() {
@@ -798,9 +799,9 @@ bool Scene::Render() {
                 SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
             }
             if (SelectionMode == SelectionMode::Edit) {
-                if (IsKeyPressed(ImGuiKey_1)) SelectionElement = MeshElement::Vertex;
-                if (IsKeyPressed(ImGuiKey_2)) SelectionElement = MeshElement::Edge;
-                if (IsKeyPressed(ImGuiKey_3)) SelectionElement = MeshElement::Face;
+                if (IsKeyPressed(ImGuiKey_1)) SetSelectedElement({MeshElement::Vertex, -1});
+                else if (IsKeyPressed(ImGuiKey_2)) SetSelectedElement({MeshElement::Edge, -1});
+                else if (IsKeyPressed(ImGuiKey_3)) SetSelectedElement({MeshElement::Face, -1});
             }
             if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
                 DestroyEntity(SelectedEntity);
@@ -811,21 +812,15 @@ bool Scene::Render() {
         if (IsWindowHovered() && IsMouseClicked(ImGuiMouseButton_Left)) {
             const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
             if (SelectionMode == SelectionMode::Edit) {
-                if (SelectionElement != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
+                if (SelectedElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
                     const auto &model = R.get<Model>(SelectedEntity);
                     const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
                     const auto &mesh = GetSelectedMesh();
-                    const auto before_selected_element = SelectedElement;
-                    SelectedElement = {SelectionElement, -1};
                     {
                         const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
-                        if (SelectionElement == MeshElement::Vertex) SelectedElement = Mesh::ElementIndex{nearest_vertex};
-                        else if (SelectionElement == MeshElement::Edge) SelectedElement = Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)};
-                        else if (SelectionElement == MeshElement::Face) SelectedElement = Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)};
-                    }
-                    if (SelectedElement != before_selected_element) {
-                        UpdateRenderBuffers(GetParentEntity(R, SelectedEntity), SelectedElement);
-                        CommandBufferDirty = true;
+                        if (SelectedElement.Element == MeshElement::Vertex) SetSelectedElement(Mesh::ElementIndex{nearest_vertex});
+                        else if (SelectedElement.Element == MeshElement::Edge) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)});
+                        else if (SelectedElement.Element == MeshElement::Face) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)});
                     }
                 }
             } else if (SelectionMode == SelectionMode::Object) {
@@ -964,15 +959,15 @@ void Scene::RenderConfig() {
                 if (SelectionMode == SelectionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    int element_selection_mode = int(SelectionElement);
+                    int element_selection_mode = int(SelectedElement.Element);
                     for (const auto element : AllElements) {
                         std::string name = to_string(element);
                         Capitalize(name);
                         SameLine();
-                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SelectionElement = element;
+                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SetSelectedElement({element, -1});
                     }
-                    Text("Selected %s: %s", to_string(SelectionElement).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
-                    if (SelectionElement == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
+                    Text("Selected %s: %s", to_string(SelectedElement.Element).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
+                    if (SelectedElement.Element == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
                         const auto &mesh = GetSelectedMesh();
                         const auto pos = mesh.GetPosition(Mesh::VH{SelectedElement.idx()});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", SelectedElement.idx(), pos.x, pos.y, pos.z);
@@ -1059,6 +1054,7 @@ void Scene::RenderConfig() {
         }
 
         if (BeginTabItem("Render")) {
+            if (ColorEdit3("Background color", BackgroundColor.float32)) InvalidateCommandBuffer();
             if (Checkbox("Show grid", &ShowGrid)) InvalidateCommandBuffer();
             if (Button("Recompile shaders")) {
                 CompileShaders();
@@ -1076,8 +1072,6 @@ void Scene::RenderConfig() {
             render_mode_changed |= RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
             PopID();
 
-            if (ColorEdit3("Background color", BackgroundColor.float32)) InvalidateCommandBuffer();
-
             int color_mode = int(ColorMode);
             bool color_mode_changed = false;
             if (RenderMode != RenderMode::Edges) {
@@ -1091,14 +1085,10 @@ void Scene::RenderConfig() {
                 RenderMode = ::RenderMode(render_mode);
                 ColorMode = ::ColorMode(color_mode);
                 UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
-                InvalidateCommandBuffer(); // Changing mode can change the rendered shader pipeline(s).
             }
             if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
                 auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-                if (ColorEdit3("Edge color", &edge_color.x)) {
-                    UpdateEdgeColors();
-                    SubmitCommandBuffer();
-                }
+                if (ColorEdit3("Edge color", &edge_color.x)) UpdateEdgeColors();
             }
             SeparatorText("Normal indicators");
             // todo go back to storing normal settings in a map of element type to bool,
