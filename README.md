@@ -34,12 +34,15 @@ General features:
 Audio-specific features:
 * Enable/disable audio output and change device and native format/sample rate
 * Volume / Mute
-* Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and instanced cylinders for each microphone position.
 * Generate an efficient physical audio model for any mesh. (See [Physical audio modeling](#physical-audio-modeling).)
+  - Click on an audio mesh to excite the nearest vertex, or trigger a selected vertex in the audio menu
+  - Edit model DSP params in real-time (via an embedded ImGui Faust parameter editor)
+  - View/navigate the generated audio graph (via an embedded Faust SVG diagram navigator)
+* Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and instanced cylinders for each microphone position.
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
-* Change SPIRV shader code and trigger a runtime recompile in the UI
+* Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
 * Resource reflection: Use [`SPIRV-Cross`](https://github.com/KhronosGroup/SPIRV-Cross) to automatically create descriptor set layout bindings for all shader pipelines
 * Instanced rendering of shared geometry with variable transforms
 
@@ -130,3 +133,4 @@ $ cmake --build build --config Release
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [ImPlot](https://github.com/epezent/implot): Plotting
 - [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform and camera rotation gizmos
+- [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, and parse for SVG link bounding boxes
