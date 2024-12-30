@@ -401,6 +401,7 @@ Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anyt
 
 void Scene::OnExciteCreate(entt::registry &, entt::entity) {
     SelectionModes.insert(SelectionMode::Excite);
+    SetSelectionMode(SelectionMode::Excite);
 }
 void Scene::OnExciteDestroy(entt::registry &r, entt::entity) {
     // The last excitable entity is being destroyed.
@@ -837,7 +838,12 @@ bool Scene::Render() {
                 // Excite the nearest entity if it's excitable.
                 if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
                     if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
-                        R.emplace<ExcitedVertex>(nearest_entity);
+                        const auto &model = R.get<Model>(nearest_entity);
+                        const auto &mesh = R.get<Mesh>(nearest_entity);
+                        if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(model.Transform));
+                            nearest_vertex.is_valid()) {
+                            R.emplace<ExcitedVertex>(nearest_entity, nearest_vertex.idx());
+                        }
                     }
                 }
             }
