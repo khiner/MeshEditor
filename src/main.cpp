@@ -319,11 +319,11 @@ void AudioModelControls() {
                 const auto *real_impact = R.try_get<RealImpact>(selected_entity);
                 const auto material_name = real_impact ? real_impact->MaterialName : DefaultMaterialPresetName;
                 const auto listener_point_entity = FindListenerEntityWithIndex(263); // This listener point is roughly centered.
+                R.emplace<Tets>(selected_entity, std::move(*tets));
                 const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
-                const auto &tets_component = R.emplace<Tets>(selected_entity, std::move(*tets));
                 if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
 
-                auto &sound_object = R.emplace<SoundObject>(selected_entity, tets_component, material_name, CreateSvg);
+                auto &sound_object = R.emplace<SoundObject>(selected_entity, material_name, CreateSvg);
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
 
                 R.emplace<Excitable>(selected_entity); // Let the scene know this object is excitable.
@@ -384,11 +384,8 @@ void AudioModelControls() {
         }
     }
 
-    if (Button("Remove audio model")) {
-        R.remove<Excitable, SoundObjectListener, SoundObject, Tets>(sound_entity);
-    }
-
-    if (auto sound_object_action = sound_object.RenderControls(GetName(R, sound_entity))) {
+    const auto &tets = R.get<Tets>(selected_entity);
+    if (auto sound_object_action = sound_object.RenderControls(GetName(R, sound_entity), tets)) {
         // We introduce this component indirection since excitations have multiple scene effects
         // (vertex indicator arrow, applying the excitation), and can be triggered in multiple ways
         // (from the control UI or clicking on the mesh).
@@ -411,6 +408,10 @@ void AudioModelControls() {
             },
             *sound_object_action
         );
+    }
+
+    if (Button("Remove audio model")) {
+        R.remove<Excitable, SoundObjectListener, SoundObject, Tets>(sound_entity);
     }
 }
 
@@ -557,10 +558,11 @@ int main(int, char **) {
     }>();
     R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         if (const auto *sound_object = r.try_get<SoundObject>(entity)) {
+            const auto &tets = r.get<Tets>(entity);
             const auto &excited_vertex = r.get<ExcitedVertex>(entity);
             const auto &mesh = r.get<Mesh>(entity);
             const auto position = mesh.GetPosition(Mesh::VH(excited_vertex.Vertex));
-            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(position)) {
+            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(tets, position)) {
                 r.emplace<SoundObjectExcitation>(entity, *nearest_excite_vertex, 1.f);
             }
         }

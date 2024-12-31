@@ -47,9 +47,8 @@ Tets Tets::CreateTets(const Mesh &mesh, TetGenOptions options) {
     }
 
     auto result = std::make_unique<tetgenio>();
-    const std::string flags_str = options.CreateFlags();
-    const char *flags = flags_str.c_str();
-    tetrahedralize(const_cast<char *>(flags), &in, result.get());
+    const std::string flags = options.CreateFlags();
+    tetrahedralize(const_cast<char *>(flags.c_str()), &in, result.get());
     return {std::move(result)};
 }
 

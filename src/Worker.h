@@ -1,11 +1,9 @@
 #pragma once
 
-#include <atomic>
 #include <functional>
 #include <future>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include "imgui.h"
 #include "imspinner.h"

@@ -53,10 +53,9 @@ using CreateSvgResource = std::function<void(std::unique_ptr<SvgResource> &, std
 
 // Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
 struct SoundObject {
-    SoundObject(const Tets &, const std::optional<std::string_view> &material_name, CreateSvgResource);
+    SoundObject(const std::optional<std::string_view> &material_name, CreateSvgResource);
     ~SoundObject();
 
-    const Tets &Tets;
     std::string_view MaterialName;
     MaterialProperties Material;
     std::vector<uint> ExcitableVertices;
@@ -66,11 +65,11 @@ struct SoundObject {
     void Apply(SoundObjectAction::Any);
 
     void ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const;
-    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name);
+    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets &);
 
     void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
 
-    std::optional<uint> FindNearestExcitableVertex(vec3 position) const;
+    std::optional<uint> FindNearestExcitableVertex(const Tets &, vec3 position) const;
 
 private:
     void SetVertex(uint);

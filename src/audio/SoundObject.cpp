@@ -618,8 +618,8 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 }
 } // namespace
 
-SoundObject::SoundObject(const ::Tets &tets, const std::optional<std::string_view> &material_name, CreateSvgResource create_svg)
-    : Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)), CreateSvg(std::move(create_svg)) {}
+SoundObject::SoundObject(const std::optional<std::string_view> &material_name, CreateSvgResource create_svg)
+    : MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)), CreateSvg(std::move(create_svg)) {}
 
 SoundObject::~SoundObject() = default;
 
@@ -670,13 +670,13 @@ void SoundObject::ProduceAudio(FrameInfo, const float *input, float *output, uin
     }
 }
 
-std::optional<uint> SoundObject::FindNearestExcitableVertex(vec3 position) const {
+std::optional<uint> SoundObject::FindNearestExcitableVertex(const Tets &tets, vec3 position) const {
     if (ExcitableVertices.empty()) return {};
 
     std::optional<uint> nearest_excite_vertex{};
     float min_dist = FLT_MAX;
     for (uint excite_vertex : ExcitableVertices) {
-        if (const float dist = glm::distance(position, Tets.GetVertexPosition(excite_vertex)); dist < min_dist) {
+        if (const float dist = glm::distance(position, tets.GetVertexPosition(excite_vertex)); dist < min_dist) {
             min_dist = dist;
             nearest_excite_vertex = {excite_vertex};
         }
@@ -699,7 +699,7 @@ void SoundObject::SetVertexForce(float force) {
     else if (Model == SoundObjectModel::Modal && ModalModel) ModalModel->SetVertexForce(force);
 }
 
-std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name) {
+std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name, const Tets &tets) {
     using namespace ImGui;
 
     std::optional<SoundObjectAction::Any> action;
@@ -791,11 +791,11 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
                 // ImpactAudio objects can only be struck at the impact points.
                 // Otherwise, linearly distribute the vertices across the tet mesh.
                 const uint num_excitable_vertices = 5; // todo UI input
-                ExcitableVertices = iota_view{0u, num_excitable_vertices} | transform([&](uint i) { return i * Tets->numberofpoints / num_excitable_vertices; }) | to<std::vector>();
+                ExcitableVertices = iota_view{0u, num_excitable_vertices} | transform([&](uint i) { return i * tets->numberofpoints / num_excitable_vertices; }) | to<std::vector>();
             }
             std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
             DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
-                return GenerateDsp(*Tets, Material, ExcitableVertices, true, fundamental_freq);
+                return GenerateDsp(*tets, Material, ExcitableVertices, true, fundamental_freq);
             });
         }
     }
