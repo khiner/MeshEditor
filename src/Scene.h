@@ -1,7 +1,9 @@
 #pragma once
 
-#include <entt/entity/registry.hpp>
 #include <set>
+
+#include <entt/entity/entity.hpp>
+#include <entt/entity/fwd.hpp>
 
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"

@@ -3,6 +3,7 @@
 #include <format>
 #include <ranges>
 
+#include <entt/entity/registry.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include "numeric/mat3.h"
