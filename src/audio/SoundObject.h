@@ -8,7 +8,6 @@
 #include <vector>
 
 #include "FrameInfo.h"
-#include "MaterialProperties.h"
 #include "Variant.h"
 #include "numeric/vec3.h"
 
@@ -42,9 +41,11 @@ using Any = std::variant<SetModel, SelectVertex, Excite, SetExciteForce>;
 } // namespace SoundObjectAction
 
 struct Tets;
+struct AcousticMaterial;
+struct Mesh2FaustResult;
+
 struct ModalAudioModel;
 struct ImpactAudioModel;
-struct Mesh2FaustResult;
 
 template<typename Result> struct Worker;
 
@@ -53,11 +54,9 @@ using CreateSvgResource = std::function<void(std::unique_ptr<SvgResource> &, std
 
 // Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
 struct SoundObject {
-    SoundObject(const std::optional<std::string_view> &material_name, CreateSvgResource);
+    SoundObject(CreateSvgResource);
     ~SoundObject();
 
-    std::string_view MaterialName;
-    MaterialProperties Material;
     std::vector<uint> ExcitableVertices;
     // The vertex currently selected for excitation.
     uint SelectedVertex{0};
@@ -65,7 +64,7 @@ struct SoundObject {
     void Apply(SoundObjectAction::Any);
 
     void ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const;
-    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets &);
+    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets &, AcousticMaterial &);
 
     void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
 

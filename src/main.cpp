@@ -19,6 +19,7 @@
 #include "Tets.h"
 #include "Window.h"
 #include "Worker.h"
+#include "audio/AcousticMaterial.h"
 #include "audio/AudioDevice.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundObject.h"
@@ -170,13 +171,6 @@ void FramePresent(ImGui_ImplVulkanH_Window &wd) {
     wd.SemaphoreIndex = (wd.SemaphoreIndex + 1) % wd.SemaphoreCount; // Now we can use the next set of semaphores.
 }
 
-entt::entity FindListenerEntityWithIndex(uint index) {
-    for (const auto &[entity, listener_point] : R.view<const RealImpactListenerPoint>().each()) {
-        if (listener_point.Index == index) return entity;
-    }
-    return entt::null;
-}
-
 void LoadRealImpact(const fs::path &path, entt::registry &R) {
     if (!fs::exists(path)) throw std::runtime_error(std::format("RealImpact path does not exist: {}", path.string()));
 
@@ -315,18 +309,37 @@ void AudioModelControls() {
                 // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
                 MainScene->AddMesh(tets->CreateMesh(), {"Tet Mesh", MainScene->GetModel(selected_entity), false, false});
                 TetGenerator.reset();
-
-                const auto *real_impact = R.try_get<RealImpact>(selected_entity);
-                const auto material_name = real_impact ? real_impact->MaterialName : DefaultMaterialPresetName;
-                const auto listener_point_entity = FindListenerEntityWithIndex(263); // This listener point is roughly centered.
                 R.emplace<Tets>(selected_entity, std::move(*tets));
-                const auto *listener_point = R.try_get<RealImpactListenerPoint>(listener_point_entity);
-                if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
 
-                auto &sound_object = R.emplace<SoundObject>(selected_entity, material_name, CreateSvg);
-                if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
+                // When the tet mesh is generated, create a material and sound object.
+                const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
+                    for (const auto &material : materials::acoustic::All) {
+                        if (material.Name == name) return material;
+                    }
+                    return {};
+                };
+                const auto *real_impact = R.try_get<RealImpact>(selected_entity);
+                const auto real_impact_material = real_impact && real_impact->MaterialName ? FindMaterial(*real_impact->MaterialName) : std::nullopt;
+                R.emplace<AcousticMaterial>(selected_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
 
+                auto &sound_object = R.emplace<SoundObject>(selected_entity, CreateSvg);
                 R.emplace<Excitable>(selected_entity); // Let the scene know this object is excitable.
+
+                if (real_impact) {
+                    const auto FindListenerEntityWithIndex = [&](uint index) -> entt::entity {
+                        for (const auto entity : R.view<RealImpactListenerPoint>()) {
+                            if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(entity); listener_point->Index == index) {
+                                return entity;
+                            }
+                        }
+                        return entt::null;
+                    };
+                    static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
+                    if (const auto listener_point_entity = FindListenerEntityWithIndex(CenterListenerIndex); listener_point_entity != entt::null) {
+                        R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
+                        sound_object.SetImpactFrames(R.get<RealImpactListenerPoint>(listener_point_entity).LoadImpactSamples(*real_impact));
+                    }
+                }
             }
         } else { // todo conditionally show "Regenerate tet mesh"
             SeparatorText("Tet mesh generation");
@@ -384,8 +397,11 @@ void AudioModelControls() {
         }
     }
 
-    const auto &tets = R.get<Tets>(selected_entity);
-    if (auto sound_object_action = sound_object.RenderControls(GetName(R, sound_entity), tets)) {
+    if (auto sound_object_action = sound_object.RenderControls(
+            GetName(R, sound_entity),
+            R.get<Tets>(selected_entity),
+            R.get<AcousticMaterial>(selected_entity)
+        )) {
         // We introduce this component indirection since excitations have multiple scene effects
         // (vertex indicator arrow, applying the excitation), and can be triggered in multiple ways
         // (from the control UI or clicking on the mesh).
@@ -411,7 +427,7 @@ void AudioModelControls() {
     }
 
     if (Button("Remove audio model")) {
-        R.remove<Excitable, SoundObjectListener, SoundObject, Tets>(sound_entity);
+        R.remove<Excitable, SoundObjectListener, SoundObject, Tets, AcousticMaterial>(sound_entity);
     }
 }
 

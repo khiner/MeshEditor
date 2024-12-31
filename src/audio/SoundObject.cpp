@@ -23,6 +23,7 @@ using Sample = float;
 #include "tetMesh.h" // Vega
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
+#include "AcousticMaterial.h"
 #include "FFTData.h"
 #include "SvgResource.h"
 #include "Tets.h"
@@ -515,7 +516,7 @@ private:
 };
 
 namespace {
-Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false, std::optional<float> fundamental_freq_opt = std::nullopt) {
+Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertex_indices, bool freq_control = false, std::optional<float> fundamental_freq_opt = std::nullopt) {
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
     // Turn each tetrahedron into 4 triangles.
@@ -605,11 +606,6 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const MaterialProperties &mat
     };
 }
 
-MaterialProperties GetMaterialPreset(std::string_view name) {
-    if (MaterialPresets.contains(name)) return MaterialPresets.at(name);
-    return MaterialPresets.at(DefaultMaterialPresetName);
-}
-
 // Assumes a and b are the same length.
 constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
     float sum = 0;
@@ -618,8 +614,7 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 }
 } // namespace
 
-SoundObject::SoundObject(const std::optional<std::string_view> &material_name, CreateSvgResource create_svg)
-    : MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)), CreateSvg(std::move(create_svg)) {}
+SoundObject::SoundObject(CreateSvgResource create_svg) : CreateSvg(std::move(create_svg)) {}
 
 SoundObject::~SoundObject() = default;
 
@@ -699,7 +694,7 @@ void SoundObject::SetVertexForce(float force) {
     else if (Model == SoundObjectModel::Modal && ModalModel) ModalModel->SetVertexForce(force);
 }
 
-std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name, const Tets &tets) {
+std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name, const Tets &tets, AcousticMaterial &material) {
     using namespace ImGui;
 
     std::optional<SoundObjectAction::Any> action;
@@ -759,27 +754,27 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         }
 
         SeparatorText("Material properties");
-        if (BeginCombo("Presets", MaterialName.data())) {
-            for (const auto [preset_name, material] : MaterialPresets) {
-                const bool is_selected = (preset_name == MaterialName);
-                if (Selectable(preset_name.data(), is_selected)) {
-                    MaterialName = preset_name;
-                    Material = material;
+        if (BeginCombo("Presets", material.Name.c_str())) {
+            for (const auto &material_choice : materials::acoustic::All) {
+                const bool is_selected = (material_choice.Name == material.Name);
+                if (Selectable(material_choice.Name.c_str(), is_selected)) {
+                    material = material_choice;
                 }
                 if (is_selected) SetItemDefaultFocus();
             }
             EndCombo();
         }
 
+        auto &material_props = material.Properties;
         Text("Density (kg/m^3)");
-        InputDouble("##Density", &Material.Density, 0.0f, 0.0f, "%.3f");
+        InputDouble("##Density", &material_props.Density, 0.0f, 0.0f, "%.3f");
         Text("Young's modulus (Pa)");
-        InputDouble("##Young's modulus", &Material.YoungModulus, 0.0f, 0.0f, "%.3f");
+        InputDouble("##Young's modulus", &material_props.YoungModulus, 0.0f, 0.0f, "%.3f");
         Text("Poisson's ratio");
-        InputDouble("##Poisson's ratio", &Material.PoissonRatio, 0.0f, 0.0f, "%.3f");
+        InputDouble("##Poisson's ratio", &material_props.PoissonRatio, 0.0f, 0.0f, "%.3f");
         Text("Rayleigh damping alpha/beta");
-        InputDouble("##Rayleigh damping alpha", &Material.Alpha, 0.0f, 0.0f, "%.3f");
-        InputDouble("##Rayleigh damping beta", &Material.Beta, 0.0f, 0.0f, "%.3f");
+        InputDouble("##Rayleigh damping alpha", &material_props.Alpha, 0.0f, 0.0f, "%.3f");
+        InputDouble("##Rayleigh damping beta", &material_props.Beta, 0.0f, 0.0f, "%.3f");
         if (DspGenerator) {
             if (auto m2f_result = DspGenerator->Render()) {
                 ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), SelectedVertex, CreateSvg);
@@ -795,7 +790,7 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
             }
             std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
             DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
-                return GenerateDsp(*tets, Material, ExcitableVertices, true, fundamental_freq);
+                return GenerateDsp(*tets, material_props, ExcitableVertices, true, fundamental_freq);
             });
         }
     }

@@ -29,7 +29,7 @@ namespace {
 // The authors provide `.mtl` and `.png` material files, but they don't provide the material name.
 // However, most object names include the material name, and the rest are easy to guess.
 // A '*' indicates a guess based on the object name and the material image.
-const std::unordered_map<std::string_view, std::string_view> MaterialNameForObjName{
+const std::unordered_map<std::string_view, std::string_view> MaterialNameForObject{
     {"CeramicKoiBowl", "Ceramic"},
     {"CeramicBowlFish", "Ceramic"},
     {"Bowl", "Ceramic"}, // *
@@ -101,7 +101,7 @@ std::optional<std::string> FindObjectName(const fs::path &start_path) {
 } // namespace
 
 RealImpact::RealImpact(const fs::path &directory) : Directory(directory), ObjPath(Directory / "transformed.obj"), ObjectName(*FindObjectName(Directory)) {
-    if (const auto it = MaterialNameForObjName.find(ObjectName); it != MaterialNameForObjName.end()) MaterialName = it->second;
+    if (const auto it = MaterialNameForObject.find(ObjectName); it != MaterialNameForObject.end()) MaterialName = it->second;
     const auto vertex_ids = npy::read_npy<long>(Directory / "vertexID.npy").data;
     for (uint i = 0; i < NumImpactVertices; ++i) VertexIndices[i] = vertex_ids[i * NumListenerPoints];
     const auto vertex_xyzs = npy::read_npy<double>(Directory / "vertexXYZ.npy").data;
