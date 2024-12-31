@@ -55,9 +55,9 @@ std::unique_ptr<ImGuiTexture> MainSceneTexture;
 
 entt::registry R;
 
-void AudioCallback(FrameInfo device_data, float *output, const float *input, uint frame_count) {
+void AudioCallback(AudioBuffer buffer) {
     for (const auto &audio_source : R.storage<SoundObject>()) {
-        audio_source.ProduceAudio(device_data, (float *)input, (float *)output, frame_count);
+        audio_source.ProduceAudio(buffer);
     }
 }
 

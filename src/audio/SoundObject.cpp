@@ -24,6 +24,7 @@ using Sample = float;
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 
 #include "AcousticMaterial.h"
+#include "AudioBuffer.h"
 #include "FFTData.h"
 #include "SvgResource.h"
 #include "Tets.h"
@@ -651,17 +652,17 @@ void SoundObject::SetImpactFrames(std::unordered_map<uint, std::vector<float>> &
     }
 }
 
-void SoundObject::ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const {
+void SoundObject::ProduceAudio(const AudioBuffer &buffer) const {
     if (Model == SoundObjectModel::ImpactAudio && ImpactModel) {
         if (!ImpactModel->ImpactFramesByVertex.contains(SelectedVertex)) return;
 
         const auto &impact_samples = ImpactModel->ImpactFramesByVertex.at(SelectedVertex);
         // todo - resample from 48kHz to device sample rate if necessary
-        for (uint i = 0; i < frame_count; ++i) {
-            output[i] += ImpactModel->Frame < impact_samples.size() ? impact_samples[ImpactModel->Frame++] : 0.0f;
+        for (uint i = 0; i < buffer.FrameCount; ++i) {
+            buffer.Output[i] += ImpactModel->Frame < impact_samples.size() ? impact_samples[ImpactModel->Frame++] : 0.0f;
         }
     } else if (Model == SoundObjectModel::Modal && ModalModel) {
-        ModalModel->ProduceAudio(input, output, frame_count);
+        ModalModel->ProduceAudio(buffer.Input, buffer.Output, buffer.FrameCount);
     }
 }
 

@@ -3,10 +3,10 @@
 #include <functional>
 #include <string>
 
-#include "FrameInfo.h"
+#include "AudioBuffer.h"
 
 struct AudioDevice {
-    using audio_callback_t = std::function<void(FrameInfo, float *output, const float *input, uint32_t frames)>;
+    using audio_callback_t = std::function<void(AudioBuffer)>;
 
     AudioDevice(audio_callback_t);
     ~AudioDevice();

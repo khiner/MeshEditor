@@ -12,7 +12,7 @@
 namespace {
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
     auto cb = *reinterpret_cast<AudioDevice::audio_callback_t *>(device->pUserData);
-    cb({device->sampleRate, device->playback.channels}, (float *)output, (const float *)input, frame_count);
+    cb({device->sampleRate, device->playback.channels, frame_count, (const float *)input, (float *)output});
 }
 
 enum IO {

@@ -7,7 +7,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "FrameInfo.h"
 #include "Variant.h"
 #include "numeric/vec3.h"
 
@@ -40,6 +39,7 @@ struct SetExciteForce {
 using Any = std::variant<SetModel, SelectVertex, Excite, SetExciteForce>;
 } // namespace SoundObjectAction
 
+struct AudioBuffer;
 struct Tets;
 struct AcousticMaterial;
 struct Mesh2FaustResult;
@@ -63,7 +63,7 @@ struct SoundObject {
 
     void Apply(SoundObjectAction::Any);
 
-    void ProduceAudio(FrameInfo, const float *input, float *output, uint frame_count) const;
+    void ProduceAudio(const AudioBuffer &) const;
     std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets &, AcousticMaterial &);
 
     void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
