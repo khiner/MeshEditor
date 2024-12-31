@@ -323,7 +323,7 @@ void AudioModelControls() {
                 const auto &tets_component = R.emplace<Tets>(selected_entity, std::move(*tets));
                 if (listener_point) R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
 
-                auto &sound_object = R.emplace<SoundObject>(selected_entity, GetName(R, selected_entity), tets_component, material_name, CreateSvg);
+                auto &sound_object = R.emplace<SoundObject>(selected_entity, tets_component, material_name, CreateSvg);
                 if (real_impact && listener_point) sound_object.SetImpactFrames(listener_point->LoadImpactSamples(*real_impact));
 
                 R.emplace<Excitable>(selected_entity); // Let the scene know this object is excitable.
@@ -388,7 +388,7 @@ void AudioModelControls() {
         R.remove<Excitable, SoundObjectListener, SoundObject, Tets>(sound_entity);
     }
 
-    if (auto sound_object_action = sound_object.RenderControls()) {
+    if (auto sound_object_action = sound_object.RenderControls(GetName(R, sound_entity))) {
         // We introduce this component indirection since excitations have multiple scene effects
         // (vertex indicator arrow, applying the excitation), and can be triggered in multiple ways
         // (from the control UI or clicking on the mesh).

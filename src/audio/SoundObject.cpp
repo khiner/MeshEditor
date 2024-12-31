@@ -156,6 +156,7 @@ struct Waveform {
             ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
             ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
             ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
+            (void)highlight_peak_freq_index; // unused
             // Disabling peak frequency display for now.
             // for (uint i = 0; i < PeakFrequencies.size(); ++i) {
             //     const bool is_highlighted = highlight_peak_freq_index && i == *highlight_peak_freq_index;
@@ -183,10 +184,9 @@ struct Waveform {
     float GetMaxValue() const { return *std::max_element(Frames.begin(), Frames.end()); }
 
     // If `normalize_max` is set, normalize the data to this maximum value.
-    void WriteWav(std::string_view file_name, std::optional<float> normalize_max = std::nullopt) const {
-        const std::string wav_filename = std::format("../audio_samples/{}.wav", file_name);
-        if (auto status = ma_encoder_init_file(wav_filename.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
-            throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", wav_filename, uint(status)));
+    void WriteWav(fs::path file_path, std::optional<float> normalize_max = std::nullopt) const {
+        if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
+            throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", file_path.string(), uint(status)));
         }
         const float mult = normalize_max ? *normalize_max / *std::max_element(Frames.begin(), Frames.end()) : 1.0f;
         const auto frames = Frames | transform([mult](float f) { return f * mult; }) | to<std::vector>();
@@ -618,8 +618,8 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 }
 } // namespace
 
-SoundObject::SoundObject(std::string_view name, const ::Tets &tets, const std::optional<std::string_view> &material_name, CreateSvgResource create_svg)
-    : Name(name), Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)), CreateSvg(std::move(create_svg)) {}
+SoundObject::SoundObject(const ::Tets &tets, const std::optional<std::string_view> &material_name, CreateSvgResource create_svg)
+    : Tets(tets), MaterialName(material_name.value_or(DefaultMaterialPresetName)), Material(GetMaterialPreset(MaterialName)), CreateSvg(std::move(create_svg)) {}
 
 SoundObject::~SoundObject() = default;
 
@@ -699,7 +699,7 @@ void SoundObject::SetVertexForce(float force) {
     else if (Model == SoundObjectModel::Modal && ModalModel) ModalModel->SetVertexForce(force);
 }
 
-std::optional<SoundObjectAction::Any> SoundObject::RenderControls() {
+std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name) {
     using namespace ImGui;
 
     std::optional<SoundObjectAction::Any> action;
@@ -750,8 +750,9 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls() {
                 SameLine();
                 if (Button("Save wav files")) {
                     // Save wav files for both the modal and real-world impact sounds.
-                    modal.WriteWav(std::format("{}-modal", Name, impact.GetMaxValue()));
-                    impact.WriteWav(std::format("{}-impact", Name));
+                    static const auto WavOutDir = fs::path{".."} / "audio_samples";
+                    modal.WriteWav(WavOutDir / std::format("{}-modal", name));
+                    impact.WriteWav(WavOutDir / std::format("{}-impact", name));
                 }
             }
             ModalModel->Draw(&SelectedVertex);
