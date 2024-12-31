@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -8,7 +9,6 @@
 #include <vector>
 
 #include "Variant.h"
-#include "numeric/vec3.h"
 
 enum class SoundObjectModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.
@@ -52,23 +52,28 @@ template<typename Result> struct Worker;
 struct SvgResource;
 using CreateSvgResource = std::function<void(std::unique_ptr<SvgResource> &, std::filesystem::path)>;
 
+struct ExcitableVertices {
+    ExcitableVertices(std::vector<uint> &&vertices)
+        : Vertices(std::move(vertices)), SelectedVertex(!Vertices.empty() ? Vertices.front() : 0) {}
+
+    std::vector<uint> Vertices;
+    uint SelectedVertex; // The vertex currently selected for excitation.
+};
+
 // Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
 struct SoundObject {
     SoundObject(CreateSvgResource);
     ~SoundObject();
 
-    std::vector<uint> ExcitableVertices;
-    // The vertex currently selected for excitation.
-    uint SelectedVertex{0};
-
     void Apply(SoundObjectAction::Any);
 
-    void ProduceAudio(const AudioBuffer &) const;
+    void ProduceAudio(AudioBuffer &) const;
     std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets &, AcousticMaterial &);
 
-    void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
+    const ExcitableVertices &GetExcitableVertices() const;
+    uint GetSelectedVertex() const { return GetExcitableVertices().SelectedVertex; }
 
-    std::optional<uint> FindNearestExcitableVertex(const Tets &, vec3 position) const;
+    void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
 
 private:
     void SetVertex(uint);

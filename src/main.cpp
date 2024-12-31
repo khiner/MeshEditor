@@ -312,7 +312,7 @@ void AudioModelControls() {
                 R.emplace<Tets>(selected_entity, std::move(*tets));
 
                 // When the tet mesh is generated, create a material and sound object.
-                const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
+                static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
                     for (const auto &material : materials::acoustic::All) {
                         if (material.Name == name) return material;
                     }
@@ -326,7 +326,7 @@ void AudioModelControls() {
                 R.emplace<Excitable>(selected_entity); // Let the scene know this object is excitable.
 
                 if (real_impact) {
-                    const auto FindListenerEntityWithIndex = [&](uint index) -> entt::entity {
+                    static const auto FindListenerEntityWithIndex = [](uint index) -> entt::entity {
                         for (const auto entity : R.view<RealImpactListenerPoint>()) {
                             if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(entity); listener_point->Index == index) {
                                 return entity;
@@ -351,9 +351,8 @@ void AudioModelControls() {
             SameLine();
             Checkbox("Quality", &quality);
             HelpMarker("Adds new points to improve the mesh quality.");
-            if (Button("Create sound object")) {
+            if (Button("Create audio model")) {
                 // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
-                // todo quality UI toggle, and also a toggle for `PreserveSurface` for non-RealImpact meshes
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
                 const auto &surface_mesh = R.get<Mesh>(selected_entity);
                 TetGenerator = std::make_unique<Worker<Tets>>("Generating tetrahedral mesh...", [&] {
@@ -415,7 +414,7 @@ void AudioModelControls() {
                     if (action.Force == 0) {
                         R.remove<SoundObjectExcitation>(sound_entity);
                     } else {
-                        R.emplace<SoundObjectExcitation>(sound_entity, sound_object.SelectedVertex, action.Force);
+                        R.emplace<SoundObjectExcitation>(sound_entity, sound_object.GetSelectedVertex(), action.Force);
                     }
                 },
                 [&](auto action) {
@@ -426,6 +425,7 @@ void AudioModelControls() {
         );
     }
 
+    Spacing();
     if (Button("Remove audio model")) {
         R.remove<Excitable, SoundObjectListener, SoundObject, Tets, AcousticMaterial>(sound_entity);
     }
@@ -544,7 +544,7 @@ int main(int, char **) {
             // Orient the camera towards the excited vertex.
             const auto &mesh = r.get<Mesh>(entity);
             const auto &model = MainScene->GetModel(entity);
-            const auto vh = Mesh::VH(sound_object->SelectedVertex);
+            const auto vh = Mesh::VH(excitation.Vertex);
             const vec3 vertex_pos{model * vec4{mesh.GetPosition(vh), 1}};
             MainScene->Camera.SetTargetDirection(glm::normalize(vertex_pos - MainScene->Camera.Target));
 
@@ -575,12 +575,18 @@ int main(int, char **) {
     R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         if (const auto *sound_object = r.try_get<SoundObject>(entity)) {
             const auto &tets = r.get<Tets>(entity);
-            const auto &excited_vertex = r.get<ExcitedVertex>(entity);
             const auto &mesh = r.get<Mesh>(entity);
-            const auto position = mesh.GetPosition(Mesh::VH(excited_vertex.Vertex));
-            if (const auto nearest_excite_vertex = sound_object->FindNearestExcitableVertex(tets, position)) {
-                r.emplace<SoundObjectExcitation>(entity, *nearest_excite_vertex, 1.f);
+            const auto position = mesh.GetPosition(Mesh::VH(r.get<ExcitedVertex>(entity).Vertex));
+
+            std::optional<uint> nearest_excite_vertex{};
+            float min_dist = FLT_MAX;
+            for (uint excite_vertex : sound_object->GetExcitableVertices().Vertices) {
+                if (const float dist = glm::distance(position, tets.GetVertexPosition(excite_vertex)); dist < min_dist) {
+                    min_dist = dist;
+                    nearest_excite_vertex = {excite_vertex};
+                }
             }
+            if (nearest_excite_vertex) r.emplace<SoundObjectExcitation>(entity, *nearest_excite_vertex, 1.f);
         }
     }>();
     R.on_destroy<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
