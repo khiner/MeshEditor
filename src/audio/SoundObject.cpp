@@ -244,6 +244,7 @@ struct ImpactAudioModel {
     bool CanExcite() const { return bool(Waveform); }
     void SetVertex(uint vertex) {
         Stop();
+        Excitable.SelectedVertex = vertex;
         if (ImpactFramesByVertex.contains(vertex)) {
             auto &frames = ImpactFramesByVertex.at(vertex);
             Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
@@ -436,6 +437,7 @@ struct ModalAudioModel {
     bool CanExcite() const { return !ImpactRecording || ImpactRecording->Complete; }
     void SetVertex(uint vertex) {
         Stop();
+        Excitable.SelectedVertex = vertex;
         const auto &vertices = Excitable.ExcitableVertices;
         if (auto it = find(vertices, vertex); it != vertices.end()) {
             SetParam(ExciteIndexParamName, std::ranges::distance(vertices.begin(), it));
@@ -626,7 +628,6 @@ void SoundObject::Apply(SoundObjectAction::Any action) {
     std::visit(
         Match{
             [&](SoundObjectAction::SetModel action) {
-                // Stop any ongoing impacts.
                 if (ImpactModel) ImpactModel->Stop();
                 if (ModalModel) ModalModel->Stop();
                 Model = action.Model;
@@ -766,13 +767,14 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
 
         if (DspGenerator) {
             if (auto m2f_result = DspGenerator->Render()) {
-                ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CreateSvg);
                 DspGenerator.reset();
+                ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CreateSvg);
+                action = SoundObjectAction::SetModel{SoundObjectModel::Modal};
             }
         }
         static int num_excitable_vertices = 10;
         if (num_excitable_vertices > tets->numberofpoints) num_excitable_vertices = tets->numberofpoints;
-        if (SliderInt("Num excitable vertices", &num_excitable_vertices, 1, tets->numberofpoints));
+        SliderInt("Num excitable vertices", &num_excitable_vertices, 1, tets->numberofpoints);
 
         if (Button(std::format("{} DSP", ModalModel ? "Regenerate" : "Generate").c_str())) {
             // Linearly distribute the vertices across the tet mesh.

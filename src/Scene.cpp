@@ -5,12 +5,14 @@
 
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include "Widgets.h" // imgui
 
 #include "ImGuizmo.h" // imgui must be included before imguizmo.
 
 #include "Excitable.h"
+#include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
 #include "numeric/mat3.h"
 #include "vulkan/VulkanContext.h"
@@ -374,6 +376,9 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
     R.on_destroy<Excitable>().connect<&Scene::OnDestroyExcitable>(*this);
 
+    R.on_construct<ExcitedVertex>().connect<&Scene::OnCreateExcitedVertex>(*this);
+    R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
+
     UpdateEdgeColors();
     TransformBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
     ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
@@ -430,6 +435,33 @@ void Scene::OnDestroyExcitable(entt::registry &r, entt::entity entity) {
 
     static constexpr Excitable EmptyExcitable{};
     UpdateHighlightedVertices(entity, EmptyExcitable);
+}
+
+void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity entity) {
+    auto &excited_vertex = r.get<ExcitedVertex>(entity);
+    // Orient the camera towards the excited vertex.
+    const auto vh = Mesh::VH(excited_vertex.Vertex);
+    const auto &mesh = r.get<Mesh>(entity);
+    const auto &model = r.get<Model>(entity).Transform;
+    const vec3 vertex_pos{model * vec4{mesh.GetPosition(vh), 1}};
+    Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
+
+    // Create vertex indicator arrow pointing at the excited vertex.
+    const vec3 normal{model * vec4{mesh.GetVertexNormal(vh), 0}};
+    const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
+    const mat4 scale = glm::scale({1}, vec3{scale_factor});
+    const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
+    const mat4 rotate = glm::mat4_cast(glm::rotation(World.Up, normal));
+    auto vertex_indicator_mesh = Arrow();
+    vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
+    excited_vertex.IndicatorEntity = AddMesh(
+        std::move(vertex_indicator_mesh),
+        {.Name = "Excite vertex indicator", .Transform = mat4{translate * rotate * scale}, .Select = false}
+    );
+}
+void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity entity) {
+    const auto &excited_vertex = r.get<ExcitedVertex>(entity);
+    DestroyEntity(excited_vertex.IndicatorEntity);
 }
 
 vk::ImageView Scene::GetResolveImageView() const { return *MainPipeline.ResolveImage->View; }
@@ -559,7 +591,7 @@ void Scene::DestroyEntity(entt::entity entity) {
     if (entity == SelectedEntity) SelectEntity(entt::null);
     if (const auto parent_entity = GetParentEntity(R, entity); parent_entity != entity) return DestroyInstance(entity);
 
-    VC.Device->waitIdle(); // xxx device blocking should be more targetted
+    VC.Device->waitIdle(); // xxx device blocking should be more targeted
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
     MeshVkData->Models.erase(entity);
@@ -860,11 +892,25 @@ bool Scene::Render() {
                 // Excite the nearest entity if it's excitable.
                 if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
                     if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
-                        const auto &model = R.get<Model>(nearest_entity);
+                        const auto &model = R.get<Model>(nearest_entity).Transform;
                         const auto &mesh = R.get<Mesh>(nearest_entity);
-                        if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(model.Transform));
+                        if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(model));
                             nearest_vertex.is_valid()) {
-                            R.emplace<ExcitedVertex>(nearest_entity, nearest_vertex.idx());
+                            if (const auto *excitable = R.try_get<Excitable>(nearest_entity)) {
+                                // Find the nearest excitable vertex.
+                                std::optional<uint> nearest_excite_vertex{};
+                                float min_dist = FLT_MAX;
+                                const auto &position = mesh.GetPosition(nearest_vertex);
+                                for (uint excite_vertex : excitable->ExcitableVertices) {
+                                    if (const float dist = glm::distance(position, mesh.GetPosition(Mesh::VH(excite_vertex))); dist < min_dist) {
+                                        min_dist = dist;
+                                        nearest_excite_vertex = {excite_vertex};
+                                    }
+                                }
+                                if (nearest_excite_vertex) {
+                                    R.emplace<ExcitedVertex>(nearest_entity, *nearest_excite_vertex, 1.f);
+                                }
+                            }
                         }
                     }
                 }

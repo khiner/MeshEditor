@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include <entt/entity/entity.hpp>
+
 struct Excitable {
     Excitable() = default;
     Excitable(std::vector<uint32_t> vertices)
@@ -12,7 +14,9 @@ struct Excitable {
     uint32_t SelectedVertex; // The vertex currently selected for excitation.
 };
 
-// If an entity has this component, the entity's mesh is being excited at a point nearest to this vertex.
+// If an entity has this component, its mesh is being excited at this vertex.
 struct ExcitedVertex {
     uint32_t Vertex;
+    float Force;
+    entt::entity IndicatorEntity{};
 };

@@ -175,7 +175,6 @@ struct Scene {
     const VulkanContext &VC;
     entt::registry &R;
     World World{};
-    Camera Camera{CreateDefaultCamera(World)};
 
     std::optional<uint> GetModelBufferIndex(entt::entity);
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
@@ -225,7 +224,11 @@ struct Scene {
     void OnUpdateExcitable(entt::registry &, entt::entity);
     void OnDestroyExcitable(entt::registry &, entt::entity);
 
+    void OnCreateExcitedVertex(entt::registry &, entt::entity);
+    void OnDestroyExcitedVertex(entt::registry &, entt::entity);
+
 private:
+    Camera Camera{CreateDefaultCamera(World)};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
