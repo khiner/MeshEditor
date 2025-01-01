@@ -138,6 +138,8 @@ struct Mesh {
     // }
 
     void HighlightVertex(VH vh) { HighlightedElements.emplace_back(MeshElement::Vertex, vh.idx()); }
+    void ClearHighlights() { HighlightedElements.clear(); }
+
     void SetFaceColor(FH fh, vec4 color) { M.set_color(fh, ToOpenMesh(color)); }
     void SetFaceColor(vec4 color) {
         for (const auto &fh : M.faces()) SetFaceColor(fh, color);

@@ -23,6 +23,7 @@ struct Name {
 
 struct Mesh;
 struct MeshVkData;
+struct Excitable;
 struct VulkanContext;
 struct VkRenderBuffers;
 struct VulkanBuffer;
@@ -220,8 +221,9 @@ struct Scene {
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void InvalidateCommandBuffer();
 
-    void OnExciteCreate(entt::registry &, entt::entity);
-    void OnExciteDestroy(entt::registry &, entt::entity);
+    void OnCreateExcitable(entt::registry &, entt::entity);
+    void OnUpdateExcitable(entt::registry &, entt::entity);
+    void OnDestroyExcitable(entt::registry &, entt::entity);
 
 private:
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
@@ -276,6 +278,7 @@ private:
     void UpdateTransformBuffers();
     void UpdateModelBuffer(entt::entity);
     void UpdateEdgeColors();
+    void UpdateHighlightedVertices(entt::entity, const Excitable &);
 
     void SetExtent(vk::Extent2D);
 };

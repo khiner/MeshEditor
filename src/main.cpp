@@ -188,15 +188,14 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         real_impact.ObjPath,
         {.Name = std::format("RealImpact Object: {}", object_name), .Transform = std::move(swap)}
     );
-    // Vertex indices may have changed due to deduplication.
-    auto &mesh = R.get<Mesh>(object_entity);
-    for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
-        const auto &pos = real_impact.ImpactPositions[i];
-        const auto vh = mesh.FindNearestVertex(pos);
-        real_impact.VertexIndices[i] = uint(vh.idx());
-        mesh.HighlightVertex(vh);
+    {
+        // Vertex indices may have changed due to deduplication.
+        const auto &mesh = R.get<Mesh>(object_entity);
+        for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
+            const auto &pos = real_impact.ImpactPositions[i];
+            real_impact.VertexIndices[i] = uint(mesh.FindNearestVertex(pos).idx());
+        }
     }
-    MainScene->UpdateRenderBuffers(object_entity);
 
     static constexpr mat4 I{1};
     auto listener_point_mesh = Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
@@ -323,8 +322,6 @@ void AudioModelControls() {
                 R.emplace<AcousticMaterial>(selected_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
 
                 auto &sound_object = R.emplace<SoundObject>(selected_entity, CreateSvg);
-                R.emplace<Excitable>(selected_entity); // Let the scene know this object is excitable.
-
                 if (real_impact) {
                     static const auto FindListenerEntityWithIndex = [](uint index) -> entt::entity {
                         for (const auto entity : R.view<RealImpactListenerPoint>()) {
@@ -340,6 +337,7 @@ void AudioModelControls() {
                         sound_object.SetImpactFrames(R.get<RealImpactListenerPoint>(listener_point_entity).LoadImpactSamples(*real_impact));
                     }
                 }
+                R.emplace<Excitable>(selected_entity, sound_object.GetExcitable());
             }
         } else { // todo conditionally show "Regenerate tet mesh"
             SeparatorText("Tet mesh generation");
@@ -416,6 +414,10 @@ void AudioModelControls() {
                     } else {
                         R.emplace<SoundObjectExcitation>(sound_entity, sound_object.GetExcitable().SelectedVertex, action.Force);
                     }
+                },
+                [&](SoundObjectAction::SetModel action) {
+                    sound_object.Apply(action);
+                    R.emplace_or_replace<Excitable>(sound_entity, sound_object.GetExcitable());
                 },
                 [&](auto action) {
                     sound_object.Apply(action);

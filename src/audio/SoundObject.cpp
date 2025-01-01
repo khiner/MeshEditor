@@ -693,12 +693,11 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
         PopID();
         if (model_changed) action = SoundObjectAction::SetModel{SoundObjectModel(model)};
-    } else {
-        Model = SoundObjectModel::Modal;
+    } else if (Model == SoundObjectModel::ImpactAudio) {
+        action = SoundObjectAction::SetModel{SoundObjectModel::Modal};
     }
 
     const bool impact_mode = Model == SoundObjectModel::ImpactAudio, modal_mode = Model == SoundObjectModel::Modal;
-
     if ((impact_mode && ImpactModel) || (modal_mode && ModalModel)) {
         const auto &excitable = GetExcitable();
         const auto &excitable_vertices = excitable.ExcitableVertices;
@@ -771,14 +770,14 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
                 DspGenerator.reset();
             }
         }
-        static int NumExcitableVertices = 10;
-        if (NumExcitableVertices > tets->numberofpoints) NumExcitableVertices = tets->numberofpoints;
-        if (SliderInt("Num excitable vertices", &NumExcitableVertices, 1, tets->numberofpoints));
+        static int num_excitable_vertices = 10;
+        if (num_excitable_vertices > tets->numberofpoints) num_excitable_vertices = tets->numberofpoints;
+        if (SliderInt("Num excitable vertices", &num_excitable_vertices, 1, tets->numberofpoints));
 
         if (Button(std::format("{} DSP", ModalModel ? "Regenerate" : "Generate").c_str())) {
             // Linearly distribute the vertices across the tet mesh.
             DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
-                auto excitable_vertices = iota_view{0u, uint(NumExcitableVertices)} | transform([&](uint i) { return i * tets->numberofpoints / NumExcitableVertices; }) | to<std::vector<uint>>();
+                auto excitable_vertices = iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * tets->numberofpoints / num_excitable_vertices; }) | to<std::vector<uint>>();
                 std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
                 return GenerateDsp(*tets, material_props, std::move(excitable_vertices), true, fundamental_freq);
             });

@@ -370,8 +370,9 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
       SilhouettePipeline(VC), EdgeDetectionPipeline(VC) {
     // EnTT listeners
-    R.on_construct<Excitable>().connect<&Scene::OnExciteCreate>(*this);
-    R.on_destroy<Excitable>().connect<&Scene::OnExciteDestroy>(*this);
+    R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
+    R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
+    R.on_destroy<Excitable>().connect<&Scene::OnDestroyExcitable>(*this);
 
     UpdateEdgeColors();
     TransformBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
@@ -401,16 +402,34 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
 
-void Scene::OnExciteCreate(entt::registry &, entt::entity) {
+void Scene::UpdateHighlightedVertices(entt::entity entity, const Excitable &excitable) {
+    if (auto *mesh = R.try_get<Mesh>(entity)) {
+        mesh->ClearHighlights();
+        for (const auto vertex : excitable.ExcitableVertices) {
+            mesh->HighlightVertex(Mesh::VH(vertex));
+        }
+    }
+    UpdateRenderBuffers(entity);
+}
+
+void Scene::OnCreateExcitable(entt::registry &r, entt::entity entity) {
     SelectionModes.insert(SelectionMode::Excite);
     SetSelectionMode(SelectionMode::Excite);
+
+    UpdateHighlightedVertices(entity, r.get<Excitable>(entity));
 }
-void Scene::OnExciteDestroy(entt::registry &r, entt::entity) {
+void Scene::OnUpdateExcitable(entt::registry &r, entt::entity entity) {
+    UpdateHighlightedVertices(entity, r.get<Excitable>(entity));
+}
+void Scene::OnDestroyExcitable(entt::registry &r, entt::entity entity) {
     // The last excitable entity is being destroyed.
     if (r.storage<Excitable>().size() == 1) {
         if (SelectionMode == SelectionMode::Excite) SetSelectionMode(*SelectionModes.begin());
         SelectionModes.erase(SelectionMode::Excite);
     }
+
+    static constexpr Excitable EmptyExcitable{};
+    UpdateHighlightedVertices(entity, EmptyExcitable);
 }
 
 vk::ImageView Scene::GetResolveImageView() const { return *MainPipeline.ResolveImage->View; }
@@ -575,13 +594,14 @@ void Scene::SetModel(entt::entity entity, mat4 &&model) {
 const mat4 &Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
 
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
-    const auto &mesh = R.get<Mesh>(mesh_entity);
-    auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
-    const Mesh::ElementIndex highlight{highlight_element};
-    for (auto element : AllElements) { // todo only update buffers for viewed elements.
-        VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh.CreateVertices(element, highlight));
+    if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
+        auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
+        const Mesh::ElementIndex highlight{highlight_element};
+        for (auto element : AllElements) { // todo only update buffers for viewed elements.
+            VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, highlight));
+        }
+        InvalidateCommandBuffer();
     }
-    InvalidateCommandBuffer();
 }
 
 void Scene::SetExtent(vk::Extent2D extent) {
