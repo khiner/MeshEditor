@@ -6,13 +6,14 @@
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
-#include "numeric/mat3.h"
-
-#include "Widgets.h"
-#include "mesh/Primitives.h"
-#include "vulkan/VulkanContext.h"
+#include "Widgets.h" // imgui
 
 #include "ImGuizmo.h" // imgui must be included before imguizmo.
+
+#include "Excitable.h"
+#include "mesh/Primitives.h"
+#include "numeric/mat3.h"
+#include "vulkan/VulkanContext.h"
 
 using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;

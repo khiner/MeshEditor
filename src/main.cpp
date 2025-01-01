@@ -414,7 +414,7 @@ void AudioModelControls() {
                     if (action.Force == 0) {
                         R.remove<SoundObjectExcitation>(sound_entity);
                     } else {
-                        R.emplace<SoundObjectExcitation>(sound_entity, sound_object.GetSelectedVertex(), action.Force);
+                        R.emplace<SoundObjectExcitation>(sound_entity, sound_object.GetExcitable().SelectedVertex, action.Force);
                     }
                 },
                 [&](auto action) {
@@ -580,7 +580,7 @@ int main(int, char **) {
 
             std::optional<uint> nearest_excite_vertex{};
             float min_dist = FLT_MAX;
-            for (uint excite_vertex : sound_object->GetExcitableVertices().Vertices) {
+            for (uint excite_vertex : sound_object->GetExcitable().ExcitableVertices) {
                 if (const float dist = glm::distance(position, tets.GetVertexPosition(excite_vertex)); dist < min_dist) {
                     min_dist = dist;
                     nearest_excite_vertex = {excite_vertex};

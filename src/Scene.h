@@ -21,12 +21,6 @@ struct Name {
     std::string Value;
 };
 
-struct Excitable {}; // A tag to mark objects as excitable.
-// If an entity has this component, the entity's mesh is being excited at a point nearest to this vertex.
-struct ExcitedVertex {
-    uint Vertex;
-};
-
 struct Mesh;
 struct MeshVkData;
 struct VulkanContext;

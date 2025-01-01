@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "Excitable.h"
 #include "Variant.h"
 
 enum class SoundObjectModel {
@@ -16,7 +17,7 @@ enum class SoundObjectModel {
     // Model a rigid body's response to an impact using modal analysis/synthesis:
     // - transforming the object's geometry into a tetrahedral volume mesh
     // - using FEM to estimate the mass/sg/damping matrices from the mesh
-    // - estimating the dominant modal frequencies and amplitudes using an eigenvalues/eigenvector solver
+    // - estimating the dominant mode frequencies/amplitudes/T60s using an eigenvalues/eigenvector solver
     // - simulating the object's response to an impact by exciting the modes associated with the impacted vertex
     Modal,
 };
@@ -52,14 +53,6 @@ template<typename Result> struct Worker;
 struct SvgResource;
 using CreateSvgResource = std::function<void(std::unique_ptr<SvgResource> &, std::filesystem::path)>;
 
-struct ExcitableVertices {
-    ExcitableVertices(std::vector<uint> &&vertices)
-        : Vertices(std::move(vertices)), SelectedVertex(!Vertices.empty() ? Vertices.front() : 0) {}
-
-    std::vector<uint> Vertices;
-    uint SelectedVertex; // The vertex currently selected for excitation.
-};
-
 // Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
 struct SoundObject {
     SoundObject(CreateSvgResource);
@@ -70,8 +63,7 @@ struct SoundObject {
     void ProduceAudio(AudioBuffer &) const;
     std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets &, AcousticMaterial &);
 
-    const ExcitableVertices &GetExcitableVertices() const;
-    uint GetSelectedVertex() const { return GetExcitableVertices().SelectedVertex; }
+    const Excitable &GetExcitable() const;
 
     void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
 
