@@ -5,7 +5,6 @@
 
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
-#include <glm/gtx/quaternion.hpp>
 
 #include "Widgets.h" // imgui
 
@@ -89,6 +88,12 @@ const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
 namespace {
+void UpdateModel(entt::registry &r, entt::entity entity, vec3 position, glm::quat rotation, vec3 scale) {
+    r.emplace_or_replace<Position>(entity, position);
+    r.emplace_or_replace<Rotation>(entity, rotation);
+    r.emplace_or_replace<Scale>(entity, scale);
+    r.emplace_or_replace<Model>(entity, glm::translate({1}, position) * glm::mat4_cast(glm::normalize(rotation)) * glm::scale({1}, scale));
+}
 
 vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
     const auto props = physical_device.getProperties();
@@ -402,7 +407,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
-    AddPrimitive(Primitive::Cube, {.Transform = {1}, .Select = true, .Visible = true});
+    AddPrimitive(Primitive::Cube, {.Select = true, .Visible = true});
 }
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
@@ -449,14 +454,14 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity entity) {
     // Create vertex indicator arrow pointing at the excited vertex.
     const vec3 normal{model * vec4{mesh.GetVertexNormal(vh), 0}};
     const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
-    const mat4 scale = glm::scale({1}, vec3{scale_factor});
-    const mat4 translate = glm::translate({1}, vertex_pos + 0.05f * scale_factor * normal);
-    const mat4 rotate = glm::mat4_cast(glm::rotation(World.Up, normal));
+    const vec3 scale{scale_factor};
+    const vec3 translate = vertex_pos + 0.05f * scale_factor * normal;
+    const glm::quat rotate = glm::rotation(World.Up, normal);
     auto vertex_indicator_mesh = Arrow();
     vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
     excited_vertex.IndicatorEntity = AddMesh(
         std::move(vertex_indicator_mesh),
-        {.Name = "Excite vertex indicator", .Transform = mat4{translate * rotate * scale}, .Select = false}
+        {.Name = "Excite vertex indicator", .Position = translate, .Rotation = rotate, .Scale = scale, .Select = false}
     );
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity entity) {
@@ -514,7 +519,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto entity = R.create();
 
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
-    R.emplace<Model>(entity, mat4(info.Transform));
+    UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name);
 
     MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
@@ -578,7 +583,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     auto &parent_node = R.get<SceneNode>(parent);
     if (info.Name.empty()) info.Name = std::format("{} instance {}", GetName(R, parent), parent_node.Children.size());
     parent_node.Children.emplace_back(entity);
-    R.emplace<Model>(entity, std::move(info.Transform));
+    UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name);
     SetVisible(entity, info.Visible);
     if (info.Select) SelectEntity(entity);
@@ -617,13 +622,11 @@ void Scene::DestroyInstance(entt::entity instance) {
 
 const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(R, SelectedEntity)); }
 
-void Scene::SetModel(entt::entity entity, mat4 &&model) {
-    R.replace<Model>(entity, std::move(model));
+void Scene::SetModel(entt::entity entity, vec3 position, glm::quat rotation, vec3 scale) {
+    UpdateModel(R, entity, position, rotation, scale);
     UpdateModelBuffer(entity);
     SubmitCommandBuffer();
 }
-
-const mat4 &Scene::GetModel(entt::entity entity) const { return R.get<Model>(entity).Transform; }
 
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
     if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
@@ -949,12 +952,14 @@ void Scene::RenderGizmo() {
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
     if (SelectedEntity != entt::null) {
-        mat4 model = R.get<Model>(SelectedEntity).Transform;
+        auto model = R.get<Model>(SelectedEntity).Transform;
         bool view_changed, model_changed;
         Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
         view_changed |= Camera.Tick();
         if (model_changed || view_changed) {
-            if (model_changed) SetModel(SelectedEntity, std::move(model));
+            vec3 position, rotation, scale;
+            DecomposeTransform(model, position, rotation, scale);
+            if (model_changed) SetModel(SelectedEntity, position, glm::quat(glm::radians(rotation)), scale);
             if (view_changed) UpdateTransformBuffers();
             SubmitCommandBuffer();
         }
@@ -1086,16 +1091,14 @@ void Scene::RenderConfig() {
                 if (Button("Add instance")) AddInstance(GetParentEntity(R, SelectedEntity));
 
                 if (CollapsingHeader("Transform")) {
-                    const auto &model = R.get<Model>(SelectedEntity).Transform;
-                    glm::vec3 pos, rot, scale;
-                    DecomposeTransform(model, pos, rot, scale);
+                    auto pos = R.get<Position>(SelectedEntity).Value;
+                    auto rot = R.get<Rotation>(SelectedEntity).Value;
+                    auto scale = R.get<Scale>(SelectedEntity).Value;
                     bool model_changed = false;
                     model_changed |= DragFloat3("Position", &pos[0], 0.01f);
-                    model_changed |= DragFloat3("Rotation (deg)", &rot[0], 1, -90, 90, "%.0f");
+                    model_changed |= DragFloat4("Rotation (quat WXYZ)", &rot[0], 0.01f);
                     model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
-                    if (model_changed) {
-                        SetModel(SelectedEntity, glm::translate(pos) * mat4{glm::quat{glm::radians(rot)}} * glm::scale(scale));
-                    }
+                    if (model_changed) SetModel(SelectedEntity, pos, rot, scale);
                     Gizmo->RenderDebug();
                 }
                 PopID();

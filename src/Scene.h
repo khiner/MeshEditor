@@ -8,6 +8,7 @@
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
+#include <glm/gtx/quaternion.hpp>
 
 #include "Camera.h"
 #include "RenderMode.h"
@@ -29,14 +30,24 @@ struct VkRenderBuffers;
 struct VulkanBuffer;
 struct ImageResource;
 
+struct Position {
+    vec3 Value;
+};
+struct Rotation {
+    glm::quat Value;
+};
+struct Scale {
+    vec3 Value;
+};
+
 struct Model {
     Model(mat4 transform)
         : Transform{std::move(transform)}, InvTransform{glm::transpose(glm::inverse(Transform))} {}
 
-    mat4 Transform{1};
+    mat4 Transform;
     // `InvTransform` is the _transpose_ of the inverse of `Transform`.
     // Since this rarely changes, we precompute it and send it to the shader.
-    mat4 InvTransform{1};
+    mat4 InvTransform;
 };
 
 struct ViewProj {
@@ -158,7 +169,9 @@ inline std::string to_string(SelectionMode mode) {
 
 struct MeshCreateInfo {
     std::string Name{};
-    mat4 Transform{1};
+    vec3 Position{0};
+    glm::quat Rotation{1, 0, 0, 0};
+    vec3 Scale{1};
     bool Select{true}, Visible{true};
 };
 
@@ -190,8 +203,7 @@ struct Scene {
     void DestroyInstance(entt::entity);
     void DestroyEntity(entt::entity);
 
-    const mat4 &GetModel(entt::entity) const;
-    void SetModel(entt::entity, mat4 &&);
+    void SetModel(entt::entity, vec3 position, glm::quat rotation, vec3 scale);
 
     void SetVisible(entt::entity, bool);
 

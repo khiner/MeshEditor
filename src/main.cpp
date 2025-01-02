@@ -11,7 +11,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <entt/entity/registry.hpp>
-#include <glm/gtx/quaternion.hpp>
 #include <nfd.h>
 
 #include "Scene.h"
@@ -167,17 +166,12 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
 
     MainScene->ClearMeshes();
     RealImpact real_impact{fs::path(path)};
-    // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
-    mat4 swap{1};
-    swap[1][1] = 0;
-    swap[1][2] = 1;
-    swap[2][1] = 1;
-    swap[2][2] = 0;
-
     const auto object_name = real_impact.ObjectName;
     const auto object_entity = MainScene->AddMesh(
         real_impact.ObjPath,
-        {.Name = std::format("RealImpact Object: {}", object_name), .Transform = std::move(swap)}
+        {.Name = std::format("RealImpact Object: {}", object_name),
+         // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
+         .Rotation = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1})}
     );
     {
         // Vertex indices may have changed due to deduplication.
@@ -188,19 +182,18 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
         }
     }
 
-    static constexpr mat4 I{1};
     auto listener_point_mesh = Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
     auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
-    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {std::move(listener_points_name), I, false, false});
-    static const auto rot_z = glm::rotate(I, float(M_PI_2), {0, 0, 1}); // Cylinder is oriended with center along the Y axis.
+    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {.Name = std::move(listener_points_name), .Select = false, .Visible = false});
+    static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
-        const auto rot = glm::rotate(I, glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
+        const auto rot = glm::angleAxis(glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
         const auto listener_point_name = std::format("RealImpact Listener: {}", p.Index);
         const auto listener_point_instance_entity = MainScene->AddInstance(
             listener_point_entity,
-            {.Name = std::move(listener_point_name), .Transform = glm::translate(I, pos) * rot, .Select = false}
+            {.Name = std::move(listener_point_name), .Position = pos, .Rotation = rot, .Select = false}
         );
         R.emplace<RealImpactListenerPoint>(listener_point_instance_entity, p);
     }
@@ -296,8 +289,8 @@ void AudioModelControls() {
     if (R.all_of<Mesh>(selected_entity) && !R.all_of<Tets>(selected_entity) && !R.all_of<RealImpactListenerPoint>(selected_entity)) {
         if (TetGenerator) {
             if (auto tets = TetGenerator->Render()) {
-                // Add an invisible tet mesh to the scene, to support toggling between surface/volumetric tet mesh views.
-                MainScene->AddMesh(tets->CreateMesh(), {"Tet Mesh", MainScene->GetModel(selected_entity), false, false});
+                // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
+                // MainScene->AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh",  R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
                 TetGenerator.reset();
                 R.emplace<Tets>(selected_entity, std::move(*tets));
 
