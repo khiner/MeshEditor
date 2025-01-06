@@ -89,7 +89,7 @@ _The cylinders shown in the images represent recorded microphone positions, but 
 
 ```shell
 $ git clone --recursive git@github.com:khiner/MeshEditor.git
-$ brew install cmake pkgconfig llvm fftw
+$ brew install cmake pkgconfig llvm fftw eigen
 $ brew link llvm --force
 ```
 
@@ -98,7 +98,7 @@ $ brew link llvm --force
 (Only tested on Ubuntu.)
 
 ```shell
-$ sudo apt install llvm
+$ sudo apt install llvm libeigen3-dev
 $ ln -s llvm-config-19 llvm-config
 $ export PATH="$(llvm-config --bindir):$PATH"
 ```
