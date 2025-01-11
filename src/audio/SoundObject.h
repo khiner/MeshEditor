@@ -61,7 +61,7 @@ struct SoundObject {
     void Apply(SoundObjectAction::Any);
 
     void ProduceAudio(AudioBuffer &) const;
-    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets &, AcousticMaterial &);
+    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets *, AcousticMaterial *);
 
     const Excitable &GetExcitable() const;
 

@@ -161,7 +161,7 @@ void FramePresent(ImGui_ImplVulkanH_Window &wd) {
     wd.SemaphoreIndex = (wd.SemaphoreIndex + 1) % wd.SemaphoreCount; // Now we can use the next set of semaphores.
 }
 
-void LoadRealImpact(const fs::path &path, entt::registry &R) {
+void LoadRealImpact(const fs::path &path, entt::registry &r) {
     if (!fs::exists(path)) throw std::runtime_error(std::format("RealImpact path does not exist: {}", path.string()));
 
     MainScene->ClearMeshes();
@@ -175,7 +175,7 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
     );
     {
         // Vertex indices may have changed due to deduplication.
-        const auto &mesh = R.get<Mesh>(object_entity);
+        const auto &mesh = r.get<Mesh>(object_entity);
         for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
             const auto &pos = real_impact.ImpactPositions[i];
             real_impact.VertexIndices[i] = uint(mesh.FindNearestVertex(pos).idx());
@@ -195,9 +195,30 @@ void LoadRealImpact(const fs::path &path, entt::registry &R) {
             listener_point_entity,
             {.Name = std::move(listener_point_name), .Position = pos, .Rotation = rot, .Select = false}
         );
-        R.emplace<RealImpactListenerPoint>(listener_point_instance_entity, p);
+        r.emplace<RealImpactListenerPoint>(listener_point_instance_entity, p);
     }
-    R.emplace<RealImpact>(object_entity, std::move(real_impact));
+    r.emplace<RealImpact>(object_entity, std::move(real_impact));
+
+    static const CreateSvgResource CreateSvg = [](std::unique_ptr<SvgResource> &svg, fs::path path) {
+        VC->Device->waitIdle();
+        svg.reset(); // Ensure destruction before creation.
+        svg = std::make_unique<SvgResource>(*VC, std::move(path));
+    };
+    auto &sound_object = r.emplace<SoundObject>(object_entity, CreateSvg);
+    static const auto FindListenerEntityWithIndex = [&](uint index) -> entt::entity {
+        for (const auto entity : r.view<RealImpactListenerPoint>()) {
+            if (const auto *listener_point = r.try_get<RealImpactListenerPoint>(entity); listener_point->Index == index) {
+                return entity;
+            }
+        }
+        return entt::null;
+    };
+    static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
+    if (const auto listener_point_entity = FindListenerEntityWithIndex(CenterListenerIndex); listener_point_entity != entt::null) {
+        R.emplace<SoundObjectListener>(object_entity, listener_point_entity);
+        sound_object.SetImpactFrames(R.get<RealImpactListenerPoint>(listener_point_entity).LoadImpactSamples(real_impact));
+    }
+    R.emplace<Excitable>(object_entity, sound_object.GetExcitable());
 }
 
 using namespace ImGui;
@@ -214,11 +235,6 @@ void HelpMarker(const char *desc) {
 }
 
 void AudioModelControls() {
-    static const CreateSvgResource CreateSvg = [](std::unique_ptr<SvgResource> &svg, fs::path path) {
-        VC->Device->waitIdle();
-        svg.reset(); // Ensure destruction before creation.
-        svg = std::make_unique<SvgResource>(*VC, std::move(path));
-    };
     static const float CharWidth = CalcTextSize("A").x;
 
     const auto selected_entity = MainScene->GetSelectedEntity();
@@ -304,24 +320,6 @@ void AudioModelControls() {
                 const auto *real_impact = R.try_get<RealImpact>(selected_entity);
                 const auto real_impact_material = real_impact && real_impact->MaterialName ? FindMaterial(*real_impact->MaterialName) : std::nullopt;
                 R.emplace<AcousticMaterial>(selected_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
-
-                auto &sound_object = R.emplace<SoundObject>(selected_entity, CreateSvg);
-                if (real_impact) {
-                    static const auto FindListenerEntityWithIndex = [](uint index) -> entt::entity {
-                        for (const auto entity : R.view<RealImpactListenerPoint>()) {
-                            if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(entity); listener_point->Index == index) {
-                                return entity;
-                            }
-                        }
-                        return entt::null;
-                    };
-                    static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
-                    if (const auto listener_point_entity = FindListenerEntityWithIndex(CenterListenerIndex); listener_point_entity != entt::null) {
-                        R.emplace<SoundObjectListener>(selected_entity, listener_point_entity);
-                        sound_object.SetImpactFrames(R.get<RealImpactListenerPoint>(listener_point_entity).LoadImpactSamples(*real_impact));
-                    }
-                }
-                R.emplace<Excitable>(selected_entity, sound_object.GetExcitable());
             }
         } else { // todo conditionally show "Regenerate tet mesh"
             SeparatorText("Tet mesh");
@@ -335,11 +333,10 @@ void AudioModelControls() {
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
                 const auto &surface_mesh = R.get<Mesh>(selected_entity);
                 TetGenerator = std::make_unique<Worker<Tets>>("Generating tetrahedral mesh...", [&] {
-                    return Tets::CreateTets(surface_mesh, {.PreserveSurface = true, .Quality = quality});
+                    return Tets::Generate(surface_mesh, {.PreserveSurface = true, .Quality = quality});
                 });
             }
         }
-        return;
     }
 
     // Display the selected sound object, or the first one if any are present.
@@ -377,8 +374,8 @@ void AudioModelControls() {
 
     if (auto sound_object_action = sound_object.RenderControls(
             GetName(R, sound_entity),
-            R.get<Tets>(selected_entity),
-            R.get<AcousticMaterial>(selected_entity)
+            R.try_get<Tets>(selected_entity),
+            R.try_get<AcousticMaterial>(selected_entity)
         )) {
         std::visit(
             Match{

@@ -4,22 +4,23 @@
 
 #include "tetgen.h"
 
+#include "mesh/Mesh.h"
+
 std::string TetGenOptions::CreateFlags() const { return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : ""); }
 
 Tets::Tets(std::unique_ptr<tetgenio> tet_gen) : TetGen(std::move(tet_gen)) {}
-Tets::Tets(const Mesh &mesh, TetGenOptions options) : Tets(CreateTets(mesh, options)) {}
+Tets::Tets(const Mesh &mesh, TetGenOptions options) : Tets(Generate(mesh, options)) {}
 Tets::Tets(Tets &&other) = default;
 Tets::~Tets() = default;
 
 Tets &Tets::operator=(Tets &&other) noexcept {
     if (this != &other) {
         TetGen = std::move(other.TetGen);
-        // Move or reassign other member variables if necessary
     }
     return *this;
 }
 
-Tets Tets::CreateTets(const Mesh &mesh, TetGenOptions options) {
+Tets Tets::Generate(const Mesh &mesh, TetGenOptions options) {
     static constexpr int TriVerts = 3;
     tetgenio in;
     const float *vertices = mesh.GetPositionData();
@@ -52,10 +53,12 @@ Tets Tets::CreateTets(const Mesh &mesh, TetGenOptions options) {
     return {std::move(result)};
 }
 
-vec3 Tets::GetVertexPosition(uint vertex) const {
-    return {TetGen->pointlist[vertex * 3], TetGen->pointlist[vertex * 3 + 1], TetGen->pointlist[vertex * 3 + 2]};
+uint32_t Tets::NumPoints() const {
+    if (!TetGen) return 0;
+    return TetGen->numberofpoints;
 }
 
+/*
 Mesh Tets::CreateMesh() const {
     std::vector<vec3> vertices;
     std::vector<std::vector<uint>> faces;
@@ -71,3 +74,4 @@ Mesh Tets::CreateMesh() const {
 
     return {std::move(vertices), std::move(faces)};
 }
+*/

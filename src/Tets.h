@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "mesh/Mesh.h"
+struct Mesh;
 
 // See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
 struct TetGenOptions {
@@ -25,14 +25,12 @@ struct Tets {
     ~Tets();
 
     Tets &operator=(Tets &&) noexcept;
-
-    std::unique_ptr<tetgenio> TetGen;
-
-    static Tets CreateTets(const Mesh &, TetGenOptions);
-
     const tetgenio &operator*() const { return *TetGen; }
-    const tetgenio *operator->() const { return TetGen.get(); }
 
-    Mesh CreateMesh() const;
-    vec3 GetVertexPosition(uint vertex) const;
+    static Tets Generate(const Mesh &, TetGenOptions);
+
+    uint32_t NumPoints() const;
+
+private:
+    std::unique_ptr<tetgenio> TetGen;
 };
