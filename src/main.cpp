@@ -324,21 +324,18 @@ void AudioModelControls() {
                 R.emplace<Excitable>(selected_entity, sound_object.GetExcitable());
             }
         } else { // todo conditionally show "Regenerate tet mesh"
-            SeparatorText("Tet mesh generation");
+            SeparatorText("Tet mesh");
 
-            static bool preserve_surface = true;
             static bool quality = false;
-            Checkbox("Preserve surface", &preserve_surface);
-            HelpMarker("Input boundary edges and faces of the mesh are preserved in the generated tetrahedral mesh.\nSteiner points appear only in the interior space of the mesh.");
-            SameLine();
             Checkbox("Quality", &quality);
-            HelpMarker("Adds new points to improve the mesh quality.");
+            HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
             if (Button("Create audio model")) {
-                // If RealImpact data is present, ensure impact points on the tet mesh are the exact same as the surface mesh.
+                // We rely on `PreserveSurface` behavior for excitable vertices;
+                // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
                 const auto &surface_mesh = R.get<Mesh>(selected_entity);
                 TetGenerator = std::make_unique<Worker<Tets>>("Generating tetrahedral mesh...", [&] {
-                    return Tets::CreateTets(surface_mesh, {.PreserveSurface = preserve_surface, .Quality = quality});
+                    return Tets::CreateTets(surface_mesh, {.PreserveSurface = true, .Quality = quality});
                 });
             }
         }
