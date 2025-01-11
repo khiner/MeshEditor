@@ -686,6 +686,8 @@ int main(int, char **) {
         }
     }
 
+    audio_device.Uninit();
+
     // Cleanup
     NFD_Quit();
 

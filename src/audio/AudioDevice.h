@@ -1,12 +1,11 @@
 #pragma once
 
-#include <functional>
 #include <string>
 
 #include "AudioBuffer.h"
 
 struct AudioDevice {
-    using audio_callback_t = std::function<void(AudioBuffer)>;
+    using audio_callback_t = void(*)(AudioBuffer);
 
     AudioDevice(audio_callback_t);
     ~AudioDevice();
@@ -27,5 +26,5 @@ private:
     uint32_t SampleRate{48'000};
 
     void OnVolumeChange();
-    void RestartDevice();
+    void Restart();
 };

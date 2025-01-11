@@ -70,7 +70,6 @@ std::string GetSampleRateName(IO io, const uint sample_rate) {
 } // namespace
 
 AudioDevice::AudioDevice(audio_callback_t data_callback) : Callback(std::move(data_callback)) {
-    Stop();
     Init();
 }
 AudioDevice::~AudioDevice() {
@@ -98,21 +97,21 @@ void AudioDevice::Init() {
         DeviceNames[IO_Out].push_back(PlaybackDeviceInfos[i].name);
     }
 
-    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
-    device_config.playback.pDeviceID = GetDeviceId(IO_Out, OutDeviceName);
-    device_config.playback.format = ma_format_f32;
-    device_config.playback.channels = 1;
-    device_config.sampleRate = SampleRate;
-    device_config.dataCallback = DataCallback;
-    device_config.pUserData = &Callback;
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.pDeviceID = GetDeviceId(IO_Out, OutDeviceName);
+    config.playback.format = ma_format_f32;
+    config.playback.channels = 1;
+    config.sampleRate = SampleRate;
+    config.dataCallback = DataCallback;
+    config.pUserData = &Callback;
 
-    if (ma_device_init(NULL, &device_config, &Device) != MA_SUCCESS) {
+    if (ma_device_init(NULL, &config, &Device) != MA_SUCCESS) {
         throw std::runtime_error("Failed to open audio output device.");
     }
 
     // `ma_context_get_devices` doesn't return native sample rates, so we need to get the device info for the specific device.
     ma_device_info out_device_info;
-    if (ma_context_get_device_info(&AudioContext, ma_device_type_playback, device_config.playback.pDeviceID, &out_device_info) != MA_SUCCESS) {
+    if (ma_context_get_device_info(&AudioContext, ma_device_type_playback, config.playback.pDeviceID, &out_device_info) != MA_SUCCESS) {
         throw std::runtime_error("Failed to get audio output device info.");
     }
     for (uint i = 0; i < out_device_info.nativeDataFormatCount; ++i) {
@@ -138,19 +137,18 @@ void AudioDevice::Stop() {
 
     if (ma_device_stop(&Device) != MA_SUCCESS) {
         ma_device_uninit(&Device);
-        throw std::runtime_error("Failed to stop audio output device.");
     }
 }
 
 void AudioDevice::Uninit() {
+    Stop();
     ma_device_uninit(&Device);
 }
 
 void AudioDevice::OnVolumeChange() { ma_device_set_master_volume(&Device, Muted ? 0 : Volume); }
 
-void AudioDevice::RestartDevice() {
+void AudioDevice::Restart() {
     const bool was_on = On;
-    Stop();
     Uninit();
     Init();
     if (was_on) Start();
@@ -174,7 +172,7 @@ void AudioDevice::RenderControls() {
             if (Selectable(option.c_str(), is_selected) && !is_selected) {
                 OutDeviceName = option;
                 SampleRate = 0; // Use the default sample rate when changing devices.
-                RestartDevice();
+                Restart();
             }
             if (is_selected) SetItemDefaultFocus();
         }
@@ -185,7 +183,7 @@ void AudioDevice::RenderControls() {
             const bool is_selected = option == SampleRate;
             if (Selectable(GetSampleRateName(IO_Out, option).c_str(), is_selected) && !is_selected) {
                 SampleRate = option;
-                RestartDevice();
+                Restart();
             }
             if (is_selected) SetItemDefaultFocus();
         }
