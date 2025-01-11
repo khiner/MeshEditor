@@ -772,14 +772,27 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
                 action = SoundObjectAction::SetModel{SoundObjectModel::Modal};
             }
         }
+
+        SeparatorText("Excitable vertices");
+        // If impact model is present, default the modal model to be excitable at exactly the same points.
+        static bool use_impact_vertices{ImpactModel};
+        if (ImpactModel) {
+            Checkbox("Use RealImpact vertices", &use_impact_vertices);
+        } else {
+            use_impact_vertices = false;
+        }
         static int num_excitable_vertices = 10;
-        if (num_excitable_vertices > tets->numberofpoints) num_excitable_vertices = tets->numberofpoints;
-        SliderInt("Num excitable vertices", &num_excitable_vertices, 1, tets->numberofpoints);
+        if (!use_impact_vertices) {
+            if (num_excitable_vertices > tets->numberofpoints) num_excitable_vertices = tets->numberofpoints;
+            SliderInt("Num excitable vertices", &num_excitable_vertices, 1, tets->numberofpoints);
+        }
 
         if (Button(std::format("{} DSP", ModalModel ? "Regenerate" : "Generate").c_str())) {
             // Linearly distribute the vertices across the tet mesh.
             DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
-                auto excitable_vertices = iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * tets->numberofpoints / num_excitable_vertices; }) | to<std::vector<uint>>();
+                auto excitable_vertices = use_impact_vertices ?
+                    ImpactModel->Excitable.ExcitableVertices :
+                    iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * tets->numberofpoints / num_excitable_vertices; }) | to<std::vector<uint>>();
                 std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
                 return GenerateDsp(*tets, material_props, std::move(excitable_vertices), true, fundamental_freq);
             });
