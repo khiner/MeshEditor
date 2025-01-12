@@ -178,11 +178,6 @@ void LoadRealImpact(const fs::path &path, entt::registry &r) {
          // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
          .Rotation = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1})}
     );
-    r.emplace<RealImpact>(object_entity, real_impact);
-
-    auto &sound_object = r.emplace<SoundObject>(object_entity, CreateSvg);
-    r.emplace<Excitable>(object_entity, sound_object.GetExcitable());
-
     {
         // Vertex indices may have changed due to deduplication.
         const auto &mesh = r.get<Mesh>(object_entity);
@@ -199,24 +194,28 @@ void LoadRealImpact(const fs::path &path, entt::registry &r) {
          .Visible = false
         }
     );
-    static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
-    for (const auto &p : real_impact.LoadListenerPoints()) {
-        const auto pos = p.GetPosition(MainScene->World.Up, true);
-        const auto rot = glm::angleAxis(glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-        const auto listener_name = std::format("RealImpact Listener: {}", p.Index);
+    for (const auto &listener_point : real_impact.LoadListenerPoints()) {
+        static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
         const auto listener_instance_entity = MainScene->AddInstance(
             listener_entity,
-            {.Name = std::move(listener_name), .Position = pos, .Rotation = rot, .Select = false}
+            {
+                .Name = std::format("RealImpact Listener: {}", listener_point.Index),
+                .Position = listener_point.GetPosition(MainScene->World.Up, true),
+                .Rotation = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), MainScene->World.Up) * rot_z,
+                .Select = false,
+            }
         );
-        r.emplace<RealImpactListenerPoint>(listener_instance_entity, p);
-
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
-        if (p.Index == CenterListenerIndex) {
+        if (listener_point.Index == CenterListenerIndex) {
             r.emplace<SoundObjectListener>(object_entity, listener_instance_entity);
-            sound_object.SetImpactFrames(r.get<RealImpactListenerPoint>(listener_instance_entity).LoadImpactSamples(real_impact));
+            auto &sound_object = r.emplace<SoundObject>(object_entity, CreateSvg);
+            sound_object.SetImpactFrames(listener_point.LoadImpactSamples(real_impact));
+            r.emplace<Excitable>(object_entity, sound_object.GetExcitable());
         }
+        r.emplace<RealImpactListenerPoint>(listener_instance_entity, listener_point);
     }
+    r.emplace<RealImpact>(object_entity, std::move(real_impact));
 }
 
 using namespace ImGui;
