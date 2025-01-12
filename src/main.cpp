@@ -161,18 +161,28 @@ void FramePresent(ImGui_ImplVulkanH_Window &wd) {
     wd.SemaphoreIndex = (wd.SemaphoreIndex + 1) % wd.SemaphoreCount; // Now we can use the next set of semaphores.
 }
 
+void CreateSvg(std::unique_ptr<SvgResource> &svg, fs::path path) {
+    VC->Device->waitIdle();
+    svg.reset(); // Ensure destruction before creation.
+    svg = std::make_unique<SvgResource>(*VC, std::move(path));
+};
+
 void LoadRealImpact(const fs::path &path, entt::registry &r) {
     if (!fs::exists(path)) throw std::runtime_error(std::format("RealImpact path does not exist: {}", path.string()));
 
     MainScene->ClearMeshes();
-    RealImpact real_impact{fs::path(path)};
-    const auto object_name = real_impact.ObjectName;
+    RealImpact real_impact{path};
     const auto object_entity = MainScene->AddMesh(
         real_impact.ObjPath,
-        {.Name = std::format("RealImpact Object: {}", object_name),
+        {.Name = std::format("RealImpact Object: {}", real_impact.ObjectName),
          // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
          .Rotation = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1})}
     );
+    r.emplace<RealImpact>(object_entity, real_impact);
+
+    auto &sound_object = r.emplace<SoundObject>(object_entity, CreateSvg);
+    r.emplace<Excitable>(object_entity, sound_object.GetExcitable());
+
     {
         // Vertex indices may have changed due to deduplication.
         const auto &mesh = r.get<Mesh>(object_entity);
@@ -182,43 +192,31 @@ void LoadRealImpact(const fs::path &path, entt::registry &r) {
         }
     }
 
-    auto listener_point_mesh = Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f);
-    auto listener_points_name = std::format("RealImpact Listeners: {}", object_name);
-    const auto listener_point_entity = MainScene->AddMesh(std::move(listener_point_mesh), {.Name = std::move(listener_points_name), .Select = false, .Visible = false});
+    const auto listener_entity = MainScene->AddMesh(
+        Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
+        {.Name = std::format("RealImpact Listeners: {}", real_impact.ObjectName),
+         .Select = false,
+         .Visible = false
+        }
+    );
     static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &p : real_impact.LoadListenerPoints()) {
         const auto pos = p.GetPosition(MainScene->World.Up, true);
         const auto rot = glm::angleAxis(glm::radians(float(p.AngleDeg)), MainScene->World.Up) * rot_z;
-        const auto listener_point_name = std::format("RealImpact Listener: {}", p.Index);
-        const auto listener_point_instance_entity = MainScene->AddInstance(
-            listener_point_entity,
-            {.Name = std::move(listener_point_name), .Position = pos, .Rotation = rot, .Select = false}
+        const auto listener_name = std::format("RealImpact Listener: {}", p.Index);
+        const auto listener_instance_entity = MainScene->AddInstance(
+            listener_entity,
+            {.Name = std::move(listener_name), .Position = pos, .Rotation = rot, .Select = false}
         );
-        r.emplace<RealImpactListenerPoint>(listener_point_instance_entity, p);
-    }
-    r.emplace<RealImpact>(object_entity, std::move(real_impact));
+        r.emplace<RealImpactListenerPoint>(listener_instance_entity, p);
 
-    static const CreateSvgResource CreateSvg = [](std::unique_ptr<SvgResource> &svg, fs::path path) {
-        VC->Device->waitIdle();
-        svg.reset(); // Ensure destruction before creation.
-        svg = std::make_unique<SvgResource>(*VC, std::move(path));
-    };
-    auto &sound_object = r.emplace<SoundObject>(object_entity, CreateSvg);
-    static const auto FindListenerEntityWithIndex = [&](uint index) -> entt::entity {
-        for (const auto entity : r.view<RealImpactListenerPoint>()) {
-            if (const auto *listener_point = r.try_get<RealImpactListenerPoint>(entity); listener_point->Index == index) {
-                return entity;
-            }
+        static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
+        if (p.Index == CenterListenerIndex) {
+            r.emplace<SoundObjectListener>(object_entity, listener_instance_entity);
+            sound_object.SetImpactFrames(r.get<RealImpactListenerPoint>(listener_instance_entity).LoadImpactSamples(real_impact));
         }
-        return entt::null;
-    };
-    static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
-    if (const auto listener_point_entity = FindListenerEntityWithIndex(CenterListenerIndex); listener_point_entity != entt::null) {
-        R.emplace<SoundObjectListener>(object_entity, listener_point_entity);
-        sound_object.SetImpactFrames(R.get<RealImpactListenerPoint>(listener_point_entity).LoadImpactSamples(real_impact));
     }
-    R.emplace<Excitable>(object_entity, sound_object.GetExcitable());
 }
 
 using namespace ImGui;
@@ -593,7 +591,7 @@ int main(int, char **) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        LoadRealImpact(fs::path(path), R);
+                        LoadRealImpact(fs::path{path}, R);
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
