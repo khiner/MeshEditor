@@ -296,7 +296,10 @@ void AudioModelControls() {
             EndTable();
         }
     }
-    if (selected_entity == entt::null) return;
+    if (selected_entity == entt::null) {
+        TextUnformatted("No selection");
+        return;
+    }
 
     static std::unique_ptr<Worker<Tets>> TetGenerator;
     if (R.all_of<Mesh>(selected_entity) && !R.all_of<Tets>(selected_entity) && !R.all_of<RealImpactListenerPoint>(selected_entity)) {
@@ -336,20 +339,26 @@ void AudioModelControls() {
         }
     }
 
-    // Display the selected sound object, or the first one if any are present.
+    // Display the selected sound object (which could be the object listened to if a listener is selected).
     if (R.storage<SoundObject>().empty()) return;
+
+    const auto FindSelectedSoundEntity = [&]() -> entt::entity {
+        if (R.all_of<SoundObject>(selected_entity)) return selected_entity;
+        if (R.storage<SoundObjectListener>().empty()) return entt::null;
+        for (const auto &[entity, listener]: R.view<const SoundObjectListener>().each()) {
+            if (listener.Listener == selected_entity) return entity;
+        }
+        if (R.all_of<RealImpactListenerPoint>(selected_entity)) return *R.view<const SoundObject>().begin();
+        return entt::null;
+    };
+    const auto sound_entity = FindSelectedSoundEntity();
+    if (sound_entity == entt::null) {
+        TextUnformatted("No sound object selected");
+        return;
+    }
 
     SeparatorText("Audio model");
 
-    const auto FindSelectedSoundEntity = [&]() {
-        for (const auto entity : R.view<SoundObject>()) {
-            if (entity == selected_entity) return entity;
-            if (const auto *listener = R.try_get<SoundObjectListener>(entity);
-                listener && listener->Listener == selected_entity) return entity;
-        }
-        return *R.view<const SoundObject>().begin();
-    };
-    const auto sound_entity = FindSelectedSoundEntity();
     auto &sound_object = R.get<SoundObject>(sound_entity);
     if (sound_entity != selected_entity && Button("Select sound object")) {
         MainScene->SelectEntity(sound_entity);
