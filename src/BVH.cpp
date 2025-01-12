@@ -13,11 +13,12 @@ BVH::BVH(std::vector<BBox> &&leaf_boxes) : LeafBoxes(std::move(leaf_boxes)) {
     std::iota(indices.begin(), indices.end(), 0);
     Build(std::move(indices));
 }
+BVH::~BVH() = default;
 
 uint BVH::Build(std::vector<uint> &&indices) {
     if (indices.size() == 1) {
         Nodes.emplace_back(indices.front());
-        return Nodes.size() - 1;
+        return RootIndex();
     }
 
     // Partially sort the indices array around the median element,
@@ -38,7 +39,7 @@ uint BVH::Build(std::vector<uint> &&indices) {
         std::move(box)
     );
 
-    return Nodes.size() - 1;
+    return RootIndex();
 }
 
 std::vector<BBox> BVH::CreateInternalBoxes() const {
@@ -46,19 +47,27 @@ std::vector<BBox> BVH::CreateInternalBoxes() const {
         transform([](const auto &node) { return node.Internal->Box; }) | to<std::vector>();
 }
 
-std::optional<uint> BVH::Intersect(const Ray &ray, const std::function<bool(uint)> &callback) const {
-    if (Nodes.empty()) return std::nullopt;
-
-    const uint root_index = Nodes.size() - 1;
-    return IntersectNode(root_index, ray, callback);
+std::optional<Intersection> BVH::IntersectNearest(const Ray &ray, IntersectFace intersect_face, const void *userdata) const {
+    if (Nodes.empty()) return {};
+    static Intersection nearest;
+    nearest.Distance = std::numeric_limits<float>::max();
+    IntersectNode(RootIndex(), ray, intersect_face, userdata, nearest);
+    if (nearest.Distance != std::numeric_limits<float>::max()) return nearest;
+    return {};
 }
-
-std::optional<uint> BVH::IntersectNode(uint node_index, const Ray &ray, const std::function<bool(uint)> &callback) const {
+void BVH::IntersectNode(uint node_index, const Ray &ray, IntersectFace intersect_face, const void *userdata, Intersection &nearest_out) const {
     const auto &node = Nodes[node_index];
-    if (node.IsLeaf()) return LeafBoxes[*node.BoxIndex].Intersect(ray) && callback(*node.BoxIndex) ? node.BoxIndex : std::nullopt;
+    if (auto index = node.BoxIndex) {
+        if (LeafBoxes[*index].Intersect(ray)) {
+            if (auto distance = intersect_face(ray, *index, userdata); *distance < nearest_out.Distance) {
+                nearest_out = {*index, *distance};
+            }
+        }
+        return;
+    }
 
     // Internal node.
-    if (!node.Internal->Box.Intersect(ray)) return std::nullopt;
-    if (auto left_hit = IntersectNode(node.Internal->Left, ray, callback)) return left_hit;
-    return IntersectNode(node.Internal->Right, ray, callback);
+    if (!node.Internal->Box.Intersect(ray)) return;
+    IntersectNode(node.Internal->Left, ray, intersect_face, userdata, nearest_out);
+    IntersectNode(node.Internal->Right, ray, intersect_face, userdata, nearest_out);
 }

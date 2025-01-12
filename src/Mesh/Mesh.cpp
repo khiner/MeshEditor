@@ -63,11 +63,68 @@ bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {
     return true;
 }
 
+namespace {
+float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const vec3 &p) {
+    const vec3 edge = v2 - v1;
+    const float t = glm::clamp(glm::dot(p - v1, edge) / glm::dot(edge, edge), 0.f, 1.f);
+    const vec3 closest_p = v1 + t * edge;
+    const vec3 diff = p - closest_p;
+    return glm::dot(diff, diff);
+}
+// Moller-Trumbore ray-triangle intersection algorithm.
+// Returns true if the ray intersects the given triangle.
+// If ray intersects, returns the distance along the ray to the intersection point.
+std::optional<float> IntersectTriangle(const Mesh::PolyMesh &m, const Ray &ray, VH v1, VH v2, VH v3) {
+    static const float eps = 1e-7f; // Floating point error tolerance.
+
+    const Point dir = ToOpenMesh(ray.Direction);
+    const Point &p1 = m.point(v1), &p2 = m.point(v2), &p3 = m.point(v3);
+    const Point e1 = p2 - p1, e2 = p3 - p1;
+    const Point h = dir % e2;
+    const float a = e1.dot(h); // Barycentric coordinate
+    if (a > -eps && a < eps) return {}; // Check if the ray is parallel to the triangle.
+
+    // Check if the intersection point is inside the triangle (in barycentric coordinates).
+    const Point origin = ToOpenMesh(ray.Origin);
+    const Point s = origin - p1;
+    const float f = 1.f / a, u = f * s.dot(h);
+    if (u < 0.f || u > 1.f) return {};
+
+    const Point q = s % e1;
+    if (float v = f * dir.dot(q); v < 0.f || u + v > 1.f) return {};
+
+    // Calculate the intersection point's distance along the ray and verify it's ahead of the ray's origin.
+    if (float distance = f * e2.dot(q); distance > eps) {
+        return distance;
+    }
+    return {};
+}
+
+std::optional<float> IntersectFace(const Ray &ray, uint fi, const void *m) {
+    auto &pm = *reinterpret_cast<const PolyMesh *>(m);
+    auto fv_it = pm.cfv_iter(FH(fi));
+    const VH v0 = *fv_it++;
+    VH v1 = *fv_it++, v2;
+    for (; fv_it.is_valid(); ++fv_it) {
+        v2 = *fv_it;
+        if (auto distance = IntersectTriangle(pm, ray, v0, v1, v2)) return distance;
+        v1 = v2;
+    }
+    return {};
+}
+
 struct VertexHash {
     size_t operator()(const Point &p) const {
         return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
     }
 };
+
+// Used as an intermediate for creating render vertices (`Vertex3D`).
+struct VerticesHandle {
+    Mesh::ElementIndex Parent; // A vertex can belong to itself, an edge, or a face.
+    std::vector<Mesh::VH> VHs;
+};
+} // namespace
 
 Mesh::PolyMesh Mesh::DeduplicateVertices() {
     PolyMesh deduped;
@@ -107,14 +164,6 @@ bool Mesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
 
 bool Mesh::EdgeBelongsToFace(EH eh, FH fh) const {
     return eh.is_valid() && fh.is_valid() && any_of(M.fh_range(fh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
-}
-
-static float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const vec3 &p) {
-    const vec3 edge = v2 - v1;
-    const float t = glm::clamp(glm::dot(p - v1, edge) / glm::dot(edge, edge), 0.f, 1.f);
-    const vec3 closest_p = v1 + t * edge;
-    const vec3 diff = p - closest_p;
-    return glm::dot(diff, diff);
 }
 
 float Mesh::CalcFaceArea(FH fh) const {
@@ -164,78 +213,16 @@ RenderBuffers Mesh::CreateBvhBuffers(vec4 color) const {
     return {std::move(vertices), std::move(indices)};
 }
 
-// Moller-Trumbore ray-triangle intersection algorithm.
-// Returns true if the ray intersects the given triangle.
-// If ray intersects, sets `distance_out` to the distance along the ray to the intersection point, and sets `intersect_point_out`, if not null.
-bool RayIntersectsTriangle(const Mesh::PolyMesh &m, const Ray &ray, VH v1, VH v2, VH v3, float *distance_out, vec3 *intersect_point_out) {
-    static const float eps = 1e-7f; // Floating point error tolerance.
-
-    const Point ray_origin = ToOpenMesh(ray.Origin), ray_dir = ToOpenMesh(ray.Direction);
-    const Point &p1 = m.point(v1), &p2 = m.point(v2), &p3 = m.point(v3);
-    const Point edge1 = p2 - p1, edge2 = p3 - p1;
-    const Point h = ray_dir % edge2;
-    const float a = edge1.dot(h); // Barycentric coordinate
-    if (a > -eps && a < eps) return false; // Check if the ray is parallel to the triangle.
-
-    // Check if the intersection point is inside the triangle (in barycentric coordinates).
-    const Point s = ray_origin - p1;
-    const float f = 1.0 / a, u = f * s.dot(h);
-    if (u < 0.0 || u > 1.0) return false;
-
-    const Point q = s % edge1;
-    const float v = f * ray_dir.dot(q);
-    if (v < 0.0 || u + v > 1.0) return false;
-
-    // Calculate the intersection point's distance along the ray and verify it's ahead of the ray's origin.
-    const float distance = f * edge2.dot(q);
-    if (distance > eps) {
-        if (distance_out) *distance_out = distance;
-        if (intersect_point_out) *intersect_point_out = ray(distance);
-        return true;
+FH Mesh::FindNearestIntersectingFace(const Ray &ray, vec3 *nearest_intersect_point_out) const {
+    if (auto intersection = Bvh->IntersectNearest(ray, IntersectFace, &M)) {
+        if (nearest_intersect_point_out) *nearest_intersect_point_out = ray(intersection->Distance);
+        return FH(intersection->Index);
     }
-    return false;
+    return FH{};
 }
 
-bool Mesh::RayIntersectsFace(const Ray &ray, FH fh, float *distance_out, vec3 *intersect_point_out) const {
-    auto fv_it = M.cfv_iter(fh);
-    const VH v0 = *fv_it++;
-    VH v1 = *fv_it++, v2;
-    for (; fv_it.is_valid(); ++fv_it) {
-        v2 = *fv_it;
-        if (RayIntersectsTriangle(M, ray, v0, v1, v2, distance_out, intersect_point_out)) return true;
-        v1 = v2;
-    }
-    return false;
-}
-
-FH Mesh::FindNearestIntersectingFace(const Ray &local_ray, vec3 *nearest_intersect_point_out) const {
-    float distance = 0, min_distance = std::numeric_limits<float>::max();
-    vec3 intersect_point;
-    FH nearest_face{};
-    Bvh->Intersect(local_ray, [&](uint fi) {
-        if (RayIntersectsFace(local_ray, FH{int(fi)}, &distance, &intersect_point) && distance < min_distance) {
-            min_distance = distance;
-            nearest_face = FH{int(fi)};
-            if (nearest_intersect_point_out) *nearest_intersect_point_out = intersect_point;
-        }
-        return false; // We want the nearest face, not just any intersecting face.
-    });
-    return nearest_face;
-}
-
-std::optional<float> Mesh::Intersect(const Ray &local_ray) const {
-    float distance = 0, min_distance = std::numeric_limits<float>::max();
-    Bvh->Intersect(local_ray, [&](uint fi) {
-        if (RayIntersectsFace(local_ray, FH{int(fi)}, &distance) && distance < min_distance) {
-            min_distance = distance;
-        }
-        return false; // We want the nearest intersection, not just any intersection.
-    });
-    return min_distance < std::numeric_limits<float>::max() ? std::make_optional(min_distance) : std::nullopt;
-}
-bool Mesh::RayIntersects(const Ray &local_ray) const {
-    auto callback = [this, &local_ray](uint fi) { return RayIntersectsFace(local_ray, FH{int(fi)}); };
-    return Bvh->Intersect(local_ray, callback).has_value();
+std::optional<Intersection> Mesh::Intersect(const Ray &ray) const {
+    return Bvh->IntersectNearest(ray, IntersectFace, &M);
 }
 
 VH Mesh::FindNearestVertex(vec3 world_point) const {
@@ -312,12 +299,6 @@ std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
     }
     return indices;
 }
-
-// Used as an intermediate for creating render vertices (`Vertex3D`).
-struct VerticesHandle {
-    Mesh::ElementIndex Parent; // A vertex can belong to itself, an edge, or a face.
-    std::vector<Mesh::VH> VHs;
-};
 
 std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const ElementIndex &highlight) const {
     std::vector<VerticesHandle> handles;

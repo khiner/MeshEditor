@@ -839,8 +839,8 @@ std::multimap<float, entt::entity> HoveredEntitiesByDistance(const entt::registr
 
         const auto &mesh = r.get<Mesh>(GetParentEntity(r, entity));
         const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
-        if (auto intersect_distance = mesh.Intersect(mouse_ray)) {
-            hovered_entities_by_distance.emplace(*intersect_distance, entity);
+        if (auto intersection = mesh.Intersect(mouse_ray)) {
+            hovered_entities_by_distance.emplace(intersection->Distance, entity);
         }
     }
     return hovered_entities_by_distance;
