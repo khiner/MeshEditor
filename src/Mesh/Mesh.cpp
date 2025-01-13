@@ -11,12 +11,7 @@ using namespace om;
 
 using std::ranges::any_of;
 
-Mesh::Mesh(const fs::path &file_path) {
-    Load(file_path, M);
-    // if (IsTriangleSoup()) M = DeduplicateVertices();
-    // Deduplicate even if not strictly triangle soup. Assumes this is a surface mesh.
-    M = DeduplicateVertices();
-
+Mesh::Mesh(PolyMesh &&m) : M(std::move(m)) {
     M.request_vertex_normals();
     M.request_face_normals();
     M.request_face_colors();
@@ -52,15 +47,6 @@ const Mesh &Mesh::operator=(Mesh &&other) {
         HighlightedElements = std::move(other.HighlightedElements);
     }
     return *this;
-}
-
-bool Mesh::Load(const fs::path &file_path, PolyMesh &out_mesh) {
-    OpenMesh::IO::Options read_options; // No options used yet, but keeping this here for future use.
-    if (!OpenMesh::IO::read_mesh(out_mesh, file_path.string(), read_options)) {
-        std::cerr << "Error loading mesh: " << file_path << std::endl;
-        return false;
-    }
-    return true;
 }
 
 namespace {
@@ -124,27 +110,37 @@ struct VerticesHandle {
     Mesh::ElementIndex Parent; // A vertex can belong to itself, an edge, or a face.
     std::vector<Mesh::VH> VHs;
 };
-} // namespace
 
-Mesh::PolyMesh Mesh::DeduplicateVertices() {
+Mesh::PolyMesh DeduplicateVertices(const Mesh::PolyMesh &m) {
     PolyMesh deduped;
-    std::unordered_map<Point, VH, VertexHash> unique_vertices;
 
-    // Add unique vertices.
-    for (auto v_it = M.vertices_begin(); v_it != M.vertices_end(); ++v_it) {
-        const auto p = M.point(*v_it);
+    std::unordered_map<Point, VH, VertexHash> unique_vertices;
+    for (auto v_it = m.vertices_begin(); v_it != m.vertices_end(); ++v_it) {
+        const auto p = m.point(*v_it);
         if (auto [it, inserted] = unique_vertices.try_emplace(p, VH()); inserted) {
             it->second = deduped.add_vertex(p);
         }
     }
     // Add faces.
-    for (const auto &fh : M.faces()) {
+    for (const auto &fh : m.faces()) {
         std::vector<VH> new_face;
-        new_face.reserve(M.valence(fh));
-        for (const auto &vh : M.fv_range(fh)) new_face.emplace_back(unique_vertices.at(M.point(vh)));
+        new_face.reserve(m.valence(fh));
+        for (const auto &vh : m.fv_range(fh)) new_face.emplace_back(unique_vertices.at(m.point(vh)));
         deduped.add_face(new_face);
     }
     return deduped;
+}
+} // namespace
+
+std::optional<Mesh::PolyMesh> LoadPolyMesh(const fs::path &file_path) {
+    static Mesh::PolyMesh mesh;
+    OpenMesh::IO::Options read_options; // No options used yet.
+    if (!OpenMesh::IO::read_mesh(mesh, file_path.string(), read_options)) {
+        return {};
+    }
+    // if (IsTriangleSoup()) M = DeduplicateVertices();
+    // Deduplicate even if not strictly triangle soup. Assumes this is a surface mesh.
+    return DeduplicateVertices(mesh);
 }
 
 bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {

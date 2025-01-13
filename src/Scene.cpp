@@ -543,7 +543,14 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     InvalidateCommandBuffer();
     return entity;
 }
-entt::entity Scene::AddMesh(const fs::path &file_path, MeshCreateInfo info) { return AddMesh(Mesh{file_path}, std::move(info)); }
+
+entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
+    auto polymesh = LoadPolyMesh(path);
+    if (!polymesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
+    const auto entity = AddMesh({std::move(*polymesh)}, std::move(info));
+    R.emplace<Path>(entity, path);
+    return entity;
+}
 
 entt::entity Scene::AddPrimitive(Primitive primitive, MeshCreateInfo info) {
     if (info.Name.empty()) info.Name = to_string(primitive);

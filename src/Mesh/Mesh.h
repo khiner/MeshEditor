@@ -29,6 +29,8 @@ using HH = OpenMesh::HalfedgeHandle;
 using Point = OpenMesh::Vec3f;
 }; // namespace om
 
+std::optional<om::PolyMesh> LoadPolyMesh(const fs::path &file_path);
+
 static constexpr vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
 static constexpr vec4 ToGlm(const OpenMesh::Vec3uc &c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
@@ -88,7 +90,7 @@ struct Mesh {
     static constexpr float NormalIndicatorLengthScale = 0.25;
 
     Mesh(Mesh &&);
-    Mesh(const fs::path &);
+    Mesh(PolyMesh &&);
     Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor);
     ~Mesh();
 
@@ -96,10 +98,6 @@ struct Mesh {
     const Mesh &operator=(Mesh &&);
 
     bool operator==(const Mesh &other) const { return &M == &other.M; }
-
-    static bool Load(const fs::path &file_path, PolyMesh &out_mesh);
-
-    PolyMesh DeduplicateVertices();
 
     uint GetVertexCount() const { return M.n_vertices(); }
     uint GetEdgeCount() const { return M.n_edges(); }

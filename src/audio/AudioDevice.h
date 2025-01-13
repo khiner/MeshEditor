@@ -5,7 +5,7 @@
 #include "AudioBuffer.h"
 
 struct AudioDevice {
-    using audio_callback_t = void(*)(AudioBuffer);
+    using audio_callback_t = void (*)(AudioBuffer);
 
     AudioDevice(audio_callback_t);
     ~AudioDevice();

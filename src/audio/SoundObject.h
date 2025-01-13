@@ -4,7 +4,6 @@
 #include <memory>
 #include <optional>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 #include "Excitable.h"
@@ -64,7 +63,8 @@ struct SoundObject {
 
     const Excitable &GetExcitable() const;
 
-    void SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex);
+    void SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices);
+    void SetImpactFrames(std::vector<std::vector<float>> &&impact_frames);
 
 private:
     void SetVertex(uint);

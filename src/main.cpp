@@ -4,9 +4,9 @@
 
 #include "Widgets.h" // imgui
 
+#include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
-#include "imgui.h"
 #include "implot.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -25,6 +25,8 @@
 #include "mesh/Primitives.h"
 #include "numeric/vec4.h"
 #include "vulkan/VulkanContext.h"
+
+using std::ranges::to;
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
@@ -167,35 +169,50 @@ void CreateSvg(std::unique_ptr<SvgResource> &svg, fs::path path) {
     svg = std::make_unique<SvgResource>(*VC, std::move(path));
 };
 
-void LoadRealImpact(const fs::path &path, entt::registry &r) {
-    if (!fs::exists(path)) throw std::runtime_error(std::format("RealImpact path does not exist: {}", path.string()));
+void LoadRealImpact(const fs::path &directory, entt::registry &r) {
+    if (!fs::exists(directory)) throw std::runtime_error(std::format("RealImpact directory does not exist: {}", directory.string()));
 
     MainScene->ClearMeshes();
-    RealImpact real_impact{path};
     const auto object_entity = MainScene->AddMesh(
-        real_impact.ObjPath,
-        {.Name = std::format("RealImpact Object: {}", real_impact.ObjectName),
-         // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
-         .Rotation = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1})}
+        directory / "transformed.obj",
+        {
+            .Name = *FindRealImpactObjectName(directory),
+            // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
+            .Rotation = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1}),
+        }
     );
+
+    static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
+        for (const auto &material : materials::acoustic::All) {
+            if (material.Name == name) return material;
+        }
+        return {};
+    };
+    auto material_name = FindRealImpactMaterialName(R.get<Name>(object_entity).Value);
+    const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
+    R.emplace<AcousticMaterial>(object_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
+
+    std::vector<uint> vertex_indices(RealImpact::NumImpactVertices);
     {
-        // Vertex indices may have changed due to deduplication.
+        auto impact_positions = LoadRealImpactPositions(directory);
+        // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
+        // so we don't even load them. Instead, we look up by position here.
         const auto &mesh = r.get<Mesh>(object_entity);
-        for (uint i = 0; i < RealImpact::NumImpactVertices; ++i) {
-            const auto &pos = real_impact.ImpactPositions[i];
-            real_impact.VertexIndices[i] = uint(mesh.FindNearestVertex(pos).idx());
+        for (uint i = 0; i < impact_positions.size(); ++i) {
+            vertex_indices[i] = uint(mesh.FindNearestVertex(impact_positions[i]).idx());
         }
     }
 
     const auto listener_entity = MainScene->AddMesh(
         Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
-        {.Name = std::format("RealImpact Listeners: {}", real_impact.ObjectName),
-         .Select = false,
-         .Visible = false
+        {
+            .Name = std::format("RealImpact Listeners: {}", R.get<Name>(object_entity).Value),
+            .Select = false,
+            .Visible = false,
         }
     );
     // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
-    for (const auto &listener_point : real_impact.LoadListenerPoints()) {
+    for (const auto &listener_point : LoadRealImpactListenerPoints(directory)) {
         static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
         const auto listener_instance_entity = MainScene->AddInstance(
             listener_entity,
@@ -210,12 +227,11 @@ void LoadRealImpact(const fs::path &path, entt::registry &r) {
         if (listener_point.Index == CenterListenerIndex) {
             r.emplace<SoundObjectListener>(object_entity, listener_instance_entity);
             auto &sound_object = r.emplace<SoundObject>(object_entity, CreateSvg);
-            sound_object.SetImpactFrames(listener_point.LoadImpactSamples(real_impact));
+            sound_object.SetImpactFrames(to<std::vector>(LoadRealImpactSamples(directory, listener_point.Index)), std::move(vertex_indices));
             r.emplace<Excitable>(object_entity, sound_object.GetExcitable());
         }
         r.emplace<RealImpactListenerPoint>(listener_instance_entity, listener_point);
     }
-    r.emplace<RealImpact>(object_entity, std::move(real_impact));
 }
 
 using namespace ImGui;
@@ -309,17 +325,6 @@ void AudioModelControls() {
                 // MainScene->AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh",  R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
                 TetGenerator.reset();
                 R.emplace<Tets>(selected_entity, std::move(*tets));
-
-                // When the tet mesh is generated, create a material and sound object.
-                static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
-                    for (const auto &material : materials::acoustic::All) {
-                        if (material.Name == name) return material;
-                    }
-                    return {};
-                };
-                const auto *real_impact = R.try_get<RealImpact>(selected_entity);
-                const auto real_impact_material = real_impact && real_impact->MaterialName ? FindMaterial(*real_impact->MaterialName) : std::nullopt;
-                R.emplace<AcousticMaterial>(selected_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
             }
         } else { // todo conditionally show "Regenerate tet mesh"
             SeparatorText("Tet mesh");
@@ -345,7 +350,7 @@ void AudioModelControls() {
     const auto FindSelectedSoundEntity = [&]() -> entt::entity {
         if (R.all_of<SoundObject>(selected_entity)) return selected_entity;
         if (R.storage<SoundObjectListener>().empty()) return entt::null;
-        for (const auto &[entity, listener]: R.view<const SoundObjectListener>().each()) {
+        for (const auto &[entity, listener] : R.view<const SoundObjectListener>().each()) {
             if (listener.Listener == selected_entity) return entity;
         }
         if (R.all_of<RealImpactListenerPoint>(selected_entity)) return *R.view<const SoundObject>().begin();
@@ -373,7 +378,7 @@ void AudioModelControls() {
     if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
         listener_point && (!listener || selected_entity != listener->Listener)) {
         if (Button("Set listener point")) {
-            sound_object.SetImpactFrames(listener_point->LoadImpactSamples(R.get<RealImpact>(sound_entity)));
+            sound_object.SetImpactFrames(to<std::vector>(LoadRealImpactSamples(R.get<Path>(sound_entity).Value.parent_path(), listener_point->Index)));
             R.emplace_or_replace<SoundObjectListener>(sound_entity, selected_entity);
         }
     }
@@ -393,7 +398,7 @@ void AudioModelControls() {
                     if (action.Force == 0) {
                         R.remove<ExcitedVertex>(sound_entity);
                     } else {
-                        R.emplace<ExcitedVertex>(sound_entity, sound_object.GetExcitable().SelectedVertex, action.Force);
+                        R.emplace<ExcitedVertex>(sound_entity, sound_object.GetExcitable().SelectedVertex(), action.Force);
                     }
                 },
                 [&](SoundObjectAction::SetModel action) {

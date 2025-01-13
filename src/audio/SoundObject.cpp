@@ -203,34 +203,35 @@ private:
 
 // All model-specific data.
 struct ImpactAudioModel {
-    ImpactAudioModel(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex)
-        : ImpactFramesByVertex(std::move(impact_frames_by_vertex)),
-          Excitable(ImpactFramesByVertex | std::views::keys | to<std::vector>()),
+    ImpactAudioModel(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices)
+        : ImpactFrames(std::move(impact_frames)),
+          Excitable(std::move(vertex_indices)),
           // All samples are the same length.
-          MaxFrame(ImpactFramesByVertex.empty() ? 0 : ImpactFramesByVertex.begin()->second.size()) {
-        SetVertex(Excitable.SelectedVertex);
+          MaxFrame(ImpactFrames.empty() ? 0 : ImpactFrames.front().size()) {
+        UpdateWaveform();
     }
     ~ImpactAudioModel() = default;
 
     const ImpactAudioModel &operator=(ImpactAudioModel &&other) noexcept {
         if (this != &other) {
-            ImpactFramesByVertex = std::move(other.ImpactFramesByVertex);
+            ImpactFrames = std::move(other.ImpactFrames);
+            Excitable = std::move(other.Excitable);
             Frame = other.Frame;
             Waveform = std::move(other.Waveform);
         }
         return *this;
     }
 
-    std::unordered_map<uint, std::vector<float>> ImpactFramesByVertex;
+    std::vector<std::vector<float>> ImpactFrames;
     Excitable Excitable;
     uint MaxFrame;
     uint Frame{MaxFrame}; // Start at the end, so it doesn't immediately play.
     std::unique_ptr<Waveform> Waveform; // Selected vertex's waveform
 
     void ProduceAudio(const AudioBuffer &buffer) {
-        if (ImpactFramesByVertex.empty()) return;
+        if (ImpactFrames.empty()) return;
 
-        const auto &impact_samples = ImpactFramesByVertex.at(Excitable.SelectedVertex);
+        const auto &impact_samples = ImpactFrames[Excitable.SelectedVertexIndex];
         // todo - resample from 48kHz to device sample rate if necessary
         for (uint i = 0; i < buffer.FrameCount; ++i) {
             buffer.Output[i] += Frame < impact_samples.size() ? impact_samples[Frame++] : 0.0f;
@@ -243,12 +244,18 @@ struct ImpactAudioModel {
 
     bool CanExcite() const { return bool(Waveform); }
     void SetVertex(uint vertex) {
-        Stop();
-        Excitable.SelectedVertex = vertex;
-        if (ImpactFramesByVertex.contains(vertex)) {
-            auto &frames = ImpactFramesByVertex.at(vertex);
-            Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
-        }
+        Excitable.SelectVertex(vertex);
+        UpdateWaveform();
+    }
+    void SetVertexIndex(uint vertex_index) {
+        Excitable.SelectedVertexIndex = vertex_index;
+        UpdateWaveform();
+    }
+    void SetImpactFrames(std::vector<std::vector<float>> &&impact_frames) {
+        if (ImpactFrames.size() != impact_frames.size()) return;
+
+        ImpactFrames = std::move(impact_frames);
+        UpdateWaveform();
     }
 
     void SetVertexForce(float force) {
@@ -261,6 +268,15 @@ struct ImpactAudioModel {
 
         Waveform->PlotFrames("Real-world impact waveform", Frame);
         Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
+    }
+
+private:
+    void UpdateWaveform() {
+        Stop();
+        if (Excitable.SelectedVertexIndex < ImpactFrames.size()) {
+            const auto &frames = ImpactFrames[Excitable.SelectedVertexIndex];
+            Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
+        }
     }
 };
 
@@ -411,7 +427,7 @@ struct ModalAudioModel {
     ModalAudioModel(Mesh2FaustResult &&m2f, CreateSvgResource create_svg)
         : FaustDsp(m2f.ModelDsp), M2F(std::move(m2f)), Excitable(M2F.ExcitableVertices), CreateSvg(std::move(create_svg)) {
         M2F.ExcitableVertices.clear(); // These are only used to populate `Excitable`.
-        SetVertex(Excitable.SelectedVertex);
+        SetVertex(Excitable.SelectedVertex());
     }
 
     ~ModalAudioModel() = default;
@@ -437,7 +453,7 @@ struct ModalAudioModel {
     bool CanExcite() const { return !ImpactRecording || ImpactRecording->Complete; }
     void SetVertex(uint vertex) {
         Stop();
-        Excitable.SelectedVertex = vertex;
+        Excitable.SelectVertex(vertex);
         const auto &vertices = Excitable.ExcitableVertices;
         if (auto it = find(vertices, vertex); it != vertices.end()) {
             SetParam(ExciteIndexParamName, std::ranges::distance(vertices.begin(), it));
@@ -483,21 +499,19 @@ struct ModalAudioModel {
         }
 
         // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-        auto selected_vertex_index = uint(FaustDsp.Get(ExciteIndexParamName));
-        const auto &vertices = Excitable.ExcitableVertices;
-        Excitable.SelectedVertex = selected_vertex_index < vertices.size() ? vertices[selected_vertex_index] : 0;
+        Excitable.SelectedVertexIndex = uint(FaustDsp.Get(ExciteIndexParamName));
         if (CollapsingHeader("Modal data charts")) {
             std::optional<size_t> new_hovered_index;
             if (auto hovered = PlotModeData(M2F.ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
             if (auto hovered = PlotModeData(M2F.ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(M2F.ModeGains[selected_vertex_index], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+            if (auto hovered = PlotModeData(M2F.ModeGains[Excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
             if (HoveredModeIndex = new_hovered_index; HoveredModeIndex && *HoveredModeIndex < M2F.ModeFreqs.size()) {
                 const auto index = *HoveredModeIndex;
                 Text(
                     "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
                     M2F.ModeFreqs[index],
                     M2F.ModeT60s[index],
-                    M2F.ModeGains[selected_vertex_index][index]
+                    M2F.ModeGains[Excitable.SelectedVertexIndex][index]
                 );
             }
         }
@@ -647,9 +661,14 @@ void SoundObject::Apply(SoundObjectAction::Any action) {
     );
 }
 
-void SoundObject::SetImpactFrames(std::unordered_map<uint, std::vector<float>> &&impact_frames_by_vertex) {
-    if (!impact_frames_by_vertex.empty()) {
-        ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames_by_vertex));
+void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices) {
+    if (!impact_frames.empty()) {
+        ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames), std::move(vertex_indices));
+    }
+}
+void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames) {
+    if (ImpactModel) {
+        ImpactModel->SetImpactFrames(std::move(impact_frames));
     }
 }
 
@@ -702,7 +721,7 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
     if ((impact_mode && ImpactModel) || (modal_mode && ModalModel)) {
         const auto &excitable = GetExcitable();
         const auto &excitable_vertices = excitable.ExcitableVertices;
-        const auto selected_vertex = excitable.SelectedVertex;
+        const auto selected_vertex = excitable.SelectedVertex();
         if (BeginCombo("Vertex", std::to_string(selected_vertex).c_str())) {
             for (uint vertex : excitable_vertices) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == selected_vertex)) {
@@ -743,7 +762,7 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         }
 
         // xxx this pattern is temporary
-        if (!tetsP|| !materialP) return action;
+        if (!tetsP || !materialP) return action;
         auto &material = *materialP;
         const auto &tets = *tetsP;
 

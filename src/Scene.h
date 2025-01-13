@@ -21,6 +21,9 @@ struct Visible {}; // A tag to mark entities as visible.
 struct Name {
     std::string Value;
 };
+struct Path {
+    fs::path Value;
+};
 
 struct Mesh;
 struct MeshVkData;
@@ -193,7 +196,8 @@ struct Scene {
     entt::entity GetSelectedEntity() const { return SelectedEntity; }
 
     entt::entity AddMesh(Mesh &&, MeshCreateInfo info = {});
-    entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
+    entt::entity AddMesh(const fs::path &, MeshCreateInfo info = {});
+
     entt::entity AddPrimitive(Primitive, MeshCreateInfo info = {});
     entt::entity AddInstance(entt::entity, MeshCreateInfo info = {});
 
