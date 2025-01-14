@@ -49,9 +49,6 @@ struct ImpactAudioModel;
 
 template<typename Result> struct Worker;
 
-struct SvgResource;
-using CreateSvgResource = void (*)(std::unique_ptr<SvgResource> &, std::filesystem::path);
-
 // Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
 struct SoundObject {
     SoundObject(CreateSvgResource);
