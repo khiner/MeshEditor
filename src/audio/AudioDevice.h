@@ -1,8 +1,8 @@
 #pragma once
 
-#include <string>
-
 #include "AudioBuffer.h"
+
+#include <string>
 
 struct AudioDevice {
     using audio_callback_t = void (*)(AudioBuffer);

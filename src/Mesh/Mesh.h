@@ -1,6 +1,10 @@
 #pragma once
 
-#include <filesystem>
+#include "BBox.h"
+#include "Intersection.h"
+#include "MeshElement.h"
+#include "RenderMode.h"
+#include "Vertex.h"
 
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <OpenMesh/Core/Mesh/PolyMesh_ArrayKernelT.hh>
@@ -8,11 +12,7 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include "BBox.h"
-#include "Intersection.h"
-#include "MeshElement.h"
-#include "RenderMode.h"
-#include "Vertex.h"
+#include <filesystem>
 
 namespace fs = std::filesystem;
 

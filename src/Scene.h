@@ -1,21 +1,20 @@
 #pragma once
 
-#include <set>
-
-#include <entt/entity/entity.hpp>
-#include <entt/entity/fwd.hpp>
-
-#include "numeric/mat4.h"
-#include "numeric/vec3.h"
-#include "numeric/vec4.h"
-#include <glm/gtx/quaternion.hpp>
-
 #include "Camera.h"
 #include "RenderMode.h"
 #include "Shader.h"
 #include "World.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
+#include "numeric/mat4.h"
+#include "numeric/vec3.h"
+#include "numeric/vec4.h"
+
+#include <entt/entity/entity.hpp>
+#include <entt/entity/fwd.hpp>
+#include <glm/gtx/quaternion.hpp>
+
+#include <set>
 
 struct Visible {}; // A tag to mark entities as visible.
 struct Name {
@@ -226,7 +225,7 @@ struct Scene {
     // Returns true if the scene was updated, which can happen when the window size or background color changes.
     bool Render();
     void RenderGizmo();
-    void RenderConfig();
+    void RenderControls();
 
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();

@@ -1,20 +1,18 @@
 #include "Scene.h"
-
-#include <format>
-#include <ranges>
-
-#include <entt/entity/registry.hpp>
-#include <glm/gtx/matrix_decompose.hpp>
-
 #include "Widgets.h" // imgui
 
-#include "ImGuizmo.h" // imgui must be included before imguizmo.
-
 #include "Excitable.h"
+#include "ImGuizmo.h" // imgui must be included before imguizmo.
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
 #include "numeric/mat3.h"
 #include "vulkan/VulkanContext.h"
+
+#include <entt/entity/registry.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
+
+#include <format>
+#include <ranges>
 
 using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;
@@ -1028,7 +1026,7 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
 }
 } // namespace
 
-void Scene::RenderConfig() {
+void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {

@@ -1,13 +1,13 @@
 #pragma once
 
+#include "faust/gui/MetaDataUI.h"
+#include "faust/gui/PathBuilder.h"
+#include "faust/gui/UI.h"
+
 #include <stack>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include "faust/gui/MetaDataUI.h"
-#include "faust/gui/PathBuilder.h"
-#include "faust/gui/UI.h"
 
 using Real = float;
 

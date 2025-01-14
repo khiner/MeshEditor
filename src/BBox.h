@@ -1,16 +1,16 @@
 #pragma once
 
-#include <algorithm>
-#include <limits>
-#include <numeric>
-#include <optional>
-#include <ranges>
+#include "Ray.h"
 
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include "Ray.h"
+#include <algorithm>
+#include <limits>
+#include <numeric>
+#include <optional>
+#include <ranges>
 
 using uint = uint32_t;
 

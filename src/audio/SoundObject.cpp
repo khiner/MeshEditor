@@ -1,34 +1,31 @@
 #include "SoundObject.h"
 
-#include <format>
-#include <print>
-#include <ranges>
-
-#include "imgui.h"
-#include "implot.h"
-#include "miniaudio.h"
-
 using Sample = float;
 #ifndef FAUSTFLOAT
 #define FAUSTFLOAT Sample
 #endif
 
-#include "mesh2faust.h"
-
-#include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
-#include "faust/dsp/llvm-dsp.h"
-
-#include "FaustParams.h"
-
-#include "tetMesh.h" // Vega
-#include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
-
 #include "AcousticMaterial.h"
 #include "AudioBuffer.h"
 #include "FFTData.h"
+#include "FaustParams.h"
 #include "SvgResource.h"
 #include "Tets.h"
 #include "Worker.h"
+
+#include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
+#include "faust/dsp/llvm-dsp.h"
+#include "mesh2faust.h"
+#include "tetMesh.h" // Vega
+
+#include "imgui.h"
+#include "implot.h"
+#include "miniaudio.h"
+#include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
+
+#include <format>
+#include <print>
+#include <ranges>
 
 using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
 using std::views::transform;

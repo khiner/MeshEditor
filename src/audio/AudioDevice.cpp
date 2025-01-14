@@ -1,13 +1,11 @@
 #include "AudioDevice.h"
+#include "SoundObject.h"
+
+#include "imgui.h"
+#include "miniaudio.h"
 
 #include <format>
 #include <string_view>
-
-#include "SoundObject.h"
-
-#include "miniaudio.h"
-
-#include "imgui.h"
 
 namespace {
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {

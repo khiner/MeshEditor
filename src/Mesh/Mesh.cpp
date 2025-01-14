@@ -1,11 +1,11 @@
 #include "Mesh.h"
 
+#include "BVH.h"
+#include "Ray.h"
+
 #include <algorithm>
 #include <ranges>
 #include <unordered_set>
-
-#include "BVH.h"
-#include "Ray.h"
 
 using namespace om;
 

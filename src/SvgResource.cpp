@@ -1,9 +1,8 @@
 #include "SvgResource.h"
+#include "vulkan/VulkanContext.h"
 
 #include "imgui.h"
 #include "lunasvg.h"
-
-#include "vulkan/VulkanContext.h"
 
 namespace {
 // Find the deepest descendant element with the given attribute containing the given point.

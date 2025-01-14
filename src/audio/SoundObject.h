@@ -1,13 +1,14 @@
 #pragma once
 
+#include "CreateSvgResource.h"
+#include "Excitable.h"
+#include "Variant.h"
+
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
-
-#include "Excitable.h"
-#include "Variant.h"
 
 enum class SoundObjectModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.

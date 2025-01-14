@@ -1,9 +1,9 @@
 #pragma once
 
-#include <vector>
-
 #include "VulkanBuffer.h"
 #include "numeric/vec2.h"
+
+#include <vector>
 
 using uint = u_int32_t;
 

@@ -1,12 +1,11 @@
 #include "RealImpact.h"
-
-#include <ranges>
-#include <regex>
+#include "npy.h"
+#include "numeric/vec4.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
-#include "npy.h"
-#include "numeric/vec4.h"
+#include <ranges>
+#include <regex>
 
 using std::ranges::max_element, std::ranges::iota_view, std::ranges::to;
 using std::views::transform;

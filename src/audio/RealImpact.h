@@ -1,13 +1,13 @@
 #pragma once
 
+#include "numeric/vec2.h"
+#include "numeric/vec3.h"
+
 #include <array>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
-
-#include "numeric/vec2.h"
-#include "numeric/vec3.h"
 
 /*
 Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.

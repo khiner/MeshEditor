@@ -1,12 +1,12 @@
 #pragma once
 
+#include "imgui.h"
+#include "imspinner.h"
+
 #include <functional>
 #include <future>
 #include <string>
 #include <string_view>
-
-#include "imgui.h"
-#include "imspinner.h"
 
 template<typename Result>
 struct Worker {

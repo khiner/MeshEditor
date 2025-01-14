@@ -1,11 +1,10 @@
 #include "VulkanContext.h"
+#include "VulkanBuffer.h"
 
 #include <format>
 #include <iostream>
 #include <numeric>
 #include <ranges>
-
-#include "VulkanBuffer.h"
 
 VkBool32 DebugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,

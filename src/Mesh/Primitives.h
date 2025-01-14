@@ -1,11 +1,10 @@
 #pragma once
 
-#include <ranges>
-
-#include "numeric/vec2.h"
-
 #include "Primitive.h"
 #include "mesh/Mesh.h"
+#include "numeric/vec2.h"
+
+#include <ranges>
 
 using std::ranges::iota_view;
 using std::ranges::to;

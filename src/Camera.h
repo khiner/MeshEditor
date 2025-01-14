@@ -1,10 +1,10 @@
 #pragma once
 
+#include "Ray.h"
+
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
-
-#include "Ray.h"
 
 #include <optional>
 

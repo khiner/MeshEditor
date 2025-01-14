@@ -13,4 +13,16 @@ inline bool BeginTable(const char *name, int columns) {
     }
     return result;
 }
+
+inline void HelpMarker(const char *desc) {
+    using namespace ImGui;
+    SameLine();
+    TextDisabled("(?)");
+    if (BeginItemTooltip()) {
+        PushTextWrapPos(GetFontSize() * 35.0f);
+        TextUnformatted(desc);
+        PopTextWrapPos();
+        EndTooltip();
+    }
+}
 } // namespace MeshEditor

@@ -1,8 +1,8 @@
 #pragma once
 
-#include <vector>
-
 #include <fftw3.h>
+
+#include <vector>
 
 struct FFTData {
     fftwf_plan Plan;

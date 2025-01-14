@@ -1,11 +1,11 @@
 #pragma once
 
+#include <vulkan/vulkan.hpp>
+
 #include <filesystem>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-#include <vulkan/vulkan.hpp>
 
 namespace fs = std::filesystem;
 

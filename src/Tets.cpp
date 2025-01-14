@@ -1,10 +1,9 @@
 #include "Tets.h"
-
-#include <format>
+#include "mesh/Mesh.h"
 
 #include "tetgen.h"
 
-#include "mesh/Mesh.h"
+#include <format>
 
 std::string TetGenOptions::CreateFlags() const { return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : ""); }
 

@@ -1,10 +1,10 @@
 #pragma once
 
+#include <entt/entity/entity.hpp>
+
 #include <cstdint>
 #include <ranges>
 #include <vector>
-
-#include <entt/entity/entity.hpp>
 
 struct Excitable {
     Excitable() = default;

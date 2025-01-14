@@ -1,14 +1,12 @@
 #include "Shader.h"
-
-#include <format>
+#include "File.h"
+#include "mesh/Vertex.h"
+#include "numeric/mat4.h"
 
 #include <shaderc/shaderc.hpp>
 #include <spirv_cross/spirv_cross.hpp>
 
-#include "numeric/mat4.h"
-
-#include "File.h"
-#include "mesh/Vertex.h"
+#include <format>
 
 #ifdef DEBUG_BUILD
 static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
