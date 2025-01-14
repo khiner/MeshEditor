@@ -9,8 +9,6 @@
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
-namespace fs = std::filesystem;
-
 /*
 Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.
 Holds all listener point data except the audio samples.
@@ -27,7 +25,18 @@ array rotates to the next angle, moves back to the original distance, and repeat
 Then, the hammer is positioned at the next impact point, and the process repeats.
 */
 
-struct RealImpactListenerPoint {
+namespace RealImpact {
+namespace fs = std::filesystem;
+
+static constexpr uint NumListenerPoints = 600; // Number of unique listener positions
+static constexpr uint NumImpactVertices = 5; // Number of recorded impact points on each object
+static constexpr uint NumMics = 15; // Number of microphones in the vertical microphone array
+static constexpr float MicBarLengthMm = 1890 - 70; // Height of the microphone array, in mm
+// Authors use a Dayton Audio EMM6 calibrated measurement microphone.
+// Measurements from https://www.amazon.com/Dayton-Audio-EMM-6-Measurement-Microphone/dp/B002KI8X40
+static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
+
+struct ListenerPoint {
     const long Index; // [0, NumListenerPoints - 1]
     const long MicId; // [0, NumMics - 1], bottom -> top
     const long DistanceMm; // Distance from the microphone to the object, in (whole) mm
@@ -39,20 +48,12 @@ struct RealImpactListenerPoint {
     vec3 GetPosition(vec3 world_up = {0, 1, 0}, bool mic_center = false) const;
 };
 
-namespace RealImpact {
-static constexpr uint NumListenerPoints = 600; // Number of unique listener positions
-static constexpr uint NumImpactVertices = 5; // Number of recorded impact points on each object
-static constexpr uint NumMics = 15; // Number of microphones in the vertical microphone array
-static constexpr float MicBarLengthMm = 1890 - 70; // Height of the microphone array, in mm
-// Authors use a Dayton Audio EMM6 calibrated measurement microphone.
-// Measurements from https://www.amazon.com/Dayton-Audio-EMM-6-Measurement-Microphone/dp/B002KI8X40
-static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
-} // namespace RealImpact
-
 // Load the audio sample frames (at 48kHz) for each impact vertex at this listener point.
-std::array<std::vector<float>, RealImpact::NumImpactVertices> LoadRealImpactSamples(const fs::path &directory, long listener_point_index);
-std::optional<std::string> FindRealImpactObjectName(const fs::path &start_path);
-std::optional<std::string_view> FindRealImpactMaterialName(std::string_view);
-std::vector<RealImpactListenerPoint> LoadRealImpactListenerPoints(const fs::path &directory);
+std::array<std::vector<float>, NumImpactVertices> LoadSamples(const fs::path &directory, long listener_point_index);
+std::optional<std::string> FindObjectName(const fs::path &start_path);
+std::optional<std::string_view> FindMaterialName(std::string_view);
+std::vector<ListenerPoint> LoadListenerPoints(const fs::path &directory);
 // World positions of the impact points
-std::array<vec3, RealImpact::NumImpactVertices> LoadRealImpactPositions(const fs::path &directory);
+std::array<vec3, NumImpactVertices> LoadPositions(const fs::path &directory);
+
+} // namespace RealImpact

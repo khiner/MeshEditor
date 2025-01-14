@@ -179,7 +179,7 @@ void LoadRealImpact(const fs::path &directory, entt::registry &r) {
     const auto object_entity = MainScene->AddMesh(
         directory / "transformed.obj",
         {
-            .Name = *FindRealImpactObjectName(directory),
+            .Name = *RealImpact::FindObjectName(directory),
             // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
             .Rotation = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1}),
         }
@@ -191,13 +191,13 @@ void LoadRealImpact(const fs::path &directory, entt::registry &r) {
         }
         return {};
     };
-    auto material_name = FindRealImpactMaterialName(R.get<Name>(object_entity).Value);
+    auto material_name = RealImpact::FindMaterialName(R.get<Name>(object_entity).Value);
     const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
     R.emplace<AcousticMaterial>(object_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
 
     std::vector<uint> vertex_indices(RealImpact::NumImpactVertices);
     {
-        auto impact_positions = LoadRealImpactPositions(directory);
+        auto impact_positions = RealImpact::LoadPositions(directory);
         // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
         // so we don't even load them. Instead, we look up by position here.
         const auto &mesh = r.get<Mesh>(object_entity);
@@ -214,7 +214,7 @@ void LoadRealImpact(const fs::path &directory, entt::registry &r) {
             .Visible = false,
         }
     );
-    for (const auto &listener_point : LoadRealImpactListenerPoints(directory)) {
+    for (const auto &listener_point : RealImpact::LoadListenerPoints(directory)) {
         static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
         const auto listener_instance_entity = MainScene->AddInstance(
             listener_entity,
@@ -225,14 +225,15 @@ void LoadRealImpact(const fs::path &directory, entt::registry &r) {
                 .Select = false,
             }
         );
+        r.emplace<SoundObjectListenerPoint>(listener_instance_entity, listener_point.Index);
+
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
         if (listener_point.Index == CenterListenerIndex) {
             r.emplace<SoundObjectListener>(object_entity, listener_instance_entity);
             auto &sound_object = r.emplace<SoundObject>(object_entity, CreateSvg);
-            sound_object.SetImpactFrames(to<std::vector>(LoadRealImpactSamples(directory, listener_point.Index)), std::move(vertex_indices));
+            sound_object.SetImpactFrames(to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
             r.emplace<Excitable>(object_entity, sound_object.GetExcitable());
         }
-        r.emplace<SoundObjectListenerPoint>(listener_instance_entity, listener_point.Index);
     }
 }
 
@@ -380,7 +381,7 @@ void AudioModelControls() {
     if (const auto *listener_point = R.try_get<SoundObjectListenerPoint>(selected_entity);
         listener_point && (!listener || selected_entity != listener->Listener)) {
         if (Button("Set listener point")) {
-            sound_object.SetImpactFrames(to<std::vector>(LoadRealImpactSamples(R.get<Path>(sound_entity).Value.parent_path(), listener_point->Index)));
+            sound_object.SetImpactFrames(to<std::vector>(RealImpact::LoadSamples(R.get<Path>(sound_entity).Value.parent_path(), listener_point->Index)));
             R.emplace_or_replace<SoundObjectListener>(sound_entity, selected_entity);
         }
     }
