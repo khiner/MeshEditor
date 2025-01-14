@@ -34,6 +34,9 @@ using std::ranges::to;
 struct SoundObjectListener {
     entt::entity Listener;
 };
+struct SoundObjectListenerPoint {
+    uint Index; // Index in the root listener point's children.
+};
 
 namespace {
 std::unique_ptr<VulkanContext> VC;
@@ -211,7 +214,6 @@ void LoadRealImpact(const fs::path &directory, entt::registry &r) {
             .Visible = false,
         }
     );
-    // todo: `Scene::AddInstances` to add multiple instances at once (mainly to avoid updating model buffer for every instance)
     for (const auto &listener_point : LoadRealImpactListenerPoints(directory)) {
         static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
         const auto listener_instance_entity = MainScene->AddInstance(
@@ -230,7 +232,7 @@ void LoadRealImpact(const fs::path &directory, entt::registry &r) {
             sound_object.SetImpactFrames(to<std::vector>(LoadRealImpactSamples(directory, listener_point.Index)), std::move(vertex_indices));
             r.emplace<Excitable>(object_entity, sound_object.GetExcitable());
         }
-        r.emplace<RealImpactListenerPoint>(listener_instance_entity, listener_point);
+        r.emplace<SoundObjectListenerPoint>(listener_instance_entity, listener_point.Index);
     }
 }
 
@@ -273,7 +275,7 @@ void AudioModelControls() {
                 if (is_selected) EndDisabled();
                 SameLine();
                 if (Button("Delete")) entity_to_delete = entity;
-                if (const auto *sound_listener = R.try_get<SoundObjectListener>(entity); sound_listener) {
+                if (const auto *sound_listener = R.try_get<SoundObjectListener>(entity)) {
                     if (Button("Select listener point")) entity_to_select = sound_listener->Listener;
                 }
                 PopID();
@@ -283,14 +285,14 @@ void AudioModelControls() {
             EndTable();
         }
     }
-    if (!R.storage<RealImpactListenerPoint>().empty() && CollapsingHeader("Listener points")) {
+    if (!R.storage<SoundObjectListenerPoint>().empty() && CollapsingHeader("Listener points")) {
         if (MeshEditor::BeginTable("Listener points", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
             TableSetupColumn("Name");
             TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
-            for (const auto entity : R.view<RealImpactListenerPoint>()) {
+            for (const auto entity : R.view<SoundObjectListenerPoint>()) {
                 const bool is_selected = entity == selected_entity;
                 PushID(uint(entity));
                 TableNextColumn();
@@ -318,7 +320,7 @@ void AudioModelControls() {
     }
 
     static std::unique_ptr<Worker<Tets>> TetGenerator;
-    if (R.all_of<Mesh>(selected_entity) && !R.all_of<Tets>(selected_entity) && !R.all_of<RealImpactListenerPoint>(selected_entity)) {
+    if (R.all_of<Mesh>(selected_entity) && !R.all_of<Tets>(selected_entity) && !R.all_of<SoundObjectListenerPoint>(selected_entity)) {
         if (TetGenerator) {
             if (auto tets = TetGenerator->Render()) {
                 // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
@@ -353,7 +355,7 @@ void AudioModelControls() {
         for (const auto &[entity, listener] : R.view<const SoundObjectListener>().each()) {
             if (listener.Listener == selected_entity) return entity;
         }
-        if (R.all_of<RealImpactListenerPoint>(selected_entity)) return *R.view<const SoundObject>().begin();
+        if (R.all_of<SoundObjectListenerPoint>(selected_entity)) return *R.view<const SoundObject>().begin();
         return entt::null;
     };
     const auto sound_entity = FindSelectedSoundEntity();
@@ -375,7 +377,7 @@ void AudioModelControls() {
             MainScene->SelectEntity(listener->Listener);
         }
     }
-    if (const auto *listener_point = R.try_get<RealImpactListenerPoint>(selected_entity);
+    if (const auto *listener_point = R.try_get<SoundObjectListenerPoint>(selected_entity);
         listener_point && (!listener || selected_entity != listener->Listener)) {
         if (Button("Set listener point")) {
             sound_object.SetImpactFrames(to<std::vector>(LoadRealImpactSamples(R.get<Path>(sound_entity).Value.parent_path(), listener_point->Index)));
