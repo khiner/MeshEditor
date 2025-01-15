@@ -28,54 +28,26 @@ using std::ranges::to;
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 namespace {
-constexpr uint MinImageCount = 2;
-bool SwapChainRebuild = false;
-
-std::unique_ptr<VulkanContext> VC;
-
-void SetupVulkanWindow(ImGui_ImplVulkanH_Window &wd, vk::SurfaceKHR surface, int width, int height) {
-    wd.Surface = surface;
-
-    // Check for WSI support
-    if (auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd.Surface); res != VK_TRUE) {
-        throw std::runtime_error("Error no WSI support on physical device 0\n");
-    }
-
-    // Select surface format.
-    const VkFormat requestSurfaceImageFormat[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
-    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
-
-    // Select present mode.
-#ifdef IMGUI_UNLIMITED_FRAME_RATE
-    VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
-#else
-    VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
-#endif
-    wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd.Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
-
-    ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
-}
-
 void CheckVk(vk::Result err) {
     if (err != vk::Result::eSuccess) throw std::runtime_error(std::format("Vulkan error: {}", vk::to_string(err)));
 }
 
-void FrameRender(ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
+bool RebuildSwapchain = false;
+void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
     auto image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
-    const auto err = VC->Device->acquireNextImageKHR(wd.Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd.FrameIndex);
+    const auto err = device.acquireNextImageKHR(wd.Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd.FrameIndex);
     if (err == vk::Result::eErrorOutOfDateKHR || err == vk::Result::eSuboptimalKHR) {
-        SwapChainRebuild = true;
+        RebuildSwapchain = true;
         return;
     }
     CheckVk(err);
 
     const auto &fd = wd.Frames[wd.FrameIndex];
     vk::Fence fd_fence{fd.Fence};
-    CheckVk(VC->Device->waitForFences(fd_fence, true, UINT64_MAX));
-    CheckVk(VC->Device->waitForFences(fd_fence, true, UINT64_MAX)); // wait indefinitely instead of periodically checking
-    VC->Device->resetFences(fd_fence);
-    VC->Device->resetCommandPool(fd.CommandPool);
+    CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX));
+    CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX)); // wait indefinitely instead of periodically checking
+    device.resetFences(fd_fence);
+    device.resetCommandPool(fd.CommandPool);
     vk::CommandBuffer command_buffer{fd.CommandBuffer};
     command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     constexpr static vk::ClearValue clear_color{{0.45f, 0.55f, 0.60f, 1.f}};
@@ -90,30 +62,23 @@ void FrameRender(ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
     vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eColorAttachmentOutput};
     vk::CommandBuffer command_buffers[]{command_buffer};
     vk::Semaphore signal_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
-    VC->Queue.submit(vk::SubmitInfo{wait_semaphores, wait_stage, command_buffers, signal_semaphores}, fd_fence);
+    queue.submit(vk::SubmitInfo{wait_semaphores, wait_stage, command_buffers, signal_semaphores}, fd_fence);
 }
-
-void FramePresent(ImGui_ImplVulkanH_Window &wd) {
-    if (SwapChainRebuild) return;
+void PresentFrame(vk::Queue queue, ImGui_ImplVulkanH_Window &wd) {
+    if (RebuildSwapchain) return;
 
     vk::Semaphore wait_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
     vk::SwapchainKHR swapchains[]{wd.Swapchain};
     uint32_t image_indices[]{wd.FrameIndex};
-    auto result = VC->Queue.presentKHR({wait_semaphores, swapchains, image_indices});
+    auto result = queue.presentKHR({wait_semaphores, swapchains, image_indices});
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
-        SwapChainRebuild = true;
+        RebuildSwapchain = true;
         return;
     }
     CheckVk(result);
 
     wd.SemaphoreIndex = (wd.SemaphoreIndex + 1) % wd.SemaphoreCount; // Now we can use the next set of semaphores.
 }
-
-void CreateSvg(std::unique_ptr<SvgResource> &svg, fs::path path) {
-    VC->Device->waitIdle();
-    svg.reset(); // Ensure destruction before creation.
-    svg = std::make_unique<SvgResource>(*VC, std::move(path));
-};
 
 using namespace ImGui;
 
@@ -156,11 +121,19 @@ bool PushFont(FontFamily family) {
 */
 
 entt::registry R;
+std::unique_ptr<VulkanContext> VC;
+
 void AudioCallback(AudioBuffer buffer) {
     for (const auto &audio_source : R.storage<SoundObject>()) {
         audio_source.ProduceAudio(buffer);
     }
 }
+
+void CreateSvg(std::unique_ptr<SvgResource> &svg, fs::path path) {
+    VC->Device->waitIdle();
+    svg.reset(); // Ensure destruction before creation.
+    svg = std::make_unique<SvgResource>(*VC, std::move(path));
+};
 
 int main(int, char **) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -177,16 +150,37 @@ int main(int, char **) {
     const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
     VC = std::make_unique<VulkanContext>(std::vector<const char *>{instance_extensions_raw, instance_extensions_raw + extensions_count});
 
-    // Create window surface.
-    VkSurfaceKHR surface;
-    if (!SDL_Vulkan_CreateSurface(window, *VC->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
-
-    // Create framebuffers.
-    int w, h;
-    SDL_GetWindowSize(window, &w, &h);
-
+    constexpr static uint MinImageCount = 2;
     ImGui_ImplVulkanH_Window wd;
-    SetupVulkanWindow(wd, surface, w, h);
+    // Set up Vulkan window.
+    {
+        VkSurfaceKHR surface;
+        // Create window surface.
+        if (!SDL_Vulkan_CreateSurface(window, *VC->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
+        wd.Surface = surface;
+
+        int w, h;
+        SDL_GetWindowSize(window, &w, &h);
+
+        // Check for WSI support
+        if (auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd.Surface); res != VK_TRUE) {
+            throw std::runtime_error("Error no WSI support on physical device 0\n");
+        }
+
+        // Select surface format.
+        const VkFormat requestSurfaceImageFormat[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
+        const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+        wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
+
+        // Select present mode.
+#ifdef IMGUI_UNLIMITED_FRAME_RATE
+        VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
+#else
+        VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
+#endif
+        wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd.Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
+        ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, w, h, MinImageCount);
+    }
 
     // Setup ImGui context.
     IMGUI_CHECKVERSION();
@@ -244,8 +238,8 @@ int main(int, char **) {
     }>();
 
     std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, R);
-    std::unique_ptr<AcousticScene> acoustic_scene = std::make_unique<AcousticScene>(R);
     std::unique_ptr<ImGuiTexture> scene_texture;
+    std::unique_ptr<AcousticScene> acoustic_scene = std::make_unique<AcousticScene>(R);
 
     AudioDevice audio_device{AudioCallback};
     audio_device.Start();
@@ -263,14 +257,14 @@ int main(int, char **) {
         }
 
         // Resize swap chain?
-        if (SwapChainRebuild) {
+        if (RebuildSwapchain) {
             int width, height;
             SDL_GetWindowSize(window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
                 ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
                 wd.FrameIndex = 0;
-                SwapChainRebuild = false;
+                RebuildSwapchain = false;
             }
         }
 
@@ -336,8 +330,7 @@ int main(int, char **) {
         if (windows.ImGuiDemo.Visible) ImGui::ShowDemoWindow(&windows.ImGuiDemo.Visible);
         if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
 
-        if (windows.SceneControls.Visible) {
-            Begin(windows.SceneControls.Name, &windows.SceneControls.Visible);
+        if (windows.SceneControls.Visible && Begin(windows.SceneControls.Name, &windows.SceneControls.Visible)) {
             if (BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
                     scene->RenderControls();
@@ -358,21 +351,19 @@ int main(int, char **) {
 
         if (windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-            Begin(windows.Scene.Name, &windows.Scene.Visible);
-            if (scene->Render()) {
-                // Extent changed. Update the scene texture.
-                scene_texture.reset(); // Ensure destruction before creation.
-                scene_texture = std::make_unique<ImGuiTexture>(*VC->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
+            if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
+                if (scene->Render()) {
+                    // Extent changed. Update the scene texture.
+                    scene_texture.reset(); // Ensure destruction before creation.
+                    scene_texture = std::make_unique<ImGuiTexture>(*VC->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
+                }
+                if (scene_texture) {
+                    const auto &scene_extent = scene->GetExtent();
+                    scene_texture->Render({float(scene_extent.width), float(scene_extent.height)});
+                }
+                scene->RenderGizmo();
+                End();
             }
-
-            const auto &cursor = GetCursorPos();
-            if (scene_texture) {
-                const auto &scene_extent = scene->GetExtent();
-                scene_texture->Render({float(scene_extent.width), float(scene_extent.height)});
-            }
-            SetCursorPos(cursor);
-            scene->RenderGizmo();
-            End();
             PopStyleVar();
 
             if (GetFrameCount() == 1) {
@@ -382,32 +373,27 @@ int main(int, char **) {
             }
         }
 
-        // Render
         ImGui::Render();
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
-            FrameRender(wd, draw_data);
-            FramePresent(wd);
+            RenderFrame(*VC->Device, VC->Queue, wd, draw_data);
+            PresentFrame(VC->Queue, wd);
         }
     }
 
-    audio_device.Uninit();
-
     // Cleanup
+    audio_device.Uninit();
     NFD_Quit();
 
     VC->Device->waitIdle();
-
     R.clear();
     scene_texture.reset();
     scene.reset();
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
-
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
-
     ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &wd, nullptr);
     VC.reset();
 
