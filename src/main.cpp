@@ -28,23 +28,10 @@ using std::ranges::to;
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 namespace {
-std::unique_ptr<VulkanContext> VC;
-
-uint MinImageCount = 2;
+constexpr uint MinImageCount = 2;
 bool SwapChainRebuild = false;
 
-WindowsState Windows;
-std::unique_ptr<Scene> MainScene;
-std::unique_ptr<AcousticScene> MainAcousticScene;
-std::unique_ptr<ImGuiTexture> MainSceneTexture;
-
-entt::registry R;
-
-void AudioCallback(AudioBuffer buffer) {
-    for (const auto &audio_source : R.storage<SoundObject>()) {
-        audio_source.ProduceAudio(buffer);
-    }
-}
+std::unique_ptr<VulkanContext> VC;
 
 void SetupVulkanWindow(ImGui_ImplVulkanH_Window &wd, vk::SurfaceKHR surface, int width, int height) {
     wd.Surface = surface;
@@ -67,7 +54,6 @@ void SetupVulkanWindow(ImGui_ImplVulkanH_Window &wd, vk::SurfaceKHR surface, int
 #endif
     wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd.Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
 
-    IM_ASSERT(MinImageCount >= 2);
     ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
 }
 
@@ -202,6 +188,13 @@ bool PushFont(FontFamily family) {
 } // namespace MeshEditor
 */
 
+entt::registry R;
+void AudioCallback(AudioBuffer buffer) {
+    for (const auto &audio_source : R.storage<SoundObject>()) {
+        audio_source.ProduceAudio(buffer);
+    }
+}
+
 int main(int, char **) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
@@ -281,11 +274,14 @@ int main(int, char **) {
         }
     }>();
 
-    MainScene = std::make_unique<Scene>(*VC, R);
-    MainAcousticScene = std::make_unique<AcousticScene>(R);
+    std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, R);
+    std::unique_ptr<AcousticScene> acoustic_scene = std::make_unique<AcousticScene>(R);
+    std::unique_ptr<ImGuiTexture> scene_texture;
 
     AudioDevice audio_device{AudioCallback};
     audio_device.Start();
+
+    WindowsState windows;
 
     // Main loop
     bool done = false;
@@ -318,10 +314,10 @@ int main(int, char **) {
         if (GetFrameCount() == 1) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.35f, nullptr, &dockspace_id);
             auto demo_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-            DockBuilderDockWindow(Windows.ImGuiDemo.Name, demo_node_id);
-            DockBuilderDockWindow(Windows.ImPlotDemo.Name, demo_node_id);
-            DockBuilderDockWindow(Windows.SceneControls.Name, controls_node_id);
-            DockBuilderDockWindow(Windows.Scene.Name, dockspace_id);
+            DockBuilderDockWindow(windows.ImGuiDemo.Name, demo_node_id);
+            DockBuilderDockWindow(windows.ImPlotDemo.Name, demo_node_id);
+            DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
+            DockBuilderDockWindow(windows.Scene.Name, dockspace_id);
         }
 
         if (BeginMainMenuBar()) {
@@ -331,7 +327,7 @@ int main(int, char **) {
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
                         const auto path = fs::path(nfd_path);
-                        MainScene->AddMesh(path, {.Name = path.filename().string()});
+                        scene->AddMesh(path, {.Name = path.filename().string()});
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));
@@ -340,7 +336,7 @@ int main(int, char **) {
                 // if (MenuItem("Export mesh", nullptr, false, MainMesh != nullptr)) {
                 //     nfdchar_t *path;
                 //     if (auto result = NFD_SaveDialog(&path, filtes.data(), filters.size(), nullptr); result == NFD_OKAY) {
-                //         MainScene->SaveMesh(fs::path(path));
+                //         scene->SaveMesh(fs::path(path));
                 //         NFD_FreePath(path);
                 //     } else if (result != NFD_CANCEL) {
                 //         throw std::runtime_error(std::format("Error saving mesh file: {}", NFD_GetError()));
@@ -350,7 +346,7 @@ int main(int, char **) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        AcousticScene::LoadRealImpact(fs::path{path}, R, *MainScene, CreateSvg);
+                        AcousticScene::LoadRealImpact(fs::path{path}, R, *scene, CreateSvg);
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
@@ -359,27 +355,27 @@ int main(int, char **) {
                 EndMenu();
             }
             if (BeginMenu("Windows")) {
-                MenuItem(Windows.ImGuiDemo.Name, nullptr, &Windows.ImGuiDemo.Visible);
-                MenuItem(Windows.ImPlotDemo.Name, nullptr, &Windows.ImPlotDemo.Visible);
-                MenuItem(Windows.SceneControls.Name, nullptr, &Windows.SceneControls.Visible);
-                MenuItem(Windows.Scene.Name, nullptr, &Windows.Scene.Visible);
+                MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
+                MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
+                MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
+                MenuItem(windows.Scene.Name, nullptr, &windows.Scene.Visible);
                 EndMenu();
             }
             EndMainMenuBar();
         }
 
-        if (Windows.ImGuiDemo.Visible) ImGui::ShowDemoWindow(&Windows.ImGuiDemo.Visible);
-        if (Windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&Windows.ImPlotDemo.Visible);
+        if (windows.ImGuiDemo.Visible) ImGui::ShowDemoWindow(&windows.ImGuiDemo.Visible);
+        if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
 
-        if (Windows.SceneControls.Visible) {
-            Begin(Windows.SceneControls.Name, &Windows.SceneControls.Visible);
+        if (windows.SceneControls.Visible) {
+            Begin(windows.SceneControls.Name, &windows.SceneControls.Visible);
             if (BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
-                    MainScene->RenderControls();
+                    scene->RenderControls();
                     EndTabItem();
                 }
                 if (BeginTabItem("Acoustic scene")) {
-                    MainAcousticScene->RenderControls(*MainScene);
+                    acoustic_scene->RenderControls(*scene);
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
@@ -391,29 +387,29 @@ int main(int, char **) {
             End();
         }
 
-        if (Windows.Scene.Visible) {
+        if (windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-            Begin(Windows.Scene.Name, &Windows.Scene.Visible);
-            if (MainScene->Render()) {
+            Begin(windows.Scene.Name, &windows.Scene.Visible);
+            if (scene->Render()) {
                 // Extent changed. Update the scene texture.
-                MainSceneTexture.reset(); // Ensure destruction before creation.
-                MainSceneTexture = std::make_unique<ImGuiTexture>(*VC->Device, MainScene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
+                scene_texture.reset(); // Ensure destruction before creation.
+                scene_texture = std::make_unique<ImGuiTexture>(*VC->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
             }
 
             const auto &cursor = GetCursorPos();
-            if (MainSceneTexture) {
-                const auto &scene_extent = MainScene->GetExtent();
-                MainSceneTexture->Render({float(scene_extent.width), float(scene_extent.height)});
+            if (scene_texture) {
+                const auto &scene_extent = scene->GetExtent();
+                scene_texture->Render({float(scene_extent.width), float(scene_extent.height)});
             }
             SetCursorPos(cursor);
-            MainScene->RenderGizmo();
+            scene->RenderGizmo();
             End();
             PopStyleVar();
 
             if (GetFrameCount() == 1) {
                 // Initialize scene now that it has an extent.
                 static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                if (fs::exists(DefaultRealImpactPath)) AcousticScene::LoadRealImpact(DefaultRealImpactPath, R, *MainScene, CreateSvg);
+                if (fs::exists(DefaultRealImpactPath)) AcousticScene::LoadRealImpact(DefaultRealImpactPath, R, *scene, CreateSvg);
             }
         }
 
@@ -439,8 +435,8 @@ int main(int, char **) {
     VC->Device->waitIdle();
 
     R.clear();
-    MainSceneTexture.reset();
-    MainScene.reset();
+    scene_texture.reset();
+    scene.reset();
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
