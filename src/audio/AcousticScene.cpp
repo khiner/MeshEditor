@@ -89,8 +89,27 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, entt::registry &r,
     }
 }
 
-AcousticScene::AcousticScene(entt::registry &r) : R(r) {}
+AcousticScene::AcousticScene(entt::registry &r) : R(r) {
+    // EnTT listeners
+    R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
+        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
+            const auto &excited_vertex = r.get<const ExcitedVertex>(entity);
+            sound_object->Apply(SoundObjectAction::Excite{excited_vertex.Vertex, excited_vertex.Force});
+        }
+    }>();
+    R.on_destroy<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
+        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
+            sound_object->Apply(SoundObjectAction::SetExciteForce{0.f});
+        }
+    }>();
+}
 AcousticScene::~AcousticScene() = default;
+
+void AcousticScene::ProduceAudio(AudioBuffer buffer) const {
+    for (const auto &audio_source : R.storage<SoundObject>()) {
+        audio_source.ProduceAudio(buffer);
+    }
+}
 
 using namespace ImGui;
 

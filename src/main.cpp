@@ -5,7 +5,6 @@
 #include "Window.h"
 #include "audio/AcousticScene.h"
 #include "audio/AudioDevice.h"
-#include "audio/SoundObject.h"
 #include "numeric/vec4.h"
 #include "vulkan/VulkanContext.h"
 
@@ -120,14 +119,8 @@ bool PushFont(FontFamily family) {
 } // namespace MeshEditor
 */
 
-entt::registry R;
 std::unique_ptr<VulkanContext> VC;
-
-void AudioCallback(AudioBuffer buffer) {
-    for (const auto &audio_source : R.storage<SoundObject>()) {
-        audio_source.ProduceAudio(buffer);
-    }
-}
+std::unique_ptr<AcousticScene> acoustic_scene;
 
 void CreateSvg(std::unique_ptr<SvgResource> &svg, fs::path path) {
     VC->Device->waitIdle();
@@ -224,24 +217,14 @@ int main(int, char **) {
 
     NFD_Init();
 
-    // EnTT listeners
-    R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
-        const auto &excited_vertex = r.get<ExcitedVertex>(entity);
-        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
-            sound_object->Apply(SoundObjectAction::Excite{excited_vertex.Vertex, excited_vertex.Force});
-        }
-    }>();
-    R.on_destroy<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
-        if (auto *sound_object = r.try_get<SoundObject>(entity)) {
-            sound_object->Apply(SoundObjectAction::SetExciteForce{0.f});
-        }
-    }>();
-
-    std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, R);
+    entt::registry r;
+    std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, r);
     std::unique_ptr<ImGuiTexture> scene_texture;
-    std::unique_ptr<AcousticScene> acoustic_scene = std::make_unique<AcousticScene>(R);
+    acoustic_scene = std::make_unique<AcousticScene>(r);
 
-    AudioDevice audio_device{AudioCallback};
+    AudioDevice audio_device{[](auto buffer) {
+        acoustic_scene->ProduceAudio(std::move(buffer));
+    }};
     audio_device.Start();
 
     WindowsState windows;
@@ -309,7 +292,7 @@ int main(int, char **) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        AcousticScene::LoadRealImpact(fs::path{path}, R, *scene, CreateSvg);
+                        AcousticScene::LoadRealImpact(fs::path{path}, r, *scene, CreateSvg);
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
@@ -369,7 +352,7 @@ int main(int, char **) {
             if (GetFrameCount() == 1) {
                 // Initialize scene now that it has an extent.
                 static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                if (fs::exists(DefaultRealImpactPath)) AcousticScene::LoadRealImpact(DefaultRealImpactPath, R, *scene, CreateSvg);
+                if (fs::exists(DefaultRealImpactPath)) AcousticScene::LoadRealImpact(DefaultRealImpactPath, r, *scene, CreateSvg);
             }
         }
 
@@ -386,7 +369,7 @@ int main(int, char **) {
     NFD_Quit();
 
     VC->Device->waitIdle();
-    R.clear();
+    r.clear();
     scene_texture.reset();
     scene.reset();
 
