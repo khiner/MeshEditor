@@ -3,39 +3,42 @@
 #include "imgui.h"
 #include "imspinner.h"
 
-#include <functional>
+#include <chrono>
 #include <future>
-#include <string>
 #include <string_view>
+
+using namespace std::chrono_literals;
 
 template<typename Result>
 struct Worker {
-    Worker(std::string_view working_message, std::function<Result()> work = {})
-        : WorkingMessage(working_message) {
-        ImGui::OpenPopup(WorkingMessage.c_str());
-        ResultFuture = std::async(std::launch::async, [work]() -> Result { return work(); });
+    Worker(std::string_view title, auto &&work)
+        : Title(title), ResultFuture(std::async(std::launch::async, std::forward<decltype(work)>(work))) {
+        ImGui::OpenPopup(Title.data());
     }
 
     ~Worker() = default;
 
     std::optional<Result> Render() {
-        std::optional<Result> result = {};
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
-        ImGui::SetNextWindowSize(ImGui::GetMainViewport()->Size / 4);
-        if (ImGui::BeginPopupModal(WorkingMessage.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            const auto &ws = ImGui::GetWindowSize();
+        using namespace ImGui;
+
+        SetNextWindowPos(GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+        SetNextWindowSize(GetMainViewport()->Size / 4);
+        if (BeginPopupModal(Title.data(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            const auto &ws = GetWindowSize();
             const float spinner_size = std::min(ws.x, ws.y) / 2;
-            ImGui::SetCursorPos((ws - ImVec2{spinner_size, spinner_size}) / 2 + ImVec2(0, ImGui::GetTextLineHeight()));
-            ImSpinner::SpinnerMultiFadeDots(WorkingMessage.c_str(), spinner_size / 2, 3);
-            if (ResultFuture.valid() && ResultFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                result = std::make_optional(std::move(ResultFuture.get()));
-                ImGui::CloseCurrentPopup();
+            SetCursorPos((ws - ImVec2{spinner_size, spinner_size}) / 2 + ImVec2{0, GetTextLineHeight()});
+            ImSpinner::SpinnerMultiFadeDots(Title.data(), spinner_size / 2, 3);
+            std::optional<Result> result;
+            if (ResultFuture.wait_for(0s) == std::future_status::ready) {
+                result = std::move(ResultFuture.get());
+                CloseCurrentPopup();
             }
-            ImGui::EndPopup();
+            EndPopup();
+            return result;
         }
-        return result;
+        return {};
     }
 
-    std::string WorkingMessage;
+    std::string_view Title;
     std::future<Result> ResultFuture;
 };
