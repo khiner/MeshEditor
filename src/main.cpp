@@ -220,7 +220,7 @@ int main(int, char **) {
     entt::registry r;
     std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, r);
     std::unique_ptr<ImGuiTexture> scene_texture;
-    acoustic_scene = std::make_unique<AcousticScene>(r);
+    acoustic_scene = std::make_unique<AcousticScene>(r, CreateSvg);
 
     AudioDevice audio_device{[](auto buffer) {
         acoustic_scene->ProduceAudio(std::move(buffer));
@@ -292,7 +292,7 @@ int main(int, char **) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        AcousticScene::LoadRealImpact(fs::path{path}, r, *scene, CreateSvg);
+                        acoustic_scene->LoadRealImpact(fs::path{path}, *scene);
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
@@ -352,7 +352,7 @@ int main(int, char **) {
             if (GetFrameCount() == 1) {
                 // Initialize scene now that it has an extent.
                 static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                if (fs::exists(DefaultRealImpactPath)) AcousticScene::LoadRealImpact(DefaultRealImpactPath, r, *scene, CreateSvg);
+                if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
             }
         }
 

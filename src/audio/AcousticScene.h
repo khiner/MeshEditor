@@ -10,14 +10,15 @@
 struct Scene;
 
 struct AcousticScene {
-    AcousticScene(entt::registry &);
+    AcousticScene(entt::registry &, CreateSvgResource);
     ~AcousticScene();
 
-    static void LoadRealImpact(const std::filesystem::path &directory, entt::registry &, Scene &, CreateSvgResource);
+    void LoadRealImpact(const std::filesystem::path &directory, Scene &) const;
 
     void RenderControls(Scene &);
 
     void ProduceAudio(AudioBuffer) const;
 
     entt::registry &R;
+    CreateSvgResource CreateSvg;
 };

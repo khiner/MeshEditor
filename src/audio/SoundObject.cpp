@@ -11,14 +11,15 @@ using Sample = float;
 #include "FaustParams.h"
 #include "SvgResource.h"
 #include "Tets.h"
+#include "Widgets.h" // imgui
 #include "Worker.h"
+#include "mesh/Mesh.h"
 
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
 #include "mesh2faust.h"
 #include "tetMesh.h" // Vega
 
-#include "imgui.h"
 #include "implot.h"
 #include "miniaudio.h"
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
@@ -697,7 +698,7 @@ const Excitable &SoundObject::GetExcitable() const {
     return EmptyExcitable;
 }
 
-std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name, const Tets *tetsP, AcousticMaterial *materialP) {
+std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name, const Mesh *meshP, AcousticMaterial *materialP) {
     using namespace ImGui;
 
     std::optional<SoundObjectAction::Any> action;
@@ -758,10 +759,11 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
             }
         }
 
-        // xxx this pattern is temporary
-        if (!tetsP || !materialP) return action;
+        // todo create material if not present
+        if (!meshP || !materialP) return action;
+
         auto &material = *materialP;
-        const auto &tets = *tetsP;
+        const auto &mesh = *meshP;
 
         SeparatorText("Material properties");
         if (BeginCombo("Presets", material.Name.c_str())) {
@@ -786,6 +788,12 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         InputDouble("##Rayleigh damping alpha", &material_props.Alpha, 0.0f, 0.0f, "%.3f");
         InputDouble("##Rayleigh damping beta", &material_props.Beta, 0.0f, 0.0f, "%.3f");
 
+        SeparatorText("Tet mesh");
+
+        static bool tet_quality = false;
+        Checkbox("Quality", &tet_quality);
+        MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
+
         if (DspGenerator) {
             if (auto m2f_result = DspGenerator->Render()) {
                 DspGenerator.reset();
@@ -802,19 +810,29 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         } else {
             use_impact_vertices = false;
         }
+        const auto num_points = mesh.GetVertexCount();
         static int num_excitable_vertices = 10;
         if (!use_impact_vertices) {
-            const auto num_points = tets.NumPoints();
-            if (uint(num_excitable_vertices) > tets.NumPoints()) num_excitable_vertices = num_points;
+            if (uint(num_excitable_vertices) > num_points) num_excitable_vertices = num_points;
             SliderInt("Num excitable vertices", &num_excitable_vertices, 1, num_points);
         }
 
-        if (Button(std::format("{} DSP", ModalModel ? "Regenerate" : "Generate").c_str())) {
-            // Linearly distribute the vertices across the tet mesh.
-            DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating DSP code...", [&] {
+        if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
+            DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating modal audio model...", [&] {
+                // todo show steps in progress. "Generateing tetrahedral mesh...", "Generating DSP code..."
+
+                // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
+                // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh",  R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
+
+                // We rely on `PreserveSurface` behavior for excitable vertices;
+                // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
+                // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+                auto tets = Tets::Generate(mesh, {.PreserveSurface = true, .Quality = tet_quality});
+
+                // Use impact model vertices or linearly distribute the vertices across the tet mesh.
                 auto excitable_vertices = use_impact_vertices ?
                     ImpactModel->Excitable.ExcitableVertices :
-                    iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * tets.NumPoints() / num_excitable_vertices; }) | to<std::vector<uint>>();
+                    iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * num_points / num_excitable_vertices; }) | to<std::vector<uint>>();
                 std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
                 return GenerateDsp(*tets, material_props, std::move(excitable_vertices), true, fundamental_freq);
             });

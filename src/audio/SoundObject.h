@@ -40,8 +40,8 @@ using Any = std::variant<SetModel, SelectVertex, Excite, SetExciteForce>;
 } // namespace SoundObjectAction
 
 struct AudioBuffer;
-struct Tets;
 struct AcousticMaterial;
+struct Mesh;
 struct Mesh2FaustResult;
 
 struct ModalAudioModel;
@@ -49,7 +49,7 @@ struct ImpactAudioModel;
 
 template<typename Result> struct Worker;
 
-// Represents a rigid mesh object that generate an audio stream in response to an impact at a given vertex.
+// Represents a rigid body that generates an audio stream in response to an impact at a given vertex.
 struct SoundObject {
     SoundObject(CreateSvgResource);
     ~SoundObject();
@@ -57,7 +57,7 @@ struct SoundObject {
     void Apply(SoundObjectAction::Any);
 
     void ProduceAudio(AudioBuffer &) const;
-    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Tets *, AcousticMaterial *);
+    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Mesh *, AcousticMaterial *);
 
     const Excitable &GetExcitable() const;
 
