@@ -55,16 +55,6 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) cons
         }
     );
 
-    static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
-        for (const auto &material : materials::acoustic::All) {
-            if (material.Name == name) return material;
-        }
-        return {};
-    };
-    auto material_name = RealImpact::FindMaterialName(R.get<Name>(object_entity).Value);
-    const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
-    R.emplace<AcousticMaterial>(object_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
-
     std::vector<uint> vertex_indices(RealImpact::NumImpactVertices);
     {
         auto impact_positions = RealImpact::LoadPositions(directory);
@@ -100,7 +90,17 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) cons
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
         if (listener_point.Index == CenterListenerIndex) {
             R.emplace<SoundObjectListener>(object_entity, listener_instance_entity);
-            auto &sound_object = R.emplace<SoundObject>(object_entity, CreateSvg);
+
+            static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
+                for (const auto &material : materials::acoustic::All) {
+                    if (material.Name == name) return material;
+                }
+                return {};
+            };
+            auto material_name = RealImpact::FindMaterialName(R.get<Name>(object_entity).Value);
+            const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
+            auto material = real_impact_material ? *real_impact_material : materials::acoustic::All.front();
+            auto &sound_object = R.emplace<SoundObject>(object_entity, std::move(material), CreateSvg);
             sound_object.SetImpactFrames(to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
             R.emplace<Excitable>(object_entity, sound_object.GetExcitable());
         }
@@ -198,7 +198,7 @@ void AcousticScene::RenderControls(Scene &scene) {
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
         if (Button("Create audio model")) {
-            R.emplace<SoundObject>(selected_entity, CreateSvg);
+            R.emplace<SoundObject>(selected_entity, materials::acoustic::All.front(), CreateSvg);
         }
         return;
     }
@@ -228,6 +228,6 @@ void AcousticScene::RenderControls(Scene &scene) {
     sound_object.RenderControls(R, sound_entity);
     Spacing();
     if (Button("Remove audio model")) {
-        R.remove<Excitable, SoundObjectListener, SoundObject, AcousticMaterial>(sound_entity);
+        R.remove<Excitable, SoundObjectListener, SoundObject>(sound_entity);
     }
 }

@@ -5,6 +5,8 @@
 
 struct AcousticMaterialProperties {
     double Density, YoungModulus, PoissonRatio, Alpha, Beta;
+
+    auto operator<=>(const AcousticMaterialProperties &) const = default;
 };
 
 struct AcousticMaterial {

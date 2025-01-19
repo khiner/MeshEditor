@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AcousticMaterial.h"
 #include "CreateSvgResource.h"
 
 #include <entt/entity/fwd.hpp>
@@ -32,7 +33,7 @@ template<typename Result> struct Worker;
 
 // Represents a rigid body that generates an audio stream in response to an impact at a given vertex.
 struct SoundObject {
-    SoundObject(CreateSvgResource);
+    SoundObject(AcousticMaterial, CreateSvgResource);
     ~SoundObject();
 
     void ProduceAudio(AudioBuffer &) const;
@@ -48,6 +49,7 @@ struct SoundObject {
 private:
     void SetModel(SoundObjectModel, entt::registry &, entt::entity);
 
+    AcousticMaterial Material;
     std::unique_ptr<ModalAudioModel> ModalModel;
     std::unique_ptr<ImpactAudioModel> ImpactModel;
 
