@@ -5,21 +5,7 @@
 
 #include <format>
 
-std::string TetGenOptions::CreateFlags() const { return std::format("p{}{}", PreserveSurface ? "Y" : "", Quality ? "q" : ""); }
-
-Tets::Tets(std::unique_ptr<tetgenio> tet_gen) : TetGen(std::move(tet_gen)) {}
-Tets::Tets(const Mesh &mesh, TetGenOptions options) : Tets(Generate(mesh, options)) {}
-Tets::Tets(Tets &&other) = default;
-Tets::~Tets() = default;
-
-Tets &Tets::operator=(Tets &&other) noexcept {
-    if (this != &other) {
-        TetGen = std::move(other.TetGen);
-    }
-    return *this;
-}
-
-Tets Tets::Generate(const Mesh &mesh, TetGenOptions options) {
+std::unique_ptr<tetgenio> GenerateTets(const Mesh &mesh, TetGenOptions options) {
     static constexpr int TriVerts = 3;
     tetgenio in;
     const float *vertices = mesh.GetPositionData();
@@ -47,25 +33,20 @@ Tets Tets::Generate(const Mesh &mesh, TetGenOptions options) {
     }
 
     auto result = std::make_unique<tetgenio>();
-    const std::string flags = options.CreateFlags();
+    const auto flags = std::format("p{}{}", options.PreserveSurface ? "Y" : "", options.Quality ? "q" : "");
     tetrahedralize(const_cast<char *>(flags.c_str()), &in, result.get());
-    return {std::move(result)};
-}
-
-uint32_t Tets::NumPoints() const {
-    if (!TetGen) return 0;
-    return TetGen->numberofpoints;
+    return result;
 }
 
 /*
-Mesh Tets::CreateMesh() const {
+Mesh CreateTetsMesh(const tetgenio &tets) const {
     std::vector<vec3> vertices;
     std::vector<std::vector<uint>> faces;
-    for (uint i = 0; i < uint(TetGen->numberofpoints); ++i) {
-        vertices.emplace_back(TetGen->pointlist[i * 3], TetGen->pointlist[i * 3 + 1], TetGen->pointlist[i * 3 + 2]);
+    for (uint i = 0; i < uint(tets.numberofpoints); ++i) {
+        vertices.emplace_back(tets.pointlist[i * 3], tets.pointlist[i * 3 + 1], tets.pointlist[i * 3 + 2]);
     }
-    for (uint i = 0; i < uint(TetGen->numberoftrifaces); ++i) {
-        const auto &tri_indices = TetGen->trifacelist;
+    for (uint i = 0; i < uint(tets.numberoftrifaces); ++i) {
+        const auto &tri_indices = tets.trifacelist;
         const uint tri_i = i * 3;
         const uint a = tri_indices[tri_i + 2], b = tri_indices[tri_i + 1], c = tri_indices[tri_i];
         faces.push_back({a, b, c});
