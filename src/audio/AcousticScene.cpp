@@ -1,5 +1,6 @@
 #include "AcousticScene.h"
 #include "AcousticMaterial.h"
+#include "Excitable.h"
 #include "RealImpact.h"
 #include "Scene.h"
 #include "SoundObject.h"
@@ -183,13 +184,6 @@ void AcousticScene::RenderControls(Scene &scene) {
     }
 
     // Display the selected sound object (which could be the object listened to if a listener is selected).
-    if (R.storage<SoundObject>().empty()) {
-        if (Button("Create audio model")) {
-            R.emplace<SoundObject>(selected_entity, CreateSvg);
-        }
-        return;
-    }
-
     const auto FindSelectedSoundEntity = [&]() -> entt::entity {
         if (R.all_of<SoundObject>(selected_entity)) return selected_entity;
         if (R.storage<SoundObjectListener>().empty()) return entt::null;
@@ -201,7 +195,9 @@ void AcousticScene::RenderControls(Scene &scene) {
     };
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
-        TextUnformatted("No sound object selected");
+        if (Button("Create audio model")) {
+            R.emplace<SoundObject>(selected_entity, CreateSvg);
+        }
         return;
     }
 

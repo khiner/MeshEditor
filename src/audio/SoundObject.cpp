@@ -7,6 +7,7 @@ using Sample = float;
 
 #include "AcousticMaterial.h"
 #include "AudioBuffer.h"
+#include "Excitable.h"
 #include "FFTData.h"
 #include "FaustParams.h"
 #include "SvgResource.h"
@@ -37,6 +38,7 @@ struct Mesh2FaustResult {
     std::vector<float> ModeT60s; // Mode T60 decay times
     std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
     std::vector<uint> ExcitableVertices; // Excitable vertices
+    AcousticMaterialProperties Material;
 };
 
 namespace {
@@ -575,8 +577,8 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialPropert
             .debugMode = false,
         }
     );
-    const std::string model_dsp = m2f_result.modelDsp;
-    if (model_dsp.empty()) return {"process = 0;", {}, {}, {}, {{}}};
+    const std::string_view model_dsp = m2f_result.modelDsp;
+    if (model_dsp.empty()) return {"process = 0;", {}, {}, {}, {{}}, {}};
 
     auto &mode_freqs = m2f_result.model.modeFreqs;
     const float fundamental_freq = fundamental_freq_opt ?
@@ -616,11 +618,12 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialPropert
                << process << '\n';
 
     return {
-        .ModelDsp = model_dsp + instrument.str(),
+        .ModelDsp = std::format("{}{}", model_dsp, instrument.str()),
         .ModeFreqs = std::move(mode_freqs),
         .ModeT60s = std::move(m2f_result.model.modeT60s),
         .ModeGains = std::move(m2f_result.model.modeGains),
         .ExcitableVertices = std::move(excitable_vertices),
+        .Material = std::move(material)
     };
 }
 
@@ -633,7 +636,6 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 } // namespace
 
 SoundObject::SoundObject(CreateSvgResource create_svg) : CreateSvg(std::move(create_svg)) {}
-
 SoundObject::~SoundObject() = default;
 
 void SoundObject::Apply(SoundObjectAction::Any action) {
@@ -735,109 +737,111 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         else if (IsItemDeactivated()) action = SoundObjectAction::SetExciteForce{0.f};
         if (!can_excite) EndDisabled();
     }
-    if (impact_mode && ImpactModel) {
-        ImpactModel->Draw();
-    } else if (modal_mode) {
-        if (ModalModel) {
-            ModalModel->Draw();
-            if (ModalModel->Waveform && ImpactModel && ImpactModel->Waveform) {
-                const auto &modal = *ModalModel->Waveform, &impact = *ImpactModel->Waveform;
-                // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
-                // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
-                // modal.GetPeakFrequencies(n_test_modes);
-                // impact.GetPeakFrequencies(n_test_modes);
-                // RMSE is abyssmal in most cases...
-                // const float rmse = RMSE(a->GetPeakFrequencies(n_test_modes), b->GetPeakFrequencies(n_test_modes));
-                // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
-                SameLine();
-                if (Button("Save wav files")) {
-                    // Save wav files for both the modal and real-world impact sounds.
-                    static const auto WavOutDir = fs::path{".."} / "audio_samples";
-                    modal.WriteWav(WavOutDir / std::format("{}-modal", name));
-                    impact.WriteWav(WavOutDir / std::format("{}-impact", name));
-                }
+
+    if (impact_mode) {
+        if (ImpactModel) ImpactModel->Draw();
+        return action;
+    }
+
+    // Modal mode
+    if (ModalModel) {
+        ModalModel->Draw();
+        if (ModalModel->Waveform && ImpactModel && ImpactModel->Waveform) {
+            const auto &modal = *ModalModel->Waveform, &impact = *ImpactModel->Waveform;
+            // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
+            // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
+            // modal.GetPeakFrequencies(n_test_modes);
+            // impact.GetPeakFrequencies(n_test_modes);
+            // RMSE is abyssmal in most cases...
+            // const float rmse = RMSE(a->GetPeakFrequencies(n_test_modes), b->GetPeakFrequencies(n_test_modes));
+            // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
+            SameLine();
+            if (Button("Save wav files")) {
+                // Save wav files for both the modal and real-world impact sounds.
+                static const auto WavOutDir = fs::path{".."} / "audio_samples";
+                modal.WriteWav(WavOutDir / std::format("{}-modal", name));
+                impact.WriteWav(WavOutDir / std::format("{}-impact", name));
             }
         }
+    }
 
-        // todo create material if not present
-        if (!meshP || !materialP) return action;
+    if (!meshP) return action;
 
-        auto &material = *materialP;
-        const auto &mesh = *meshP;
+    static AcousticMaterial default_material = materials::acoustic::All.front();
+    auto &material = materialP ? *materialP : default_material;
 
-        SeparatorText("Material properties");
-        if (BeginCombo("Presets", material.Name.c_str())) {
-            for (const auto &material_choice : materials::acoustic::All) {
-                const bool is_selected = (material_choice.Name == material.Name);
-                if (Selectable(material_choice.Name.c_str(), is_selected)) {
-                    material = material_choice;
-                }
-                if (is_selected) SetItemDefaultFocus();
+    SeparatorText("Material properties");
+    if (BeginCombo("Presets", material.Name.c_str())) {
+        for (const auto &material_choice : materials::acoustic::All) {
+            const bool is_selected = (material_choice.Name == material.Name);
+            if (Selectable(material_choice.Name.c_str(), is_selected)) {
+                material = material_choice;
             }
-            EndCombo();
+            if (is_selected) SetItemDefaultFocus();
         }
+        EndCombo();
+    }
 
-        auto &material_props = material.Properties;
-        Text("Density (kg/m^3)");
-        InputDouble("##Density", &material_props.Density, 0.0f, 0.0f, "%.3f");
-        Text("Young's modulus (Pa)");
-        InputDouble("##Young's modulus", &material_props.YoungModulus, 0.0f, 0.0f, "%.3f");
-        Text("Poisson's ratio");
-        InputDouble("##Poisson's ratio", &material_props.PoissonRatio, 0.0f, 0.0f, "%.3f");
-        Text("Rayleigh damping alpha/beta");
-        InputDouble("##Rayleigh damping alpha", &material_props.Alpha, 0.0f, 0.0f, "%.3f");
-        InputDouble("##Rayleigh damping beta", &material_props.Beta, 0.0f, 0.0f, "%.3f");
+    auto &material_props = material.Properties;
+    Text("Density (kg/m^3)");
+    InputDouble("##Density", &material_props.Density, 0.0f, 0.0f, "%.3f");
+    Text("Young's modulus (Pa)");
+    InputDouble("##Young's modulus", &material_props.YoungModulus, 0.0f, 0.0f, "%.3f");
+    Text("Poisson's ratio");
+    InputDouble("##Poisson's ratio", &material_props.PoissonRatio, 0.0f, 0.0f, "%.3f");
+    Text("Rayleigh damping alpha/beta");
+    InputDouble("##Rayleigh damping alpha", &material_props.Alpha, 0.0f, 0.0f, "%.3f");
+    InputDouble("##Rayleigh damping beta", &material_props.Beta, 0.0f, 0.0f, "%.3f");
 
-        SeparatorText("Tet mesh");
+    SeparatorText("Tet mesh");
 
-        static bool tet_quality = false;
-        Checkbox("Quality", &tet_quality);
-        MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
+    static bool tet_quality = false;
+    Checkbox("Quality", &tet_quality);
+    MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
 
-        if (DspGenerator) {
-            if (auto m2f_result = DspGenerator->Render()) {
-                DspGenerator.reset();
-                ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CreateSvg);
-                action = SoundObjectAction::SetModel{SoundObjectModel::Modal};
-            }
+    if (DspGenerator) {
+        if (auto m2f_result = DspGenerator->Render()) {
+            DspGenerator.reset();
+            ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CreateSvg);
+            action = SoundObjectAction::SetModel{SoundObjectModel::Modal};
         }
+    }
 
-        SeparatorText("Excitable vertices");
-        // If impact model is present, default the modal model to be excitable at exactly the same points.
-        static bool use_impact_vertices{ImpactModel};
-        if (ImpactModel) {
-            Checkbox("Use RealImpact vertices", &use_impact_vertices);
-        } else {
-            use_impact_vertices = false;
-        }
-        const auto num_points = mesh.GetVertexCount();
-        static int num_excitable_vertices = 10;
-        if (!use_impact_vertices) {
-            if (uint(num_excitable_vertices) > num_points) num_excitable_vertices = num_points;
-            SliderInt("Num excitable vertices", &num_excitable_vertices, 1, num_points);
-        }
+    SeparatorText("Excitable vertices");
+    // If impact model is present, default the modal model to be excitable at exactly the same points.
+    static bool use_impact_vertices{ImpactModel};
+    if (ImpactModel) {
+        Checkbox("Use RealImpact vertices", &use_impact_vertices);
+    } else {
+        use_impact_vertices = false;
+    }
+    const auto num_points = meshP->GetVertexCount();
+    static int num_excitable_vertices = 10;
+    if (!use_impact_vertices) {
+        if (uint(num_excitable_vertices) > num_points) num_excitable_vertices = num_points;
+        SliderInt("Num excitable vertices", &num_excitable_vertices, 1, num_points);
+    }
 
-        if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
-            DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating modal audio model...", [&] {
-                // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
-                // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh",  R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
+    if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
+        DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating modal audio model...", [&] {
+            // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
+            // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh",  R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
 
-                // We rely on `PreserveSurface` behavior for excitable vertices;
-                // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
-                // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
-                while (!DspGenerator) {}
-                DspGenerator->SetMessage("Generating tetrahedral mesh...");
-                auto tets = Tets::Generate(mesh, {.PreserveSurface = true, .Quality = tet_quality});
+            // We rely on `PreserveSurface` behavior for excitable vertices;
+            // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
+            // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+            while (!DspGenerator) {}
+            DspGenerator->SetMessage("Generating tetrahedral mesh...");
+            auto tets = Tets::Generate(*meshP, {.PreserveSurface = true, .Quality = tet_quality});
 
-                DspGenerator->SetMessage("Generating DSP...");
-                // Use impact model vertices or linearly distribute the vertices across the tet mesh.
-                auto excitable_vertices = use_impact_vertices ?
-                    ImpactModel->Excitable.ExcitableVertices :
-                    iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * num_points / num_excitable_vertices; }) | to<std::vector<uint>>();
-                std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
-                return GenerateDsp(*tets, material_props, std::move(excitable_vertices), true, fundamental_freq);
-            });
-        }
+            DspGenerator->SetMessage("Generating DSP...");
+            // Use impact model vertices or linearly distribute the vertices across the tet mesh.
+            auto excitable_vertices = use_impact_vertices ?
+                ImpactModel->Excitable.ExcitableVertices :
+                iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * num_points / num_excitable_vertices; }) | to<std::vector<uint>>();
+            std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
+            return GenerateDsp(*tets, material_props, std::move(excitable_vertices), true, fundamental_freq);
+        });
     }
 
     return action;

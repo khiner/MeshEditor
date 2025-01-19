@@ -1,7 +1,6 @@
 #pragma once
 
 #include "CreateSvgResource.h"
-#include "Excitable.h"
 #include "Variant.h"
 
 #include <filesystem>
@@ -41,6 +40,7 @@ using Any = std::variant<SetModel, SelectVertex, Excite, SetExciteForce>;
 
 struct AudioBuffer;
 struct AcousticMaterial;
+struct Excitable;
 struct Mesh;
 struct Mesh2FaustResult;
 
