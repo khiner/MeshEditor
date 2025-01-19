@@ -335,14 +335,17 @@ int main(int, char **) {
         if (windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
+                scene->Interact();
                 if (scene->Render()) {
                     // Extent changed. Update the scene texture.
                     scene_texture.reset(); // Ensure destruction before creation.
                     scene_texture = std::make_unique<ImGuiTexture>(*VC->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
                 }
                 if (scene_texture) {
+                    const auto cursor = GetCursorPos();
                     const auto &scene_extent = scene->GetExtent();
                     scene_texture->Render({float(scene_extent.width), float(scene_extent.height)});
+                    SetCursorPos(cursor);
                 }
                 scene->RenderGizmo();
                 End();

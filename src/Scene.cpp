@@ -865,81 +865,96 @@ std::multimap<float, entt::entity> HoveredEntitiesByDistance(const entt::registr
 }
 } // namespace
 
-bool Scene::Render() {
-    if (Extent.width != 0 && Extent.height != 0) {
-        // Handle keyboard input.
-        if (IsWindowFocused()) {
-            if (IsKeyPressed(ImGuiKey_Tab)) {
-                // Cycle to the next selection mode, wrapping around to the first.
-                auto it = find(SelectionModes, SelectionMode);
-                SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
-            }
-            if (SelectionMode == SelectionMode::Edit) {
-                if (IsKeyPressed(ImGuiKey_1)) SetSelectedElement({MeshElement::Vertex, -1});
-                else if (IsKeyPressed(ImGuiKey_2)) SetSelectedElement({MeshElement::Edge, -1});
-                else if (IsKeyPressed(ImGuiKey_3)) SetSelectedElement({MeshElement::Face, -1});
-            }
-            if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
-                DestroyEntity(SelectedEntity);
+void Scene::Interact() {
+    if (Extent.width == 0 || Extent.height == 0) return;
+
+    // Handle keyboard input.
+    if (IsWindowFocused()) {
+        if (IsKeyPressed(ImGuiKey_Tab)) {
+            // Cycle to the next selection mode, wrapping around to the first.
+            auto it = find(SelectionModes, SelectionMode);
+            SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
+        }
+        if (SelectionMode == SelectionMode::Edit) {
+            if (IsKeyPressed(ImGuiKey_1)) SetSelectedElement({MeshElement::Vertex, -1});
+            else if (IsKeyPressed(ImGuiKey_2)) SetSelectedElement({MeshElement::Edge, -1});
+            else if (IsKeyPressed(ImGuiKey_3)) SetSelectedElement({MeshElement::Face, -1});
+        }
+        if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
+            DestroyEntity(SelectedEntity);
+        }
+    }
+
+    // Handle mouse input.
+    if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ExcitedVertex>(SelectedEntity)) {
+        R.erase<ExcitedVertex>(SelectedEntity);
+    }
+    if (!IsWindowHovered()) return;
+
+    // We adopt Blender's mouse wheel for camera rotation, and Cmd+wheel to zoom.
+    if (const vec2 wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; wheel != vec2{0, 0}) {
+        if (GetIO().KeyCtrl || GetIO().KeySuper) {
+            Camera.SetTargetDistance(Camera.GetDistance() * (1.f - wheel.y / 16.f));
+        } else {
+            Camera.OrbitDelta(wheel * 0.1f);
+            UpdateTransformBuffers();
+        }
+    }
+    if (!IsMouseClicked(ImGuiMouseButton_Left) || ImGuizmo::IsOver()) return;
+
+    // Handle mouse selection.
+    const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
+    if (SelectionMode == SelectionMode::Edit) {
+        if (SelectedElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
+            const auto &model = R.get<Model>(SelectedEntity);
+            const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
+            const auto &mesh = GetSelectedMesh();
+            {
+                const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
+                if (SelectedElement.Element == MeshElement::Vertex) SetSelectedElement(Mesh::ElementIndex{nearest_vertex});
+                else if (SelectedElement.Element == MeshElement::Edge) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)});
+                else if (SelectedElement.Element == MeshElement::Face) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)});
             }
         }
-
-        // Handle mouse input.
-        if (IsWindowHovered() && IsMouseClicked(ImGuiMouseButton_Left)) {
-            const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
-            if (SelectionMode == SelectionMode::Edit) {
-                if (SelectedElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
-                    const auto &model = R.get<Model>(SelectedEntity);
-                    const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
-                    const auto &mesh = GetSelectedMesh();
-                    {
-                        const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
-                        if (SelectedElement.Element == MeshElement::Vertex) SetSelectedElement(Mesh::ElementIndex{nearest_vertex});
-                        else if (SelectedElement.Element == MeshElement::Edge) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)});
-                        else if (SelectedElement.Element == MeshElement::Face) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)});
-                    }
-                }
-            } else if (SelectionMode == SelectionMode::Object) {
-                if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
-                    // Cycle through hovered entities.
-                    auto it = find_if(entities_by_distance, [&](const auto &entry) { return entry.second == SelectedEntity; });
-                    if (it != entities_by_distance.end()) ++it;
-                    if (it == entities_by_distance.end()) it = entities_by_distance.begin();
-                    SelectEntity(it->second);
-                } else {
-                    SelectEntity(entt::null);
-                }
-            } else if (SelectionMode == SelectionMode::Excite) {
-                // Excite the nearest entity if it's excitable.
-                if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
-                    if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
-                        const auto &mesh = R.get<const Mesh>(nearest_entity);
-                        if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(R.get<const Model>(nearest_entity).InvTransform));
-                            nearest_vertex.is_valid()) {
-                            if (const auto *excitable = R.try_get<Excitable>(nearest_entity)) {
-                                // Find the nearest excitable vertex.
-                                std::optional<uint> nearest_excite_vertex{};
-                                float min_dist = FLT_MAX;
-                                const auto &position = mesh.GetPosition(nearest_vertex);
-                                for (uint excite_vertex : excitable->ExcitableVertices) {
-                                    if (const float dist = glm::distance(position, mesh.GetPosition(Mesh::VH(excite_vertex))); dist < min_dist) {
-                                        min_dist = dist;
-                                        nearest_excite_vertex = {excite_vertex};
-                                    }
-                                }
-                                if (nearest_excite_vertex) {
-                                    R.emplace<ExcitedVertex>(nearest_entity, *nearest_excite_vertex, 1.f);
-                                }
+    } else if (SelectionMode == SelectionMode::Object) {
+        if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
+            // Cycle through hovered entities.
+            auto it = find_if(entities_by_distance, [&](const auto &entry) { return entry.second == SelectedEntity; });
+            if (it != entities_by_distance.end()) ++it;
+            if (it == entities_by_distance.end()) it = entities_by_distance.begin();
+            SelectEntity(it->second);
+        } else {
+            SelectEntity(entt::null);
+        }
+    } else if (SelectionMode == SelectionMode::Excite) {
+        // Excite the nearest entity if it's excitable.
+        if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
+            if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
+                const auto &mesh = R.get<const Mesh>(nearest_entity);
+                if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(R.get<const Model>(nearest_entity).InvTransform));
+                    nearest_vertex.is_valid()) {
+                    if (const auto *excitable = R.try_get<Excitable>(nearest_entity)) {
+                        // Find the nearest excitable vertex.
+                        std::optional<uint> nearest_excite_vertex{};
+                        float min_dist = FLT_MAX;
+                        const auto &position = mesh.GetPosition(nearest_vertex);
+                        for (uint excite_vertex : excitable->ExcitableVertices) {
+                            if (const float dist = glm::distance(position, mesh.GetPosition(Mesh::VH(excite_vertex))); dist < min_dist) {
+                                min_dist = dist;
+                                nearest_excite_vertex = {excite_vertex};
                             }
+                        }
+                        if (nearest_excite_vertex) {
+                            R.emplace<ExcitedVertex>(nearest_entity, *nearest_excite_vertex, 1.f);
                         }
                     }
                 }
             }
-        } else if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ExcitedVertex>(SelectedEntity)) {
-            R.erase<ExcitedVertex>(SelectedEntity);
         }
     }
+}
 
+bool Scene::Render() {
     const vec2 content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty) return false;
@@ -956,15 +971,6 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    // We adopt Blender's mouse wheel for camera rotation, and Cmd+wheel to zoom.
-    if (const vec2 wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; wheel != vec2{0, 0} && IsWindowHovered()) {
-        if (GetIO().KeyCtrl || GetIO().KeySuper) {
-            Camera.SetTargetDistance(Camera.GetDistance() * (1.f - wheel.y / 16.f));
-        } else {
-            Camera.OrbitDelta(wheel * 0.1f);
-            UpdateTransformBuffers();
-        }
-    }
     Gizmo->Begin();
     if (SelectedEntity != entt::null) {
         auto transform = R.get<Model>(SelectedEntity).Transform;

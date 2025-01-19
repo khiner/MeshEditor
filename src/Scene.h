@@ -210,11 +210,14 @@ struct Scene {
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
     vk::ImageView GetResolveImageView() const;
 
+    // Handle mouse/keyboard interactions.
+    void Interact();
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
     // and it will be equal to the dimensions of `GetContentRegionAvail()` at the beginning of the call.
     // Returns true if the scene was updated, which can happen when the window size or background color changes.
     bool Render();
+
     void RenderGizmo();
     void RenderControls();
 
