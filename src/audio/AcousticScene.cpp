@@ -205,7 +205,6 @@ void AcousticScene::RenderControls(Scene &scene) {
 
     SeparatorText("Audio model");
 
-    auto &sound_object = R.get<SoundObject>(sound_entity);
     if (sound_entity != selected_entity && Button("Select sound object")) {
         scene.SelectEntity(sound_entity);
     }
@@ -216,6 +215,8 @@ void AcousticScene::RenderControls(Scene &scene) {
             scene.SelectEntity(listener->Listener);
         }
     }
+
+    auto &sound_object = R.get<SoundObject>(sound_entity);
     if (const auto *listener_point = R.try_get<SoundObjectListenerPoint>(selected_entity);
         listener_point && (!listener || selected_entity != listener->Listener)) {
         if (Button("Set listener point")) {

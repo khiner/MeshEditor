@@ -46,7 +46,7 @@ struct Worker {
     void SetMessage(std::string_view message) { Message = message; }
 
 private:
-    std::string_view Title;
-    std::string_view Message{""};
+    std::string Title;
+    std::string Message{""};
     std::future<Result> ResultFuture;
 };

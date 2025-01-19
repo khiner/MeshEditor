@@ -688,6 +688,14 @@ const Excitable &SoundObject::GetExcitable() const {
 void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     using namespace ImGui;
 
+    if (DspGenerator) {
+        if (auto m2f_result = DspGenerator->Render()) {
+            DspGenerator.reset();
+            ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CreateSvg);
+            SetModel(SoundObjectModel::Modal, r, entity);
+        }
+    }
+
     if (ImpactModel) {
         PushID("AudioModel");
         auto model = int(Model);
@@ -787,14 +795,6 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     Checkbox("Quality", &tet_quality);
     MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
 
-    if (DspGenerator) {
-        if (auto m2f_result = DspGenerator->Render()) {
-            DspGenerator.reset();
-            ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CreateSvg);
-            SetModel(SoundObjectModel::Modal, r, entity);
-        }
-    }
-
     SeparatorText("Excitable vertices");
     // If impact model is present, default the modal model to be excitable at exactly the same points.
     static bool use_impact_vertices{ImpactModel};
@@ -805,9 +805,9 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     }
 
     const auto &mesh = r.get<const Mesh>(entity);
-    const auto num_points = mesh.GetVertexCount();
     static int num_excitable_vertices = 10;
     if (!use_impact_vertices) {
+        const auto num_points = mesh.GetVertexCount();
         if (uint(num_excitable_vertices) > num_points) num_excitable_vertices = num_points;
         SliderInt("Num excitable vertices", &num_excitable_vertices, 1, num_points);
     }
@@ -826,6 +826,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
 
             DspGenerator->SetMessage("Generating DSP...");
             // Use impact model vertices or linearly distribute the vertices across the tet mesh.
+            const auto num_points = mesh.GetVertexCount();
             auto excitable_vertices = use_impact_vertices ?
                 ImpactModel->Excitable.ExcitableVertices :
                 iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * num_points / num_excitable_vertices; }) | to<std::vector<uint>>();
