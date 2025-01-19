@@ -15,7 +15,6 @@ struct Worker {
         : Title(title), ResultFuture(std::async(std::launch::async, std::forward<decltype(work)>(work))) {
         ImGui::OpenPopup(Title.data());
     }
-
     ~Worker() = default;
 
     std::optional<Result> Render() {
@@ -26,7 +25,12 @@ struct Worker {
         if (BeginPopupModal(Title.data(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             const auto &ws = GetWindowSize();
             const float spinner_size = std::min(ws.x, ws.y) / 2;
-            SetCursorPos((ws - ImVec2{spinner_size, spinner_size}) / 2 + ImVec2{0, GetTextLineHeight()});
+            const ImVec2 spinner_pos = (ws - ImVec2{spinner_size, spinner_size}) / 2;
+            SetCursorPos({(ws.x - CalcTextSize(Message.data()).x) / 2, spinner_pos.y - GetTextLineHeight()});
+            TextUnformatted(Message.data());
+            Spacing();
+            Spacing();
+            SetCursorPosX(spinner_pos.x);
             ImSpinner::SpinnerMultiFadeDots(Title.data(), spinner_size / 2, 3);
             std::optional<Result> result;
             if (ResultFuture.wait_for(0s) == std::future_status::ready) {
@@ -39,6 +43,10 @@ struct Worker {
         return {};
     }
 
+    void SetMessage(std::string_view message) { Message = message; }
+
+private:
     std::string_view Title;
+    std::string_view Message{""};
     std::future<Result> ResultFuture;
 };

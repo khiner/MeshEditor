@@ -819,16 +819,17 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
 
         if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
             DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating modal audio model...", [&] {
-                // todo show steps in progress. "Generateing tetrahedral mesh...", "Generating DSP code..."
-
                 // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
                 // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh",  R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
 
                 // We rely on `PreserveSurface` behavior for excitable vertices;
                 // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+                while (!DspGenerator) {}
+                DspGenerator->SetMessage("Generating tetrahedral mesh...");
                 auto tets = Tets::Generate(mesh, {.PreserveSurface = true, .Quality = tet_quality});
 
+                DspGenerator->SetMessage("Generating DSP...");
                 // Use impact model vertices or linearly distribute the vertices across the tet mesh.
                 auto excitable_vertices = use_impact_vertices ?
                     ImpactModel->Excitable.ExcitableVertices :
