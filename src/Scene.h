@@ -10,16 +10,12 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include <entt/entity/entity.hpp>
 #include <entt/entity/fwd.hpp>
 #include <glm/gtx/quaternion.hpp>
 
 #include <set>
 
 struct Visible {}; // A tag to mark entities as visible.
-struct Name {
-    std::string Value;
-};
 struct Path {
     fs::path Value;
 };
@@ -177,10 +173,6 @@ struct MeshCreateInfo {
     bool Select{true}, Visible{true};
 };
 
-std::string IdString(entt::entity);
-std::string GetName(const entt::registry &, entt::entity); // Returns name if present, otherwise hex ID.
-entt::entity GetParentEntity(const entt::registry &, entt::entity);
-
 static constexpr Camera CreateDefaultCamera(const World &world) { return {world.Up, {0, 0, 2}, world.Origin, 60, 0.01, 100}; }
 
 struct Scene {
@@ -256,7 +248,7 @@ private:
     SelectionMode SelectionMode{SelectionMode::Object};
     MeshElementIndex SelectedElement{MeshElement::Face, -1};
 
-    entt::entity SelectedEntity{entt::null};
+    entt::entity SelectedEntity;
     std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;
@@ -277,16 +269,8 @@ private:
 
     bool CommandBufferDirty{false};
 
-    void SetSelectionMode(::SelectionMode mode) {
-        SelectionMode = mode;
-        InvalidateCommandBuffer();
-    }
-    void SetSelectedElement(MeshElementIndex element) {
-        if (SelectedEntity == entt::null) return;
-
-        SelectedElement = element;
-        UpdateRenderBuffers(GetParentEntity(R, SelectedEntity), SelectedElement);
-    }
+    void SetSelectionMode(::SelectionMode);
+    void SetSelectedElement(MeshElementIndex);
 
     const Mesh &GetSelectedMesh() const;
 

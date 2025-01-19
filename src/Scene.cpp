@@ -3,6 +3,7 @@
 
 #include "Excitable.h"
 #include "ImGuizmo.h" // imgui must be included before imguizmo.
+#include "Registry.h"
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
 #include "numeric/mat3.h"
@@ -25,15 +26,6 @@ struct SceneNode {
     std::unordered_map<entt::entity, uint> ModelIndices;
 };
 
-std::string IdString(entt::entity entity) { return std::format("0x{:08x}", uint(entity)); }
-std::string GetName(const entt::registry &r, entt::entity entity) {
-    if (entity == entt::null) return "null";
-
-    if (const auto *name = r.try_get<Name>(entity)) {
-        if (!name->Value.empty()) return name->Value;
-    }
-    return IdString(entity);
-}
 entt::entity GetParentEntity(const entt::registry &r, entt::entity entity) {
     if (entity == entt::null) return entt::null;
 
@@ -624,7 +616,16 @@ void Scene::DestroyInstance(entt::entity instance) {
     R.destroy(instance);
     InvalidateCommandBuffer();
 }
+void Scene::SetSelectionMode(::SelectionMode mode) {
+    SelectionMode = mode;
+    InvalidateCommandBuffer();
+}
+void Scene::SetSelectedElement(MeshElementIndex element) {
+    if (SelectedEntity == entt::null) return;
 
+    SelectedElement = element;
+    UpdateRenderBuffers(GetParentEntity(R, SelectedEntity), SelectedElement);
+}
 const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(R, SelectedEntity)); }
 
 void Scene::SetModel(entt::entity entity, vec3 position, glm::quat rotation, vec3 scale) {

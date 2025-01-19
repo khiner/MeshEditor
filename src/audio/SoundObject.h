@@ -1,7 +1,8 @@
 #pragma once
 
 #include "CreateSvgResource.h"
-#include "Variant.h"
+
+#include <entt/entity/fwd.hpp>
 
 #include <filesystem>
 #include <memory>
@@ -20,28 +21,8 @@ enum class SoundObjectModel {
     Modal,
 };
 
-// Actions
-namespace SoundObjectAction {
-struct SetModel {
-    SoundObjectModel Model;
-};
-struct SelectVertex {
-    uint Vertex;
-};
-struct Excite {
-    uint Vertex;
-    float Force;
-};
-struct SetExciteForce {
-    float Force;
-};
-using Any = std::variant<SetModel, SelectVertex, Excite, SetExciteForce>;
-} // namespace SoundObjectAction
-
 struct AudioBuffer;
-struct AcousticMaterial;
 struct Excitable;
-struct Mesh;
 struct Mesh2FaustResult;
 
 struct ModalAudioModel;
@@ -54,19 +35,18 @@ struct SoundObject {
     SoundObject(CreateSvgResource);
     ~SoundObject();
 
-    void Apply(SoundObjectAction::Any);
-
     void ProduceAudio(AudioBuffer &) const;
-    std::optional<SoundObjectAction::Any> RenderControls(std::string_view name, const Mesh *, AcousticMaterial *);
+    void RenderControls(entt::registry &, entt::entity);
 
     const Excitable &GetExcitable() const;
+    void SetVertex(uint);
+    void SetVertexForce(float);
 
     void SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices);
     void SetImpactFrames(std::vector<std::vector<float>> &&impact_frames);
 
 private:
-    void SetVertex(uint);
-    void SetVertexForce(float);
+    void SetModel(SoundObjectModel, entt::registry &, entt::entity);
 
     std::unique_ptr<ModalAudioModel> ModalModel;
     std::unique_ptr<ImpactAudioModel> ImpactModel;

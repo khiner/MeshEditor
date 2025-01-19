@@ -2,6 +2,7 @@
 #include "AcousticMaterial.h"
 #include "Excitable.h"
 #include "RealImpact.h"
+#include "Registry.h"
 #include "Scene.h"
 #include "SoundObject.h"
 #include "Widgets.h" // imgui
@@ -29,12 +30,13 @@ AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg) : 
     R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
             const auto &excited_vertex = r.get<const ExcitedVertex>(entity);
-            sound_object->Apply(SoundObjectAction::Excite{excited_vertex.Vertex, excited_vertex.Force});
+            sound_object->SetVertex(excited_vertex.Vertex);
+            sound_object->SetVertexForce(excited_vertex.Force);
         }
     }>();
     R.on_destroy<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
-            sound_object->Apply(SoundObjectAction::SetExciteForce{0.f});
+            sound_object->SetVertexForce(0.f);
         }
     }>();
 }
@@ -222,36 +224,7 @@ void AcousticScene::RenderControls(Scene &scene) {
         }
     }
 
-    if (auto sound_object_action = sound_object.RenderControls(
-            GetName(R, sound_entity),
-            R.try_get<Mesh>(selected_entity),
-            R.try_get<AcousticMaterial>(selected_entity)
-        )) {
-        std::visit(
-            Match{
-                [&](SoundObjectAction::SelectVertex action) {
-                    sound_object.Apply(action);
-                    R.remove<ExcitedVertex>(sound_entity);
-                },
-                [&](SoundObjectAction::SetExciteForce action) {
-                    if (action.Force == 0) {
-                        R.remove<ExcitedVertex>(sound_entity);
-                    } else {
-                        R.emplace<ExcitedVertex>(sound_entity, sound_object.GetExcitable().SelectedVertex(), action.Force);
-                    }
-                },
-                [&](SoundObjectAction::SetModel action) {
-                    sound_object.Apply(action);
-                    R.emplace_or_replace<Excitable>(sound_entity, sound_object.GetExcitable());
-                },
-                [&](auto action) {
-                    sound_object.Apply(action);
-                }
-            },
-            *sound_object_action
-        );
-    }
-
+    sound_object.RenderControls(R, sound_entity);
     Spacing();
     if (Button("Remove audio model")) {
         R.remove<Excitable, SoundObjectListener, SoundObject, AcousticMaterial>(sound_entity);

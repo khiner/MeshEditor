@@ -10,6 +10,7 @@ using Sample = float;
 #include "Excitable.h"
 #include "FFTData.h"
 #include "FaustParams.h"
+#include "Registry.h"
 #include "SvgResource.h"
 #include "Tets.h"
 #include "Widgets.h" // imgui
@@ -24,6 +25,7 @@ using Sample = float;
 #include "implot.h"
 #include "miniaudio.h"
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
+#include <entt/entity/registry.hpp>
 
 #include <format>
 #include <print>
@@ -638,29 +640,6 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 SoundObject::SoundObject(CreateSvgResource create_svg) : CreateSvg(std::move(create_svg)) {}
 SoundObject::~SoundObject() = default;
 
-void SoundObject::Apply(SoundObjectAction::Any action) {
-    std::visit(
-        Match{
-            [&](SoundObjectAction::SetModel action) {
-                if (ImpactModel) ImpactModel->Stop();
-                if (ModalModel) ModalModel->Stop();
-                Model = action.Model;
-            },
-            [&](SoundObjectAction::SelectVertex action) {
-                SetVertex(action.Vertex);
-            },
-            [&](SoundObjectAction::Excite action) {
-                SetVertex(action.Vertex);
-                SetVertexForce(action.Force);
-            },
-            [&](SoundObjectAction::SetExciteForce action) {
-                SetVertexForce(action.Force);
-            }
-        },
-        std::move(action)
-    );
-}
-
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices) {
     if (!impact_frames.empty()) {
         ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames), std::move(vertex_indices));
@@ -685,11 +664,17 @@ void SoundObject::SetVertex(uint vertex) {
     if (ImpactModel) ImpactModel->SetVertex(vertex);
     if (ModalModel) ModalModel->SetVertex(vertex);
 }
-
 void SoundObject::SetVertexForce(float force) {
     // Update vertex force in the active model.
     if (Model == SoundObjectModel::ImpactAudio && ImpactModel) ImpactModel->SetVertexForce(force);
     else if (Model == SoundObjectModel::Modal && ModalModel) ModalModel->SetVertexForce(force);
+}
+
+void SoundObject::SetModel(SoundObjectModel model, entt::registry &r, entt::entity entity) {
+    if (ImpactModel) ImpactModel->Stop();
+    if (ModalModel) ModalModel->Stop();
+    Model = model;
+    r.emplace_or_replace<Excitable>(entity, GetExcitable());
 }
 
 const Excitable &SoundObject::GetExcitable() const {
@@ -700,10 +685,8 @@ const Excitable &SoundObject::GetExcitable() const {
     return EmptyExcitable;
 }
 
-std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_view name, const Mesh *meshP, AcousticMaterial *materialP) {
+void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     using namespace ImGui;
-
-    std::optional<SoundObjectAction::Any> action;
 
     if (ImpactModel) {
         PushID("AudioModel");
@@ -712,9 +695,11 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         SameLine();
         model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
         PopID();
-        if (model_changed) action = SoundObjectAction::SetModel{SoundObjectModel(model)};
+        if (model_changed) {
+            SetModel(SoundObjectModel(model), r, entity);
+        }
     } else if (Model == SoundObjectModel::ImpactAudio) {
-        action = SoundObjectAction::SetModel{SoundObjectModel::Modal};
+        SetModel(SoundObjectModel::Modal, r, entity);
     }
 
     const bool impact_mode = Model == SoundObjectModel::ImpactAudio, modal_mode = Model == SoundObjectModel::Modal;
@@ -725,7 +710,8 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         if (BeginCombo("Vertex", std::to_string(selected_vertex).c_str())) {
             for (uint vertex : excitable_vertices) {
                 if (Selectable(std::to_string(vertex).c_str(), vertex == selected_vertex)) {
-                    action = SoundObjectAction::SelectVertex{vertex};
+                    SetVertex(vertex);
+                    r.remove<ExcitedVertex>(entity);
                 }
             }
             EndCombo();
@@ -733,14 +719,17 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         const bool can_excite = (impact_mode && ImpactModel->CanExcite()) || (modal_mode && ModalModel->CanExcite());
         if (!can_excite) BeginDisabled();
         Button("Strike");
-        if (IsItemActivated()) action = SoundObjectAction::SetExciteForce{1.f};
-        else if (IsItemDeactivated()) action = SoundObjectAction::SetExciteForce{0.f};
+        if (IsItemActivated()) {
+            r.emplace<ExcitedVertex>(entity, GetExcitable().SelectedVertex(), 1.f);
+        } else if (IsItemDeactivated()) {
+            r.remove<ExcitedVertex>(entity);
+        }
         if (!can_excite) EndDisabled();
     }
 
     if (impact_mode) {
         if (ImpactModel) ImpactModel->Draw();
-        return action;
+        return;
     }
 
     // Modal mode
@@ -757,6 +746,7 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
             // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
             SameLine();
             if (Button("Save wav files")) {
+                const auto name = GetName(r, entity);
                 // Save wav files for both the modal and real-world impact sounds.
                 static const auto WavOutDir = fs::path{".."} / "audio_samples";
                 modal.WriteWav(WavOutDir / std::format("{}-modal", name));
@@ -765,10 +755,8 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         }
     }
 
-    if (!meshP) return action;
-
     static AcousticMaterial default_material = materials::acoustic::All.front();
-    auto &material = materialP ? *materialP : default_material;
+    auto &material = r.all_of<AcousticMaterial>(entity) ? r.get<AcousticMaterial>(entity) : default_material;
 
     SeparatorText("Material properties");
     if (BeginCombo("Presets", material.Name.c_str())) {
@@ -803,7 +791,7 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
         if (auto m2f_result = DspGenerator->Render()) {
             DspGenerator.reset();
             ModalModel = std::make_unique<ModalAudioModel>(std::move(*m2f_result), CreateSvg);
-            action = SoundObjectAction::SetModel{SoundObjectModel::Modal};
+            SetModel(SoundObjectModel::Modal, r, entity);
         }
     }
 
@@ -815,7 +803,9 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
     } else {
         use_impact_vertices = false;
     }
-    const auto num_points = meshP->GetVertexCount();
+
+    const auto &mesh = r.get<const Mesh>(entity);
+    const auto num_points = mesh.GetVertexCount();
     static int num_excitable_vertices = 10;
     if (!use_impact_vertices) {
         if (uint(num_excitable_vertices) > num_points) num_excitable_vertices = num_points;
@@ -832,7 +822,7 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
             // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
             while (!DspGenerator) {}
             DspGenerator->SetMessage("Generating tetrahedral mesh...");
-            auto tets = Tets::Generate(*meshP, {.PreserveSurface = true, .Quality = tet_quality});
+            auto tets = Tets::Generate(mesh, {.PreserveSurface = true, .Quality = tet_quality});
 
             DspGenerator->SetMessage("Generating DSP...");
             // Use impact model vertices or linearly distribute the vertices across the tet mesh.
@@ -843,6 +833,4 @@ std::optional<SoundObjectAction::Any> SoundObject::RenderControls(std::string_vi
             return GenerateDsp(*tets, material_props, std::move(excitable_vertices), true, fundamental_freq);
         });
     }
-
-    return action;
 }
