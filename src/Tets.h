@@ -2,6 +2,8 @@
 
 #include <memory>
 
+#include "numeric/vec3.h"
+
 struct Mesh;
 
 // See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
@@ -15,4 +17,4 @@ struct TetGenOptions {
 
 class tetgenio;
 
-std::unique_ptr<tetgenio> GenerateTets(const Mesh &, TetGenOptions);
+std::unique_ptr<tetgenio> GenerateTets(const Mesh &, vec3 scale, TetGenOptions);

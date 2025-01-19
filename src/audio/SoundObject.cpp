@@ -10,6 +10,7 @@ using Sample = float;
 #include "FFTData.h"
 #include "FaustParams.h"
 #include "Registry.h"
+#include "Scale.h"
 #include "SvgResource.h"
 #include "Tets.h"
 #include "Widgets.h" // imgui
@@ -830,7 +831,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
             // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
             while (!DspGenerator) {}
             DspGenerator->SetMessage("Generating tetrahedral mesh...");
-            auto tets = GenerateTets(mesh, {.PreserveSurface = true, .Quality = tet_quality});
+            auto tets = GenerateTets(mesh, r.get<Scale>(entity).Value, {.PreserveSurface = true, .Quality = tet_quality});
 
             DspGenerator->SetMessage("Generating DSP...");
             std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;

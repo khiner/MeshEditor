@@ -4,6 +4,7 @@
 #include "Excitable.h"
 #include "ImGuizmo.h" // imgui must be included before imguizmo.
 #include "Registry.h"
+#include "Scale.h"
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
 #include "numeric/mat3.h"

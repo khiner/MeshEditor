@@ -34,9 +34,6 @@ struct Position {
 struct Rotation {
     glm::quat Value;
 };
-struct Scale {
-    vec3 Value;
-};
 
 struct Model {
     Model(mat4 transform)
