@@ -321,7 +321,7 @@ struct Gizmo {
 
         const auto &window_pos = GetWindowPos();
         const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
-        auto camera_view = camera.GetViewMatrix();
+        auto camera_view = camera.GetView();
         const float camera_distance = camera.GetDistance();
         if (view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0); view_changed) {
             camera.SetPositionFromView(camera_view);
@@ -332,8 +332,8 @@ struct Gizmo {
         using namespace ImGui;
 
         Render(camera, view_changed);
-        auto camera_view = camera.GetViewMatrix();
-        auto camera_projection = camera.GetProjectionMatrix(aspect_ratio);
+        auto camera_view = camera.GetView();
+        auto camera_projection = camera.GetProjection(aspect_ratio);
         model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
     }
 
@@ -797,7 +797,7 @@ void Scene::UpdateEdgeColors() {
 
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    const ViewProj view_proj{Camera.GetViewMatrix(), Camera.GetProjectionMatrix(aspect_ratio)};
+    const ViewProj view_proj{Camera.GetView(), Camera.GetProjection(aspect_ratio)};
     VC.UpdateBuffer(*TransformBuffer, &view_proj);
 
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};

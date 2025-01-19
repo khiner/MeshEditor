@@ -3,13 +3,12 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-mat4 Camera::GetViewMatrix() const { return glm::lookAt(Position, Target, Up); }
-mat4 Camera::GetProjectionMatrix(float aspect_ratio) const { return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip); }
-mat4 Camera::GetInvViewProjectionMatrix(float aspect_ratio) const { return glm::inverse(GetProjectionMatrix(aspect_ratio) * GetViewMatrix()); }
+mat4 Camera::GetView() const { return glm::lookAt(Position, Target, Up); }
+mat4 Camera::GetProjection(float aspect_ratio) const { return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip); }
 float Camera::GetDistance() const { return glm::distance(Position, Target); }
 
 Ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
-    const mat4 inv_vp = GetInvViewProjectionMatrix(aspect_ratio);
+    const mat4 inv_vp = glm::inverse(GetProjection(aspect_ratio) * GetView());
     vec4 near_point = inv_vp * vec4(pos_clip.x, pos_clip.y, -1.0, 1.0);
     near_point /= near_point.w; // Perspective divide.
 

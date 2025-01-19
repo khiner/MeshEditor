@@ -2,9 +2,7 @@
 
 #include "Ray.h"
 
-#include "numeric/mat4.h"
 #include "numeric/vec2.h"
-#include "numeric/vec3.h"
 
 #include <optional>
 
@@ -13,21 +11,18 @@ struct Camera {
         : Up(up), Position(position), Target(target), FieldOfView(field_of_view), NearClip(near_clip), FarClip(far_clip) {}
     ~Camera() = default;
 
-    vec3 Up;
-    vec3 Position;
-    vec3 Target;
+    vec3 Up, Position, Target;
     float FieldOfView;
     float NearClip, FarClip;
 
-    mat4 GetViewMatrix() const;
-    mat4 GetProjectionMatrix(float aspect_ratio) const;
-    mat4 GetInvViewProjectionMatrix(float aspect_ratio) const;
+    mat4 GetView() const;
+    mat4 GetProjection(float aspect_ratio) const;
     float GetDistance() const;
 
     // Converts a position in clip space to a ray in world space.
     Ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
 
-    void SetPositionFromView(const mat4 &view);
+    void SetPositionFromView(const mat4 &);
     void SetTargetDistance(float distance) { TargetDistance = distance; }
     // Orbit spherically around the target until landing at the given direction.
     // Distance to target is preserved.
