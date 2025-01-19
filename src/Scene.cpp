@@ -82,7 +82,11 @@ namespace {
 void UpdateModel(entt::registry &r, entt::entity entity, vec3 position, glm::quat rotation, vec3 scale) {
     r.emplace_or_replace<Position>(entity, position);
     r.emplace_or_replace<Rotation>(entity, rotation);
-    r.emplace_or_replace<Scale>(entity, scale);
+
+    // Frozen entities can't have their scale changed.
+    if (!r.all_of<Frozen>(entity)) r.emplace_or_replace<Scale>(entity, scale);
+    else scale = r.all_of<Scale>(entity) ? r.get<Scale>(entity).Value : vec3{1};
+
     r.emplace_or_replace<Model>(entity, glm::translate({1}, position) * glm::mat4_cast(glm::normalize(rotation)) * glm::scale({1}, scale));
 }
 
@@ -338,9 +342,11 @@ struct Gizmo {
         model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
     }
 
-    void RenderDebug() {
+    void RenderDebug(bool scale_enabled) {
         using namespace ImGui;
         using namespace ImGuizmo;
+
+        if (!scale_enabled && ActiveOp == SCALE) ActiveOp = TRANSLATE;
 
         Checkbox("Gizmo", &ShowModelGizmo);
         if (!ShowModelGizmo) return;
@@ -356,10 +362,13 @@ struct Gizmo {
 
         if (IsKeyPressed(ImGuiKey_T)) ActiveOp = TRANSLATE;
         if (IsKeyPressed(ImGuiKey_R)) ActiveOp = ROTATE;
-        if (IsKeyPressed(ImGuiKey_S)) ActiveOp = SCALE;
+        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) ActiveOp = SCALE;
         if (RadioButton("Translate (T)", ActiveOp == TRANSLATE)) ActiveOp = TRANSLATE;
         if (RadioButton("Rotate (R)", ActiveOp == ROTATE)) ActiveOp = ROTATE;
-        if (RadioButton("Scale (S)", ActiveOp == SCALE)) ActiveOp = SCALE;
+        if (!scale_enabled) BeginDisabled();
+        const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
+        if (RadioButton(label.c_str(), ActiveOp == SCALE)) ActiveOp = SCALE;
+        if (!scale_enabled) EndDisabled();
         if (RadioButton("Universal", ActiveOp == UNIVERSAL)) ActiveOp = UNIVERSAL;
     }
 };
@@ -803,6 +812,7 @@ void Scene::UpdateTransformBuffers() {
 
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
     VC.UpdateBuffer(*ViewProjNearFarBuffer, &vpnf);
+    InvalidateCommandBuffer();
 }
 
 void Scene::UpdateModelBuffer(entt::entity entity) {
@@ -953,31 +963,25 @@ void Scene::RenderGizmo() {
         } else {
             Camera.OrbitDelta(wheel * 0.1f);
             UpdateTransformBuffers();
-            SubmitCommandBuffer();
         }
     }
     Gizmo->Begin();
-    const float aspect_ratio = float(Extent.width) / float(Extent.height);
     if (SelectedEntity != entt::null) {
         auto transform = R.get<Model>(SelectedEntity).Transform;
         bool view_changed, model_changed;
-        Gizmo->Render(Camera, transform, aspect_ratio, view_changed, model_changed);
+        Gizmo->Render(Camera, transform, float(Extent.width) / float(Extent.height), view_changed, model_changed);
         view_changed |= Camera.Tick();
         if (model_changed || view_changed) {
             vec3 position, rotation, scale;
             DecomposeTransform(transform, position, rotation, scale);
             if (model_changed) SetModel(SelectedEntity, position, glm::quat(glm::radians(rotation)), scale);
             if (view_changed) UpdateTransformBuffers();
-            SubmitCommandBuffer();
         }
     } else {
         bool view_changed;
         Gizmo->Render(Camera, view_changed);
         view_changed |= Camera.Tick();
-        if (view_changed) {
-            UpdateTransformBuffers();
-            SubmitCommandBuffer();
-        }
+        if (view_changed) UpdateTransformBuffers();
     }
 }
 
@@ -1078,7 +1082,7 @@ void Scene::RenderControls() {
                 }
                 const auto &selected_mesh = GetSelectedMesh();
                 TextUnformatted(
-                    std::format("Vertices|Edges|Faces: {:L} | {:L} | {:L}", selected_mesh.GetVertexCount(), selected_mesh.GetEdgeCount(), selected_mesh.GetFaceCount()).c_str()
+                    std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", selected_mesh.GetVertexCount(), selected_mesh.GetEdgeCount(), selected_mesh.GetFaceCount()).c_str()
                 );
                 Text("Model buffer index: %s", GetModelBufferIndex(SelectedEntity) ? std::to_string(*GetModelBufferIndex(SelectedEntity)).c_str() : "None");
                 Unindent();
@@ -1099,14 +1103,20 @@ void Scene::RenderControls() {
 
                 if (CollapsingHeader("Transform")) {
                     auto pos = R.get<Position>(SelectedEntity).Value;
-                    auto rot = R.get<Rotation>(SelectedEntity).Value;
                     auto scale = R.get<Scale>(SelectedEntity).Value;
+                    auto rot = R.get<Rotation>(SelectedEntity).Value;
                     bool model_changed = false;
                     model_changed |= DragFloat3("Position", &pos[0], 0.01f);
                     model_changed |= DragFloat4("Rotation (quat WXYZ)", &rot[0], 0.01f);
-                    model_changed |= DragFloat3("Scale", &scale[0], 0.01f, 0.01f, 10);
+
+                    const bool frozen = R.all_of<Frozen>(SelectedEntity);
+                    if (frozen) BeginDisabled();
+                    const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
+                    model_changed |= DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
+                    if (frozen) EndDisabled();
                     if (model_changed) SetModel(SelectedEntity, pos, rot, scale);
-                    Gizmo->RenderDebug();
+
+                    Gizmo->RenderDebug(!frozen);
                 }
                 PopID();
             } else {
@@ -1214,7 +1224,7 @@ void Scene::RenderControls() {
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
                 VC.UpdateBuffer(*SilhouetteDisplayBuffer, &SilhouetteDisplay);
-                SubmitCommandBuffer();
+                InvalidateCommandBuffer();
             }
             EndTabItem();
         }
@@ -1233,7 +1243,6 @@ void Scene::RenderControls() {
             if (camera_changed) {
                 Camera.StopMoving();
                 UpdateTransformBuffers();
-                SubmitCommandBuffer();
             }
             EndTabItem();
         }

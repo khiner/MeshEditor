@@ -15,7 +15,9 @@
 
 #include <set>
 
-struct Visible {}; // A tag to mark entities as visible.
+struct Visible {}; // Tag to mark entities as visible in the scene
+struct Frozen {}; // Tag to disable entity transform changes
+
 struct Path {
     fs::path Value;
 };

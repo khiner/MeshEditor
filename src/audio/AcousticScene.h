@@ -8,6 +8,8 @@
 #include <filesystem>
 
 struct Scene;
+struct SoundObject;
+struct AcousticMaterial;
 
 struct AcousticScene {
     AcousticScene(entt::registry &, CreateSvgResource);
@@ -18,6 +20,9 @@ struct AcousticScene {
     void RenderControls(Scene &);
 
     void ProduceAudio(AudioBuffer) const;
+
+private:
+    SoundObject &AddSoundObject(entt::entity, AcousticMaterial) const;
 
     entt::registry &R;
     CreateSvgResource CreateSvg;

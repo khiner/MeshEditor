@@ -100,7 +100,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) cons
             auto material_name = RealImpact::FindMaterialName(R.get<Name>(object_entity).Value);
             const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
             auto material = real_impact_material ? *real_impact_material : materials::acoustic::All.front();
-            auto &sound_object = R.emplace<SoundObject>(object_entity, std::move(material), CreateSvg);
+            auto &sound_object = AddSoundObject(object_entity, std::move(material));
             sound_object.SetImpactFrames(to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
             R.emplace<Excitable>(object_entity, sound_object.GetExcitable());
         }
@@ -111,6 +111,11 @@ void AcousticScene::ProduceAudio(AudioBuffer buffer) const {
     for (const auto &audio_source : R.storage<SoundObject>()) {
         audio_source.ProduceAudio(buffer);
     }
+}
+
+SoundObject &AcousticScene::AddSoundObject(entt::entity entity, AcousticMaterial material) const {
+    R.emplace<Frozen>(entity);
+    return R.emplace<SoundObject>(entity, std::move(material), CreateSvg);
 }
 
 using namespace ImGui;
@@ -197,9 +202,7 @@ void AcousticScene::RenderControls(Scene &scene) {
     };
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
-        if (Button("Create audio model")) {
-            R.emplace<SoundObject>(selected_entity, materials::acoustic::All.front(), CreateSvg);
-        }
+        if (Button("Create audio model")) AddSoundObject(selected_entity, materials::acoustic::All.front());
         return;
     }
 
@@ -228,6 +231,6 @@ void AcousticScene::RenderControls(Scene &scene) {
     sound_object.RenderControls(R, sound_entity);
     Spacing();
     if (Button("Remove audio model")) {
-        R.remove<Excitable, SoundObjectListener, SoundObject>(sound_entity);
+        R.remove<SoundObject, SoundObjectListener, Excitable, Frozen>(sound_entity);
     }
 }
