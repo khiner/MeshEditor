@@ -84,10 +84,10 @@ struct Mesh {
 
     inline static const vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
     inline static vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
-    inline static vec4 HighlightColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
-    inline static vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Face Normal`.
-    inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender's default `Preferences->Themes->3D Viewport->Vertex Normal`.
-    static constexpr float NormalIndicatorLengthScale = 0.25;
+    inline static vec4 HighlightColor{0.929, 0.341, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Object Selected
+    inline static vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal
+    inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
+    static constexpr float NormalIndicatorLengthScale{0.25};
 
     Mesh(Mesh &&);
     Mesh(PolyMesh &&);

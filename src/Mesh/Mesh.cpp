@@ -39,6 +39,7 @@ Mesh::~Mesh() {
     M.release_face_colors();
 }
 
+// todo this was here for entt, but something tells me it doesn't need this anymore
 const Mesh &Mesh::operator=(Mesh &&other) {
     if (this != &other) {
         BoundingBox = std::move(other.BoundingBox);

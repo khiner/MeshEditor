@@ -8,5 +8,7 @@ struct Ray {
 
     vec3 operator()(float t) const { return Origin + Direction * t; }
 
-    Ray WorldToLocal(const mat4 &model) const;
+    // We already cash the transpose of the inverse transform for all models,
+    // so save some compute by using that.
+    Ray WorldToLocal(const mat4 &transp_inv_transform) const;
 };

@@ -437,21 +437,22 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity entity) {
     // Orient the camera towards the excited vertex.
     const auto vh = Mesh::VH(excited_vertex.Vertex);
     const auto &mesh = r.get<Mesh>(entity);
-    const auto &model = r.get<Model>(entity).Transform;
-    const vec3 vertex_pos{model * vec4{mesh.GetPosition(vh), 1}};
+    const auto &transform = r.get<Model>(entity).Transform;
+    const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
 
     // Create vertex indicator arrow pointing at the excited vertex.
-    const vec3 normal{model * vec4{mesh.GetVertexNormal(vh), 0}};
+    const vec3 normal{transform * vec4{mesh.GetVertexNormal(vh), 0}};
     const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
-    const vec3 scale{scale_factor};
-    const vec3 translate = vertex_pos + 0.05f * scale_factor * normal;
-    const glm::quat rotate = glm::rotation(World.Up, normal);
     auto vertex_indicator_mesh = Arrow();
     vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
     excited_vertex.IndicatorEntity = AddMesh(
         std::move(vertex_indicator_mesh),
-        {.Name = "Excite vertex indicator", .Position = translate, .Rotation = rotate, .Scale = scale, .Select = false}
+        {.Name = "Excite vertex indicator",
+         .Position = vertex_pos + 0.05f * scale_factor * normal,
+         .Rotation = glm::rotation(World.Up, normal),
+         .Scale = vec3{scale_factor},
+         .Select = false}
     );
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity entity) {
@@ -844,7 +845,7 @@ std::multimap<float, entt::entity> HoveredEntitiesByDistance(const entt::registr
         if (!r.all_of<Visible>(entity)) continue;
 
         const auto &mesh = r.get<Mesh>(GetParentEntity(r, entity));
-        const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
+        const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
         if (auto intersection = mesh.Intersect(mouse_ray)) {
             hovered_entities_by_distance.emplace(intersection->Distance, entity);
         }
@@ -878,7 +879,7 @@ bool Scene::Render() {
             if (SelectionMode == SelectionMode::Edit) {
                 if (SelectedElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
                     const auto &model = R.get<Model>(SelectedEntity);
-                    const auto mouse_ray = mouse_world_ray.WorldToLocal(model.Transform);
+                    const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
                     const auto &mesh = GetSelectedMesh();
                     {
                         const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
@@ -901,9 +902,8 @@ bool Scene::Render() {
                 // Excite the nearest entity if it's excitable.
                 if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
                     if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
-                        const auto &model = R.get<Model>(nearest_entity).Transform;
-                        const auto &mesh = R.get<Mesh>(nearest_entity);
-                        if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(model));
+                        const auto &mesh = R.get<const Mesh>(nearest_entity);
+                        if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(R.get<const Model>(nearest_entity).InvTransform));
                             nearest_vertex.is_valid()) {
                             if (const auto *excitable = R.try_get<Excitable>(nearest_entity)) {
                                 // Find the nearest excitable vertex.
@@ -958,13 +958,13 @@ void Scene::RenderGizmo() {
     Gizmo->Begin();
     const float aspect_ratio = float(Extent.width) / float(Extent.height);
     if (SelectedEntity != entt::null) {
-        auto model = R.get<Model>(SelectedEntity).Transform;
+        auto transform = R.get<Model>(SelectedEntity).Transform;
         bool view_changed, model_changed;
-        Gizmo->Render(Camera, model, aspect_ratio, view_changed, model_changed);
+        Gizmo->Render(Camera, transform, aspect_ratio, view_changed, model_changed);
         view_changed |= Camera.Tick();
         if (model_changed || view_changed) {
             vec3 position, rotation, scale;
-            DecomposeTransform(model, position, rotation, scale);
+            DecomposeTransform(transform, position, rotation, scale);
             if (model_changed) SetModel(SelectedEntity, position, glm::quat(glm::radians(rotation)), scale);
             if (view_changed) UpdateTransformBuffers();
             SubmitCommandBuffer();
