@@ -51,14 +51,14 @@ std::optional<Intersection> BVH::IntersectNearest(const Ray &ray, IntersectFace 
     if (Nodes.empty()) return {};
     Intersection nearest{0, std::numeric_limits<float>::max()};
     IntersectNode(RootIndex(), ray, intersect_face, userdata, nearest);
-    if (nearest.Distance != std::numeric_limits<float>::max()) return nearest;
+    if (nearest.Distance < std::numeric_limits<float>::max()) return nearest;
     return {};
 }
 void BVH::IntersectNode(uint node_index, const Ray &ray, IntersectFace intersect_face, const void *userdata, Intersection &nearest_out) const {
     const auto &node = Nodes[node_index];
     if (auto index = node.BoxIndex) {
         if (LeafBoxes[*index].Intersect(ray)) {
-            if (auto distance = intersect_face(ray, *index, userdata); *distance < nearest_out.Distance) {
+            if (auto distance = intersect_face(ray, *index, userdata); distance && *distance < nearest_out.Distance) {
                 nearest_out = {*index, *distance};
             }
         }

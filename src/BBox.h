@@ -85,7 +85,7 @@ struct BBox {
         return {0, 0, 0}; // Failed to find a normal.
     }
 
-    // Returns the intersection distance of the ray with the box, or `std::nullopt` if there is no intersection.
+    // Returns the intersection distance of the ray with the box, or nullopt if there is no intersection.
     std::optional<float> Intersect(const Ray &ray) const {
         float t0 = 0, t1 = std::numeric_limits<float>::max();
         for (int i = 0; i < 3; ++i) {
@@ -97,7 +97,7 @@ struct BBox {
 
             t0 = std::max(t0, t_near);
             t1 = std::min(t1, t_far);
-            if (t0 > t1) return std::nullopt;
+            if (t0 > t1) return {};
         }
         return t0;
     }

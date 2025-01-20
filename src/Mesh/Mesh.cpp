@@ -79,7 +79,7 @@ constexpr std::optional<float> IntersectTriangle(Point o, Point d, Point p1, Poi
     if (float v = f * d.dot(q); v < 0.f || u + v > 1.f) return {};
 
     // Calculate the intersection point's distance along the ray and verify it's ahead of the ray's origin.
-    if (float distance = f * e2.dot(q); distance > eps) return distance;
+    if (float distance = f * e2.dot(q); distance > eps) return {distance};
     return {};
 }
 
@@ -91,7 +91,7 @@ constexpr std::optional<float> IntersectFace(const Ray &ray, uint fi, const void
     VH v1 = *fv_it++, v2;
     for (; fv_it.is_valid(); ++fv_it) {
         v2 = *fv_it;
-        if (auto distance = IntersectTriangle(o, d, pm.point(v0), pm.point(v1), pm.point(v2))) return distance;
+        if (auto distance = IntersectTriangle(o, d, pm.point(v0), pm.point(v1), pm.point(v2))) return {distance};
         v1 = v2;
     }
     return {};
