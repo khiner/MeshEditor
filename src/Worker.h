@@ -23,7 +23,7 @@ struct Worker {
         SetNextWindowPos(GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
         SetNextWindowSize(GetMainViewport()->Size / 4);
         if (BeginPopupModal(Title.data(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            const auto &ws = GetWindowSize();
+            const auto ws = GetWindowSize();
             const float spinner_size = std::min(ws.x, ws.y) / 2;
             const ImVec2 spinner_pos = (ws - ImVec2{spinner_size, spinner_size}) / 2;
             SetCursorPos({(ws.x - CalcTextSize(Message.data()).x) / 2, spinner_pos.y - GetTextLineHeight()});
@@ -46,7 +46,6 @@ struct Worker {
     void SetMessage(std::string_view message) { Message = message; }
 
 private:
-    std::string Title;
-    std::string Message{""};
+    std::string Title, Message;
     std::future<Result> ResultFuture;
 };

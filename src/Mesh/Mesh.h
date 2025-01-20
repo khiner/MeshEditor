@@ -107,6 +107,7 @@ struct Mesh {
 
     const float *GetPositionData() const { return (const float *)M.points(); }
 
+    Point GetPoint(VH vh) const { return M.point(vh); }
     vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
     vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
 
@@ -163,13 +164,13 @@ struct Mesh {
 
     std::optional<Intersection> Intersect(const Ray &local_ray) const;
 
-    VH FindNearestVertex(vec3 world_point) const;
+    VH FindNearestVertex(Point) const;
     // Returns a handle to the vertex nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     VH FindNearestVertex(const Ray &local_ray) const;
 
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     EH FindNearestEdge(const Ray &world_ray) const;
-    FH FindNearestIntersectingFace(const Ray &local_ray, vec3 *nearest_intersect_point_out = nullptr) const;
+    FH FindNearestIntersectingFace(const Ray &local_ray, Point *nearest_intersect_point_out = nullptr) const;
 
     std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.

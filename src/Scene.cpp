@@ -855,9 +855,9 @@ std::multimap<float, entt::entity> HoveredEntitiesByDistance(const entt::registr
     for (const auto &[entity, model] : r.view<const Model>().each()) {
         if (!r.all_of<Visible>(entity)) continue;
 
-        const auto &mesh = r.get<Mesh>(GetParentEntity(r, entity));
-        const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
-        if (auto intersection = mesh.Intersect(mouse_ray)) {
+        const auto &mesh = r.get<const Mesh>(GetParentEntity(r, entity));
+        if (const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
+            auto intersection = mesh.Intersect(mouse_ray)) {
             hovered_entities_by_distance.emplace(intersection->Distance, entity);
         }
     }
@@ -931,17 +931,18 @@ void Scene::Interact() {
         if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
             if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
                 const auto &mesh = R.get<const Mesh>(nearest_entity);
-                if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(R.get<const Model>(nearest_entity).InvTransform));
+                if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(R.get<Model>(nearest_entity).InvTransform));
                     nearest_vertex.is_valid()) {
                     if (const auto *excitable = R.try_get<Excitable>(nearest_entity)) {
                         // Find the nearest excitable vertex.
-                        std::optional<uint> nearest_excite_vertex{};
-                        float min_dist = FLT_MAX;
-                        const auto &position = mesh.GetPosition(nearest_vertex);
+                        std::optional<uint> nearest_excite_vertex;
+                        float min_dist_sq = std::numeric_limits<float>::max();
+                        const auto p = mesh.GetPoint(nearest_vertex);
                         for (uint excite_vertex : excitable->ExcitableVertices) {
-                            if (const float dist = glm::distance(position, mesh.GetPosition(Mesh::VH(excite_vertex))); dist < min_dist) {
-                                min_dist = dist;
-                                nearest_excite_vertex = {excite_vertex};
+                            const auto diff = p - mesh.GetPoint(Mesh::VH(excite_vertex));
+                            if (float dist_sq = diff.dot(diff); dist_sq < min_dist_sq) {
+                                min_dist_sq = dist_sq;
+                                nearest_excite_vertex = excite_vertex;
                             }
                         }
                         if (nearest_excite_vertex) {
