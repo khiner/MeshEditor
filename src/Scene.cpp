@@ -850,18 +850,40 @@ void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, v
     rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
 }
 
-std::multimap<float, entt::entity> HoveredEntitiesByDistance(const entt::registry &r, const Ray &mouse_world_ray) {
-    std::multimap<float, entt::entity> hovered_entities_by_distance;
+std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const Ray &world_ray) {
+    std::multimap<float, entt::entity> entities_by_distance;
     for (const auto &[entity, model] : r.view<const Model>().each()) {
         if (!r.all_of<Visible>(entity)) continue;
 
         const auto &mesh = r.get<const Mesh>(GetParentEntity(r, entity));
-        if (const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
-            auto intersection = mesh.Intersect(mouse_ray)) {
-            hovered_entities_by_distance.emplace(intersection->Distance, entity);
+        if (auto intersection = mesh.Intersect(world_ray.WorldToLocal(model.InvTransform))) {
+            entities_by_distance.emplace(intersection->Distance, entity);
         }
     }
-    return hovered_entities_by_distance;
+    return entities_by_distance;
+}
+
+// Nearest intersection across all meshes.
+struct EntityIntersection {
+    entt::entity Entity;
+    Intersection Intersection;
+    vec3 Position;
+};
+std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, const Ray &world_ray) {
+    float nearest_distance = std::numeric_limits<float>::max();
+    std::optional<EntityIntersection> nearest;
+    for (const auto &[entity, model] : r.view<const Model>().each()) {
+        if (!r.all_of<Visible>(entity)) continue;
+
+        const auto &mesh = r.get<const Mesh>(GetParentEntity(r, entity));
+        const auto local_ray = world_ray.WorldToLocal(model.InvTransform);
+        if (auto intersection = mesh.Intersect(local_ray);
+            intersection && intersection->Distance < nearest_distance) {
+            nearest_distance = intersection->Distance;
+            nearest = {entity, *intersection, local_ray(nearest_distance)};
+        }
+    }
+    return nearest;
 }
 } // namespace
 
@@ -917,7 +939,7 @@ void Scene::Interact() {
             }
         }
     } else if (SelectionMode == SelectionMode::Object) {
-        if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
+        if (const auto entities_by_distance = IntersectedEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
             // Cycle through hovered entities.
             auto it = find_if(entities_by_distance, [&](const auto &entry) { return entry.second == SelectedEntity; });
             if (it != entities_by_distance.end()) ++it;
@@ -928,27 +950,22 @@ void Scene::Interact() {
         }
     } else if (SelectionMode == SelectionMode::Excite) {
         // Excite the nearest entity if it's excitable.
-        if (const auto entities_by_distance = HoveredEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
-            if (const auto nearest_entity = entities_by_distance.begin()->second; R.all_of<Excitable>(nearest_entity)) {
-                const auto &mesh = R.get<const Mesh>(nearest_entity);
-                if (auto nearest_vertex = mesh.FindNearestVertex(mouse_world_ray.WorldToLocal(R.get<Model>(nearest_entity).InvTransform));
-                    nearest_vertex.is_valid()) {
-                    if (const auto *excitable = R.try_get<Excitable>(nearest_entity)) {
-                        // Find the nearest excitable vertex.
-                        std::optional<uint> nearest_excite_vertex;
-                        float min_dist_sq = std::numeric_limits<float>::max();
-                        const auto p = mesh.GetPoint(nearest_vertex);
-                        for (uint excite_vertex : excitable->ExcitableVertices) {
-                            const auto diff = p - mesh.GetPoint(Mesh::VH(excite_vertex));
-                            if (float dist_sq = diff.dot(diff); dist_sq < min_dist_sq) {
-                                min_dist_sq = dist_sq;
-                                nearest_excite_vertex = excite_vertex;
-                            }
-                        }
-                        if (nearest_excite_vertex) {
-                            R.emplace<ExcitedVertex>(nearest_entity, *nearest_excite_vertex, 1.f);
-                        }
+        if (const auto nearest = IntersectNearest(R, mouse_world_ray)) {
+            if (const auto *excitable = R.try_get<Excitable>(nearest->Entity)) {
+                // Find the nearest excitable vertex.
+                std::optional<uint> nearest_excite_vertex;
+                float min_dist_sq = std::numeric_limits<float>::max();
+                const auto &mesh = R.get<Mesh>(GetParentEntity(R, nearest->Entity));
+                const auto p = nearest->Position;
+                for (uint excite_vertex : excitable->ExcitableVertices) {
+                    const auto diff = p - mesh.GetPosition(Mesh::VH(excite_vertex));
+                    if (float dist_sq = glm::dot(diff, diff); dist_sq < min_dist_sq) {
+                        min_dist_sq = dist_sq;
+                        nearest_excite_vertex = excite_vertex;
                     }
+                }
+                if (nearest_excite_vertex) {
+                    R.emplace<ExcitedVertex>(nearest->Entity, *nearest_excite_vertex, 1.f);
                 }
             }
         }
