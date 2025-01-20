@@ -1037,6 +1037,13 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
 
     return std::nullopt;
 }
+
+void RenderMat4(const mat4 &m) {
+    for (uint i = 0; i < 4; ++i) {
+        const auto row = m[i];
+        Text("%.2f, %.2f, %.2f, %.2f", row.x, row.y, row.z, row.w);
+    }
+}
 } // namespace
 
 void Scene::RenderControls() {
@@ -1124,6 +1131,15 @@ void Scene::RenderControls() {
                     if (model_changed) SetModel(SelectedEntity, pos, rot, scale);
 
                     Gizmo->RenderDebug(!frozen);
+                    if (TreeNode("Model transform")) {
+                        TextUnformatted("Transform");
+                        const auto &model = R.get<Model>(SelectedEntity);
+                        RenderMat4(model.Transform);
+                        Spacing();
+                        TextUnformatted("Inverse transform");
+                        RenderMat4(model.InvTransform);
+                        TreePop();
+                    }
                 }
                 PopID();
             } else {
@@ -1191,16 +1207,19 @@ void Scene::RenderControls() {
                 auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
                 if (ColorEdit3("Edge color", &edge_color.x)) UpdateEdgeColors();
             }
-            SeparatorText("Normal indicators");
+            SeparatorText("Indicators");
             // todo go back to storing normal settings in a map of element type to bool,
             //   and ensure meshes/instances are created with the current normals
             if (SelectedEntity != entt::null) {
+                AlignTextToFramePadding();
+                TextUnformatted("Normals:");
                 const auto mesh_entity = GetParentEntity(R, SelectedEntity);
                 const auto &mesh = R.get<Mesh>(mesh_entity);
                 auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
                 for (const auto element : AllNormalElements) {
+                    SameLine();
                     bool has_normals = normals.contains(element);
-                    std::string name = to_string(element);
+                    auto name = to_string(element);
                     Capitalize(name);
                     if (Checkbox(name.c_str(), &has_normals)) {
                         if (has_normals) {
@@ -1210,7 +1229,6 @@ void Scene::RenderControls() {
                         }
                         InvalidateCommandBuffer();
                     }
-                    if (element != AllNormalElements.back()) SameLine();
                 }
                 if (Checkbox("BVH boxes", &ShowBvhBoxes)) {
                     auto &buffers = MeshVkData->BvhBoxes;
