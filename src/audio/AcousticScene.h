@@ -6,10 +6,12 @@
 #include <entt/entity/fwd.hpp>
 
 #include <filesystem>
+#include <memory>
 
+struct AcousticMaterial;
 struct Scene;
 struct SoundObject;
-struct AcousticMaterial;
+struct FaustDSP;
 
 struct AcousticScene {
     AcousticScene(entt::registry &, CreateSvgResource);
@@ -26,4 +28,5 @@ private:
 
     entt::registry &R;
     CreateSvgResource CreateSvg;
+    // std::unique_ptr<FaustDSP> Dsp;
 };

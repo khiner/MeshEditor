@@ -1,5 +1,4 @@
 #include "AcousticScene.h"
-#include "AcousticMaterial.h"
 #include "Excitable.h"
 #include "RealImpact.h"
 #include "Registry.h"

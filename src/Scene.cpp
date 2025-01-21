@@ -7,7 +7,6 @@
 #include "Scale.h"
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
-#include "numeric/mat3.h"
 #include "vulkan/VulkanContext.h"
 
 #include <entt/entity/registry.hpp>

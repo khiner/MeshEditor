@@ -24,12 +24,10 @@ enum class SoundObjectModel {
 
 struct AudioBuffer;
 struct Excitable;
-struct Mesh2FaustResult;
+struct FaustDSP;
 
 struct ModalAudioModel;
 struct ImpactAudioModel;
-
-template<typename Result> struct Worker;
 
 // Represents a rigid body that generates an audio stream in response to an impact at a given vertex.
 struct SoundObject {
@@ -49,11 +47,11 @@ struct SoundObject {
 private:
     void SetModel(SoundObjectModel, entt::registry &, entt::entity);
 
+    std::unique_ptr<FaustDSP> Dsp;
     AcousticMaterial Material;
     std::unique_ptr<ModalAudioModel> ModalModel;
     std::unique_ptr<ImpactAudioModel> ImpactModel;
 
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
-    std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
     CreateSvgResource CreateSvg;
 };
