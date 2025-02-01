@@ -6,43 +6,55 @@
 #include <numeric>
 #include <ranges>
 
-using std::ranges::any_of, std::ranges::distance, std::ranges::find_if ;
+using std::ranges::any_of, std::ranges::distance, std::ranges::find_if;
 
-VkBool32 DebugCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT type,
-    const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
+/*
+After upgrading from Vulkan SDK 1.3.290.0 to 1.4.304.0, I get:
+Undefined symbols for architecture arm64:
+"_vkCreateDebugUtilsMessengerEXT", referenced from:
+    vk::detail::DispatchLoaderStatic::vkCreateDebugUtilsMessengerEXT(VkInstance_T*, VkDebugUtilsMessengerCreateInfoEXT const*, VkAllocationCallbacks const*, VkDebugUtilsMessengerEXT_T**) const in VulkanContext.cpp.o
+ld: symbol(s) not found for architecture arm64
+So disabling the debug messenger for now.
+namespace {
+vk::Bool32 DebugCallback(
+    vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+    vk::DebugUtilsMessageTypeFlagsEXT type,
+    const vk::DebugUtilsMessengerCallbackDataEXT *callback_data,
     void *user_data
 ) {
-    (void)user_data; // Unused
-
+    (void)user_data;
     const char *severity_str = "";
     switch (severity) {
-        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: severity_str = "Verbose"; break;
-        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: severity_str = "Info"; break;
-        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: severity_str = "Warning"; break;
-        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: severity_str = "Error"; break;
+        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose: severity_str = "Verbose"; break;
+        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo: severity_str = "Info"; break;
+        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning: severity_str = "Warning"; break;
+        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eError: severity_str = "Error"; break;
         default: break;
     }
 
-    const char *type_str = "";
-    switch (type) {
-        case VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT: type_str = "General"; break;
-        case VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT: type_str = "Validation"; break;
-        case VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT: type_str = "Performance"; break;
-        default: break;
+    std::string type_str;
+    if (type & vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral) {
+        type_str = "General";
+    }
+    if (type & vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation) {
+        type_str = "Validation";
+    }
+    if (type & vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance) {
+        type_str = "Performance";
     }
 
     std::cerr << "[Vulkan|" << severity_str << "|" << type_str << "]" << ": " << callback_data->pMessage << '\n';
-    return VK_FALSE; // Return VK_TRUE if the message is to be aborted and VK_FALSE otherwise.
+    return vk::False;
 }
+} // namespace
+*/
 
 VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
-    std::vector<const char *> enabled_layers;
-    const auto available_layers = vk::enumerateInstanceLayerProperties();
     const auto IsLayerAvailable = [&](std::string_view layer) {
+        static const auto available_layers = vk::enumerateInstanceLayerProperties();
         return any_of(available_layers, [layer](const auto &prop) { return strcmp(prop.layerName, layer.data()) == 0; });
     };
+    std::vector<const char *> enabled_layers;
     const auto AddLayerIfAvailable = [&](std::string_view layer) {
         if (IsLayerAvailable(layer)) {
             enabled_layers.push_back(layer.data());
@@ -72,9 +84,10 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
 
     const vk::ApplicationInfo app{"", {}, "", {}, VK_API_VERSION_1_3};
     Instance = vk::createInstanceUnique({flags, &app, enabled_layers, enabled_extensions});
+    /*
     if (AddExtensionIfAvailable(vk::EXTDebugUtilsExtensionName)) {
-        const auto _ = Instance->createDebugUtilsMessengerEXTUnique(
-            {
+        const auto _ = Instance->createDebugUtilsMessengerEXT(
+            vk::DebugUtilsMessengerCreateInfoEXT{
                 {},
                 vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
                     vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
@@ -84,11 +97,11 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
                     vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
                     vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
                 DebugCallback,
-            },
-            nullptr,
-            vk::DispatchLoaderDynamic{Instance.get(), vkGetInstanceProcAddr}
+                nullptr
+            }
         );
     }
+    */
 
     PhysicalDevice = FindPhysicalDevice();
 

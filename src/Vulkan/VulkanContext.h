@@ -7,10 +7,6 @@
 
 using uint = u_int32_t;
 
-VkBool32 DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT *, void *);
-
-bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &, const char *extension);
-
 struct ImageResource {
     vk::UniqueDeviceMemory Memory;
     vk::UniqueImage Image;
