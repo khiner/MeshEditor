@@ -6,6 +6,8 @@
 #include <numeric>
 #include <ranges>
 
+using std::ranges::any_of, std::ranges::distance, std::ranges::find_if ;
+
 VkBool32 DebugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type,
@@ -31,56 +33,70 @@ VkBool32 DebugCallback(
         default: break;
     }
 
-    std::cerr << "[Vulkan|" << severity_str << "|" << type_str << "]"
-              << ": " << callback_data->pMessage << std::endl;
-
+    std::cerr << "[Vulkan|" << severity_str << "|" << type_str << "]" << ": " << callback_data->pMessage << '\n';
     return VK_FALSE; // Return VK_TRUE if the message is to be aborted and VK_FALSE otherwise.
 }
 
-bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties> &properties, const char *extension) {
-    return std::ranges::any_of(properties, [extension](const auto &prop) { return strcmp(prop.extensionName, extension) == 0; });
-}
+VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
+    std::vector<const char *> enabled_layers;
+    const auto available_layers = vk::enumerateInstanceLayerProperties();
+    const auto IsLayerAvailable = [&](std::string_view layer) {
+        return any_of(available_layers, [layer](const auto &prop) { return strcmp(prop.layerName, layer.data()) == 0; });
+    };
+    const auto AddLayerIfAvailable = [&](std::string_view layer) {
+        if (IsLayerAvailable(layer)) {
+            enabled_layers.push_back(layer.data());
+        } else {
+            std::cerr << "Warning: Validation layer " << layer << " not available." << std::endl;
+        }
+    };
+    AddLayerIfAvailable("VK_LAYER_KHRONOS_validation");
 
-VulkanContext::VulkanContext(std::vector<const char *> extensions) {
     const auto instance_props = vk::enumerateInstanceExtensionProperties();
-    if (IsExtensionAvailable(instance_props, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
-        extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-    }
-
     vk::InstanceCreateFlags flags;
-    if (IsExtensionAvailable(instance_props, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
-        extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-        flags |= vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
-    }
-    extensions.push_back("VK_EXT_debug_utils");
+    const auto IsExtensionAvailable = [&](std::string_view extension) {
+        return any_of(instance_props, [extension](const auto &prop) { return strcmp(prop.extensionName, extension.data()) == 0; });
+    };
+    const auto AddExtensionIfAvailable = [&](std::string_view extension, vk::InstanceCreateFlags flag = {}) {
+        if (IsExtensionAvailable(extension)) {
+            enabled_extensions.push_back(extension.data());
+            flags |= flag;
+            return true;
+        } else {
+            std::cerr << "Warning: Extension " << extension << " not available." << std::endl;
+            return false;
+        }
+    };
+    AddExtensionIfAvailable(vk::KHRPortabilityEnumerationExtensionName, vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR);
+    AddExtensionIfAvailable(vk::EXTDebugUtilsExtensionName);
 
-    const std::vector<const char *> validation_layers{"VK_LAYER_KHRONOS_validation"};
     const vk::ApplicationInfo app{"", {}, "", {}, VK_API_VERSION_1_3};
-    Instance = vk::createInstanceUnique({flags, &app, validation_layers, extensions});
-
-    const auto _ = Instance->createDebugUtilsMessengerEXTUnique(
-        {
-            {},
-            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
-                vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo,
-            vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
-            DebugCallback,
-        },
-        nullptr,
-        vk::DispatchLoaderDynamic{Instance.get(), vkGetInstanceProcAddr}
-    );
+    Instance = vk::createInstanceUnique({flags, &app, enabled_layers, enabled_extensions});
+    if (AddExtensionIfAvailable(vk::EXTDebugUtilsExtensionName)) {
+        const auto _ = Instance->createDebugUtilsMessengerEXTUnique(
+            {
+                {},
+                vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
+                    vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                    vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
+                    vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo,
+                vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                    vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                    vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
+                DebugCallback,
+            },
+            nullptr,
+            vk::DispatchLoaderDynamic{Instance.get(), vkGetInstanceProcAddr}
+        );
+    }
 
     PhysicalDevice = FindPhysicalDevice();
 
     const auto qfp = PhysicalDevice.getQueueFamilyProperties();
-    const auto qfp_find_graphics_it = std::ranges::find_if(qfp, [](const auto &qfp) { return bool(qfp.queueFlags & vk::QueueFlagBits::eGraphics); });
+    const auto qfp_find_graphics_it = find_if(qfp, [](const auto &qfp) { return bool(qfp.queueFlags & vk::QueueFlagBits::eGraphics); });
     if (qfp_find_graphics_it == qfp.end()) throw std::runtime_error("No graphics queue family found.");
 
-    QueueFamily = std::ranges::distance(qfp.begin(), qfp_find_graphics_it);
+    QueueFamily = distance(qfp.begin(), qfp_find_graphics_it);
     if (!PhysicalDevice.getFeatures().fillModeNonSolid) {
         throw std::runtime_error("`fillModeNonSolid` is not supported, but is needed for line rendering.");
     }
