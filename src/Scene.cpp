@@ -2,7 +2,8 @@
 #include "Widgets.h" // imgui
 
 #include "Excitable.h"
-#include "ImGuizmo.h" // imgui must be included before imguizmo.
+#include "ImGuizmo.h" // imgui must be included before imguizmo and imoguizmo
+#include "ImOGuizmo.h"
 #include "Registry.h"
 #include "Scale.h"
 #include "mesh/Arrow.h"
@@ -318,24 +319,24 @@ struct Gizmo {
         ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
     }
 
-    void Render(Camera &camera, bool &view_changed) const {
+    bool Render(Camera &camera, float aspect_ratio) const {
         using namespace ImGui;
+        static constexpr float Size{120};
 
-        static constexpr float ViewManipulateSize = 128;
-
-        const auto &window_pos = GetWindowPos();
-        const auto view_manipulate_pos = window_pos + ImVec2{GetWindowContentRegionMax().x - ViewManipulateSize, GetWindowContentRegionMin().y};
-        auto camera_view = camera.GetView();
-        const float camera_distance = camera.GetDistance();
-        if (view_changed = ImGuizmo::ViewManipulate(&camera_view[0][0], camera_distance, view_manipulate_pos, {ViewManipulateSize, ViewManipulateSize}, 0); view_changed) {
+        const auto window_pos = GetWindowPos();
+        const float padding = 2 * GetTextLineHeightWithSpacing();
+        const auto pos = vec2{window_pos.x, window_pos.y} + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{Size, 0} + vec2{-padding, padding};
+        if (auto camera_view = camera.GetView(); ImOGuizmo::DrawGizmo(pos, Size, camera_view, camera.GetProjection(aspect_ratio), camera.GetDistance())) {
             camera.SetPositionFromView(camera_view);
+            return true;
         }
+        return false;
     }
 
     void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
         using namespace ImGui;
 
-        Render(camera, view_changed);
+        view_changed = Render(camera, aspect_ratio);
         auto camera_view = camera.GetView();
         auto camera_projection = camera.GetProjection(aspect_ratio);
         model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
@@ -989,10 +990,11 @@ bool Scene::Render() {
 
 void Scene::RenderGizmo() {
     Gizmo->Begin();
+    const auto aspect_ratio = float(Extent.width) / float(Extent.height);
     if (SelectedEntity != entt::null) {
         auto transform = R.get<Model>(SelectedEntity).Transform;
         bool view_changed, model_changed;
-        Gizmo->Render(Camera, transform, float(Extent.width) / float(Extent.height), view_changed, model_changed);
+        Gizmo->Render(Camera, transform, aspect_ratio, view_changed, model_changed);
         view_changed |= Camera.Tick();
         if (model_changed || view_changed) {
             vec3 position, rotation, scale;
@@ -1001,8 +1003,7 @@ void Scene::RenderGizmo() {
             if (view_changed) UpdateTransformBuffers();
         }
     } else {
-        bool view_changed;
-        Gizmo->Render(Camera, view_changed);
+        bool view_changed = Gizmo->Render(Camera, aspect_ratio);
         view_changed |= Camera.Tick();
         if (view_changed) UpdateTransformBuffers();
     }
