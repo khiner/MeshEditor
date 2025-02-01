@@ -3,13 +3,6 @@
 #pragma once
 
 namespace ImGuizmo {
-// return true if mouse cursor is over any gizmo control (axis, plan or screen component)
-bool IsOver();
-// return true if mouse IsOver or if the gizmo is in moving state
-bool IsUsing();
-
-void SetRect(float x, float y, float width, float height);
-
 // call it when you want a gizmo
 // Needs view and projection matrices.
 // matrix parameter is the source matrix (where will be gizmo be drawn) and might be transformed by the function. Return deltaMatrix is optional
@@ -37,19 +30,20 @@ enum OPERATION {
     UNIVERSAL = TRANSLATE | ROTATE | SCALEU
 };
 
-inline OPERATION operator|(OPERATION lhs, OPERATION rhs) {
-    return static_cast<OPERATION>(static_cast<int>(lhs) | static_cast<int>(rhs));
-}
-
 enum MODE {
     LOCAL,
     WORLD
 };
 
-bool Manipulate(const float *view, const float *projection, OPERATION operation, MODE mode, float *matrix, float *deltaMatrix = nullptr, const float *snap = nullptr);
-
+// return true if mouse cursor is over any gizmo control (axis, plan or screen component)
+bool IsOver();
 // return true if the cursor is over the operation's gizmo
-bool IsOver(OPERATION op);
+bool IsOver(OPERATION);
+// return true if mouse IsOver or if the gizmo is in moving state
+bool IsUsing();
+
+void SetRect(float x, float y, float width, float height);
+bool Manipulate(const float *view, const float *projection, OPERATION, MODE, float *matrix, float *deltaMatrix = nullptr, const float *snap = nullptr);
 
 enum COLOR {
     DIRECTION_X, // directionColor[0]
