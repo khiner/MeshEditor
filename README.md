@@ -19,12 +19,9 @@ General features:
 * Flat/smooth/wireframe mesh rendering
 * Bounding Volume Hierarchy (BVH) ray intersection acceleration structure
   - Used for mouse interactions - this is not a ray tracing renderer :)
-* Translate / rotate / (nonuniformly) scale meshes and instances with [gizmo]([ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo)) and numeric inputs
+* Translate / rotate / (nonuniformly) scale meshes and instances with model gizmo (adapted from [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo)) and numeric inputs
 * Simple camera + scene lighting model, roughly matching Blender visually
-* Edit camera with:
-  - Camera rotate cube [gizmo]([ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo))
-  - Scrollwheel zoom
-  - Numeric inputs
+* Edit camera with view gizmo (heavily adapted from [ImOGuizmo](https://github.com/fknfilewalker/imoguizmo)), mouse wheel, and umeric inputs
 * Edit lighting parameters
 * Render face/vertex normals as lines for debugging
 * Render bounding box / BVH wireframes for debugging
@@ -132,5 +129,4 @@ $ cmake --build build --config Release
 - [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator): Efficient Vulkan memory allocation
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [ImPlot](https://github.com/epezent/implot): Plotting
-- [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo): Mesh transform and camera rotation gizmos
 - [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, and parse for SVG link bounding boxes

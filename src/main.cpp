@@ -1,4 +1,3 @@
-
 #include "Scene.h"
 #include "SvgResource.h"
 #include "Widgets.h" // imgui

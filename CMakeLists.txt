@@ -45,7 +45,6 @@ add_executable(${PROJECT_NAME}
     ${IMPLOT_DIR}/implot.cpp
     ${IMPLOT_DIR}/implot_items.cpp
     ${IMPLOT_DIR}/implot_demo.cpp
-    lib/ImGuizmo/ImGuizmo.cpp
     lib/miniaudio/extras/miniaudio_split/miniaudio.c
     ${SOURCES}
 )
@@ -59,7 +58,6 @@ include_directories(
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${IMPLOT_DIR}
-    SYSTEM lib/ImGuizmo
     SYSTEM lib/imspinner
     SYSTEM lib/glm
     SYSTEM lib/entt/src

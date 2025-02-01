@@ -308,23 +308,15 @@ struct Gizmo {
     ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
     bool ShowModelGizmo{false};
 
-    void Begin() const {
-        using namespace ImGui;
-
-        const auto content_region = GetContentRegionAvail();
-        const auto &window_pos = GetWindowPos();
-        ImGuizmo::BeginFrame();
-        ImGuizmo::SetDrawlist();
-        ImGuizmo::SetOrthographic(false);
-        ImGuizmo::SetRect(window_pos.x, window_pos.y + GetTextLineHeightWithSpacing(), content_region.x, content_region.y);
-    }
-
     bool Render(Camera &camera, float aspect_ratio) const {
         using namespace ImGui;
         static constexpr float Size{120};
 
+        const auto content_region = GetContentRegionAvail();
         const auto window_pos = GetWindowPos();
-        const float padding = 2 * GetTextLineHeightWithSpacing();
+        const float line_height = GetTextLineHeightWithSpacing();
+        ImGuizmo::SetRect(window_pos.x, window_pos.y + line_height, content_region.x, content_region.y);
+        const float padding = 2 * line_height;
         const auto pos = vec2{window_pos.x, window_pos.y} + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{Size, 0} + vec2{-padding, padding};
         if (auto camera_view = camera.GetView(); ImOGuizmo::DrawGizmo(pos, Size, camera_view, camera.GetProjection(aspect_ratio), camera.GetDistance())) {
             camera.SetPositionFromView(camera_view);
@@ -334,8 +326,6 @@ struct Gizmo {
     }
 
     void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
-        using namespace ImGui;
-
         view_changed = Render(camera, aspect_ratio);
         auto camera_view = camera.GetView();
         auto camera_projection = camera.GetProjection(aspect_ratio);
@@ -989,7 +979,6 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    Gizmo->Begin();
     const auto aspect_ratio = float(Extent.width) / float(Extent.height);
     if (SelectedEntity != entt::null) {
         auto transform = R.get<Model>(SelectedEntity).Transform;
