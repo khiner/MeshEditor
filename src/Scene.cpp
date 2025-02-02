@@ -305,7 +305,7 @@ void EdgeDetectionPipeline::Begin(vk::CommandBuffer cb) const {
 }
 
 struct Gizmo {
-    ImGuizmo::OPERATION ActiveOp{ImGuizmo::TRANSLATE};
+    ImGuizmo::Operation ActiveOp{ImGuizmo::TRANSLATE};
     bool ShowModelGizmo{false};
 
     bool Render(Camera &camera, float aspect_ratio) const {

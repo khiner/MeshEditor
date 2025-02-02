@@ -9,7 +9,7 @@ namespace ImGuizmo {
 // Needs view and projection matrices.
 // matrix parameter is the source matrix (where will be gizmo be drawn) and might be transformed by the function. Return deltaMatrix is optional
 // translation is applied in world space
-enum OPERATION {
+enum Operation {
     TRANSLATE_X = (1u << 0),
     TRANSLATE_Y = (1u << 1),
     TRANSLATE_Z = (1u << 2),
@@ -40,12 +40,12 @@ enum MODE {
 // return true if mouse cursor is over any gizmo control (axis, plan or screen component)
 bool IsOver();
 // return true if the cursor is over the operation's gizmo
-bool IsOver(OPERATION);
+bool IsOver(Operation);
 // return true if mouse IsOver or if the gizmo is in moving state
 bool IsUsing();
 
 void SetRect(float x, float y, float width, float height);
-bool Manipulate(const mat4 &view, const mat4 &projection, OPERATION, MODE, mat4 &matrix, const float *snap = nullptr);
+bool Manipulate(const mat4 &view, const mat4 &projection, Operation, MODE, mat4 &matrix, const float *snap = nullptr);
 
 enum COLOR {
     DIRECTION_X, // directionColor[0]
