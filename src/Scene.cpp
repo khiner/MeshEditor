@@ -329,7 +329,7 @@ struct Gizmo {
         view_changed = Render(camera, aspect_ratio);
         auto camera_view = camera.GetView();
         auto camera_projection = camera.GetProjection(aspect_ratio);
-        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(&camera_view[0][0], &camera_projection[0][0], ActiveOp, ImGuizmo::LOCAL, &model[0][0]);
+        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(camera_view, camera_projection, ActiveOp, ImGuizmo::LOCAL, model);
     }
 
     void RenderDebug(bool scale_enabled) {

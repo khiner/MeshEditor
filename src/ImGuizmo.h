@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "numeric/mat4.h"
+
 namespace ImGuizmo {
 // call it when you want a gizmo
 // Needs view and projection matrices.
@@ -43,7 +45,7 @@ bool IsOver(OPERATION);
 bool IsUsing();
 
 void SetRect(float x, float y, float width, float height);
-bool Manipulate(const float *view, const float *projection, OPERATION, MODE, float *matrix, float *deltaMatrix = nullptr, const float *snap = nullptr);
+bool Manipulate(const mat4 &view, const mat4 &projection, OPERATION, MODE, mat4 &matrix, const float *snap = nullptr);
 
 enum COLOR {
     DIRECTION_X, // directionColor[0]
