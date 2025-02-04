@@ -305,7 +305,7 @@ void EdgeDetectionPipeline::Begin(vk::CommandBuffer cb) const {
 }
 
 struct Gizmo {
-    ImGuizmo::Operation ActiveOp{ImGuizmo::TRANSLATE};
+    ImGuizmo::Operation ActiveOp{ImGuizmo::Translate};
     bool ShowModelGizmo{false};
 
     bool Render(Camera &camera, float aspect_ratio) const {
@@ -329,37 +329,37 @@ struct Gizmo {
         view_changed = Render(camera, aspect_ratio);
         auto camera_view = camera.GetView();
         auto camera_projection = camera.GetProjection(aspect_ratio);
-        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(camera_view, camera_projection, ActiveOp, ImGuizmo::LOCAL, model);
+        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(camera_view, camera_projection, ActiveOp, ImGuizmo::Local, model);
     }
 
     void RenderDebug(bool scale_enabled) {
         using namespace ImGui;
         using namespace ImGuizmo;
 
-        if (!scale_enabled && ActiveOp == SCALE) ActiveOp = TRANSLATE;
+        if (!scale_enabled && ActiveOp == ImGuizmo::Scale) ActiveOp = ImGuizmo::Translate;
 
         Checkbox("Gizmo", &ShowModelGizmo);
         if (!ShowModelGizmo) return;
 
         const char *interaction_text =
-            IsUsing()         ? "Using Gizmo" :
-            IsOver(TRANSLATE) ? "Translate hovered" :
-            IsOver(ROTATE)    ? "Rotate hovered" :
-            IsOver(SCALE)     ? "Scale hovered" :
-            IsOver()          ? "Hovered" :
-                                "Not interacting";
+            IsUsing()                   ? "Using Gizmo" :
+            IsOver(ImGuizmo::Translate) ? "Translate hovered" :
+            IsOver(ImGuizmo::Rotate)    ? "Rotate hovered" :
+            IsOver(ImGuizmo::Scale)     ? "Scale hovered" :
+            IsOver()                    ? "Hovered" :
+                                          "Not interacting";
         Text("Interaction: %s", interaction_text);
 
-        if (IsKeyPressed(ImGuiKey_T)) ActiveOp = TRANSLATE;
-        if (IsKeyPressed(ImGuiKey_R)) ActiveOp = ROTATE;
-        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) ActiveOp = SCALE;
-        if (RadioButton("Translate (T)", ActiveOp == TRANSLATE)) ActiveOp = TRANSLATE;
-        if (RadioButton("Rotate (R)", ActiveOp == ROTATE)) ActiveOp = ROTATE;
+        if (IsKeyPressed(ImGuiKey_T)) ActiveOp = ImGuizmo::Translate;
+        if (IsKeyPressed(ImGuiKey_R)) ActiveOp = ImGuizmo::Rotate;
+        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) ActiveOp = ImGuizmo::Scale;
+        if (RadioButton("Translate (T)", ActiveOp == ImGuizmo::Translate)) ActiveOp = ImGuizmo::Translate;
+        if (RadioButton("Rotate (R)", ActiveOp == ImGuizmo::Rotate)) ActiveOp = ImGuizmo::Rotate;
         if (!scale_enabled) BeginDisabled();
         const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
-        if (RadioButton(label.c_str(), ActiveOp == SCALE)) ActiveOp = SCALE;
+        if (RadioButton(label.c_str(), ActiveOp == ImGuizmo::Scale)) ActiveOp = ImGuizmo::Scale;
         if (!scale_enabled) EndDisabled();
-        if (RadioButton("Universal", ActiveOp == UNIVERSAL)) ActiveOp = UNIVERSAL;
+        if (RadioButton("Universal", ActiveOp == ImGuizmo::Universal)) ActiveOp = ImGuizmo::Universal;
     }
 };
 
