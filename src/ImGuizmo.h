@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "numeric/vec2.h"
 #include "numeric/mat4.h"
 
 namespace ImGuizmo {
@@ -40,6 +41,6 @@ bool IsOver(Operation);
 // Is gizmo actively being used
 bool IsUsing();
 
-void SetRect(float x, float y, float w, float h);
+void SetRect(vec2 pos, vec2 size);
 bool Manipulate(const mat4 &view, const mat4 &proj, Operation, Mode, mat4 &m, const float *snap = nullptr);
 } // namespace ImGuizmo

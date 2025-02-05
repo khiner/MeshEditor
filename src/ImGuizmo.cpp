@@ -41,7 +41,7 @@ constexpr bool IsScale(MoveType type) { return type >= MT_ScaleX && type <= MT_S
 using namespace ImGuizmo;
 using enum Operation;
 
-constexpr auto OpVal = [](auto op) { return static_cast<std::underlying_type_t<Operation>>(op);  };
+constexpr auto OpVal = [](auto op) { return static_cast<std::underlying_type_t<Operation>>(op); };
 constexpr Operation operator&(Operation a, Operation b) { return static_cast<Operation>(OpVal(a) & OpVal(b)); }
 constexpr Operation operator|(Operation a, Operation b) { return static_cast<Operation>(OpVal(a) | OpVal(b)); }
 constexpr Operation operator<<(Operation op, unsigned int shift) { return static_cast<Operation>(OpVal(op) << shift); }
@@ -115,7 +115,7 @@ struct Context {
 
     vec4 ModelScaleOrigin;
     vec4 CameraEye, CameraDir;
-    vec4 RayOrigin, RayVector;
+    vec4 RayOrigin, RayDir;
 
     float RadiusSquareCenter;
     ImVec2 ScreenSquareCenter, ScreenSquareMin, ScreenSquareMax;
@@ -142,10 +142,8 @@ struct Context {
     float AxisFactor[3];
     float AxisLimit{0.0025}, PlaneLimit{0.02};
 
-    float X{0}, Y{0};
-    float Width{0}, Height{0};
-    float XMax{0}, YMax{0};
-    float DisplayRatio{1};
+    vec2 Pos{0, 0};
+    vec2 Size{0, 0};
     float GizmoSizeClipSpace{0.1};
     bool IsOrthographic{false};
 
@@ -177,48 +175,18 @@ bool IsOver(Operation op) {
     if (HasAnyOp(op, Translate) && GetMoveType(op)) return true;
     return false;
 }
-void SetRect(float x, float y, float width, float height) {
-    g.X = x;
-    g.Y = y;
-    g.Width = width;
-    g.Height = height;
-    g.XMax = g.X + g.Width;
-    g.YMax = g.Y + g.XMax;
-    g.DisplayRatio = width / height;
+void SetRect(vec2 pos, vec2 size) {
+    g.Pos = pos;
+    g.Size = size;
 }
 } // namespace ImGuizmo
 
 namespace {
-bool IsHoveringWindow() {
-    auto &g = *ImGui::GetCurrentContext();
-    auto *window = ImGui::FindWindowByName(ImGui::GetWindowDrawList()->_OwnerName);
-    if (g.HoveredWindow == window) return true; // Mouse hovering drawlist window
-    if (g.HoveredWindow != nullptr) return false; // Another window is hovered
-    // Hovering drawlist window rect, while no other window is hovered (for _NoInputs windows)
-    if (ImGui::IsMouseHoveringRect(window->InnerRect.Min, window->InnerRect.Max, false)) return true;
-    return false;
-}
-
 constexpr ImVec2 WorldToPos(vec3 pos_world, const mat4 &m) {
     auto trans = vec2{m * vec4{pos_world, 1}} * (0.5f / glm::dot(glm::transpose(m)[3], vec4{pos_world, 1})) + 0.5f;
     trans.y = 1.f - trans.y;
-    trans = trans * vec2{g.Width, g.Height} + vec2{g.X, g.Y};
+    trans = g.Pos + trans * g.Size;
     return {trans.x, trans.y};
-}
-
-void ComputeCameraRay(vec4 &ray_origin, vec4 &ray_dir, ImVec2 pos = {g.X, g.Y}, ImVec2 size = {g.Width, g.Height}) {
-    const auto view_proj_inv = glm::inverse(g.Proj * g.View);
-    const auto mouse_delta = ImGui::GetIO().MousePos - pos;
-    const float mox = (mouse_delta.x / size.x) * 2 - 1;
-    const float moy = (1 - (mouse_delta.y / size.y)) * 2 - 1;
-    const float z_near = g.Reversed ? 1 - FLT_EPSILON : 0;
-    const float z_far = g.Reversed ? 0 : 1 - FLT_EPSILON;
-    ray_origin = view_proj_inv * vec4{mox, moy, z_near, 1};
-    ray_origin /= ray_origin.w;
-
-    vec4 ray_end{view_proj_inv * vec4{mox, moy, z_far, 1}};
-    ray_end /= ray_end.w;
-    ray_dir = glm::normalize(ray_end - ray_origin);
 }
 
 constexpr float GetSegmentLengthClipSpace(const vec4 &start, const vec4 &end, const bool local_coords = false) {
@@ -232,8 +200,9 @@ constexpr float GetSegmentLengthClipSpace(const vec4 &start, const vec4 &end, co
     if (fabsf(segment_end.w) > FLT_EPSILON) segment_end /= segment_end.w;
 
     auto clip_space_axis = segment_end - segment_start;
-    if (g.DisplayRatio < 1.0) clip_space_axis.x *= g.DisplayRatio;
-    else clip_space_axis.y /= g.DisplayRatio;
+    const auto aspect_ratio = g.Size.x / g.Size.y;
+    if (aspect_ratio < 1.0) clip_space_axis.x *= aspect_ratio;
+    else clip_space_axis.y /= aspect_ratio;
     return sqrtf(clip_space_axis.x * clip_space_axis.x + clip_space_axis.y * clip_space_axis.y);
 }
 
@@ -244,11 +213,12 @@ constexpr float GetParallelogram(const vec4 &p0, const vec4 &pa, const vec4 &pb)
         // check for axis aligned with camera direction
         if (fabsf(pts[i].w) > FLT_EPSILON) pts[i] /= pts[i].w;
     }
+    const auto aspect_ratio = g.Size.x / g.Size.y;
     auto seg_a = pts[1] - pts[0];
-    seg_a.y /= g.DisplayRatio;
+    seg_a.y /= aspect_ratio;
 
     auto seg_b = pts[2] - pts[0];
-    seg_b.y /= g.DisplayRatio;
+    seg_b.y /= aspect_ratio;
 
     const auto seg_a_ortho = glm::normalize(vec4{-seg_a.y, seg_a.x, 0, 0});
     return sqrtf(seg_a.x * seg_a.x + seg_a.y * seg_a.y) * fabsf(glm::dot(vec3{seg_a_ortho}, vec3{seg_b}));
@@ -260,11 +230,14 @@ vec4 Dir(const mat4 &m) { return {m[2]}; }
 vec4 Pos(const mat4 &m) { return {m[3]}; }
 void SetPos(mat4 &m, const vec4 &pos) { m[3] = pos; }
 
+vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
+ImVec2 ToImVec(vec2 v) { return {v.x, v.y}; }
+
 void ComputeContext(const mat4 &view, const mat4 &proj, mat4 &m, Mode mode) {
     g.Mode = mode;
     g.View = view;
     g.Proj = proj;
-    g.MouseOver = IsHoveringWindow();
+    g.MouseOver = ImGui::IsWindowHovered();
 
     auto &model_local = g.ModelLocal;
     model_local[0] = glm::normalize(m[0]);
@@ -301,7 +274,19 @@ void ComputeContext(const mat4 &view, const mat4 &proj, mat4 &m, Mode mode) {
     g.ScreenSquareMin = g.ScreenSquareCenter - ImVec2{10, 10};
     g.ScreenSquareMax = g.ScreenSquareCenter + ImVec2{10, 10};
 
-    ComputeCameraRay(g.RayOrigin, g.RayVector);
+    // Compute camera ray
+    const auto view_proj_inv = glm::inverse(g.Proj * g.View);
+    const auto mouse_delta = ImGui::GetIO().MousePos - ToImVec(g.Pos);
+    const float mox = (mouse_delta.x / g.Size.x) * 2 - 1;
+    const float moy = (1 - (mouse_delta.y / g.Size.y)) * 2 - 1;
+    const float z_near = g.Reversed ? 1 - FLT_EPSILON : 0;
+    const float z_far = g.Reversed ? 0 : 1 - FLT_EPSILON;
+    g.RayOrigin = view_proj_inv * vec4{mox, moy, z_near, 1};
+    g.RayOrigin /= g.RayOrigin.w;
+
+    vec4 ray_end{view_proj_inv * vec4{mox, moy, z_far, 1}};
+    ray_end /= ray_end.w;
+    g.RayDir = glm::normalize(ray_end - g.RayOrigin);
 }
 
 constexpr ImU32 GetColorU32(int idx) {
@@ -423,8 +408,8 @@ constexpr float IntersectRayPlane(const vec4 &origin, const vec4 &dir, const vec
 
 constexpr float ComputeAngleOnPlan() {
     vec4 perp{glm::normalize(vec4{glm::cross(vec3{g.RotationVectorSource}, vec3{g.TranslationPlan}), 0})};
-    const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, g.TranslationPlan);
-    const auto pos_local = glm::normalize(g.RayOrigin + g.RayVector * len - Pos(g.Model));
+    const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
+    const auto pos_local = glm::normalize(g.RayOrigin + g.RayDir * len - Pos(g.Model));
     const float acos_angle = std::clamp(glm::dot(pos_local, g.RotationVectorSource), -1.f, 1.f);
     return acosf(acos_angle) * (glm::dot(pos_local, perp) < 0 ? 1.f : -1.f);
 }
@@ -443,8 +428,6 @@ constexpr vec4 BuildPlan(const vec4 &p_point1, const vec4 &p_normal) {
     const auto normal = glm::normalize(p_normal);
     return {vec3{normal}, glm::dot(normal, p_point1)};
 }
-
-vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
 
 constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 vert_p1, ImVec2 vert_p2) {
     const auto vec = ToGlm(vert_p2 - vert_p1);
@@ -476,10 +459,10 @@ MoveType GetScaleType(Operation op) {
         dir_plane_x = g.ModelLocal * vec4{vec3{dir_plane_x}, 0};
         dir_plane_y = g.ModelLocal * vec4{vec3{dir_plane_y}, 0};
 
-        const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, BuildPlan(Pos(g.ModelLocal), dir_axis));
+        const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, BuildPlan(Pos(g.ModelLocal), dir_axis));
         const float start_offset = HasAllOps(op, Operation(TranslateX << i)) ? 1.0f : 0.1f;
         const float end_offset = HasAllOps(op, Operation(TranslateX << i)) ? 1.4f : 1.0f;
-        const auto pos_plan = g.RayOrigin + g.RayVector * len;
+        const auto pos_plan = g.RayOrigin + g.RayDir * len;
         const auto pos_plan_screen = WorldToPos(pos_plan, g.ViewProj);
         const auto axis_start_screen = WorldToPos(Pos(g.ModelLocal) + dir_axis * g.ScreenFactor * start_offset, g.ViewProj);
         const auto axis_end_screen = WorldToPos(Pos(g.ModelLocal) + dir_axis * g.ScreenFactor * end_offset, g.ViewProj);
@@ -527,8 +510,8 @@ MoveType GetRotateType(Operation op) {
         if (!HasAnyOp(op, Operation(RotateX << i))) continue;
 
         const auto pickup_plan = BuildPlan(Pos(g.Model), g.Model[i]);
-        const auto len = IntersectRayPlane(g.RayOrigin, g.RayVector, pickup_plan);
-        const auto intersect_world_pos = g.RayOrigin + g.RayVector * len;
+        const auto len = IntersectRayPlane(g.RayOrigin, g.RayDir, pickup_plan);
+        const auto intersect_world_pos = g.RayOrigin + g.RayDir * len;
         const auto intersect_view_pos = g.View * vec4{vec3{intersect_world_pos}, 1};
         if (ImAbs(model_view_pos.z) - ImAbs(intersect_view_pos.z) < -FLT_EPSILON) continue;
 
@@ -555,7 +538,8 @@ MoveType GetMoveType(Operation op) {
         type = MT_MoveScreen;
     }
 
-    const ImVec2 pos_screen{io.MousePos - ImVec2{g.X, g.Y}};
+    const auto pos = ToImVec(g.Pos);
+    const ImVec2 pos_screen{io.MousePos - pos};
     for (int i = 0; i < 3 && type == MT_None; ++i) {
         vec4 dir_plane_x, dir_plane_y, dir_axis;
         bool below_axis_limit, below_plane_limit;
@@ -564,15 +548,15 @@ MoveType GetMoveType(Operation op) {
         dir_plane_x = g.Model * vec4{vec3{dir_plane_x}, 0};
         dir_plane_y = g.Model * vec4{vec3{dir_plane_y}, 0};
 
-        const auto axis_start_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor * 0.1f, g.ViewProj) - ImVec2{g.X, g.Y};
-        const auto axis_end_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor, g.ViewProj) - ImVec2{g.X, g.Y};
+        const auto axis_start_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor * 0.1f, g.ViewProj) - pos;
+        const auto axis_end_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor, g.ViewProj) - pos;
         const auto closest_on_axis = PointOnSegment(pos_screen, axis_start_screen, axis_end_screen);
         if (ImLengthSqr(closest_on_axis - pos_screen) < SelectDistSq && HasAnyOp(op, Operation(TranslateX << i))) {
             type = MoveType(MT_MoveX + i);
         }
 
-        const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, BuildPlan(Pos(g.Model), dir_axis));
-        const auto pos_plan = g.RayOrigin + g.RayVector * len;
+        const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, BuildPlan(Pos(g.Model), dir_axis));
+        const auto pos_plan = g.RayOrigin + g.RayDir * len;
         const float dx = glm::dot(vec3{dir_plane_x}, vec3{pos_plan - Pos(g.Model)} / g.ScreenFactor);
         const float dy = glm::dot(vec3{dir_plane_y}, vec3{pos_plan - Pos(g.Model)} / g.ScreenFactor);
         if (below_plane_limit && dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3] && HasAllOps(op, TranslatePlans[i])) {
@@ -593,9 +577,9 @@ bool HandleTranslation(mat4 &m, Operation op, MoveType &type, const float *snap)
     // move
     if (g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID) && IsTranslate(g.CurrentMoveType)) {
         ImGui::SetNextFrameWantCaptureMouse(true);
-        const float len_signed = IntersectRayPlane(g.RayOrigin, g.RayVector, g.TranslationPlan);
+        const float len_signed = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
         const float len = fabsf(len_signed); // near plan
-        const auto new_pos = g.RayOrigin + g.RayVector * len;
+        const auto new_pos = g.RayOrigin + g.RayDir * len;
 
         const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
         auto delta = new_origin - Pos(g.Model);
@@ -653,8 +637,8 @@ bool HandleTranslation(mat4 &m, Operation op, MoveType &type, const float *snap)
                 }
                 // pickup plan
                 g.TranslationPlan = BuildPlan(Pos(g.Model), move_plan_normal[type - MT_MoveX]);
-                const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, g.TranslationPlan);
-                g.TranslationPlanOrigin = g.RayOrigin + g.RayVector * len;
+                const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
+                g.TranslationPlanOrigin = g.RayOrigin + g.RayDir * len;
                 g.MatrixOrigin = Pos(g.Model);
 
                 g.RelativeOrigin = (g.TranslationPlanOrigin - Pos(g.Model)) * (1.f / g.ScreenFactor);
@@ -678,8 +662,8 @@ bool HandleScale(mat4 &m, Operation op, MoveType &type, const float *snap) {
             g.CurrentMoveType = type;
             const vec4 move_plan_normal[]{g.Model[1], g.Model[2], g.Model[0], g.Model[2], g.Model[1], g.Model[0], -g.CameraDir};
             g.TranslationPlan = BuildPlan(Pos(g.Model), move_plan_normal[type - MT_ScaleX]);
-            const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, g.TranslationPlan);
-            g.TranslationPlanOrigin = g.RayOrigin + g.RayVector * len;
+            const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
+            g.TranslationPlanOrigin = g.RayOrigin + g.RayDir * len;
             g.MatrixOrigin = Pos(g.Model);
             g.Scale = {1, 1, 1, 0};
             g.RelativeOrigin = (g.TranslationPlanOrigin - Pos(g.Model)) * (1.f / g.ScreenFactor);
@@ -690,8 +674,8 @@ bool HandleScale(mat4 &m, Operation op, MoveType &type, const float *snap) {
     // scale
     if (g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID) && IsScale(g.CurrentMoveType)) {
         ImGui::SetNextFrameWantCaptureMouse(true);
-        const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, g.TranslationPlan);
-        const auto new_pos = g.RayOrigin + g.RayVector * len;
+        const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
+        const auto new_pos = g.RayOrigin + g.RayDir * len;
         const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
         auto delta = new_origin - Pos(g.ModelLocal);
         // 1 axis constraint
@@ -755,8 +739,8 @@ bool HandleRotation(mat4 &m, Operation op, MoveType &type, const float *snap) {
                 BuildPlan(Pos(g.Model), rotate_plan_normal[type - MT_RotateX]) :
                 BuildPlan(Pos(g.ModelSource), {DirUnary[type - MT_RotateX], 0});
 
-            const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, g.TranslationPlan);
-            g.RotationVectorSource = glm::normalize(g.RayOrigin + g.RayVector * len - Pos(g.Model));
+            const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
+            g.RotationVectorSource = glm::normalize(g.RayOrigin + g.RayDir * len - Pos(g.Model));
             g.RotationAngleOrigin = ComputeAngleOnPlan();
         }
     }
@@ -823,7 +807,7 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
 
         static constexpr int HalfCircleSegmentCount{64};
         static constexpr float ScreenRotateSize{0.06};
-        g.RadiusSquareCenter = ScreenRotateSize * g.Height;
+        g.RadiusSquareCenter = ScreenRotateSize * g.Size.y;
 
         bool hasRSC = HasAnyOp(op, RotateScreen);
         for (int axis = 0; axis < 3; axis++) {

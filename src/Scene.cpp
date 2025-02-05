@@ -315,7 +315,7 @@ struct Gizmo {
         const auto content_region = GetContentRegionAvail();
         const auto window_pos = GetWindowPos();
         const float line_height = GetTextLineHeightWithSpacing();
-        ImGuizmo::SetRect(window_pos.x, window_pos.y + line_height, content_region.x, content_region.y);
+        ImGuizmo::SetRect(vec2{window_pos.x, window_pos.y} + line_height, vec2{content_region.x, content_region.y});
         const float padding = 2 * line_height;
         const auto pos = vec2{window_pos.x, window_pos.y} + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{Size, 0} + vec2{-padding, padding};
         if (auto camera_view = camera.GetView(); ImOGuizmo::DrawGizmo(pos, Size, camera_view, camera.GetProjection(aspect_ratio), camera.GetDistance())) {
