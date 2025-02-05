@@ -39,10 +39,15 @@ constexpr bool IsRotate(MoveType type) { return type >= MT_RotateX && type <= MT
 constexpr bool IsScale(MoveType type) { return type >= MT_ScaleX && type <= MT_ScaleXYZ; }
 
 using namespace ImGuizmo;
+using enum Operation;
 
-constexpr bool Intersects(Operation a, Operation b) { return (a & b) != 0; }
-constexpr bool Contains(Operation a, Operation b) { return (a & b) == b; }
-constexpr Operation operator|(Operation a, Operation b) { return Operation(int(a) | int(b)); }
+constexpr auto OpVal = [](auto op) { return static_cast<std::underlying_type_t<Operation>>(op);  };
+constexpr Operation operator&(Operation a, Operation b) { return static_cast<Operation>(OpVal(a) & OpVal(b)); }
+constexpr Operation operator|(Operation a, Operation b) { return static_cast<Operation>(OpVal(a) | OpVal(b)); }
+constexpr Operation operator<<(Operation op, unsigned int shift) { return static_cast<Operation>(OpVal(op) << shift); }
+constexpr Operation operator>>(Operation op, unsigned int shift) { return static_cast<Operation>(OpVal(op) >> shift); }
+constexpr bool HasAnyOp(Operation a, Operation b) { return (a & b) != Operation::NoOperation; }
+constexpr bool HasAllOps(Operation a, Operation b) { return (a & b) == b; }
 
 // Matches MT_MOVE_AB order
 constexpr Operation TranslatePlans[]{TranslateY | TranslateZ, TranslateX | TranslateZ, TranslateX | TranslateY};
@@ -161,15 +166,15 @@ namespace ImGuizmo {
 bool IsUsing() { return g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID); }
 
 bool IsOver() {
-    return IsUsing() || (Intersects(g.Op, Translate) && GetMoveType(g.Op)) ||
-        (Intersects(g.Op, Rotate) && GetRotateType(g.Op)) ||
-        (Intersects(g.Op, Scale) && GetScaleType(g.Op));
+    return IsUsing() || (HasAnyOp(g.Op, Translate) && GetMoveType(g.Op)) ||
+        (HasAnyOp(g.Op, Rotate) && GetRotateType(g.Op)) ||
+        (HasAnyOp(g.Op, Scale) && GetScaleType(g.Op));
 }
 bool IsOver(Operation op) {
     if (IsUsing()) return true;
-    if (Intersects(op, Scale) && GetScaleType(op)) return true;
-    if (Intersects(op, Rotate) && GetRotateType(op)) return true;
-    if (Intersects(op, Translate) && GetMoveType(op)) return true;
+    if (HasAnyOp(op, Scale) && GetScaleType(op)) return true;
+    if (HasAnyOp(op, Rotate) && GetRotateType(op)) return true;
+    if (HasAnyOp(op, Translate) && GetMoveType(op)) return true;
     return false;
 }
 void SetRect(float x, float y, float width, float height) {
@@ -458,13 +463,13 @@ MoveType GetScaleType(Operation op) {
     const auto mouse_pos = ImGui::GetIO().MousePos;
     auto type = mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
             mouse_pos.y >= g.ScreenSquareMin.y && mouse_pos.y <= g.ScreenSquareMax.y &&
-            Contains(op, Scale) ?
+            HasAllOps(op, Scale) ?
         MT_ScaleXYZ :
         MT_None;
 
     // compute
     for (int i = 0; i < 3 && type == MT_None; ++i) {
-        if (!Intersects(op, Operation(ScaleX << i))) continue;
+        if (!HasAnyOp(op, static_cast<Operation>(ScaleX << i))) continue;
         vec4 dir_plane_x, dir_plane_y, dir_axis;
         ComputeTripodAxis(i, dir_axis, dir_plane_x, dir_plane_y, true);
         dir_axis = g.ModelLocal * vec4{vec3{dir_axis}, 0};
@@ -472,8 +477,8 @@ MoveType GetScaleType(Operation op) {
         dir_plane_y = g.ModelLocal * vec4{vec3{dir_plane_y}, 0};
 
         const float len = IntersectRayPlane(g.RayOrigin, g.RayVector, BuildPlan(Pos(g.ModelLocal), dir_axis));
-        const float start_offset = Contains(op, Operation(TranslateX << i)) ? 1.0f : 0.1f;
-        const float end_offset = Contains(op, Operation(TranslateX << i)) ? 1.4f : 1.0f;
+        const float start_offset = HasAllOps(op, Operation(TranslateX << i)) ? 1.0f : 0.1f;
+        const float end_offset = HasAllOps(op, Operation(TranslateX << i)) ? 1.4f : 1.0f;
         const auto pos_plan = g.RayOrigin + g.RayVector * len;
         const auto pos_plan_screen = WorldToPos(pos_plan, g.ViewProj);
         const auto axis_start_screen = WorldToPos(Pos(g.ModelLocal) + dir_axis * g.ScreenFactor * start_offset, g.ViewProj);
@@ -484,10 +489,10 @@ MoveType GetScaleType(Operation op) {
 
     // universal
     const vec4 delta_screen{mouse_pos.x - g.ScreenSquareCenter.x, mouse_pos.y - g.ScreenSquareCenter.y, 0, 0};
-    if (float dist = glm::length(delta_screen); dist >= 17.0f && dist < 23.0f && Contains(op, ScaleU)) type = MT_ScaleXYZ;
+    if (float dist = glm::length(delta_screen); dist >= 17.0f && dist < 23.0f && HasAllOps(op, ScaleU)) type = MT_ScaleXYZ;
 
     for (int i = 0; i < 3 && type == MT_None; ++i) {
-        if (!Intersects(op, Operation(ScaleXU << i))) continue;
+        if (!HasAnyOp(op, Operation(ScaleXU << i))) continue;
 
         vec4 dir_plane_x, dir_plane_y, dir_axis;
         bool below_axis_limit, below_plane_limit;
@@ -495,7 +500,7 @@ MoveType GetScaleType(Operation op) {
 
         // draw axis
         if (below_axis_limit) {
-            const bool has_translate_on_axis = Contains(op, Operation(TranslateX << i));
+            const bool has_translate_on_axis = HasAllOps(op, Operation(TranslateX << i));
             const float marker_scale = has_translate_on_axis ? 1.4f : 1.0f;
             const auto end = WorldToPos((dir_axis * marker_scale) * g.ScreenFactor, g.MVPLocal);
             if (ImLengthSqr(end - mouse_pos) < SelectDistSq) type = MoveType(MT_ScaleX + i);
@@ -513,13 +518,13 @@ MoveType GetRotateType(Operation op) {
     const auto mouse_pos = ImGui::GetIO().MousePos;
     const vec4 delta_screen{mouse_pos.x - g.ScreenSquareCenter.x, mouse_pos.y - g.ScreenSquareCenter.y, 0, 0};
     const auto dist = glm::length(delta_screen);
-    auto type = Intersects(op, RotateScreen) && dist >= (g.RadiusSquareCenter - 4) && dist < (g.RadiusSquareCenter + 4) ?
+    auto type = HasAnyOp(op, RotateScreen) && dist >= (g.RadiusSquareCenter - 4) && dist < (g.RadiusSquareCenter + 4) ?
         MT_RotateScreen :
         MT_None;
 
     const auto model_view_pos = g.View * vec4{vec3{Pos(g.Model)}, 1};
     for (int i = 0; i < 3 && type == MT_None; ++i) {
-        if (!Intersects(op, Operation(RotateX << i))) continue;
+        if (!HasAnyOp(op, Operation(RotateX << i))) continue;
 
         const auto pickup_plan = BuildPlan(Pos(g.Model), g.Model[i]);
         const auto len = IntersectRayPlane(g.RayOrigin, g.RayVector, pickup_plan);
@@ -540,13 +545,13 @@ constexpr float QuadMin{0.5}, QuadMax{0.8};
 constexpr float QuadUV[]{QuadMin, QuadMin, QuadMin, QuadMax, QuadMax, QuadMax, QuadMax, QuadMin};
 
 MoveType GetMoveType(Operation op) {
-    if (g.Using || !g.MouseOver || !Intersects(op, Translate)) return MT_None;
+    if (g.Using || !g.MouseOver || !HasAnyOp(op, Translate)) return MT_None;
 
     auto &io = ImGui::GetIO();
     auto type{MT_None};
     if (io.MousePos.x >= g.ScreenSquareMin.x && io.MousePos.x <= g.ScreenSquareMax.x &&
         io.MousePos.y >= g.ScreenSquareMin.y && io.MousePos.y <= g.ScreenSquareMax.y &&
-        Contains(op, Translate)) {
+        HasAllOps(op, Translate)) {
         type = MT_MoveScreen;
     }
 
@@ -562,7 +567,7 @@ MoveType GetMoveType(Operation op) {
         const auto axis_start_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor * 0.1f, g.ViewProj) - ImVec2{g.X, g.Y};
         const auto axis_end_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor, g.ViewProj) - ImVec2{g.X, g.Y};
         const auto closest_on_axis = PointOnSegment(pos_screen, axis_start_screen, axis_end_screen);
-        if (ImLengthSqr(closest_on_axis - pos_screen) < SelectDistSq && Intersects(op, Operation(TranslateX << i))) {
+        if (ImLengthSqr(closest_on_axis - pos_screen) < SelectDistSq && HasAnyOp(op, Operation(TranslateX << i))) {
             type = MoveType(MT_MoveX + i);
         }
 
@@ -570,7 +575,7 @@ MoveType GetMoveType(Operation op) {
         const auto pos_plan = g.RayOrigin + g.RayVector * len;
         const float dx = glm::dot(vec3{dir_plane_x}, vec3{pos_plan - Pos(g.Model)} / g.ScreenFactor);
         const float dy = glm::dot(vec3{dir_plane_y}, vec3{pos_plan - Pos(g.Model)} / g.ScreenFactor);
-        if (below_plane_limit && dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3] && Contains(op, TranslatePlans[i])) {
+        if (below_plane_limit && dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3] && HasAllOps(op, TranslatePlans[i])) {
             type = MoveType(MT_MoveYZ + i);
         }
     }
@@ -580,7 +585,7 @@ MoveType GetMoveType(Operation op) {
 bool CanActivate() { return ImGui::IsMouseClicked(0) && !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemActive(); }
 
 bool HandleTranslation(mat4 &m, Operation op, MoveType &type, const float *snap) {
-    if (type != MT_None || !Intersects(op, Translate)) return false;
+    if (type != MT_None || !HasAnyOp(op, Translate)) return false;
 
     const bool apply_rot_locally = g.Mode == Local || type == MT_MoveScreen;
     bool modified = false;
@@ -660,7 +665,7 @@ bool HandleTranslation(mat4 &m, Operation op, MoveType &type, const float *snap)
 }
 
 bool HandleScale(mat4 &m, Operation op, MoveType &type, const float *snap) {
-    if (type != MT_None || !g.MouseOver || (!Intersects(op, Scale) && !Intersects(op, ScaleU))) return false;
+    if (type != MT_None || !g.MouseOver || (!HasAnyOp(op, Scale) && !HasAnyOp(op, ScaleU))) return false;
 
     bool modified = false;
     if (!g.Using) {
@@ -731,7 +736,7 @@ bool HandleScale(mat4 &m, Operation op, MoveType &type, const float *snap) {
 }
 
 bool HandleRotation(mat4 &m, Operation op, MoveType &type, const float *snap) {
-    if (!Intersects(op, Rotate) || type != MT_None || !g.MouseOver) return false;
+    if (!HasAnyOp(op, Rotate) || type != MT_None || !g.MouseOver) return false;
 
     bool apply_rot_locally{g.Mode == Local};
     bool modified{false};
@@ -792,7 +797,7 @@ bool HandleRotation(mat4 &m, Operation op, MoveType &type, const float *snap) {
 namespace ImGuizmo {
 bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat4 &m, const float *snap) {
     // Scale is always local or m will be skewed when applying world scale or oriented m
-    ComputeContext(view, proj, m, (op & Scale) ? Local : mode);
+    ComputeContext(view, proj, m, HasAllOps(op, Scale) ? Local : mode);
 
     // behind camera
     const auto pos_cam_space = g.MVP * vec4{vec3{0}, 1};
@@ -810,7 +815,7 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
     if (!draw_list) return false;
 
     ImU32 colors[7];
-    if (Intersects(op, Rotate)) {
+    if (HasAnyOp(op, Rotate)) {
         ComputeColors(colors, type, Rotate);
 
         vec4 cam_to_model = g.IsOrthographic ? -Dir(glm::inverse(g.View)) : glm::normalize(Pos(g.Model) - g.CameraEye);
@@ -820,9 +825,9 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
         static constexpr float ScreenRotateSize{0.06};
         g.RadiusSquareCenter = ScreenRotateSize * g.Height;
 
-        bool hasRSC = Intersects(op, RotateScreen);
+        bool hasRSC = HasAnyOp(op, RotateScreen);
         for (int axis = 0; axis < 3; axis++) {
-            if (!Intersects(op, Operation(RotateZ >> axis))) continue;
+            if (!HasAnyOp(op, Operation(RotateZ >> axis))) continue;
 
             const bool using_axis = g.Using && type == MT_RotateZ - axis;
             const int circle_mul = hasRSC && !using_axis ? 1 : 2;
@@ -871,7 +876,7 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
 
     static constexpr int TranslationInfoIndex[]{0, 0, 0, 1, 0, 0, 2, 0, 0, 1, 2, 0, 0, 2, 0, 0, 1, 0, 0, 1, 2};
     static constexpr const char *ScaleInfoMask[]{"X : %5.2f", "Y : %5.2f", "Z : %5.2f", "XYZ : %5.2f"};
-    if (Intersects(op, Translate)) {
+    if (HasAnyOp(op, Translate)) {
         ComputeColors(colors, type, Translate);
 
         const auto origin = WorldToPos(Pos(g.Model), g.ViewProj);
@@ -881,7 +886,7 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
             ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit);
             if (!g.Using || (g.Using && type == MT_MoveX + i)) {
                 // draw axis
-                if (below_axis_limit && Intersects(op, Operation(TranslateX << i))) {
+                if (below_axis_limit && HasAnyOp(op, Operation(TranslateX << i))) {
                     const auto base = WorldToPos(dir_axis * 0.1f * g.ScreenFactor, g.MVP);
                     const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
                     draw_list->AddLine(base, end, colors[i + 1], g.Style.TranslationLineThickness);
@@ -899,7 +904,7 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
             }
             // draw plane
             if (!g.Using || (g.Using && type == MT_MoveYZ + i)) {
-                if (below_plane_limit && Contains(op, TranslatePlans[i])) {
+                if (below_plane_limit && HasAllOps(op, TranslatePlans[i])) {
                     ImVec2 quad_pts_screen[4];
                     for (int j = 0; j < 4; ++j) {
                         const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
@@ -933,14 +938,14 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
             draw_list->AddText(dest_pos + ImVec2{14, 14}, GetColorU32(Text), tmps);
         }
     }
-    if (Intersects(op, Scale)) {
+    if (HasAnyOp(op, Scale)) {
         ComputeColors(colors, type, Scale);
 
         vec4 scale_display{1};
         if (g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID)) scale_display = g.Scale;
 
         for (int i = 0; i < 3; ++i) {
-            if (!Intersects(op, Operation(ScaleX << i))) continue;
+            if (!HasAnyOp(op, Operation(ScaleX << i))) continue;
 
             if (!g.Using || type == MT_ScaleX + i) {
                 vec4 dir_plane_x, dir_plane_y, dir_axis;
@@ -949,7 +954,7 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
 
                 // draw axis
                 if (below_axis_limit) {
-                    bool has_translate_on_axis = Contains(op, Operation(TranslateX << i));
+                    bool has_translate_on_axis = HasAllOps(op, Operation(TranslateX << i));
                     float marker_scale = has_translate_on_axis ? 1.4f : 1.0f;
                     const auto base = WorldToPos(dir_axis * 0.1f * g.ScreenFactor, g.MVP);
                     const auto end = WorldToPos((dir_axis * marker_scale * scale_display[i]) * g.ScreenFactor, g.MVP);
@@ -978,19 +983,19 @@ bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat
             draw_list->AddText(dest_pos + ImVec2{14, 14}, GetColorU32(Text), tmps);
         }
     }
-    if (Intersects(op, ScaleU)) {
+    if (HasAnyOp(op, ScaleU)) {
         ComputeColors(colors, type, ScaleU);
 
         const auto scale_display = g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID) ? g.Scale : vec4{1};
         for (int i = 0; i < 3; ++i) {
-            if (!Intersects(op, Operation(ScaleXU << i))) continue;
+            if (!HasAnyOp(op, Operation(ScaleXU << i))) continue;
 
             if (!g.Using || type == MT_ScaleX + i) {
                 vec4 dir_plane_x, dir_plane_y, dir_axis;
                 bool below_axis_limit, below_plane_limit;
                 ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
                 if (below_axis_limit) {
-                    const bool has_translate_on_axis = Contains(op, Operation(TranslateX << i));
+                    const bool has_translate_on_axis = HasAllOps(op, Operation(TranslateX << i));
                     const float marker_scale = has_translate_on_axis ? 1.4f : 1.0f;
                     const auto end = WorldToPos((dir_axis * marker_scale * scale_display[i]) * g.ScreenFactor, g.MVPLocal);
                     draw_list->AddCircleFilled(end, 12.f, colors[i + 1]);

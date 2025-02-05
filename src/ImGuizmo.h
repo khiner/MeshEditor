@@ -5,7 +5,7 @@
 #include "numeric/mat4.h"
 
 namespace ImGuizmo {
-enum Operation {
+enum class Operation {
     NoOperation = 0,
     TranslateX = 1u << 0,
     TranslateY = 1u << 1,
