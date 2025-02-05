@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "numeric/vec2.h"
 #include "numeric/mat4.h"
+#include "numeric/vec2.h"
 
 namespace ImGuizmo {
 enum class Operation {
@@ -41,6 +41,5 @@ bool IsOver(Operation);
 // Is gizmo actively being used
 bool IsUsing();
 
-void SetRect(vec2 pos, vec2 size);
-bool Manipulate(const mat4 &view, const mat4 &proj, Operation, Mode, mat4 &m, const float *snap = nullptr);
+bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Operation, Mode, mat4 &m, const float *snap = nullptr);
 } // namespace ImGuizmo

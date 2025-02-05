@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Camera.h"
+#include "ImGuizmo.h"
 #include "RenderMode.h"
 #include "Shader.h"
 #include "World.h"
@@ -69,8 +70,6 @@ struct Lights {
 struct SilhouetteDisplay {
     vec4 Color;
 };
-
-struct Gizmo;
 
 enum class ShaderPipelineType {
     Fill,
@@ -217,7 +216,6 @@ struct Scene {
     // and it will be equal to the dimensions of `GetContentRegionAvail()` at the beginning of the call.
     // Returns true if the scene was updated, which can happen when the window size or background color changes.
     bool Render();
-
     void RenderGizmo();
     void RenderControls();
 
@@ -264,7 +262,8 @@ private:
     EdgeDetectionPipeline EdgeDetectionPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
-    std::unique_ptr<Gizmo> Gizmo;
+    ImGuizmo::Operation ActiveGizmoOp{ImGuizmo::Operation::Translate};
+    bool ShowModelGizmo{false};
 
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.

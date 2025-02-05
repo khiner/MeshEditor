@@ -2,7 +2,6 @@
 #include "Widgets.h" // imgui
 
 #include "Excitable.h"
-#include "ImGuizmo.h" // imgui must be included before imguizmo and imoguizmo
 #include "ImOGuizmo.h"
 #include "Registry.h"
 #include "Scale.h"
@@ -304,65 +303,6 @@ void EdgeDetectionPipeline::Begin(vk::CommandBuffer cb) const {
     cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
 }
 
-struct Gizmo {
-    ImGuizmo::Operation ActiveOp{ImGuizmo::Operation::Translate};
-    bool ShowModelGizmo{false};
-
-    bool Render(Camera &camera, float aspect_ratio) const {
-        using namespace ImGui;
-        static constexpr float Size{120};
-
-        const auto content_region = GetContentRegionAvail();
-        const auto window_pos = GetWindowPos();
-        const float line_height = GetTextLineHeightWithSpacing();
-        ImGuizmo::SetRect(vec2{window_pos.x, window_pos.y} + line_height, vec2{content_region.x, content_region.y});
-        const float padding = 2 * line_height;
-        const auto pos = vec2{window_pos.x, window_pos.y} + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{Size, 0} + vec2{-padding, padding};
-        if (auto camera_view = camera.GetView(); ImOGuizmo::DrawGizmo(pos, Size, camera_view, camera.GetProjection(aspect_ratio), camera.GetDistance())) {
-            camera.SetPositionFromView(camera_view);
-            return true;
-        }
-        return false;
-    }
-
-    void Render(Camera &camera, mat4 &model, float aspect_ratio, bool &view_changed, bool &model_changed) const {
-        view_changed = Render(camera, aspect_ratio);
-        auto camera_view = camera.GetView();
-        auto camera_projection = camera.GetProjection(aspect_ratio);
-        model_changed = ShowModelGizmo && ImGuizmo::Manipulate(camera_view, camera_projection, ActiveOp, ImGuizmo::Local, model);
-    }
-
-    void RenderDebug(bool scale_enabled) {
-        using namespace ImGui;
-        using namespace ImGuizmo;
-
-        if (!scale_enabled && ActiveOp == Operation::Scale) ActiveOp = Operation::Translate;
-
-        Checkbox("Gizmo", &ShowModelGizmo);
-        if (!ShowModelGizmo) return;
-
-        const char *interaction_text =
-            IsUsing()                    ? "Using Gizmo" :
-            IsOver(Operation::Translate) ? "Translate hovered" :
-            IsOver(Operation::Rotate)    ? "Rotate hovered" :
-            IsOver(Operation::Scale)     ? "Scale hovered" :
-            IsOver()                     ? "Hovered" :
-                                           "Not interacting";
-        Text("Interaction: %s", interaction_text);
-
-        if (IsKeyPressed(ImGuiKey_T)) ActiveOp = Operation::Translate;
-        if (IsKeyPressed(ImGuiKey_R)) ActiveOp = Operation::Rotate;
-        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) ActiveOp = Operation::Scale;
-        if (RadioButton("Translate (T)", ActiveOp == Operation::Translate)) ActiveOp = Operation::Translate;
-        if (RadioButton("Rotate (R)", ActiveOp == Operation::Rotate)) ActiveOp = Operation::Rotate;
-        if (!scale_enabled) BeginDisabled();
-        const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
-        if (RadioButton(label.c_str(), ActiveOp == Operation::Scale)) ActiveOp = Operation::Scale;
-        if (!scale_enabled) EndDisabled();
-        if (RadioButton("Universal", ActiveOp == Operation::Universal)) ActiveOp = Operation::Universal;
-    }
-};
-
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
     : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainPipeline(VC),
       SilhouettePipeline(VC), EdgeDetectionPipeline(VC) {
@@ -394,7 +334,6 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
         {SPT::Silhouette, "ViewProjectionUBO", transform_buffer},
     });
 
-    Gizmo = std::make_unique<::Gizmo>();
     CompileShaders();
 
     AddPrimitive(Primitive::Cube, {.Select = true, .Visible = true});
@@ -632,7 +571,7 @@ const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetParentEntity(
 void Scene::SetModel(entt::entity entity, vec3 position, glm::quat rotation, vec3 scale) {
     UpdateModel(R, entity, position, rotation, scale);
     UpdateModelBuffer(entity);
-    SubmitCommandBuffer();
+    InvalidateCommandBuffer();
 }
 
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
@@ -832,14 +771,6 @@ void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
 }
 
-void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, vec3 &scale) {
-    static vec3 skew;
-    static vec4 perspective;
-    static glm::quat orientation;
-    glm::decompose(transform, scale, orientation, position, skew, perspective);
-    rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
-}
-
 // We already cache the transpose of the inverse transform for all models,
 // so save some compute by using that.
 ray WorldToLocal(const ray &r, const mat4 &model_i_t) {
@@ -986,22 +917,29 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    const auto aspect_ratio = float(Extent.width) / float(Extent.height);
+    const auto content_region = ToGlm(GetContentRegionAvail());
+    const float line_height = GetTextLineHeightWithSpacing();
+    const auto window_pos = ToGlm(GetWindowPos());
+    auto camera_view = Camera.GetView();
+    auto camera_proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
     if (SelectedEntity != entt::null) {
-        auto transform = R.get<Model>(SelectedEntity).Transform;
-        bool view_changed, model_changed;
-        Gizmo->Render(Camera, transform, aspect_ratio, view_changed, model_changed);
-        view_changed |= Camera.Tick();
-        if (model_changed || view_changed) {
-            vec3 position, rotation, scale;
-            DecomposeTransform(transform, position, rotation, scale);
-            if (model_changed) SetModel(SelectedEntity, position, glm::quat(glm::radians(rotation)), scale);
-            if (view_changed) UpdateTransformBuffers();
+        auto model = R.get<Model>(SelectedEntity).Transform;
+        if (ShowModelGizmo && ImGuizmo::Manipulate(window_pos + line_height, content_region, camera_view, camera_proj, ActiveGizmoOp, ImGuizmo::Local, model)) {
+            static vec3 skew, scale, position;
+            static vec4 perspective;
+            static glm::quat orientation;
+            glm::decompose(model, scale, orientation, position, skew, perspective);
+            SetModel(SelectedEntity, position, glm::quat{glm::eulerAngles(orientation)}, scale);
         }
-    } else {
-        bool view_changed = Gizmo->Render(Camera, aspect_ratio);
-        view_changed |= Camera.Tick();
-        if (view_changed) UpdateTransformBuffers();
+    }
+    static constexpr float OGizmoSize{120};
+    const float padding = 2 * line_height;
+    const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
+    if (auto camera_view = Camera.GetView(); ImOGuizmo::DrawGizmo(pos, OGizmoSize, camera_view, camera_proj, Camera.GetDistance())) {
+        Camera.SetPositionFromView(camera_view);
+        UpdateTransformBuffers();
+    } else if (Camera.Tick()) {
+        UpdateTransformBuffers();
     }
 }
 
@@ -1143,7 +1081,33 @@ void Scene::RenderControls() {
                     if (frozen) EndDisabled();
                     if (model_changed) SetModel(SelectedEntity, pos, rot, scale);
 
-                    Gizmo->RenderDebug(!frozen);
+                    using namespace ImGuizmo;
+                    const bool scale_enabled = !frozen;
+                    if (!scale_enabled && ActiveGizmoOp == Operation::Scale) ActiveGizmoOp = Operation::Translate;
+
+                    Checkbox("Gizmo", &ShowModelGizmo);
+                    if (ShowModelGizmo) {
+                        const char *interaction_text =
+                            IsUsing()                    ? "Using Gizmo" :
+                            IsOver(Operation::Translate) ? "Translate hovered" :
+                            IsOver(Operation::Rotate)    ? "Rotate hovered" :
+                            IsOver(Operation::Scale)     ? "Scale hovered" :
+                            IsOver()                     ? "Hovered" :
+                                                           "Not interacting";
+                        Text("Interaction: %s", interaction_text);
+
+                        auto &op = ActiveGizmoOp;
+                        if (IsKeyPressed(ImGuiKey_T)) op = Operation::Translate;
+                        if (IsKeyPressed(ImGuiKey_R)) op = Operation::Rotate;
+                        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = Operation::Scale;
+                        if (RadioButton("Translate (T)", op == Operation::Translate)) op = Operation::Translate;
+                        if (RadioButton("Rotate (R)", op == Operation::Rotate)) op = Operation::Rotate;
+                        if (!scale_enabled) BeginDisabled();
+                        const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
+                        if (RadioButton(label.c_str(), op == Operation::Scale)) op = Operation::Scale;
+                        if (!scale_enabled) EndDisabled();
+                        if (RadioButton("Universal", op == Operation::Universal)) op = Operation::Universal;
+                    }
                     if (TreeNode("Model transform")) {
                         TextUnformatted("Transform");
                         const auto &model = R.get<Model>(SelectedEntity);

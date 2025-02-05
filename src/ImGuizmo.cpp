@@ -175,10 +175,6 @@ bool IsOver(Operation op) {
     if (HasAnyOp(op, Translate) && GetMoveType(op)) return true;
     return false;
 }
-void SetRect(vec2 pos, vec2 size) {
-    g.Pos = pos;
-    g.Size = size;
-}
 } // namespace ImGuizmo
 
 namespace {
@@ -779,7 +775,10 @@ bool HandleRotation(mat4 &m, Operation op, MoveType &type, const float *snap) {
 } // namespace
 
 namespace ImGuizmo {
-bool Manipulate(const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat4 &m, const float *snap) {
+bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Operation op, Mode mode, mat4 &m, const float *snap) {
+    g.Pos = pos;
+    g.Size = size;
+
     // Scale is always local or m will be skewed when applying world scale or oriented m
     ComputeContext(view, proj, m, HasAllOps(op, Scale) ? Local : mode);
 
