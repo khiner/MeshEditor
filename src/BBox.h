@@ -1,8 +1,7 @@
 #pragma once
 
-#include "Ray.h"
-
 #include "numeric/mat4.h"
+#include "numeric/ray.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
@@ -86,12 +85,12 @@ struct BBox {
     }
 
     // Returns the intersection distance of the ray with the box, or nullopt if there is no intersection.
-    std::optional<float> Intersect(const Ray &ray) const {
+    std::optional<float> Intersect(const ray &ray) const {
         float t0 = 0, t1 = std::numeric_limits<float>::max();
         for (int i = 0; i < 3; ++i) {
-            const float inv_ray_dir = 1.f / ray.Direction[i];
-            float t_near = (Min[i] - ray.Origin[i]) * inv_ray_dir;
-            float t_far = (Max[i] - ray.Origin[i]) * inv_ray_dir;
+            const float inv_ray_dir = 1.f / ray.d[i];
+            float t_near = (Min[i] - ray.o[i]) * inv_ray_dir;
+            float t_far = (Max[i] - ray.o[i]) * inv_ray_dir;
             if (t_near > t_far) std::swap(t_near, t_far);
             t_far *= 1 + 2 * std::numeric_limits<float>::epsilon();
 

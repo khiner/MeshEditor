@@ -17,7 +17,7 @@
 namespace fs = std::filesystem;
 
 struct BVH;
-struct Ray;
+struct ray;
 
 // Aliases for OpenMesh types to support `using namespace om;`.
 namespace om {
@@ -162,15 +162,15 @@ struct Mesh {
     bool VertexBelongsToFaceEdge(VH, FH, EH) const;
     bool EdgeBelongsToFace(EH, FH) const;
 
-    std::optional<Intersection> Intersect(const Ray &local_ray) const;
+    std::optional<Intersection> Intersect(const ray &local_ray) const;
 
     VH FindNearestVertex(Point) const;
     // Returns a handle to the vertex nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
-    VH FindNearestVertex(const Ray &local_ray) const;
+    VH FindNearestVertex(const ray &local_ray) const;
 
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
-    EH FindNearestEdge(const Ray &world_ray) const;
-    FH FindNearestIntersectingFace(const Ray &local_ray, Point *nearest_intersect_point_out = nullptr) const;
+    EH FindNearestEdge(const ray &world_ray) const;
+    FH FindNearestIntersectingFace(const ray &local_ray, Point *nearest_intersect_point_out = nullptr) const;
 
     std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.

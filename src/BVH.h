@@ -29,8 +29,8 @@ struct BVH {
 
     uint RootIndex() const { return Nodes.size() - 1; }
 
-    using IntersectFace = std::optional<float> (*)(const Ray &, uint face_index, const void *userdata);
-    std::optional<Intersection> IntersectNearest(const Ray &, IntersectFace, const void *userdata) const;
+    using IntersectFace = std::optional<float> (*)(const ray &, uint face_index, const void *userdata);
+    std::optional<Intersection> IntersectNearest(const ray &, IntersectFace, const void *userdata) const;
 
     std::vector<BBox> CreateInternalBoxes() const; // All non-leaf boxes, for debugging.
 
@@ -39,5 +39,5 @@ private:
     std::vector<Node> Nodes;
 
     uint Build(std::vector<uint> &&indices);
-    void IntersectNode(uint node_index, const Ray &, IntersectFace, const void *userdata, Intersection &nearest_out) const;
+    void IntersectNode(uint node_index, const ray &, IntersectFace, const void *userdata, Intersection &nearest_out) const;
 };

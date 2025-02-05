@@ -342,12 +342,12 @@ struct Gizmo {
         if (!ShowModelGizmo) return;
 
         const char *interaction_text =
-            IsUsing()                   ? "Using Gizmo" :
+            IsUsing()                    ? "Using Gizmo" :
             IsOver(Operation::Translate) ? "Translate hovered" :
             IsOver(Operation::Rotate)    ? "Rotate hovered" :
             IsOver(Operation::Scale)     ? "Scale hovered" :
-            IsOver()                    ? "Hovered" :
-                                          "Not interacting";
+            IsOver()                     ? "Hovered" :
+                                           "Not interacting";
         Text("Interaction: %s", interaction_text);
 
         if (IsKeyPressed(ImGuiKey_T)) ActiveOp = Operation::Translate;
@@ -820,7 +820,7 @@ vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 // Returns a world space ray from the mouse into the scene.
-Ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
+ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
     // Mouse pos in content region
     const vec2 mouse_pos = ToGlm((GetMousePos() - GetCursorScreenPos()) / GetContentRegionAvail());
     // Normalized Device Coordinates, $\mathcal{NDC} \in [-1,1]^2$
@@ -840,13 +840,20 @@ void DecomposeTransform(const mat4 &transform, vec3 &position, vec3 &rotation, v
     rotation = glm::eulerAngles(orientation) * 180.f / glm::pi<float>(); // Convert radians to degrees
 }
 
-std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const Ray &world_ray) {
+// We already cache the transpose of the inverse transform for all models,
+// so save some compute by using that.
+ray WorldToLocal(const ray &r, const mat4 &model_i_t) {
+    const auto model_i = glm::transpose(model_i_t);
+    return {{model_i * vec4{r.o, 1}}, glm::normalize(vec3{model_i * vec4{r.d, 0}})};
+}
+
+std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const ray &world_ray) {
     std::multimap<float, entt::entity> entities_by_distance;
     for (const auto &[entity, model] : r.view<const Model>().each()) {
         if (!r.all_of<Visible>(entity)) continue;
 
         const auto &mesh = r.get<const Mesh>(GetParentEntity(r, entity));
-        if (auto intersection = mesh.Intersect(world_ray.WorldToLocal(model.InvTransform))) {
+        if (auto intersection = mesh.Intersect(WorldToLocal(world_ray, model.InvTransform))) {
             entities_by_distance.emplace(intersection->Distance, entity);
         }
     }
@@ -859,14 +866,14 @@ struct EntityIntersection {
     Intersection Intersection;
     vec3 Position;
 };
-std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, const Ray &world_ray) {
+std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, const ray &world_ray) {
     float nearest_distance = std::numeric_limits<float>::max();
     std::optional<EntityIntersection> nearest;
     for (const auto &[entity, model] : r.view<const Model>().each()) {
         if (!r.all_of<Visible>(entity)) continue;
 
         const auto &mesh = r.get<const Mesh>(GetParentEntity(r, entity));
-        const auto local_ray = world_ray.WorldToLocal(model.InvTransform);
+        const auto local_ray = WorldToLocal(world_ray, model.InvTransform);
         if (auto intersection = mesh.Intersect(local_ray);
             intersection && intersection->Distance < nearest_distance) {
             nearest_distance = intersection->Distance;
@@ -919,7 +926,7 @@ void Scene::Interact() {
     if (SelectionMode == SelectionMode::Edit) {
         if (SelectedElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
             const auto &model = R.get<Model>(SelectedEntity);
-            const auto mouse_ray = mouse_world_ray.WorldToLocal(model.InvTransform);
+            const auto mouse_ray = WorldToLocal(mouse_world_ray, model.InvTransform);
             const auto &mesh = GetSelectedMesh();
             {
                 const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);

@@ -1,7 +1,7 @@
 #include "Mesh.h"
 
 #include "BVH.h"
-#include "Ray.h"
+#include "numeric/ray.h"
 
 #include <algorithm>
 #include <ranges>
@@ -83,8 +83,8 @@ constexpr std::optional<float> IntersectTriangle(Point o, Point d, Point p1, Poi
     return {};
 }
 
-constexpr std::optional<float> IntersectFace(const Ray &ray, uint fi, const void *m) noexcept {
-    const Point o = ToOpenMesh(ray.Origin), d = ToOpenMesh(ray.Direction);
+constexpr std::optional<float> IntersectFace(const ray &ray, uint fi, const void *m) noexcept {
+    const Point o = ToOpenMesh(ray.o), d = ToOpenMesh(ray.d);
     const auto &pm = *reinterpret_cast<const PolyMesh *>(m);
     auto fv_it = pm.cfv_iter(FH(fi));
     const VH v0 = *fv_it++;
@@ -207,7 +207,7 @@ RenderBuffers Mesh::CreateBvhBuffers(vec4 color) const {
     return {std::move(vertices), std::move(indices)};
 }
 
-FH Mesh::FindNearestIntersectingFace(const Ray &ray, Point *nearest_intersect_point_out) const {
+FH Mesh::FindNearestIntersectingFace(const ray &ray, Point *nearest_intersect_point_out) const {
     if (auto intersection = Bvh->IntersectNearest(ray, IntersectFace, &M)) {
         if (nearest_intersect_point_out) *nearest_intersect_point_out = ToOpenMesh(ray(intersection->Distance));
         return FH(intersection->Index);
@@ -215,7 +215,7 @@ FH Mesh::FindNearestIntersectingFace(const Ray &ray, Point *nearest_intersect_po
     return FH{};
 }
 
-std::optional<Intersection> Mesh::Intersect(const Ray &ray) const {
+std::optional<Intersection> Mesh::Intersect(const ray &ray) const {
     return Bvh->IntersectNearest(ray, IntersectFace, &M);
 }
 
@@ -232,7 +232,7 @@ VH Mesh::FindNearestVertex(Point p) const {
     return closest_vertex;
 }
 
-VH Mesh::FindNearestVertex(const Ray &local_ray) const {
+VH Mesh::FindNearestVertex(const ray &local_ray) const {
     Point intersection_point;
     const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
     if (!face.is_valid()) return VH{};
@@ -250,7 +250,7 @@ VH Mesh::FindNearestVertex(const Ray &local_ray) const {
     return closest_vertex;
 }
 
-EH Mesh::FindNearestEdge(const Ray &local_ray) const {
+EH Mesh::FindNearestEdge(const ray &local_ray) const {
     Point intersection_point;
     const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
     if (!face.is_valid()) return Mesh::EH{};

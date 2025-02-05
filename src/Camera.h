@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Ray.h"
-
+#include "numeric/mat4.h"
+#include "numeric/ray.h"
 #include "numeric/vec2.h"
 
 #include <optional>
@@ -20,7 +20,7 @@ struct Camera {
     float GetDistance() const;
 
     // Converts a position in clip space to a ray in world space.
-    Ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
+    ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
 
     void SetPositionFromView(const mat4 &);
     void SetTargetDistance(float distance) { TargetDistance = distance; }
