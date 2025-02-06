@@ -2,6 +2,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #endif
 
+#include "numeric/mat3.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
@@ -127,13 +128,15 @@ struct Context {
     bool MouseOver{false};
     bool Reversed{false}; // reversed proj m
 
-    vec4 TranslationPlan, TranslationPlanOrigin, TranslationPrevDelta;
+    vec4 TranslationPlan, TranslationPrevDelta;
+    vec3 TranslationPlanOrigin;
     vec4 MatrixOrigin;
 
     vec4 RotationVectorSource;
     float RotationAngle, RotationAngleOrigin;
 
-    vec4 Scale, ScaleOrigin, ScalePrev;
+    vec4 Scale, ScalePrev;
+    vec3 ScaleOrigin;
     float SaveMousePosX;
 
     // save axis factor when using gizmo
@@ -185,13 +188,14 @@ constexpr ImVec2 WorldToPos(vec3 pos_world, const mat4 &m) {
     return {trans.x, trans.y};
 }
 
-constexpr float GetSegmentLengthClipSpace(const vec4 &start, const vec4 &end, const bool local_coords = false) {
+constexpr float GetSegmentLengthClipSpace(vec3 end, bool local_coords = false) {
+    static constexpr auto start = vec3{0};
     const auto &mvp = local_coords ? g.MVPLocal : g.MVP;
-    auto segment_start = mvp * vec4{vec3{start}, 1};
+    auto segment_start = mvp * vec4{start, 1};
     // check for axis aligned with camera direction
     if (fabsf(segment_start.w) > FLT_EPSILON) segment_start /= segment_start.w;
 
-    auto segment_end = mvp * vec4{vec3{end}, 1};
+    auto segment_end = mvp * vec4{end, 1};
     // check for axis aligned with camera direction
     if (fabsf(segment_end.w) > FLT_EPSILON) segment_end /= segment_end.w;
 
@@ -200,24 +204,6 @@ constexpr float GetSegmentLengthClipSpace(const vec4 &start, const vec4 &end, co
     if (aspect_ratio < 1.0) clip_space_axis.x *= aspect_ratio;
     else clip_space_axis.y /= aspect_ratio;
     return sqrtf(clip_space_axis.x * clip_space_axis.x + clip_space_axis.y * clip_space_axis.y);
-}
-
-constexpr float GetParallelogram(const vec4 &p0, const vec4 &pa, const vec4 &pb) {
-    vec4 pts[]{p0, pa, pb};
-    for (uint32_t i = 0; i < 3; ++i) {
-        pts[i] = g.MVP * vec4{vec3{pts[i]}, 1};
-        // check for axis aligned with camera direction
-        if (fabsf(pts[i].w) > FLT_EPSILON) pts[i] /= pts[i].w;
-    }
-    const auto aspect_ratio = g.Size.x / g.Size.y;
-    auto seg_a = pts[1] - pts[0];
-    seg_a.y /= aspect_ratio;
-
-    auto seg_b = pts[2] - pts[0];
-    seg_b.y /= aspect_ratio;
-
-    const auto seg_a_ortho = glm::normalize(vec4{-seg_a.y, seg_a.x, 0, 0});
-    return sqrtf(seg_a.x * seg_a.x + seg_a.y * seg_a.y) * fabsf(glm::dot(vec3{seg_a_ortho}, vec3{seg_b}));
 }
 
 vec4 Right(const mat4 &m) { return {m[0]}; }
@@ -263,7 +249,7 @@ void ComputeContext(const mat4 &view, const mat4 &proj, mat4 &m, Mode mode) {
     const auto right_point = g.ViewProj * vec4{vec3{Right(view_inv)}, 1};
     g.ScreenFactor = g.GizmoSizeClipSpace / (right_point.x / right_point.w - Pos(g.MVP).x / Pos(g.MVP).w);
 
-    const float right_len = GetSegmentLengthClipSpace(vec4{0}, g.ModelInverse * vec4{vec3{Right(view_inv)}, 0});
+    const float right_len = GetSegmentLengthClipSpace(g.ModelInverse * vec4{vec3{Right(view_inv)}, 0});
     g.ScreenFactor = g.GizmoSizeClipSpace / right_len;
 
     g.ScreenSquareCenter = WorldToPos(vec3{0}, g.MVP);
@@ -277,6 +263,7 @@ void ComputeContext(const mat4 &view, const mat4 &proj, mat4 &m, Mode mode) {
     const float moy = (1 - (mouse_delta.y / g.Size.y)) * 2 - 1;
     const float z_near = g.Reversed ? 1 - FLT_EPSILON : 0;
     const float z_far = g.Reversed ? 0 : 1 - FLT_EPSILON;
+
     g.RayOrigin = view_proj_inv * vec4{mox, moy, z_near, 1};
     g.RayOrigin /= g.RayOrigin.w;
 
@@ -320,11 +307,9 @@ constexpr void ComputeColors(ImU32 *colors, MoveType type, Operation op) {
     }
 }
 
-const vec3 DirUnary[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+const mat3 DirUnary{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
-static constexpr vec4 Origin{0};
-
-void ComputeTripodAxis(const int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, const bool local_coords = false) {
+void ComputeTripodAxis(int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool local_coords = false) {
     if (g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID)) {
         // When using, use stored factors so the gizmo doesn't flip when we translate
         dir_axis *= g.AxisFactor[axis_i];
@@ -337,12 +322,12 @@ void ComputeTripodAxis(const int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4
     dir_plane_x = {DirUnary[(axis_i + 1) % 3], 0};
     dir_plane_y = {DirUnary[(axis_i + 2) % 3], 0};
 
-    const float len_dir = GetSegmentLengthClipSpace(Origin, dir_axis, local_coords);
-    const float len_dir_minus = GetSegmentLengthClipSpace(Origin, -dir_axis, local_coords);
-    const float len_dir_plane_x = GetSegmentLengthClipSpace(Origin, dir_plane_x, local_coords);
-    const float len_dir_plane_x_minus = GetSegmentLengthClipSpace(Origin, -dir_plane_x, local_coords);
-    const float len_dir_plane_y = GetSegmentLengthClipSpace(Origin, dir_plane_y, local_coords);
-    const float len_dir_plane_y_minus = GetSegmentLengthClipSpace(Origin, -dir_plane_y, local_coords);
+    const float len_dir = GetSegmentLengthClipSpace(dir_axis, local_coords);
+    const float len_dir_minus = GetSegmentLengthClipSpace(-dir_axis, local_coords);
+    const float len_dir_plane_x = GetSegmentLengthClipSpace(dir_plane_x, local_coords);
+    const float len_dir_plane_x_minus = GetSegmentLengthClipSpace(-dir_plane_x, local_coords);
+    const float len_dir_plane_y = GetSegmentLengthClipSpace(dir_plane_y, local_coords);
+    const float len_dir_plane_y_minus = GetSegmentLengthClipSpace(-dir_plane_y, local_coords);
 
     // For readability, flip gizmo axis for better visibility
     // When false, they always stay along the positive world/local axis
@@ -353,14 +338,13 @@ void ComputeTripodAxis(const int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4
     dir_axis *= mul_axis;
     dir_plane_x *= mul_axis_x;
     dir_plane_y *= mul_axis_y;
-
     // Cache
     g.AxisFactor[axis_i] = mul_axis;
     g.AxisFactor[(axis_i + 1) % 3] = mul_axis_x;
     g.AxisFactor[(axis_i + 2) % 3] = mul_axis_y;
 }
 
-void ComputeTripodVisibility(const int axis_i, float axis_length_clip_space, vec4 dir_plane_x, vec4 dir_plane_y, bool &below_axis_limit, bool &below_plane_limit) {
+void ComputeTripodVisibility(int axis_i, float axis_length_clip_space, vec4 dir_plane_x, vec4 dir_plane_y, bool &below_axis_limit, bool &below_plane_limit) {
     if (g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID)) {
         // When using, use stored factors so the gizmo doesn't flip when we translate
         below_axis_limit = g.BelowAxisLimit[axis_i];
@@ -368,7 +352,19 @@ void ComputeTripodVisibility(const int axis_i, float axis_length_clip_space, vec
         return;
     }
 
-    const float para_surf = GetParallelogram(Origin, dir_plane_x * g.ScreenFactor, dir_plane_y * g.ScreenFactor);
+    // Parallelogram area
+    vec4 pa = dir_plane_x * g.ScreenFactor, pb = dir_plane_y * g.ScreenFactor;
+    pa = g.MVP * vec4{vec3{pa}, 1};
+    if (fabsf(pa.w) > FLT_EPSILON) pa /= pa.w;
+    pb = g.MVP * vec4{vec3{pb}, 1};
+    if (fabsf(pb.w) > FLT_EPSILON) pb /= pb.w;
+
+    const auto aspect_ratio = g.Size.x / g.Size.y;
+    pa.y /= aspect_ratio;
+    pb.y /= aspect_ratio;
+
+    const float para_surf = sqrtf(pa.x * pa.x + pa.y * pa.y) * fabsf(glm::dot(glm::normalize(vec3{-pa.y, pa.x, 0}), vec3{pb}));
+
     below_plane_limit = para_surf > g.AxisLimit;
     below_axis_limit = axis_length_clip_space > g.PlaneLimit;
     // Cache
@@ -376,9 +372,9 @@ void ComputeTripodVisibility(const int axis_i, float axis_length_clip_space, vec
     g.BelowPlaneLimit[axis_i] = below_plane_limit;
 }
 
-void ComputeTripodAxisAndVisibility(const int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool &below_axis_limit, bool &below_plane_limit, const bool local_coords = false) {
+void ComputeTripodAxisAndVisibility(int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool &below_axis_limit, bool &below_plane_limit, bool local_coords = false) {
     ComputeTripodAxis(axis_i, dir_axis, dir_plane_x, dir_plane_y, local_coords);
-    const float axis_length_clip_space = GetSegmentLengthClipSpace(Origin, dir_axis * g.ScreenFactor, local_coords);
+    const float axis_length_clip_space = GetSegmentLengthClipSpace(dir_axis * g.ScreenFactor, local_coords);
     ComputeTripodVisibility(axis_i, axis_length_clip_space, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit);
 }
 
@@ -389,17 +385,17 @@ constexpr void ComputeSnap(float *value, float snap) {
     const float modulo = fmodf(*value, snap);
     const float modulo_ratio = fabsf(modulo) / snap;
     if (modulo_ratio < SnapTension) *value -= modulo;
-    else if (modulo_ratio > (1.f - SnapTension)) *value = *value - modulo + snap * (*value < 0 ? -1 : 1);
+    else if (modulo_ratio > 1 - SnapTension) *value = *value - modulo + snap * (*value < 0 ? -1 : 1);
 }
 constexpr void ComputeSnap(vec4 &value, const float *snap) {
     for (int i = 0; i < 3; ++i) ComputeSnap(&value[i], snap[i]);
 }
 
-constexpr float IntersectRayPlane(const vec4 &origin, const vec4 &dir, const vec4 &plan) {
-    const float num = glm::dot(vec3{plan}, vec3{origin}) - plan.w;
-    const float den = glm::dot(vec3{plan}, vec3{dir});
+constexpr float IntersectRayPlane(vec3 origin, vec3 dir, vec4 plan) {
+    const float num = glm::dot(vec3{plan}, origin) - plan.w;
+    const float den = glm::dot(vec3{plan}, dir);
     // if normal is orthogonal to vector, can't intersect
-    return fabsf(den) < FLT_EPSILON ? -1 : -(num / den);
+    return fabsf(den) < FLT_EPSILON ? -1 : -num / den;
 }
 
 constexpr float ComputeAngleOnPlan() {
@@ -411,7 +407,7 @@ constexpr float ComputeAngleOnPlan() {
 }
 
 void DrawHatchedAxis(vec3 axis) {
-    if (g.Style.HatchedAxisLineThickness <= 0.0f) return;
+    if (g.Style.HatchedAxisLineThickness <= 0) return;
 
     for (int j = 1; j < 10; j++) {
         const auto base = WorldToPos(axis * 0.05f * float(j * 2) * g.ScreenFactor, g.MVP);
@@ -514,7 +510,7 @@ MoveType GetRotateType(Operation op) {
         auto ideal_pos_circle = g.ModelInverse * vec4{vec3{glm::normalize(intersect_world_pos - Pos(g.Model))}, 0};
         const auto ideal_circle_pos_screen = WorldToPos(ideal_pos_circle * RotationDisplayScale * g.ScreenFactor, g.MVP);
         const auto distance_screen = ideal_circle_pos_screen - mouse_pos;
-        if (glm::length(vec2(distance_screen.x, distance_screen.y)) < 8) type = MoveType(MT_RotateX + i);
+        if (glm::length(vec2{distance_screen.x, distance_screen.y}) < 8) type = MoveType(MT_RotateX + i);
     }
 
     return type;
@@ -633,11 +629,9 @@ bool HandleTranslation(mat4 &m, Operation op, MoveType &type, const float *snap)
                 }
                 // pickup plan
                 g.TranslationPlan = BuildPlan(Pos(g.Model), move_plan_normal[type - MT_MoveX]);
-                const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
-                g.TranslationPlanOrigin = g.RayOrigin + g.RayDir * len;
+                g.TranslationPlanOrigin = g.RayOrigin + g.RayDir * IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
                 g.MatrixOrigin = Pos(g.Model);
-
-                g.RelativeOrigin = (g.TranslationPlanOrigin - Pos(g.Model)) * (1.f / g.ScreenFactor);
+                g.RelativeOrigin = (vec4{g.TranslationPlanOrigin, 1} - Pos(g.Model)) * (1.f / g.ScreenFactor);
             }
         }
     }
@@ -660,10 +654,10 @@ bool HandleScale(mat4 &m, Operation op, MoveType &type, const float *snap) {
             g.TranslationPlan = BuildPlan(Pos(g.Model), move_plan_normal[type - MT_ScaleX]);
             const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlan);
             g.TranslationPlanOrigin = g.RayOrigin + g.RayDir * len;
-            g.MatrixOrigin = Pos(g.Model);
             g.Scale = {1, 1, 1, 0};
-            g.RelativeOrigin = (g.TranslationPlanOrigin - Pos(g.Model)) * (1.f / g.ScreenFactor);
-            g.ScaleOrigin = {glm::length(Right(g.ModelSource)), glm::length(Up(g.ModelSource)), glm::length(Dir(g.ModelSource)), 0};
+            g.MatrixOrigin = Pos(g.Model);
+            g.RelativeOrigin = (vec4{g.TranslationPlanOrigin, 1} - Pos(g.Model)) * (1.f / g.ScreenFactor);
+            g.ScaleOrigin = {glm::length(Right(g.ModelSource)), glm::length(Up(g.ModelSource)), glm::length(Dir(g.ModelSource))};
             g.SaveMousePosX = ImGui::GetIO().MousePos.x;
         }
     }
@@ -681,7 +675,7 @@ bool HandleScale(mat4 &m, Operation op, MoveType &type, const float *snap) {
             const float length_on_axis = glm::dot(axis_value, delta);
             delta = axis_value * length_on_axis;
 
-            vec4 base = g.TranslationPlanOrigin - Pos(g.ModelLocal);
+            vec4 base = vec4{g.TranslationPlanOrigin, 0} - Pos(g.ModelLocal);
             const float ratio = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
             g.Scale[axis_i] = std::max(ratio, 0.001f);
         } else {
@@ -703,7 +697,7 @@ bool HandleScale(mat4 &m, Operation op, MoveType &type, const float *snap) {
             modified = true;
         }
 
-        m = g.ModelLocal * glm::scale(mat4{1}, {g.Scale * g.ScaleOrigin});
+        m = g.ModelLocal * glm::scale(mat4{1}, {g.Scale * vec4{g.ScaleOrigin, 0}});
 
         if (!ImGui::GetIO().MouseDown[0]) {
             g.Using = false;
@@ -910,13 +904,14 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Operati
             draw_list->AddCircle(dest_pos, 6.f, translation_line_color);
             draw_list->AddLine({source_pos_screen.x + dif.x, source_pos_screen.y + dif.y}, {dest_pos.x - dif.x, dest_pos.y - dif.y}, translation_line_color, 2.f);
 
+            static constexpr const char *TranslationInfoMask[]{
+                "X : %5.3f", "Y : %5.3f", "Z : %5.3f", "Y : %5.3f Z : %5.3f", "X : %5.3f Z : %5.3f", "X : %5.3f Y : %5.3f", "X : %5.3f Y : %5.3f Z : %5.3f"
+            };
             const auto delta_info = Pos(g.Model) - g.MatrixOrigin;
-            const int component_info_i = (type - MT_MoveX) * 3;
-
-            static constexpr const char *TranslationInfoMask[]{"X : %5.3f", "Y : %5.3f", "Z : %5.3f", "Y : %5.3f Z : %5.3f", "X : %5.3f Z : %5.3f", "X : %5.3f Y : %5.3f", "X : %5.3f Y : %5.3f Z : %5.3f"};
+            const int info_i = (type - MT_MoveX) * 3;
 
             char tmps[512];
-            ImFormatString(tmps, sizeof(tmps), TranslationInfoMask[type - MT_MoveX], delta_info[TranslationInfoIndex[component_info_i]], delta_info[TranslationInfoIndex[component_info_i + 1]], delta_info[TranslationInfoIndex[component_info_i + 2]]);
+            ImFormatString(tmps, sizeof(tmps), TranslationInfoMask[type - MT_MoveX], delta_info[TranslationInfoIndex[info_i]], delta_info[TranslationInfoIndex[info_i + 1]], delta_info[TranslationInfoIndex[info_i + 2]]);
             draw_list->AddText(dest_pos + ImVec2{15, 15}, GetColorU32(TextShadow), tmps);
             draw_list->AddText(dest_pos + ImVec2{14, 14}, GetColorU32(Text), tmps);
         }
