@@ -850,7 +850,7 @@ void Scene::Interact() {
             UpdateTransformBuffers();
         }
     }
-    if (!IsMouseClicked(ImGuiMouseButton_Left) || ImGuizmo::IsOver()) return;
+    if (!IsMouseClicked(ImGuiMouseButton_Left) || ImGuizmo::IsOver(ActiveGizmoOp)) return;
 
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
@@ -991,8 +991,7 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
 
 void RenderMat4(const mat4 &m) {
     for (uint i = 0; i < 4; ++i) {
-        const auto row = m[i];
-        Text("%.2f, %.2f, %.2f, %.2f", row.x, row.y, row.z, row.w);
+        Text("%.2f, %.2f, %.2f, %.2f", m[0][i], m[1][i], m[2][i], m[3][i]);
     }
 }
 } // namespace
@@ -1092,7 +1091,7 @@ void Scene::RenderControls() {
                             IsOver(Operation::Translate) ? "Translate hovered" :
                             IsOver(Operation::Rotate)    ? "Rotate hovered" :
                             IsOver(Operation::Scale)     ? "Scale hovered" :
-                            IsOver()                     ? "Hovered" :
+                            IsOver(ActiveGizmoOp)        ? "Hovered" :
                                                            "Not interacting";
                         Text("Interaction: %s", interaction_text);
 

@@ -34,8 +34,6 @@ enum Mode {
     World
 };
 
-// Is mouse cursor over any gizmo control (axis, plan or screen component)
-bool IsOver();
 // Is cursor over the operation's gizmo
 bool IsOver(Operation);
 // Is gizmo actively being used
