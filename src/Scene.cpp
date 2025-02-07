@@ -1082,30 +1082,30 @@ void Scene::RenderControls() {
 
                     using namespace ImGuizmo;
                     const bool scale_enabled = !frozen;
-                    if (!scale_enabled && ActiveGizmoOp == Operation::Scale) ActiveGizmoOp = Operation::Translate;
+                    if (!scale_enabled && ActiveGizmoOp == Op::Scale) ActiveGizmoOp = Op::Translate;
 
                     Checkbox("Gizmo", &ShowModelGizmo);
                     if (ShowModelGizmo) {
                         const char *interaction_text =
                             IsUsing()                    ? "Using Gizmo" :
-                            IsOver(Operation::Translate) ? "Translate hovered" :
-                            IsOver(Operation::Rotate)    ? "Rotate hovered" :
-                            IsOver(Operation::Scale)     ? "Scale hovered" :
+                            IsOver(Op::Translate) ? "Translate hovered" :
+                            IsOver(Op::Rotate)    ? "Rotate hovered" :
+                            IsOver(Op::Scale)     ? "Scale hovered" :
                             IsOver(ActiveGizmoOp)        ? "Hovered" :
                                                            "Not interacting";
                         Text("Interaction: %s", interaction_text);
 
                         auto &op = ActiveGizmoOp;
-                        if (IsKeyPressed(ImGuiKey_T)) op = Operation::Translate;
-                        if (IsKeyPressed(ImGuiKey_R)) op = Operation::Rotate;
-                        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = Operation::Scale;
-                        if (RadioButton("Translate (T)", op == Operation::Translate)) op = Operation::Translate;
-                        if (RadioButton("Rotate (R)", op == Operation::Rotate)) op = Operation::Rotate;
+                        if (IsKeyPressed(ImGuiKey_T)) op = Op::Translate;
+                        if (IsKeyPressed(ImGuiKey_R)) op = Op::Rotate;
+                        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = Op::Scale;
+                        if (RadioButton("Translate (T)", op == Op::Translate)) op = Op::Translate;
+                        if (RadioButton("Rotate (R)", op == Op::Rotate)) op = Op::Rotate;
                         if (!scale_enabled) BeginDisabled();
                         const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
-                        if (RadioButton(label.c_str(), op == Operation::Scale)) op = Operation::Scale;
+                        if (RadioButton(label.c_str(), op == Op::Scale)) op = Op::Scale;
                         if (!scale_enabled) EndDisabled();
-                        if (RadioButton("Universal", op == Operation::Universal)) op = Operation::Universal;
+                        if (RadioButton("Universal", op == Op::Universal)) op = Op::Universal;
                     }
                     if (TreeNode("Model transform")) {
                         TextUnformatted("Transform");
@@ -1124,14 +1124,14 @@ void Scene::RenderControls() {
 
             if (CollapsingHeader("Add primitive")) {
                 PushID("AddPrimitive");
-                static int current_primitive_edit = int(Primitive::Cube);
-                uint i = 0; // For line breaks
-                for (const auto primitive : AllPrimitives) {
-                    if (i++ % 3 != 0) SameLine();
-                    RadioButton(to_string(primitive).c_str(), &current_primitive_edit, int(primitive));
+                static int select_primitive = int(Primitive::Cube);
+                for (uint i = 0; i < AllPrimitives.size(); ++i) {
+                    if (i % 3 != 0) SameLine();
+                    const auto primitive = AllPrimitives[i];
+                    RadioButton(to_string(primitive).c_str(), &select_primitive, int(primitive));
                 }
-                if (auto mesh = PrimitiveEditor(Primitive(current_primitive_edit), true)) {
-                    R.emplace<Primitive>(AddMesh(std::move(*mesh), {.Name = to_string(Primitive(current_primitive_edit))}), Primitive(current_primitive_edit));
+                if (auto mesh = PrimitiveEditor(Primitive(select_primitive), true)) {
+                    R.emplace<Primitive>(AddMesh(std::move(*mesh), {.Name = to_string(Primitive(select_primitive))}), Primitive(select_primitive));
                 }
                 PopID();
             }

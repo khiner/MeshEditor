@@ -6,27 +6,28 @@
 #include "numeric/vec2.h"
 
 namespace ImGuizmo {
-enum class Operation {
-    NoOperation = 0,
-    TranslateX = 1u << 0,
-    TranslateY = 1u << 1,
-    TranslateZ = 1u << 2,
-    RotateX = 1u << 3,
-    RotateY = 1u << 4,
-    RotateZ = 1u << 5,
-    RotateScreen = 1u << 6,
-    ScaleX = 1u << 7,
-    ScaleY = 1u << 8,
-    ScaleZ = 1u << 9,
-    ScaleXU = 1u << 10,
-    ScaleYU = 1u << 11,
-    ScaleZU = 1u << 12,
+enum class Op {
+    NoOp = 0,
 
-    Translate = TranslateX | TranslateY | TranslateZ,
-    Rotate = RotateX | RotateY | RotateZ | RotateScreen,
-    Scale = ScaleX | ScaleY | ScaleZ,
-    ScaleU = ScaleXU | ScaleYU | ScaleZU, // universal
-    Universal = Translate | Rotate | ScaleU
+    AxisX = 1 << 0,
+    AxisY = 1 << 1,
+    AxisZ = 1 << 2,
+    Screen = 1 << 3,
+
+    Translate = 1 << 4,
+    Rotate = 1 << 5,
+    Scale = 1 << 6,
+    ScaleU = 1 << 7, // Universal scale is a different control.
+    Universal = Translate | Rotate | ScaleU,
+
+    TranslateYZ = Translate | AxisY | AxisZ,
+    TranslateZX = Translate | AxisZ | AxisX,
+    TranslateXY = Translate | AxisX | AxisY,
+    TranslateScreen = Translate | Screen,
+
+    RotateScreen = Rotate | Screen,
+
+    ScaleXYZ = Scale | AxisX | AxisY | AxisZ,
 };
 
 enum Mode {
@@ -35,9 +36,9 @@ enum Mode {
 };
 
 // Is cursor over the operation's gizmo
-bool IsOver(Operation);
+bool IsOver(Op);
 // Is gizmo actively being used
 bool IsUsing();
 
-bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Operation, Mode, mat4 &m, const float *snap = nullptr);
+bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op, Mode, mat4 &m, const float *snap = nullptr);
 } // namespace ImGuizmo

@@ -262,7 +262,7 @@ private:
     EdgeDetectionPipeline EdgeDetectionPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
-    ImGuizmo::Operation ActiveGizmoOp{ImGuizmo::Operation::Translate};
+    ImGuizmo::Op ActiveGizmoOp{ImGuizmo::Op::Translate};
     bool ShowModelGizmo{false};
 
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
