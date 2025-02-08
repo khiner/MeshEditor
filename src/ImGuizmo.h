@@ -5,6 +5,8 @@
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
 
+#include <string_view>
+
 namespace ImGuizmo {
 enum class Op {
     NoOp = 0,
@@ -28,6 +30,7 @@ enum class Op {
     RotateScreen = Rotate | Screen,
 
     ScaleXYZ = Scale | AxisX | AxisY | AxisZ,
+    ScaleUXYZ = ScaleU | AxisX | AxisY | AxisZ,
 };
 
 enum Mode {
@@ -35,10 +38,9 @@ enum Mode {
     World
 };
 
-// Is cursor over the operation's gizmo
-bool IsOver(Op);
-// Is gizmo actively being used
-bool IsUsing();
+Op HoverOp();
+Op UsingOp();
+std::string_view ToString(Op);
 
 bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op, Mode, mat4 &m, const float *snap = nullptr);
 } // namespace ImGuizmo

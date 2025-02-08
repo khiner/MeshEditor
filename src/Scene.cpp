@@ -844,13 +844,13 @@ void Scene::Interact() {
     // We adopt Blender's mouse wheel for camera rotation, and Cmd+wheel to zoom.
     if (const vec2 wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; wheel != vec2{0, 0}) {
         if (GetIO().KeyCtrl || GetIO().KeySuper) {
-            Camera.SetTargetDistance(Camera.GetDistance() * (1.f - wheel.y / 16.f));
+            Camera.SetTargetDistance(Camera.GetDistance() * (1 - wheel.y / 16.f));
         } else {
             Camera.OrbitDelta(wheel * 0.1f);
             UpdateTransformBuffers();
         }
     }
-    if (!IsMouseClicked(ImGuiMouseButton_Left) || ImGuizmo::IsOver(ActiveGizmoOp)) return;
+    if (!IsMouseClicked(ImGuiMouseButton_Left) || ImGuizmo::HoverOp() != ImGuizmo::Op::NoOp) return;
 
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
@@ -1086,14 +1086,8 @@ void Scene::RenderControls() {
 
                     Checkbox("Gizmo", &ShowModelGizmo);
                     if (ShowModelGizmo) {
-                        const char *interaction_text =
-                            IsUsing()                    ? "Using Gizmo" :
-                            IsOver(Op::Translate) ? "Translate hovered" :
-                            IsOver(Op::Rotate)    ? "Rotate hovered" :
-                            IsOver(Op::Scale)     ? "Scale hovered" :
-                            IsOver(ActiveGizmoOp)        ? "Hovered" :
-                                                           "Not interacting";
-                        Text("Interaction: %s", interaction_text);
+                        if (const auto label = ToString(HoverOp()); label != "") Text("Hovering: %s", label.data());
+                        if (const auto label = ToString(UsingOp()); label != "") Text("Using: %s", label.data());
 
                         auto &op = ActiveGizmoOp;
                         if (IsKeyPressed(ImGuiKey_T)) op = Op::Translate;
