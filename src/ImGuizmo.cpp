@@ -132,10 +132,10 @@ std::string_view ToString(Op op) {
     if (op == (Rotate | AxisY)) return "RotateY";
     if (op == (Rotate | AxisZ)) return "RotateZ";
     if (op == RotateScreen) return "RotateScreen";
-    if (op == (Scale | AxisX) || op == (ScaleU | AxisX)) return "ScaleX";
-    if (op == (Scale | AxisY) || op == (ScaleU | AxisY)) return "ScaleY";
-    if (op == (Scale | AxisZ) || op == (ScaleU | AxisZ)) return "ScaleZ";
-    if (op == ScaleXYZ || op == ScaleUXYZ) return "ScaleXYZ";
+    if (op == (Scale | AxisX)) return "ScaleX";
+    if (op == (Scale | AxisY)) return "ScaleY";
+    if (op == (Scale | AxisZ)) return "ScaleZ";
+    if (op == ScaleXYZ) return "ScaleXYZ";
     return "";
 }
 } // namespace ImGuizmo
@@ -212,10 +212,9 @@ constexpr void ComputeColors(ImU32 *colors, Op type, Op op) {
             }
             break;
         case Scale:
-        case ScaleU:
-            colors[0] = type == ScaleXYZ || type == ScaleUXYZ ? selection_color : IM_COL32_WHITE;
+            colors[0] = type == ScaleXYZ ? selection_color : IM_COL32_WHITE;
             for (int i = 0; i < 3; ++i) {
-                colors[i + 1] = type == (Scale | AxisOp(i)) || type == (ScaleU | AxisOp(i)) ? selection_color : Color::Directions[i];
+                colors[i + 1] = type == (Scale | AxisOp(i)) ? selection_color : Color::Directions[i];
             }
             break;
         // note: this internal function is only called with three possible values for op
@@ -414,16 +413,16 @@ Op GetRotateOp(Op op) {
 }
 
 Op GetScaleOp(Op op) {
-    const bool scale_u = HasAnyOp(op, ScaleU);
-    if (!HasAnyOp(op, Scale) && !scale_u) return NoOp;
+    const bool universal = op == Universal;
+    if (!HasAnyOp(op, Scale) && !universal) return NoOp;
 
     const auto mouse_pos = ImGui::GetIO().MousePos;
-    if (!scale_u && mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
+    if (!universal && mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
         mouse_pos.y >= g.ScreenSquareMin.y && mouse_pos.y <= g.ScreenSquareMax.y) {
         return ScaleXYZ;
     }
 
-    if (!scale_u) {
+    if (!universal) {
         for (int i = 0; i < 3; ++i) {
             vec4 dir_plane_x, dir_plane_y, dir_axis;
             ComputeTripodAxis(i, dir_axis, dir_plane_x, dir_plane_y, true);
@@ -446,7 +445,7 @@ Op GetScaleOp(Op op) {
     // Universal
     if (float dist_sq = ImLengthSqr(mouse_pos - g.ScreenSquareCenter);
         dist_sq >= 17 * 17 && dist_sq < 23 * 23) {
-        return ScaleUXYZ;
+        return ScaleXYZ;
     }
 
     for (int i = 0; i < 3; ++i) {
@@ -456,7 +455,7 @@ Op GetScaleOp(Op op) {
         if (below_axis_limit) {
             const float marker_scale = op == (Translate | AxisOp(i)) ? 1.4f : 1.0f;
             const auto end = WorldToPos(dir_axis * marker_scale * g.ScreenFactor, g.MVPLocal);
-            if (ImLengthSqr(end - mouse_pos) < SelectDistSq) return ScaleU | AxisOp(i);
+            if (ImLengthSqr(end - mouse_pos) < SelectDistSq) return Scale | AxisOp(i);
         }
     }
     return NoOp;
@@ -529,7 +528,7 @@ Op HandleTranslation(mat4 &m, Op op, const float *snap, bool local) {
 }
 
 Op HandleScale(mat4 &m, Op op, const float *snap) {
-    if (!HasAnyOp(op, Scale) && !HasAnyOp(op, ScaleU)) return NoOp;
+    if (!HasAnyOp(op, Scale)) return NoOp;
 
     if (!g.Using) {
         // Find new scale op
@@ -541,9 +540,9 @@ Op HandleScale(mat4 &m, Op op, const float *snap) {
             g.Using = true;
             g.EditingID = g.ActualID;
             g.CurrentOp = type;
-            const auto translation_plane = type == ScaleXYZ || type == ScaleUXYZ ?
+            const auto translation_plane = type == ScaleXYZ ?
                 -vec4{g.CameraDir, 0} :
-                g.Model[(AxisIndex(type, HasAnyOp(type, Scale) ? Scale : ScaleU) + 1) % 3];
+                g.Model[(AxisIndex(type, Scale) + 1) % 3];
             g.TranslationPlane = BuildPlane(Pos(g.Model), translation_plane);
             const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
             g.TranslationPlaneOrigin = g.RayOrigin + g.RayDir * len;
@@ -555,7 +554,7 @@ Op HandleScale(mat4 &m, Op op, const float *snap) {
         }
         return type;
     }
-    if ((g.ActualID != -1 && g.ActualID != g.EditingID) || (!HasAnyOp(g.CurrentOp, Scale) && !HasAnyOp(g.CurrentOp, ScaleU))) return NoOp;
+    if ((g.ActualID != -1 && g.ActualID != g.EditingID) || !HasAnyOp(g.CurrentOp, Scale)) return NoOp;
 
     ImGui::SetNextFrameWantCaptureMouse(true);
     const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
@@ -563,8 +562,8 @@ Op HandleScale(mat4 &m, Op op, const float *snap) {
     const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
     auto delta = new_origin - Pos(g.ModelLocal);
     // 1 axis constraint
-    if (g.CurrentOp != ScaleXYZ && g.CurrentOp != ScaleUXYZ) {
-        const auto axis_i = AxisIndex(g.CurrentOp, HasAnyOp(g.CurrentOp, Scale) ? Scale : ScaleU);
+    if (g.CurrentOp != ScaleXYZ) {
+        const auto axis_i = AxisIndex(g.CurrentOp, Scale);
         const auto &axis_value = g.ModelLocal[axis_i];
         const float length_on_axis = glm::dot(axis_value, delta);
         delta = axis_value * length_on_axis;
@@ -655,8 +654,8 @@ std::string FormatTranslation(Op op, vec3 v) {
     );
 }
 std::string FormatScale(Op op, vec3 v) {
-    if (!HasAnyOp(op, Scale) && !HasAnyOp(op, ScaleU)) return "";
-    if (op == ScaleXYZ || op == ScaleUXYZ) return std::format("XYZ : {:.3f}", v.x);
+    if (!HasAnyOp(op, Scale)) return "";
+    if (op == ScaleXYZ) return std::format("XYZ : {:.3f}", v.x);
     if (HasAnyOp(op, AxisX)) return std::format("X : {:.3f}", v.x);
     if (HasAnyOp(op, AxisY)) return std::format("Y : {:.3f}", v.y);
     if (HasAnyOp(op, AxisZ)) return std::format("Z : {:.3f}", v.z);
@@ -685,6 +684,8 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
     model_local[1] = glm::normalize(m[1]);
     model_local[2] = glm::normalize(m[2]);
     model_local[3] = m[3];
+
+    const bool universal = op == Universal;
 
     // Scale is always local or m will be skewed when applying world scale or rotated m
     if (HasAnyOp(op, Scale)) mode = Local;
@@ -756,13 +757,15 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
                 draw_list->AddLine(base, end, colors[i + 1], g.Style.TranslationLineThickness);
 
-                // Arrow head begin
-                auto dir = origin - end;
-                dir /= sqrtf(ImLengthSqr(dir)); // Normalize
-                dir *= g.Style.TranslationLineArrowSize;
+                if (!universal) { // In universal mode, draw scale circles in place of translate arrows.
+                    // Arrow head begin
+                    auto dir = origin - end;
+                    dir /= sqrtf(ImLengthSqr(dir)); // Normalize
+                    dir *= g.Style.TranslationLineArrowSize;
 
-                const ImVec2 orth_dir{dir.y, -dir.x};
-                draw_list->AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, colors[i + 1]);
+                    const ImVec2 orth_dir{dir.y, -dir.x};
+                    draw_list->AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, colors[i + 1]);
+                }
                 if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
             }
             if ((!g.Using || type == TranslatePlanes[i]) && below_plane_limit) {
@@ -777,7 +780,9 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
             }
         }
 
-        draw_list->AddCircleFilled(g.ScreenSquareCenter, g.Style.CenterCircleSize, colors[0], 32);
+        if (!g.Using || type == TranslateScreen) {
+            draw_list->AddCircleFilled(g.ScreenSquareCenter, g.Style.CenterCircleSize, colors[0], 32);
+        }
 
         if (IsUsing() && HasAnyOp(type, Translate)) {
             const auto translation_line_color = Color::TranslationLine;
@@ -846,7 +851,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         }
     }
 
-    if (HasAnyOp(op, Scale)) {
+    if (HasAnyOp(op, Scale) && !universal) {
         ComputeColors(colors, type, Scale);
 
         vec4 scale_display{1};
@@ -859,18 +864,16 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
                 if (below_axis_limit) {
                     // draw axis
-                    bool has_translate_on_axis = op == (Translate | AxisOp(i));
-                    float marker_scale = has_translate_on_axis ? 1.4f : 1.0f;
                     const auto base = WorldToPos(dir_axis * 0.1f * g.ScreenFactor, g.MVP);
-                    const auto end = WorldToPos((dir_axis * marker_scale * scale_display[i]) * g.ScreenFactor, g.MVP);
+                    const auto end = WorldToPos((dir_axis * scale_display[i]) * g.ScreenFactor, g.MVP);
                     if (IsUsing()) {
                         const auto line_color = Color::ScaleLine;
-                        const auto center = WorldToPos(dir_axis * marker_scale * g.ScreenFactor, g.MVP);
+                        const auto center = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
                         draw_list->AddLine(base, center, line_color, g.Style.ScaleLineThickness);
                         draw_list->AddCircleFilled(center, g.Style.ScaleLineCircleSize, line_color);
                     }
 
-                    if (g.Using || !has_translate_on_axis) draw_list->AddLine(base, end, colors[i + 1], g.Style.ScaleLineThickness);
+                    draw_list->AddLine(base, end, colors[i + 1], g.Style.ScaleLineThickness);
                     draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
                     if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis * scale_display[i]);
                 }
@@ -886,27 +889,26 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
             draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
         }
     }
-    if (HasAnyOp(op, ScaleU)) {
-        ComputeColors(colors, type, ScaleU);
+    if (HasAnyOp(op, Scale) && universal) {
+        ComputeColors(colors, type, Scale);
 
-        const auto scale_display = IsUsing() ? g.Scale : vec4{1};
-        for (int i = 0; i < 3; ++i) {
-            if (!g.Using || type == (ScaleU | AxisOp(i))) {
+        if (!g.Using) {
+            for (int i = 0; i < 3; ++i) {
                 vec4 dir_plane_x, dir_plane_y, dir_axis;
                 bool below_axis_limit, below_plane_limit;
                 ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
                 if (below_axis_limit) {
-                    const bool has_translate_on_axis = op == (Translate | AxisOp(i));
-                    const float marker_scale = has_translate_on_axis ? 1.4f : 1.0f;
-                    const auto end = WorldToPos((dir_axis * marker_scale * scale_display[i]) * g.ScreenFactor, g.MVPLocal);
-                    draw_list->AddCircleFilled(end, 12.f, colors[i + 1]);
+                    const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
+                    draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
                 }
             }
         }
-        draw_list->AddCircle(g.ScreenSquareCenter, 20.f, colors[0], 32, g.Style.CenterCircleSize);
+        if (!g.Using || type == ScaleXYZ) {
+            draw_list->AddCircle(g.ScreenSquareCenter, 20.f, colors[0], 32, g.Style.CenterCircleSize);
+        }
 
-        if (IsUsing()) {
-            const auto formatted = FormatScale(type, scale_display);
+        if (IsUsing() && HasAnyOp(type, Scale)) {
+            const auto formatted = FormatScale(type, g.Scale);
             const auto dest_pos = WorldToPos(Pos(g.Model), g.ViewProj);
             draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
             draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());

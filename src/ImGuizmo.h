@@ -19,8 +19,7 @@ enum class Op {
     Translate = 1 << 4,
     Rotate = 1 << 5,
     Scale = 1 << 6,
-    ScaleU = 1 << 7, // Universal scale is a different control.
-    Universal = Translate | Rotate | ScaleU,
+    Universal = Translate | Rotate | Scale,
 
     TranslateYZ = Translate | AxisY | AxisZ,
     TranslateZX = Translate | AxisZ | AxisX,
@@ -30,7 +29,6 @@ enum class Op {
     RotateScreen = Rotate | Screen,
 
     ScaleXYZ = Scale | AxisX | AxisY | AxisZ,
-    ScaleUXYZ = ScaleU | AxisX | AxisY | AxisZ,
 };
 
 enum Mode {
