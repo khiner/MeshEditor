@@ -849,35 +849,37 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
             draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
         }
     }
-
-    if (HasAnyOp(op, Scale) && !universal) {
+    if (HasAnyOp(op, Scale)) {
         ComputeColors(colors, type, Scale);
-
         if (!g.Using) {
             for (int i = 0; i < 3; ++i) {
                 vec4 dir_plane_x, dir_plane_y, dir_axis;
                 bool below_axis_limit, below_plane_limit;
                 ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
                 if (below_axis_limit) {
-                    // draw axis
-                    const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
-                    if (IsUsing()) {
-                        const auto line_color = Color::ScaleLine;
-                        const auto center = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                        draw_list->AddLine(base, center, line_color, g.Style.ScaleLineThickness);
-                        draw_list->AddCircleFilled(center, g.Style.ScaleLineCircleSize, line_color);
+                    if (!universal) {
+                        const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
+                        if (IsUsing()) {
+                            const auto line_color = Color::ScaleLine;
+                            const auto center = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
+                            draw_list->AddLine(base, center, line_color, g.Style.ScaleLineThickness);
+                            draw_list->AddCircleFilled(center, g.Style.ScaleLineCircleSize, line_color);
+                        }
+                        const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
+                        draw_list->AddLine(base, end, colors[i + 1], g.Style.ScaleLineThickness);
+                        draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
+                        if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
+                    } else {
+                        const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
+                        draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
                     }
-
-                    const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                    draw_list->AddLine(base, end, colors[i + 1], g.Style.ScaleLineThickness);
-                    draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
-                    if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
                 }
             }
         }
         if (!g.Using || HasAnyOp(type, Scale)) {
             const auto circle_color = g.Using || type == ScaleXYZ ? Color::Selection : IM_COL32_WHITE;
-            draw_list->AddCircleFilled(g.ScreenSquareCenter, g.Style.CenterCircleSize, circle_color, 32);
+            if (!universal) draw_list->AddCircleFilled(g.ScreenSquareCenter, g.Style.CenterCircleSize, circle_color, 32);
+            else draw_list->AddCircle(g.ScreenSquareCenter, 20.f, circle_color, 32, g.Style.CenterCircleSize);
             if (IsUsing()) {
                 const auto formatted = FormatScale(type, g.Scale);
                 const auto dest_pos = WorldToPos(Pos(g.Model), g.ViewProj);
@@ -886,32 +888,6 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
             }
         }
     }
-    if (HasAnyOp(op, Scale) && universal) {
-        ComputeColors(colors, type, Scale);
-
-        if (!g.Using) {
-            for (int i = 0; i < 3; ++i) {
-                vec4 dir_plane_x, dir_plane_y, dir_axis;
-                bool below_axis_limit, below_plane_limit;
-                ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
-                if (below_axis_limit) {
-                    const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
-                    draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
-                }
-            }
-        }
-        if (!g.Using || HasAnyOp(type, Scale)) {
-            const auto circle_color = g.Using || type == ScaleXYZ ? Color::Selection : IM_COL32_WHITE;
-            draw_list->AddCircle(g.ScreenSquareCenter, 20.f, circle_color, 32, g.Style.CenterCircleSize);
-            if (IsUsing()) {
-                const auto formatted = FormatScale(type, g.Scale);
-                const auto dest_pos = WorldToPos(Pos(g.Model), g.ViewProj);
-                draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
-                draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
-            }
-        }
-    }
-
     return type != NoOp;
 }
 } // namespace ImGuizmo
