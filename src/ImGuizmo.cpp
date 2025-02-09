@@ -27,44 +27,28 @@ constexpr Op operator|(Op a, Op b) { return Op(OpVal(a) | OpVal(b)); }
 constexpr Op operator<<(Op op, unsigned int shift) { return Op(OpVal(op) << shift); }
 constexpr bool HasAnyOp(Op a, Op b) { return (a & b) != Op::NoOp; }
 
-enum Color {
-    DirectionX,
-    DirectionY,
-    DirectionZ,
-    PlaneX,
-    PlaneY,
-    PlaneZ,
-    Selection,
-    Inactive,
-    TranslationLine,
-    ScaleLine,
-    RotationBorderActive,
-    RotationFillActive,
-    HatchedAxisLines,
-    Text,
-    TextShadow,
-    COUNT
-};
+namespace Color {
+constexpr ImU32
+    DirectionX{IM_COL32(255, 54, 83, 255)},
+    DirectionY{IM_COL32(138, 219, 0, 255)},
+    DirectionZ{IM_COL32(44, 143, 255, 255)},
+    PlaneX{IM_COL32(154, 57, 71, 255)},
+    PlaneY{IM_COL32(98, 138, 34, 255)},
+    PlaneZ{IM_COL32(52, 100, 154, 255)},
+    Selection{IM_COL32(255, 128, 16, 138)},
+    TranslationLine{IM_COL32(170, 170, 170, 170)},
+    ScaleLine{IM_COL32(64, 64, 64, 255)},
+    RotationBorderActive{IM_COL32(255, 128, 16, 255)},
+    RotationFillActive{IM_COL32(255, 128, 16, 128)},
+    HatchedAxisLines{IM_COL32(0, 0, 0, 128)},
+    Text{IM_COL32(255, 255, 255, 255)},
+    TextShadow{IM_COL32(0, 0, 0, 255)};
+
+constexpr ImU32 Directions[]{DirectionX, DirectionY, DirectionZ};
+constexpr ImU32 Planes[]{PlaneX, PlaneY, PlaneZ};
+} // namespace Color
 
 struct Style {
-    Style() {
-        Colors[DirectionX] = {.666, 0, 0, 1};
-        Colors[DirectionY] = {0, .666, 0, 1};
-        Colors[DirectionZ] = {0, 0, .666, 1};
-        Colors[PlaneX] = {.666, 0, 0, .38};
-        Colors[PlaneY] = {0, .666, 0, .38};
-        Colors[PlaneZ] = {0, 0, .666, .38};
-        Colors[Selection] = {1, .5, .062, .541};
-        Colors[Inactive] = {.6, .6, .6, .6};
-        Colors[TranslationLine] = {.666, .666, .666, .666};
-        Colors[ScaleLine] = {.25, .25, .25, 1};
-        Colors[RotationBorderActive] = {1, .5, .062, 1};
-        Colors[RotationFillActive] = {1, .5, .062, .5};
-        Colors[HatchedAxisLines] = {0, 0, 0, .5};
-        Colors[Text] = {1, 1, 1, 1};
-        Colors[TextShadow] = {0, 0, 0, 1};
-    }
-
     float TranslationLineThickness{3}; // Thickness of lines for translation gizmo
     float TranslationLineArrowSize{6}; // Size of arrow at the end of lines for translation gizmo
     float RotationLineThickness{2}; // Thickness of lines for rotation gizmo
@@ -73,8 +57,6 @@ struct Style {
     float ScaleLineCircleSize{6}; // Size of circle at the end of lines for scale gizmo
     float HatchedAxisLineThickness{6}; // Thickness of hatched axis lines
     float CenterCircleSize{6}; // Size of circle at the center of the translate/scale gizmo
-
-    ImVec4 Colors[Color::COUNT];
 };
 
 struct Context {
@@ -193,8 +175,6 @@ void SetPos(mat4 &m, const vec4 &pos) { m[3] = pos; }
 vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
 ImVec2 ToImVec(vec2 v) { return {v.x, v.y}; }
 
-constexpr ImU32 GetColorU32(int idx) { return ImGui::ColorConvertFloat4ToU32(g.Style.Colors[idx]); }
-
 constexpr Op AxisOp(int axis_i) { return AxisX << axis_i; }
 constexpr int AxisIndex(Op op, Op type) {
     const auto axis_only = Op(int(op) - int(type));
@@ -215,27 +195,27 @@ constexpr std::optional<int> TranslatePlaneIndex(Op op) {
 }
 
 constexpr void ComputeColors(ImU32 *colors, Op type, Op op) {
-    const auto selection_color = GetColorU32(Selection);
+    const auto selection_color = Color::Selection;
     switch (op) {
         case Translate:
             colors[0] = type == TranslateScreen ? selection_color : IM_COL32_WHITE;
             for (int i = 0; i < 3; ++i) {
-                colors[i + 1] = type == (Translate | AxisOp(i)) ? selection_color : GetColorU32(DirectionX + i);
-                colors[i + 4] = type == TranslatePlanes[i] ? selection_color : GetColorU32(PlaneX + i);
+                colors[i + 1] = type == (Translate | AxisOp(i)) ? selection_color : Color::Directions[i];
+                colors[i + 4] = type == TranslatePlanes[i] ? selection_color : Color::Planes[i];
                 colors[i + 4] = type == TranslateScreen ? selection_color : colors[i + 4];
             }
             break;
         case Rotate:
             colors[0] = type == RotateScreen ? selection_color : IM_COL32_WHITE;
             for (int i = 0; i < 3; ++i) {
-                colors[i + 1] = type == (Rotate | AxisOp(i)) ? selection_color : GetColorU32(DirectionX + i);
+                colors[i + 1] = type == (Rotate | AxisOp(i)) ? selection_color : Color::Directions[i];
             }
             break;
         case Scale:
         case ScaleU:
             colors[0] = type == ScaleXYZ || type == ScaleUXYZ ? selection_color : IM_COL32_WHITE;
             for (int i = 0; i < 3; ++i) {
-                colors[i + 1] = type == (Scale | AxisOp(i)) || type == (ScaleU | AxisOp(i)) ? selection_color : GetColorU32(DirectionX + i);
+                colors[i + 1] = type == (Scale | AxisOp(i)) || type == (ScaleU | AxisOp(i)) ? selection_color : Color::Directions[i];
             }
             break;
         // note: this internal function is only called with three possible values for op
@@ -349,7 +329,7 @@ void DrawHatchedAxis(vec3 axis) {
     for (int i = 1; i < 10; i++) {
         const auto base = WorldToPos(axis * 0.05f * float(i * 2) * g.ScreenFactor, g.MVP);
         const auto end = WorldToPos(axis * 0.05f * float(i * 2 + 1) * g.ScreenFactor, g.MVP);
-        ImGui::GetWindowDrawList()->AddLine(base, end, GetColorU32(HatchedAxisLines), g.Style.HatchedAxisLineThickness);
+        ImGui::GetWindowDrawList()->AddLine(base, end, Color::HatchedAxisLines, g.Style.HatchedAxisLineThickness);
     }
 }
 
@@ -796,7 +776,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                     const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
                     quad_pts_screen[j] = WorldToPos(corner_pos_world, g.MVP);
                 }
-                draw_list->AddPolyline(quad_pts_screen, 4, GetColorU32(DirectionX + i), true, 1.0f);
+                draw_list->AddPolyline(quad_pts_screen, 4, Color::Directions[i], true, 1.0f);
                 draw_list->AddConvexPolyFilled(quad_pts_screen, 4, colors[i + 4]);
             }
         }
@@ -804,7 +784,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         draw_list->AddCircleFilled(g.ScreenSquareCenter, g.Style.CenterCircleSize, colors[0], 32);
 
         if (IsUsing() && HasAnyOp(type, Translate)) {
-            const auto translation_line_color = GetColorU32(TranslationLine);
+            const auto translation_line_color = Color::TranslationLine;
             const auto source_pos_screen = WorldToPos(g.MatrixOrigin, g.ViewProj);
             const auto dest_pos = WorldToPos(Pos(g.Model), g.ViewProj);
             const auto dif = ToImVec(glm::normalize(vec4{dest_pos.x - source_pos_screen.x, dest_pos.y - source_pos_screen.y, 0, 0}) * 5.f);
@@ -814,8 +794,8 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
 
             const auto delta_info = Pos(g.Model) - g.MatrixOrigin;
             const auto formatted = FormatTranslation(type, delta_info);
-            draw_list->AddText(dest_pos + ImVec2{15, 15}, GetColorU32(TextShadow), formatted.data());
-            draw_list->AddText(dest_pos + ImVec2{14, 14}, GetColorU32(Text), formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
         }
     }
     if (HasAnyOp(op, Rotate)) {
@@ -860,13 +840,13 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 const auto pos = rotate * vec4{vec3{g.RotationVectorSource}, 1} * g.ScreenFactor * RotationDisplayScale;
                 circle_pos[i] = WorldToPos(pos + Pos(g.Model), g.ViewProj);
             }
-            draw_list->AddConvexPolyFilled(circle_pos, HalfCircleSegmentCount + 1, GetColorU32(RotationFillActive));
-            draw_list->AddPolyline(circle_pos, HalfCircleSegmentCount + 1, GetColorU32(RotationBorderActive), true, g.Style.RotationLineThickness);
+            draw_list->AddConvexPolyFilled(circle_pos, HalfCircleSegmentCount + 1, Color::RotationFillActive);
+            draw_list->AddPolyline(circle_pos, HalfCircleSegmentCount + 1, Color::RotationBorderActive, true, g.Style.RotationLineThickness);
 
             const auto formatted = FormatRotation(type, g.RotationAngle);
             const auto dest_pos = circle_pos[1];
-            draw_list->AddText(dest_pos + ImVec2{15, 15}, GetColorU32(TextShadow), formatted.data());
-            draw_list->AddText(dest_pos + ImVec2{14, 14}, GetColorU32(Text), formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
         }
     }
 
@@ -888,7 +868,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                     const auto base = WorldToPos(dir_axis * 0.1f * g.ScreenFactor, g.MVP);
                     const auto end = WorldToPos((dir_axis * marker_scale * scale_display[i]) * g.ScreenFactor, g.MVP);
                     if (IsUsing()) {
-                        const auto line_color = GetColorU32(ScaleLine);
+                        const auto line_color = Color::ScaleLine;
                         const auto center = WorldToPos(dir_axis * marker_scale * g.ScreenFactor, g.MVP);
                         draw_list->AddLine(base, center, line_color, g.Style.ScaleLineThickness);
                         draw_list->AddCircleFilled(center, g.Style.ScaleLineCircleSize, line_color);
@@ -906,8 +886,8 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         if (IsUsing() && HasAnyOp(type, Scale)) {
             const auto formatted = FormatScale(type, scale_display);
             const auto dest_pos = WorldToPos(Pos(g.Model), g.ViewProj);
-            draw_list->AddText(dest_pos + ImVec2{15, 15}, GetColorU32(TextShadow), formatted.data());
-            draw_list->AddText(dest_pos + ImVec2{14, 14}, GetColorU32(Text), formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
         }
     }
     if (HasAnyOp(op, ScaleU)) {
@@ -932,8 +912,8 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         if (IsUsing()) {
             const auto formatted = FormatScale(type, scale_display);
             const auto dest_pos = WorldToPos(Pos(g.Model), g.ViewProj);
-            draw_list->AddText(dest_pos + ImVec2{15, 15}, GetColorU32(TextShadow), formatted.data());
-            draw_list->AddText(dest_pos + ImVec2{14, 14}, GetColorU32(Text), formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
+            draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
         }
     }
 
