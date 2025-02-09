@@ -261,38 +261,34 @@ void ComputeTripodAxis(int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_
     g.AxisFactor[(axis_i + 2) % 3] = mul_axis_y;
 }
 
-void ComputeTripodVisibility(int axis_i, float axis_length_clip, vec4 dir_plane_x, vec4 dir_plane_y, bool &below_axis_limit, bool &below_plane_limit) {
+void ComputeTripodAxisAndVisibility(int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool &below_axis_limit, bool &below_plane_limit, bool local_coords = false) {
+    ComputeTripodAxis(axis_i, dir_axis, dir_plane_x, dir_plane_y, local_coords);
     if (IsUsing()) {
         // When using, use stored factors so the gizmo doesn't flip when we translate
         below_axis_limit = g.BelowAxisLimit[axis_i];
         below_plane_limit = g.BelowPlaneLimit[axis_i];
-        return;
+    } else {
+        static constexpr float AxisLimit{0.02};
+        below_axis_limit = GetSegmentLengthClipSpace(dir_axis * g.ScreenFactor, local_coords) > AxisLimit;
+        g.BelowAxisLimit[axis_i] = below_axis_limit; // Cache
+
+        static constexpr auto ToNDC = [](vec4 v) {
+            v = g.MVP * vec4{vec3{v}, 1};
+            if (fabsf(v.w) > FLT_EPSILON) v /= v.w;
+            return vec2{v};
+        };
+        // Parallelogram area
+        const auto o = ToNDC(vec4{0});
+        auto pa = ToNDC(dir_plane_x * g.ScreenFactor) - o;
+        auto pb = ToNDC(dir_plane_y * g.ScreenFactor) - o;
+        const auto aspect_ratio = g.Size.x / g.Size.y;
+        pa.y /= aspect_ratio;
+        pb.y /= aspect_ratio;
+
+        static constexpr float ParallelogramAreaLimit{0.0025};
+        below_plane_limit = fabsf(pa.x * pb.y - pa.y * pb.x) > ParallelogramAreaLimit; // abs cross product
+        g.BelowPlaneLimit[axis_i] = below_plane_limit; // Cache
     }
-
-    // Parallelogram area
-    vec4 pa = dir_plane_x * g.ScreenFactor, pb = dir_plane_y * g.ScreenFactor;
-    pa = g.MVP * vec4{vec3{pa}, 1};
-    if (fabsf(pa.w) > FLT_EPSILON) pa /= pa.w;
-    pb = g.MVP * vec4{vec3{pb}, 1};
-    if (fabsf(pb.w) > FLT_EPSILON) pb /= pb.w;
-
-    const auto aspect_ratio = g.Size.x / g.Size.y;
-    pa.y /= aspect_ratio;
-    pb.y /= aspect_ratio;
-
-    static constexpr float AxisLimit{0.0025}, PlaneLimit{0.02};
-    const float para_surf = glm::length(vec2{pa}) * fabsf(glm::dot(glm::normalize(vec3{-pa.y, pa.x, 0}), vec3{pb}));
-    below_plane_limit = para_surf > AxisLimit;
-    below_axis_limit = axis_length_clip > PlaneLimit;
-    // Cache
-    g.BelowAxisLimit[axis_i] = below_axis_limit;
-    g.BelowPlaneLimit[axis_i] = below_plane_limit;
-}
-
-void ComputeTripodAxisAndVisibility(int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool &below_axis_limit, bool &below_plane_limit, bool local_coords = false) {
-    ComputeTripodAxis(axis_i, dir_axis, dir_plane_x, dir_plane_y, local_coords);
-    const float axis_length_clip = GetSegmentLengthClipSpace(dir_axis * g.ScreenFactor, local_coords);
-    ComputeTripodVisibility(axis_i, axis_length_clip, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit);
 }
 
 constexpr void ComputeSnap(float *value, float snap) {
