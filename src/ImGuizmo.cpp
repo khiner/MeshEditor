@@ -48,20 +48,7 @@ constexpr ImU32 Directions[]{DirectionX, DirectionY, DirectionZ};
 constexpr ImU32 Planes[]{PlaneX, PlaneY, PlaneZ};
 } // namespace Color
 
-struct Style {
-    float TranslationLineThickness{3}; // Thickness of lines for translation gizmo
-    float TranslationLineArrowSize{6}; // Size of arrow at the end of lines for translation gizmo
-    float RotationLineThickness{2}; // Thickness of lines for rotation gizmo
-    float RotationOuterLineThickness{3}; // Thickness of line surrounding the rotation gizmo
-    float ScaleLineThickness{3}; // Thickness of lines for scale gizmo
-    float ScaleLineCircleSize{6}; // Size of circle at the end of lines for scale gizmo
-    float HatchedAxisLineThickness{6}; // Thickness of hatched axis lines
-    float CenterCircleSize{6}; // Size of circle at the center of the translate/scale gizmo
-};
-
 struct Context {
-    Style Style;
-
     mat4 View, Proj, ViewProj, Model;
     mat4 ModelLocal; // orthonormalized model
     mat4 ModelInverse;
@@ -100,13 +87,24 @@ struct Context {
     vec2 Pos{0, 0}, Size{0, 0};
     bool IsOrthographic{false};
 
-    Op HoverOp{NoOp};
-    Op CurrentOp{NoOp};
+    Op HoverOp{NoOp}, CurrentOp{NoOp};
 
     int ActualID{-1}, EditingID{-1};
 };
 
+struct Style {
+    float TranslationLineThickness{3}; // Thickness of lines for translation gizmo
+    float TranslationLineArrowSize{6}; // Size of arrow at the end of lines for translation gizmo
+    float RotationLineThickness{2}; // Thickness of lines for rotation gizmo
+    float RotationOuterLineThickness{3}; // Thickness of line surrounding the rotation gizmo
+    float ScaleLineThickness{3}; // Thickness of lines for scale gizmo
+    float ScaleLineCircleSize{6}; // Size of circle at the end of lines for scale gizmo
+    float HatchedAxisLineThickness{6}; // Thickness of hatched axis lines
+    float CenterCircleSize{6}; // Size of circle at the center of the translate/scale gizmo
+};
+
 Context g;
+Style style;
 
 Op GetTranslateOp(Op);
 Op GetRotateOp(Op);
@@ -318,12 +316,12 @@ constexpr float ComputeAngleOnPlan() {
 }
 
 void DrawHatchedAxis(vec3 axis) {
-    if (g.Style.HatchedAxisLineThickness <= 0) return;
+    if (style.HatchedAxisLineThickness <= 0) return;
 
     for (int i = 1; i < 10; i++) {
         const auto base = WorldToPos(axis * 0.05f * float(i * 2) * g.ScreenFactor, g.MVP);
         const auto end = WorldToPos(axis * 0.05f * float(i * 2 + 1) * g.ScreenFactor, g.MVP);
-        ImGui::GetWindowDrawList()->AddLine(base, end, Color::HatchedAxisLines, g.Style.HatchedAxisLineThickness);
+        ImGui::GetWindowDrawList()->AddLine(base, end, Color::HatchedAxisLines, style.HatchedAxisLineThickness);
     }
 }
 
@@ -387,7 +385,7 @@ constexpr float RotationDisplayScale{1.2};
 Op GetRotateOp(Op op) {
     if (!HasAnyOp(op, Rotate)) return NoOp;
 
-    constexpr static float SelectDist = 8;
+    static constexpr float SelectDist = 8;
     const auto mouse_pos = ImGui::GetIO().MousePos;
     if (HasAnyOp(op, RotateScreen)) {
         const auto dist_sq = ImLengthSqr(mouse_pos - g.ScreenSquareCenter);
@@ -642,33 +640,27 @@ Op HandleRotation(mat4 &m, Op op, const float *snap, bool local) {
     return g.CurrentOp;
 }
 
-std::string FormatTranslation(Op op, vec3 v) {
-    if (!HasAnyOp(op, Translate)) return "";
-    if (op == TranslateScreen) return std::format("X: {:.3f} Y: {:.3f} Z: {:.3f}", v.x, v.y, v.z);
-    return std::format(
-        "{}{}{}",
-        HasAnyOp(op, AxisX) ? std::format("X : {:.3f} ", v.x) : "",
-        HasAnyOp(op, AxisY) ? std::format("Y : {:.3f} ", v.y) : "",
-        HasAnyOp(op, AxisZ) ? std::format("Z : {:.3f} ", v.z) : ""
-    );
+namespace Format {
+static constexpr char AxisLabels[] = "XYZ";
+std::string Axis(int axis_i, float v) { return axis_i >= 0 && axis_i < 3 ? std::format("{}: {:.3f}", AxisLabels[axis_i], v) : ""; }
+std::string Axis(int axis_i, vec3 v) { return Axis(axis_i, v[axis_i]); }
+std::string Translation(Op op, vec3 v) {
+    if (op == TranslateScreen) return std::format("{} {} {}", Axis(0, v.x), Axis(1, v.y), Axis(2, v.z));
+    if (op == TranslateYZ) return std::format("{} {}", Axis(1, v.y), Axis(2, v.z));
+    if (op == TranslateZX) return std::format("{} {}", Axis(2, v.z), Axis(0, v.x));
+    if (op == TranslateXY) return std::format("{} {}", Axis(0, v.x), Axis(1, v.y));
+    return Axis(AxisIndex(op, Op::Translate), v);
 }
-std::string FormatScale(Op op, vec3 v) {
-    if (!HasAnyOp(op, Scale)) return "";
-    if (op == ScaleXYZ) return std::format("XYZ : {:.3f}", v.x);
-    if (HasAnyOp(op, AxisX)) return std::format("X : {:.3f}", v.x);
-    if (HasAnyOp(op, AxisY)) return std::format("Y : {:.3f}", v.y);
-    if (HasAnyOp(op, AxisZ)) return std::format("Z : {:.3f}", v.z);
-    return "";
-}
-std::string FormatRotation(Op op, float rad) {
+std::string Scale(Op op, vec3 v) { return op == ScaleXYZ ? std::format("XYZ: {:.3f}", v.x) : Axis(AxisIndex(op, Op::Scale), v); }
+std::string Rotation(Op op, float rad) {
     if (!HasAnyOp(op, Rotate)) return "";
     const auto deg_rad = std::format("{:.3f} deg {:.3f} rad", rad * 180 / M_PI, rad);
-    if (op == RotateScreen) return std::format("Screen : {}", deg_rad);
-    if (HasAnyOp(op, AxisX)) return std::format("X : {}", deg_rad);
-    if (HasAnyOp(op, AxisY)) return std::format("Y : {}", deg_rad);
-    if (HasAnyOp(op, AxisZ)) return std::format("Z : {}", deg_rad);
-    return "";
+    if (op == RotateScreen) return std::format("Screen: {}", deg_rad);
+
+    const auto axis_i = AxisIndex(op, Rotate);
+    return axis_i >= 0 && axis_i < 3 ? std::format("{}: {}", AxisLabels[axis_i], deg_rad) : "";
 }
+} // namespace Format
 } // namespace
 
 namespace ImGuizmo {
@@ -754,13 +746,13 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 // draw axis
                 const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
                 const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                draw_list->AddLine(base, end, colors[i + 1], g.Style.TranslationLineThickness);
+                draw_list->AddLine(base, end, colors[i + 1], style.TranslationLineThickness);
 
                 if (!universal) { // In universal mode, draw scale circles in place of translate arrows.
                     // Arrow head begin
                     auto dir = origin - end;
                     dir /= sqrtf(ImLengthSqr(dir)); // Normalize
-                    dir *= g.Style.TranslationLineArrowSize;
+                    dir *= style.TranslationLineArrowSize;
 
                     const ImVec2 orth_dir{dir.y, -dir.x};
                     draw_list->AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, colors[i + 1]);
@@ -780,7 +772,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         }
 
         if (!g.Using || type == TranslateScreen) {
-            draw_list->AddCircleFilled(g.ScreenSquareCenter, g.Style.CenterCircleSize, colors[0], 32);
+            draw_list->AddCircleFilled(g.ScreenSquareCenter, style.CenterCircleSize, colors[0], 32);
         }
 
         if (IsUsing() && HasAnyOp(type, Translate)) {
@@ -793,7 +785,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
             draw_list->AddLine(source_pos_screen + dif, dest_pos - dif, translation_line_color, 2.f);
 
             const auto delta_info = Pos(g.Model) - g.MatrixOrigin;
-            const auto formatted = FormatTranslation(type, delta_info);
+            const auto formatted = Format::Translation(type, delta_info);
             draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
             draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
         }
@@ -820,7 +812,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 circle_pos[i] = WorldToPos(pos, g.MVP);
             }
             if (!g.Using || using_axis) {
-                draw_list->AddPolyline(circle_pos.data(), point_count, colors[3 - axis], false, g.Style.RotationLineThickness);
+                draw_list->AddPolyline(circle_pos.data(), point_count, colors[3 - axis], false, style.RotationLineThickness);
             }
             if (float radius_axis_sq = ImLengthSqr(WorldToPos(Pos(g.Model), g.ViewProj) - circle_pos[0]);
                 radius_axis_sq > g.RadiusSquareCenter * g.RadiusSquareCenter) {
@@ -828,7 +820,7 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
             }
         }
         if (!g.Using || type == RotateScreen) {
-            draw_list->AddCircle(WorldToPos(Pos(g.Model), g.ViewProj), g.RadiusSquareCenter, colors[0], 64, g.Style.RotationOuterLineThickness);
+            draw_list->AddCircle(WorldToPos(Pos(g.Model), g.ViewProj), g.RadiusSquareCenter, colors[0], 64, style.RotationOuterLineThickness);
         }
 
         if (IsUsing() && HasAnyOp(type, Rotate)) {
@@ -841,9 +833,9 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 circle_pos[i] = WorldToPos(pos + Pos(g.Model), g.ViewProj);
             }
             draw_list->AddConvexPolyFilled(circle_pos, HalfCircleSegmentCount + 1, Color::RotationFillActive);
-            draw_list->AddPolyline(circle_pos, HalfCircleSegmentCount + 1, Color::RotationBorderActive, true, g.Style.RotationLineThickness);
+            draw_list->AddPolyline(circle_pos, HalfCircleSegmentCount + 1, Color::RotationBorderActive, true, style.RotationLineThickness);
 
-            const auto formatted = FormatRotation(type, g.RotationAngle);
+            const auto formatted = Format::Rotation(type, g.RotationAngle);
             const auto dest_pos = circle_pos[1];
             draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
             draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
@@ -862,26 +854,26 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                         if (IsUsing()) {
                             const auto line_color = Color::ScaleLine;
                             const auto center = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                            draw_list->AddLine(base, center, line_color, g.Style.ScaleLineThickness);
-                            draw_list->AddCircleFilled(center, g.Style.ScaleLineCircleSize, line_color);
+                            draw_list->AddLine(base, center, line_color, style.ScaleLineThickness);
+                            draw_list->AddCircleFilled(center, style.ScaleLineCircleSize, line_color);
                         }
                         const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                        draw_list->AddLine(base, end, colors[i + 1], g.Style.ScaleLineThickness);
-                        draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
+                        draw_list->AddLine(base, end, colors[i + 1], style.ScaleLineThickness);
+                        draw_list->AddCircleFilled(end, style.ScaleLineCircleSize, colors[i + 1]);
                         if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
                     } else {
                         const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
-                        draw_list->AddCircleFilled(end, g.Style.ScaleLineCircleSize, colors[i + 1]);
+                        draw_list->AddCircleFilled(end, style.ScaleLineCircleSize, colors[i + 1]);
                     }
                 }
             }
         }
         if (!g.Using || HasAnyOp(type, Scale)) {
             const auto circle_color = g.Using || type == ScaleXYZ ? Color::Selection : IM_COL32_WHITE;
-            if (!universal) draw_list->AddCircleFilled(g.ScreenSquareCenter, g.Style.CenterCircleSize, circle_color, 32);
-            else draw_list->AddCircle(g.ScreenSquareCenter, 20.f, circle_color, 32, g.Style.CenterCircleSize);
+            if (!universal) draw_list->AddCircleFilled(g.ScreenSquareCenter, style.CenterCircleSize, circle_color, 32);
+            else draw_list->AddCircle(g.ScreenSquareCenter, 20.f, circle_color, 32, style.CenterCircleSize);
             if (IsUsing()) {
-                const auto formatted = FormatScale(type, g.Scale);
+                const auto formatted = Format::Scale(type, g.Scale);
                 const auto dest_pos = WorldToPos(Pos(g.Model), g.ViewProj);
                 draw_list->AddText(dest_pos + ImVec2{15, 15}, Color::TextShadow, formatted.data());
                 draw_list->AddText(dest_pos + ImVec2{14, 14}, Color::Text, formatted.data());
