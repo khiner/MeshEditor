@@ -10,7 +10,6 @@
 #include "numeric/vec4.h"
 
 #include <algorithm>
-#include <cmath>
 #include <ranges>
 #include <vector>
 
@@ -18,11 +17,11 @@ namespace OrientationGizmo {
 namespace internal {
 // Scales are in relation to the rect size.
 struct Scale {
-    float LineThickness{0.017f};
-    float AxisLength{0.33f};
-    float PositiveRadius{0.075f};
-    float NegativeRadius{0.05f};
-    float HoverCircleRadius{0.88f};
+    float LineThickness{.017};
+    float PositiveRadius{.075};
+    float NegativeRadius{.05};
+    float AxisLength{.5f - PositiveRadius};
+    float HoverCircleRadius{.5};
 };
 struct Color {
     ImU32 XFront{IM_COL32(255, 54, 83, 255)}, XBack{IM_COL32(154, 57, 71, 255)};
@@ -32,66 +31,60 @@ struct Color {
 };
 } // namespace internal
 
-constexpr static internal::Scale Scale;
-constexpr static internal::Color Color;
+static constexpr internal::Scale Scale;
+static constexpr internal::Color Color;
 
-bool Draw(vec2 dim, float size, mat4 &view, const mat4 &proj, float pivot_distance) {
+bool Draw(vec2 pos, float size, mat4 &view, float pivot_distance) {
+    static const mat4 proj = glm::ortho(-1, 1, -1, 1, -1, 1);
     auto *draw_list = ImGui::GetWindowDrawList();
 
     const auto mouse_pos_imgui = ImGui::GetIO().MousePos;
     const vec2 mouse_pos{mouse_pos_imgui.x, mouse_pos_imgui.y};
     const auto MouseInCircle = [&mouse_pos](vec2 center, float r) { return glm::dot(mouse_pos - center, mouse_pos - center) <= r * r; };
 
-    const float h_size = size * 0.5f;
-    const float hover_circle_radius = h_size * Scale.HoverCircleRadius;
-    const vec2 center = dim + vec2{h_size, h_size};
-    if (MouseInCircle(center, hover_circle_radius)) {
-        draw_list->AddCircleFilled({center.x, center.y}, hover_circle_radius, Color.Hover);
+    const auto hover_circle_r = size * Scale.HoverCircleRadius;
+    const auto center = pos + vec2{size, size} * 0.5f;
+    if (MouseInCircle(center, hover_circle_r)) {
+        draw_list->AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
     }
 
-    auto view_proj = proj * view;
-    { // Flip Y: ImGui uses top-left origin, and glm is bottom-left.
-        view_proj[0][1] *= -1;
-        view_proj[1][1] *= -1;
-        view_proj[2][1] *= -1;
-        view_proj[3][1] *= -1;
-    }
-    const float axis_length = size * Scale.AxisLength;
-    const auto x_axis = view_proj * vec4{axis_length, 0, 0, 0};
-    const auto y_axis = view_proj * vec4{0, axis_length, 0, 0};
-    const auto z_axis = view_proj * vec4{0, 0, axis_length, 0};
+    // Flip Y: ImGui uses top-left origin, and glm is bottom-left.
+    auto view_proj = glm::scale(mat4{1}, vec3{1, -1, 1}) * (proj * view);
+    const auto axes = view_proj * glm::scale(mat4{1}, vec3{size * Scale.AxisLength});
+    const vec3 x_axis{axes[0]}, y_axis{axes[1]}, z_axis{axes[2]};
 
-    // sort axis based on distance
+    // sort axis based on z-depth in clip space
     // 0 : +x axis, 1 : +y axis, 2 : +z axis, 3 : -x axis, 4 : -y axis, 5 : -z axis
-    std::vector<std::pair<uint32_t, float>> pairs{{0, x_axis.w}, {1, y_axis.w}, {2, z_axis.w}, {3, -x_axis.w}, {4, -y_axis.w}, {5, -z_axis.w}};
+    std::vector<std::pair<uint32_t, float>> pairs{
+        {0, x_axis.z}, {1, y_axis.z}, {2, z_axis.z}, {3, -x_axis.z}, {4, -y_axis.z}, {5, -z_axis.z}
+    };
     std::ranges::sort(pairs, [](const auto &a, const auto &b) { return a.second > b.second; });
 
-    const auto xa = vec2(x_axis), ya = vec2(y_axis), za = vec2(z_axis);
-
-    const float positive_radius = size * Scale.PositiveRadius;
-    const float negative_radius = size * Scale.NegativeRadius;
+    const auto xa = vec2{x_axis}, ya = vec2{y_axis}, za = vec2{z_axis};
+    const float positive_r = size * Scale.PositiveRadius;
+    const float negative_r = size * Scale.NegativeRadius;
 
     // find selection, front to back
     int selection = -1;
     for (const auto &pair : pairs) {
         switch (pair.first) {
             case 0: // +x axis
-                if (MouseInCircle(center + xa, positive_radius)) selection = 0;
+                if (MouseInCircle(center + xa, positive_r)) selection = 0;
                 break;
             case 1: // +y axis
-                if (MouseInCircle(center + ya, positive_radius)) selection = 1;
+                if (MouseInCircle(center + ya, positive_r)) selection = 1;
                 break;
             case 2: // +z axis
-                if (MouseInCircle(center + za, positive_radius)) selection = 2;
+                if (MouseInCircle(center + za, positive_r)) selection = 2;
                 break;
             case 3: // -x axis
-                if (MouseInCircle(center - xa, negative_radius)) selection = 3;
+                if (MouseInCircle(center - xa, negative_r)) selection = 3;
                 break;
             case 4: // -y axis
-                if (MouseInCircle(center - ya, negative_radius)) selection = 4;
+                if (MouseInCircle(center - ya, negative_r)) selection = 4;
                 break;
             case 5: // -z axis
-                if (MouseInCircle(center - za, negative_radius)) selection = 5;
+                if (MouseInCircle(center - za, negative_r)) selection = 5;
                 break;
             default: break;
         }
@@ -116,30 +109,30 @@ bool Draw(vec2 dim, float size, mat4 &view, const mat4 &proj, float pivot_distan
         if (selected) draw_list->AddCircle({line_end.x, line_end.y}, radius, IM_COL32_WHITE, 0, 1.1f);
     };
 
-    const bool x_positive_closer = x_axis.w <= 0;
-    const bool y_positive_closer = y_axis.w <= 0;
-    const bool z_positive_closer = z_axis.w <= 0;
+    const bool x_positive_closer = x_axis.z <= 0;
+    const bool y_positive_closer = y_axis.z <= 0;
+    const bool z_positive_closer = z_axis.z <= 0;
     // draw back first
     const float weight = size * Scale.LineThickness;
     for (const auto &pair : pairs) {
         switch (pair.first) {
             case 0: // +x axis
-                DrawPositiveLine(xa, x_positive_closer ? Color.XFront : Color.XBack, positive_radius, weight, "X", selection == 0);
+                DrawPositiveLine(xa, x_positive_closer ? Color.XFront : Color.XBack, positive_r, weight, "X", selection == 0);
                 continue;
             case 1: // +y axis
-                DrawPositiveLine(ya, y_positive_closer ? Color.YFront : Color.YBack, positive_radius, weight, "Y", selection == 1);
+                DrawPositiveLine(ya, y_positive_closer ? Color.YFront : Color.YBack, positive_r, weight, "Y", selection == 1);
                 continue;
             case 2: // +z axis
-                DrawPositiveLine(za, z_positive_closer ? Color.ZFront : Color.ZBack, positive_radius, weight, "Z", selection == 2);
+                DrawPositiveLine(za, z_positive_closer ? Color.ZFront : Color.ZBack, positive_r, weight, "Z", selection == 2);
                 continue;
             case 3: // -x axis
-                DrawNegativeLine(xa, !x_positive_closer ? Color.XFront : Color.XBack, negative_radius, selection == 3);
+                DrawNegativeLine(xa, !x_positive_closer ? Color.XFront : Color.XBack, negative_r, selection == 3);
                 continue;
             case 4: // -y axis
-                DrawNegativeLine(ya, !y_positive_closer ? Color.YFront : Color.YBack, negative_radius, selection == 4);
+                DrawNegativeLine(ya, !y_positive_closer ? Color.YFront : Color.YBack, negative_r, selection == 4);
                 continue;
             case 5: // -z axis
-                DrawNegativeLine(za, !z_positive_closer ? Color.ZFront : Color.ZBack, negative_radius, selection == 5);
+                DrawNegativeLine(za, !z_positive_closer ? Color.ZFront : Color.ZBack, negative_r, selection == 5);
                 continue;
             default: break;
         }

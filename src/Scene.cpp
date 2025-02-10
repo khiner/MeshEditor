@@ -932,10 +932,10 @@ void Scene::RenderGizmo() {
             SetModel(SelectedEntity, position, glm::quat{glm::eulerAngles(orientation)}, scale);
         }
     }
-    static constexpr float OGizmoSize{120};
+    static constexpr float OGizmoSize{110};
     const float padding = 2 * line_height;
     const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-    if (auto camera_view = Camera.GetView(); OrientationGizmo::Draw(pos, OGizmoSize, camera_view, camera_proj, Camera.GetDistance())) {
+    if (auto camera_view = Camera.GetView(); OrientationGizmo::Draw(pos, OGizmoSize, camera_view, Camera.GetDistance())) {
         Camera.SetPositionFromView(camera_view);
         UpdateTransformBuffers();
     } else if (Camera.Tick()) {
