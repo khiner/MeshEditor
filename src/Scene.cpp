@@ -2,7 +2,7 @@
 #include "Widgets.h" // imgui
 
 #include "Excitable.h"
-#include "ImOGuizmo.h"
+#include "OrientationGizmo.h"
 #include "Registry.h"
 #include "Scale.h"
 #include "mesh/Arrow.h"
@@ -850,7 +850,7 @@ void Scene::Interact() {
             UpdateTransformBuffers();
         }
     }
-    if (!IsMouseClicked(ImGuiMouseButton_Left) || ImGuizmo::HoverOp() != ImGuizmo::Op::NoOp) return;
+    if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::HoverOp() != ModelGizmo::Op::NoOp) return;
 
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
@@ -924,7 +924,7 @@ void Scene::RenderGizmo() {
     auto camera_proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
     if (SelectedEntity != entt::null) {
         auto model = R.get<Model>(SelectedEntity).Transform;
-        if (ShowModelGizmo && ImGuizmo::Manipulate(window_pos + line_height, content_region, camera_view, camera_proj, ActiveGizmoOp, ImGuizmo::Local, model, GizmoSnap ? std::optional{GizmoSnapValue} : std::nullopt)) {
+        if (ShowModelGizmo && ModelGizmo::Draw(window_pos + line_height, content_region, camera_view, camera_proj, ActiveGizmoOp, ModelGizmo::Local, model, GizmoSnap ? std::optional{GizmoSnapValue} : std::nullopt)) {
             static vec3 skew, scale, position;
             static vec4 perspective;
             static glm::quat orientation;
@@ -935,7 +935,7 @@ void Scene::RenderGizmo() {
     static constexpr float OGizmoSize{120};
     const float padding = 2 * line_height;
     const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-    if (auto camera_view = Camera.GetView(); ImOGuizmo::DrawGizmo(pos, OGizmoSize, camera_view, camera_proj, Camera.GetDistance())) {
+    if (auto camera_view = Camera.GetView(); OrientationGizmo::Draw(pos, OGizmoSize, camera_view, camera_proj, Camera.GetDistance())) {
         Camera.SetPositionFromView(camera_view);
         UpdateTransformBuffers();
     } else if (Camera.Tick()) {
@@ -1080,7 +1080,7 @@ void Scene::RenderControls() {
                     if (frozen) EndDisabled();
                     if (model_changed) SetModel(SelectedEntity, pos, rot, scale);
 
-                    using namespace ImGuizmo;
+                    using namespace ModelGizmo;
                     const bool scale_enabled = !frozen;
                     if (!scale_enabled && ActiveGizmoOp == Op::Scale) ActiveGizmoOp = Op::Translate;
 

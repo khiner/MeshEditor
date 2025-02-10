@@ -2,7 +2,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #endif
 
-#include "ImGuizmo.h"
+#include "ModelGizmo.h"
 
 #include "numeric/mat3.h"
 #include "numeric/vec4.h"
@@ -17,7 +17,7 @@
 #include <vector>
 
 namespace {
-using namespace ImGuizmo;
+using namespace ModelGizmo;
 using enum Op;
 
 constexpr auto OpVal = [](auto op) { return static_cast<std::underlying_type_t<Op>>(op); };
@@ -101,7 +101,7 @@ state::Style Style;
 state::Color Color;
 } // namespace
 
-namespace ImGuizmo {
+namespace ModelGizmo {
 Op HoverOp() { return g.HoverOp; }
 Op UsingOp() { return g.Using ? g.CurrentOp : NoOp; }
 
@@ -124,7 +124,7 @@ std::string_view ToString(Op op) {
     if (op == ScaleXYZ) return "ScaleXYZ";
     return "";
 }
-} // namespace ImGuizmo
+} // namespace ModelGizmo
 
 namespace {
 constexpr ImVec2 WorldToPos(vec3 pos_world, const mat4 &m) {
@@ -605,8 +605,8 @@ std::string Rotation(Op op, float rad) {
 } // namespace Format
 } // namespace
 
-namespace ImGuizmo {
-bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode mode, mat4 &m, std::optional<vec3> snap) {
+namespace ModelGizmo {
+bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode mode, mat4 &m, std::optional<vec3> snap) {
     g.Pos = pos;
     g.Size = size;
     g.View = view;
@@ -815,4 +815,4 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
     }
     return type != NoOp;
 }
-} // namespace ImGuizmo
+} // namespace ModelGizmo

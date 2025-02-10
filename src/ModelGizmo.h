@@ -1,4 +1,4 @@
-// Started with https://github.com/CedricGuillemet/ImGuizmo and modified/simplified heavily.
+// Started with https://github.com/CedricGuillemet/ModelGizmo and modified/simplified heavily.
 
 #pragma once
 
@@ -9,7 +9,7 @@
 #include <optional>
 #include <string_view>
 
-namespace ImGuizmo {
+namespace ModelGizmo {
 enum class Op {
     NoOp = 0,
 
@@ -42,5 +42,5 @@ Op HoverOp();
 Op UsingOp();
 std::string_view ToString(Op);
 
-bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op, Mode, mat4 &m, std::optional<vec3> snap = std::nullopt);
-} // namespace ImGuizmo
+bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op, Mode, mat4 &m, std::optional<vec3> snap = std::nullopt);
+} // namespace ModelGizmo

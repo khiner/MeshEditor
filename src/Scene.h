@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Camera.h"
-#include "ImGuizmo.h"
+#include "ModelGizmo.h"
 #include "RenderMode.h"
 #include "Shader.h"
 #include "World.h"
@@ -262,7 +262,7 @@ private:
     EdgeDetectionPipeline EdgeDetectionPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
-    ImGuizmo::Op ActiveGizmoOp{ImGuizmo::Op::Translate};
+    ModelGizmo::Op ActiveGizmoOp{ModelGizmo::Op::Translate};
     bool ShowModelGizmo{false};
     bool GizmoSnap; // Snap translate and scale gizmos.
     vec3 GizmoSnapValue{0.5f};

@@ -14,7 +14,7 @@
 #include <ranges>
 #include <vector>
 
-namespace ImOGuizmo {
+namespace OrientationGizmo {
 namespace internal {
 // Scales are in relation to the rect size.
 struct Scale {
@@ -35,7 +35,7 @@ struct Color {
 constexpr static internal::Scale Scale;
 constexpr static internal::Color Color;
 
-bool DrawGizmo(vec2 dim, float size, mat4 &view, const mat4 &proj, float pivot_distance) {
+bool Draw(vec2 dim, float size, mat4 &view, const mat4 &proj, float pivot_distance) {
     auto *draw_list = ImGui::GetWindowDrawList();
 
     const auto mouse_pos_imgui = ImGui::GetIO().MousePos;
@@ -179,4 +179,4 @@ bool DrawGizmo(vec2 dim, float size, mat4 &view, const mat4 &proj, float pivot_d
 
     return false;
 }
-} // namespace ImOGuizmo
+} // namespace OrientationGizmo
