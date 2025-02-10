@@ -88,8 +88,6 @@ struct Context {
     bool IsOrthographic{false};
 
     Op HoverOp{NoOp}, CurrentOp{NoOp};
-
-    int ActualID{-1}, EditingID{-1};
 };
 
 struct Style {
@@ -105,17 +103,12 @@ struct Style {
 
 Context g;
 Style style;
-
-Op GetTranslateOp(Op);
-Op GetRotateOp(Op);
-Op GetScaleOp(Op);
 } // namespace
 
 namespace ImGuizmo {
-bool IsUsing() { return g.Using && (g.ActualID == -1 || g.ActualID == g.EditingID); }
-
+bool IsUsing() { return g.Using; }
 Op HoverOp() { return g.HoverOp; }
-Op UsingOp() { return g.CurrentOp; }
+Op UsingOp() { return g.Using ? g.CurrentOp : NoOp; }
 
 std::string_view ToString(Op op) {
     if (op == NoOp) return "";
@@ -505,7 +498,6 @@ Op HandleTranslation(mat4 &m, Op op, const float *snap, bool local) {
     ImGui::SetNextFrameWantCaptureMouse(true);
     if (CanActivate()) {
         g.Using = true;
-        g.EditingID = g.ActualID;
         g.CurrentOp = type;
         static constexpr auto GetTranslationPlane = [](Op op) {
             if (op == TranslateScreen) return -vec4{g.CameraDir, 0};
@@ -535,7 +527,6 @@ Op HandleScale(mat4 &m, Op op, const float *snap) {
         ImGui::SetNextFrameWantCaptureMouse(true);
         if (CanActivate()) {
             g.Using = true;
-            g.EditingID = g.ActualID;
             g.CurrentOp = type;
             const auto translation_plane = type == ScaleXYZ ?
                 -vec4{g.CameraDir, 0} :
@@ -551,7 +542,7 @@ Op HandleScale(mat4 &m, Op op, const float *snap) {
         }
         return type;
     }
-    if ((g.ActualID != -1 && g.ActualID != g.EditingID) || !HasAnyOp(g.CurrentOp, Scale)) return NoOp;
+    if (!g.Using || !HasAnyOp(g.CurrentOp, Scale)) return NoOp;
 
     ImGui::SetNextFrameWantCaptureMouse(true);
     const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
@@ -600,7 +591,6 @@ Op HandleRotation(mat4 &m, Op op, const float *snap, bool local) {
         ImGui::SetNextFrameWantCaptureMouse(true);
         if (CanActivate()) {
             g.Using = true;
-            g.EditingID = g.ActualID;
             g.CurrentOp = type;
             if (local || type == RotateScreen) {
                 const auto translation_plane = type == RotateScreen ? -vec4{g.CameraDir, 0} : g.Model[AxisIndex(type, Rotate)];
@@ -614,7 +604,7 @@ Op HandleRotation(mat4 &m, Op op, const float *snap, bool local) {
         }
         return type;
     }
-    if ((g.ActualID != -1 && g.ActualID != g.EditingID) || !HasAnyOp(g.CurrentOp, Rotate)) return NoOp;
+    if (!g.Using || !HasAnyOp(g.CurrentOp, Rotate)) return NoOp;
 
     ImGui::SetNextFrameWantCaptureMouse(true);
     g.RotationAngle = ComputeAngleOnPlan();
@@ -633,10 +623,7 @@ Op HandleRotation(mat4 &m, Op op, const float *snap, bool local) {
         SetPos(m, Pos(g.ModelSource));
     }
 
-    if (!ImGui::GetIO().MouseDown[0]) {
-        g.Using = false;
-        g.EditingID = -1;
-    }
+    if (!ImGui::GetIO().MouseDown[0]) g.Using = false;
     return g.CurrentOp;
 }
 
