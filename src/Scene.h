@@ -264,6 +264,8 @@ private:
 
     ImGuizmo::Op ActiveGizmoOp{ImGuizmo::Op::Translate};
     bool ShowModelGizmo{false};
+    bool GizmoSnap; // Snap translate and scale gizmos.
+    vec3 GizmoSnapValue{0.5f};
 
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.

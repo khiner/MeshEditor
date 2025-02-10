@@ -4,7 +4,9 @@
 
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
+#include "numeric/vec3.h"
 
+#include <optional>
 #include <string_view>
 
 namespace ImGuizmo {
@@ -40,5 +42,5 @@ Op HoverOp();
 Op UsingOp();
 std::string_view ToString(Op);
 
-bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op, Mode, mat4 &m, const float *snap = nullptr);
+bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op, Mode, mat4 &m, std::optional<vec3> snap = std::nullopt);
 } // namespace ImGuizmo

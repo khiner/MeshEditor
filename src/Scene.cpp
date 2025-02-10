@@ -924,7 +924,7 @@ void Scene::RenderGizmo() {
     auto camera_proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
     if (SelectedEntity != entt::null) {
         auto model = R.get<Model>(SelectedEntity).Transform;
-        if (ShowModelGizmo && ImGuizmo::Manipulate(window_pos + line_height, content_region, camera_view, camera_proj, ActiveGizmoOp, ImGuizmo::Local, model)) {
+        if (ShowModelGizmo && ImGuizmo::Manipulate(window_pos + line_height, content_region, camera_view, camera_proj, ActiveGizmoOp, ImGuizmo::Local, model, GizmoSnap ? std::optional{GizmoSnapValue} : std::nullopt)) {
             static vec3 skew, scale, position;
             static vec4 perspective;
             static glm::quat orientation;
@@ -1100,6 +1100,13 @@ void Scene::RenderControls() {
                         if (RadioButton(label.c_str(), op == Op::Scale)) op = Op::Scale;
                         if (!scale_enabled) EndDisabled();
                         if (RadioButton("Universal", op == Op::Universal)) op = Op::Universal;
+                        Spacing();
+                        Checkbox("Snap", &GizmoSnap);
+                        if (GizmoSnap) {
+                            SameLine();
+                            // todo link/unlink snap values
+                            DragFloat3("Snap", &GizmoSnapValue.x, 1.f, 0.01f, 100.f);
+                        }
                     }
                     if (TreeNode("Model transform")) {
                         TextUnformatted("Transform");
