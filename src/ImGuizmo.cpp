@@ -185,34 +185,6 @@ constexpr std::optional<int> TranslatePlaneIndex(Op op) {
     return {};
 }
 
-constexpr void ComputeColors(ImU32 *colors, Op type, Op op) {
-    switch (op) {
-        case Translate:
-            colors[0] = type == TranslateScreen ? Color::Selection : IM_COL32_WHITE;
-            for (int i = 0; i < 3; ++i) {
-                colors[i + 1] = type == (Translate | AxisOp(i)) ? Color::Selection : Color::Directions[i];
-                colors[i + 4] = type == TranslatePlanes[i] ? Color::Selection : Color::Planes[i];
-                colors[i + 4] = type == TranslateScreen ? Color::Selection : colors[i + 4];
-            }
-            break;
-        case Rotate:
-            colors[0] = type == RotateScreen ? Color::Selection : IM_COL32_WHITE;
-            for (int i = 0; i < 3; ++i) {
-                colors[i + 1] = type == (Rotate | AxisOp(i)) ? Color::Selection : Color::Directions[i];
-            }
-            break;
-        case Scale:
-            colors[0] = type == ScaleXYZ ? Color::Selection : IM_COL32_WHITE;
-            for (int i = 0; i < 3; ++i) {
-                colors[i + 1] = type == (Scale | AxisOp(i)) ? Color::Selection : Color::Directions[i];
-            }
-            break;
-        // note: this internal function is only called with three possible values for op
-        default:
-            break;
-    }
-}
-
 const mat3 DirUnary{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
 void ComputeTripodAxis(int axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool local_coords = false) {
@@ -451,13 +423,10 @@ Op GetScaleOp(Op op) {
     return NoOp;
 }
 
-bool CanActivate() { return ImGui::IsMouseClicked(0) && !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemActive(); }
-
 Op HandleTranslation(mat4 &m, Op op, const float *snap, bool local) {
     if (!HasAnyOp(op, Translate)) return NoOp;
 
     if (IsUsing() && HasAnyOp(g.CurrentOp, Translate)) {
-        ImGui::SetNextFrameWantCaptureMouse(true);
         const float len_signed = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
         const float len = fabsf(len_signed); // near plan
         const auto new_pos = g.RayOrigin + g.RayDir * len;
@@ -495,8 +464,7 @@ Op HandleTranslation(mat4 &m, Op op, const float *snap, bool local) {
     const auto type = GetTranslateOp(op);
     if (type == NoOp) return NoOp;
 
-    ImGui::SetNextFrameWantCaptureMouse(true);
-    if (CanActivate()) {
+    if (ImGui::IsMouseClicked(0)) {
         g.Using = true;
         g.CurrentOp = type;
         static constexpr auto GetTranslationPlane = [](Op op) {
@@ -524,8 +492,7 @@ Op HandleScale(mat4 &m, Op op, const float *snap) {
         const auto type = GetScaleOp(op);
         if (type == NoOp) return NoOp;
 
-        ImGui::SetNextFrameWantCaptureMouse(true);
-        if (CanActivate()) {
+        if (ImGui::IsMouseClicked(0)) {
             g.Using = true;
             g.CurrentOp = type;
             const auto translation_plane = type == ScaleXYZ ?
@@ -544,7 +511,6 @@ Op HandleScale(mat4 &m, Op op, const float *snap) {
     }
     if (!g.Using || !HasAnyOp(g.CurrentOp, Scale)) return NoOp;
 
-    ImGui::SetNextFrameWantCaptureMouse(true);
     const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
     const auto new_pos = g.RayOrigin + g.RayDir * len;
     const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
@@ -588,8 +554,7 @@ Op HandleRotation(mat4 &m, Op op, const float *snap, bool local) {
         const auto type = GetRotateOp(op);
         if (type == NoOp) return NoOp;
 
-        ImGui::SetNextFrameWantCaptureMouse(true);
-        if (CanActivate()) {
+        if (ImGui::IsMouseClicked(0)) {
             g.Using = true;
             g.CurrentOp = type;
             if (local || type == RotateScreen) {
@@ -606,7 +571,6 @@ Op HandleRotation(mat4 &m, Op op, const float *snap, bool local) {
     }
     if (!g.Using || !HasAnyOp(g.CurrentOp, Rotate)) return NoOp;
 
-    ImGui::SetNextFrameWantCaptureMouse(true);
     g.RotationAngle = ComputeAngleOnPlan();
     if (snap) ComputeSnap(&g.RotationAngle, snap[0] * M_PI / 180.f);
 
@@ -663,8 +627,6 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
     model_local[2] = glm::normalize(m[2]);
     model_local[3] = m[3];
 
-    const bool universal = op == Universal;
-
     // Scale is always local or m will be skewed when applying world scale or rotated m
     if (HasAnyOp(op, Scale)) mode = Local;
     g.Model = mode == Local ? g.ModelLocal : glm::translate(mat4{1}, vec3{Pos(m)});
@@ -720,10 +682,8 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
     // Draw
     auto *draw_list = ImGui::GetWindowDrawList();
 
-    ImU32 colors[7];
+    const bool universal = op == Universal;
     if (HasAnyOp(op, Translate)) {
-        ComputeColors(colors, type, Translate);
-
         const auto origin = WorldToPos(Pos(g.Model), g.ViewProj);
         for (int i = 0; i < 3; ++i) {
             vec4 dir_plane_x, dir_plane_y, dir_axis;
@@ -733,16 +693,12 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 // draw axis
                 const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
                 const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                draw_list->AddLine(base, end, colors[i + 1], style.TranslationLineThickness);
-
-                if (!universal) { // In universal mode, draw scale circles in place of translate arrows.
-                    // Arrow head begin
-                    auto dir = origin - end;
-                    dir /= sqrtf(ImLengthSqr(dir)); // Normalize
-                    dir *= style.TranslationLineArrowSize;
-
+                const auto color = type == (Translate | AxisOp(i)) ? Color::Selection : Color::Directions[i];
+                draw_list->AddLine(base, end, color, style.TranslationLineThickness);
+                if (!universal) { // In universal mode, draw scale circles instead of translate arrows.
+                    const auto dir = (origin - end) * style.TranslationLineArrowSize / sqrtf(ImLengthSqr(origin - end));
                     const ImVec2 orth_dir{dir.y, -dir.x};
-                    draw_list->AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, colors[i + 1]);
+                    draw_list->AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, color);
                 }
                 if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
             }
@@ -754,12 +710,14 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                     quad_pts_screen[j] = WorldToPos(corner_pos_world, g.MVP);
                 }
                 draw_list->AddPolyline(quad_pts_screen, 4, Color::Directions[i], true, 1.0f);
-                draw_list->AddConvexPolyFilled(quad_pts_screen, 4, colors[i + 4]);
+                const auto color = type == TranslateScreen || type == TranslatePlanes[i] ? Color::Selection : Color::Planes[i];
+                draw_list->AddConvexPolyFilled(quad_pts_screen, 4, color);
             }
         }
 
         if (!g.Using || type == TranslateScreen) {
-            draw_list->AddCircleFilled(g.ScreenSquareCenter, style.CenterCircleSize, colors[0], 32);
+            const auto color = type == TranslateScreen ? Color::Selection : IM_COL32_WHITE;
+            draw_list->AddCircleFilled(g.ScreenSquareCenter, style.CenterCircleSize, color, 32);
         }
 
         if (IsUsing() && HasAnyOp(type, Translate)) {
@@ -778,8 +736,6 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         }
     }
     if (HasAnyOp(op, Rotate)) {
-        ComputeColors(colors, type, Rotate);
-
         static constexpr int HalfCircleSegmentCount{64};
         static constexpr float ScreenRotateSize{0.06};
         g.RadiusSquareCenter = ScreenRotateSize * g.Size.y;
@@ -787,8 +743,8 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         // Assumes affine model
         const auto cam_to_model = mat3{g.ModelInverse} * vec3{g.IsOrthographic ? -Dir(glm::inverse(g.View)) : glm::normalize(vec3{Pos(g.Model)} - g.CameraEye)};
         for (int axis = 0; axis < 3; axis++) {
-            const bool using_axis = g.Using && type == (Rotate | AxisOp(2 - axis));
-            const int circle_mul = !using_axis ? 1 : 2;
+            const bool is_type = type == (Rotate | AxisOp(2 - axis));
+            const int circle_mul = g.Using && is_type ? 2 : 1;
             const int point_count = circle_mul * HalfCircleSegmentCount + 1;
             std::vector<ImVec2> circle_pos(point_count);
             float angle_start = atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]) + M_PI_2;
@@ -798,8 +754,9 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
                 const auto pos = vec4{axis_pos[axis], axis_pos[(axis + 1) % 3], axis_pos[(axis + 2) % 3], 0} * g.ScreenFactor * RotationDisplayScale;
                 circle_pos[i] = WorldToPos(pos, g.MVP);
             }
-            if (!g.Using || using_axis) {
-                draw_list->AddPolyline(circle_pos.data(), point_count, colors[3 - axis], false, style.RotationLineThickness);
+            if (!g.Using || is_type) {
+                const auto color = is_type ? Color::Selection : Color::Directions[2 - axis];
+                draw_list->AddPolyline(circle_pos.data(), point_count, color, false, style.RotationLineThickness);
             }
             if (float radius_axis_sq = ImLengthSqr(WorldToPos(Pos(g.Model), g.ViewProj) - circle_pos[0]);
                 radius_axis_sq > g.RadiusSquareCenter * g.RadiusSquareCenter) {
@@ -807,7 +764,8 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
             }
         }
         if (!g.Using || type == RotateScreen) {
-            draw_list->AddCircle(WorldToPos(Pos(g.Model), g.ViewProj), g.RadiusSquareCenter, colors[0], 64, style.RotationOuterLineThickness);
+            const auto color = type == RotateScreen ? Color::Selection : IM_COL32_WHITE;
+            draw_list->AddCircle(WorldToPos(Pos(g.Model), g.ViewProj), g.RadiusSquareCenter, color, 64, style.RotationOuterLineThickness);
         }
 
         if (IsUsing() && HasAnyOp(type, Rotate)) {
@@ -829,28 +787,27 @@ bool Manipulate(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, 
         }
     }
     if (HasAnyOp(op, Scale)) {
-        ComputeColors(colors, type, Scale);
         if (!g.Using) {
             for (int i = 0; i < 3; ++i) {
                 vec4 dir_plane_x, dir_plane_y, dir_axis;
                 bool below_axis_limit, below_plane_limit;
                 ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
                 if (below_axis_limit) {
+                    const auto color = type == (Scale | AxisOp(i)) ? Color::Selection : Color::Directions[i];
                     if (!universal) {
                         const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
                         if (IsUsing()) {
-                            const auto line_color = Color::ScaleLine;
                             const auto center = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                            draw_list->AddLine(base, center, line_color, style.ScaleLineThickness);
-                            draw_list->AddCircleFilled(center, style.ScaleLineCircleSize, line_color);
+                            draw_list->AddLine(base, center, Color::ScaleLine, style.ScaleLineThickness);
+                            draw_list->AddCircleFilled(center, style.ScaleLineCircleSize, Color::ScaleLine);
                         }
                         const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
-                        draw_list->AddLine(base, end, colors[i + 1], style.ScaleLineThickness);
-                        draw_list->AddCircleFilled(end, style.ScaleLineCircleSize, colors[i + 1]);
+                        draw_list->AddLine(base, end, color, style.ScaleLineThickness);
+                        draw_list->AddCircleFilled(end, style.ScaleLineCircleSize, color);
                         if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
                     } else {
                         const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
-                        draw_list->AddCircleFilled(end, style.ScaleLineCircleSize, colors[i + 1]);
+                        draw_list->AddCircleFilled(end, style.ScaleLineCircleSize, color);
                     }
                 }
             }
