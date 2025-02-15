@@ -45,8 +45,6 @@ struct Context {
     float ScreenFactor;
     vec4 RelativeOrigin;
 
-    bool Using{false};
-
     vec4 TranslationPlane;
     vec3 TranslationPlaneOrigin;
     vec4 MatrixOrigin;
@@ -58,15 +56,10 @@ struct Context {
     vec3 ScaleOrigin;
     float SaveMousePosX;
 
-    // save axis factor when using gizmo
-    bool BelowAxisLimit[3];
-    bool BelowPlaneLimit[3];
-    float AxisFactor[3];
-
     vec2 Pos{0, 0}, Size{0, 0};
-    bool IsOrthographic{false};
-
     Op CurrentOp{NoOp};
+    bool Using{false};
+    bool IsOrthographic{false};
 };
 
 struct Style {
@@ -129,8 +122,8 @@ constexpr ImVec2 WorldToPos(vec3 pos_world, const mat4 &m) {
     return {trans.x, trans.y};
 }
 
-constexpr float LengthClipSpace(vec3 v, bool local_coords = false) {
-    const auto &mvp = local_coords ? g.MVPLocal : g.MVP;
+constexpr float LengthClipSpace(vec3 v, bool local = false) {
+    const auto &mvp = local ? g.MVPLocal : g.MVP;
     auto start = mvp * vec4{0, 0, 0, 1};
     if (fabsf(start.w) > FLT_EPSILON) start /= start.w;
 
@@ -166,67 +159,6 @@ constexpr std::optional<uint32_t> TranslatePlaneIndex(Op op) {
     if (op == TranslateZX) return 1;
     if (op == TranslateXY) return 2;
     return {};
-}
-
-const mat3 DirUnary{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-
-void ComputeTripodAxis(uint32_t axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool local_coords = false) {
-    if (g.Using) {
-        // Use stored factors so the gizmo doesn't flip when translating.
-        dir_axis *= g.AxisFactor[axis_i];
-        dir_plane_x *= g.AxisFactor[(axis_i + 1) % 3];
-        dir_plane_y *= g.AxisFactor[(axis_i + 2) % 3];
-        return;
-    }
-
-    dir_axis = {DirUnary[axis_i], 0};
-    dir_plane_x = {DirUnary[(axis_i + 1) % 3], 0};
-    dir_plane_y = {DirUnary[(axis_i + 2) % 3], 0};
-
-    const float len_dir = LengthClipSpace(dir_axis, local_coords);
-    const float len_dir_minus = LengthClipSpace(-dir_axis, local_coords);
-    const float len_dir_plane_x = LengthClipSpace(dir_plane_x, local_coords);
-    const float len_dir_plane_x_minus = LengthClipSpace(-dir_plane_x, local_coords);
-    const float len_dir_plane_y = LengthClipSpace(dir_plane_y, local_coords);
-    const float len_dir_plane_y_minus = LengthClipSpace(-dir_plane_y, local_coords);
-    // Flip gizmo axis for better visibility.
-    const float mul_axis = len_dir < len_dir_minus && fabsf(len_dir - len_dir_minus) > FLT_EPSILON ? -1 : 1;
-    const float mul_axis_x = len_dir_plane_x < len_dir_plane_x_minus && fabsf(len_dir_plane_x - len_dir_plane_x_minus) > FLT_EPSILON ? -1 : 1;
-    const float mul_axis_y = len_dir_plane_y < len_dir_plane_y_minus && fabsf(len_dir_plane_y - len_dir_plane_y_minus) > FLT_EPSILON ? -1 : 1;
-
-    dir_axis *= mul_axis;
-    dir_plane_x *= mul_axis_x;
-    dir_plane_y *= mul_axis_y;
-    // Cache
-    g.AxisFactor[axis_i] = mul_axis;
-    g.AxisFactor[(axis_i + 1) % 3] = mul_axis_x;
-    g.AxisFactor[(axis_i + 2) % 3] = mul_axis_y;
-}
-
-void ComputeTripodAxisAndVisibility(uint32_t axis_i, vec4 &dir_axis, vec4 &dir_plane_x, vec4 &dir_plane_y, bool &below_axis_limit, bool &below_plane_limit, bool local_coords = false) {
-    ComputeTripodAxis(axis_i, dir_axis, dir_plane_x, dir_plane_y, local_coords);
-    if (g.Using) {
-        // When using, use stored factors so the gizmo doesn't flip when we translate
-        below_axis_limit = g.BelowAxisLimit[axis_i];
-        below_plane_limit = g.BelowPlaneLimit[axis_i];
-    } else {
-        static constexpr float AxisLimit{0.02};
-        below_axis_limit = LengthClipSpace(dir_axis * g.ScreenFactor, local_coords) > AxisLimit;
-        g.BelowAxisLimit[axis_i] = below_axis_limit; // Cache
-
-        static constexpr auto ToNDC = [](vec4 v) {
-            v = g.MVP * vec4{vec3{v}, 1};
-            if (fabsf(v.w) > FLT_EPSILON) v /= v.w;
-            return vec2{v};
-        };
-        // Parallelogram area
-        static constexpr float ParallelogramAreaLimit{0.0025};
-        const auto o = ToNDC(vec4{0});
-        const auto pa = ToNDC(dir_plane_x * g.ScreenFactor) - o;
-        const auto pb = ToNDC(dir_plane_y * g.ScreenFactor) - o;
-        below_plane_limit = fabsf(pa.x * pb.y - pa.y * pb.x) > ParallelogramAreaLimit; // abs cross product
-        g.BelowPlaneLimit[axis_i] = below_plane_limit; // Cache
-    }
 }
 
 constexpr float IntersectRayPlane(vec3 origin, vec3 dir, vec4 plan) {
@@ -273,6 +205,38 @@ constexpr float SelectDistSq = Style.CircleRad * Style.CircleRad;
 constexpr float QuadMin{0.5}, QuadMax{0.8};
 constexpr float QuadUV[]{QuadMin, QuadMin, QuadMin, QuadMax, QuadMax, QuadMax, QuadMax, QuadMin};
 
+const mat3 DirUnary{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+constexpr bool IsDirNeg(vec3 dir, bool local = false) {
+    const float len = LengthClipSpace(dir, local);
+    const float len_minus = LengthClipSpace(-dir, local);
+    return len < len_minus && fabsf(len - len_minus) > FLT_EPSILON;
+}
+vec3 ComputeDirAxis(uint32_t axis_i, bool local = false) {
+    return DirUnary[axis_i] * (IsDirNeg(DirUnary[axis_i], local) ? -1.f : 1.f);
+}
+vec3 ComputeDirPlaneX(uint32_t axis_i, bool local = false) {
+    return DirUnary[(axis_i + 1) % 3] * (IsDirNeg(DirUnary[(axis_i + 1) % 3], local) ? -1.f : 1.f);
+}
+vec3 ComputeDirPlaneY(uint32_t axis_i, bool local = false) {
+    return DirUnary[(axis_i + 2) % 3] * (IsDirNeg(DirUnary[(axis_i + 2) % 3], local) ? -1.f : 1.f);
+}
+bool ComputeAxisVisibility(vec3 dir_axis, bool local = false) {
+    static constexpr float AxisLimit{0.02};
+    return LengthClipSpace(dir_axis * g.ScreenFactor, local) > AxisLimit;
+}
+bool ComputePlaneVisibility(vec3 dir_plane_x, vec3 dir_plane_y) {
+    static constexpr auto ToNDC = [](vec3 v) {
+        auto vp = g.MVP * vec4{v, 1};
+        if (fabsf(vp.w) > FLT_EPSILON) vp /= vp.w;
+        return vec2{vp};
+    };
+    static constexpr float ParallelogramAreaLimit{0.0025};
+    const auto o = ToNDC(vec3{0});
+    const auto pa = ToNDC(dir_plane_x * g.ScreenFactor) - o;
+    const auto pb = ToNDC(dir_plane_y * g.ScreenFactor) - o;
+    return fabsf(pa.x * pb.y - pa.y * pb.x) > ParallelogramAreaLimit; // abs cross product
+}
 Op GetTranslateOp() {
     const auto mouse_pos = ImGui::GetIO().MousePos;
     if (mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
@@ -282,13 +246,9 @@ Op GetTranslateOp() {
 
     const auto pos = ToImVec(g.Pos), pos_screen{mouse_pos - pos};
     for (uint32_t i = 0; i < 3; ++i) {
-        vec4 dir_plane_x, dir_plane_y, dir_axis;
-        bool below_axis_limit, below_plane_limit;
-        ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit);
-
-        dir_axis = g.Model * vec4{vec3{dir_axis}, 0};
-        dir_plane_x = g.Model * vec4{vec3{dir_plane_x}, 0};
-        dir_plane_y = g.Model * vec4{vec3{dir_plane_y}, 0};
+        const auto dir_axis = g.Model * vec4{ComputeDirAxis(i), 0};
+        const auto dir_plane_x = g.Model * vec4{ComputeDirPlaneX(i), 0};
+        const auto dir_plane_y = g.Model * vec4{ComputeDirPlaneY(i), 0};
 
         const auto axis_start_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor * 0.1f, g.ViewProj) - pos;
         const auto axis_end_screen = WorldToPos(Pos(g.Model) + dir_axis * g.ScreenFactor, g.ViewProj) - pos;
@@ -299,7 +259,7 @@ Op GetTranslateOp() {
         const auto pos_plane = g.RayOrigin + g.RayDir * len;
         const float dx = glm::dot(vec3{dir_plane_x}, vec3{pos_plane - Pos(g.Model)} / g.ScreenFactor);
         const float dy = glm::dot(vec3{dir_plane_y}, vec3{pos_plane - Pos(g.Model)} / g.ScreenFactor);
-        if (below_plane_limit && dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3]) {
+        if (ComputePlaneVisibility(dir_plane_x, dir_plane_y) && dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3]) {
             return TranslatePlanes[i];
         }
     }
@@ -341,12 +301,7 @@ Op GetScaleOp(bool universal) {
 
     if (!universal) {
         for (uint32_t i = 0; i < 3; ++i) {
-            vec4 dir_plane_x, dir_plane_y, dir_axis;
-            ComputeTripodAxis(i, dir_axis, dir_plane_x, dir_plane_y, true);
-            dir_axis = g.ModelLocal * vec4{vec3{dir_axis}, 0};
-            dir_plane_x = g.ModelLocal * vec4{vec3{dir_plane_x}, 0};
-            dir_plane_y = g.ModelLocal * vec4{vec3{dir_plane_y}, 0};
-
+            const auto dir_axis = g.ModelLocal * vec4{ComputeDirAxis(i, true), 0};
             const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, BuildPlane(Pos(g.ModelLocal), dir_axis));
             const auto pos_plane = g.RayOrigin + g.RayDir * len;
             const auto pos_plan_screen = WorldToPos(pos_plane, g.ViewProj);
@@ -365,10 +320,7 @@ Op GetScaleOp(bool universal) {
     }
 
     for (uint32_t i = 0; i < 3; ++i) {
-        vec4 dir_plane_x, dir_plane_y, dir_axis;
-        bool below_axis_limit, below_plane_limit;
-        ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
-        if (below_axis_limit) {
+        if (auto dir_axis = ComputeDirAxis(i, true); ComputeAxisVisibility(dir_axis, true)) {
             const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
             if (ImLengthSqr(end - mouse_pos) < SelectDistSq) return Scale | AxisOp(i);
         }
@@ -604,9 +556,9 @@ bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode m
     if (HasAnyOp(op, Translate)) {
         const auto origin = WorldToPos(Pos(g.Model), g.ViewProj);
         for (uint32_t i = 0; i < 3; ++i) {
-            vec4 dir_plane_x, dir_plane_y, dir_axis;
-            bool below_axis_limit = false, below_plane_limit = false;
-            ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit);
+            const bool is_neg = IsDirNeg(DirUnary[i]);
+            const auto dir_axis = DirUnary[i] * (is_neg ? -1.f : 1.f);
+            const bool below_axis_limit = ComputeAxisVisibility(dir_axis);
             const bool using_type = type == (Translate | AxisOp(i));
             if ((!g.Using || using_type) && below_axis_limit) {
                 // draw axis
@@ -614,23 +566,29 @@ bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode m
                 const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
                 const auto color = using_type ? Color.Selection : Color.Directions[i];
                 dl->AddLine(base, end, color, Style.LineWidth);
-                if (!g.Using && !universal) { // In universal mode, draw scale circles instead of translate arrows.
+                // In universal mode, draw scale circles instead of translate arrows.
+                // (Show arrow when using though.)
+                if (!universal || g.Using) {
                     const auto dir = (origin - end) * Style.LineArrowSize / sqrtf(ImLengthSqr(origin - end));
                     const ImVec2 orth_dir{dir.y, -dir.x};
                     dl->AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, color);
                 }
-                if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
+                if (is_neg) DrawHatchedAxis(dir_axis);
             }
-            if ((!g.Using || type == TranslatePlanes[i]) && below_plane_limit) {
-                // draw plane
-                ImVec2 quad_pts_screen[4];
-                for (uint32_t j = 0; j < 4; ++j) {
-                    const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
-                    quad_pts_screen[j] = WorldToPos(corner_pos_world, g.MVP);
+            if ((!g.Using || type == TranslatePlanes[i])) {
+                const auto dir_plane_x = ComputeDirPlaneX(i);
+                const auto dir_plane_y = ComputeDirPlaneY(i);
+                if (ComputePlaneVisibility(dir_plane_x, dir_plane_y)) {
+                    // draw plane
+                    ImVec2 quad_pts_screen[4];
+                    for (uint32_t j = 0; j < 4; ++j) {
+                        const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
+                        quad_pts_screen[j] = WorldToPos(corner_pos_world, g.MVP);
+                    }
+                    dl->AddPolyline(quad_pts_screen, 4, Color.Directions[i], true, 1.0f);
+                    const auto color = type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i];
+                    dl->AddConvexPolyFilled(quad_pts_screen, 4, color);
                 }
-                dl->AddPolyline(quad_pts_screen, 4, Color.Directions[i], true, 1.0f);
-                const auto color = type == TranslateScreen || type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i];
-                dl->AddConvexPolyFilled(quad_pts_screen, 4, color);
             }
         }
         if (!g.Using || type == TranslateScreen) {
@@ -705,10 +663,10 @@ bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode m
     if (HasAnyOp(op, Scale)) {
         if (!g.Using) {
             for (uint32_t i = 0; i < 3; ++i) {
-                vec4 dir_plane_x, dir_plane_y, dir_axis;
-                bool below_axis_limit, below_plane_limit;
-                ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
-                if (below_axis_limit) {
+                const vec4 dir{DirUnary[i], 0};
+                const bool is_neg = IsDirNeg(dir, true);
+                const auto dir_axis = dir * (is_neg ? -1.f : 1.f);
+                if (ComputeAxisVisibility(dir_axis, true)) {
                     const auto color = type == (Scale | AxisOp(i)) ? Color.Selection : Color.Directions[i];
                     if (!universal) {
                         const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
@@ -720,7 +678,7 @@ bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode m
                         const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
                         dl->AddLine(base, end, color, Style.LineWidth);
                         dl->AddCircleFilled(end, Style.CircleRad, color);
-                        if (g.AxisFactor[i] < 0) DrawHatchedAxis(dir_axis);
+                        if (is_neg) DrawHatchedAxis(dir_axis);
                     } else {
                         const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
                         dl->AddCircleFilled(end, Style.CircleRad, color);
