@@ -850,7 +850,7 @@ void Scene::Interact() {
             UpdateTransformBuffers();
         }
     }
-    if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::HoverOp() != ModelGizmo::Op::NoOp) return;
+    if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp) return;
 
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
@@ -1082,8 +1082,8 @@ void Scene::RenderControls() {
 
                     Checkbox("Gizmo", &ShowModelGizmo);
                     if (ShowModelGizmo) {
-                        if (const auto label = ToString(HoverOp()); label != "") Text("Hovering: %s", label.data());
-                        if (const auto label = ToString(UsingOp()); label != "") Text("Using: %s", label.data());
+                        if (const auto label = ToString(CurrentOp()); label != "") Text("Op: %s", label.data());
+                        if (IsActive()) Text("Active");
 
                         auto &op = ActiveGizmoOp;
                         if (IsKeyPressed(ImGuiKey_T)) op = Op::Translate;

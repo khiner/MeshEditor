@@ -66,7 +66,7 @@ struct Context {
     vec2 Pos{0, 0}, Size{0, 0};
     bool IsOrthographic{false};
 
-    Op HoverOp{NoOp}, CurrentOp{NoOp};
+    Op CurrentOp{NoOp};
 };
 
 struct Style {
@@ -92,13 +92,13 @@ struct Color {
 } // namespace state
 
 state::Context g;
-state::Style Style;
-state::Color Color;
+constexpr state::Style Style;
+constexpr state::Color Color;
 } // namespace
 
 namespace ModelGizmo {
-Op HoverOp() { return g.HoverOp; }
-Op UsingOp() { return g.Using ? g.CurrentOp : NoOp; }
+bool IsActive() { return g.Using; }
+Op CurrentOp() { return g.CurrentOp; }
 
 std::string_view ToString(Op op) {
     if (op == NoOp) return "";
@@ -268,14 +268,12 @@ constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 vert_p1, ImVec2 vert_p2) {
     return vert_p1 + ImVec2{v.x, v.y} * t;
 }
 
-constexpr float SelectDistSq = 12 * 12;
+constexpr float SelectDistSq = Style.CircleRad * Style.CircleRad;
 
 constexpr float QuadMin{0.5}, QuadMax{0.8};
 constexpr float QuadUV[]{QuadMin, QuadMin, QuadMin, QuadMax, QuadMax, QuadMax, QuadMax, QuadMin};
 
-Op GetTranslateOp(Op op) {
-    if (g.Using || !HasAnyOp(op, Translate)) return NoOp;
-
+Op GetTranslateOp() {
     const auto mouse_pos = ImGui::GetIO().MousePos;
     if (mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
         mouse_pos.y >= g.ScreenSquareMin.y && mouse_pos.y <= g.ScreenSquareMax.y) {
@@ -311,16 +309,12 @@ Op GetTranslateOp(Op op) {
 // Scale a bit so translate axes don't touch when in universal.
 constexpr float RotationDisplayScale{1.2};
 
-Op GetRotateOp(Op op) {
-    if (!HasAnyOp(op, Rotate)) return NoOp;
-
+Op GetRotateOp() {
     static constexpr float SelectDist = 8;
     const auto mouse_pos = ImGui::GetIO().MousePos;
-    if (HasAnyOp(op, RotateScreen)) {
-        const auto dist_sq = ImLengthSqr(mouse_pos - g.ScreenSquareCenter);
-        const auto inner_rad = g.RadiusSquareCenter - SelectDist / 2, outer_rad = g.RadiusSquareCenter + SelectDist / 2;
-        if (dist_sq >= inner_rad * inner_rad && dist_sq < outer_rad * outer_rad) return RotateScreen;
-    }
+    const auto dist_sq = ImLengthSqr(mouse_pos - g.ScreenSquareCenter);
+    const auto inner_rad = g.RadiusSquareCenter - SelectDist / 2, outer_rad = g.RadiusSquareCenter + SelectDist / 2;
+    if (dist_sq >= inner_rad * inner_rad && dist_sq < outer_rad * outer_rad) return RotateScreen;
 
     const auto mv_pos = g.View * vec4{vec3{Pos(g.Model)}, 1};
     for (uint32_t i = 0; i < 3; ++i) {
@@ -338,10 +332,7 @@ Op GetRotateOp(Op op) {
     return NoOp;
 }
 
-Op GetScaleOp(Op op) {
-    const bool universal = op == Universal;
-    if (!HasAnyOp(op, Scale) && !universal) return NoOp;
-
+Op GetScaleOp(bool universal) {
     const auto mouse_pos = ImGui::GetIO().MousePos;
     if (!universal && mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
         mouse_pos.y >= g.ScreenSquareMin.y && mouse_pos.y <= g.ScreenSquareMax.y) {
@@ -357,11 +348,10 @@ Op GetScaleOp(Op op) {
             dir_plane_y = g.ModelLocal * vec4{vec3{dir_plane_y}, 0};
 
             const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, BuildPlane(Pos(g.ModelLocal), dir_axis));
-            const bool is_axis = op == (Translate | AxisOp(i));
             const auto pos_plane = g.RayOrigin + g.RayDir * len;
             const auto pos_plan_screen = WorldToPos(pos_plane, g.ViewProj);
-            const auto axis_start_screen = WorldToPos(Pos(g.ModelLocal) + dir_axis * g.ScreenFactor * (is_axis ? 1.0f : 0.1f), g.ViewProj);
-            const auto axis_end_screen = WorldToPos(Pos(g.ModelLocal) + dir_axis * g.ScreenFactor * (is_axis ? 1.4f : 1.0f), g.ViewProj);
+            const auto axis_start_screen = WorldToPos(Pos(g.ModelLocal) + dir_axis * g.ScreenFactor * 0.1f, g.ViewProj);
+            const auto axis_end_screen = WorldToPos(Pos(g.ModelLocal) + dir_axis * g.ScreenFactor * 1.0f, g.ViewProj);
             const auto closest_on_axis = PointOnSegment(pos_plan_screen, axis_start_screen, axis_end_screen);
             if (ImLengthSqr(closest_on_axis - pos_plan_screen) < SelectDistSq) return Scale | AxisOp(i);
         }
@@ -379,8 +369,7 @@ Op GetScaleOp(Op op) {
         bool below_axis_limit, below_plane_limit;
         ComputeTripodAxisAndVisibility(i, dir_axis, dir_plane_x, dir_plane_y, below_axis_limit, below_plane_limit, true);
         if (below_axis_limit) {
-            const float marker_scale = op == (Translate | AxisOp(i)) ? 1.4f : 1.0f;
-            const auto end = WorldToPos(dir_axis * marker_scale * g.ScreenFactor, g.MVPLocal);
+            const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
             if (ImLengthSqr(end - mouse_pos) < SelectDistSq) return Scale | AxisOp(i);
         }
     }
@@ -398,171 +387,6 @@ constexpr float Snap(float v, float snap) {
     return v;
 }
 constexpr vec4 Snap(vec4 v, vec3 snap) { return {Snap(v[0], snap[0]), Snap(v[1], snap[1]), Snap(v[2], snap[2]), v[3]}; }
-
-Op HandleTranslation(mat4 &m, Op op, bool local, std::optional<vec3> snap = std::nullopt) {
-    if (!HasAnyOp(op, Translate)) return NoOp;
-
-    if (g.Using && HasAnyOp(g.CurrentOp, Translate)) {
-        const float len_signed = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
-        const float len = fabsf(len_signed); // near plan
-        const auto new_pos = g.RayOrigin + g.RayDir * len;
-        const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
-        auto delta = new_origin - Pos(g.Model);
-
-        // 1 axis constraint
-        if (g.CurrentOp == (Translate | AxisX) || g.CurrentOp == (Translate | AxisY) || g.CurrentOp == (Translate | AxisZ)) {
-            const auto axis_i = AxisIndex(g.CurrentOp, Translate);
-            delta = g.Model[axis_i] * glm::dot(g.Model[axis_i], delta);
-        }
-
-        if (snap) {
-            auto delta_cumulative = Pos(g.Model) + delta - g.MatrixOrigin;
-            if (local || g.CurrentOp == TranslateScreen) {
-                auto model_source = g.ModelSource;
-                model_source[0] = glm::normalize(model_source[0]);
-                model_source[1] = glm::normalize(model_source[1]);
-                model_source[2] = glm::normalize(model_source[2]);
-                delta_cumulative = glm::inverse(model_source) * vec4{vec3{delta_cumulative}, 0};
-                delta_cumulative = Snap(delta_cumulative, *snap);
-                delta_cumulative = model_source * vec4{vec3{delta_cumulative}, 0};
-            } else {
-                delta_cumulative = Snap(delta_cumulative, *snap);
-            }
-            delta = g.MatrixOrigin + delta_cumulative - Pos(g.Model);
-        }
-
-        m = glm::translate(mat4{1}, vec3{delta}) * g.ModelSource;
-        if (!ImGui::GetIO().MouseDown[0]) g.Using = false;
-        return g.CurrentOp;
-    }
-
-    // Find new translate op
-    const auto type = GetTranslateOp(op);
-    if (type == NoOp) return NoOp;
-
-    if (ImGui::IsMouseClicked(0)) {
-        g.Using = true;
-        g.CurrentOp = type;
-        static constexpr auto GetTranslationPlane = [](Op op) {
-            if (op == TranslateScreen) return -vec4{g.CameraDir, 0};
-            if (auto plane_index = TranslatePlaneIndex(op)) return g.Model[*plane_index];
-
-            const auto plane = g.Model[AxisIndex(op, Translate)];
-            const auto cam_to_model = glm::normalize(vec3{Pos(g.Model)} - g.CameraEye);
-            return glm::normalize(vec4{glm::cross(vec3{plane}, glm::cross(vec3{plane}, cam_to_model)), 0});
-        };
-
-        g.TranslationPlane = BuildPlane(Pos(g.Model), GetTranslationPlane(type));
-        g.TranslationPlaneOrigin = g.RayOrigin + g.RayDir * IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
-        g.MatrixOrigin = Pos(g.Model);
-        g.RelativeOrigin = (vec4{g.TranslationPlaneOrigin, 1} - Pos(g.Model)) / g.ScreenFactor;
-    }
-    return type;
-}
-
-Op HandleScale(mat4 &m, Op op, std::optional<vec3> snap = std::nullopt) {
-    if (!HasAnyOp(op, Scale)) return NoOp;
-
-    if (!g.Using) {
-        // Find new scale op
-        const auto type = GetScaleOp(op);
-        if (type == NoOp) return NoOp;
-
-        if (ImGui::IsMouseClicked(0)) {
-            g.Using = true;
-            g.CurrentOp = type;
-            const auto translation_plane = type == ScaleXYZ ?
-                -vec4{g.CameraDir, 0} :
-                g.Model[(AxisIndex(type, Scale) + 1) % 3];
-            g.TranslationPlane = BuildPlane(Pos(g.Model), translation_plane);
-            const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
-            g.TranslationPlaneOrigin = g.RayOrigin + g.RayDir * len;
-            g.Scale = {1, 1, 1, 0};
-            g.MatrixOrigin = Pos(g.Model);
-            g.RelativeOrigin = (vec4{g.TranslationPlaneOrigin, 1} - Pos(g.Model)) / g.ScreenFactor;
-            g.ScaleOrigin = {glm::length(Right(g.ModelSource)), glm::length(Up(g.ModelSource)), glm::length(Dir(g.ModelSource))};
-            g.SaveMousePosX = ImGui::GetIO().MousePos.x;
-        }
-        return type;
-    }
-    if (!g.Using || !HasAnyOp(g.CurrentOp, Scale)) return NoOp;
-
-    const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
-    const auto new_pos = g.RayOrigin + g.RayDir * len;
-    const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
-    auto delta = new_origin - Pos(g.ModelLocal);
-    // 1 axis constraint
-    if (g.CurrentOp != ScaleXYZ) {
-        const auto axis_i = AxisIndex(g.CurrentOp, Scale);
-        const auto &axis_value = g.ModelLocal[axis_i];
-        const float length_on_axis = glm::dot(axis_value, delta);
-        delta = axis_value * length_on_axis;
-
-        vec4 base = vec4{g.TranslationPlaneOrigin, 0} - Pos(g.ModelLocal);
-        const float ratio = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
-        g.Scale[axis_i] = std::max(ratio, 0.001f);
-    } else {
-        const float scale_delta = (ImGui::GetIO().MousePos.x - g.SaveMousePosX) * 0.01f;
-        g.Scale = vec4{std::max(1.f + scale_delta, 0.001f)};
-    }
-
-    if (snap) g.Scale = Snap(g.Scale, *snap);
-
-    // no 0 allowed
-    for (uint32_t i = 0; i < 3; ++i) g.Scale[i] = std::max(g.Scale[i], 0.001f);
-
-    m = g.ModelLocal * glm::scale(mat4{1}, {g.Scale * vec4{g.ScaleOrigin, 0}});
-
-    if (!ImGui::GetIO().MouseDown[0]) {
-        g.Using = false;
-        g.Scale = vec4{1, 1, 1, 0};
-    }
-    return g.CurrentOp;
-}
-
-Op HandleRotation(mat4 &m, Op op, bool local, std::optional<vec3> snap = std::nullopt) {
-    if (!HasAnyOp(op, Rotate)) return NoOp;
-
-    if (!g.Using) {
-        const auto type = GetRotateOp(op);
-        if (type == NoOp) return NoOp;
-
-        if (ImGui::IsMouseClicked(0)) {
-            g.Using = true;
-            g.CurrentOp = type;
-            if (local || type == RotateScreen) {
-                const auto translation_plane = type == RotateScreen ? -vec4{g.CameraDir, 0} : g.Model[AxisIndex(type, Rotate)];
-                g.TranslationPlane = BuildPlane(Pos(g.Model), translation_plane);
-            } else {
-                g.TranslationPlane = BuildPlane(Pos(g.ModelSource), {DirUnary[AxisIndex(type, Rotate)], 0});
-            }
-            const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
-            g.RotationVectorSource = glm::normalize(g.RayOrigin + g.RayDir * len - Pos(g.Model));
-            g.RotationAngleOrigin = ComputeAngleOnPlan();
-        }
-        return type;
-    }
-    if (!g.Using || !HasAnyOp(g.CurrentOp, Rotate)) return NoOp;
-
-    g.RotationAngle = ComputeAngleOnPlan();
-    if (snap) g.RotationAngle = Snap(g.RotationAngle, snap->x * M_PI / 180.f);
-
-    const vec3 rot_axis_local = glm::normalize(glm::mat3{g.ModelInverse} * g.TranslationPlane); // Assumes affine model
-    const mat4 delta_rot{glm::rotate(mat4{1}, g.RotationAngle - g.RotationAngleOrigin, rot_axis_local)};
-    if (g.RotationAngle != g.RotationAngleOrigin) g.RotationAngleOrigin = g.RotationAngle;
-
-    if (local) {
-        m = g.ModelLocal * delta_rot * glm::scale(mat4{1}, vec3{g.ModelScaleOrigin});
-    } else {
-        auto res = g.ModelSource;
-        SetPos(res, vec4{0});
-        m = delta_rot * res;
-        SetPos(m, Pos(g.ModelSource));
-    }
-
-    if (!ImGui::GetIO().MouseDown[0]) g.Using = false;
-    return g.CurrentOp;
-}
 
 namespace Format {
 static constexpr char AxisLabels[] = "XYZ";
@@ -594,11 +418,10 @@ bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode m
     g.View = view;
     g.Proj = proj;
 
-    auto &model_local = g.ModelLocal;
-    model_local[0] = glm::normalize(m[0]);
-    model_local[1] = glm::normalize(m[1]);
-    model_local[2] = glm::normalize(m[2]);
-    model_local[3] = m[3];
+    g.ModelLocal[0] = glm::normalize(m[0]);
+    g.ModelLocal[1] = glm::normalize(m[1]);
+    g.ModelLocal[2] = glm::normalize(m[2]);
+    g.ModelLocal[3] = m[3];
 
     // Scale is always local or m will be skewed when applying world scale or rotated m
     if (HasAnyOp(op, Scale)) mode = Local;
@@ -643,18 +466,140 @@ bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode m
     const auto pos_cam_space = g.MVP * vec4{vec3{0}, 1};
     if (!g.IsOrthographic && pos_cam_space.z < 0.001 && !g.Using) return false;
 
-    const bool window_hovered = ImGui::IsWindowHovered();
-    // Order is important because of universal selection.
-    auto type{NoOp};
-    if (window_hovered) type = HandleScale(m, op, snap);
-    // HandleTranslation has side effects, so call it even if not hovered.
-    if (type == NoOp) type = HandleTranslation(m, op, mode == Local, snap);
-    if (type == NoOp && window_hovered) type = HandleRotation(m, op, mode == Local, snap);
-    g.HoverOp = type;
+    if (!ImGui::GetIO().MouseDown[0]) g.Using = false;
+    if (g.Using) {
+        const auto type = g.CurrentOp;
+        if (HasAnyOp(type, Translate)) {
+            const float len_signed = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
+            const float len = fabsf(len_signed); // near plan
+            const auto new_pos = g.RayOrigin + g.RayDir * len;
+            const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
+            auto delta = new_origin - Pos(g.Model);
+
+            // 1 axis constraint
+            if (type == (Translate | AxisX) || type == (Translate | AxisY) || type == (Translate | AxisZ)) {
+                const auto axis_i = AxisIndex(type, Translate);
+                delta = g.Model[axis_i] * glm::dot(g.Model[axis_i], delta);
+            }
+
+            if (snap) {
+                auto delta_cumulative = Pos(g.Model) + delta - g.MatrixOrigin;
+                if (mode == Local || type == TranslateScreen) {
+                    auto model_source = g.ModelSource;
+                    model_source[0] = glm::normalize(model_source[0]);
+                    model_source[1] = glm::normalize(model_source[1]);
+                    model_source[2] = glm::normalize(model_source[2]);
+                    delta_cumulative = glm::inverse(model_source) * vec4{vec3{delta_cumulative}, 0};
+                    delta_cumulative = Snap(delta_cumulative, *snap);
+                    delta_cumulative = model_source * vec4{vec3{delta_cumulative}, 0};
+                } else {
+                    delta_cumulative = Snap(delta_cumulative, *snap);
+                }
+                delta = g.MatrixOrigin + delta_cumulative - Pos(g.Model);
+            }
+
+            m = glm::translate(mat4{1}, vec3{delta}) * g.ModelSource;
+        } else if (HasAnyOp(type, Scale)) {
+            const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
+            const auto new_pos = g.RayOrigin + g.RayDir * len;
+            const auto new_origin = new_pos - g.RelativeOrigin * g.ScreenFactor;
+            auto delta = new_origin - Pos(g.ModelLocal);
+            // 1 axis constraint
+            if (type != ScaleXYZ) {
+                const auto axis_i = AxisIndex(type, Scale);
+                const auto &axis_value = g.ModelLocal[axis_i];
+                const float length_on_axis = glm::dot(axis_value, delta);
+                delta = axis_value * length_on_axis;
+
+                vec4 base = vec4{g.TranslationPlaneOrigin, 0} - Pos(g.ModelLocal);
+                const float ratio = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
+                g.Scale[axis_i] = std::max(ratio, 0.001f);
+            } else {
+                const float scale_delta = (ImGui::GetIO().MousePos.x - g.SaveMousePosX) * 0.01f;
+                g.Scale = vec4{std::max(1.f + scale_delta, 0.001f)};
+            }
+
+            if (snap) g.Scale = Snap(g.Scale, *snap);
+
+            // no 0 allowed
+            for (uint32_t i = 0; i < 3; ++i) g.Scale[i] = std::max(g.Scale[i], 0.001f);
+
+            m = g.ModelLocal * glm::scale(mat4{1}, {g.Scale * vec4{g.ScaleOrigin, 0}});
+        } else if (HasAnyOp(type, Rotate)) {
+            g.RotationAngle = ComputeAngleOnPlan();
+            if (snap) g.RotationAngle = Snap(g.RotationAngle, snap->x * M_PI / 180.f);
+
+            const vec3 rot_axis_local = glm::normalize(glm::mat3{g.ModelInverse} * g.TranslationPlane); // Assumes affine model
+            const mat4 delta_rot{glm::rotate(mat4{1}, g.RotationAngle - g.RotationAngleOrigin, rot_axis_local)};
+            if (g.RotationAngle != g.RotationAngleOrigin) g.RotationAngleOrigin = g.RotationAngle;
+
+            if (mode == Local) {
+                m = g.ModelLocal * delta_rot * glm::scale(mat4{1}, vec3{g.ModelScaleOrigin});
+            } else {
+                auto res = g.ModelSource;
+                SetPos(res, vec4{0});
+                m = delta_rot * res;
+                SetPos(m, Pos(g.ModelSource));
+            }
+        }
+    } else if (ImGui::IsWindowHovered()) {
+        auto &type = g.CurrentOp;
+        type = NoOp;
+        const bool mouse_clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        // Op selection check order is important because of universal selection.
+        if (HasAnyOp(op, Scale)) {
+            if (type = GetScaleOp(op == Universal); type != NoOp && mouse_clicked) {
+                g.Using = true;
+                const auto translation_plane = type == ScaleXYZ ?
+                    -vec4{g.CameraDir, 0} :
+                    g.Model[(AxisIndex(type, Scale) + 1) % 3];
+                g.TranslationPlane = BuildPlane(Pos(g.Model), translation_plane);
+                const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
+                g.TranslationPlaneOrigin = g.RayOrigin + g.RayDir * len;
+                g.Scale = {1, 1, 1, 0};
+                g.MatrixOrigin = Pos(g.Model);
+                g.RelativeOrigin = (vec4{g.TranslationPlaneOrigin, 1} - Pos(g.Model)) / g.ScreenFactor;
+                g.ScaleOrigin = {glm::length(Right(g.ModelSource)), glm::length(Up(g.ModelSource)), glm::length(Dir(g.ModelSource))};
+                g.SaveMousePosX = ImGui::GetIO().MousePos.x;
+            }
+        }
+        if (type == NoOp && HasAnyOp(op, Translate)) {
+            if (type = GetTranslateOp(); type != NoOp && mouse_clicked) {
+                g.Using = true;
+                static constexpr auto GetTranslationPlane = [](Op op) {
+                    if (op == TranslateScreen) return -vec4{g.CameraDir, 0};
+                    if (auto plane_index = TranslatePlaneIndex(op)) return g.Model[*plane_index];
+
+                    const auto plane = g.Model[AxisIndex(op, Translate)];
+                    const auto cam_to_model = glm::normalize(vec3{Pos(g.Model)} - g.CameraEye);
+                    return glm::normalize(vec4{glm::cross(vec3{plane}, glm::cross(vec3{plane}, cam_to_model)), 0});
+                };
+
+                g.TranslationPlane = BuildPlane(Pos(g.Model), GetTranslationPlane(type));
+                g.TranslationPlaneOrigin = g.RayOrigin + g.RayDir * IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
+                g.MatrixOrigin = Pos(g.Model);
+                g.RelativeOrigin = (vec4{g.TranslationPlaneOrigin, 1} - Pos(g.Model)) / g.ScreenFactor;
+            }
+        }
+        if (type == NoOp && HasAnyOp(op, Rotate)) {
+            if (type = GetRotateOp(); type != NoOp && mouse_clicked) {
+                g.Using = true;
+                if (mode == Local || type == RotateScreen) {
+                    const auto translation_plane = type == RotateScreen ? -vec4{g.CameraDir, 0} : g.Model[AxisIndex(type, Rotate)];
+                    g.TranslationPlane = BuildPlane(Pos(g.Model), translation_plane);
+                } else {
+                    g.TranslationPlane = BuildPlane(Pos(g.ModelSource), {DirUnary[AxisIndex(type, Rotate)], 0});
+                }
+                const float len = IntersectRayPlane(g.RayOrigin, g.RayDir, g.TranslationPlane);
+                g.RotationVectorSource = glm::normalize(g.RayOrigin + g.RayDir * len - Pos(g.Model));
+                g.RotationAngleOrigin = ComputeAngleOnPlan();
+            }
+        }
+    }
 
     // Draw
+    const auto type = g.CurrentOp;
     auto *dl = ImGui::GetWindowDrawList();
-
     const bool universal = op == Universal;
     if (HasAnyOp(op, Translate)) {
         const auto origin = WorldToPos(Pos(g.Model), g.ViewProj);
