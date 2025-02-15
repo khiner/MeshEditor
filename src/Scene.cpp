@@ -920,11 +920,11 @@ void Scene::RenderGizmo() {
     const auto content_region = ToGlm(GetContentRegionAvail());
     const float line_height = GetTextLineHeightWithSpacing();
     const auto window_pos = ToGlm(GetWindowPos());
-    auto camera_view = Camera.GetView();
-    auto camera_proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
-    if (SelectedEntity != entt::null) {
-        auto model = R.get<Model>(SelectedEntity).Transform;
-        if (ShowModelGizmo && ModelGizmo::Draw(window_pos + line_height, content_region, camera_view, camera_proj, ActiveGizmoOp, ModelGizmo::Local, model, GizmoSnap ? std::optional{GizmoSnapValue} : std::nullopt)) {
+    auto view = Camera.GetView();
+    if (ShowModelGizmo && SelectedEntity != entt::null) {
+        const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
+        if (auto model = R.get<Model>(SelectedEntity).Transform;
+            ModelGizmo::Draw(window_pos + line_height, content_region, view, proj, ActiveGizmoOp, ModelGizmo::Local, model, GizmoSnap ? std::optional{GizmoSnapValue} : std::nullopt)) {
             static vec3 skew, scale, position;
             static vec4 perspective;
             static glm::quat orientation;
@@ -935,12 +935,8 @@ void Scene::RenderGizmo() {
     static constexpr float OGizmoSize{110};
     const float padding = 2 * line_height;
     const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-    if (auto camera_view = Camera.GetView(); OrientationGizmo::Draw(pos, OGizmoSize, camera_view, Camera.GetDistance())) {
-        Camera.SetPositionFromView(camera_view);
-        UpdateTransformBuffers();
-    } else if (Camera.Tick()) {
-        UpdateTransformBuffers();
-    }
+    if (auto dir = OrientationGizmo::Draw(pos, OGizmoSize, view)) Camera.SetTargetDirection(*dir);
+    if (Camera.Tick()) UpdateTransformBuffers();
 }
 
 namespace {

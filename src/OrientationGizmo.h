@@ -7,7 +7,6 @@
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
-#include "numeric/vec4.h"
 
 #include <algorithm>
 #include <optional>
@@ -42,7 +41,8 @@ struct Color {
 static constexpr internal::Scale Scale;
 static constexpr internal::Color Color;
 
-bool Draw(vec2 pos, float size, mat4 &view, float pivot_distance) {
+// Returns orientation direction if clicked.
+std::optional<vec3> Draw(vec2 pos, float size, const mat4 &view) {
     static const mat4 proj = glm::ortho(-1, 1, -1, 1, -1, 1);
     auto *draw_list = ImGui::GetWindowDrawList();
 
@@ -92,14 +92,9 @@ bool Draw(vec2 pos, float size, mat4 &view, float pivot_distance) {
 
     if (hovered_i && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         static constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
-        static constexpr vec3 Ups[]{{0, 1, 0}, {0, 0, -1}, {0, 1, 0}, {0, 1, 0}, {0, 0, 1}, {0, 1, 0}};
-        const auto model = glm::inverse(view);
-        const auto pivot_pos = vec3{model[3]} - vec3{model[2]} * pivot_distance;
-        const auto eye = pivot_pos + Axes[*hovered_i] * pivot_distance;
-        view = glm::lookAt(eye, pivot_pos, Ups[*hovered_i]);
-        return true;
+        return Axes[*hovered_i];
     }
 
-    return false;
+    return {};
 }
 } // namespace OrientationGizmo
