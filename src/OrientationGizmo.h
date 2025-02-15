@@ -19,7 +19,7 @@ namespace OrientationGizmo {
 namespace internal {
 // Scales are in relation to the rect size.
 struct Scale {
-    float LineThickness{.017};
+    float LineWidth{.017};
     float PositiveRadius{.075};
     float NegativeRadius{.05};
     float AxisLength{.5f - PositiveRadius};
@@ -79,7 +79,7 @@ std::optional<vec3> Draw(vec2 pos, float size, const mat4 &view) {
         const bool selected = hovered_i && *hovered_i == i;
         const float radius = size * (is_positive ? Scale.PositiveRadius : Scale.NegativeRadius);
         const auto line_end = ToImVec(center + axis);
-        if (is_positive) draw_list->AddLine(ToImVec(center), line_end, color, size * Scale.LineThickness);
+        if (is_positive) draw_list->AddLine(ToImVec(center), line_end, color, size * Scale.LineWidth);
         draw_list->AddCircleFilled(line_end, radius, color);
         if (selected) draw_list->AddCircle(line_end, radius, IM_COL32_WHITE, 0, 1.1f);
         if (is_positive) {
