@@ -932,10 +932,12 @@ void Scene::RenderGizmo() {
             SetModel(SelectedEntity, position, orientation, scale);
         }
     }
-    static constexpr float OGizmoSize{110};
+    static constexpr float OGizmoSize{85};
     const float padding = 2 * line_height;
     const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-    if (auto dir = OrientationGizmo::Draw(pos, OGizmoSize, view)) Camera.SetTargetDirection(*dir);
+    if (auto res = OrientationGizmo::Draw(pos, OGizmoSize, view)) {
+        Camera.SetTargetDirection(res->Direction, res->Immediate);
+    }
     if (Camera.Tick()) UpdateTransformBuffers();
 }
 

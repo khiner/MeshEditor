@@ -26,7 +26,10 @@ struct Camera {
     void SetTargetDistance(float distance) { TargetDistance = distance; }
     // Orbit spherically around the target until landing at the given direction.
     // Distance to target is preserved.
-    void SetTargetDirection(vec3 direction) { TargetDirection = std::move(direction); }
+    void SetTargetDirection(vec3 direction, bool immediate = false) { 
+        TargetDirection = direction;
+        Immediate = immediate;
+     }
 
     // Orbit spherically around the target by the given angle deltas.
     // (azimuth, elevation) / (yaw, pitch) / (x, y) / (phi, theta)
@@ -42,6 +45,7 @@ struct Camera {
 private:
     std::optional<float> TargetDistance{};
     std::optional<vec3> TargetDirection{};
+    bool Immediate{false}; // Move immediately to target direction.
     float TickSpeed{0.3};
 
     void SetDistance(float distance);

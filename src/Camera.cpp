@@ -48,20 +48,27 @@ bool Camera::Tick() {
     if (TargetDistance) {
         const auto distance = GetDistance();
         if (abs(distance - *TargetDistance) < 0.001) {
+            SetDistance(*TargetDistance);
             TargetDistance.reset();
-            if (!TargetDirection) return false;
         } else {
             SetDistance(glm::mix(distance, *TargetDistance, TickSpeed));
         }
     }
     if (TargetDirection) {
+        if (Immediate) {
+            Position = (Target - *TargetDirection) * GetDistance();
+            TargetDirection.reset();
+            Immediate = false;
+            return true;
+        }
         const auto direction = glm::normalize(Position - Target);
         if (abs(glm::dot(direction, *TargetDirection) - 1.0f) < 0.001) {
+            Position = *TargetDirection * GetDistance();
             TargetDirection.reset();
-            return false;
+        } else {
+            const auto direction_next = glm::mix(direction, *TargetDirection, TickSpeed);
+            OrbitDelta(DirToAngles(direction_next, Up) - DirToAngles(direction, Up));
         }
-        const auto direction_next = glm::mix(direction, *TargetDirection, TickSpeed);
-        OrbitDelta(DirToAngles(direction_next, Up) - DirToAngles(direction, Up));
     }
     return true;
 }
