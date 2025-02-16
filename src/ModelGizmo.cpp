@@ -332,7 +332,7 @@ mat4 Transform(Model model, Mode mode, Op type, const ray &mouse_ray, std::optio
     if (g.RotationAngle != g.RotationAngleOrigin) g.RotationAngleOrigin = g.RotationAngle;
 
     if (mode == Local) {
-        const vec3 model_scale{glm::length(Right(model.M)), glm::length(Up(model.M)), glm::length(Dir(model.M))};
+        const vec3 model_scale{glm::length(model.M[0]), glm::length(model.M[1]), glm::length(model.M[2])};
         return model.Ortho * delta_rot * glm::scale(mat4{1}, model_scale);
     }
     auto res = model.M;
@@ -571,7 +571,7 @@ void Render(Model model, Op op, Op type, const mat4 &view_proj, const mat4 &view
 } // namespace
 
 namespace ModelGizmo {
-bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode mode, mat4 &m, std::optional<vec3> snap) {
+bool Draw(Mode mode, Op op, vec2 pos, vec2 size, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
     g.Pos = pos;
     g.Size = size;
 
@@ -668,6 +668,6 @@ bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op op, Mode m
     }
 
     Render({g.Model, m_ortho, m_inv}, op, g.CurrentOp, view_proj, view_inv, camera_ray);
-    return g.CurrentOp != NoOp;
+    return g.CurrentOp != NoOp && g.Using;
 }
 } // namespace ModelGizmo

@@ -8,6 +8,7 @@
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
+#include <numeric/mat3.h>
 
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -755,17 +756,7 @@ using namespace ImGui;
 
 namespace {
 vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
-vec2 ToGlm(vk::Extent2D e) { return {float(e.width), float(e.height)}; }
 vk::Extent2D ToVkExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
-
-// Returns a world space ray from the mouse into the scene.
-ray GetMouseWorldRay(Camera camera, vec2 view_extent) {
-    // Mouse pos in content region
-    const vec2 mouse_pos = ToGlm((GetMousePos() - GetCursorScreenPos()) / GetContentRegionAvail());
-    // Normalized Device Coordinates, $\mathcal{NDC} \in [-1,1]^2$
-    const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y};
-    return camera.ClipPosToWorldRay(mouse_pos_ndc, view_extent.x / view_extent.y);
-}
 
 void Capitalize(std::string &str) {
     if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
@@ -815,6 +806,15 @@ std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, cons
 }
 } // namespace
 
+// Returns a world space ray from the mouse into the scene.
+ray Scene::GetMouseWorldRay() const {
+    // Mouse pos in content region
+    const vec2 mouse_pos = ToGlm((GetMousePos() - GetCursorScreenPos()) / GetContentRegionAvail());
+    // Normalized Device Coordinates in [-1,1]^2
+    const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y};
+    return Camera.ClipPosToWorldRay(mouse_pos_ndc, Extent.width / Extent.height);
+}
+
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
 
@@ -853,7 +853,7 @@ void Scene::Interact() {
     if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp) return;
 
     // Handle mouse selection.
-    const auto mouse_world_ray = GetMouseWorldRay(Camera, ToGlm(Extent));
+    const auto mouse_world_ray = GetMouseWorldRay();
     if (SelectionMode == SelectionMode::Edit) {
         if (SelectedElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
             const auto &model = R.get<Model>(SelectedEntity);
@@ -921,15 +921,15 @@ void Scene::RenderGizmo() {
     const float line_height = GetTextLineHeightWithSpacing();
     const auto window_pos = ToGlm(GetWindowPos());
     auto view = Camera.GetView();
-    if (ShowModelGizmo && SelectedEntity != entt::null) {
+    if (MGizmo.Show && SelectedEntity != entt::null) {
         const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
         if (auto model = R.get<Model>(SelectedEntity).Transform;
-            ModelGizmo::Draw(window_pos + line_height, content_region, view, proj, ActiveGizmoOp, ModelGizmo::Local, model, GizmoSnap ? std::optional{GizmoSnapValue} : std::nullopt)) {
-            static vec3 skew, scale, position;
-            static vec4 perspective;
-            static glm::quat orientation;
-            glm::decompose(model, scale, orientation, position, skew, perspective);
-            SetModel(SelectedEntity, position, glm::quat{glm::eulerAngles(orientation)}, scale);
+            ModelGizmo::Draw(ModelGizmo::Local, MGizmo.Op, window_pos + line_height, content_region, model, view, proj, MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt)) {
+            // Decompose affine model matrix into pos, scale, and orientation.
+            const vec3 position = model[3];
+            const vec3 scale{glm::length(model[0]), glm::length(model[1]), glm::length(model[2])};
+            const auto orientation = glm::quat_cast(mat3{vec3{model[0]} / scale.x, vec3{model[1]} / scale.y, vec3{model[2]} / scale.z});
+            SetModel(SelectedEntity, position, orientation, scale);
         }
     }
     static constexpr float OGizmoSize{110};
@@ -1078,14 +1078,14 @@ void Scene::RenderControls() {
 
                     using namespace ModelGizmo;
                     const bool scale_enabled = !frozen;
-                    if (!scale_enabled && ActiveGizmoOp == Op::Scale) ActiveGizmoOp = Op::Translate;
+                    if (!scale_enabled && MGizmo.Op == Op::Scale) MGizmo.Op = Op::Translate;
 
-                    Checkbox("Gizmo", &ShowModelGizmo);
-                    if (ShowModelGizmo) {
+                    Checkbox("Gizmo", &MGizmo.Show);
+                    if (MGizmo.Show) {
                         if (const auto label = ToString(CurrentOp()); label != "") Text("Op: %s", label.data());
                         if (IsActive()) Text("Active");
 
-                        auto &op = ActiveGizmoOp;
+                        auto &op = MGizmo.Op;
                         if (IsKeyPressed(ImGuiKey_T)) op = Op::Translate;
                         if (IsKeyPressed(ImGuiKey_R)) op = Op::Rotate;
                         if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = Op::Scale;
@@ -1097,11 +1097,11 @@ void Scene::RenderControls() {
                         if (!scale_enabled) EndDisabled();
                         if (RadioButton("Universal", op == Op::Universal)) op = Op::Universal;
                         Spacing();
-                        Checkbox("Snap", &GizmoSnap);
-                        if (GizmoSnap) {
+                        Checkbox("Snap", &MGizmo.Snap);
+                        if (MGizmo.Snap) {
                             SameLine();
                             // todo link/unlink snap values
-                            DragFloat3("Snap", &GizmoSnapValue.x, 1.f, 0.01f, 100.f);
+                            DragFloat3("Snap", &MGizmo.SnapValue.x, 1.f, 0.01f, 100.f);
                         }
                     }
                     if (TreeNode("Model transform")) {

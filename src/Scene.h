@@ -205,12 +205,14 @@ struct Scene {
         InvalidateCommandBuffer();
     }
 
-    const vk::Extent2D &GetExtent() const { return Extent; }
+    vk::Extent2D GetExtent() const { return Extent; }
     vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
     vk::ImageView GetResolveImageView() const;
 
     // Handle mouse/keyboard interactions.
     void Interact();
+    ray GetMouseWorldRay() const; // World space ray from the mouse into the scene.
+
     // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
     // and it will be equal to the dimensions of `GetContentRegionAvail()` at the beginning of the call.
@@ -262,10 +264,13 @@ private:
     EdgeDetectionPipeline EdgeDetectionPipeline;
     std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
 
-    ModelGizmo::Op ActiveGizmoOp{ModelGizmo::Op::Translate};
-    bool ShowModelGizmo{false};
-    bool GizmoSnap; // Snap translate and scale gizmos.
-    vec3 GizmoSnapValue{0.5f};
+    struct ModelGizmoState {
+        ModelGizmo::Op Op{ModelGizmo::Op::Translate};
+        bool Show{false};
+        bool Snap; // Snap translate and scale gizmos.
+        vec3 SnapValue{0.5f};
+    };
+    ModelGizmoState MGizmo;
 
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.

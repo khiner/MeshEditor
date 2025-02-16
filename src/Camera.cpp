@@ -8,13 +8,11 @@ mat4 Camera::GetProjection(float aspect_ratio) const { return glm::perspective(g
 float Camera::GetDistance() const { return glm::distance(Position, Target); }
 
 ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
-    const mat4 inv_vp = glm::inverse(GetProjection(aspect_ratio) * GetView());
-    vec4 near_point = inv_vp * vec4(pos_clip.x, pos_clip.y, -1.0, 1.0);
-    near_point /= near_point.w; // Perspective divide.
-
-    vec4 far_point = inv_vp * vec4(pos_clip.x, pos_clip.y, 1.0, 1.0);
-    far_point /= far_point.w; // Perspective divide.
-
+    const auto vp_inv = glm::inverse(GetProjection(aspect_ratio) * GetView());
+    auto near_point = vp_inv * vec4{pos_clip.x, pos_clip.y, -1, 1};
+    near_point /= near_point.w;
+    auto far_point = vp_inv * vec4{pos_clip.x, pos_clip.y, 1, 1};
+    far_point /= far_point.w;
     return {near_point, glm::normalize(far_point - near_point)};
 }
 

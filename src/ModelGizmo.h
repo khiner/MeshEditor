@@ -42,5 +42,5 @@ bool IsActive();
 Op CurrentOp(); // Hovered or active operation.
 std::string_view ToString(Op);
 
-bool Draw(vec2 pos, vec2 size, const mat4 &view, const mat4 &proj, Op, Mode, mat4 &m, std::optional<vec3> snap = std::nullopt);
+bool Draw(Mode, Op, vec2 pos, vec2 size, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap = std::nullopt);
 } // namespace ModelGizmo
