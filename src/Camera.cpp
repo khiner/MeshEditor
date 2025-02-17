@@ -15,6 +15,9 @@ quat GetOrbitDelta(const quat &orientation, vec2 angles_delta) {
 }
 } // namespace
 
+bool Camera::IsAligned(vec3 direction) const {
+    return Close(glm::normalize(direction), Orientation * vec3{0, 0, 1});
+}
 mat4 Camera::GetView() const {
     const auto position = Target - (Orientation * vec3{0, 0, Distance});
     return glm::lookAt(position, Target, Orientation * vec3{0, 1, 0});

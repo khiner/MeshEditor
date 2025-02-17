@@ -11,9 +11,11 @@
 #include <ranges>
 #include <string_view>
 
-// Axis order: [+x, +y, +z, -x, -y, -z]
-
 namespace OrientationGizmo {
+
+// Axis order: [+x, +y, +z, -x, -y, -z]
+static constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
+
 namespace internal {
 // Scales are in relation to the rect size.
 struct Scale {
@@ -35,7 +37,6 @@ struct Color {
 struct Context {
     std::optional<vec2> MouseDownPos; // Only present if mouse was pressed in hover circle.
     std::optional<vec2> DragEndPos; // Only present if mouse was dragged past click threshold.
-    std::optional<uint32_t> SelectedAxis; // Remember the last selected axis to highlight.
     bool Hovered;
 };
 } // namespace internal
@@ -44,14 +45,7 @@ static constexpr internal::Scale Scale;
 static constexpr internal::Color Color;
 static internal::Context Context;
 
-// struct Result {
-//     vec3 Direction;
-//     bool Immediate{false}; // Apply the new orientation immediately. (Don't orbit to it.)
-// };
-
 bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.DragEndPos; }
-// Call when orientation has been changed by other means.
-void Clear() { Context = {}; }
 
 void Draw(vec2 pos, float size, Camera &camera) {
     static const mat4 proj = glm::ortho(-1, 1, -1, 1, -1, 1);
@@ -86,6 +80,8 @@ void Draw(vec2 pos, float size, Camera &camera) {
         hovered_i = it != std::ranges::end(depth_order) ? std::optional{*it} : std::nullopt;
     }
 
+    const bool is_aligned[3]{camera.IsAligned(Axes[0]), camera.IsAligned(Axes[1]), camera.IsAligned(Axes[2])};
+
     // Draw back to front
     for (auto i : std::views::reverse(depth_order)) {
         static constexpr auto ToImVec = [](vec2 v) { return ImVec2{v.x, v.y}; };
@@ -99,7 +95,7 @@ void Draw(vec2 pos, float size, Camera &camera) {
         if (hovered_i && *hovered_i == i) draw_list->AddCircle(line_end, radius, IM_COL32_WHITE, 20, 1.1f);
         else if (!is_positive) draw_list->AddCircle(line_end, radius, Color.Axes[i - 3], 20, 1.f);
         if (const bool selected = (hovered_i && *hovered_i == i);
-            is_positive || selected || (Context.SelectedAxis && *Context.SelectedAxis == i)) {
+            is_positive || selected || is_aligned[is_positive ? i : i - 3]) {
             static constexpr std::string_view AxisLabels[]{"X", "Y", "Z", "-X", "-Y", "-Z"};
             const auto *label = AxisLabels[i].data();
             const auto text_pos = line_end - ImGui::CalcTextSize(label) * 0.5f + ImVec2{0.5, 0};
@@ -118,7 +114,6 @@ void Draw(vec2 pos, float size, Camera &camera) {
             const auto mouse_delta = mouse_pos - *Context.MouseDownPos;
             if (glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
                 Context.DragEndPos = mouse_pos;
-                Context.SelectedAxis = std::nullopt;
             }
         } else { // Dragging
             const auto drag_delta = mouse_pos - *Context.DragEndPos;
@@ -128,11 +123,9 @@ void Draw(vec2 pos, float size, Camera &camera) {
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         if (!Context.DragEndPos && hovered_i) { // Click
             // If selecting the same axis, select the opposite axis.
-            if (*hovered_i == Context.SelectedAxis) {
+            if (is_aligned[*hovered_i > 2 ? *hovered_i - 3 : *hovered_i]) {
                 hovered_i = *hovered_i < 3 ? *hovered_i + 3 : *hovered_i - 3;
             }
-            Context.SelectedAxis = *hovered_i;
-            static constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
             camera.SetTargetDirection(Axes[*hovered_i]);
         }
         Context.MouseDownPos = std::nullopt;

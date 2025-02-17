@@ -379,7 +379,6 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity entity) {
     const auto &mesh = r.get<Mesh>(entity);
     const auto &transform = r.get<Model>(entity).Transform;
     const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
-    OrientationGizmo::Clear();
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
 
     // Create vertex indicator arrow pointing at the excited vertex.
@@ -845,7 +844,6 @@ void Scene::Interact() {
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
     if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
-        OrientationGizmo::Clear();
         if (io.KeyCtrl || io.KeySuper) {
             Camera.SetTargetDistance(Camera.Distance * (1 - wheel.y / 16.f));
         } else {
@@ -1241,7 +1239,6 @@ void Scene::RenderControls() {
             camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
             camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
             if (camera_changed) {
-                OrientationGizmo::Clear();
                 Camera.StopMoving();
                 UpdateTransformBuffers();
             }

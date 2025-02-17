@@ -29,6 +29,8 @@ struct Camera {
     bool Tick();
     void StopMoving();
 
+    bool IsAligned(vec3 direction) const;
+
 private:
     std::optional<float> TargetDistance{};
     std::optional<vec3> TargetDirection{};
