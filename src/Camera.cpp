@@ -2,6 +2,7 @@
 #include "numeric/vec4.h"
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 namespace {
 // Direction vector to spherical angles (azimuth and elevation).
@@ -29,6 +30,19 @@ ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
     auto far_point = vp_inv * vec4{pos_clip.x, pos_clip.y, 1, 1};
     far_point /= far_point.w;
     return {near_point, glm::normalize(far_point - near_point)};
+}
+
+void Camera::SetTargetDirection(vec3 direction, bool immediate) {
+    TargetDirection = glm::normalize(direction);
+    // If target direction is exactly Up or Down, nudge it a bit towards the camera to avoid the singularity.
+    if (NearPole(*TargetDirection, Up)) {
+        static constexpr float NudgeAngle{0.025};
+        const auto current_dir = glm::normalize(Position - Target);
+        // Rotation axis, perpendicular to both target_direction and current_direction.
+        const auto rotation_axis = glm::normalize(glm::cross(*TargetDirection, current_dir));
+        TargetDirection = glm::normalize(glm::angleAxis(NudgeAngle, rotation_axis) * (*TargetDirection));
+    }
+    Immediate = immediate;
 }
 
 void Camera::OrbitDelta(vec2 angles_delta) {
@@ -65,12 +79,17 @@ bool Camera::Tick() {
             return true;
         }
         const auto direction = glm::normalize(Position - Target);
-        if (abs(glm::dot(direction, *TargetDirection) - 1.0f) < 0.001) {
+        if (const auto angle = std::acos(glm::clamp(glm::dot(direction, *TargetDirection), -1.f, 1.f)); angle < 0.01) {
             Position = *TargetDirection * GetDistance();
             TargetDirection.reset();
         } else {
-            const auto direction_next = glm::mix(direction, *TargetDirection, TickSpeed);
-            OrbitDelta(DirToAngles(direction_next, Up) - DirToAngles(direction, Up));
+            // // Handle the singularity when target direction is exactly Up or Down
+            const auto safe_up = NearPole(direction, Up) ? glm::cross(glm::vec3{1, 0, 0}, *TargetDirection) : Up;
+            glm::quat current_orientation = glm::quatLookAt(direction, Up);
+            glm::quat target_orientation = glm::quatLookAt(*TargetDirection, safe_up);
+            glm::quat new_orientation = glm::slerp(current_orientation, target_orientation, TickSpeed);
+            const auto new_direction = new_orientation * vec3{0, 0, -1}; // Forward vector
+            Position = Target + new_direction * GetDistance();
         }
     }
     return true;
