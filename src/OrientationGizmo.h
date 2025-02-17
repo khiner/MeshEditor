@@ -4,9 +4,7 @@
 
 #pragma once
 
-#include "numeric/mat4.h"
-#include "numeric/vec2.h"
-#include "numeric/vec3.h"
+#include "Camera.h"
 
 #include <algorithm>
 #include <optional>
@@ -46,16 +44,16 @@ static constexpr internal::Scale Scale;
 static constexpr internal::Color Color;
 static internal::Context Context;
 
-struct Result {
-    vec3 Direction;
-    bool Immediate{false}; // Apply the new orientation immediately. (Don't orbit to it.)
-};
+// struct Result {
+//     vec3 Direction;
+//     bool Immediate{false}; // Apply the new orientation immediately. (Don't orbit to it.)
+// };
 
 bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.DragEndPos; }
 // Call when orientation has been changed by other means.
 void Clear() { Context = {}; }
 
-std::optional<Result> Draw(vec2 pos, float size, const mat4 &view) {
+void Draw(vec2 pos, float size, Camera &camera) {
     static const mat4 proj = glm::ortho(-1, 1, -1, 1, -1, 1);
     auto *draw_list = ImGui::GetWindowDrawList();
 
@@ -71,6 +69,7 @@ std::optional<Result> Draw(vec2 pos, float size, const mat4 &view) {
     if (Context.Hovered) draw_list->AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
 
     // Flip Y: ImGui uses top-left origin, and glm is bottom-left.
+    const auto view = camera.GetView();
     const auto view_proj = glm::scale(mat4{1}, vec3{1, -1, 1}) * (proj * view);
     const auto axes_proj = view_proj * glm::scale(mat4{1}, vec3{size * Scale.AxisLength});
     const vec3 axes[]{axes_proj[0], axes_proj[1], axes_proj[2], -axes_proj[0], -axes_proj[1], -axes_proj[2]};
@@ -124,17 +123,7 @@ std::optional<Result> Draw(vec2 pos, float size, const mat4 &view) {
         } else { // Dragging
             const auto drag_delta = mouse_pos - *Context.DragEndPos;
             Context.DragEndPos = mouse_pos;
-
-            // Compute new orientation direction.
-            static constexpr float DragSensitivity{0.008};
-            // The view matrix is an orthonormal transform (for an affine camera),
-            // so its inverse is just its transpose for the rotation part.
-            const auto view_inv = glm::transpose(glm::mat3{view});
-            // Horizontal and vertical drags rotates around the up and right axes, respectively.
-            const auto rot_delta_x = glm::angleAxis(drag_delta.x * DragSensitivity, view_inv[1]);
-            const auto rot_delta_y = glm::angleAxis(drag_delta.y * DragSensitivity, view_inv[0]);
-            // Current dir is camera forward vector in world space.
-            return Result{glm::normalize(-glm::normalize(view_inv[2]) * (rot_delta_x * rot_delta_y)), true};
+            camera.OrbitDelta(vec2{-drag_delta.x, drag_delta.y} * 0.01f);
         }
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         if (!Context.DragEndPos && hovered_i) { // Click
@@ -144,12 +133,10 @@ std::optional<Result> Draw(vec2 pos, float size, const mat4 &view) {
             }
             Context.SelectedAxis = *hovered_i;
             static constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
-            return Result{Axes[*hovered_i], false};
+            camera.SetTargetDirection(Axes[*hovered_i]);
         }
         Context.MouseDownPos = std::nullopt;
         Context.DragEndPos = std::nullopt;
     }
-
-    return {};
 }
 } // namespace OrientationGizmo

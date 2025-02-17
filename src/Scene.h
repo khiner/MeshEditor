@@ -12,7 +12,6 @@
 #include "numeric/vec4.h"
 
 #include <entt/entity/fwd.hpp>
-#include <glm/gtx/quaternion.hpp>
 
 #include <set>
 
@@ -171,7 +170,7 @@ struct MeshCreateInfo {
     bool Select{true}, Visible{true};
 };
 
-static constexpr Camera CreateDefaultCamera(const World &world) { return {world.Up, {0, 0, 2}, world.Origin, 60, 0.01, 100}; }
+static constexpr Camera CreateDefaultCamera(const World &world) { return {{0, 0, 2}, world.Origin, 60, 0.01, 100}; }
 
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);

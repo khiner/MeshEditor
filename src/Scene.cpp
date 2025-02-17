@@ -842,15 +842,14 @@ void Scene::Interact() {
     }
     if (!IsWindowHovered()) return;
 
-    // We adopt Blender's mouse wheel for camera rotation, and Cmd+wheel to zoom.
-    if (const vec2 wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; wheel != vec2{0, 0}) {
-        if (GetIO().KeyCtrl || GetIO().KeySuper) {
-            OrientationGizmo::Clear();
-            Camera.SetTargetDistance(Camera.GetDistance() * (1 - wheel.y / 16.f));
+    // Mouse wheel for camera rotation, Cmd+wheel to zoom.
+    const auto &io = GetIO();
+    if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
+        OrientationGizmo::Clear();
+        if (io.KeyCtrl || io.KeySuper) {
+            Camera.SetTargetDistance(Camera.Distance * (1 - wheel.y / 16.f));
         } else {
-            OrientationGizmo::Clear();
-            Camera.OrbitDelta(wheel * 0.1f);
-            UpdateTransformBuffers();
+            Camera.OrbitDelta(vec2{-wheel.x, wheel.y} * 0.1f);
         }
     }
     if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp || OrientationGizmo::IsActive()) return;
@@ -938,9 +937,7 @@ void Scene::RenderGizmo() {
     static constexpr float OGizmoSize{90};
     const float padding = 2 * line_height;
     const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-    if (auto res = OrientationGizmo::Draw(pos, OGizmoSize, view)) {
-        Camera.SetTargetDirection(res->Direction, res->Immediate);
-    }
+    OrientationGizmo::Draw(pos, OGizmoSize, Camera);
     if (Camera.Tick()) UpdateTransformBuffers();
 }
 
@@ -1238,7 +1235,7 @@ void Scene::RenderControls() {
                 Camera = CreateDefaultCamera(World);
                 camera_changed = true;
             }
-            camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
+            // camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
             camera_changed |= SliderFloat3("Target", &Camera.Target.x, -10, 10);
             camera_changed |= SliderFloat("Field of view (deg)", &Camera.FieldOfView, 1, 180);
             camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
