@@ -132,6 +132,10 @@ std::optional<Result> Draw(vec2 pos, float size, const mat4 &view) {
         }
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         if (!Context.DragEndPos && hovered_i) { // Click
+            // If selecting the same axis, select the opposite axis.
+            if (*hovered_i == Context.SelectedAxis) {
+                hovered_i = *hovered_i < 3 ? *hovered_i + 3 : *hovered_i - 3;
+            }
             Context.SelectedAxis = *hovered_i;
             static constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
             return Result{Axes[*hovered_i], false};
