@@ -3,7 +3,22 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-mat4 Camera::GetView() const { return glm::lookAt(Position, Target, Up); }
+namespace {
+// Direction vector to spherical angles (azimuth and elevation).
+constexpr vec2 DirToAngles(const vec3 &dir, const vec3 &up) {
+    return {atan2(dir.z, dir.x), asin(glm::clamp(glm::dot(dir, up), -1.f, 1.f))};
+}
+constexpr bool NearPole(const vec3 &dir, const vec3 &up) { return glm::abs(glm::dot(dir, up)) > 0.9999f; }
+} // namespace
+
+mat4 Camera::GetView() const {
+    // Detect if the camera is near the up/down pole to avoid degenerate view matrix.
+    const auto direction = glm::normalize(Position - Target);
+    const auto near_pole = NearPole(direction, Up);
+    const auto safe_up = near_pole ? glm::cross(direction, glm::vec3{1, 0, 0}) : Up;
+    return glm::lookAt(Position, Target, safe_up);
+}
+
 mat4 Camera::GetProjection(float aspect_ratio) const { return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip); }
 float Camera::GetDistance() const { return glm::distance(Position, Target); }
 
@@ -15,18 +30,6 @@ ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
     far_point /= far_point.w;
     return {near_point, glm::normalize(far_point - near_point)};
 }
-
-void Camera::SetPositionFromView(const mat4 &view) {
-    Position = glm::inverse(view)[3];
-    StopMoving();
-}
-
-// Direction vector to spherical angles (azimuth and elevation).
-namespace {
-constexpr vec2 DirToAngles(const vec3 &dir, const vec3 &up) {
-    return {atan2(dir.z, dir.x), asin(glm::clamp(glm::dot(dir, up), -1.0f, 1.0f))};
-}
-} // namespace
 
 void Camera::OrbitDelta(vec2 angles_delta) {
     const auto dir = glm::normalize(Target - Position);

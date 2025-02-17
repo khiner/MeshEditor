@@ -22,7 +22,6 @@ struct Camera {
     // Converts a position in clip space to a ray in world space.
     ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
 
-    void SetPositionFromView(const mat4 &);
     void SetTargetDistance(float distance) { TargetDistance = distance; }
     // Orbit spherically around the target until landing at the given direction.
     // Distance to target is preserved.
