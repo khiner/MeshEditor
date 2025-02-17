@@ -379,6 +379,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity entity) {
     const auto &mesh = r.get<Mesh>(entity);
     const auto &transform = r.get<Model>(entity).Transform;
     const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
+    OrientationGizmo::Clear();
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
 
     // Create vertex indicator arrow pointing at the excited vertex.
@@ -844,13 +845,15 @@ void Scene::Interact() {
     // We adopt Blender's mouse wheel for camera rotation, and Cmd+wheel to zoom.
     if (const vec2 wheel{GetIO().MouseWheelH, GetIO().MouseWheel}; wheel != vec2{0, 0}) {
         if (GetIO().KeyCtrl || GetIO().KeySuper) {
+            OrientationGizmo::Clear();
             Camera.SetTargetDistance(Camera.GetDistance() * (1 - wheel.y / 16.f));
         } else {
+            OrientationGizmo::Clear();
             Camera.OrbitDelta(wheel * 0.1f);
             UpdateTransformBuffers();
         }
     }
-    if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp) return;
+    if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp || OrientationGizmo::IsActive()) return;
 
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay();
@@ -932,7 +935,7 @@ void Scene::RenderGizmo() {
             SetModel(SelectedEntity, position, orientation, scale);
         }
     }
-    static constexpr float OGizmoSize{85};
+    static constexpr float OGizmoSize{90};
     const float padding = 2 * line_height;
     const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
     if (auto res = OrientationGizmo::Draw(pos, OGizmoSize, view)) {
@@ -1241,6 +1244,7 @@ void Scene::RenderControls() {
             camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
             camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
             if (camera_changed) {
+                OrientationGizmo::Clear();
                 Camera.StopMoving();
                 UpdateTransformBuffers();
             }
