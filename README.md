@@ -21,7 +21,7 @@ General features:
   - Used for mouse interactions - this is not a ray tracing renderer :)
 * Translate / rotate / (nonuniformly) scale meshes and instances with model gizmo (adapted from [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo)) and numeric inputs
 * Simple camera + scene lighting model, roughly matching Blender visually
-* Edit camera with view gizmo (heavily adapted from [ImOGuizmo](https://github.com/fknfilewalker/imoguizmo)), mouse wheel, and umeric inputs
+* Edit camera with mouse wheel, numeric inputs, or with a custom orientation gizmo designed to look and behave just like Blender's
 * Edit lighting parameters
 * Render face/vertex normals as lines for debugging
 * Render bounding box / BVH wireframes for debugging

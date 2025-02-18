@@ -1,6 +1,5 @@
-// Started with https://github.com/fknfilewalker/imoguizmo and modified/simplified heavily.
-
-// imgui must be included before this header.
+// Designed to look and behave just like Blender's orientation gizmo.
+// imgui.h must be included before this header.
 
 #pragma once
 
