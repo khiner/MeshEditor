@@ -26,21 +26,24 @@ struct Camera {
     mat4 GetView() const;
     mat4 GetProjection(float aspect_ratio) const;
     ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
-    void SetTargetDistance(float distance) { TargetDistance = distance; }
-    void SetTargetYawPitch(vec2 yaw_pitch) { TargetYawPitch = yaw_pitch; }
-    void SetTargetDirection(vec3);
-    void AddYawPitch(vec2);
-    bool Tick();
-    void StopMoving();
 
     bool IsAligned(vec3 direction) const;
+
+    void SetTargetDistance(float);
+    void SetTargetYawPitch(vec2);
+    void SetTargetDirection(vec3);
+    void AddYawPitch(vec2);
+    void SetYawPitchVelocity(vec2 vel) { YawPitchVelocity = vel; }
+    void StopMoving();
+
+    bool Tick();
 
 private:
     std::optional<float> TargetDistance{};
     std::optional<vec2> TargetYawPitch{};
+    vec2 YawPitchVelocity{};
     bool Changed{false};
     float TickSpeed{0.25};
 
-    void SetDistance(float distance);
-    void SetYawPitch(vec2);
+    void _SetYawPitch(vec2);
 };

@@ -8,11 +8,9 @@ constexpr bool Close(const vec3 &dir, const vec3 &up) { return glm::abs(glm::dot
 // Wrap angle to [-pi, pi]
 constexpr float WrapYaw(float angle) { return glm::mod(angle, glm::two_pi<float>()); }
 constexpr float WrapPitch(float angle) { return glm::atan(glm::sin(angle), glm::cos(angle)); }
+constexpr float LengthSq(vec2 v) { return glm::dot(v, v); }
 } // namespace
 
-void Camera::SetTargetDirection(vec3 direction) {
-    SetTargetYawPitch({WrapYaw(atan2(direction.z, direction.x)), WrapPitch(asin(direction.y))});
-}
 bool Camera::IsAligned(vec3 direction) const {
     const auto current_dir = glm::normalize(vec3{glm::cos(Yaw) * glm::cos(Pitch), glm::sin(Pitch), glm::sin(Yaw) * glm::cos(Pitch)});
     return Close(current_dir, direction);
@@ -35,16 +33,24 @@ ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
     return {near_point, glm::normalize(far_point - near_point)};
 }
 
-void Camera::SetYawPitch(vec2 yaw_pitch) {
-    Yaw = WrapYaw(yaw_pitch.x);
-    Pitch = WrapPitch(yaw_pitch.y);
+void Camera::SetTargetDirection(vec3 direction) {
+    SetTargetYawPitch({WrapYaw(atan2(direction.z, direction.x)), WrapPitch(asin(direction.y))});
+    YawPitchVelocity = {};
 }
-
+void Camera::SetTargetDistance(float distance) {
+    TargetDistance = distance;
+    YawPitchVelocity = {};
+}
+void Camera::SetTargetYawPitch(vec2 yaw_pitch) {
+    TargetYawPitch = yaw_pitch;
+    YawPitchVelocity = {};
+}
 void Camera::AddYawPitch(vec2 yaw_pitch_delta) {
-    SetYawPitch(vec2{Yaw, Pitch} + yaw_pitch_delta);
+    _SetYawPitch(vec2{Yaw, Pitch} + yaw_pitch_delta);
     Changed = true;
     TargetYawPitch.reset();
     TargetDistance.reset();
+    YawPitchVelocity = {};
 }
 
 bool Camera::Tick() {
@@ -52,28 +58,30 @@ bool Camera::Tick() {
         Changed = false;
         return true;
     }
+    if (YawPitchVelocity != vec2{0}) {
+        _SetYawPitch(vec2{Yaw, Pitch} + YawPitchVelocity);
+        YawPitchVelocity *= 0.9f;
+        if (LengthSq(YawPitchVelocity) < 0.00001) YawPitchVelocity = {};
+        return true;
+    }
     if (!TargetDistance && !TargetYawPitch) return false;
 
     if (TargetDistance) {
         const auto distance = Distance;
         if (std::abs(distance - *TargetDistance) < 0.0001) {
-            SetDistance(*TargetDistance);
+            Distance = *TargetDistance;
             TargetDistance.reset();
         } else {
-            SetDistance(glm::mix(distance, *TargetDistance, TickSpeed));
+            Distance = glm::mix(distance, *TargetDistance, TickSpeed);
         }
     }
     if (TargetYawPitch) {
         const vec2 current{Yaw, Pitch};
-        const vec2 target = *TargetYawPitch;
-        // If the target or current dir is a pole, keep the current yaw.
-        const bool target_is_pole = abs(abs(target.y) - glm::half_pi<float>()) < 0.01;
-        const bool current_is_pole = abs(abs(current.y) - glm::half_pi<float>()) < 0.01;
-        const auto delta = target_is_pole || current_is_pole ? vec2{0, target.y - current.y} : target - current;
-        if (glm::length(delta) < 0.01) {
+        const auto delta = *TargetYawPitch - current;
+        if (LengthSq(delta) < 0.0001) {
             TargetYawPitch.reset();
         } else {
-            SetYawPitch(current + glm::mix(vec2{0}, delta, TickSpeed));
+            _SetYawPitch(current + glm::mix(vec2{0}, delta, TickSpeed));
         }
     }
     return true;
@@ -84,6 +92,7 @@ void Camera::StopMoving() {
     TargetYawPitch.reset();
 }
 
-void Camera::SetDistance(float distance) {
-    Distance = distance;
+void Camera::_SetYawPitch(vec2 yaw_pitch) {
+    Yaw = WrapYaw(yaw_pitch.x);
+    Pitch = WrapPitch(yaw_pitch.y);
 }
