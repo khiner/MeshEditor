@@ -1,5 +1,6 @@
 #pragma once
 
+#include "numeric/mat3.h"
 #include "numeric/mat4.h"
 #include "numeric/ray.h"
 #include "numeric/vec2.h"
@@ -27,12 +28,16 @@ struct Camera {
     mat4 GetProjection(float aspect_ratio) const;
     ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
 
+    vec3 Forward() const;
+    mat3 Basis() const;
+
     bool IsAligned(vec3 direction) const;
 
     void SetTargetDistance(float);
     void SetTargetYawPitch(vec2);
     void SetTargetDirection(vec3);
     void AddYawPitch(vec2);
+
     // Not currently used, since I need to figure out trackpad touch events.
     void SetYawPitchVelocity(vec2 vel) { YawPitchVelocity = vel; }
     void StopMoving();
@@ -47,4 +52,5 @@ private:
     float TickSpeed{0.25};
 
     void _SetYawPitch(vec2);
+    vec3 YAxis() const; // May be flipped depending on pitch.
 };

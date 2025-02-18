@@ -32,7 +32,7 @@ struct Color {
         IM_COL32(98, 138, 34, 255),
         IM_COL32(52, 100, 154, 255),
     };
-    ImU32 Hover{IM_COL32(100, 100, 100, 130)};
+    ImU32 Hover{IM_COL32(120, 120, 120, 130)};
 };
 struct Context {
     std::optional<vec2> MouseDownPos; // Only present if mouse was pressed in hover circle.
@@ -48,54 +48,54 @@ static internal::Context Context;
 bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.DragEndPos; }
 
 void Draw(vec2 pos, float size, Camera &camera) {
-    static const mat4 proj = glm::ortho(-1, 1, -1, 1, -1, 1);
     auto *draw_list = ImGui::GetWindowDrawList();
 
     const auto mouse_pos_imgui = ImGui::GetIO().MousePos;
     const vec2 mouse_pos{mouse_pos_imgui.x, mouse_pos_imgui.y};
-    const auto MouseInCircle = [&mouse_pos](vec2 center, float r) {
-        return glm::dot(mouse_pos - center, mouse_pos - center) <= r * r;
-    };
-
     const auto hover_circle_r = size * Scale.HoverCircleRadius;
     const auto center = pos + vec2{size, size} * 0.5f;
-    Context.Hovered = MouseInCircle(center, hover_circle_r);
+    Context.Hovered = glm::dot(mouse_pos - center, mouse_pos - center) <= hover_circle_r * hover_circle_r;
     if (Context.Hovered) draw_list->AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
 
-    // Flip Y: ImGui uses top-left origin, and glm is bottom-left.
-    const auto view = camera.GetView();
-    const auto view_proj = glm::scale(mat4{1}, vec3{1, -1, 1}) * (proj * view);
-    const auto axes_proj = view_proj * glm::scale(mat4{1}, vec3{size * Scale.AxisLength});
-    const vec3 axes[]{axes_proj[0], axes_proj[1], axes_proj[2], -axes_proj[0], -axes_proj[1], -axes_proj[2]};
-    // Sort axis based on z-depth in clip space.
-    size_t depth_order[]{0, 1, 2, 3, 4, 5};
-    std::ranges::sort(depth_order, [&axes](auto i, auto j) { return axes[i].z < axes[j].z; });
-
-    // Find first hovered.
-    std::optional<size_t> hovered_i;
-    if (Context.Hovered) {
-        const auto it = std::ranges::find_if(depth_order, [&](size_t i) {
-            return MouseInCircle(center + vec2{axes[i]}, size * Scale.CircleRadius);
-        });
-        hovered_i = it != std::ranges::end(depth_order) ? std::optional{*it} : std::nullopt;
+    // Project camera-relative axes to screen space.
+    const mat3 transform = glm::transpose(camera.Basis());
+    static vec3 axes[6];
+    for (size_t i = 0; i < 6; ++i) {
+        axes[i] = vec3{i < 3 ? transform[i] : -transform[i - 3]} * size * Scale.AxisLength;
+        // Flip y: ImGui uses top-left origin, and glm is bottom-left.
+        axes[i].y = -axes[i].y;
     }
 
-    const bool is_aligned[3]{camera.IsAligned(Axes[0]), camera.IsAligned(Axes[1]), camera.IsAligned(Axes[2])};
+    static size_t AxisIndices[]{0, 1, 2, 3, 4, 5};
+    // Sort axis based on z-depth in clip space, with farthest first.
+    std::ranges::sort(AxisIndices, [](auto i, auto j) { return axes[i].z > axes[j].z; });
+
+    // Find closest hovered axis.
+    std::optional<size_t> hovered_i;
+    if (Context.Hovered && !Context.DragEndPos) {
+        hovered_i = std::ranges::min(AxisIndices, {}, [&](size_t i) {
+            const auto mouse_delta = mouse_pos - (center + vec2{axes[i]});
+            // Add z to avoid hovering (covered) back axes.
+            return glm::dot(mouse_delta, mouse_delta) + axes[i].z;
+        });
+    }
+
+    const bool is_aligned[]{camera.IsAligned(Axes[0]), camera.IsAligned(Axes[1]), camera.IsAligned(Axes[2])};
 
     // Draw back to front
-    for (auto i : std::views::reverse(depth_order)) {
+    for (auto i : AxisIndices) {
         static constexpr auto ToImVec = [](vec2 v) { return ImVec2{v.x, v.y}; };
         const vec2 axis{axes[i]};
         const auto color = Color.Axes[i];
-        const bool is_positive = i < 3;
+        const bool positive = i < 3;
         const float radius = size * Scale.CircleRadius;
         const auto line_end = ToImVec(center + axis);
-        if (is_positive) draw_list->AddLine(ToImVec(center), line_end, color, 1.5);
+        if (positive) draw_list->AddLine(ToImVec(center), line_end, color, 1.5);
         draw_list->AddCircleFilled(line_end, radius, color);
         if (hovered_i && *hovered_i == i) draw_list->AddCircle(line_end, radius, IM_COL32_WHITE, 20, 1.1f);
-        else if (!is_positive) draw_list->AddCircle(line_end, radius, Color.Axes[i - 3], 20, 1.f);
+        else if (!positive) draw_list->AddCircle(line_end, radius, Color.Axes[i - 3], 20, 1.f);
         if (const bool selected = (hovered_i && *hovered_i == i);
-            is_positive || selected || is_aligned[is_positive ? i : i - 3]) {
+            positive || selected || is_aligned[positive ? i : i - 3]) {
             static constexpr std::string_view AxisLabels[]{"X", "Y", "Z", "-X", "-Y", "-Z"};
             const auto *label = AxisLabels[i].data();
             const auto text_pos = line_end - ImGui::CalcTextSize(label) * 0.5f + ImVec2{0.5, 0};
