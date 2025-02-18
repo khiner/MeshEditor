@@ -7,7 +7,7 @@
 #include "World.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
-#include "numeric/mat4.h"
+#include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
@@ -170,7 +170,7 @@ struct MeshCreateInfo {
     bool Select{true}, Visible{true};
 };
 
-static constexpr Camera CreateDefaultCamera(const World &world) { return {{0, 0, 2}, world.Origin, 60, 0.01, 100}; }
+static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, 60, 0.01, 100}; }
 
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);
@@ -236,7 +236,7 @@ struct Scene {
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
 private:
-    Camera Camera{CreateDefaultCamera(World)};
+    Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.

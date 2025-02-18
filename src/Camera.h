@@ -1,12 +1,12 @@
 #pragma once
 
 #include "numeric/mat4.h"
-#include "numeric/quat.h"
 #include "numeric/ray.h"
 #include "numeric/vec2.h"
 
 #include <optional>
 
+// This is specifically designed to be the view camera, not a free camera.
 struct Camera {
     Camera(vec3 position, vec3 target, float field_of_view, float near_clip, float far_clip)
         : Target(target), Distance(glm::length(position - target)), FieldOfView(field_of_view), NearClip(near_clip), FarClip(far_clip) {
@@ -33,6 +33,7 @@ struct Camera {
     void SetTargetYawPitch(vec2);
     void SetTargetDirection(vec3);
     void AddYawPitch(vec2);
+    // Not currently used, since I need to figure out trackpad touch events.
     void SetYawPitchVelocity(vec2 vel) { YawPitchVelocity = vel; }
     void StopMoving();
 

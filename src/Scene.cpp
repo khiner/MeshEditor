@@ -847,7 +847,7 @@ void Scene::Interact() {
         if (io.KeyCtrl || io.KeySuper) {
             Camera.SetTargetDistance(Camera.Distance * (1 - wheel.y / 16.f));
         } else {
-            Camera.SetYawPitchVelocity(wheel * 0.1f);
+            Camera.AddYawPitch(wheel * 0.1f);
         }
     }
     if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp || OrientationGizmo::IsActive()) return;
@@ -1230,7 +1230,7 @@ void Scene::RenderControls() {
         if (BeginTabItem("Camera")) {
             bool camera_changed = false;
             if (Button("Reset camera")) {
-                Camera = CreateDefaultCamera(World);
+                Camera = CreateDefaultCamera();
                 camera_changed = true;
             }
             // camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
