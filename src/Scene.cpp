@@ -847,7 +847,7 @@ void Scene::Interact() {
         if (io.KeyCtrl || io.KeySuper) {
             Camera.SetTargetDistance(Camera.Distance * (1 - wheel.y / 16.f));
         } else {
-            Camera.OrbitDelta(vec2{-wheel.x, wheel.y} * 0.1f);
+            Camera.AddYawPitch(wheel * 0.1f);
         }
     }
     if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp || OrientationGizmo::IsActive()) return;

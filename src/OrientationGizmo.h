@@ -118,7 +118,7 @@ void Draw(vec2 pos, float size, Camera &camera) {
         } else { // Dragging
             const auto drag_delta = mouse_pos - *Context.DragEndPos;
             Context.DragEndPos = mouse_pos;
-            camera.OrbitDelta(vec2{-drag_delta.x, drag_delta.y} * 0.01f);
+            camera.AddYawPitch(drag_delta * 0.01f);
         }
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         if (!Context.DragEndPos && hovered_i) { // Click

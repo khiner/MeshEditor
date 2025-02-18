@@ -3,24 +3,23 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
-const vec3 YAxis{0, 1, 0}, XAxis{1, 0, 0};
+const vec3 YAxis{0, 1, 0};
 constexpr bool Close(const vec3 &dir, const vec3 &up) { return glm::abs(glm::dot(dir, up)) > 0.9999f; }
-
-quat GetOrbitDelta(const quat &orientation, vec2 angles_delta) {
-    // const bool is_pole = Close(orientation * vec3{0, 0, 1}, YAxis);
-    // todo Need to handle poles differently to avoid skewing camera.
-    const auto yaw_rotation = glm::angleAxis(angles_delta.x, YAxis);
-    const auto pitch_rotation = glm::angleAxis(angles_delta.y, orientation * XAxis);
-    return glm::normalize(pitch_rotation * yaw_rotation * orientation);
-}
+// Wrap angle to [-pi, pi]
+constexpr float WrapYaw(float angle) { return glm::mod(angle, glm::two_pi<float>()); }
+constexpr float WrapPitch(float angle) { return glm::atan(glm::sin(angle), glm::cos(angle)); }
 } // namespace
 
+void Camera::SetTargetDirection(vec3 direction) {
+    SetTargetYawPitch({WrapYaw(atan2(direction.z, direction.x)), WrapPitch(asin(direction.y))});
+}
 bool Camera::IsAligned(vec3 direction) const {
-    return Close(glm::normalize(direction), Orientation * vec3{0, 0, 1});
+    const auto current_dir = glm::normalize(vec3{glm::cos(Yaw) * glm::cos(Pitch), glm::sin(Pitch), glm::sin(Yaw) * glm::cos(Pitch)});
+    return Close(current_dir, direction);
 }
 mat4 Camera::GetView() const {
-    const auto position = Target - (Orientation * vec3{0, 0, Distance});
-    return glm::lookAt(position, Target, Orientation * vec3{0, 1, 0});
+    const bool is_flipped = Pitch > glm::half_pi<float>() || Pitch < -glm::half_pi<float>();
+    return glm::lookAt(Target + Distance * vec3{glm::cos(Yaw) * glm::cos(Pitch), glm::sin(Pitch), glm::sin(Yaw) * glm::cos(Pitch)}, Target, YAxis * (is_flipped ? -1.f : 1.f));
 }
 
 mat4 Camera::GetProjection(float aspect_ratio) const {
@@ -36,10 +35,15 @@ ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
     return {near_point, glm::normalize(far_point - near_point)};
 }
 
-void Camera::OrbitDelta(vec2 angles_delta) {
-    Orientation = GetOrbitDelta(Orientation, angles_delta);
+void Camera::SetYawPitch(vec2 yaw_pitch) {
+    Yaw = WrapYaw(yaw_pitch.x);
+    Pitch = WrapPitch(yaw_pitch.y);
+}
+
+void Camera::AddYawPitch(vec2 yaw_pitch_delta) {
+    SetYawPitch(vec2{Yaw, Pitch} + yaw_pitch_delta);
     Changed = true;
-    TargetDirection.reset();
+    TargetYawPitch.reset();
     TargetDistance.reset();
 }
 
@@ -48,7 +52,7 @@ bool Camera::Tick() {
         Changed = false;
         return true;
     }
-    if (!TargetDistance && !TargetDirection) return false;
+    if (!TargetDistance && !TargetYawPitch) return false;
 
     if (TargetDistance) {
         const auto distance = Distance;
@@ -59,24 +63,17 @@ bool Camera::Tick() {
             SetDistance(glm::mix(distance, *TargetDistance, TickSpeed));
         }
     }
-    if (TargetDirection) {
-        const auto current_direction = glm::normalize(Target - (Orientation * vec3{0, 0, Distance}));
-        const vec2 current_angles{
-            atan2(current_direction.x, current_direction.z),
-            asin(glm::clamp(current_direction.y, -1.f, 1.f))
-        };
-        const vec2 target_angles{
-            atan2(TargetDirection->x, TargetDirection->z),
-            asin(glm::clamp(TargetDirection->y, -1.f, 1.f))
-        };
+    if (TargetYawPitch) {
+        const vec2 current{Yaw, Pitch};
+        const vec2 target = *TargetYawPitch;
         // If the target or current dir is a pole, keep the current yaw.
-        const bool target_is_pole = Close(*TargetDirection, YAxis), current_is_pole = Close(current_direction, YAxis);
-        const auto delta_angles = target_is_pole || current_is_pole ? vec2{0, target_angles.y - current_angles.y} : target_angles - current_angles;
-        if (glm::length(delta_angles) < 0.01) {
-            TargetDirection.reset();
+        const bool target_is_pole = abs(abs(target.y) - glm::half_pi<float>()) < 0.01;
+        const bool current_is_pole = abs(abs(current.y) - glm::half_pi<float>()) < 0.01;
+        const auto delta = target_is_pole || current_is_pole ? vec2{0, target.y - current.y} : target - current;
+        if (glm::length(delta) < 0.01) {
+            TargetYawPitch.reset();
         } else {
-            // Pass the deltas to OrbitDelta to apply smooth rotation
-            Orientation = GetOrbitDelta(Orientation, glm::mix(vec2{0}, delta_angles, TickSpeed));
+            SetYawPitch(current + glm::mix(vec2{0}, delta, TickSpeed));
         }
     }
     return true;
@@ -84,7 +81,7 @@ bool Camera::Tick() {
 
 void Camera::StopMoving() {
     TargetDistance.reset();
-    TargetDirection.reset();
+    TargetYawPitch.reset();
 }
 
 void Camera::SetDistance(float distance) {
