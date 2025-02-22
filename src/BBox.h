@@ -5,11 +5,11 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include <algorithm>
+#include <array>
 #include <limits>
 #include <numeric>
 #include <optional>
-#include <ranges>
+#include <span>
 
 using uint = uint32_t;
 
@@ -25,7 +25,7 @@ struct BBox {
         const auto corners = Corners();
         BBox bbox;
         for (const vec3 &corner : corners) {
-            const vec3 transformed = transform * vec4(corner, 1);
+            const vec3 transformed = transform * vec4{corner, 1};
             bbox.Min = glm::min(bbox.Min, transformed);
             bbox.Max = glm::max(bbox.Max, transformed);
         }

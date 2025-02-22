@@ -15,16 +15,15 @@ if(APPLE)
 endif()
 
 set(STATIC_FAUST on CACHE BOOL "Build Static Faust library" FORCE)
-set(SDL_STATIC ON CACHE BOOL "Build SDL3 statically" FORCE)
 
 add_subdirectory(lib)
 
 # Ignore lib warnings
 target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
-target_compile_options(SDL3-static PRIVATE -w)
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
+find_package(SDL3 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
 find_package(Vulkan REQUIRED)
@@ -104,7 +103,7 @@ find_library(SPIRV_CROSS_CORE_LIB spirv-cross-core $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 message(STATUS "Found spirv-cross-core in: ${SPIRV_CROSS_CORE_LIB}")
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3-static ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F lunasvg)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F lunasvg)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -114,7 +113,7 @@ endif()
 
 # Disable lib warnings
 # staticlib is faustlib (can't use alias target)
-set(disable_warning_targets staticlib SDL3-static mesh2faust OpenMeshCore)
+set(disable_warning_targets staticlib mesh2faust OpenMeshCore)
 foreach(target IN LISTS disable_warning_targets)
     target_compile_options(${target} PRIVATE -w)
 endforeach()

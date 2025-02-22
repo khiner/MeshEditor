@@ -19,7 +19,6 @@ namespace internal {
 // Scales are in relation to the rect size.
 struct Scale {
     float CircleRadius{.095};
-    float AxisLength{.5f - CircleRadius};
     float HoverCircleRadius{.5};
 };
 struct Color {
@@ -60,9 +59,8 @@ void Draw(vec2 pos, float size, Camera &camera) {
     const mat3 transform = glm::transpose(camera.Basis());
     static vec3 axes[6];
     for (size_t i = 0; i < 6; ++i) {
-        axes[i] = vec3{i < 3 ? transform[i] : -transform[i - 3]} * size * Scale.AxisLength;
-        // Flip y: ImGui uses top-left origin, and glm is bottom-left.
-        axes[i].y = -axes[i].y;
+        axes[i] = vec3{i < 3 ? transform[i] : -transform[i - 3]} * size * (.5f - Scale.CircleRadius);
+        axes[i].y = -axes[i].y; // Flip for ImGui
     }
 
     static size_t AxisIndices[]{0, 1, 2, 3, 4, 5};

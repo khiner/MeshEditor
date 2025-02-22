@@ -86,16 +86,17 @@ _The cylinders shown in the images represent recorded microphone positions, but 
 
 ```shell
 $ git clone --recursive git@github.com:khiner/MeshEditor.git
-$ brew install cmake pkgconfig llvm fftw eigen
+$ brew install cmake pkgconfig llvm sdl3 fftw eigen
 $ brew link llvm --force
 ```
 
 #### Linux
 
-(Only tested on Ubuntu.)
+(Only tested on Ubuntu, and it's been awhile, so I'd honestly be suprised if it works.
+If you want a Linux build, I'd be happy to get this working!)
 
 ```shell
-$ sudo apt install llvm libeigen3-dev
+$ sudo apt install llvm sld3 libeigen3-dev
 $ ln -s llvm-config-19 llvm-config
 $ export PATH="$(llvm-config --bindir):$PATH"
 ```
