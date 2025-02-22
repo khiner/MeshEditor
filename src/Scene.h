@@ -14,6 +14,7 @@
 #include <entt/entity/fwd.hpp>
 
 #include <set>
+#include <unordered_map>
 
 struct Visible {}; // Tag to mark entities as visible in the scene
 struct Frozen {}; // Tag to disable entity transform changes
@@ -81,66 +82,24 @@ enum class ShaderPipelineType {
 };
 using SPT = ShaderPipelineType;
 
-struct RenderPipeline {
-    struct ShaderBindingDescriptor {
-        SPT PipelineType;
-        std::string BindingName;
-        std::optional<vk::DescriptorBufferInfo> BufferInfo{};
-        std::optional<vk::DescriptorImageInfo> ImageInfo{};
-    };
+struct ShaderBindingDescriptor {
+    SPT PipelineType;
+    std::string BindingName;
+    std::optional<vk::DescriptorBufferInfo> BufferInfo{};
+    std::optional<vk::DescriptorImageInfo> ImageInfo{};
+};
+struct PipelineRenderer {
+    vk::UniqueRenderPass RenderPass;
+    std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
 
-    RenderPipeline(const VulkanContext &);
-    virtual ~RenderPipeline();
-
-    const VulkanContext &VC;
-
-    // Updates images and framebuffer based on the new extent.
-    // These resources are reused by future renders that don't change the extent.
-    virtual void SetExtent(vk::Extent2D) = 0;
-
-    const ShaderPipeline *GetShaderPipeline(SPT spt) const { return ShaderPipelines.at(spt).get(); }
     void CompileShaders();
 
-    void UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
+    std::vector<vk::WriteDescriptorSet> GetDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
 
     // If `model_index` is set, only the model at that index is rendered.
     // Otherwise, all models are rendered.
     void Render(vk::CommandBuffer, SPT, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
     void Render(vk::CommandBuffer, SPT, const VkRenderBuffers &, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
-
-protected:
-    vk::UniqueFramebuffer Framebuffer;
-    vk::UniqueRenderPass RenderPass;
-    std::unordered_map<SPT, std::unique_ptr<ShaderPipeline>> ShaderPipelines;
-};
-
-struct MainPipeline : RenderPipeline {
-    MainPipeline(const VulkanContext &);
-
-    vk::SampleCountFlagBits MsaaSamples;
-    // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
-    std::unique_ptr<ImageResource> DepthImage, OffscreenImage, ResolveImage;
-
-    void SetExtent(vk::Extent2D) override;
-    void Begin(vk::CommandBuffer, const vk::ClearColorValue &background_color) const;
-};
-
-struct SilhouettePipeline : RenderPipeline {
-    SilhouettePipeline(const VulkanContext &);
-
-    std::unique_ptr<ImageResource> OffscreenImage; // Single-sampled image without a depth buffer.
-
-    void SetExtent(vk::Extent2D) override;
-    void Begin(vk::CommandBuffer) const;
-};
-
-struct EdgeDetectionPipeline : RenderPipeline {
-    EdgeDetectionPipeline(const VulkanContext &);
-
-    std::unique_ptr<ImageResource> OffscreenImage; // Single-sampled image without a depth buffer.
-
-    void SetExtent(vk::Extent2D) override;
-    void Begin(vk::CommandBuffer) const;
 };
 
 enum class SelectionMode {
@@ -168,6 +127,10 @@ struct MeshCreateInfo {
 };
 
 static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, 60, 0.01, 100}; }
+
+struct MainPipelineResources;
+struct SilhouettePipelineResources;
+struct EdgeDetectionPipelineResources;
 
 struct Scene {
     Scene(const VulkanContext &, entt::registry &);
@@ -202,7 +165,6 @@ struct Scene {
     }
 
     vk::Extent2D GetExtent() const { return Extent; }
-    vk::SampleCountFlagBits GetMsaaSamples() const { return MainPipeline.MsaaSamples; }
     vk::ImageView GetResolveImageView() const;
 
     // Handle mouse/keyboard interactions.
@@ -255,10 +217,10 @@ private:
 
     std::unique_ptr<VulkanBuffer> TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
-    MainPipeline MainPipeline;
-    SilhouettePipeline SilhouettePipeline;
-    EdgeDetectionPipeline EdgeDetectionPipeline;
-    std::vector<std::unique_ptr<RenderPipeline>> RenderPipelines;
+    PipelineRenderer MainRenderer, SilhouetteRenderer, EdgeDetectionRenderer;
+    std::unique_ptr<MainPipelineResources> MainResources;
+    std::unique_ptr<SilhouettePipelineResources> SilhouetteResources;
+    std::unique_ptr<EdgeDetectionPipelineResources> EdgeDetectionResources;
 
     struct ModelGizmoState {
         ModelGizmo::Op Op{ModelGizmo::Op::Translate};

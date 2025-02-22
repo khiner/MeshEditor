@@ -86,6 +86,8 @@ struct ShaderPipeline {
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state = {},
         vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1
     );
+    ShaderPipeline(ShaderPipeline &&) = default;
+    ShaderPipeline &operator=(ShaderPipeline &&) = default;
     ~ShaderPipeline() = default;
 
     vk::Device Device;
@@ -108,5 +110,5 @@ struct ShaderPipeline {
 
     std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
 
-    void RenderQuad(vk::CommandBuffer cb) const;
+    void RenderQuad(vk::CommandBuffer) const;
 };

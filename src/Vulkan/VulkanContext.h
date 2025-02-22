@@ -89,6 +89,6 @@ struct VulkanContext {
     void WaitForRender() const;
     void SubmitTransfer() const;
 
-    std::unique_ptr<ImageResource> CreateImage(vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags mem_flags = vk::MemoryPropertyFlagBits::eDeviceLocal) const;
-    std::unique_ptr<ImageResource> RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const;
+    ImageResource CreateImage(vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags mem_flags = vk::MemoryPropertyFlagBits::eDeviceLocal) const;
+    ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const;
 };

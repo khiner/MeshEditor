@@ -262,15 +262,15 @@ void VulkanContext::SubmitTransfer() const {
     WaitForRender();
 }
 
-std::unique_ptr<ImageResource> VulkanContext::CreateImage(vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags) const {
+ImageResource VulkanContext::CreateImage(vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags) const {
     auto image = Device->createImageUnique(image_info);
     const auto mem_reqs = Device->getImageMemoryRequirements(*image);
     auto memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, mem_flags)});
     Device->bindImageMemory(*image, *memory, 0);
     view_info.image = *image;
-    return std::make_unique<ImageResource>(std::move(memory), std::move(image), Device->createImageViewUnique(view_info), image_info.extent);
+    return {std::move(memory), std::move(image), Device->createImageViewUnique(view_info), image_info.extent};
 }
-std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
+ImageResource VulkanContext::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
     auto image = CreateImage(
         {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
@@ -296,14 +296,14 @@ std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *da
             vk::ImageLayout::eTransferDstOptimal, // newLayout
             VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
             VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image->Image, // image
+            *image.Image, // image
             {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
         }
     );
 
     // Copy buffer to image.
     cb.copyBufferToImage(
-        *staging_buffer, *image->Image, vk::ImageLayout::eTransferDstOptimal,
+        *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
         vk::BufferImageCopy{
             0, // bufferOffset
             0, // bufferRowLength (tightly packed)
@@ -326,7 +326,7 @@ std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *da
             vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
             VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
             VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
-            *image->Image, // image
+            *image.Image, // image
             {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
         }
     );

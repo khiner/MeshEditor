@@ -39,7 +39,7 @@ struct SvgResourceImpl {
     SvgResourceImpl(const VulkanContext &vc, fs::path path) {
         if (Document = lunasvg::Document::loadFromFile(path); Document) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
-                Image = vc.RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height()));
+                Image = std::make_unique<ImageResource>(vc.RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
                 Texture = std::make_unique<ImGuiTexture>(*vc.Device, *Image->View);
             }
         }
