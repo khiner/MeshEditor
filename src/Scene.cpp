@@ -217,8 +217,7 @@ void RenderPipeline::UpdateDescriptors(std::vector<ShaderBindingDescriptor> &&de
 }
 
 void MainPipeline::SetExtent(vk::Extent2D extent) {
-    Extent = extent;
-    const vk::Extent3D e3d{Extent, 1};
+    const vk::Extent3D e3d{extent, 1};
     DepthImage = VC.CreateImage(
         {{}, vk::ImageType::e2D, ImageFormat::Depth, e3d, 1, 1, MsaaSamples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
@@ -232,12 +231,13 @@ void MainPipeline::SetExtent(vk::Extent2D extent) {
         {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
     const std::array image_views{*DepthImage->View, *OffscreenImage->View, *ResolveImage->View};
-    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, extent.width, extent.height, 1});
 }
 
 void MainPipeline::Begin(vk::CommandBuffer cb, const vk::ClearColorValue &background_color) const {
     const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {background_color}};
-    cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    const vk::Rect2D rect{{0, 0}, {OffscreenImage->Extent.width, OffscreenImage->Extent.height}};
+    cb.beginRenderPass({*RenderPass, *Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
 }
 
 SilhouettePipeline::SilhouettePipeline(const VulkanContext &vc) : RenderPipeline(vc) {
@@ -257,19 +257,19 @@ SilhouettePipeline::SilhouettePipeline(const VulkanContext &vc) : RenderPipeline
 }
 
 void SilhouettePipeline::SetExtent(vk::Extent2D extent) {
-    Extent = extent;
     OffscreenImage = VC.CreateImage(
-        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
     const std::array image_views{*OffscreenImage->View};
-    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, extent.width, extent.height, 1});
 }
 
 void SilhouettePipeline::Begin(vk::CommandBuffer cb) const {
     static const std::vector<vk::ClearValue> clear_values{{Transparent}};
-    cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    const vk::Rect2D rect{{0, 0}, {OffscreenImage->Extent.width, OffscreenImage->Extent.height}};
+    cb.beginRenderPass({*RenderPass, *Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
 }
 
 EdgeDetectionPipeline::EdgeDetectionPipeline(const VulkanContext &vc) : RenderPipeline(vc) {
@@ -289,19 +289,19 @@ EdgeDetectionPipeline::EdgeDetectionPipeline(const VulkanContext &vc) : RenderPi
 }
 
 void EdgeDetectionPipeline::SetExtent(vk::Extent2D extent) {
-    Extent = extent;
     OffscreenImage = VC.CreateImage(
-        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{Extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
+        {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
 
     const std::array image_views{*OffscreenImage->View};
-    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, Extent.width, Extent.height, 1});
+    Framebuffer = VC.Device->createFramebufferUnique({{}, *RenderPass, image_views, extent.width, extent.height, 1});
 }
 
 void EdgeDetectionPipeline::Begin(vk::CommandBuffer cb) const {
     static const std::vector<vk::ClearValue> clear_values{{Transparent}};
-    cb.beginRenderPass({*RenderPass, *Framebuffer, vk::Rect2D{{0, 0}, Extent}, clear_values}, vk::SubpassContents::eInline);
+    const vk::Rect2D rect{{0, 0}, {OffscreenImage->Extent.width, OffscreenImage->Extent.height}};
+    cb.beginRenderPass({*RenderPass, *Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
 }
 
 Scene::Scene(const VulkanContext &vc, entt::registry &r)

@@ -11,6 +11,7 @@ struct ImageResource {
     vk::UniqueDeviceMemory Memory;
     vk::UniqueImage Image;
     vk::UniqueImageView View;
+    vk::Extent3D Extent;
 };
 
 struct ImGuiTexture {

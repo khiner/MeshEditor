@@ -268,8 +268,7 @@ std::unique_ptr<ImageResource> VulkanContext::CreateImage(vk::ImageCreateInfo im
     auto memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, mem_flags)});
     Device->bindImageMemory(*image, *memory, 0);
     view_info.image = *image;
-    auto view = Device->createImageViewUnique(view_info);
-    return std::make_unique<ImageResource>(std::move(memory), std::move(image), std::move(view));
+    return std::make_unique<ImageResource>(std::move(memory), std::move(image), Device->createImageViewUnique(view_info), image_info.extent);
 }
 std::unique_ptr<ImageResource> VulkanContext::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
     auto image = CreateImage(

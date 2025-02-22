@@ -118,7 +118,6 @@ struct MainPipeline : RenderPipeline {
     MainPipeline(const VulkanContext &);
 
     vk::SampleCountFlagBits MsaaSamples;
-    vk::Extent2D Extent;
     // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
     std::unique_ptr<ImageResource> DepthImage, OffscreenImage, ResolveImage;
 
@@ -129,7 +128,6 @@ struct MainPipeline : RenderPipeline {
 struct SilhouettePipeline : RenderPipeline {
     SilhouettePipeline(const VulkanContext &);
 
-    vk::Extent2D Extent;
     std::unique_ptr<ImageResource> OffscreenImage; // Single-sampled image without a depth buffer.
 
     void SetExtent(vk::Extent2D) override;
@@ -139,7 +137,6 @@ struct SilhouettePipeline : RenderPipeline {
 struct EdgeDetectionPipeline : RenderPipeline {
     EdgeDetectionPipeline(const VulkanContext &);
 
-    vk::Extent2D Extent;
     std::unique_ptr<ImageResource> OffscreenImage; // Single-sampled image without a depth buffer.
 
     void SetExtent(vk::Extent2D) override;
