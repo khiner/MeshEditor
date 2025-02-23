@@ -9,8 +9,8 @@
 
 namespace {
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
-    auto cb = *reinterpret_cast<AudioDevice::audio_callback_t *>(device->pUserData);
-    cb({device->sampleRate, device->playback.channels, frame_count, (const float *)input, (float *)output});
+    auto cb = reinterpret_cast<AudioDeviceCallback *>(device->pUserData);
+    cb->Callback(AudioBuffer{device->sampleRate, device->playback.channels, frame_count, (const float *)input, (float *)output}, cb->UserData);
 }
 
 enum IO {
@@ -67,7 +67,7 @@ std::string GetSampleRateName(IO io, const uint sample_rate) {
 }
 } // namespace
 
-AudioDevice::AudioDevice(audio_callback_t data_callback) : Callback(std::move(data_callback)) {
+AudioDevice::AudioDevice(AudioDeviceCallback data_callback) : Callback(std::move(data_callback)) {
     Init();
 }
 AudioDevice::~AudioDevice() {

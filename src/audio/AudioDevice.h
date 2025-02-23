@@ -4,10 +4,15 @@
 
 #include <string>
 
-struct AudioDevice {
-    using audio_callback_t = void (*)(AudioBuffer);
+struct AudioDeviceCallback {
+    using callback_t = void (*)(AudioBuffer, void *user_data);
 
-    AudioDevice(audio_callback_t);
+    callback_t Callback;
+    void *UserData;
+};
+
+struct AudioDevice {
+    AudioDevice(AudioDeviceCallback);
     ~AudioDevice();
 
     void Init();
@@ -18,7 +23,7 @@ struct AudioDevice {
     void RenderControls();
 
 private:
-    audio_callback_t Callback;
+    AudioDeviceCallback Callback;
 
     bool On{false}, Muted{false};
     float Volume{1.0};
