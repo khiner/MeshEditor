@@ -23,7 +23,7 @@
 #include <ranges>
 
 using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
-using std::views::transform;
+using std::views::transform, std::views::take;
 
 class tetgenio;
 
@@ -78,7 +78,7 @@ constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const
 constexpr std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_bins, uint n_peaks) {
     const uint N_2 = n_bins / 2;
 
-    std::vector<std::pair<float, uint>> peaks;
+    std::vector<std::pair<float, uint>> peaks; // (magnitude, bin)
     for (uint i = 1; i < N_2 - 1; i++) {
         float mag_sq = data[i][0] * data[i][0] + data[i][1] * data[i][1];
         float left_mag_sq = data[i - 1][0] * data[i - 1][0] + data[i - 1][1] * data[i - 1][1];
@@ -88,7 +88,7 @@ constexpr std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint
 
     // Sort descending by magnitude and convert to frequency.
     sort(peaks, [](const auto &a, const auto &b) { return a.first > b.first; });
-    auto peak_freqs = peaks | std::views::take(n_peaks) |
+    auto peak_freqs = peaks | take(n_peaks) |
         transform([n_bins](const auto &p) { return float(p.second * SampleRate / n_bins); }) | to<std::vector>();
     sort(peak_freqs);
     return peak_freqs;
@@ -104,7 +104,7 @@ struct Waveform {
     const std::vector<float> Frames;
     std::vector<float> WindowedFrames;
     const FFTData FftData;
-    std::vector<float> PeakFrequencies;
+    // std::vector<float> PeakFrequencies;
 
     Waveform(const float *frames, uint frame_count)
         : Frames(frames, frames + frame_count),
@@ -172,10 +172,7 @@ struct Waveform {
         }
     }
 
-    std::vector<float> GetPeakFrequencies(uint n_peaks) {
-        if (n_peaks != PeakFrequencies.size()) PeakFrequencies = ::FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks);
-        return PeakFrequencies;
-    }
+    std::vector<float> GetPeakFrequencies(uint n_peaks) { return FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks); }
 
     float GetMaxValue() const { return *std::max_element(Frames.begin(), Frames.end()); }
 
@@ -687,7 +684,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     if (disable_generate) BeginDisabled();
     if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
         const auto scale = r.get<Scale>(entity).Value;
-        const auto fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
+        const auto fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(8).front()} : std::nullopt;
         DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating modal audio model...", [&, scale, fundamental_freq] {
             // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
             // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
