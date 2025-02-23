@@ -8,12 +8,6 @@
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
 
-#include <filesystem>
-#include <ranges>
-
-using std::ranges::to;
-using std::views::transform;
-
 constexpr uint SampleRate = 48'000; // todo respect device sample rate
 
 FaustDSP::FaustDSP(CreateSvgResource create_svg) : CreateSvg(std::move(create_svg)) {}
@@ -28,12 +22,11 @@ void FaustDSP::Compute(uint n, const Sample **input, Sample **output) const {
 void FaustDSP::DrawParams() {
     if (Params) Params->Draw();
 }
-void FaustDSP::DrawGraph() {
-    const static fs::path FaustSvgDir = "MeshEditor-svg";
-    if (!fs::exists(FaustSvgDir)) SaveSvg();
+void FaustDSP::DrawGraph(const fs::path &svg_dir) {
+    if (!fs::exists(svg_dir)) SaveSvg(svg_dir);
 
     static fs::path SelectedSvg = "process.svg";
-    if (const auto faust_svg_path = FaustSvgDir / SelectedSvg; fs::exists(faust_svg_path)) {
+    if (const auto faust_svg_path = svg_dir / SelectedSvg; fs::exists(faust_svg_path)) {
         if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
             CreateSvg(FaustSvg, faust_svg_path);
         }
@@ -56,9 +49,7 @@ Sample *FaustDSP::GetZone(std::string_view param_label) const {
     return Params ? Params->getZoneForLabel(param_label.data()) : nullptr;
 }
 
-void FaustDSP::SaveSvg() {
-    drawSchema(Box, "MeshEditor-svg", "svg");
-}
+void FaustDSP::SaveSvg(const fs::path &dir) { drawSchema(Box, dir.c_str(), "svg"); }
 
 void FaustDSP::Init() {
     if (Code.empty()) return;

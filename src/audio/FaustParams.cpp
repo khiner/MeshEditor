@@ -2,19 +2,22 @@
 
 #include "imgui.h"
 
+#include <ranges>
+#include <span>
+
 using namespace ImGui;
 
-bool RadioButtons(const char *label, float *value, const FaustParams::NamesAndValues &names_and_values) {
+using std::ranges::find;
+
+bool RadioButtons(const char *label, float *value, const std::span<std::string> names, const std::span<double> values) {
     PushID(label);
     BeginGroup();
 
     Text("%s", label);
     bool changed = false;
-    for (int i = 0; i < int(names_and_values.names.size()); i++) {
-        std::string_view choice_name = names_and_values.names[i];
-        const Real choice_value = names_and_values.values[i];
-        if (RadioButton(choice_name.data(), *value == choice_value)) {
-            *value = float(choice_value);
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (RadioButton(names[i].data(), *value == values[i])) {
+            *value = float(values[i]);
             changed = true;
         }
     }
@@ -48,17 +51,18 @@ void FaustParams::DrawItem(const FaustParams::Item &item) {
         if (SliderFloat(label, &value, float(item.min), float(item.max), nullptr, flags)) *item.zone = Real(value);
     } else if (type == ItemType_HRadioButtons || type == ItemType_VRadioButtons) {
         auto value = float(*item.zone);
-        if (RadioButtons(item.label.c_str(), &value, names_and_values.at(item.zone))) *item.zone = Real(value);
+        if (RadioButtons(item.label.c_str(), &value, NamesForZone.at(item.zone), ValuesForZone.at(item.zone))) *item.zone = Real(value);
     } else if (type == ItemType_Menu) {
-        auto value = float(*item.zone);
-        const auto &nav = names_and_values.at(item.zone);
+        auto value = *item.zone;
+        const auto &names = NamesForZone.at(item.zone);
+        const auto &values = ValuesForZone.at(item.zone);
         // todo handle not present
-        const auto selected_index = find(nav.values.begin(), nav.values.end(), value) - nav.values.begin();
-        if (BeginCombo(label, nav.names[selected_index].c_str())) {
-            for (int i = 0; i < int(nav.names.size()); i++) {
-                const Real choice_value = nav.values[i];
+        const auto selected_index = find(values, value) - values.begin();
+        if (BeginCombo(label, names[selected_index].c_str())) {
+            for (size_t i = 0; i < NamesForZone.size(); ++i) {
+                const Real choice_value = values[i];
                 const bool is_selected = value == choice_value;
-                if (Selectable(nav.names[i].c_str(), is_selected)) *item.zone = Real(choice_value);
+                if (Selectable(names[i].c_str(), is_selected)) *item.zone = Real(choice_value);
             }
             EndCombo();
         }

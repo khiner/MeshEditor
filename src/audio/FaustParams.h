@@ -37,7 +37,7 @@ enum ItemType {
 // Label, shortname, or complete path (to discriminate between possibly identical labels
 // at different locations in the UI hierarchy) can be used to access any created widget.
 // See Faust's `APIUI` for possible extensions (response curves, gyro, ...).
-class FAUST_API FaustParams : public UI, public MetaDataUI, public PathBuilder {
+class FaustParams : public UI, public MetaDataUI, public PathBuilder {
 public:
     FaustParams() = default;
     ~FaustParams() override = default;
@@ -63,20 +63,20 @@ public:
     void openHorizontalBox(const char *label) override {
         pushLabel(label);
         activeGroup().items.emplace_back(ItemType_HGroup, label);
-        groups.push(&activeGroup().items.back());
+        Groups.push(&activeGroup().items.back());
     }
     void openVerticalBox(const char *label) override {
         pushLabel(label);
         activeGroup().items.emplace_back(ItemType_VGroup, label);
-        groups.push(&activeGroup().items.back());
+        Groups.push(&activeGroup().items.back());
     }
     void openTabBox(const char *label) override {
         pushLabel(label);
         activeGroup().items.emplace_back(ItemType_TGroup, label);
-        groups.push(&activeGroup().items.back());
+        Groups.push(&activeGroup().items.back());
     }
     void closeBox() override {
-        groups.pop();
+        Groups.pop();
         if (popLabel()) {
             computeShortNames();
         }
@@ -105,13 +105,15 @@ public:
         else addUiItem(is_vertical ? ItemType_VSlider : ItemType_HSlider, label, zone, min, max, init, step);
     }
     void addRadioButtons(const char *label, Real *zone, Real init, Real min, Real max, Real step, const char *text, bool is_vertical) {
-        names_and_values[zone] = {};
-        parseMenuList(text, names_and_values[zone].names, names_and_values[zone].values);
+        NamesForZone[zone] = {};
+        ValuesForZone[zone] = {};
+        parseMenuList(text, NamesForZone.at(zone), ValuesForZone.at(zone));
         addUiItem(is_vertical ? ItemType_VRadioButtons : ItemType_HRadioButtons, label, zone, min, max, init, step);
     }
     void addMenu(const char *label, Real *zone, Real init, Real min, Real max, Real step, const char *text) {
-        names_and_values[zone] = {};
-        parseMenuList(text, names_and_values[zone].names, names_and_values[zone].values);
+        NamesForZone[zone] = {};
+        ValuesForZone[zone] = {};
+        parseMenuList(text, NamesForZone.at(zone), ValuesForZone.at(zone));
         addUiItem(ItemType_Menu, label, zone, min, max, init, step);
     }
 
@@ -132,27 +134,27 @@ public:
     }
 
     Real *getZoneForLabel(const char *label) {
-        return zone_for_label.contains(label) ? zone_for_label[label] : nullptr;
+        return ZoneForLabel.contains(label) ? ZoneForLabel.at(label) : nullptr;
     }
 
-    Item ui{ItemType_None, ""};
-    std::unordered_map<const Real *, NamesAndValues> names_and_values;
+    Item Root{ItemType_None, ""};
+    std::unordered_map<const Real *, std::vector<std::string>> NamesForZone;
+    std::unordered_map<const Real *, std::vector<double>> ValuesForZone;
 
     void DrawItem(const Item &);
-    void Draw() { DrawItem(ui); }
+    void Draw() { DrawItem(Root); }
 
 private:
     void addUiItem(const ItemType type, const char *label, Real *zone, Real min = 0, Real max = 0, Real init = 0, Real step = 0) {
         Item item{type, label, zone, min, max, init, step, fTooltip.contains(zone) ? fTooltip.at(zone).c_str() : nullptr};
         if (fLogSet.contains(zone)) item.logscale = true;
-        activeGroup().items.push_back(item);
-        std::string path = buildPath(label);
-        fFullPaths.push_back(path);
-        zone_for_label[label] = zone;
+        activeGroup().items.emplace_back(std::move(item));
+        fFullPaths.push_back(buildPath(label));
+        ZoneForLabel[label] = zone;
     }
 
-    Item &activeGroup() { return groups.empty() ? ui : *groups.top(); }
+    Item &activeGroup() { return Groups.empty() ? Root : *Groups.top(); }
 
-    std::stack<Item *> groups{};
-    std::unordered_map<std::string, Real *> zone_for_label{};
+    std::stack<Item *> Groups{};
+    std::unordered_map<std::string, Real *> ZoneForLabel{};
 };

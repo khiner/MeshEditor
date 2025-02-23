@@ -19,6 +19,7 @@
 #include <entt/entity/registry.hpp>
 
 #include <format>
+#include <optional>
 #include <print>
 #include <ranges>
 
@@ -26,6 +27,9 @@ using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges:
 using std::views::transform, std::views::take;
 
 class tetgenio;
+
+constexpr std::string_view ExciteIndexParamName{"Excite index"};
+constexpr std::string_view GateParamName{"Gate"};
 
 struct Mesh2FaustResult {
     std::string ModelDsp; // Faust DSP code defining the model function.
@@ -381,7 +385,8 @@ struct ModalAudioModel {
         }
 
         if (CollapsingHeader("DSP parameters")) Dsp.DrawParams();
-        if (CollapsingHeader("DSP graph")) Dsp.DrawGraph();
+        static const fs::path FaustSvgDir = "MeshEditor-svg";
+        if (CollapsingHeader("DSP graph")) Dsp.DrawGraph(FaustSvgDir);
         if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", Dsp.GetCode());
     }
 

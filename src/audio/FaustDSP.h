@@ -5,15 +5,15 @@ using Sample = float;
 #define FAUSTFLOAT Sample
 #endif
 
-#include "AcousticMaterial.h"
 #include "CreateSvgResource.h"
-#include "numeric/vec3.h"
 
+#include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 class CTreeBase;
 using Box = CTreeBase *;
@@ -24,9 +24,6 @@ struct llvm_dsp_factory;
 
 struct Mesh;
 template<typename Result> struct Worker;
-
-constexpr std::string_view ExciteIndexParamName{"Excite index"};
-constexpr std::string_view GateParamName{"Gate"};
 
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.
@@ -43,14 +40,12 @@ struct FaustDSP {
     void Compute(uint32_t n, const Sample **input, Sample **output) const;
 
     void DrawParams();
-    void DrawGraph();
+    void DrawGraph(const fs::path &svg_dir);
 
     Sample Get(std::string_view param_label) const;
     void Set(std::string_view param_label, Sample value) const;
 
     Sample *GetZone(std::string_view param_label) const;
-
-    void SaveSvg();
 
     std::unique_ptr<SvgResource> FaustSvg;
     CreateSvgResource CreateSvg;
@@ -61,12 +56,13 @@ private:
     void Update();
     void DestroyDsp();
 
+    void SaveSvg(const fs::path &dir);
+
     Box Box{nullptr};
     dsp *Dsp{nullptr};
+    llvm_dsp_factory *DspFactory{nullptr};
     std::unique_ptr<FaustParams> Params;
 
-    std::string ErrorMessage{""};
-
     std::string Code{""};
-    llvm_dsp_factory *DspFactory{nullptr};
+    std::string ErrorMessage{""};
 };
