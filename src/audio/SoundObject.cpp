@@ -26,16 +26,12 @@
 using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
 using std::views::transform, std::views::take;
 
-class tetgenio;
-
 constexpr std::string_view ExciteIndexParamName{"Excite index"};
 constexpr std::string_view GateParamName{"Gate"};
 
 struct Mesh2FaustResult {
     std::string ModelDsp; // Faust DSP code defining the model function.
-    std::vector<float> ModeFreqs; // Mode frequencies
-    std::vector<float> ModeT60s; // Mode T60 decay times
-    std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
+    m2f::ModalModel ModalModel;
     std::vector<uint32_t> ExcitableVertices; // Excitable vertices
     AcousticMaterialProperties Material;
 };
@@ -316,7 +312,7 @@ struct ModalAudioModel {
 
     ~ModalAudioModel() = default;
 
-    uint ModeCount() const { return M2F.ModeFreqs.size(); }
+    uint ModeCount() const { return M2F.ModalModel.modeFreqs.size(); }
 
     void ProduceAudio(AudioBuffer &buffer) const {
         if (!ImpactRecording) return;
@@ -370,16 +366,17 @@ struct ModalAudioModel {
         Excitable.SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
         if (CollapsingHeader("Modal data charts")) {
             std::optional<size_t> new_hovered_index;
-            if (auto hovered = PlotModeData(M2F.ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(M2F.ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(M2F.ModeGains[Excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
-            if (HoveredModeIndex = new_hovered_index; HoveredModeIndex && *HoveredModeIndex < M2F.ModeFreqs.size()) {
+            const auto &model = M2F.ModalModel;
+            if (auto hovered = PlotModeData(model.modeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
+            if (auto hovered = PlotModeData(model.modeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
+            if (auto hovered = PlotModeData(model.modeGains[Excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+            if (HoveredModeIndex = new_hovered_index; HoveredModeIndex && *HoveredModeIndex < model.modeFreqs.size()) {
                 const auto index = *HoveredModeIndex;
                 Text(
                     "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
-                    M2F.ModeFreqs[index],
-                    M2F.ModeT60s[index],
-                    M2F.ModeGains[Excitable.SelectedVertexIndex][index]
+                    model.modeFreqs[index],
+                    model.modeT60s[index],
+                    model.modeGains[Excitable.SelectedVertexIndex][index]
                 );
             }
         }
@@ -460,7 +457,10 @@ const Excitable &SoundObject::GetExcitable() const {
     return EmptyExcitable;
 }
 
-Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, bool freq_control = false, std::optional<float> fundamental_freq_opt = {}) {
+static constexpr std::string ModelName{"modalModel"};
+
+m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, bool freq_control) {
+    // Convert the tetrahedral mesh into a VegaFEM TetMesh.
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
     // Turn each tetrahedron into 4 triangles.
@@ -470,14 +470,12 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialPropert
         int a = result_indices[tri_i], b = result_indices[tri_i + 1], c = result_indices[tri_i + 2], d = result_indices[tri_i + 3];
         tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
     }
-    // Convert the tetrahedral mesh into a VegaFEM TetMesh.
     TetMesh volumetric_mesh{
         tets.numberofpoints, tets.pointlist, tets.numberoftetrahedra * 3, tet_indices.data(),
         material.YoungModulus, material.PoissonRatio, material.Density
     };
 
-    static constexpr std::string model_name{"modalModel"};
-    const auto m2f_result = m2f::mesh2faust(
+    return m2f::mesh2modal(
         &volumetric_mesh,
         m2f::MaterialProperties{
             .youngModulus = material.YoungModulus,
@@ -487,7 +485,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialPropert
             .beta = material.Beta
         },
         m2f::CommonArguments{
-            .modelName = model_name,
+            .modelName = ModelName,
             .freqControl = freq_control,
             .modesMinFreq = 20,
             // 20k is the upper limit of human hearing, but we often need to pitch down to match the
@@ -501,32 +499,34 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialPropert
             .debugMode = false,
         }
     );
-    const std::string_view model_dsp = m2f_result.modelDsp;
-    if (model_dsp.empty()) return {"process = 0;", {}, {}, {}, {{}}, {}};
+}
 
-    auto &mode_freqs = m2f_result.model.modeFreqs;
+std::string GenerateDsp(const m2f::ModalModel &modal_model, const std::vector<uint> &excitable_vertices, std::optional<float> fundamental_freq_opt, bool freq_control) {
+    auto model_dsp = modal2faust(modal_model, {ModelName, freq_control});
+    if (model_dsp.empty()) return "process = 0;";
+
     const float fundamental_freq = fundamental_freq_opt ?
         *fundamental_freq_opt :
-        !mode_freqs.empty() ? mode_freqs.front() :
-                              440.0f;
+        !modal_model.modeFreqs.empty() ? modal_model.modeFreqs.front() :
+                                         440.0f;
 
     // Static code sections.
-    static constexpr std::string to_sandh{" : ba.sAndH(gate);"}; // Add a sample and hold on the gate, in serial, and end the expression.
+    static constexpr std::string ToSAH{" : ba.sAndH(gate);"}; // Add a sample and hold on the gate, in serial, and end the expression.
     static const std::string
         gain = "gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01);",
-        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
+        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + ToSAH,
         gate = std::format("gate = button(\"{}[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");", GateParamName),
-        hammer_hardness = "hammerHardness = hslider(\"Hammer hardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
-        hammer_size = "hammerSize = hslider(\"Hammer size[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.1,0,1,0.01)" + to_sandh,
+        hammer_hardness = "hammerHardness = hslider(\"Hammer hardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + ToSAH,
+        hammer_size = "hammerSize = hslider(\"Hammer size[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.1,0,1,0.01)" + ToSAH,
         hammer = "hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; };";
 
     // Variable code sections.
     const uint num_excite = excitable_vertices.size();
     const std::string
-        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, to_sandh),
-        ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excite - 1) / 2, num_excite - 1, to_sandh),
-        modal_model = std::format("{}({}exPos,t60Scale)", model_name, freq_control ? "freq," : ""),
-        process = std::format("process = hammer(gate,hammerHardness,hammerSize) : {}*gain;", modal_model);
+        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, ToSAH),
+        ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excite - 1) / 2, num_excite - 1, ToSAH),
+        model = std::format("{}({}exPos,t60Scale)", ModelName, freq_control ? "freq," : ""),
+        process = std::format("process = hammer(gate,hammerHardness,hammerSize) : {}*gain;", model);
 
     std::stringstream instrument;
     instrument << gate << '\n'
@@ -540,15 +540,7 @@ Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialPropert
                << hammer << '\n'
                << '\n'
                << process << '\n';
-
-    return {
-        .ModelDsp = std::format("{}{}", model_dsp, instrument.str()),
-        .ModeFreqs = std::move(mode_freqs),
-        .ModeT60s = std::move(m2f_result.model.modeT60s),
-        .ModeGains = std::move(m2f_result.model.modeGains),
-        .ExcitableVertices = std::move(excitable_vertices),
-        .Material = std::move(material)
-    };
+    return std::format("{}{}", std::move(model_dsp), instrument.str());
 }
 
 void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
@@ -702,8 +694,18 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
             DspGenerator->SetMessage("Generating tetrahedral mesh...");
             const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = quality_tets});
 
+            DspGenerator->SetMessage("Generating modal model...");
+            auto modal_model = GenerateModalModel(*tets, material_props, excitable_vertices, true);
+
             DspGenerator->SetMessage("Generating DSP...");
-            return ::GenerateDsp(*tets, material_props, excitable_vertices, true, fundamental_freq);
+            auto dsp = GenerateDsp(modal_model, excitable_vertices, fundamental_freq, true);
+
+            return Mesh2FaustResult{
+                .ModelDsp = std::move(dsp),
+                .ModalModel = std::move(modal_model),
+                .ExcitableVertices = excitable_vertices,
+                .Material = material_props,
+            };
         });
     }
     if (disable_generate) EndDisabled();

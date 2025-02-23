@@ -23,7 +23,7 @@
 	branch = dev
 [submodule "lib/faust"]
 	path = lib/faust
-	url = git@github.com:grame-cncm/faust.git
+	url = git@github.com:khiner/faust.git
 [submodule "lib/tetgen"]
 	path = lib/tetgen
 	url = git@github.com:libigl/tetgen.git

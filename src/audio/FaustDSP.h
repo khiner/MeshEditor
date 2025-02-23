@@ -15,8 +15,8 @@ using Sample = float;
 
 namespace fs = std::filesystem;
 
-class CTreeBase;
-using Box = CTreeBase *;
+class CTree;
+using Box = CTree *;
 class dsp;
 class FaustParams;
 
