@@ -6,13 +6,16 @@
 #include "FaustDSP.h"
 #include "Registry.h"
 #include "Scale.h"
-#include "SvgResource.h"
+#include "Tets.h"
 #include "Widgets.h" // imgui
 #include "Worker.h"
 #include "mesh/Mesh.h"
+#include "mesh2faust.h"
 
 #include "implot.h"
 #include "miniaudio.h"
+#include "tetMesh.h" // Vega
+#include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 #include <entt/entity/registry.hpp>
 
 #include <format>
@@ -21,6 +24,17 @@
 
 using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
 using std::views::transform;
+
+class tetgenio;
+
+struct Mesh2FaustResult {
+    std::string ModelDsp; // Faust DSP code defining the model function.
+    std::vector<float> ModeFreqs; // Mode frequencies
+    std::vector<float> ModeT60s; // Mode T60 decay times
+    std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
+    std::vector<uint32_t> ExcitableVertices; // Excitable vertices
+    AcousticMaterialProperties Material;
+};
 
 namespace {
 struct ImpactRecording {
@@ -289,11 +303,12 @@ std::optional<size_t> PlotModeData(
 
     return hovered_index;
 }
+std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
 } // namespace
 
 struct ModalAudioModel {
-    ModalAudioModel(FaustDSP &dsp, Mesh2FaustResult &&m2f, CreateSvgResource create_svg)
-        : Dsp(dsp), M2F(std::move(m2f)), Excitable(M2F.ExcitableVertices), CreateSvg(std::move(create_svg)) {
+    ModalAudioModel(FaustDSP &dsp, Mesh2FaustResult &&m2f)
+        : Dsp(dsp), M2F(std::move(m2f)), Excitable(M2F.ExcitableVertices) {
         M2F.ExcitableVertices.clear(); // These are only used to populate `Excitable`.
         SetVertex(Excitable.SelectedVertex());
     }
@@ -303,11 +318,10 @@ struct ModalAudioModel {
     uint ModeCount() const { return M2F.ModeFreqs.size(); }
 
     void ProduceAudio(AudioBuffer &buffer) const {
-        if (ImpactRecording && ImpactRecording->Frame == 0) SetParam(GateParamName, 1);
+        if (!ImpactRecording) return;
 
-        Dsp.Compute(buffer.FrameCount, &buffer.Input, &buffer.Output);
-
-        if (ImpactRecording && !ImpactRecording->Complete) {
+        if (ImpactRecording->Frame == 0) SetParam(GateParamName, 1);
+        if (!ImpactRecording->Complete) {
             for (uint i = 0; i < buffer.FrameCount && ImpactRecording->Frame < ImpactRecording::FrameCount; ++i, ++ImpactRecording->Frame) {
                 ImpactRecording->Frames[ImpactRecording->Frame] = buffer.Output[i];
             }
@@ -332,21 +346,6 @@ struct ModalAudioModel {
 
     void SetParam(std::string_view param_label, Sample param_value) const {
         Dsp.Set(std::move(param_label), param_value);
-    }
-
-    void DrawDspGraph() {
-        const static fs::path FaustSvgDir = "MeshEditor-svg";
-        if (!fs::exists(FaustSvgDir)) Dsp.SaveSvg();
-
-        static fs::path SelectedSvg = "process.svg";
-        if (const auto faust_svg_path = FaustSvgDir / SelectedSvg; fs::exists(faust_svg_path)) {
-            if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
-                CreateSvg(FaustSvg, faust_svg_path);
-            }
-            if (auto clickedLinkOpt = FaustSvg->Render()) {
-                SelectedSvg = std::move(*clickedLinkOpt);
-            }
-        }
     }
 
     void Draw() {
@@ -385,7 +384,7 @@ struct ModalAudioModel {
         }
 
         if (CollapsingHeader("DSP parameters")) Dsp.DrawParams();
-        if (CollapsingHeader("DSP graph")) DrawDspGraph();
+        if (CollapsingHeader("DSP graph")) Dsp.DrawGraph();
         if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", Dsp.GetCode());
     }
 
@@ -396,9 +395,6 @@ struct ModalAudioModel {
     Excitable Excitable;
 
 private:
-    CreateSvgResource CreateSvg;
-
-    std::unique_ptr<SvgResource> FaustSvg;
     std::unique_ptr<ImpactRecording> ImpactRecording;
     std::optional<size_t> HoveredModeIndex;
 };
@@ -414,8 +410,7 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 } // namespace
 */
 
-SoundObject::SoundObject(AcousticMaterial material, CreateSvgResource create_svg)
-    : Dsp(std::make_unique<FaustDSP>()), Material(std::move(material)), CreateSvg(std::move(create_svg)) {}
+SoundObject::SoundObject(AcousticMaterial material, FaustDSP &dsp) : Dsp(dsp), Material(std::move(material)) {}
 SoundObject::~SoundObject() = default;
 
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices) {
@@ -463,12 +458,103 @@ const Excitable &SoundObject::GetExcitable() const {
     return EmptyExcitable;
 }
 
+Mesh2FaustResult GenerateDsp(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, bool freq_control = false, std::optional<float> fundamental_freq_opt = {}) {
+    std::vector<int> tet_indices;
+    tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
+    // Turn each tetrahedron into 4 triangles.
+    for (uint i = 0; i < uint(tets.numberoftetrahedra); ++i) {
+        auto &result_indices = tets.tetrahedronlist;
+        uint tri_i = i * 4;
+        int a = result_indices[tri_i], b = result_indices[tri_i + 1], c = result_indices[tri_i + 2], d = result_indices[tri_i + 3];
+        tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
+    }
+    // Convert the tetrahedral mesh into a VegaFEM TetMesh.
+    TetMesh volumetric_mesh{
+        tets.numberofpoints, tets.pointlist, tets.numberoftetrahedra * 3, tet_indices.data(),
+        material.YoungModulus, material.PoissonRatio, material.Density
+    };
+
+    static constexpr std::string model_name{"modalModel"};
+    const auto m2f_result = m2f::mesh2faust(
+        &volumetric_mesh,
+        m2f::MaterialProperties{
+            .youngModulus = material.YoungModulus,
+            .poissonRatio = material.PoissonRatio,
+            .density = material.Density,
+            .alpha = material.Alpha,
+            .beta = material.Beta
+        },
+        m2f::CommonArguments{
+            .modelName = model_name,
+            .freqControl = freq_control,
+            .modesMinFreq = 20,
+            // 20k is the upper limit of human hearing, but we often need to pitch down to match the
+            // fundamental frequency of the true recording, so we double the upper limit.
+            .modesMaxFreq = 40000,
+            .targetNModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
+            .femNModes = 80, // number of modes to be computed for the finite element analysis
+            // Convert to signed ints.
+            .exPos = excitable_vertices | transform([](uint i) { return int(i); }) | to<std::vector>(),
+            .nExPos = int(excitable_vertices.size()),
+            .debugMode = false,
+        }
+    );
+    const std::string_view model_dsp = m2f_result.modelDsp;
+    if (model_dsp.empty()) return {"process = 0;", {}, {}, {}, {{}}, {}};
+
+    auto &mode_freqs = m2f_result.model.modeFreqs;
+    const float fundamental_freq = fundamental_freq_opt ?
+        *fundamental_freq_opt :
+        !mode_freqs.empty() ? mode_freqs.front() :
+                              440.0f;
+
+    // Static code sections.
+    static constexpr std::string to_sandh{" : ba.sAndH(gate);"}; // Add a sample and hold on the gate, in serial, and end the expression.
+    static const std::string
+        gain = "gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01);",
+        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + to_sandh,
+        gate = std::format("gate = button(\"{}[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");", GateParamName),
+        hammer_hardness = "hammerHardness = hslider(\"Hammer hardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + to_sandh,
+        hammer_size = "hammerSize = hslider(\"Hammer size[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.1,0,1,0.01)" + to_sandh,
+        hammer = "hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; };";
+
+    // Variable code sections.
+    const uint num_excite = excitable_vertices.size();
+    const std::string
+        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, to_sandh),
+        ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excite - 1) / 2, num_excite - 1, to_sandh),
+        modal_model = std::format("{}({}exPos,t60Scale)", model_name, freq_control ? "freq," : ""),
+        process = std::format("process = hammer(gate,hammerHardness,hammerSize) : {}*gain;", modal_model);
+
+    std::stringstream instrument;
+    instrument << gate << '\n'
+               << hammer_hardness << '\n'
+               << hammer_size << '\n'
+               << gain << '\n'
+               << freq << '\n'
+               << ex_pos << '\n'
+               << t60_scale << '\n'
+               << '\n'
+               << hammer << '\n'
+               << '\n'
+               << process << '\n';
+
+    return {
+        .ModelDsp = std::format("{}{}", model_dsp, instrument.str()),
+        .ModeFreqs = std::move(mode_freqs),
+        .ModeT60s = std::move(m2f_result.model.modeT60s),
+        .ModeGains = std::move(m2f_result.model.modeGains),
+        .ExcitableVertices = std::move(excitable_vertices),
+        .Material = std::move(material)
+    };
+}
+
 void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
-    if (auto &dsp_generator = Dsp->DspGenerator) {
+    if (auto &dsp_generator = DspGenerator) {
         if (auto m2f_result = dsp_generator->Render()) {
             dsp_generator.reset();
-            Dsp->SetCode(m2f_result->ModelDsp);
-            ModalModel = std::make_unique<ModalAudioModel>(*Dsp, std::move(*m2f_result), CreateSvg);
+            Dsp.SetCode(m2f_result->ModelDsp);
+            ModalModel = std::make_unique<ModalAudioModel>(Dsp, std::move(*m2f_result));
             SetModel(SoundObjectModel::Modal, r, entity);
         }
     }
@@ -600,8 +686,23 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     const bool disable_generate = !material_changed && ModalModel && excitable_vertices == ModalModel->Excitable.ExcitableVertices;
     if (disable_generate) BeginDisabled();
     if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
-        std::optional<float> fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
-        Dsp->GenerateDsp(mesh, r.get<Scale>(entity).Value, excitable_vertices, fundamental_freq, material_props, quality_tets);
+        const auto scale = r.get<Scale>(entity).Value;
+        const auto fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(10).front()} : std::nullopt;
+        DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating modal audio model...", [&, scale, fundamental_freq] {
+            // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
+            // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
+
+            // We rely on `PreserveSurface` behavior for excitable vertices;
+            // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
+            // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
+
+            while (!DspGenerator) {}
+            DspGenerator->SetMessage("Generating tetrahedral mesh...");
+            const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = quality_tets});
+
+            DspGenerator->SetMessage("Generating DSP...");
+            return ::GenerateDsp(*tets, material_props, excitable_vertices, true, fundamental_freq);
+        });
     }
     if (disable_generate) EndDisabled();
 }

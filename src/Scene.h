@@ -29,13 +29,12 @@ struct Excitable;
 struct VulkanContext;
 struct VkRenderBuffers;
 struct VulkanBuffer;
-struct ImageResource;
 
 struct Position {
     vec3 Value;
 };
 struct Rotation {
-    glm::quat Value;
+    quat Value;
 };
 
 struct Model {
@@ -121,7 +120,7 @@ inline std::string to_string(SelectionMode mode) {
 struct MeshCreateInfo {
     std::string Name{};
     vec3 Position{0};
-    glm::quat Rotation{1, 0, 0, 0};
+    quat Rotation{1, 0, 0, 0};
     vec3 Scale{1};
     bool Select{true}, Visible{true};
 };
@@ -155,7 +154,7 @@ struct Scene {
     void DestroyInstance(entt::entity);
     void DestroyEntity(entt::entity);
 
-    void SetModel(entt::entity, vec3 position, glm::quat rotation, vec3 scale);
+    void SetModel(entt::entity, vec3 position, quat rotation, vec3 scale);
 
     void SetVisible(entt::entity, bool);
 

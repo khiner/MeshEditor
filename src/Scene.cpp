@@ -79,7 +79,7 @@ const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
 namespace {
-void UpdateModel(entt::registry &r, entt::entity entity, vec3 position, glm::quat rotation, vec3 scale) {
+void UpdateModel(entt::registry &r, entt::entity entity, vec3 position, quat rotation, vec3 scale) {
     r.emplace_or_replace<Position>(entity, position);
     r.emplace_or_replace<Rotation>(entity, rotation);
 
@@ -541,7 +541,7 @@ const Mesh &Scene::GetSelectedMesh() const {
     return R.get<Mesh>(GetParentEntity(R, SelectedEntity));
 }
 
-void Scene::SetModel(entt::entity entity, vec3 position, glm::quat rotation, vec3 scale) {
+void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 scale) {
     UpdateModel(R, entity, position, rotation, scale);
     UpdateModelBuffer(entity);
     InvalidateCommandBuffer();

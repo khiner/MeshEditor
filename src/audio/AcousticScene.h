@@ -28,5 +28,5 @@ private:
 
     entt::registry &R;
     CreateSvgResource CreateSvg;
-    // std::unique_ptr<FaustDSP> Dsp;
+    std::unique_ptr<FaustDSP> Dsp;
 };

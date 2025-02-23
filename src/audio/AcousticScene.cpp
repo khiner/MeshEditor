@@ -1,5 +1,6 @@
 #include "AcousticScene.h"
 #include "Excitable.h"
+#include "FaustDSP.h"
 #include "RealImpact.h"
 #include "Registry.h"
 #include "Scene.h"
@@ -24,7 +25,8 @@ struct SoundObjectListenerPoint {
     uint Index; // Index in the root listener point's children.
 };
 
-AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg) : R(r), CreateSvg(std::move(create_svg)) {
+AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg)
+    : R(r), CreateSvg(std::move(create_svg)), Dsp(std::make_unique<FaustDSP>(std::move(create_svg))) {
     // EnTT listeners
     R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
@@ -107,6 +109,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) cons
 }
 
 void AcousticScene::ProduceAudio(AudioBuffer buffer) const {
+    Dsp->Compute(buffer.FrameCount, &buffer.Input, &buffer.Output);
     for (const auto &audio_source : R.storage<SoundObject>()) {
         audio_source.ProduceAudio(buffer);
     }
@@ -114,7 +117,7 @@ void AcousticScene::ProduceAudio(AudioBuffer buffer) const {
 
 SoundObject &AcousticScene::AddSoundObject(entt::entity entity, AcousticMaterial material) const {
     R.emplace<Frozen>(entity);
-    return R.emplace<SoundObject>(entity, std::move(material), CreateSvg);
+    return R.emplace<SoundObject>(entity, std::move(material), *Dsp);
 }
 
 using namespace ImGui;
