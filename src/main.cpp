@@ -119,7 +119,7 @@ bool PushFont(FontFamily family) {
 */
 
 std::unique_ptr<VulkanContext> VC;
-std::unique_ptr<AcousticScene> acoustic_scene;
+std::unique_ptr<AcousticScene> acoustic_scene; // Only global to make the audio device callback a raw function pointer. Probably not worth it.
 
 void CreateSvg(std::unique_ptr<SvgResource> &svg, fs::path path) {
     VC->Device->waitIdle();
@@ -217,8 +217,6 @@ int main(int, char **) {
     NFD_Init();
 
     entt::registry r;
-    std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, r);
-    std::unique_ptr<ImGuiTexture> scene_texture;
     acoustic_scene = std::make_unique<AcousticScene>(r, CreateSvg);
 
     AudioDevice audio_device{[](auto buffer) {
@@ -226,6 +224,8 @@ int main(int, char **) {
     }};
     audio_device.Start();
 
+    std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, r);
+    std::unique_ptr<ImGuiTexture> scene_texture;
     WindowsState windows;
 
     // Main loop
@@ -368,6 +368,7 @@ int main(int, char **) {
 
     // Cleanup
     audio_device.Uninit();
+    acoustic_scene.reset();
     NFD_Quit();
 
     VC->Device->waitIdle();
