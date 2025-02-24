@@ -1,6 +1,7 @@
 #include "AcousticScene.h"
 #include "Excitable.h"
 #include "FaustDSP.h"
+#include "FaustGenerator.h"
 #include "RealImpact.h"
 #include "Registry.h"
 #include "Scene.h"
@@ -26,8 +27,8 @@ struct SoundObjectListenerPoint {
 };
 
 AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg)
-    : R(r), CreateSvg(std::move(create_svg)), Dsp(std::make_unique<FaustDSP>(std::move(create_svg))) {
-    // EnTT listeners
+    : R(r), CreateSvg(std::move(create_svg)), Dsp(std::make_unique<FaustDSP>(std::move(create_svg))),
+      FaustGenerator(std::make_unique<::FaustGenerator>(r, [this](std::string_view code) { Dsp->SetCode(code); })) {
     R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
             const auto &excited_vertex = r.get<const ExcitedVertex>(entity);

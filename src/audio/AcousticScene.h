@@ -12,6 +12,7 @@ struct AcousticMaterial;
 struct Scene;
 struct SoundObject;
 struct FaustDSP;
+struct FaustGenerator;
 
 struct AcousticScene {
     AcousticScene(entt::registry &, CreateSvgResource);
@@ -29,4 +30,5 @@ private:
     entt::registry &R;
     CreateSvgResource CreateSvg;
     std::unique_ptr<FaustDSP> Dsp;
+    std::unique_ptr<FaustGenerator> FaustGenerator;
 };

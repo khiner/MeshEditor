@@ -369,12 +369,13 @@ int main(int, char **) {
     }
 
     // Cleanup
+    VC->Device->waitIdle();
+    r.clear();
+
     audio_device.Uninit();
     acoustic_scene.reset();
     NFD_Quit();
 
-    VC->Device->waitIdle();
-    r.clear();
     scene_texture.reset();
     scene.reset();
 

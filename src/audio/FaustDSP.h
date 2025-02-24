@@ -22,9 +22,6 @@ class FaustParams;
 
 struct llvm_dsp_factory;
 
-struct Mesh;
-template<typename Result> struct Worker;
-
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.
 struct FaustDSP {
@@ -63,6 +60,6 @@ private:
     llvm_dsp_factory *DspFactory{nullptr};
     std::unique_ptr<FaustParams> Params;
 
-    std::string Code{""};
-    std::string ErrorMessage{""};
+    std::string Code;
+    std::string ErrorMessage;
 };

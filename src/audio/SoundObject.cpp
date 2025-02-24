@@ -4,15 +4,16 @@
 #include "Excitable.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
+#include "ModalSoundObject.h"
 #include "Registry.h"
 #include "Scale.h"
 #include "Tets.h"
 #include "Widgets.h" // imgui
 #include "Worker.h"
-#include "mesh/Mesh.h"
-#include "mesh2faust.h"
 
 #include "implot.h"
+#include "mesh/Mesh.h"
+#include "mesh2faust.h"
 #include "miniaudio.h"
 #include "tetMesh.h" // Vega
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
@@ -25,16 +26,6 @@
 
 using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
 using std::views::transform, std::views::take;
-
-constexpr std::string_view ExciteIndexParamName{"Excite index"};
-constexpr std::string_view GateParamName{"Gate"};
-
-struct Mesh2FaustResult {
-    std::string ModelDsp; // Faust DSP code defining the model function.
-    m2f::ModalModel ModalModel;
-    std::vector<uint32_t> ExcitableVertices; // Excitable vertices
-    AcousticMaterialProperties Material;
-};
 
 namespace {
 struct ImpactRecording {
@@ -255,13 +246,6 @@ struct ImpactAudioModel {
         else if (force == 0 && IsStarted()) Stop();
     }
 
-    void Draw() const {
-        if (!Waveform) return;
-
-        Waveform->PlotFrames("Real-world impact waveform", Frame);
-        Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
-    }
-
 private:
     void UpdateWaveform() {
         Stop();
@@ -300,19 +284,14 @@ std::optional<size_t> PlotModeData(
 
     return hovered_index;
 }
-std::unique_ptr<Worker<Mesh2FaustResult>> DspGenerator;
+std::unique_ptr<Worker<ModalSoundObject>> DspGenerator;
 } // namespace
 
 struct ModalAudioModel {
-    ModalAudioModel(FaustDSP &dsp, Mesh2FaustResult &&m2f)
-        : Dsp(dsp), M2F(std::move(m2f)), Excitable(M2F.ExcitableVertices) {
-        M2F.ExcitableVertices.clear(); // These are only used to populate `Excitable`.
+    ModalAudioModel(FaustDSP &dsp, Excitable &&excitable) : Dsp(dsp), Excitable(std::move(excitable)) {
         SetVertex(Excitable.SelectedVertex());
     }
-
     ~ModalAudioModel() = default;
-
-    uint ModeCount() const { return M2F.ModalModel.modeFreqs.size(); }
 
     void ProduceAudio(AudioBuffer &buffer) const {
         if (!ImpactRecording) return;
@@ -345,7 +324,7 @@ struct ModalAudioModel {
         Dsp.Set(std::move(param_label), param_value);
     }
 
-    void Draw() {
+    void Draw(const ModalSoundObject &model) {
         using namespace ImGui;
 
         const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
@@ -366,17 +345,16 @@ struct ModalAudioModel {
         Excitable.SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
         if (CollapsingHeader("Modal data charts")) {
             std::optional<size_t> new_hovered_index;
-            const auto &model = M2F.ModalModel;
-            if (auto hovered = PlotModeData(model.modeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(model.modeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(model.modeGains[Excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
-            if (HoveredModeIndex = new_hovered_index; HoveredModeIndex && *HoveredModeIndex < model.modeFreqs.size()) {
+            if (auto hovered = PlotModeData(model.ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
+            if (auto hovered = PlotModeData(model.ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
+            if (auto hovered = PlotModeData(model.ModeGains[Excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+            if (HoveredModeIndex = new_hovered_index; HoveredModeIndex && *HoveredModeIndex < model.ModeFreqs.size()) {
                 const auto index = *HoveredModeIndex;
                 Text(
                     "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
-                    model.modeFreqs[index],
-                    model.modeT60s[index],
-                    model.modeGains[Excitable.SelectedVertexIndex][index]
+                    model.ModeFreqs[index],
+                    model.ModeT60s[index],
+                    model.ModeGains[Excitable.SelectedVertexIndex][index]
                 );
             }
         }
@@ -390,7 +368,6 @@ struct ModalAudioModel {
     std::unique_ptr<Waveform> Waveform{}; // Recorded waveform
 
     FaustDSP &Dsp;
-    Mesh2FaustResult M2F;
     Excitable Excitable;
 
 private:
@@ -457,9 +434,7 @@ const Excitable &SoundObject::GetExcitable() const {
     return EmptyExcitable;
 }
 
-static constexpr std::string ModelName{"modalModel"};
-
-m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, bool freq_control) {
+m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices) {
     // Convert the tetrahedral mesh into a VegaFEM TetMesh.
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
@@ -485,8 +460,8 @@ m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialP
             .beta = material.Beta
         },
         m2f::CommonArguments{
-            .modelName = ModelName,
-            .freqControl = freq_control,
+            .modelName = "", // Not used until code gen
+            .freqControl = false, // Not used until code gen
             .modesMinFreq = 20,
             // 20k is the upper limit of human hearing, but we often need to pitch down to match the
             // fundamental frequency of the true recording, so we double the upper limit.
@@ -501,54 +476,12 @@ m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialP
     );
 }
 
-std::string GenerateDsp(const m2f::ModalModel &modal_model, const std::vector<uint> &excitable_vertices, std::optional<float> fundamental_freq_opt, bool freq_control) {
-    auto model_dsp = modal2faust(modal_model, {ModelName, freq_control});
-    if (model_dsp.empty()) return "process = 0;";
-
-    const float fundamental_freq = fundamental_freq_opt ?
-        *fundamental_freq_opt :
-        !modal_model.modeFreqs.empty() ? modal_model.modeFreqs.front() :
-                                         440.0f;
-
-    // Static code sections.
-    static constexpr std::string ToSAH{" : ba.sAndH(gate);"}; // Add a sample and hold on the gate, in serial, and end the expression.
-    static const std::string
-        gain = "gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01);",
-        t60_scale = "t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)" + ToSAH,
-        gate = std::format("gate = button(\"{}[tooltip: When excitation source is 'Hammer', excites the vertex. With any excitation source, applies the current parameters.]\");", GateParamName),
-        hammer_hardness = "hammerHardness = hslider(\"Hammer hardness[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.9,0,1,0.01)" + ToSAH,
-        hammer_size = "hammerSize = hslider(\"Hammer size[tooltip: Only has an effect when excitation source is 'Hammer'.]\",0.1,0,1,0.01)" + ToSAH,
-        hammer = "hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; };";
-
-    // Variable code sections.
-    const uint num_excite = excitable_vertices.size();
-    const std::string
-        freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, ToSAH),
-        ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excite - 1) / 2, num_excite - 1, ToSAH),
-        model = std::format("{}({}exPos,t60Scale)", ModelName, freq_control ? "freq," : ""),
-        process = std::format("process = hammer(gate,hammerHardness,hammerSize) : {}*gain;", model);
-
-    std::stringstream instrument;
-    instrument << gate << '\n'
-               << hammer_hardness << '\n'
-               << hammer_size << '\n'
-               << gain << '\n'
-               << freq << '\n'
-               << ex_pos << '\n'
-               << t60_scale << '\n'
-               << '\n'
-               << hammer << '\n'
-               << '\n'
-               << process << '\n';
-    return std::format("{}{}", std::move(model_dsp), instrument.str());
-}
-
 void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     if (auto &dsp_generator = DspGenerator) {
-        if (auto m2f_result = dsp_generator->Render()) {
+        if (auto modal_sound_object = dsp_generator->Render()) {
             dsp_generator.reset();
-            Dsp.SetCode(m2f_result->ModelDsp);
-            ModalModel = std::make_unique<ModalAudioModel>(Dsp, std::move(*m2f_result));
+            r.emplace_or_replace<ModalSoundObject>(entity, std::move(*modal_sound_object));
+            ModalModel = std::make_unique<ModalAudioModel>(Dsp, Excitable{r.get<ModalSoundObject>(entity).ExcitableVertices});
             SetModel(SoundObjectModel::Modal, r, entity);
         }
     }
@@ -595,15 +528,20 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     }
 
     if (impact_mode) {
-        if (ImpactModel) ImpactModel->Draw();
+        if (ImpactModel && ImpactModel->Waveform) {
+            ImpactModel->Waveform->PlotFrames("Real-world impact waveform", ImpactModel->Frame);
+            ImpactModel->Waveform->PlotMagnitudeSpectrum("Real-world impact spectrum");
+        }
         return;
     }
 
+    const auto *modal_model = r.try_get<ModalSoundObject>(entity);
     // Modal mode
-    if (ModalModel) {
-        ModalModel->Draw();
+    if (ModalModel && modal_model) {
+        ModalModel->Draw(*modal_model);
         if (ModalModel->Waveform && ImpactModel && ImpactModel->Waveform) {
             const auto &modal = *ModalModel->Waveform, &impact = *ImpactModel->Waveform;
+            // uint ModeCount() const { return ModalModel.modeFreqs.size(); }
             // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
             // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
             // modal.GetPeakFrequencies(n_test_modes);
@@ -644,8 +582,8 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     Text("Rayleigh damping alpha/beta");
     InputDouble("##Rayleigh damping alpha", &material_props.Alpha, 0.0f, 0.0f, "%.3f");
     InputDouble("##Rayleigh damping beta", &material_props.Beta, 0.0f, 0.0f, "%.3f");
-    const bool material_changed = ModalModel && material_props != ModalModel->M2F.Material;
-    if (material_changed && Button("Reset material props")) material_props = ModalModel->M2F.Material;
+    const bool material_changed = modal_model && material_props != modal_model->Material;
+    if (material_changed && Button("Reset material props")) material_props = modal_model->Material;
 
     SeparatorText("Tet mesh");
 
@@ -682,7 +620,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
         const auto scale = r.get<Scale>(entity).Value;
         const auto fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(8).front()} : std::nullopt;
-        DspGenerator = std::make_unique<Worker<Mesh2FaustResult>>("Generating modal audio model...", [&, scale, fundamental_freq] {
+        DspGenerator = std::make_unique<Worker<ModalSoundObject>>("Generating modal audio model...", [&, scale, fundamental_freq] {
             // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
             // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
 
@@ -695,16 +633,15 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
             const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = quality_tets});
 
             DspGenerator->SetMessage("Generating modal model...");
-            auto modal_model = GenerateModalModel(*tets, material_props, excitable_vertices, true);
+            auto modal_model = GenerateModalModel(*tets, material_props, excitable_vertices);
 
-            DspGenerator->SetMessage("Generating DSP...");
-            auto dsp = GenerateDsp(modal_model, excitable_vertices, fundamental_freq, true);
-
-            return Mesh2FaustResult{
-                .ModelDsp = std::move(dsp),
-                .ModalModel = std::move(modal_model),
+            return ModalSoundObject{
+                .ModeFreqs = std::move(modal_model.modeFreqs),
+                .ModeT60s = std::move(modal_model.modeT60s),
+                .ModeGains = std::move(modal_model.modeGains),
                 .ExcitableVertices = excitable_vertices,
                 .Material = material_props,
+                .FundamentalFreq = fundamental_freq,
             };
         });
     }
