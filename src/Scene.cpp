@@ -421,7 +421,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
-    R.emplace<Name>(entity, info.Name);
+    R.emplace<Name>(entity, CreateName(R, info.Name));
 
     MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
@@ -489,10 +489,9 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
     R.emplace<SceneNode>(entity, parent);
     auto &parent_node = R.get<SceneNode>(parent);
-    if (info.Name.empty()) info.Name = std::format("{} instance {}", GetName(R, parent), parent_node.Children.size());
     parent_node.Children.emplace_back(entity);
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
-    R.emplace<Name>(entity, info.Name);
+    R.emplace<Name>(entity, info.Name.empty() ? std::format("{} instance {}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     SetVisible(entity, info.Visible);
     if (info.Select) SelectEntity(entity);
     InvalidateCommandBuffer();
