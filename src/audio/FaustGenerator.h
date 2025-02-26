@@ -23,5 +23,5 @@ private:
     entt::registry &R;
     OnFaustCodeChanged OnCodeChanged;
 
-    // std::unordered_map<entt::entity, ModalDsp> ModalDspByEntity;
+    std::unordered_map<entt::entity, ModalDsp> ModalDspByEntity;
 };
