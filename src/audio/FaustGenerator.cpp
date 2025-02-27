@@ -20,14 +20,14 @@ FaustGenerator::~FaustGenerator() = default;
 namespace {
 using ModalDsp = FaustGenerator::ModalDsp;
 constexpr std::string_view ToSAH{" : ba.sAndH(gate)"}; // add a sample and hold on the gate in serial
-ModalDsp GenerateModalDsp(const std::string_view model_name, const ModalSoundObject &obj, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq_opt, bool freq_control) {
+ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundObject &obj, bool freq_control) {
     static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
     static constexpr std::string_view ModelT60Scale{"t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)"};
-    const float fundamental_freq = fundamental_freq_opt ? *fundamental_freq_opt : !obj.ModeFreqs.empty() ? obj.ModeFreqs.front() :
-                                                                                                           440.0f;
+    const float fundamental_freq = obj.FundamentalFreq ? *obj.FundamentalFreq : !obj.ModeFreqs.empty() ? obj.ModeFreqs.front() :
+                                                                                                         440.0f;
     const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, ToSAH);
-    const auto num_excite = excitable_vertices.size();
-    const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excite - 1) / 2, num_excite - 1, ToSAH);
+    const uint num_excitable = obj.Excitable.ExcitableVertices.size();
+    const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1, ToSAH);
 
     const auto model = m2f::modal2faust({obj.ModeFreqs, obj.ModeT60s, obj.ModeGains}, {"modalModel", freq_control});
     const auto model_definition = std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{}{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale, ToSAH);
@@ -62,7 +62,7 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
 void FaustGenerator::OnCreateModalSoundObject(entt::registry &r, entt::entity e) {
     const auto &model = r.get<ModalSoundObject>(e);
     const auto name = GetName(r, e);
-    ModalDspByEntity[e] = GenerateModalDsp(name, model, model.ExcitableVertices, model.FundamentalFreq, true);
+    ModalDspByEntity[e] = GenerateModalDsp(name, model, true);
     OnCodeChanged(GenerateDsp(ModalDspByEntity));
 }
 void FaustGenerator::OnDestroyModalSoundObject(entt::registry &, entt::entity e) {

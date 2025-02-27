@@ -32,7 +32,9 @@ AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg)
     R.on_construct<ExcitedVertex>().connect<[](entt::registry &r, entt::entity entity) {
         if (auto *sound_object = r.try_get<SoundObject>(entity)) {
             const auto &excited_vertex = r.get<const ExcitedVertex>(entity);
-            sound_object->SetVertex(excited_vertex.Vertex);
+            auto &excitable = r.get<Excitable>(entity);
+            excitable.SelectVertex(excited_vertex.Vertex);
+            sound_object->SetVertex(excitable.SelectedVertexIndex);
             sound_object->SetVertexForce(excited_vertex.Force);
         }
     }>();
@@ -101,24 +103,24 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) cons
             };
             auto material_name = RealImpact::FindMaterialName(R.get<Name>(object_entity).Value);
             const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
-            auto material = real_impact_material ? *real_impact_material : materials::acoustic::All.front();
-            auto &sound_object = AddSoundObject(object_entity, std::move(material));
+            auto &sound_object = AddSoundObject(object_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
+            R.emplace<Excitable>(object_entity, vertex_indices);
             sound_object.SetImpactFrames(to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
-            R.emplace<Excitable>(object_entity, sound_object.GetExcitable());
         }
     }
 }
 
 void AcousticScene::ProduceAudio(AudioBuffer buffer) const {
     Dsp->Compute(buffer.FrameCount, &buffer.Input, &buffer.Output);
-    for (const auto &audio_source : R.storage<SoundObject>()) {
-        audio_source.ProduceAudio(buffer);
+    for (const auto &[e, audio_source] : R.view<SoundObject>().each()) {
+        audio_source.ProduceAudio(buffer, R, e);
     }
 }
 
 SoundObject &AcousticScene::AddSoundObject(entt::entity entity, AcousticMaterial material) const {
     R.emplace<Frozen>(entity);
-    return R.emplace<SoundObject>(entity, std::move(material), *Dsp);
+    R.emplace<AcousticMaterial>(entity, material);
+    return R.emplace<SoundObject>(entity, material, *Dsp);
 }
 
 using namespace ImGui;
@@ -205,7 +207,9 @@ void AcousticScene::RenderControls(Scene &scene) {
     };
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
-        if (Button("Create audio model")) AddSoundObject(selected_entity, materials::acoustic::All.front());
+        if (Button("Create audio model")) {
+            AddSoundObject(selected_entity, materials::acoustic::All.front());
+        }
         return;
     }
 

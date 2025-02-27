@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AcousticMaterial.h"
+#include "Excitable.h"
 
 #include <optional>
 #include <string_view>
@@ -12,7 +13,6 @@ struct ModalSoundObject {
     std::vector<float> ModeFreqs; // Mode frequencies
     std::vector<float> ModeT60s; // Mode T60 decay times
     std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
-    std::vector<uint32_t> ExcitableVertices; // Excitable vertices
-    AcousticMaterialProperties Material;
+    ::Excitable Excitable;
     std::optional<float> FundamentalFreq;
 };

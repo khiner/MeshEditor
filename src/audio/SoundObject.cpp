@@ -67,10 +67,10 @@ constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const
 
 // Ordered by lowest to highest frequency.
 constexpr std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_bins, uint n_peaks) {
-    const uint N_2 = n_bins / 2;
+    const uint N2 = n_bins / 2;
 
     std::vector<std::pair<float, uint>> peaks; // (magnitude, bin)
-    for (uint i = 1; i < N_2 - 1; i++) {
+    for (uint i = 1; i < N2 - 1; i++) {
         float mag_sq = data[i][0] * data[i][0] + data[i][1] * data[i][1];
         float left_mag_sq = data[i - 1][0] * data[i - 1][0] + data[i - 1][1] * data[i - 1][1];
         float right_mag_sq = data[i + 1][0] * data[i + 1][0] + data[i + 1][1] * data[i + 1][1];
@@ -121,26 +121,26 @@ struct Waveform {
 
     void PlotMagnitudeSpectrum(std::string_view label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = {}) const {
         if (ImPlot::BeginPlot(label.data(), ChartSize)) {
-            static constexpr float MIN_DB = -200;
+            static constexpr float MinDb = -200;
             const FFTData &fft = FftData;
             const uint N = WindowedFrames.size();
-            const uint N_2 = N / 2;
+            const uint N2 = N / 2;
             const float fs = SampleRate; // todo flexible sample rate
             const float fs_n = SampleRate / float(N);
 
-            static std::vector<float> frequency(N_2), magnitude(N_2);
-            frequency.resize(N_2);
-            magnitude.resize(N_2);
+            static std::vector<float> frequency(N2), magnitude(N2);
+            frequency.resize(N2);
+            magnitude.resize(N2);
 
             const auto *data = fft.Complex;
-            for (uint i = 0; i < N_2; i++) {
+            for (uint i = 0; i < N2; i++) {
                 frequency[i] = fs_n * float(i);
-                magnitude[i] = LinearToDb(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N_2));
+                magnitude[i] = LinearToDb(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));
             }
 
             ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");
             ImPlot::SetupAxisLimits(ImAxis_X1, 0, fs / 2, ImGuiCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, MIN_DB, 0, ImGuiCond_Always);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, MinDb, 0, ImGuiCond_Always);
             ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
             ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
             (void)highlight_peak_freq_index; // unused
@@ -156,7 +156,7 @@ struct Waveform {
             //         ImPlot::PlotInfLines("##Peak", &freq, 1);
             //     }
             // }
-            ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N_2, MIN_DB);
+            ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N2, MinDb);
             ImPlot::PopStyleColor();
             ImPlot::PopStyleVar();
             ImPlot::EndPlot();
@@ -186,19 +186,17 @@ private:
 
 // All model-specific data.
 struct ImpactAudioModel {
-    ImpactAudioModel(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices)
+    ImpactAudioModel(std::vector<std::vector<float>> &&impact_frames)
         : ImpactFrames(std::move(impact_frames)),
-          Excitable(std::move(vertex_indices)),
           // All samples are the same length.
           MaxFrame(ImpactFrames.empty() ? 0 : ImpactFrames.front().size()) {
-        UpdateWaveform();
+        SetVertex(0);
     }
     ~ImpactAudioModel() = default;
 
     const ImpactAudioModel &operator=(ImpactAudioModel &&other) noexcept {
         if (this != &other) {
             ImpactFrames = std::move(other.ImpactFrames);
-            Excitable = std::move(other.Excitable);
             Frame = other.Frame;
             Waveform = std::move(other.Waveform);
         }
@@ -206,15 +204,15 @@ struct ImpactAudioModel {
     }
 
     std::vector<std::vector<float>> ImpactFrames;
-    Excitable Excitable;
+    uint CurrentVertex{0};
     uint MaxFrame;
     uint Frame{MaxFrame}; // Start at the end, so it doesn't immediately play.
     std::unique_ptr<Waveform> Waveform; // Selected vertex's waveform
 
-    void ProduceAudio(const AudioBuffer &buffer) {
+    void ProduceAudio(const AudioBuffer &buffer, uint selected_vertex_index) {
         if (ImpactFrames.empty()) return;
 
-        const auto &impact_samples = ImpactFrames[Excitable.SelectedVertexIndex];
+        const auto &impact_samples = ImpactFrames[selected_vertex_index];
         // todo - resample from 48kHz to device sample rate if necessary
         for (uint i = 0; i < buffer.FrameCount; ++i) {
             buffer.Output[i] += Frame < impact_samples.size() ? impact_samples[Frame++] : 0.0f;
@@ -226,33 +224,24 @@ struct ImpactAudioModel {
     bool IsStarted() const { return Frame != MaxFrame; }
 
     bool CanExcite() const { return bool(Waveform); }
-    void SetVertex(uint vertex) {
-        Excitable.SelectVertex(vertex);
-        UpdateWaveform();
-    }
-    void SetVertexIndex(uint vertex_index) {
-        Excitable.SelectedVertexIndex = vertex_index;
-        UpdateWaveform();
+    void SetVertex(uint vertex_index) {
+        CurrentVertex = vertex_index;
+        Stop();
+        if (vertex_index < ImpactFrames.size()) {
+            const auto &frames = ImpactFrames[CurrentVertex];
+            Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
+        }
     }
     void SetImpactFrames(std::vector<std::vector<float>> &&impact_frames) {
         if (ImpactFrames.size() != impact_frames.size()) return;
 
         ImpactFrames = std::move(impact_frames);
-        UpdateWaveform();
+        SetVertex(CurrentVertex);
     }
 
     void SetVertexForce(float force) {
         if (force > 0 && !IsStarted()) Start();
         else if (force == 0 && IsStarted()) Stop();
-    }
-
-private:
-    void UpdateWaveform() {
-        Stop();
-        if (Excitable.SelectedVertexIndex < ImpactFrames.size()) {
-            const auto &frames = ImpactFrames[Excitable.SelectedVertexIndex];
-            Waveform = std::make_unique<::Waveform>(frames.data(), frames.size());
-        }
     }
 };
 
@@ -288,9 +277,7 @@ std::unique_ptr<Worker<ModalSoundObject>> DspGenerator;
 } // namespace
 
 struct ModalAudioModel {
-    ModalAudioModel(FaustDSP &dsp, Excitable &&excitable) : Dsp(dsp), Excitable(std::move(excitable)) {
-        SetVertex(Excitable.SelectedVertex());
-    }
+    ModalAudioModel(FaustDSP &dsp) : Dsp(dsp) {}
     ~ModalAudioModel() = default;
 
     void ProduceAudio(AudioBuffer &buffer) const {
@@ -309,13 +296,9 @@ struct ModalAudioModel {
     }
 
     bool CanExcite() const { return !ImpactRecording || ImpactRecording->Complete; }
-    void SetVertex(uint vertex) {
+    void SetVertex(uint vertex_index) {
         Stop();
-        Excitable.SelectVertex(vertex);
-        const auto &vertices = Excitable.ExcitableVertices;
-        if (auto it = find(vertices, vertex); it != vertices.end()) {
-            SetParam(ExciteIndexParamName, std::ranges::distance(vertices.begin(), it));
-        }
+        SetParam(ExciteIndexParamName, vertex_index);
     }
     void SetVertexForce(float force) { SetParam(GateParamName, force); }
     void Stop() { SetVertexForce(0); }
@@ -324,7 +307,7 @@ struct ModalAudioModel {
         Dsp.Set(std::move(param_label), param_value);
     }
 
-    void Draw(const ModalSoundObject &model) {
+    void Draw(const ModalSoundObject &model, Excitable &excitable) {
         using namespace ImGui;
 
         const bool is_recording = ImpactRecording && !ImpactRecording->Complete;
@@ -342,25 +325,25 @@ struct ModalAudioModel {
         }
 
         // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-        Excitable.SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
+        excitable.SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
         if (CollapsingHeader("Modal data charts")) {
             std::optional<size_t> new_hovered_index;
             if (auto hovered = PlotModeData(model.ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", HoveredModeIndex)) new_hovered_index = hovered;
             if (auto hovered = PlotModeData(model.ModeT60s, "Mode T60s", "", "T60 decay time (s)", HoveredModeIndex)) new_hovered_index = hovered;
-            if (auto hovered = PlotModeData(model.ModeGains[Excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
+            if (auto hovered = PlotModeData(model.ModeGains[excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", HoveredModeIndex, 1.f)) new_hovered_index = hovered;
             if (HoveredModeIndex = new_hovered_index; HoveredModeIndex && *HoveredModeIndex < model.ModeFreqs.size()) {
                 const auto index = *HoveredModeIndex;
                 Text(
                     "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
                     model.ModeFreqs[index],
                     model.ModeT60s[index],
-                    model.ModeGains[Excitable.SelectedVertexIndex][index]
+                    model.ModeGains[excitable.SelectedVertexIndex][index]
                 );
             }
         }
 
         if (CollapsingHeader("DSP parameters")) Dsp.DrawParams();
-        static const fs::path FaustSvgDir = "MeshEditor-svg";
+        static const fs::path FaustSvgDir{"MeshEditor-svg"};
         if (CollapsingHeader("DSP graph")) Dsp.DrawGraph(FaustSvgDir);
         if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", Dsp.GetCode());
     }
@@ -368,7 +351,6 @@ struct ModalAudioModel {
     std::unique_ptr<Waveform> Waveform{}; // Recorded waveform
 
     FaustDSP &Dsp;
-    Excitable Excitable;
 
 private:
     std::unique_ptr<ImpactRecording> ImpactRecording;
@@ -386,23 +368,24 @@ constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
 } // namespace
 */
 
-SoundObject::SoundObject(AcousticMaterial material, FaustDSP &dsp) : Dsp(dsp), Material(std::move(material)) {}
+SoundObject::SoundObject(AcousticMaterial material, FaustDSP &dsp) : Dsp(dsp) {
+    Controls.Material = std::move(material);
+}
 SoundObject::~SoundObject() = default;
 
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices) {
     if (!impact_frames.empty()) {
-        ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames), std::move(vertex_indices));
+        ImpactVertices = std::move(vertex_indices);
+        ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames));
     }
 }
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames) {
-    if (ImpactModel) {
-        ImpactModel->SetImpactFrames(std::move(impact_frames));
-    }
+    if (ImpactModel) ImpactModel->SetImpactFrames(std::move(impact_frames));
 }
 
-void SoundObject::ProduceAudio(AudioBuffer &buffer) const {
+void SoundObject::ProduceAudio(AudioBuffer &buffer, entt::registry &r, entt::entity entity) const {
     if (Model == SoundObjectModel::ImpactAudio && ImpactModel) {
-        ImpactModel->ProduceAudio(buffer);
+        ImpactModel->ProduceAudio(buffer, r.get<Excitable>(entity).SelectedVertexIndex);
     } else if (Model == SoundObjectModel::Modal && ModalModel) {
         ModalModel->ProduceAudio(buffer);
     }
@@ -420,18 +403,18 @@ void SoundObject::SetVertexForce(float force) {
 }
 
 void SoundObject::SetModel(SoundObjectModel model, entt::registry &r, entt::entity entity) {
+    if (Model == model) return;
+
     if (ImpactModel) ImpactModel->Stop();
     if (ModalModel) ModalModel->Stop();
     Model = model;
-    r.emplace_or_replace<Excitable>(entity, GetExcitable());
-}
+    const bool is_impact = Model == SoundObjectModel::ImpactAudio && ImpactModel && ImpactVertices;
+    const bool is_modal = Model == SoundObjectModel::Modal && ModalModel;
+    if (!is_impact && !is_modal) return;
 
-const Excitable &SoundObject::GetExcitable() const {
-    if (Model == SoundObjectModel::ImpactAudio && ImpactModel) return ImpactModel->Excitable;
-    if (Model == SoundObjectModel::Modal && ModalModel) return ModalModel->Excitable;
-
-    static constexpr Excitable EmptyExcitable{};
-    return EmptyExcitable;
+    auto excitable = is_impact ? Excitable{*ImpactVertices, ImpactModel->CurrentVertex} : r.get<ModalSoundObject>(entity).Excitable;
+    Controls.NumExcitableVertices = excitable.ExcitableVertices.size();
+    r.emplace_or_replace<Excitable>(entity, std::move(excitable));
 }
 
 m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices) {
@@ -480,8 +463,9 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     if (auto &dsp_generator = DspGenerator) {
         if (auto modal_sound_object = dsp_generator->Render()) {
             dsp_generator.reset();
+            ModalModel = std::make_unique<ModalAudioModel>(Dsp);
+            ModalModel->SetVertex(modal_sound_object->Excitable.SelectedVertexIndex);
             r.emplace_or_replace<ModalSoundObject>(entity, std::move(*modal_sound_object));
-            ModalModel = std::make_unique<ModalAudioModel>(Dsp, Excitable{r.get<ModalSoundObject>(entity).ExcitableVertices});
             SetModel(SoundObjectModel::Modal, r, entity);
         }
     }
@@ -502,16 +486,18 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
         SetModel(SoundObjectModel::Modal, r, entity);
     }
 
+    auto &excitable = r.get<Excitable>(entity);
+
     const bool impact_mode = Model == SoundObjectModel::ImpactAudio, modal_mode = Model == SoundObjectModel::Modal;
     if ((impact_mode && ImpactModel) || (modal_mode && ModalModel)) {
-        const auto &excitable = GetExcitable();
-        const auto &excitable_vertices = excitable.ExcitableVertices;
-        const auto selected_vertex = excitable.SelectedVertex();
-        if (BeginCombo("Vertex", std::to_string(selected_vertex).c_str())) {
-            for (uint vertex : excitable_vertices) {
-                if (Selectable(std::to_string(vertex).c_str(), vertex == selected_vertex)) {
-                    SetVertex(vertex);
+        const auto selected_vi = excitable.SelectedVertexIndex;
+        if (BeginCombo("Vertex", std::to_string(excitable.SelectedVertex()).c_str())) {
+            for (uint vi = 0; vi < excitable.ExcitableVertices.size(); ++vi) {
+                const auto vertex = excitable.ExcitableVertices[vi];
+                if (Selectable(std::to_string(vertex).c_str(), vi == selected_vi)) {
                     r.remove<ExcitedVertex>(entity);
+                    excitable.SelectedVertexIndex = vi;
+                    SetVertex(vi);
                 }
             }
             EndCombo();
@@ -520,7 +506,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
         if (!can_excite) BeginDisabled();
         Button("Strike");
         if (IsItemActivated()) {
-            r.emplace<ExcitedVertex>(entity, GetExcitable().SelectedVertex(), 1.f);
+            r.emplace<ExcitedVertex>(entity, excitable.SelectedVertex(), 1.f);
         } else if (IsItemDeactivated()) {
             r.remove<ExcitedVertex>(entity);
         }
@@ -538,7 +524,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     const auto *modal_model = r.try_get<ModalSoundObject>(entity);
     // Modal mode
     if (ModalModel && modal_model) {
-        ModalModel->Draw(*modal_model);
+        ModalModel->Draw(*modal_model, excitable);
         if (ModalModel->Waveform && ImpactModel && ImpactModel->Waveform) {
             const auto &modal = *ModalModel->Waveform, &impact = *ImpactModel->Waveform;
             // uint ModeCount() const { return ModalModel.modeFreqs.size(); }
@@ -561,66 +547,57 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     }
 
     SeparatorText("Material properties");
-    if (BeginCombo("Presets", Material.Name.c_str())) {
+    if (BeginCombo("Presets", Controls.Material.Name.c_str())) {
         for (const auto &material_choice : materials::acoustic::All) {
-            const bool is_selected = (material_choice.Name == Material.Name);
+            const bool is_selected = (material_choice.Name == Controls.Material.Name);
             if (Selectable(material_choice.Name.c_str(), is_selected)) {
-                Material = material_choice;
+                Controls.Material = material_choice;
             }
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();
     }
 
-    auto &material_props = Material.Properties;
     Text("Density (kg/m^3)");
-    InputDouble("##Density", &material_props.Density, 0.0f, 0.0f, "%.3f");
+    InputDouble("##Density", &Controls.Material.Properties.Density, 0.0f, 0.0f, "%.3f");
     Text("Young's modulus (Pa)");
-    InputDouble("##Young's modulus", &material_props.YoungModulus, 0.0f, 0.0f, "%.3f");
+    InputDouble("##Young's modulus", &Controls.Material.Properties.YoungModulus, 0.0f, 0.0f, "%.3f");
     Text("Poisson's ratio");
-    InputDouble("##Poisson's ratio", &material_props.PoissonRatio, 0.0f, 0.0f, "%.3f");
+    InputDouble("##Poisson's ratio", &Controls.Material.Properties.PoissonRatio, 0.0f, 0.0f, "%.3f");
     Text("Rayleigh damping alpha/beta");
-    InputDouble("##Rayleigh damping alpha", &material_props.Alpha, 0.0f, 0.0f, "%.3f");
-    InputDouble("##Rayleigh damping beta", &material_props.Beta, 0.0f, 0.0f, "%.3f");
-    const bool material_changed = modal_model && material_props != modal_model->Material;
-    if (material_changed && Button("Reset material props")) material_props = modal_model->Material;
+    InputDouble("##Rayleigh damping alpha", &Controls.Material.Properties.Alpha, 0.0f, 0.0f, "%.3f");
+    InputDouble("##Rayleigh damping beta", &Controls.Material.Properties.Beta, 0.0f, 0.0f, "%.3f");
+
+    const auto &original_material = r.get<AcousticMaterial>(entity);
+    bool material_changed = Controls.Material.Properties != original_material.Properties;
+    if (material_changed && Button("Reset material props")) {
+        Controls.Material = original_material;
+        material_changed = false;
+    }
 
     SeparatorText("Tet mesh");
 
-    static bool quality_tets = false;
-    Checkbox("Quality", &quality_tets);
+    Checkbox("Quality", &Controls.QualityTets);
     MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
 
     SeparatorText("Excitable vertices");
-    static bool vertices_changed{false};
     // If impact model is present, default the modal model to be excitable at exactly the same points.
-    static bool use_impact_vertices{ImpactModel};
-    if (ImpactModel) vertices_changed = Checkbox("Use RealImpact vertices", &use_impact_vertices);
-    else use_impact_vertices = false;
+    if (ImpactModel) Checkbox("Use RealImpact vertices", &Controls.UseImpactVertices);
 
     const auto &mesh = r.get<const Mesh>(entity);
-    static int num_excitable_vertices = 10;
-    if (!use_impact_vertices) {
-        const auto num_points = mesh.GetVertexCount();
-        if (uint(num_excitable_vertices) > num_points) num_excitable_vertices = num_points;
-        vertices_changed |= SliderInt("Num excitable vertices", &num_excitable_vertices, 1, num_points);
+    if (!ImpactModel || !Controls.UseImpactVertices) {
+        const uint num_points = mesh.GetVertexCount();
+        Controls.NumExcitableVertices = std::min(Controls.NumExcitableVertices, num_points);
+        const uint MinExcitableVertices = 1, MaxExcitableVertices = num_points;
+        SliderScalar("Num excitable vertices", ImGuiDataType_U32, &Controls.NumExcitableVertices, &MinExcitableVertices, &MaxExcitableVertices);
     }
 
-    const auto num_points = mesh.GetVertexCount();
-    static std::vector<uint> excitable_vertices;
-    if (excitable_vertices.empty() || vertices_changed) {
-        // Use impact model vertices or linearly distribute the vertices across the tet mesh.
-        excitable_vertices = use_impact_vertices ?
-            ImpactModel->Excitable.ExcitableVertices :
-            iota_view{0u, uint(num_excitable_vertices)} | transform([&](uint i) { return i * num_points / num_excitable_vertices; }) | to<std::vector<uint>>();
-    }
-
-    const bool disable_generate = !material_changed && ModalModel && excitable_vertices == ModalModel->Excitable.ExcitableVertices;
+    const bool disable_generate = !material_changed && modal_model && Controls.NumExcitableVertices == modal_model->Excitable.ExcitableVertices.size();
     if (disable_generate) BeginDisabled();
     if (Button(std::format("{} audio model", ModalModel ? "Regenerate" : "Generate").c_str())) {
+        if (material_changed) r.replace<AcousticMaterial>(entity, Controls.Material);
         const auto scale = r.get<Scale>(entity).Value;
-        const auto fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(8).front()} : std::nullopt;
-        DspGenerator = std::make_unique<Worker<ModalSoundObject>>("Generating modal audio model...", [&, scale, fundamental_freq] {
+        DspGenerator = std::make_unique<Worker<ModalSoundObject>>("Generating modal audio model...", [&, scale] {
             // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
             // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
 
@@ -628,19 +605,25 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
             // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
             // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
+            const auto fundamental_freq = ImpactModel && ImpactModel->Waveform ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(8).front()} : std::nullopt;
+            // Use impact model vertices or linearly distribute the vertices across the tet mesh.
+            const auto num_points = mesh.GetVertexCount();
+            const auto excitable_vertices = ImpactModel && ImpactVertices && Controls.UseImpactVertices ?
+                *ImpactVertices :
+                iota_view{0u, uint(Controls.NumExcitableVertices)} | transform([&](uint i) { return i * num_points / Controls.NumExcitableVertices; }) | to<std::vector<uint>>();
+
             while (!DspGenerator) {}
             DspGenerator->SetMessage("Generating tetrahedral mesh...");
-            const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = quality_tets});
+            const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = Controls.QualityTets});
 
             DspGenerator->SetMessage("Generating modal model...");
-            auto modal_model = GenerateModalModel(*tets, material_props, excitable_vertices);
+            auto modal_model = GenerateModalModel(*tets, Controls.Material.Properties, excitable_vertices);
 
             return ModalSoundObject{
                 .ModeFreqs = std::move(modal_model.modeFreqs),
                 .ModeT60s = std::move(modal_model.modeT60s),
                 .ModeGains = std::move(modal_model.modeGains),
-                .ExcitableVertices = excitable_vertices,
-                .Material = material_props,
+                .Excitable = {excitable_vertices},
                 .FundamentalFreq = fundamental_freq,
             };
         });

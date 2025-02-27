@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -32,10 +33,9 @@ struct SoundObject {
     SoundObject(AcousticMaterial, FaustDSP &);
     ~SoundObject();
 
-    void ProduceAudio(AudioBuffer &) const;
+    void ProduceAudio(AudioBuffer &, entt::registry &, entt::entity) const;
     void RenderControls(entt::registry &, entt::entity);
 
-    const Excitable &GetExcitable() const;
     void SetVertex(uint);
     void SetVertexForce(float);
 
@@ -45,10 +45,19 @@ struct SoundObject {
 private:
     void SetModel(SoundObjectModel, entt::registry &, entt::entity);
 
+    // 1:1 with ImGui controls, cached per-object
+    struct ControlState {
+        AcousticMaterial Material{materials::acoustic::All.front()};
+        uint32_t NumExcitableVertices{10};
+        bool UseImpactVertices{true}; // Only used in ImpactAudio mode
+        bool QualityTets{false};
+    };
+
     FaustDSP &Dsp;
-    AcousticMaterial Material;
+    ControlState Controls{};
     std::unique_ptr<ModalAudioModel> ModalModel;
     std::unique_ptr<ImpactAudioModel> ImpactModel;
+    std::optional<std::vector<uint>> ImpactVertices;
 
     SoundObjectModel Model{SoundObjectModel::ImpactAudio};
 };
