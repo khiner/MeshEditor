@@ -103,7 +103,8 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) cons
             };
             auto material_name = RealImpact::FindMaterialName(R.get<Name>(object_entity).Value);
             const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
-            auto &sound_object = AddSoundObject(object_entity, real_impact_material ? *real_impact_material : materials::acoustic::All.front());
+            if (real_impact_material) R.emplace<AcousticMaterial>(object_entity, *real_impact_material);
+            auto &sound_object = AddSoundObject(object_entity);
             R.emplace<Excitable>(object_entity, vertex_indices);
             sound_object.SetImpactFrames(to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
         }
@@ -117,10 +118,9 @@ void AcousticScene::ProduceAudio(AudioBuffer buffer) const {
     }
 }
 
-SoundObject &AcousticScene::AddSoundObject(entt::entity entity, AcousticMaterial material) const {
+SoundObject &AcousticScene::AddSoundObject(entt::entity entity) const {
     R.emplace<Frozen>(entity);
-    R.emplace<AcousticMaterial>(entity, material);
-    return R.emplace<SoundObject>(entity, material, *Dsp);
+    return R.emplace<SoundObject>(entity, *Dsp);
 }
 
 using namespace ImGui;
@@ -208,12 +208,10 @@ void AcousticScene::RenderControls(Scene &scene) {
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
         if (Button("Create audio model")) {
-            AddSoundObject(selected_entity, materials::acoustic::All.front());
+            AddSoundObject(selected_entity);
         }
         return;
     }
-
-    SeparatorText("Audio model");
 
     if (sound_entity != selected_entity && Button("Select sound object")) {
         scene.SelectEntity(sound_entity);
@@ -235,9 +233,10 @@ void AcousticScene::RenderControls(Scene &scene) {
         }
     }
 
+    SeparatorText("Selected sound object");
     sound_object.RenderControls(R, sound_entity);
     Spacing();
-    if (Button("Remove audio model")) {
+    if (Button("Delete sound object")) {
         R.remove<SoundObject, SoundObjectListener, Excitable, Frozen>(sound_entity);
     }
 }

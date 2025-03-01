@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <memory>
 
-struct AcousticMaterial;
 struct Scene;
 struct SoundObject;
 struct FaustDSP;
@@ -25,7 +24,7 @@ struct AcousticScene {
     void ProduceAudio(AudioBuffer) const;
 
 private:
-    SoundObject &AddSoundObject(entt::entity, AcousticMaterial) const;
+    SoundObject &AddSoundObject(entt::entity) const;
 
     entt::registry &R;
     CreateSvgResource CreateSvg;

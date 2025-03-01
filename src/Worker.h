@@ -11,9 +11,9 @@ using namespace std::chrono_literals;
 
 template<typename Result>
 struct Worker {
-    Worker(std::string_view title, auto &&work)
+    Worker(ImGuiWindow *window, std::string_view title, auto &&work)
         : Title(title), ResultFuture(std::async(std::launch::async, std::forward<decltype(work)>(work))) {
-        ImGui::OpenPopup(Title.data());
+        ImGui::OpenPopup(window->GetID(Title.data()));
     }
     ~Worker() = default;
 
