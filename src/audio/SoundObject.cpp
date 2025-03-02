@@ -32,6 +32,7 @@ struct ImpactRecording {
     ImpactRecording(uint frame_count) : Frames(frame_count) {}
     std::vector<float> Frames;
     uint Frame{0};
+
     bool Complete() const { return Frame == Frames.size(); }
     void Record(float value) {
         if (!Complete()) Frames[Frame++] = value;
@@ -91,102 +92,88 @@ constexpr std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint
 constexpr float LinearToDb(float linear) { return 20.0f * log10f(linear); }
 constexpr ImVec2 ChartSize{-1, 160};
 
-struct Waveform {
-    // Capture a short audio segment shortly after the impact for FFT.
+// Capture a short audio segment shortly after the impact for FFT.
+FFTData ComputeFft(const std::vector<float> &frames) {
     static constexpr uint FftStartFrame = 30, FftEndFrame = SampleRate / 16;
-    inline static const auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
-    const std::vector<float> &Frames;
-    std::vector<float> WindowedFrames;
-    FFTData FftData;
-    // std::vector<float> PeakFrequencies;
+    static const auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
+    return {ApplyWindow(BHWindow, frames.data() + FftStartFrame)};
+}
 
-    Waveform(const std::vector<float> &frames)
-        : Frames(frames), WindowedFrames(ApplyWindow(BHWindow, Frames.data() + FftStartFrame)), FftData(WindowedFrames) {}
+std::vector<float> GetPeakFrequencies(const FFTData &fft_data, uint n_peaks) { return FindPeakFrequencies(fft_data.Complex, fft_data.NumReal, n_peaks); }
 
-    void PlotFrames(std::string_view label = "Waveform", std::optional<uint> highlight_frame = {}) const {
-        if (ImPlot::BeginPlot(label.data(), ChartSize)) {
-            ImPlot::SetupAxes("Frame", "Amplitude");
-            ImPlot::SetupAxisLimits(ImAxis_X1, 0, Frames.size(), ImGuiCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
-
-            if (highlight_frame) {
-                ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
-                ImPlot::PlotInfLines("##Highlight", &*highlight_frame, 1);
-                ImPlot::PopStyleColor();
-            }
-            ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
-            ImPlot::PlotLine("", Frames.data(), Frames.size());
-            ImPlot::PopStyleVar();
-            ImPlot::EndPlot();
-        }
+// If `normalize_max` is set, normalize the data to this maximum value.
+void WriteWav(const std::vector<float> &frames, fs::path file_path, std::optional<float> normalize_max = std::nullopt) {
+    static ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
+    static ma_encoder WavEncoder;
+    if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
+        throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", file_path.string(), uint(status)));
     }
+    const float mult = normalize_max ? *normalize_max / *std::ranges::max_element(frames) : 1.0f;
+    const auto frames_normed = frames | transform([mult](float f) { return f * mult; }) | to<std::vector>();
+    ma_encoder_write_pcm_frames(&WavEncoder, frames_normed.data(), frames_normed.size(), nullptr);
+    ma_encoder_uninit(&WavEncoder);
+}
 
-    void PlotMagnitudeSpectrum(std::string_view label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = {}) const {
-        if (ImPlot::BeginPlot(label.data(), ChartSize)) {
-            static constexpr float MinDb = -200;
-            const FFTData &fft = FftData;
-            const uint N = WindowedFrames.size();
-            const uint N2 = N / 2;
-            const float fs = SampleRate; // todo flexible sample rate
-            const float fs_n = SampleRate / float(N);
+void PlotFrames(const std::vector<float> &frames, std::string_view label = "Waveform", std::optional<uint> highlight_frame = {}) {
+    if (ImPlot::BeginPlot(label.data(), ChartSize)) {
+        ImPlot::SetupAxes("Frame", "Amplitude");
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, frames.size(), ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
 
-            static std::vector<float> frequency(N2), magnitude(N2);
-            frequency.resize(N2);
-            magnitude.resize(N2);
-
-            const auto *data = fft.Complex;
-            for (uint i = 0; i < N2; i++) {
-                frequency[i] = fs_n * float(i);
-                magnitude[i] = LinearToDb(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));
-            }
-
-            ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");
-            ImPlot::SetupAxisLimits(ImAxis_X1, 0, fs / 2, ImGuiCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, MinDb, 0, ImGuiCond_Always);
-            ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
-            ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
-            (void)highlight_peak_freq_index; // unused
-            // Disabling peak frequency display for now.
-            // for (uint i = 0; i < PeakFrequencies.size(); ++i) {
-            //     const bool is_highlighted = highlight_peak_freq_index && i == *highlight_peak_freq_index;
-            //     const float freq = PeakFrequencies[i];
-            //     if (is_highlighted) {
-            //         ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
-            //         ImPlot::PlotInfLines("##Highlight", &freq, 1);
-            //         ImPlot::PopStyleColor();
-            //     } else {
-            //         ImPlot::PlotInfLines("##Peak", &freq, 1);
-            //     }
-            // }
-            ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N2, MinDb);
+        if (highlight_frame) {
+            ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
+            ImPlot::PlotInfLines("##Highlight", &*highlight_frame, 1);
             ImPlot::PopStyleColor();
-            ImPlot::PopStyleVar();
-            ImPlot::EndPlot();
         }
+        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
+        ImPlot::PlotLine("", frames.data(), frames.size());
+        ImPlot::PopStyleVar();
+        ImPlot::EndPlot();
     }
+}
 
-    std::vector<float> GetPeakFrequencies(uint n_peaks) { return FindPeakFrequencies(FftData.Complex, WindowedFrames.size(), n_peaks); }
+void PlotMagnitudeSpectrum(const FFTData &fft_data, std::string_view label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = {}) {
+    if (ImPlot::BeginPlot(label.data(), ChartSize)) {
+        static constexpr float MinDb = -200;
+        const uint N = fft_data.NumReal, N2 = N / 2;
+        const float fs = SampleRate; // todo flexible sample rate
+        const float fs_n = SampleRate / float(N);
+        static std::vector<float> frequency(N2), magnitude(N2);
+        frequency.resize(N2);
+        magnitude.resize(N2);
 
-    float GetMaxValue() const { return *std::ranges::max_element(Frames); }
-
-    // If `normalize_max` is set, normalize the data to this maximum value.
-    void WriteWav(fs::path file_path, std::optional<float> normalize_max = std::nullopt) const {
-        if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
-            throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", file_path.string(), uint(status)));
+        const auto *data = fft_data.Complex;
+        for (uint i = 0; i < N2; i++) {
+            frequency[i] = fs_n * float(i);
+            magnitude[i] = LinearToDb(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));
         }
-        const float mult = normalize_max ? *normalize_max / GetMaxValue() : 1.0f;
-        const auto frames = Frames | transform([mult](float f) { return f * mult; }) | to<std::vector>();
-        ma_encoder_write_pcm_frames(&WavEncoder, frames.data(), frames.size(), nullptr);
-        ma_encoder_uninit(&WavEncoder);
-    }
 
-private:
-    inline static ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
-    inline static ma_encoder WavEncoder;
-};
+        ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, fs / 2, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, MinDb, 0, ImGuiCond_Always);
+        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
+        ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
+        (void)highlight_peak_freq_index; // unused
+        // Disabling peak frequency display for now.
+        // for (uint i = 0; i < PeakFrequencies.size(); ++i) {
+        //     const bool is_highlighted = highlight_peak_freq_index && i == *highlight_peak_freq_index;
+        //     const float freq = PeakFrequencies[i];
+        //     if (is_highlighted) {
+        //         ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
+        //         ImPlot::PlotInfLines("##Highlight", &freq, 1);
+        //         ImPlot::PopStyleColor();
+        //     } else {
+        //         ImPlot::PlotInfLines("##Peak", &freq, 1);
+        //     }
+        // }
+        ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N2, MinDb);
+        ImPlot::PopStyleColor();
+        ImPlot::PopStyleVar();
+        ImPlot::EndPlot();
+    }
+}
 } // namespace
 
-// All model-specific data.
 struct ImpactAudioModel {
     ImpactAudioModel(std::vector<std::vector<float>> &&impact_frames) : ImpactFrames(std::move(impact_frames)) {}
     ~ImpactAudioModel() = default;
@@ -194,11 +181,17 @@ struct ImpactAudioModel {
     std::vector<std::vector<float>> ImpactFrames;
     uint CurrentVertex{0};
     uint Frame{uint(GetFrames().size())}; // Don'a immediately play
-    std::unique_ptr<::Waveform> Waveform = std::make_unique<::Waveform>(GetFrames()); // Selected vertex's waveform
+    FFTData FftData{ComputeFft(GetFrames())}; // For selected vertex
 
     const std::vector<float> &GetFrames() const { return ImpactFrames[CurrentVertex]; }
     bool Complete() const { return Frame == GetFrames().size(); }
     void Stop() { Frame = GetFrames().size(); }
+};
+
+struct ModalAudioModel {
+    std::unique_ptr<ImpactRecording> ImpactRecording;
+    std::unique_ptr<FFTData> FftData; // For recorded waveform
+    std::optional<size_t> HoveredModeIndex;
 };
 
 namespace {
@@ -232,12 +225,6 @@ std::optional<size_t> PlotModeData(
 std::unique_ptr<Worker<ModalSoundObject>> DspGenerator;
 } // namespace
 
-struct ModalAudioModel {
-    std::unique_ptr<Waveform> Waveform{}; // Recorded waveform
-    std::unique_ptr<ImpactRecording> ImpactRecording;
-    std::optional<size_t> HoveredModeIndex;
-};
-
 /*
 namespace {
 // Assumes a and b are the same length.
@@ -262,7 +249,7 @@ void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frame
     if (ImpactModel) {
         ImpactModel->Stop();
         ImpactModel->ImpactFrames = std::move(impact_frames);
-        ImpactModel->Waveform = std::make_unique<::Waveform>(ImpactModel->GetFrames());
+        ImpactModel->FftData = ComputeFft(ImpactModel->GetFrames());
     }
 }
 
@@ -293,7 +280,7 @@ void SoundObject::SetVertex(uint vertex) {
     if (ImpactModel && vertex != ImpactModel->CurrentVertex && vertex < ImpactModel->ImpactFrames.size()) {
         ImpactModel->Stop();
         ImpactModel->CurrentVertex = vertex;
-        ImpactModel->Waveform = std::make_unique<Waveform>(ImpactModel->GetFrames());
+        ImpactModel->FftData = ComputeFft(ImpactModel->GetFrames());
     }
     if (ModalModel) {
         Dsp.Set(GateParamName, 0);
@@ -303,7 +290,7 @@ void SoundObject::SetVertex(uint vertex) {
 void SoundObject::SetVertexForce(float force) {
     // Update vertex force in the active model.
     if (Model == SoundObjectModel::ImpactAudio && ImpactModel) {
-        if (force > 0 && ImpactModel->Complete()) ImpactModel->Frame = 0;
+        if (force > 0) ImpactModel->Frame = 0;
     } else if (Model == SoundObjectModel::Modal && ModalModel) {
         Dsp.Set(GateParamName, force);
     }
@@ -424,8 +411,8 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
 
     if (Model == SoundObjectModel::ImpactAudio) {
         SeparatorText("Real-world impact model");
-        ImpactModel->Waveform->PlotFrames("Waveform", ImpactModel->Frame);
-        ImpactModel->Waveform->PlotMagnitudeSpectrum("Spectrum");
+        PlotFrames(ImpactModel->GetFrames(), "Waveform", ImpactModel->Frame);
+        PlotMagnitudeSpectrum(ImpactModel->FftData, "Spectrum");
     }
 
     // Show model model create/edit even in impact mode.
@@ -502,7 +489,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
                 // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
-                const auto fundamental_freq = ImpactModel ? std::optional{ImpactModel->Waveform->GetPeakFrequencies(8).front()} : std::nullopt;
+                const auto fundamental_freq = ImpactModel ? std::optional{GetPeakFrequencies(ImpactModel->FftData, 8).front()} : std::nullopt;
                 // Use impact model vertices or linearly distribute the vertices across the tet mesh.
                 const auto num_vertices = mesh.GetVertexCount();
                 const auto excitable_vertices = ImpactModel && ImpactVertices && info.UseImpactVertices ?
@@ -537,9 +524,9 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     if (!modal_sound_object) return;
 
     const auto &model = *modal_sound_object;
-    if (ModalModel->Waveform) {
-        ModalModel->Waveform->PlotFrames("Modal impact waveform");
-        ModalModel->Waveform->PlotMagnitudeSpectrum("Modal impact spectrum", ModalModel->HoveredModeIndex);
+    if (ModalModel->ImpactRecording && ModalModel->FftData) {
+        PlotFrames(ModalModel->ImpactRecording->Frames, "Modal impact waveform");
+        PlotMagnitudeSpectrum(*ModalModel->FftData, "Modal impact spectrum", ModalModel->HoveredModeIndex);
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
@@ -572,28 +559,25 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     static constexpr uint RecordFrames = 208'592; // Same length as RealImpact recordings.
     if (Button("Record strike")) impact_recording = std::make_unique<::ImpactRecording>(RecordFrames);
     if (is_recording) EndDisabled();
-    if (impact_recording && impact_recording->Complete()) {
-        ModalModel->Waveform = std::make_unique<::Waveform>(impact_recording->Frames);
-        impact_recording.reset();
+    if (!ModalModel->FftData && impact_recording && impact_recording->Complete()) {
+        ModalModel->FftData = std::make_unique<FFTData>(ComputeFft(impact_recording->Frames));
     }
 
-    if (ModalModel->Waveform && ImpactModel) {
-        const auto &modal = *ModalModel->Waveform, &impact = *ImpactModel->Waveform;
+    if (ImpactModel && impact_recording && impact_recording->Complete()) {
+        // const auto &modal = *ModalModel->FftData, &impact = ImpactModel->FftData;
         // uint ModeCount() const { return ModalModel.modeFreqs.size(); }
         // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
         // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
-        // modal.GetPeakFrequencies(n_test_modes);
-        // impact.GetPeakFrequencies(n_test_modes);
         // RMSE is abyssmal in most cases...
-        // const float rmse = RMSE(a->GetPeakFrequencies(n_test_modes), b->GetPeakFrequencies(n_test_modes));
+        // const float rmse = RMSE(GetPeakFrequencies(modal, n_test_modes), GetPeakFrequencies(impact, n_test_modes));
         // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
         SameLine();
         if (Button("Save wav files")) {
             const auto name = GetName(r, entity);
             // Save wav files for both the modal and real-world impact sounds.
             static const auto WavOutDir = fs::path{".."} / "audio_samples";
-            modal.WriteWav(WavOutDir / std::format("{}-modal", name));
-            impact.WriteWav(WavOutDir / std::format("{}-impact", name));
+            WriteWav(impact_recording->Frames, WavOutDir / std::format("{}-modal", name));
+            WriteWav(ImpactModel->GetFrames(), WavOutDir / std::format("{}-impact", name));
         }
     }
 }
