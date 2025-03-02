@@ -487,7 +487,6 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
                 // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
-                const auto fundamental_freq = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 8).front()} : std::nullopt;
                 // Use impact model vertices or linearly distribute the vertices across the tet mesh.
                 const auto num_vertices = mesh.GetVertexCount();
                 const auto excitable_vertices = ImpactModel && info.UseImpactVertices ?
@@ -502,13 +501,14 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
                 auto modal_model = GenerateModalModel(*tets, info.Material.Properties, excitable_vertices);
 
                 r.remove<ModalModelCreateInfo>(entity);
-                return ModalSoundObject{
+                ModalSoundObject obj{
                     .ModeFreqs = std::move(modal_model.modeFreqs),
                     .ModeT60s = std::move(modal_model.modeT60s),
                     .ModeGains = std::move(modal_model.modeGains),
                     .Excitable = {excitable_vertices},
-                    .FundamentalFreq = fundamental_freq,
                 };
+                if (ImpactModel) obj.FundamentalFreq = GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front();
+                return obj;
             });
         }
         SameLine();
@@ -535,8 +535,7 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
     excitable->SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
-        const auto fundamental = model.FundamentalFreq;
-        const auto scaled_mode_freqs = fundamental ? (model.ModeFreqs | transform([&](float f) { return *fundamental * f / model.ModeFreqs.front(); }) | to<std::vector>()) : model.ModeFreqs;
+        const auto scaled_mode_freqs = model.ModeFreqs | transform([&](float f) { return model.FundamentalFreq * f / model.ModeFreqs.front(); }) | to<std::vector>();
         if (auto hovered = PlotModeData(scaled_mode_freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(model.ModeT60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(model.ModeGains[excitable->SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;

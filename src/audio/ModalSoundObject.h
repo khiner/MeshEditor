@@ -14,5 +14,5 @@ struct ModalSoundObject {
     std::vector<float> ModeT60s; // Mode T60 decay times
     std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
     ::Excitable Excitable;
-    std::optional<float> FundamentalFreq;
+    float FundamentalFreq{!ModeFreqs.empty() ? ModeFreqs.front() : 440.f}; // Override to scale mode frequencies
 };

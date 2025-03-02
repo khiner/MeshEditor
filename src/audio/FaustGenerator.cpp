@@ -23,8 +23,7 @@ constexpr std::string_view ToSAH{" : ba.sAndH(gate)"}; // add a sample and hold 
 ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundObject &obj, bool freq_control) {
     static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
     static constexpr std::string_view ModelT60Scale{"t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)"};
-    const float fundamental_freq = obj.FundamentalFreq.value_or(!obj.ModeFreqs.empty() ? obj.ModeFreqs.front() : 440.f);
-    const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", fundamental_freq, ToSAH);
+    const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,26000,1){}", obj.FundamentalFreq, ToSAH);
     const uint num_excitable = obj.Excitable.ExcitableVertices.size();
     const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1, ToSAH);
 
