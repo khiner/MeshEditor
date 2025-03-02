@@ -57,7 +57,6 @@ private:
     FaustDSP &Dsp;
     std::unique_ptr<ModalAudioModel> ModalModel;
     std::unique_ptr<ImpactAudioModel> ImpactModel;
-    std::optional<std::vector<uint>> ImpactVertices;
 
     SoundObjectModel Model{SoundObjectModel::None};
 };

@@ -28,8 +28,9 @@ using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges:
 using std::views::transform, std::views::take;
 
 namespace {
-struct ImpactRecording {
-    ImpactRecording(uint frame_count) : Frames(frame_count) {}
+struct Recording {
+    Recording(uint frame_count) : Frames(frame_count) {}
+
     std::vector<float> Frames;
     uint Frame{0};
 
@@ -132,7 +133,13 @@ void PlotFrames(const std::vector<float> &frames, std::string_view label = "Wave
     }
 }
 
-void PlotMagnitudeSpectrum(const FFTData &fft_data, std::string_view label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = {}) {
+void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = {}) {
+    static const std::vector<float> *frames_ptr{&frames};
+    static FFTData fft_data{ComputeFft(frames)};
+    if (&frames != frames_ptr) {
+        fft_data = ComputeFft(frames);
+        frames_ptr = &frames;
+    }
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         static constexpr float MinDb = -200;
         const uint N = fft_data.NumReal, N2 = N / 2;
@@ -175,22 +182,21 @@ void PlotMagnitudeSpectrum(const FFTData &fft_data, std::string_view label = "Ma
 } // namespace
 
 struct ImpactAudioModel {
-    ImpactAudioModel(std::vector<std::vector<float>> &&impact_frames) : ImpactFrames(std::move(impact_frames)) {}
+    ImpactAudioModel(std::vector<std::vector<float>> &&frames, std::vector<uint> vertices)
+        : Frames(std::move(frames)), Excitable(vertices) {}
     ~ImpactAudioModel() = default;
 
-    std::vector<std::vector<float>> ImpactFrames;
-    uint CurrentVertex{0};
+    std::vector<std::vector<float>> Frames;
+    Excitable Excitable;
     uint Frame{uint(GetFrames().size())}; // Don'a immediately play
-    FFTData FftData{ComputeFft(GetFrames())}; // For selected vertex
 
-    const std::vector<float> &GetFrames() const { return ImpactFrames[CurrentVertex]; }
+    const std::vector<float> &GetFrames() const { return Frames[Excitable.SelectedVertexIndex]; }
     bool Complete() const { return Frame == GetFrames().size(); }
     void Stop() { Frame = GetFrames().size(); }
 };
 
 struct ModalAudioModel {
-    std::unique_ptr<ImpactRecording> ImpactRecording;
-    std::unique_ptr<FFTData> FftData; // For recorded waveform
+    std::unique_ptr<Recording> Recording;
     std::optional<size_t> HoveredModeIndex;
 };
 
@@ -241,46 +247,44 @@ SoundObject::~SoundObject() = default;
 
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices) {
     if (!impact_frames.empty()) {
-        ImpactVertices = std::move(vertex_indices);
-        ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames));
+        ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames), std::move(vertex_indices));
+        Model = SoundObjectModel::ImpactAudio;
     }
 }
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames) {
     if (ImpactModel) {
         ImpactModel->Stop();
-        ImpactModel->ImpactFrames = std::move(impact_frames);
-        ImpactModel->FftData = ComputeFft(ImpactModel->GetFrames());
+        ImpactModel->Frames = std::move(impact_frames);
     }
 }
 
 void SoundObject::ProduceAudio(AudioBuffer &buffer, entt::registry &r, entt::entity entity) const {
     if (Model == SoundObjectModel::ImpactAudio && ImpactModel) {
-        if (ImpactModel->ImpactFrames.empty()) return;
-        const auto &impact_samples = ImpactModel->ImpactFrames[r.get<Excitable>(entity).SelectedVertexIndex];
+        if (ImpactModel->Frames.empty()) return;
+        const auto &impact_samples = ImpactModel->Frames[r.get<Excitable>(entity).SelectedVertexIndex];
         // todo - resample from 48kHz to device sample rate if necessary
         for (uint i = 0; i < buffer.FrameCount; ++i) {
             buffer.Output[i] += ImpactModel->Frame < impact_samples.size() ? impact_samples[ImpactModel->Frame++] : 0.0f;
         }
     } else if (Model == SoundObjectModel::Modal && ModalModel) {
-        const auto &impact_recording = ModalModel->ImpactRecording;
-        if (!impact_recording) return;
+        const auto &recording = ModalModel->Recording;
+        if (!recording) return;
 
-        if (impact_recording->Frame == 0) Dsp.Set(GateParamName, 1);
-        if (!impact_recording->Complete()) {
-            for (uint i = 0; i < buffer.FrameCount && !impact_recording->Complete(); ++i) {
-                impact_recording->Record(buffer.Output[i]);
+        if (recording->Frame == 0) Dsp.Set(GateParamName, 1);
+        if (!recording->Complete()) {
+            for (uint i = 0; i < buffer.FrameCount && !recording->Complete(); ++i) {
+                recording->Record(buffer.Output[i]);
             }
-            if (impact_recording->Complete()) Dsp.Set(GateParamName, 0);
+            if (recording->Complete()) Dsp.Set(GateParamName, 0);
         }
     }
 }
 
 void SoundObject::SetVertex(uint vertex) {
     // Update vertex in all present models.
-    if (ImpactModel && vertex != ImpactModel->CurrentVertex && vertex < ImpactModel->ImpactFrames.size()) {
+    if (ImpactModel) {
         ImpactModel->Stop();
-        ImpactModel->CurrentVertex = vertex;
-        ImpactModel->FftData = ComputeFft(ImpactModel->GetFrames());
+        ImpactModel->Excitable.SelectedVertexIndex = vertex;
     }
     if (ModalModel) {
         Dsp.Set(GateParamName, 0);
@@ -302,11 +306,11 @@ void SoundObject::SetModel(SoundObjectModel model, entt::registry &r, entt::enti
     if (ImpactModel) ImpactModel->Stop();
     if (ModalModel) Dsp.Set(GateParamName, 0);
     Model = model;
-    const bool is_impact = Model == SoundObjectModel::ImpactAudio && ImpactModel && ImpactVertices;
+    const bool is_impact = Model == SoundObjectModel::ImpactAudio && ImpactModel;
     const bool is_modal = Model == SoundObjectModel::Modal && ModalModel;
     if (!is_impact && !is_modal) return;
 
-    auto excitable = is_impact ? Excitable{*ImpactVertices, ImpactModel->CurrentVertex} : r.get<ModalSoundObject>(entity).Excitable;
+    auto excitable = is_impact ? ImpactModel->Excitable : r.get<ModalSoundObject>(entity).Excitable;
     r.emplace_or_replace<Excitable>(entity, std::move(excitable));
 }
 
@@ -402,7 +406,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     }
     const bool can_excite =
         (Model == SoundObjectModel::ImpactAudio) ||
-        (Model == SoundObjectModel::Modal && (!ModalModel->ImpactRecording || ModalModel->ImpactRecording->Complete()));
+        (Model == SoundObjectModel::Modal && (!ModalModel->Recording || ModalModel->Recording->Complete()));
     if (!can_excite) BeginDisabled();
     Button("Excite");
     if (IsItemActivated()) r.emplace<ExcitedVertex>(entity, excitable.SelectedVertex(), 1.f);
@@ -411,8 +415,9 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
 
     if (Model == SoundObjectModel::ImpactAudio) {
         SeparatorText("Real-world impact model");
-        PlotFrames(ImpactModel->GetFrames(), "Waveform", ImpactModel->Frame);
-        PlotMagnitudeSpectrum(ImpactModel->FftData, "Spectrum");
+        const auto &frames = ImpactModel->GetFrames();
+        PlotFrames(frames, "Waveform", ImpactModel->Frame);
+        PlotMagnitudeSpectrum(frames, "Spectrum");
     }
 
     // Show model model create/edit even in impact mode.
@@ -489,11 +494,11 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
                 // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
                 // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
-                const auto fundamental_freq = ImpactModel ? std::optional{GetPeakFrequencies(ImpactModel->FftData, 8).front()} : std::nullopt;
+                const auto fundamental_freq = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 8).front()} : std::nullopt;
                 // Use impact model vertices or linearly distribute the vertices across the tet mesh.
                 const auto num_vertices = mesh.GetVertexCount();
-                const auto excitable_vertices = ImpactModel && ImpactVertices && info.UseImpactVertices ?
-                    *ImpactVertices :
+                const auto excitable_vertices = ImpactModel && info.UseImpactVertices ?
+                    ImpactModel->Excitable.ExcitableVertices :
                     iota_view{0u, uint(info.NumExcitableVertices)} | transform([&](uint i) { return i * num_vertices / info.NumExcitableVertices; }) | to<std::vector<uint>>();
 
                 while (!DspGenerator) {}
@@ -524,9 +529,10 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     if (!modal_sound_object) return;
 
     const auto &model = *modal_sound_object;
-    if (ModalModel->ImpactRecording && ModalModel->FftData) {
-        PlotFrames(ModalModel->ImpactRecording->Frames, "Modal impact waveform");
-        PlotMagnitudeSpectrum(*ModalModel->FftData, "Modal impact spectrum", ModalModel->HoveredModeIndex);
+    if (ModalModel->Recording && ModalModel->Recording->Complete()) {
+        const auto &frames = ModalModel->Recording->Frames;
+        PlotFrames(frames, "Modal impact waveform");
+        PlotMagnitudeSpectrum(frames, "Modal impact spectrum", ModalModel->HoveredModeIndex);
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
@@ -553,17 +559,14 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     if (CollapsingHeader("DSP graph")) Dsp.DrawGraph(FaustSvgDir);
     if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", Dsp.GetCode());
 
-    auto &impact_recording = ModalModel->ImpactRecording;
-    const bool is_recording = impact_recording && !impact_recording->Complete();
+    auto &recording = ModalModel->Recording;
+    const bool is_recording = recording && !recording->Complete();
     if (is_recording) BeginDisabled();
     static constexpr uint RecordFrames = 208'592; // Same length as RealImpact recordings.
-    if (Button("Record strike")) impact_recording = std::make_unique<::ImpactRecording>(RecordFrames);
+    if (Button("Record strike")) recording = std::make_unique<::Recording>(RecordFrames);
     if (is_recording) EndDisabled();
-    if (!ModalModel->FftData && impact_recording && impact_recording->Complete()) {
-        ModalModel->FftData = std::make_unique<FFTData>(ComputeFft(impact_recording->Frames));
-    }
 
-    if (ImpactModel && impact_recording && impact_recording->Complete()) {
+    if (ImpactModel && recording && recording->Complete()) {
         // const auto &modal = *ModalModel->FftData, &impact = ImpactModel->FftData;
         // uint ModeCount() const { return ModalModel.modeFreqs.size(); }
         // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
@@ -576,7 +579,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
             const auto name = GetName(r, entity);
             // Save wav files for both the modal and real-world impact sounds.
             static const auto WavOutDir = fs::path{".."} / "audio_samples";
-            WriteWav(impact_recording->Frames, WavOutDir / std::format("{}-modal", name));
+            WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name));
             WriteWav(ImpactModel->GetFrames(), WavOutDir / std::format("{}-impact", name));
         }
     }
