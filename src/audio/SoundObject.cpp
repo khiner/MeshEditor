@@ -133,7 +133,7 @@ void PlotFrames(const std::vector<float> &frames, std::string_view label = "Wave
     }
 }
 
-void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view label = "Magnitude spectrum", std::optional<uint> highlight_peak_freq_index = {}) {
+void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view label = "Magnitude spectrum", std::optional<float> highlight_freq = {}) {
     static const std::vector<float> *frames_ptr{&frames};
     static FFTData fft_data{ComputeFft(frames)};
     if (&frames != frames_ptr) {
@@ -160,19 +160,11 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
         ImPlot::SetupAxisLimits(ImAxis_Y1, MinDb, 0, ImGuiCond_Always);
         ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
         ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
-        (void)highlight_peak_freq_index; // unused
-        // Disabling peak frequency display for now.
-        // for (uint i = 0; i < PeakFrequencies.size(); ++i) {
-        //     const bool is_highlighted = highlight_peak_freq_index && i == *highlight_peak_freq_index;
-        //     const float freq = PeakFrequencies[i];
-        //     if (is_highlighted) {
-        //         ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
-        //         ImPlot::PlotInfLines("##Highlight", &freq, 1);
-        //         ImPlot::PopStyleColor();
-        //     } else {
-        //         ImPlot::PlotInfLines("##Peak", &freq, 1);
-        //     }
-        // }
+        if (highlight_freq) {
+            ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
+            ImPlot::PlotInfLines("##Highlight", &(*highlight_freq), 1);
+            ImPlot::PopStyleColor();
+        }
         ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N2, MinDb);
         ImPlot::PopStyleColor();
         ImPlot::PopStyleVar();
@@ -197,7 +189,6 @@ struct ImpactAudioModel {
 
 struct ModalAudioModel {
     std::unique_ptr<Recording> Recording;
-    std::optional<size_t> HoveredModeIndex;
 };
 
 namespace {
@@ -528,26 +519,29 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     const auto *modal_sound_object = r.try_get<const ModalSoundObject>(entity);
     if (!modal_sound_object) return;
 
+    static std::optional<size_t> hovered_mode_index;
     const auto &model = *modal_sound_object;
     if (ModalModel->Recording && ModalModel->Recording->Complete()) {
         const auto &frames = ModalModel->Recording->Frames;
         PlotFrames(frames, "Modal impact waveform");
-        PlotMagnitudeSpectrum(frames, "Modal impact spectrum", ModalModel->HoveredModeIndex);
+        const auto highlight_freq = hovered_mode_index ? std::optional{model.ModeFreqs[*hovered_mode_index]} : std::nullopt;
+        PlotMagnitudeSpectrum(frames, "Modal impact spectrum", highlight_freq);
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
     excitable.SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
     if (CollapsingHeader("Modal data charts")) {
-        auto &hovered_index = ModalModel->HoveredModeIndex;
         std::optional<size_t> new_hovered_index;
-        if (auto hovered = PlotModeData(model.ModeFreqs, "Mode frequencies", "", "Frequency (Hz)", hovered_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(model.ModeT60s, "Mode T60s", "", "T60 decay time (s)", hovered_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(model.ModeGains[excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_index, 1.f)) new_hovered_index = hovered;
-        if (hovered_index = new_hovered_index; hovered_index && *hovered_index < model.ModeFreqs.size()) {
-            const auto index = *hovered_index;
+        const auto fundamental = model.FundamentalFreq;
+        const auto scaled_mode_freqs = fundamental ? (model.ModeFreqs | transform([&](float f) { return *fundamental * f / model.ModeFreqs.front(); }) | to<std::vector>()) : model.ModeFreqs;
+        if (auto hovered = PlotModeData(scaled_mode_freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(model.ModeT60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(model.ModeGains[excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
+        if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < model.ModeFreqs.size()) {
+            const auto index = *hovered_mode_index;
             Text(
                 "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
-                model.ModeFreqs[index],
+                scaled_mode_freqs[index],
                 model.ModeT60s[index],
                 model.ModeGains[excitable.SelectedVertexIndex][index]
             );
