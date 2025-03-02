@@ -43,7 +43,7 @@ struct SoundObject {
     ~SoundObject();
 
     void ProduceAudio(AudioBuffer &, entt::registry &, entt::entity) const;
-    void RenderControls(entt::registry &, entt::entity);
+    void Draw(entt::registry &, entt::entity);
 
     void SetVertex(uint);
     void SetVertexForce(float);

@@ -347,7 +347,7 @@ m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialP
     );
 }
 
-void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
+void SoundObject::Draw(entt::registry &r, entt::entity entity) {
     if (auto &dsp_generator = DspGenerator) {
         if (auto modal_sound_object = dsp_generator->Render()) {
             dsp_generator.reset();
@@ -359,7 +359,6 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     }
 
     using namespace ImGui;
-    if (!ImpactModel && !ModalModel) return;
 
     auto new_model = Model;
     if (Model == SoundObjectModel::None) {
@@ -381,29 +380,32 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     }
     if (new_model != Model) SetModel(new_model, r, entity);
 
-    // Cross-model controls
-    auto &excitable = r.get<Excitable>(entity);
-    if (BeginCombo("Vertex", std::to_string(excitable.SelectedVertex()).c_str())) {
-        const auto selected_vi = excitable.SelectedVertexIndex;
-        for (uint vi = 0; vi < excitable.ExcitableVertices.size(); ++vi) {
-            const auto vertex = excitable.ExcitableVertices[vi];
-            if (Selectable(std::to_string(vertex).c_str(), vi == selected_vi)) {
-                r.remove<ExcitedVertex>(entity);
-                excitable.SelectedVertexIndex = vi;
-                SetVertex(vi);
+    // Cross-model excite section
+    auto *excitable = r.try_get<Excitable>(entity);
+    if (excitable) {
+        if (BeginCombo("Vertex", std::to_string(excitable->SelectedVertex()).c_str())) {
+            const auto selected_vi = excitable->SelectedVertexIndex;
+            for (uint vi = 0; vi < excitable->ExcitableVertices.size(); ++vi) {
+                const auto vertex = excitable->ExcitableVertices[vi];
+                if (Selectable(std::to_string(vertex).c_str(), vi == selected_vi)) {
+                    r.remove<ExcitedVertex>(entity);
+                    excitable->SelectedVertexIndex = vi;
+                    SetVertex(vi);
+                }
             }
+            EndCombo();
         }
-        EndCombo();
+        const bool can_excite =
+            (Model == SoundObjectModel::ImpactAudio) ||
+            (Model == SoundObjectModel::Modal && (!ModalModel->Recording || ModalModel->Recording->Complete()));
+        if (!can_excite) BeginDisabled();
+        Button("Excite");
+        if (IsItemActivated()) r.emplace<ExcitedVertex>(entity, excitable->SelectedVertex(), 1.f);
+        else if (IsItemDeactivated()) r.remove<ExcitedVertex>(entity);
+        if (!can_excite) EndDisabled();
     }
-    const bool can_excite =
-        (Model == SoundObjectModel::ImpactAudio) ||
-        (Model == SoundObjectModel::Modal && (!ModalModel->Recording || ModalModel->Recording->Complete()));
-    if (!can_excite) BeginDisabled();
-    Button("Excite");
-    if (IsItemActivated()) r.emplace<ExcitedVertex>(entity, excitable.SelectedVertex(), 1.f);
-    else if (IsItemDeactivated()) r.remove<ExcitedVertex>(entity);
-    if (!can_excite) EndDisabled();
 
+    // Impact model
     if (Model == SoundObjectModel::ImpactAudio) {
         SeparatorText("Real-world impact model");
         const auto &frames = ImpactModel->GetFrames();
@@ -411,7 +413,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
         PlotMagnitudeSpectrum(frames, "Spectrum");
     }
 
-    // Show model model create/edit even in impact mode.
+    // Model model create/edit (show even in impact/none mode)
     SeparatorText("Modal model");
 
     auto *parent_window = GetCurrentWindow();
@@ -477,7 +479,7 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
             r.emplace_or_replace<AcousticMaterial>(entity, info.Material);
             const auto scale = r.get<Scale>(entity).Value;
 
-            DspGenerator = std::make_unique<Worker<ModalSoundObject>>(parent_window, "Generating modal audio model...", [&, scale] {
+            DspGenerator = std::make_unique<Worker<ModalSoundObject>>(parent_window, "Generating modal audio model...", [&, entity, scale] {
                 // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
                 // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
 
@@ -514,10 +516,11 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
         EndChild();
     }
 
-    if (Model == SoundObjectModel::ImpactAudio) return;
+    if (Model != SoundObjectModel::Modal) return;
 
+    // Modal
     const auto *modal_sound_object = r.try_get<const ModalSoundObject>(entity);
-    if (!modal_sound_object) return;
+    if (!excitable || !modal_sound_object) return;
 
     static std::optional<size_t> hovered_mode_index;
     const auto &model = *modal_sound_object;
@@ -529,21 +532,21 @@ void SoundObject::RenderControls(entt::registry &r, entt::entity entity) {
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-    excitable.SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
+    excitable->SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
         const auto fundamental = model.FundamentalFreq;
         const auto scaled_mode_freqs = fundamental ? (model.ModeFreqs | transform([&](float f) { return *fundamental * f / model.ModeFreqs.front(); }) | to<std::vector>()) : model.ModeFreqs;
         if (auto hovered = PlotModeData(scaled_mode_freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(model.ModeT60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(model.ModeGains[excitable.SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(model.ModeGains[excitable->SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
         if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < model.ModeFreqs.size()) {
             const auto index = *hovered_mode_index;
             Text(
                 "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
                 scaled_mode_freqs[index],
                 model.ModeT60s[index],
-                model.ModeGains[excitable.SelectedVertexIndex][index]
+                model.ModeGains[excitable->SelectedVertexIndex][index]
             );
         }
     }

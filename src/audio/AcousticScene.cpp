@@ -233,8 +233,8 @@ void AcousticScene::RenderControls(Scene &scene) {
         }
     }
 
-    SeparatorText("Selected sound object");
-    sound_object.RenderControls(R, sound_entity);
+    SeparatorText(std::format("Selected sound object: {}", GetName(R, sound_entity)).c_str());
+    sound_object.Draw(R, sound_entity);
     Spacing();
     if (Button("Delete sound object")) {
         R.remove<SoundObject, SoundObjectListener, Excitable, Frozen>(sound_entity);
