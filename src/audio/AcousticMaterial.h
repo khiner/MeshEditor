@@ -1,13 +1,9 @@
 #pragma once
 
+#include "AcousticMaterialProperties.h"
+
 #include <string>
 #include <vector>
-
-struct AcousticMaterialProperties {
-    double Density, YoungModulus, PoissonRatio, Alpha, Beta;
-
-    auto operator<=>(const AcousticMaterialProperties &) const = default;
-};
 
 struct AcousticMaterial {
     std::string Name;

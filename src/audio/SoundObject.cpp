@@ -15,7 +15,6 @@
 #include "mesh/Mesh.h"
 #include "mesh2faust.h"
 #include "miniaudio.h"
-#include "tetMesh.h" // Vega
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 #include <entt/entity/registry.hpp>
 
@@ -305,48 +304,6 @@ void SoundObject::SetModel(SoundObjectModel model, entt::registry &r, entt::enti
     r.emplace_or_replace<Excitable>(entity, std::move(excitable));
 }
 
-m2f::ModalModel GenerateModalModel(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices) {
-    // Convert the tetrahedral mesh into a VegaFEM TetMesh.
-    std::vector<int> tet_indices;
-    tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
-    // Turn each tetrahedron into 4 triangles.
-    for (uint i = 0; i < uint(tets.numberoftetrahedra); ++i) {
-        auto &result_indices = tets.tetrahedronlist;
-        uint tri_i = i * 4;
-        int a = result_indices[tri_i], b = result_indices[tri_i + 1], c = result_indices[tri_i + 2], d = result_indices[tri_i + 3];
-        tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
-    }
-    TetMesh volumetric_mesh{
-        tets.numberofpoints, tets.pointlist, tets.numberoftetrahedra * 3, tet_indices.data(),
-        material.YoungModulus, material.PoissonRatio, material.Density
-    };
-
-    return m2f::mesh2modal(
-        &volumetric_mesh,
-        m2f::MaterialProperties{
-            .youngModulus = material.YoungModulus,
-            .poissonRatio = material.PoissonRatio,
-            .density = material.Density,
-            .alpha = material.Alpha,
-            .beta = material.Beta
-        },
-        m2f::CommonArguments{
-            .modelName = "", // Not used until code gen
-            .freqControl = false, // Not used until code gen
-            .modesMinFreq = 20,
-            // 20k is the upper limit of human hearing, but we often need to pitch down to match the
-            // fundamental frequency of the true recording, so we double the upper limit.
-            .modesMaxFreq = 40000,
-            .targetNModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
-            .femNModes = 80, // number of modes to be computed for the finite element analysis
-            // Convert to signed ints.
-            .exPos = excitable_vertices | transform([](uint i) { return int(i); }) | to<std::vector>(),
-            .nExPos = int(excitable_vertices.size()),
-            .debugMode = false,
-        }
-    );
-}
-
 void SoundObject::Draw(entt::registry &r, entt::entity entity) {
     if (auto &dsp_generator = DspGenerator) {
         if (auto modal_sound_object = dsp_generator->Render()) {
@@ -498,16 +455,17 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
                 const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = info.QualityTets});
 
                 DspGenerator->SetMessage("Generating modal model...");
-                auto modal_model = GenerateModalModel(*tets, info.Material.Properties, excitable_vertices);
+                const auto fundamendal = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front()} : std::nullopt;
+                auto modal_model = m2f::mesh2modal(*tets, info.Material.Properties, excitable_vertices, fundamendal);
 
                 r.remove<ModalModelCreateInfo>(entity);
                 ModalSoundObject obj{
-                    .ModeFreqs = std::move(modal_model.modeFreqs),
-                    .ModeT60s = std::move(modal_model.modeT60s),
-                    .ModeGains = std::move(modal_model.modeGains),
+                    .ModeFreqs = std::move(modal_model.ModeFreqs),
+                    .ModeT60s = std::move(modal_model.ModeT60s),
+                    .ModeGains = std::move(modal_model.ModeGains),
                     .Excitable = {excitable_vertices},
                 };
-                if (ImpactModel) obj.FundamentalFreq = GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front();
+                if (fundamendal) obj.FundamentalFreq = *fundamendal;
                 return obj;
             });
         }

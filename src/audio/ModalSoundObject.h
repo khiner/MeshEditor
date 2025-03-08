@@ -3,7 +3,6 @@
 #include "AcousticMaterial.h"
 #include "Excitable.h"
 
-#include <optional>
 #include <string_view>
 
 static constexpr std::string_view ExciteIndexParamName{"Excite index"};
