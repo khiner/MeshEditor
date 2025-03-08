@@ -33,6 +33,9 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 set(IMGUI_DIR lib/imgui)
 set(IMPLOT_DIR lib/implot)
 
+set(Mesh2FaustDir ${CMAKE_CURRENT_SOURCE_DIR}/lib/faust/tools/physicalModeling/mesh2faust)
+set(VegaDir ${Mesh2FaustDir}/vega/libraries)
+
 add_executable(${PROJECT_NAME}
     ${IMGUI_DIR}/imgui_demo.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
@@ -45,12 +48,22 @@ add_executable(${PROJECT_NAME}
     ${IMPLOT_DIR}/implot_items.cpp
     ${IMPLOT_DIR}/implot_demo.cpp
     lib/miniaudio/extras/miniaudio_split/miniaudio.c
+    ${VegaDir}/volumetricMesh/tetMesh.cpp
+    ${VegaDir}/volumetricMesh/volumetricMesh.cpp
+    ${VegaDir}/volumetricMesh/volumetricMeshENuMaterial.cpp
+    ${VegaDir}/volumetricMesh/volumetricMeshOrthotropicMaterial.cpp
+    ${VegaDir}/volumetricMesh/volumetricMeshMooneyRivlinMaterial.cpp
+    ${VegaDir}/sparseMatrix/sparseMatrix.cpp
+    ${VegaDir}/volumetricMesh/generateMassMatrix.cpp
+    ${VegaDir}/stvk/StVKInternalForces.cpp
+    ${VegaDir}/stvk/StVKStiffnessMatrix.cpp
+    ${VegaDir}/volumetricMesh/volumetricMeshParser.cpp
+    ${VegaDir}/stvk/StVKElementABCDLoader.cpp
+    ${VegaDir}/stvk/StVKTetABCD.cpp
+    ${VegaDir}/stvk/StVKTetHighMemoryABCD.cpp
+    ${VegaDir}/stvk/StVKElementABCD.cpp
     ${SOURCES}
 )
-
-set(INCLUDE_EXECUTABLE OFF CACHE STRING "Build the mesh2faust executable" FORCE)
-set(Mesh2FaustDir ${CMAKE_CURRENT_SOURCE_DIR}/lib/faust/tools/physicalModeling/mesh2faust)
-add_subdirectory(${Mesh2FaustDir})
 
 include_directories(
     ${Vulkan_INCLUDE_DIRS}
@@ -68,9 +81,10 @@ include_directories(
     SYSTEM lib/faust/compiler/errors
     SYSTEM lib/faust/compiler/tlib
     SYSTEM lib/faust/compiler/boxes
+    SYSTEM lib/spectra/include
 
+    SYSTEM ${Mesh2FaustDir}/vega/libraries/include
     SYSTEM PkgConfig::FFTW3F
-    SYSTEM ${Mesh2FaustDir}/src
     src
 )
 
@@ -103,7 +117,7 @@ find_library(SPIRV_CROSS_CORE_LIB spirv-cross-core $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 message(STATUS "Found spirv-cross-core in: ${SPIRV_CROSS_CORE_LIB}")
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib mesh2faust tetgen PkgConfig::FFTW3F lunasvg)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib tetgen PkgConfig::FFTW3F lunasvg)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -113,7 +127,7 @@ endif()
 
 # Disable lib warnings
 # staticlib is faustlib (can't use alias target)
-set(disable_warning_targets staticlib mesh2faust OpenMeshCore)
+set(disable_warning_targets staticlib OpenMeshCore)
 foreach(target IN LISTS disable_warning_targets)
     target_compile_options(${target} PRIVATE -w)
 endforeach()
