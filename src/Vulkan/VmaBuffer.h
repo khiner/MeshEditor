@@ -22,22 +22,23 @@ struct VmaBuffer {
     VmaBuffer &operator=(VmaBuffer &&) noexcept;
 
     VkBuffer operator*() const;
-    VkBuffer Get() const;
-
+    const char *GetMappedData() const { return MappedData; }
     vk::DeviceSize GetAllocatedSize() const;
 
     void WriteRegion(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes);
     void MoveRegion(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize bytes);
-    char *MapMemory();
-    void UnmapMemory();
 
 private:
+    // Map the memory to `MappedData` the allocation is host visible.
+    void MapMemory();
+    void UnmapMemory();
+
     const VmaAllocator &Allocator;
-
-    VkBuffer Buffer{VK_NULL_HANDLE};
-
     struct AllocationInfo;
     std::unique_ptr<AllocationInfo> Allocation;
+
+    VkBuffer Buffer{VK_NULL_HANDLE};
+    char *MappedData{nullptr};
 };
 
 // See https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/quick_start.html

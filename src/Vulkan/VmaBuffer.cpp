@@ -21,68 +21,76 @@ VmaMemoryUsage ToVmaMemoryUsage(MemoryUsage usage) {
 
 VmaBuffer::VmaBuffer(const VmaAllocator &allocator, vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage)
     : Allocator(allocator), Allocation(std::make_unique<AllocationInfo>()) {
-    vk::BufferCreateInfo buffer_info{{}, size, vk::BufferUsageFlagBits::eTransferSrc | usage, vk::SharingMode::eExclusive};
-
     VmaAllocationCreateInfo alloc_info{};
     alloc_info.usage = ToVmaMemoryUsage(memory_usage);
 
-    VkBufferCreateInfo buffer_create_info = buffer_info;
-    if (vmaCreateBuffer(allocator, &buffer_create_info, &alloc_info, &Buffer, &Allocation->Allocation, nullptr) != VK_SUCCESS) {
+    vk::BufferCreateInfo buffer_create_info{{}, size, vk::BufferUsageFlagBits::eTransferSrc | usage, vk::SharingMode::eExclusive};
+    if (vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo *>(&buffer_create_info), &alloc_info, &Buffer, &Allocation->Allocation, nullptr) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create VMA buffer.");
     }
     vmaGetAllocationInfo(allocator, Allocation->Allocation, &Allocation->Info);
+    MapMemory();
 }
-VmaBuffer::VmaBuffer(VmaBuffer &&other) : Allocator(other.Allocator), Buffer(other.Buffer), Allocation(std::move(other.Allocation)) {
+VmaBuffer::VmaBuffer(VmaBuffer &&other)
+    : Allocator(other.Allocator), Allocation(std::move(other.Allocation)), Buffer(other.Buffer), MappedData(other.MappedData) {
     other.Buffer = VK_NULL_HANDLE;
     other.Allocation = {};
+    other.MappedData = nullptr;
 }
 VmaBuffer::~VmaBuffer() {
+    UnmapMemory();
     if (Buffer != VK_NULL_HANDLE) vmaDestroyBuffer(Allocator, Buffer, Allocation->Allocation);
 }
 
 VmaBuffer &VmaBuffer::operator=(VmaBuffer &&other) noexcept {
     if (this != &other) {
         // Free resources
+        UnmapMemory();
         if (Buffer != VK_NULL_HANDLE) vmaDestroyBuffer(Allocator, Buffer, Allocation->Allocation);
-
         // Transfer resources
         Buffer = other.Buffer;
         Allocation = std::move(other.Allocation);
-
+        MappedData = other.MappedData;
         // Prevent double-free
         other.Buffer = VK_NULL_HANDLE;
+        other.MappedData = nullptr;
     }
     return *this;
 }
 
 VkBuffer VmaBuffer::operator*() const { return Buffer; }
-VkBuffer VmaBuffer::Get() const { return Buffer; }
 
 vk::DeviceSize VmaBuffer::GetAllocatedSize() const { return Allocation->Info.size; }
 
-char *VmaBuffer::MapMemory() {
-    void *mapped_data = nullptr;
-    if (vmaMapMemory(Allocator, Allocation->Allocation, &mapped_data) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to map VMA buffer memory.");
+void VmaBuffer::MapMemory() {
+    VkMemoryPropertyFlags memory_props;
+    vmaGetMemoryTypeProperties(Allocator, Allocation->Info.memoryType, &memory_props);
+    if (memory_props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        void *mapped_data = nullptr;
+        if (vmaMapMemory(Allocator, Allocation->Allocation, &mapped_data) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to map VMA buffer memory.");
+        }
+        MappedData = static_cast<char *>(mapped_data);
     }
-    return static_cast<char *>(mapped_data);
 }
-void VmaBuffer::UnmapMemory() { vmaUnmapMemory(Allocator, Allocation->Allocation); }
+void VmaBuffer::UnmapMemory() {
+    if (MappedData) {
+        vmaUnmapMemory(Allocator, Allocation->Allocation);
+        MappedData = nullptr;
+    }
+}
 
 void VmaBuffer::WriteRegion(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) {
     if (bytes == 0 || offset >= GetAllocatedSize()) return;
 
-    memcpy(MapMemory() + offset, data, size_t(bytes));
-    UnmapMemory();
+    memcpy(MappedData + offset, data, size_t(bytes));
 }
 
 void VmaBuffer::MoveRegion(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize bytes) {
     if (bytes == 0 || from + bytes >= GetAllocatedSize() || to + bytes >= GetAllocatedSize()) return;
 
-    char *data_start = MapMemory();
     // Shift the data to "erase" the region (dst is first, src is second.)
-    memmove(data_start + to, data_start + from, size_t(bytes));
-    UnmapMemory();
+    memmove(MappedData + to, MappedData + from, size_t(bytes));
 }
 
 struct VulkanBufferAllocator::AllocatorInfo {

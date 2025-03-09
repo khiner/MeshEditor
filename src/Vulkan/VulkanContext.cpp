@@ -208,9 +208,7 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         const auto new_bytes = NextPowerOfTwo(required_bytes);
         auto new_buffer = CreateBuffer(buffer.Usage, new_bytes);
         // Host copy:
-        char *host_data = buffer.HostBuffer.MapMemory();
-        new_buffer.HostBuffer.WriteRegion(host_data, 0, buffer.Size);
-        buffer.HostBuffer.UnmapMemory();
+        new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetMappedData(), 0, buffer.Size);
         // Host->device copy:
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
