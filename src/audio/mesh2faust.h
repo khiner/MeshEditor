@@ -18,8 +18,8 @@ namespace m2f {
 struct CommonArguments {
     float ModesMinFreq = 20; // Lowest mode freq
     float ModesMaxFreq = 10000; // Highest mode freq
-    int TargetNModes = 20; // Number of synthesized modes
-    int FemNModes = 100; // Number of modes to be computed with Finite Element Analysis (FEA)
+    uint32_t TargetNModes = 20; // Number of synthesized modes
+    uint32_t FemNModes = 100; // Number of modes to be computed with Finite Element Analysis (FEA)
     std::vector<int> ExPos = {}; // Specific excitation positions
     std::optional<int> NExPos = {}; // Number of excitation positions (default is max)
 };
@@ -36,8 +36,8 @@ ModalModel mesh2modal(const tetgenio &, const AcousticMaterialProperties &, cons
 ModalModel mesh2modal(
     const Eigen::SparseMatrix<double, 0, int> &M, // Mass matrix
     const Eigen::SparseMatrix<double, 0, int> &K, // Stiffness matrix
-    int num_vertices,
-    int vertex_dim = 3,
+    uint32_t num_vertices,
+    uint32_t vertex_dim = 3,
     AcousticMaterialProperties material = {},
     CommonArguments args = {}
 );

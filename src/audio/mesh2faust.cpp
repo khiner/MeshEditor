@@ -31,8 +31,8 @@ m2f::ModalModel m2f::mesh2modal(TetMesh *volumetric_mesh, AcousticMaterialProper
     StVKStiffnessMatrix stiffness_matrix_class{&internal_forces};
     stiffness_matrix_class.GetStiffnessMatrixTopology(&stiffness_matrix);
 
-    const uint vertex_dim = 3;
-    const int num_vertices = volumetric_mesh->getNumVertices();
+    const uint32_t vertex_dim = 3;
+    const uint32_t num_vertices = volumetric_mesh->getNumVertices();
     double *zero = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
     stiffness_matrix_class.ComputeStiffnessMatrix(zero, stiffness_matrix);
 
@@ -42,19 +42,19 @@ m2f::ModalModel m2f::mesh2modal(TetMesh *volumetric_mesh, AcousticMaterialProper
 
     // Copy Vega sparse matrices to Eigen matrices.
     // _Note: Eigen is column-major by default._
-    std::vector<Eigen::Triplet<double>> K_triplets, M_triplets;
-    for (int i = 0; i < stiffness_matrix->GetNumRows(); ++i) {
-        for (int j = 0; j < stiffness_matrix->GetRowLength(i); ++j) {
-            K_triplets.push_back({i, stiffness_matrix->GetColumnIndex(i, j), stiffness_matrix->GetEntry(i, j)});
+    std::vector<Eigen::Triplet<double, uint32_t>> K_triplets, M_triplets;
+    for (uint32_t i = 0; i < uint32_t(stiffness_matrix->GetNumRows()); ++i) {
+        for (int32_t j = 0; j < stiffness_matrix->GetRowLength(i); ++j) {
+            K_triplets.push_back({i, uint32_t(stiffness_matrix->GetColumnIndex(i, j)), stiffness_matrix->GetEntry(i, j)});
         }
     }
-    for (int i = 0; i < mass_matrix->GetNumRows(); ++i) {
-        for (int j = 0; j < mass_matrix->GetRowLength(i); ++j) {
-            M_triplets.push_back({i, mass_matrix->GetColumnIndex(i, j), mass_matrix->GetEntry(i, j)});
+    for (uint32_t i = 0; i < uint32_t(mass_matrix->GetNumRows()); ++i) {
+        for (uint32_t j = 0; j < uint32_t(mass_matrix->GetRowLength(i)); ++j) {
+            M_triplets.push_back({i, uint32_t(mass_matrix->GetColumnIndex(i, j)), mass_matrix->GetEntry(i, j)});
         }
     }
 
-    const int n = stiffness_matrix->Getn();
+    const uint32_t n = stiffness_matrix->Getn();
     Eigen::SparseMatrix<double> K(n, n), M(n, n);
     K.setFromTriplets(K_triplets.begin(), K_triplets.end());
     M.setFromTriplets(M_triplets.begin(), M_triplets.end());
@@ -101,17 +101,17 @@ m2f::ModalModel m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialProp
 m2f::ModalModel m2f::mesh2modal(
     const Eigen::SparseMatrix<double> &M,
     const Eigen::SparseMatrix<double> &K,
-    int num_vertices, int vertex_dim,
+    uint32_t num_vertices, uint32_t vertex_dim,
     AcousticMaterialProperties material,
     CommonArguments args
 ) {
-    const int fem_n_modes = std::min(args.FemNModes, num_vertices * vertex_dim - 1);
+    const uint32_t fem_n_modes = std::min(args.FemNModes, num_vertices * vertex_dim - 1);
 
     /** Compute mass/stiffness eigenvalues and eigenvectors **/
     using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
     using BOpType = Spectra::SparseSymMatProd<double>;
 
-    const int convergence_ratio = std::min(std::max(2 * fem_n_modes + 1, 20), num_vertices * vertex_dim);
+    const uint32_t convergence_ratio = std::min(std::max(2u * fem_n_modes + 1u, 20u), num_vertices * vertex_dim);
     const double sigma = pow(2 * M_PI * args.ModesMinFreq, 2);
     OpType op(K, M);
     BOpType Bop(M);
@@ -125,8 +125,8 @@ m2f::ModalModel m2f::mesh2modal(
 
     /** Compute modes frequencies/gains/T60s **/
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
-    int lowest_mode_i = 0, highest_mode_i = 0;
-    for (int mode = 0; mode < fem_n_modes; ++mode) {
+    uint32_t lowest_mode_i = 0, highest_mode_i = 0;
+    for (uint32_t mode = 0; mode < fem_n_modes; ++mode) {
         if (eigenvalues[mode] > 1) { // Ignore very small eigenvalues
             // See Eqs. 1-12 in https://www.cs.cornell.edu/~djames/papers/DyRT.pdf for a derivation of the following.
             double omega_i = sqrt(eigenvalues[mode]); // Undamped natural frequency, in rad/s
@@ -150,26 +150,26 @@ m2f::ModalModel m2f::mesh2modal(
     }
 
     // Adjust modes to include only the requested range.
-    const int n_modes = std::min(std::min(args.TargetNModes, fem_n_modes), highest_mode_i - lowest_mode_i);
+    const uint32_t n_modes = std::min(std::min(args.TargetNModes, fem_n_modes), highest_mode_i - lowest_mode_i);
     mode_freqs.erase(mode_freqs.begin(), mode_freqs.begin() + lowest_mode_i);
     mode_freqs.resize(n_modes);
     mode_t60s.erase(mode_t60s.begin(), mode_t60s.begin() + lowest_mode_i);
     mode_t60s.resize(n_modes);
 
-    const int n_ex_pos = std::min(
-        int(!args.ExPos.empty() ? args.ExPos.size() : args.NExPos ? *args.NExPos :
-                                                                    num_vertices),
-        num_vertices
+    const uint32_t n_ex_pos = std::min(
+        !args.ExPos.empty() ? args.ExPos.size() : args.NExPos ? *args.NExPos :
+                                                                num_vertices,
+        size_t(num_vertices)
     );
     std::vector<std::vector<float>> gains(n_ex_pos); // Mode gains by [exitation position][mode]
     for (size_t ex_pos = 0; ex_pos < size_t(n_ex_pos); ++ex_pos) { // For each excitation position
         // If exPos was provided, retrieve data. Otherwise, distribute excitation positions linearly.
-        int ev_i = vertex_dim * (ex_pos < args.ExPos.size() ? args.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
+        uint32_t ev_i = vertex_dim * (ex_pos < args.ExPos.size() ? args.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
         gains[ex_pos] = std::vector<float>(n_modes);
         float max_gain = 0;
-        for (int mode = 0; mode < n_modes; ++mode) {
+        for (uint32_t mode = 0; mode < n_modes; ++mode) {
             float gain = 0;
-            for (int vi = 0; vi < vertex_dim; ++vi) gain += pow(eigenvectors(ev_i + vi, mode + lowest_mode_i), 2);
+            for (uint32_t vi = 0; vi < vertex_dim; ++vi) gain += pow(eigenvectors(ev_i + vi, mode + lowest_mode_i), 2);
 
             gains[ex_pos][mode] = sqrt(gain);
             if (gains[ex_pos][mode] > max_gain) max_gain = gains[ex_pos][mode];
