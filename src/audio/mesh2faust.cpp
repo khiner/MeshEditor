@@ -9,14 +9,17 @@
 #include "tetMesh.h"
 
 // tetgen
-#include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
+#include "tetgen.h"
 
 // Spectra
 #include <Spectra/MatOp/SparseSymMatProd.h>
 #include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
 
+#include <ranges>
 #include <sstream>
+
+using std::ranges::find_if, std::views::drop, std::views::reverse;
 
 ModalModes m2f::mesh2modal(TetMesh &tet_mesh, Args args) {
     SparseMatrix *mass_matrix;
@@ -85,6 +88,7 @@ ModalModes m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialPropertie
         {
             .MinModeFreq = 20,
             .MaxModeFreq = 16'000,
+            .FundamentalFreq = fundamental_freq,
             .NumModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
             .NumFemModes = 80, // number of modes to be computed for the finite element analysis
             // Convert to signed ints.
@@ -118,9 +122,8 @@ ModalModes m2f::mesh2modal(
     const auto eigenvalues = eigs.eigenvalues();
     const auto eigenvectors = eigs.eigenvectors();
 
-    /** Compute modes frequencies/gains/T60s **/
+    // Compute modes frequencies/gains/T60s
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
-    uint32_t lowest_mode_i = 0, highest_mode_i = 0;
     for (uint32_t mode = 0; mode < fem_n_modes; ++mode) {
         if (eigenvalues[mode] > 1) { // Ignore very small eigenvalues
             // See Eqs. 1-12 in https://www.cs.cornell.edu/~djames/papers/DyRT.pdf for a derivation of the following.
@@ -140,9 +143,15 @@ ModalModes m2f::mesh2modal(
         } else {
             mode_freqs[mode] = mode_t60s[mode] = 0.0;
         }
-        if (mode_freqs[mode] < args.MinModeFreq) ++lowest_mode_i;
-        if (mode_freqs[mode] < args.MaxModeFreq) ++highest_mode_i;
     }
+
+    // Find the lowest mode based on the unscaled minimum frequency.
+    // This is because we need to know the lowest mode to scale the other modes.
+    const float min_mode_freq = args.MinModeFreq;
+    const uint32_t lowest_mode_i = find_if(mode_freqs | reverse, [min_mode_freq](auto freq) { return freq <= min_mode_freq; }).base() - mode_freqs.begin();
+    // Find the highest mode based on the scaled maximum frequency.
+    const float max_mode_freq = args.FundamentalFreq ? mode_freqs[lowest_mode_i] * args.MaxModeFreq / *args.FundamentalFreq : args.MaxModeFreq;
+    const uint32_t highest_mode_i = find_if(mode_freqs | drop(lowest_mode_i) | reverse, [max_mode_freq](auto freq) { return freq <= max_mode_freq; }).base() - mode_freqs.begin();
 
     // Adjust modes to include only the requested range.
     const uint32_t n_modes = std::min(std::min(args.NumModes, fem_n_modes), highest_mode_i - lowest_mode_i);

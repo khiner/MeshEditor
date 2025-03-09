@@ -20,6 +20,7 @@ namespace m2f {
 struct Args {
     float MinModeFreq = 20; // Lowest mode freq
     float MaxModeFreq = 16'000; // Highest mode freq
+    std::optional<float> FundamentalFreq = std::nullopt; // Scale mode freqs so the lowest mode is at this fundamental
     uint32_t NumModes = 20; // Number of synthesized modes
     uint32_t NumFemModes = 100; // Number of modes to be computed with Finite Element Analysis (FEA)
     std::vector<uint32_t> ExPos = {}; // Excitation positions
