@@ -1,8 +1,8 @@
 #pragma once
 
 #include "AcousticMaterial.h"
-#include "ModalModes.h"
 #include "Excitable.h"
+#include "ModalModes.h"
 
 #include <string_view>
 

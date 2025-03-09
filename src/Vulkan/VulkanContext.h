@@ -48,18 +48,11 @@ struct VulkanContext {
     vk::UniquePipelineCache PipelineCache;
     vk::UniqueDescriptorPool DescriptorPool;
 
-    const uint FramebufferCount{1};
     vk::UniqueCommandPool CommandPool;
-    std::vector<vk::UniqueCommandBuffer> CommandBuffers;
-    std::vector<vk::UniqueCommandBuffer> TransferCommandBuffers;
+    vk::UniqueCommandBuffer TransferCommandBuffer;
     vk::UniqueFence RenderFence;
 
-    // Find a discrete GPU, or the first available (integrated) GPU.
-    vk::PhysicalDevice FindPhysicalDevice() const;
-    uint FindMemoryType(uint type_filter, vk::MemoryPropertyFlags) const;
-
     // Create the staging and device buffers and their memory.
-    // Assumes `buffer.Size` is set.
     VulkanBuffer CreateBuffer(vk::BufferUsageFlags, vk::DeviceSize) const;
 
     // Uses `buffer.Size` if `bytes` is not set.
@@ -70,16 +63,9 @@ struct VulkanContext {
     // This is for dynamic buffers, and it doesn't free memory, so the allocated size will be greater than the used size.
     void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize bytes) const;
 
-    template<typename T> VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const std::vector<T> &data) const {
-        const uint bytes = sizeof(T) * data.size();
+    VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize bytes) const {
         auto buffer = CreateBuffer(flags, bytes);
-        UpdateBuffer(buffer, data.data(), 0, bytes);
-        return buffer;
-    }
-    template<typename T, size_t N> VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const std::array<T, N> &data) const {
-        const uint bytes = sizeof(T) * N;
-        auto buffer = CreateBuffer(flags, bytes);
-        UpdateBuffer(buffer, data.data(), 0, bytes);
+        UpdateBuffer(buffer, data, 0, bytes);
         return buffer;
     }
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {

@@ -49,6 +49,27 @@ vk::Bool32 DebugCallback(
 } // namespace
 */
 
+namespace {
+// Find a discrete GPU, or the first available (integrated) GPU.
+vk::PhysicalDevice FindPhysicalDevice(const vk::UniqueInstance &instance) {
+    const auto physical_devices = instance->enumeratePhysicalDevices();
+    if (physical_devices.empty()) throw std::runtime_error("No Vulkan devices found.");
+
+    for (const auto &device : physical_devices) {
+        if (device.getProperties().deviceType == vk::PhysicalDeviceType::eDiscreteGpu) return device;
+    }
+    return physical_devices[0];
+}
+
+uint FindMemoryType(const vk::PhysicalDevice &physical_device, uint type_filter, vk::MemoryPropertyFlags prop_flags) {
+    auto mem_props = physical_device.getMemoryProperties();
+    for (uint i = 0; i < mem_props.memoryTypeCount; i++) {
+        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & prop_flags) == prop_flags) return i;
+    }
+    throw std::runtime_error("failed to find suitable memory type!");
+}
+} // namespace
+
 VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
     const auto IsLayerAvailable = [&](std::string_view layer) {
         static const auto available_layers = vk::enumerateInstanceLayerProperties();
@@ -103,7 +124,7 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
     }
     */
 
-    PhysicalDevice = FindPhysicalDevice();
+    PhysicalDevice = FindPhysicalDevice(Instance);
 
     const auto qfp = PhysicalDevice.getQueueFamilyProperties();
     const auto qfp_find_graphics_it = find_if(qfp, [](const auto &qfp) { return bool(qfp.queueFlags & vk::QueueFlagBits::eGraphics); });
@@ -146,27 +167,8 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
     DescriptorPool = Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, max_sets, pool_sizes});
 
     CommandPool = Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, QueueFamily});
-    CommandBuffers = Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount});
-    TransferCommandBuffers = Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, FramebufferCount});
+    TransferCommandBuffer = std::move(Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front());
     RenderFence = Device->createFenceUnique({});
-}
-
-vk::PhysicalDevice VulkanContext::FindPhysicalDevice() const {
-    const auto physical_devices = Instance->enumeratePhysicalDevices();
-    if (physical_devices.empty()) throw std::runtime_error("No Vulkan devices found.");
-
-    for (const auto &device : physical_devices) {
-        if (device.getProperties().deviceType == vk::PhysicalDeviceType::eDiscreteGpu) return device;
-    }
-    return physical_devices[0];
-}
-
-uint VulkanContext::FindMemoryType(uint type_filter, vk::MemoryPropertyFlags prop_flags) const {
-    auto mem_props = PhysicalDevice.getMemoryProperties();
-    for (uint i = 0; i < mem_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & prop_flags) == prop_flags) return i;
-    }
-    throw std::runtime_error("failed to find suitable memory type!");
 }
 
 VulkanBuffer VulkanContext::CreateBuffer(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
@@ -196,7 +198,7 @@ uint64_t NextPowerOfTwo(uint64_t x) {
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0) bytes = buffer.Size;
 
-    const auto &cb = *TransferCommandBuffers.front();
+    const auto &cb = *TransferCommandBuffer;
 
     // Note: `buffer.Size` is the _used_ size, not the allocated size.
     const auto required_bytes = offset + bytes;
@@ -204,7 +206,7 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         // Create a new buffer with the first large enough power of two.
         // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
         const auto new_bytes = NextPowerOfTwo(required_bytes);
-        VulkanBuffer new_buffer = CreateBuffer(buffer.Usage, new_bytes);
+        auto new_buffer = CreateBuffer(buffer.Usage, new_bytes);
         // Host copy:
         char *host_data = buffer.HostBuffer.MapMemory();
         new_buffer.HostBuffer.WriteRegion(host_data, 0, buffer.Size);
@@ -213,8 +215,8 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
         cb.end();
-
         SubmitTransfer();
+
         buffer = std::move(new_buffer);
         buffer.Size = required_bytes; // `buffer.Size` is the newly allocated size, so we may need to shrink it.
     } else {
@@ -228,7 +230,6 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});
     cb.end();
-
     SubmitTransfer();
 }
 
@@ -238,7 +239,7 @@ void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offse
     if (const auto move_bytes = buffer.Size - (offset + bytes); move_bytes > 0) {
         buffer.HostBuffer.MoveRegion(offset + bytes, offset, move_bytes);
 
-        const auto &cb = *TransferCommandBuffers.front();
+        const auto &cb = *TransferCommandBuffer;
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_bytes});
         cb.end();
@@ -257,7 +258,7 @@ void VulkanContext::WaitForRender() const {
 // TODO Use separate fence/semaphores for buffer updates and rendering?
 void VulkanContext::SubmitTransfer() const {
     vk::SubmitInfo submit;
-    submit.setCommandBuffers(*TransferCommandBuffers.front());
+    submit.setCommandBuffers(*TransferCommandBuffer);
     Queue.submit(submit, *RenderFence);
     WaitForRender();
 }
@@ -265,7 +266,7 @@ void VulkanContext::SubmitTransfer() const {
 ImageResource VulkanContext::CreateImage(vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags) const {
     auto image = Device->createImageUnique(image_info);
     const auto mem_reqs = Device->getImageMemoryRequirements(*image);
-    auto memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(mem_reqs.memoryTypeBits, mem_flags)});
+    auto memory = Device->allocateMemoryUnique({mem_reqs.size, FindMemoryType(PhysicalDevice, mem_reqs.memoryTypeBits, mem_flags)});
     Device->bindImageMemory(*image, *memory, 0);
     view_info.image = *image;
     return {std::move(memory), std::move(image), Device->createImageViewUnique(view_info), image_info.extent};
@@ -281,7 +282,7 @@ ImageResource VulkanContext::RenderBitmapToImage(const void *data, uint32_t widt
     staging_buffer.WriteRegion(data, 0, buffer_size);
 
     // Record commands to copy from staging buffer to Vulkan image.
-    const auto &cb = *TransferCommandBuffers.front();
+    const auto &cb = *TransferCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     // Transition the image layout to be ready for data transfer.

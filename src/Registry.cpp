@@ -20,7 +20,7 @@ std::string CreateName(const entt::registry &r, std::string_view prefix) {
     for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
         const auto view = r.view<const Name>();
         const auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i);
-        if (!std::ranges::any_of(view, [&](auto entity) {return view.get<Name>(entity).Value == name; })) {
+        if (!std::ranges::any_of(view, [&](auto entity) { return view.get<Name>(entity).Value == name; })) {
             return name;
         }
     }

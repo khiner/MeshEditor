@@ -136,7 +136,6 @@ struct Scene {
     ~Scene();
 
     const VulkanContext &VC;
-    entt::registry &R;
     World World{};
 
     std::optional<uint> GetModelBufferIndex(entt::entity);
@@ -194,6 +193,9 @@ struct Scene {
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
 private:
+    entt::registry &R;
+    vk::UniqueCommandBuffer CommandBuffer;
+
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 

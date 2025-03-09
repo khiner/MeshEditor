@@ -39,19 +39,18 @@ entt::entity GetParentEntity(const entt::registry &r, entt::entity entity) {
 // Simple wrapper around vertex and index buffers.
 struct VkRenderBuffers {
     VulkanBuffer Vertices, Indices;
-
     VkRenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices)
-        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(vertices))),
-          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, std::move(indices))) {}
+        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size())),
+          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * indices.size())) {}
 
     VkRenderBuffers(const VulkanContext &vc, RenderBuffers &&buffers)
-        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(buffers.Vertices))),
-          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, std::move(buffers.Indices))) {}
+        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, buffers.Vertices.data(), sizeof(Vertex3D) * buffers.Vertices.size())),
+          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, buffers.Indices.data(), sizeof(uint) * buffers.Indices.size())) {}
 
     template<size_t N>
     VkRenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices)
-        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, std::move(vertices))),
-          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices)) {}
+        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size())),
+          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * N)) {}
 };
 
 using MeshBuffers = std::unordered_map<MeshElement, VkRenderBuffers>;
@@ -268,7 +267,8 @@ struct EdgeDetectionPipelineResources {
 };
 
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
-    : VC(vc), R(r), MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(vc)),
+    : VC(vc), R(r), CommandBuffer(std::move(VC.Device->allocateCommandBuffersUnique({*VC.CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
+      MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(vc)),
       SilhouetteRenderer(SilhouettePipelineRenderer(vc)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(vc)) {
     // EnTT listeners
     R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
@@ -283,8 +283,8 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
     UpdateTransformBuffers();
 
-    LightsBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{Lights}));
-    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, std::vector{SilhouetteDisplay}));
+    LightsBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, &Lights, sizeof(Lights)));
+    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, &SilhouetteDisplay, sizeof(SilhouetteDisplay)));
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
     VC.Device->updateDescriptorSets(
@@ -603,7 +603,7 @@ std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_m
 }
 
 void Scene::RecordCommandBuffer() {
-    const auto cb = *VC.CommandBuffers.front();
+    const auto &cb = *CommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
@@ -709,7 +709,7 @@ void Scene::RecordCommandBuffer() {
 
 void Scene::SubmitCommandBuffer(vk::Fence fence) const {
     vk::SubmitInfo submit;
-    submit.setCommandBuffers(*VC.CommandBuffers[0]);
+    submit.setCommandBuffers(*CommandBuffer);
     VC.Queue.submit(submit, fence);
 }
 
