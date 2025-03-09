@@ -21,7 +21,7 @@
 
 using std::views::transform, std::ranges::to;
 
-m2f::ModalModel m2f::mesh2modal(TetMesh *volumetric_mesh, AcousticMaterialProperties material, CommonArguments args) {
+ModalModes m2f::mesh2modal(TetMesh *volumetric_mesh, AcousticMaterialProperties material, CommonArguments args) {
     SparseMatrix *mass_matrix;
     GenerateMassMatrix::computeMassMatrix(volumetric_mesh, &mass_matrix, true);
 
@@ -67,7 +67,7 @@ m2f::ModalModel m2f::mesh2modal(TetMesh *volumetric_mesh, AcousticMaterialProper
     return mesh2modal(M, K, num_vertices, vertex_dim, material, args);
 }
 
-m2f::ModalModel m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> /*fundamental_freq*/) {
+ModalModes m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
     // Convert the tetrahedral mesh into a VegaFEM TetMesh.
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
@@ -98,7 +98,7 @@ m2f::ModalModel m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialProp
     );
 }
 
-m2f::ModalModel m2f::mesh2modal(
+ModalModes m2f::mesh2modal(
     const Eigen::SparseMatrix<double> &M,
     const Eigen::SparseMatrix<double> &K,
     uint32_t num_vertices, uint32_t vertex_dim,
@@ -180,10 +180,10 @@ m2f::ModalModel m2f::mesh2modal(
     return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains)};
 }
 
-std::string m2f::modal2faust(const ModalModel &model, DspGenArguments args) {
-    const auto &freqs = model.ModeFreqs;
-    const auto &gains = model.ModeGains;
-    const auto &t60s = model.ModeT60s;
+std::string m2f::modal2faust(const ModalModes &modes, DspGenArguments args) {
+    const auto &freqs = modes.Freqs;
+    const auto &gains = modes.Gains;
+    const auto &t60s = modes.T60s;
     const auto n_modes = freqs.size();
     const auto n_ex_pos = gains.size();
 

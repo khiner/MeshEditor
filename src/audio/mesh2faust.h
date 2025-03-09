@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AcousticMaterialProperties.h"
+#include "ModalModes.h"
 
 #include <optional>
 #include <string>
@@ -24,16 +25,10 @@ struct CommonArguments {
     std::optional<int> NExPos = {}; // Number of excitation positions (default is max)
 };
 
-struct ModalModel {
-    std::vector<float> ModeFreqs; // Mode frequencies
-    std::vector<float> ModeT60s; // Mode T60 decay times
-    std::vector<std::vector<float>> ModeGains; // Mode gains by [exitation position][mode]
-};
+ModalModes mesh2modal(TetMesh *, AcousticMaterialProperties material = {}, CommonArguments args = {});
+ModalModes mesh2modal(const tetgenio &, const AcousticMaterialProperties &, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq);
 
-ModalModel mesh2modal(TetMesh *, AcousticMaterialProperties material = {}, CommonArguments args = {});
-ModalModel mesh2modal(const tetgenio &, const AcousticMaterialProperties &, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq);
-
-ModalModel mesh2modal(
+ModalModes mesh2modal(
     const Eigen::SparseMatrix<double, 0, int> &M, // Mass matrix
     const Eigen::SparseMatrix<double, 0, int> &K, // Stiffness matrix
     uint32_t num_vertices,
@@ -48,7 +43,7 @@ struct DspGenArguments {
     bool freqControl = false; // Freq control activated
 };
 
-// Generate DSP code from a `ModalModel`.
-std::string modal2faust(const ModalModel &, DspGenArguments args = {});
+// Generate DSP code from modal modes.
+std::string modal2faust(const ModalModes &, DspGenArguments args = {});
 
 } // namespace m2f

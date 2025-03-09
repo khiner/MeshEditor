@@ -456,13 +456,9 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
 
                 DspGenerator->SetMessage("Generating modal model...");
                 const auto fundamendal = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front()} : std::nullopt;
-                auto modal_model = m2f::mesh2modal(*tets, info.Material.Properties, excitable_vertices, fundamendal);
-
                 r.remove<ModalModelCreateInfo>(entity);
                 ModalSoundObject obj{
-                    .ModeFreqs = std::move(modal_model.ModeFreqs),
-                    .ModeT60s = std::move(modal_model.ModeT60s),
-                    .ModeGains = std::move(modal_model.ModeGains),
+                    .Modes = m2f::mesh2modal(*tets, info.Material.Properties, excitable_vertices, fundamendal),
                     .Excitable = {excitable_vertices},
                 };
                 if (fundamendal) obj.FundamentalFreq = *fundamendal;
@@ -482,10 +478,11 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
 
     static std::optional<size_t> hovered_mode_index;
     const auto &model = *modal_sound_object;
+    const auto &modes = model.Modes;
     if (ModalModel->Recording && ModalModel->Recording->Complete()) {
         const auto &frames = ModalModel->Recording->Frames;
         PlotFrames(frames, "Modal impact waveform");
-        const auto highlight_freq = hovered_mode_index ? std::optional{model.ModeFreqs[*hovered_mode_index]} : std::nullopt;
+        const auto highlight_freq = hovered_mode_index ? std::optional{modes.Freqs[*hovered_mode_index]} : std::nullopt;
         PlotMagnitudeSpectrum(frames, "Modal impact spectrum", highlight_freq);
     }
 
@@ -493,17 +490,17 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
     excitable->SelectedVertexIndex = uint(Dsp.Get(ExciteIndexParamName));
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
-        const auto scaled_mode_freqs = model.ModeFreqs | transform([&](float f) { return model.FundamentalFreq * f / model.ModeFreqs.front(); }) | to<std::vector>();
+        const auto scaled_mode_freqs = modes.Freqs | transform([&](float f) { return model.FundamentalFreq * f / modes.Freqs.front(); }) | to<std::vector>();
         if (auto hovered = PlotModeData(scaled_mode_freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(model.ModeT60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(model.ModeGains[excitable->SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
-        if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < model.ModeFreqs.size()) {
+        if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(modes.Gains[excitable->SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
+        if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < modes.Freqs.size()) {
             const auto index = *hovered_mode_index;
             Text(
                 "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
                 scaled_mode_freqs[index],
-                model.ModeT60s[index],
-                model.ModeGains[excitable->SelectedVertexIndex][index]
+                modes.T60s[index],
+                modes.Gains[excitable->SelectedVertexIndex][index]
             );
         }
     }
@@ -522,7 +519,7 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
 
     if (ImpactModel && recording && recording->Complete()) {
         // const auto &modal = *ModalModel->FftData, &impact = ImpactModel->FftData;
-        // uint ModeCount() const { return ModalModel.modeFreqs.size(); }
+        // uint ModeCount() const { return modes.Freqs.size(); }
         // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
         // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
         // RMSE is abyssmal in most cases...
