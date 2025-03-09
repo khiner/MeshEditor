@@ -3,7 +3,6 @@
 #include "ModalSoundObject.h"
 #include "Registry.h"
 
-#include "mesh2faust.h"
 #include <entt/entity/registry.hpp>
 
 #include <format>
@@ -18,6 +17,56 @@ FaustGenerator::FaustGenerator(entt::registry &r, OnFaustCodeChanged code_chante
 FaustGenerator::~FaustGenerator() = default;
 
 namespace {
+// Generate DSP code from modal modes.
+std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view model_name, bool freq_control) {
+    const auto &freqs = modes.Freqs;
+    const auto &gains = modes.Gains;
+    const auto &t60s = modes.T60s;
+    const auto n_modes = freqs.size();
+    const auto n_ex_pos = gains.size();
+
+    std::stringstream dsp;
+    dsp << "import(\"stdfaust.lib\");\n\n"
+        << model_name << "(" << (freq_control ? "freq," : "")
+        << "exPos,t60Scale) = _ <: "
+           "par(mode,nModes,pm.modeFilter(modeFreqs(mode),modesT60s(mode),"
+           "modesGains(int(exPos),mode))) :> /(nModes)\n"
+        << "with{\n"
+        << "nModes = " << n_modes << ";\n";
+    if (n_ex_pos > 1) dsp << "nExPos = " << n_ex_pos << ";\n";
+
+    dsp << "modeFreqsUnscaled(n) = ba.take(n+1,(";
+    for (size_t mode = 0; mode < n_modes; ++mode) {
+        dsp << freqs[mode];
+        if (mode < n_modes - 1) dsp << ",";
+    }
+    dsp << "));\n";
+    dsp << "modeFreqs(mode) = ";
+    if (freq_control) dsp << "freq*modeFreqsUnscaled(mode)/modeFreqsUnscaled(0)";
+    else dsp << "modeFreqsUnscaled(mode)";
+    dsp << ";\n";
+
+    dsp << "modesGains(p,n) = waveform{";
+    for (size_t ex_pos = 0; ex_pos < gains.size(); ++ex_pos) {
+        for (size_t mode = 0; mode < gains[ex_pos].size(); ++mode) {
+            dsp << gains[ex_pos][mode];
+            if (mode < n_modes - 1) dsp << ",";
+        }
+        if (ex_pos < gains.size() - 1) dsp << ",";
+    }
+    dsp << "},int(p*nModes+n) : rdtable" << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
+
+    dsp << "modesT60s(n) = t60Scale * ba.take(n+1,(";
+    for (size_t mode = 0; mode < n_modes; ++mode) {
+        dsp << t60s[mode];
+        if (mode < n_modes - 1) dsp << ",";
+    }
+    dsp << "));\n";
+    dsp << "};\n";
+
+    return dsp.str();
+}
+
 using ModalDsp = FaustGenerator::ModalDsp;
 constexpr std::string_view ToSAH{" : ba.sAndH(gate)"}; // add a sample and hold on the gate in serial
 ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundObject &obj, bool freq_control) {
@@ -27,7 +76,7 @@ ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundObject &o
     const uint num_excitable = obj.Excitable.ExcitableVertices.size();
     const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1, ToSAH);
 
-    const auto model = m2f::modal2faust(obj.Modes, "modalModel", freq_control);
+    const auto model = GenerateModalModelDsp(obj.Modes, "modalModel", freq_control);
     const auto model_definition = std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{}{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale, ToSAH);
     const auto model_eval = std::format("{}.modalModel({}{}.exPos,{}.t60Scale)*{}.gain", model_name, freq_control ? std::format("{}.freq,", model_name) : "", model_name, model_name, model_name);
     return {model_definition, model_eval};

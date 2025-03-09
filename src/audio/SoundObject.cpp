@@ -458,7 +458,7 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
                 const auto fundamendal = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front()} : std::nullopt;
                 r.remove<ModalModelCreateInfo>(entity);
                 ModalSoundObject obj{
-                    .Modes = m2f::mesh2modal(*tets, info.Material.Properties, excitable_vertices, fundamendal),
+                    .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable_vertices, fundamendal),
                     .Excitable = {excitable_vertices},
                 };
                 if (fundamendal) obj.FundamentalFreq = *fundamendal;

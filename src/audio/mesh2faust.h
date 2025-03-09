@@ -27,18 +27,14 @@ struct Args {
     AcousticMaterialProperties Material = {};
 };
 
-ModalModes mesh2modal(TetMesh &, Args args = {});
-ModalModes mesh2modal(const tetgenio &, const AcousticMaterialProperties &, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq);
+ModalModes mesh2modes(TetMesh &, Args args = {});
+ModalModes mesh2modes(const tetgenio &, const AcousticMaterialProperties &, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq);
 
-ModalModes mesh2modal(
+ModalModes mesh2modes(
     const Eigen::SparseMatrix<double, 0, int> &M, // Mass matrix
     const Eigen::SparseMatrix<double, 0, int> &K, // Stiffness matrix
     uint32_t num_vertices,
     uint32_t vertex_dim = 3,
     Args args = {}
 );
-
-// Generate DSP code from modal modes.
-std::string modal2faust(const ModalModes &, std::string_view model_name = "modalModel", bool freq_control = false);
-
 } // namespace m2f

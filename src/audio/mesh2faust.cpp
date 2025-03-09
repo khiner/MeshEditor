@@ -17,11 +17,10 @@
 #include <Spectra/SymGEigsShiftSolver.h>
 
 #include <ranges>
-#include <sstream>
 
 using std::ranges::find_if, std::views::drop, std::views::reverse;
 
-ModalModes m2f::mesh2modal(TetMesh &tet_mesh, Args args) {
+ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
     SparseMatrix *mass_matrix;
     GenerateMassMatrix::computeMassMatrix(&tet_mesh, &mass_matrix, true);
 
@@ -64,10 +63,10 @@ ModalModes m2f::mesh2modal(TetMesh &tet_mesh, Args args) {
     delete stiffness_matrix;
     stiffness_matrix = nullptr;
 
-    return mesh2modal(M, K, num_vertices, vertex_dim, std::move(args));
+    return mesh2modes(M, K, num_vertices, vertex_dim, std::move(args));
 }
 
-ModalModes m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
+ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
     // Convert the tetrahedral mesh into a VegaFEM TetMesh.
     std::vector<int> tet_indices;
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
@@ -83,7 +82,7 @@ ModalModes m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialPropertie
         material.YoungModulus, material.PoissonRatio, material.Density
     };
 
-    return mesh2modal(
+    return mesh2modes(
         tet_mesh,
         {
             .MinModeFreq = 20,
@@ -98,7 +97,7 @@ ModalModes m2f::mesh2modal(const tetgenio &tets, const AcousticMaterialPropertie
     );
 }
 
-ModalModes m2f::mesh2modal(
+ModalModes m2f::mesh2modes(
     const Eigen::SparseMatrix<double> &M,
     const Eigen::SparseMatrix<double> &K,
     uint32_t num_vertices, uint32_t vertex_dim,
@@ -178,53 +177,4 @@ ModalModes m2f::mesh2modal(
     }
 
     return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains)};
-}
-
-std::string m2f::modal2faust(const ModalModes &modes, std::string_view model_name, bool freq_control) {
-    const auto &freqs = modes.Freqs;
-    const auto &gains = modes.Gains;
-    const auto &t60s = modes.T60s;
-    const auto n_modes = freqs.size();
-    const auto n_ex_pos = gains.size();
-
-    std::stringstream dsp;
-    dsp << "import(\"stdfaust.lib\");\n\n"
-        << model_name << "(" << (freq_control ? "freq," : "")
-        << "exPos,t60Scale) = _ <: "
-           "par(mode,nModes,pm.modeFilter(modeFreqs(mode),modesT60s(mode),"
-           "modesGains(int(exPos),mode))) :> /(nModes)\n"
-        << "with{\n"
-        << "nModes = " << n_modes << ";\n";
-    if (n_ex_pos > 1) dsp << "nExPos = " << n_ex_pos << ";\n";
-
-    dsp << "modeFreqsUnscaled(n) = ba.take(n+1,(";
-    for (size_t mode = 0; mode < n_modes; ++mode) {
-        dsp << freqs[mode];
-        if (mode < n_modes - 1) dsp << ",";
-    }
-    dsp << "));\n";
-    dsp << "modeFreqs(mode) = ";
-    if (freq_control) dsp << "freq*modeFreqsUnscaled(mode)/modeFreqsUnscaled(0)";
-    else dsp << "modeFreqsUnscaled(mode)";
-    dsp << ";\n";
-
-    dsp << "modesGains(p,n) = waveform{";
-    for (size_t ex_pos = 0; ex_pos < gains.size(); ++ex_pos) {
-        for (size_t mode = 0; mode < gains[ex_pos].size(); ++mode) {
-            dsp << gains[ex_pos][mode];
-            if (mode < n_modes - 1) dsp << ",";
-        }
-        if (ex_pos < gains.size() - 1) dsp << ",";
-    }
-    dsp << "},int(p*nModes+n) : rdtable" << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
-
-    dsp << "modesT60s(n) = t60Scale * ba.take(n+1,(";
-    for (size_t mode = 0; mode < n_modes; ++mode) {
-        dsp << t60s[mode];
-        if (mode < n_modes - 1) dsp << ",";
-    }
-    dsp << "));\n";
-    dsp << "};\n";
-
-    return dsp.str();
 }
