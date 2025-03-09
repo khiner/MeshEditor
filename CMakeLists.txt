@@ -4,6 +4,7 @@ project(MeshEditor LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_FLAGS "-O2")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib")
@@ -116,6 +117,10 @@ find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
 find_library(SPIRV_CROSS_CORE_LIB spirv-cross-core $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 message(STATUS "Found spirv-cross-core in: ${SPIRV_CROSS_CORE_LIB}")
+
+if(APPLE)
+  target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
+endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib tetgen PkgConfig::FFTW3F lunasvg)
 
