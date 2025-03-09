@@ -27,7 +27,7 @@ ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundObject &o
     const uint num_excitable = obj.Excitable.ExcitableVertices.size();
     const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1){}", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1, ToSAH);
 
-    const auto model = m2f::modal2faust(obj.Modes, {"modalModel", freq_control});
+    const auto model = m2f::modal2faust(obj.Modes, "modalModel", freq_control);
     const auto model_definition = std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{}{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale, ToSAH);
     const auto model_eval = std::format("{}.modalModel({}{}.exPos,{}.t60Scale)*{}.gain", model_name, freq_control ? std::format("{}.freq,", model_name) : "", model_name, model_name, model_name);
     return {model_definition, model_eval};
