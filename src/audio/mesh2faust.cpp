@@ -22,9 +22,9 @@ using std::ranges::find_if, std::views::drop, std::views::reverse;
 
 ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
     SparseMatrix *mass_matrix;
-    GenerateMassMatrix::computeMassMatrix(&tet_mesh, &mass_matrix, true);
+    GenerateMassMatrix::computeMassMatrix(&tet_mesh, &mass_matrix);
 
-    StVKElementABCD *precomputed_integrals = StVKElementABCDLoader::load(&tet_mesh);
+    StVKTetABCD *precomputed_integrals = StVKElementABCDLoader::load(&tet_mesh);
     StVKInternalForces internal_forces{&tet_mesh, precomputed_integrals};
     SparseMatrix *stiffness_matrix;
     StVKStiffnessMatrix stiffness_matrix_class{&internal_forces};
@@ -32,10 +32,11 @@ ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
 
     const uint32_t vertex_dim = 3;
     const uint32_t num_vertices = tet_mesh.getNumVertices();
-    double *zero = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
-    stiffness_matrix_class.ComputeStiffnessMatrix(zero, stiffness_matrix);
+    // In linear modal analysis, the displacements are zero.
+    double *displacements = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
+    stiffness_matrix_class.ComputeStiffnessMatrix(displacements, stiffness_matrix);
 
-    free(zero);
+    free(displacements);
     delete precomputed_integrals;
     precomputed_integrals = nullptr;
 
@@ -43,7 +44,7 @@ ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
     // _Note: Eigen is column-major by default._
     std::vector<Eigen::Triplet<double, uint32_t>> K_triplets, M_triplets;
     for (uint32_t i = 0; i < uint32_t(stiffness_matrix->GetNumRows()); ++i) {
-        for (int32_t j = 0; j < stiffness_matrix->GetRowLength(i); ++j) {
+        for (uint32_t j = 0; j < uint32_t(stiffness_matrix->GetRowLength(i)); ++j) {
             K_triplets.push_back({i, uint32_t(stiffness_matrix->GetColumnIndex(i, j)), stiffness_matrix->GetEntry(i, j)});
         }
     }
@@ -124,24 +125,24 @@ ModalModes m2f::mesh2modes(
     // Compute modes frequencies/gains/T60s
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
     for (uint32_t mode = 0; mode < fem_n_modes; ++mode) {
-        if (eigenvalues[mode] > 1) { // Ignore very small eigenvalues
-            // See Eqs. 1-12 in https://www.cs.cornell.edu/~djames/papers/DyRT.pdf for a derivation of the following.
-            const double omega_i = sqrt(eigenvalues[mode]); // Undamped natural frequency, in rad/s
-            // With good eigenvalue estimates, this should be near-equivalent:
-            // const auto &v = eigenvectors.col(mode);
-            // const double Mv = v.transpose() * M * v, Kv = v.transpose() * K * v, omega_i = sqrt(Kv / Mv);
-            const double xi_i = 0.5 * (args.Material.Alpha / omega_i + args.Material.Beta * omega_i); // Damping ratio
-            const double omega_i_hz = omega_i / (2 * M_PI);
-            mode_freqs[mode] = omega_i_hz * sqrt(1 - xi_i * xi_i); // Damped natural frequency
-            // T60 is the time for the mode's amplitude to decay by 60 dB.
-            // 20 * log10(1000) = 60 dB -> After T60 time, the amplitude is 1/1000th of its initial value.
-            // A change of basis gets us to the ln(1000) factor.
-            // See https://ccrma.stanford.edu/~jos/st/Audio_Decay_Time_T60.html
-            static const double LN_1000 = std::log(1000);
-            mode_t60s[mode] = LN_1000 / (xi_i * omega_i_hz); // Damping is based on the _undamped_ natural frequency.
-        } else {
+        if (eigenvalues[mode] < 1) { // Ignore very small eigenvalues
             mode_freqs[mode] = mode_t60s[mode] = 0.0;
+            continue;
         }
+        // See Eqs. 1-12 in https://www.cs.cornell.edu/~djames/papers/DyRT.pdf for a derivation of the following.
+        const double omega_i = sqrt(eigenvalues[mode]); // Undamped natural frequency, in rad/s
+        // With good eigenvalue estimates, this should be nearly equivalent:
+        // const auto &v = eigenvectors.col(mode);
+        // const double Mv = v.transpose() * M * v, Kv = v.transpose() * K * v, omega_i = sqrt(Kv / Mv);
+        const double xi_i = 0.5 * (args.Material.Alpha / omega_i + args.Material.Beta * omega_i); // Damping ratio
+        const double omega_i_hz = omega_i / (2 * M_PI);
+        mode_freqs[mode] = omega_i_hz * sqrt(1 - xi_i * xi_i); // Damped natural frequency
+        // T60 is the time for the mode's amplitude to decay by 60 dB.
+        // 20log10(1000) = 60 dB -> After T60 time, the amplitude is 1/1000th of its initial value.
+        // A change of basis gets us to the ln(1000) factor.
+        // See https://ccrma.stanford.edu/~jos/st/Audio_Decay_Time_T60.html
+        static const double LN_1000 = std::log(1000);
+        mode_t60s[mode] = LN_1000 / (xi_i * omega_i_hz); // Damping is based on the _undamped_ natural frequency.
     }
 
     // Find the lowest mode based on the unscaled minimum frequency.

@@ -31,46 +31,36 @@ find_package(Vulkan REQUIRED)
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
-set(IMGUI_DIR lib/imgui)
-set(IMPLOT_DIR lib/implot)
-
-set(Mesh2FaustDir ${CMAKE_CURRENT_SOURCE_DIR}/lib/faust/tools/physicalModeling/mesh2faust)
-set(VegaDir ${Mesh2FaustDir}/vega/libraries)
+set(ImguiDir lib/imgui)
+set(ImplotDir lib/implot)
+set(VegaDir src/audio/vega)
 
 add_executable(${PROJECT_NAME}
-    ${IMGUI_DIR}/imgui_demo.cpp
-    ${IMGUI_DIR}/imgui_draw.cpp
-    ${IMGUI_DIR}/imgui_tables.cpp
-    ${IMGUI_DIR}/imgui_widgets.cpp
-    ${IMGUI_DIR}/imgui.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
-    ${IMPLOT_DIR}/implot.cpp
-    ${IMPLOT_DIR}/implot_items.cpp
-    ${IMPLOT_DIR}/implot_demo.cpp
+    ${ImguiDir}/imgui_demo.cpp
+    ${ImguiDir}/imgui_draw.cpp
+    ${ImguiDir}/imgui_tables.cpp
+    ${ImguiDir}/imgui_widgets.cpp
+    ${ImguiDir}/imgui.cpp
+    ${ImguiDir}/backends/imgui_impl_vulkan.cpp
+    ${ImguiDir}/backends/imgui_impl_sdl3.cpp
+    ${ImplotDir}/implot.cpp
+    ${ImplotDir}/implot_items.cpp
+    ${ImplotDir}/implot_demo.cpp
     lib/miniaudio/extras/miniaudio_split/miniaudio.c
     ${VegaDir}/volumetricMesh/tetMesh.cpp
-    ${VegaDir}/volumetricMesh/volumetricMesh.cpp
-    ${VegaDir}/volumetricMesh/volumetricMeshENuMaterial.cpp
-    ${VegaDir}/volumetricMesh/volumetricMeshOrthotropicMaterial.cpp
-    ${VegaDir}/volumetricMesh/volumetricMeshMooneyRivlinMaterial.cpp
     ${VegaDir}/sparseMatrix/sparseMatrix.cpp
     ${VegaDir}/volumetricMesh/generateMassMatrix.cpp
     ${VegaDir}/stvk/StVKInternalForces.cpp
     ${VegaDir}/stvk/StVKStiffnessMatrix.cpp
-    ${VegaDir}/volumetricMesh/volumetricMeshParser.cpp
-    ${VegaDir}/stvk/StVKElementABCDLoader.cpp
     ${VegaDir}/stvk/StVKTetABCD.cpp
-    ${VegaDir}/stvk/StVKTetHighMemoryABCD.cpp
-    ${VegaDir}/stvk/StVKElementABCD.cpp
     ${SOURCES}
 )
 
 include_directories(
     ${Vulkan_INCLUDE_DIRS}
-    ${IMGUI_DIR}
-    ${IMGUI_DIR}/backends
-    ${IMPLOT_DIR}
+    ${ImguiDir}
+    ${ImguiDir}/backends
+    ${ImplotDir}
     SYSTEM lib/imspinner
     SYSTEM lib/glm
     SYSTEM lib/entt/src
@@ -84,7 +74,7 @@ include_directories(
     SYSTEM lib/faust/compiler/boxes
     SYSTEM lib/spectra/include
 
-    SYSTEM ${Mesh2FaustDir}/vega/libraries/include
+    SYSTEM ${VegaDir}/include
     SYSTEM PkgConfig::FFTW3F
     src
 )

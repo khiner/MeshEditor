@@ -455,13 +455,14 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
                 const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = info.QualityTets});
 
                 DspGenerator->SetMessage("Generating modal model...");
-                const auto fundamendal = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front()} : std::nullopt;
+                const auto fundamental = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front()} : std::nullopt;
+                // const std::optional<float> fundamental = {};
                 r.remove<ModalModelCreateInfo>(entity);
                 ModalSoundObject obj{
-                    .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable_vertices, fundamendal),
+                    .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable_vertices, fundamental),
                     .Excitable = {excitable_vertices},
                 };
-                if (fundamendal) obj.FundamentalFreq = *fundamendal;
+                if (fundamental) obj.FundamentalFreq = *fundamental;
                 return obj;
             });
         }
