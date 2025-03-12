@@ -16,7 +16,7 @@ struct StVKStiffnessMatrix {
 
     // generates a zero matrix with the same pattern of non-zero entries as the tangent stiffness matrix
     // note: sparsity pattern does not depend on the deformable configuration
-    void GetStiffnessMatrixTopology(SparseMatrix **);
+    SparseMatrix GetStiffnessMatrixTopology();
 
     // evaluates the tangent stiffness matrix in the given deformation configuration
     // "vertexDisplacements" is an array of vertex deformations, of length 3*n, where n is the total number of mesh vertices
@@ -33,8 +33,6 @@ struct StVKStiffnessMatrix {
     void AddCubicTermsContribution(const double *vertexDisplacements, SparseMatrix *, int elementLow = -1, int elementHigh = -1);
 
 private:
-    int numElementVertices;
-
     // acceleration indices
     int **row_;
     int **column_;
@@ -52,9 +50,8 @@ private:
     void AddMatrix3x3Block(int c, int a, int element, Mat3d &matrix, SparseMatrix *sparseMatrix) {
         int *row = row_[element];
         int *column = column_[element];
-
         for (int k = 0; k < 3; k++)
             for (int l = 0; l < 3; l++)
-                sparseMatrix->AddEntry(3 * row[c] + k, 3 * column[numElementVertices * c + a] + l, matrix[k][l]);
+                sparseMatrix->AddEntry(3 * row[c] + k, 3 * column[TetMesh::NumElementVertices * c + a] + l, matrix[k][l]);
     }
 };

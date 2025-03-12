@@ -3,9 +3,9 @@
 #include <Eigen/SparseCore>
 
 // Vega
-#include "StVKElementABCDLoader.h"
 #include "StVKStiffnessMatrix.h"
-#include "generateMassMatrix.h"
+#include "StVKTetABCD.h"
+#include "sparseMatrix.h"
 #include "tetMesh.h"
 
 // tetgen
@@ -16,53 +16,91 @@
 #include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
 
+#include <memory>
 #include <ranges>
 
 using std::ranges::find_if, std::views::drop, std::views::reverse;
 
-ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
-    SparseMatrix *mass_matrix;
-    GenerateMassMatrix::computeMassMatrix(&tet_mesh, &mass_matrix);
+static constexpr auto NEV = TetMesh::NumElementVertices;
 
-    StVKTetABCD *precomputed_integrals = StVKElementABCDLoader::load(&tet_mesh);
-    StVKInternalForces internal_forces{&tet_mesh, precomputed_integrals};
-    SparseMatrix *stiffness_matrix;
+// Each matrix element z will be augmented to a 3x3 z*I matrix
+// (causing mtx dimensions to grow by a factor of 3).
+// Output matrix will be 3*n x 3*n, where n is the number of tet vertices.
+inline static SparseMatrix GenerateMassMatrix(const TetMesh &tets) {
+    const int n = tets.getNumVertices();
+    SparseMatrixOutline outline{3 * n};
+    for (int el = 0; el < tets.getNumElements(); el++) {
+        /*
+        Compute the mass matrix of a single element.
+        Consistent mass matrix of a tetrahedron:
+                    [ 2  1  1  1  ]
+                    [ 1  2  1  1  ]
+        mass / 20 * [ 1  1  2  1  ]
+                    [ 1  1  1  2  ]
+        with mass = density * volume.
+        The consistent mass matrix does not depend on the shape of the tetrahedron.
+        (Source: Singiresu S. Rao: The finite element method in engineering, 2004)
+        */
+        static constexpr double coeffs[]{
+            2, 1, 1, 1,
+            1, 2, 1, 1,
+            1, 1, 2, 1,
+            1, 1, 1, 2
+        };
+        const double factor = tets.getElementDensity(el) * tets.getElementVolume(el) / 20;
+        std::array<double, NEV * NEV> element_mass_matrix;
+        for (uint32_t i = 0; i < NEV * NEV; i++) element_mass_matrix[i] = factor * coeffs[i];
+
+        for (uint32_t i = 0; i < NEV; i++) {
+            for (uint32_t j = 0; j < NEV; j++) {
+                const double entry = element_mass_matrix[NEV * j + i];
+                const int vi = tets.getVertexIndex(el, i);
+                const int vj = tets.getVertexIndex(el, j);
+                outline.AddEntry(3 * vi + 0, 3 * vj + 0, entry);
+                outline.AddEntry(3 * vi + 1, 3 * vj + 1, entry);
+                outline.AddEntry(3 * vi + 2, 3 * vj + 2, entry);
+            }
+        }
+    }
+
+    return {&outline};
+}
+
+ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
+    SparseMatrix mass_matrix = GenerateMassMatrix(tet_mesh);
+
+    auto precomputed_integrals = std::make_unique<StVKTetABCD>(&tet_mesh);
+    StVKInternalForces internal_forces{&tet_mesh, precomputed_integrals.get()};
     StVKStiffnessMatrix stiffness_matrix_class{&internal_forces};
-    stiffness_matrix_class.GetStiffnessMatrixTopology(&stiffness_matrix);
+    SparseMatrix stiffness_matrix = stiffness_matrix_class.GetStiffnessMatrixTopology();
 
     const uint32_t vertex_dim = 3;
     const uint32_t num_vertices = tet_mesh.getNumVertices();
     // In linear modal analysis, the displacements are zero.
     double *displacements = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
-    stiffness_matrix_class.ComputeStiffnessMatrix(displacements, stiffness_matrix);
+    stiffness_matrix_class.ComputeStiffnessMatrix(displacements, &stiffness_matrix);
 
     free(displacements);
-    delete precomputed_integrals;
     precomputed_integrals = nullptr;
 
     // Copy Vega sparse matrices to Eigen matrices.
     // _Note: Eigen is column-major by default._
     std::vector<Eigen::Triplet<double, uint32_t>> K_triplets, M_triplets;
-    for (uint32_t i = 0; i < uint32_t(stiffness_matrix->GetNumRows()); ++i) {
-        for (uint32_t j = 0; j < uint32_t(stiffness_matrix->GetRowLength(i)); ++j) {
-            K_triplets.push_back({i, uint32_t(stiffness_matrix->GetColumnIndex(i, j)), stiffness_matrix->GetEntry(i, j)});
+    for (uint32_t i = 0; i < uint32_t(stiffness_matrix.GetNumRows()); ++i) {
+        for (uint32_t j = 0; j < uint32_t(stiffness_matrix.GetRowLength(i)); ++j) {
+            K_triplets.push_back({i, uint32_t(stiffness_matrix.GetColumnIndex(i, j)), stiffness_matrix.GetEntry(i, j)});
         }
     }
-    for (uint32_t i = 0; i < uint32_t(mass_matrix->GetNumRows()); ++i) {
-        for (uint32_t j = 0; j < uint32_t(mass_matrix->GetRowLength(i)); ++j) {
-            M_triplets.push_back({i, uint32_t(mass_matrix->GetColumnIndex(i, j)), mass_matrix->GetEntry(i, j)});
+    for (uint32_t i = 0; i < uint32_t(mass_matrix.GetNumRows()); ++i) {
+        for (uint32_t j = 0; j < uint32_t(mass_matrix.GetRowLength(i)); ++j) {
+            M_triplets.push_back({i, uint32_t(mass_matrix.GetColumnIndex(i, j)), mass_matrix.GetEntry(i, j)});
         }
     }
 
-    const uint32_t n = stiffness_matrix->Getn();
+    const uint32_t n = stiffness_matrix.Getn();
     Eigen::SparseMatrix<double> K(n, n), M(n, n);
     K.setFromTriplets(K_triplets.begin(), K_triplets.end());
     M.setFromTriplets(M_triplets.begin(), M_triplets.end());
-
-    delete mass_matrix;
-    mass_matrix = nullptr;
-    delete stiffness_matrix;
-    stiffness_matrix = nullptr;
 
     return mesh2modes(M, K, num_vertices, vertex_dim, std::move(args));
 }

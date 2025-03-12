@@ -47,9 +47,7 @@ add_executable(${PROJECT_NAME}
     ${ImplotDir}/implot_items.cpp
     ${ImplotDir}/implot_demo.cpp
     lib/miniaudio/extras/miniaudio_split/miniaudio.c
-    ${VegaDir}/volumetricMesh/tetMesh.cpp
     ${VegaDir}/sparseMatrix/sparseMatrix.cpp
-    ${VegaDir}/volumetricMesh/generateMassMatrix.cpp
     ${VegaDir}/stvk/StVKInternalForces.cpp
     ${VegaDir}/stvk/StVKStiffnessMatrix.cpp
     ${VegaDir}/stvk/StVKTetABCD.cpp

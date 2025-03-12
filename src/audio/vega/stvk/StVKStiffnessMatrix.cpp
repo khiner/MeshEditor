@@ -1,9 +1,10 @@
 #include "StVKStiffnessMatrix.h"
 
+static constexpr auto NEV = TetMesh::NumElementVertices;
+
 StVKStiffnessMatrix::StVKStiffnessMatrix(StVKInternalForces *stVKInternalForces) {
     precomputedIntegrals = stVKInternalForces->GetPrecomputedIntegrals();
     tetMesh = stVKInternalForces->GetTetMesh();
-    numElementVertices = tetMesh->getNumElementVertices();
     int numElements = tetMesh->getNumElements();
 
     lambdaLame = (double *)malloc(sizeof(double) * numElements);
@@ -15,52 +16,41 @@ StVKStiffnessMatrix::StVKStiffnessMatrix(StVKInternalForces *stVKInternalForces)
         muLame[el] = material.getMu();
     }
 
-    // build stiffness matrix skeleton
-    SparseMatrix *stiffnessMatrixTopology;
-    GetStiffnessMatrixTopology(&stiffnessMatrixTopology);
-
+    SparseMatrix topology = GetStiffnessMatrixTopology();
     // build acceleration indices
     row_ = (int **)malloc(sizeof(int *) * numElements);
     column_ = (int **)malloc(sizeof(int *) * numElements);
-
     for (int el = 0; el < numElements; el++) {
-        row_[el] = (int *)malloc(sizeof(int) * numElementVertices);
-        column_[el] = (int *)malloc(sizeof(int) * numElementVertices * numElementVertices);
-        for (int ver = 0; ver < numElementVertices; ver++)
-            row_[el][ver] = tetMesh->getVertexIndex(el, ver);
+        row_[el] = (int *)malloc(sizeof(int) * NEV);
+        column_[el] = (int *)malloc(sizeof(int) * NEV * NEV);
+        for (uint32_t ver = 0; ver < NEV; ver++) row_[el][ver] = tetMesh->getVertexIndex(el, ver);
         // seek for value row[j] in list associated with row[i]
-        for (int i = 0; i < numElementVertices; i++)
-            for (int j = 0; j < numElementVertices; j++)
-                column_[el][numElementVertices * i + j] = stiffnessMatrixTopology->GetInverseIndex(3 * row_[el][i], 3 * row_[el][j]) / 3;
+        for (uint32_t i = 0; i < NEV; i++)
+            for (uint32_t j = 0; j < NEV; j++)
+                column_[el][NEV * i + j] = topology.GetInverseIndex(3 * row_[el][i], 3 * row_[el][j]) / 3;
     }
-
-    delete (stiffnessMatrixTopology);
 }
 
-void StVKStiffnessMatrix::GetStiffnessMatrixTopology(SparseMatrix **stiffnessMatrixTopology) {
-    int numVertices = tetMesh->getNumVertices();
-    int *vertices = (int *)malloc(sizeof(int) * numElementVertices);
-
-    // build skeleton of sparseMatrix
-    SparseMatrixOutline *emptyMatrix = new SparseMatrixOutline(3 * numVertices);
+SparseMatrix StVKStiffnessMatrix::GetStiffnessMatrixTopology() {
+    std::array<int, NEV> vertices;
+    SparseMatrixOutline outline{3 * tetMesh->getNumVertices()};
     for (int el = 0; el < tetMesh->getNumElements(); el++) {
-        for (int ver = 0; ver < numElementVertices; ver++)
-            vertices[ver] = tetMesh->getVertexIndex(el, ver);
-        for (int i = 0; i < numElementVertices; i++)
-            for (int j = 0; j < numElementVertices; j++) {
-                for (int k = 0; k < 3; k++)
-                    for (int l = 0; l < 3; l++) {
-                        // only add the entry if both vertices are free (non-fixed)
-                        // the corresponding elt is in row 3*i+k, column 3*j+l
-                        emptyMatrix->AddEntry(3 * vertices[i] + k, 3 * vertices[j] + l, 0.0);
+        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
+
+        for (uint32_t i = 0; i < NEV; i++) {
+            for (uint32_t j = 0; j < NEV; j++) {
+                for (uint32_t k = 0; k < 3; k++) {
+                    for (uint32_t l = 0; l < 3; l++) {
+                        // Only add the entry if both vertices are free (non-fixed).
+                        // The corresponding elt is in row 3*i+k, column 3*j+l
+                        outline.AddEntry(3 * vertices[i] + k, 3 * vertices[j] + l, 0.0);
                     }
+                }
             }
+        }
     }
 
-    *stiffnessMatrixTopology = new SparseMatrix(emptyMatrix);
-    delete (emptyMatrix);
-
-    free(vertices);
+    return {&outline};
 }
 
 StVKStiffnessMatrix::~StVKStiffnessMatrix() {
@@ -87,20 +77,20 @@ void StVKStiffnessMatrix::AddLinearTermsContribution(const double *vertexDisplac
     if (elementLow < 0) elementLow = 0;
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
-    int *vertices = (int *)malloc(sizeof(int) * numElementVertices);
+    int *vertices = (int *)malloc(sizeof(int) * NEV);
     void *elIter;
     precomputedIntegrals->AllocateElementIterator(&elIter);
 
     for (int el = elementLow; el < elementHigh; el++) {
         precomputedIntegrals->PrepareElement(el, elIter);
-        for (int ver = 0; ver < numElementVertices; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
+        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
         double mu = muLame[el];
         // over all vertices of the voxel, computing row of vertex c
-        for (int c = 0; c < numElementVertices; c++) {
+        for (uint32_t c = 0; c < NEV; c++) {
             // linear terms, over all vertices
-            for (int a = 0; a < numElementVertices; a++) {
+            for (uint32_t a = 0; a < NEV; a++) {
                 Mat3d matrix(1.0);
                 matrix *= mu * precomputedIntegrals->B(elIter, a, c);
                 matrix += lambda * precomputedIntegrals->A(elIter, c, a) + mu * precomputedIntegrals->A(elIter, a, c);
@@ -123,7 +113,7 @@ void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisp
     if (elementLow < 0) elementLow = 0;
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
-    int *vertices = (int *)malloc(sizeof(int) * numElementVertices);
+    int *vertices = (int *)malloc(sizeof(int) * NEV);
     void *elIter;
     precomputedIntegrals->AllocateElementIterator(&elIter);
 
@@ -133,19 +123,19 @@ void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisp
         int *row = row_[el];
         int *column = column_[el];
 
-        for (int ver = 0; ver < numElementVertices; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
+        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
         double mu = muLame[el];
         // over all vertices of the voxel, computing row of vertex c
-        for (int c = 0; c < numElementVertices; c++) {
+        for (uint32_t c = 0; c < NEV; c++) {
             int rowc = 3 * row[c];
-            int c8 = numElementVertices * c;
+            int c8 = NEV * c;
             // quadratic terms, compute contribution to block (c,e) of the stiffness matrix
-            for (int e = 0; e < numElementVertices; e++) {
+            for (uint32_t e = 0; e < NEV; e++) {
                 double matrix[9];
                 memset(matrix, 0, sizeof(double) * 9);
-                for (int a = 0; a < numElementVertices; a++) {
+                for (uint32_t a = 0; a < NEV; a++) {
                     double qa[3] = {vertexDisplacements[3 * vertices[a] + 0], vertexDisplacements[3 * vertices[a] + 1], vertexDisplacements[3 * vertices[a] + 2]};
 
                     Vec3d C0v = lambda * precomputedIntegrals->C(elIter, c, a, e) + mu * (precomputedIntegrals->C(elIter, e, a, c) + precomputedIntegrals->C(elIter, a, e, c));
@@ -199,7 +189,7 @@ void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplace
     if (elementLow < 0) elementLow = 0;
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
-    int *vertices = (int *)malloc(sizeof(int) * numElementVertices);
+    int *vertices = (int *)malloc(sizeof(int) * NEV);
     void *elIter;
     precomputedIntegrals->AllocateElementIterator(&elIter);
 
@@ -209,24 +199,23 @@ void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplace
         int *row = row_[el];
         int *column = column_[el];
 
-        for (int ver = 0; ver < numElementVertices; ver++)
-            vertices[ver] = tetMesh->getVertexIndex(el, ver);
+        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
         double mu = muLame[el];
 
         // over all vertices of the voxel, computing derivative on force on vertex c
-        for (int c = 0; c < numElementVertices; c++) {
+        for (uint32_t c = 0; c < NEV; c++) {
             int rowc = 3 * row[c];
-            int c8 = numElementVertices * c;
+            int c8 = NEV * c;
             // cubic terms, compute contribution to block (c,e) of the stiffness matrix
-            for (int e = 0; e < numElementVertices; e++) {
+            for (uint32_t e = 0; e < NEV; e++) {
                 double matrix[9];
                 memset(matrix, 0, sizeof(double) * 9);
-                for (int a = 0; a < numElementVertices; a++) {
+                for (uint32_t a = 0; a < NEV; a++) {
                     int va = vertices[a];
                     const double *qa = &(vertexDisplacements[3 * va]);
-                    for (int b = 0; b < numElementVertices; b++) {
+                    for (uint32_t b = 0; b < NEV; b++) {
                         int vb = vertices[b];
                         const double *qb = &(vertexDisplacements[3 * vb]);
                         double D0 = lambda * precomputedIntegrals->D(elIter, a, c, b, e) +

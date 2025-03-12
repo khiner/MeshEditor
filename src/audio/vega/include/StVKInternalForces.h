@@ -36,7 +36,6 @@ private:
     void InitGravity(); // aux function
 
     double *buffer;
-    int numElementVertices;
 
     double *lambdaLame;
     double *muLame;
