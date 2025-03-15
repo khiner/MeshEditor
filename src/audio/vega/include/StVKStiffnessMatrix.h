@@ -2,16 +2,16 @@
 
 /*
   Computes the tangent stiffness matrix of a StVK elastic deformable object.
-  The tangent stiffness matrix depends on the deformable configuration.
   As a special case, the routine can compute the stiffness matrix in the rest configuration.
 */
 
-#include "StVKInternalForces.h"
+#include "StVKTetABCD.h"
 #include "mat3d.h"
 #include "sparseMatrix.h"
+#include "tetMesh.h"
 
 struct StVKStiffnessMatrix {
-    StVKStiffnessMatrix(StVKInternalForces *);
+    StVKStiffnessMatrix(TetMesh *, StVKTetABCD *);
     ~StVKStiffnessMatrix();
 
     // generates a zero matrix with the same pattern of non-zero entries as the tangent stiffness matrix
@@ -23,13 +23,11 @@ struct StVKStiffnessMatrix {
     void ComputeStiffnessMatrix(const double *vertexDisplacements, SparseMatrix *);
 
 private:
+    TetMesh *tetMesh;
+    StVKTetABCD *precomputedIntegrals;
     // acceleration indices
     int **row_;
     int **column_;
-
-    TetMesh *tetMesh;
-    StVKInternalForces *stVKInternalForces;
-    StVKTetABCD *precomputedIntegrals;
 
     double *lambdaLame;
     double *muLame;

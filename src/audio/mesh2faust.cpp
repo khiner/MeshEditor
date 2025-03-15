@@ -70,8 +70,7 @@ ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
     SparseMatrix mass_matrix = GenerateMassMatrix(tet_mesh);
 
     auto precomputed_integrals = std::make_unique<StVKTetABCD>(&tet_mesh);
-    StVKInternalForces internal_forces{&tet_mesh, precomputed_integrals.get()};
-    StVKStiffnessMatrix stiffness_matrix_class{&internal_forces};
+    StVKStiffnessMatrix stiffness_matrix_class{&tet_mesh, precomputed_integrals.get()};
     SparseMatrix stiffness_matrix = stiffness_matrix_class.GetStiffnessMatrixTopology();
 
     const uint32_t vertex_dim = 3;

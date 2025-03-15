@@ -48,7 +48,6 @@ add_executable(${PROJECT_NAME}
     ${ImplotDir}/implot_demo.cpp
     lib/miniaudio/extras/miniaudio_split/miniaudio.c
     ${VegaDir}/sparseMatrix/sparseMatrix.cpp
-    ${VegaDir}/stvk/StVKInternalForces.cpp
     ${VegaDir}/stvk/StVKStiffnessMatrix.cpp
     ${SOURCES}
 )

@@ -2,10 +2,8 @@
 
 static constexpr auto NEV = TetMesh::NumElementVertices;
 
-StVKStiffnessMatrix::StVKStiffnessMatrix(StVKInternalForces *stVKInternalForces) {
-    precomputedIntegrals = stVKInternalForces->GetPrecomputedIntegrals();
-    tetMesh = stVKInternalForces->GetTetMesh();
-
+StVKStiffnessMatrix::StVKStiffnessMatrix(TetMesh *tetMesh, StVKTetABCD *precomputedABCDIntegrals)
+    : precomputedIntegrals(precomputedABCDIntegrals), tetMesh(tetMesh) {
     int numElements = tetMesh->getNumElements();
     lambdaLame = (double *)malloc(sizeof(double) * numElements);
     muLame = (double *)malloc(sizeof(double) * numElements);
