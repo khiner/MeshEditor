@@ -1,6 +1,5 @@
 #pragma once
 
-#include "mat3d.h"
 #include "sparseMatrix.h"
 #include "tetMesh.h"
 

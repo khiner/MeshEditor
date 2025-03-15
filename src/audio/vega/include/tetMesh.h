@@ -2,7 +2,9 @@
 
 // Container for a tetrahedral volumetric 3D mesh.
 
-#include "vec3d.h"
+#include "numeric/vec3.h"
+
+#include <glm/geometric.hpp>
 
 #include <cmath>
 #include <memory.h>
@@ -13,7 +15,7 @@ struct TetMesh {
 
     TetMesh(int numVertices_, double *vertices_, int numElements_, int *elements_, double E, double nu, double density)
         : material(density, E, nu), numElements(numElements_), numVertices(numVertices_),
-          vertices(new Vec3d[numVertices]), elements((int **)malloc(sizeof(int *) * numElements)) {
+          vertices(new dvec3[numVertices]), elements((int **)malloc(sizeof(int *) * numElements)) {
         for (int i = 0; i < numVertices; i++) vertices[i] = {vertices_[3 * i + 0], vertices_[3 * i + 1], vertices_[3 * i + 2]};
 
         int *v = (int *)malloc(sizeof(int) * NumElementVertices);
@@ -34,24 +36,24 @@ struct TetMesh {
     }
 
     // volume = 1/6 * |(d-a) . ((b-a) x (c-a))|
-    inline static double getTetVolume(const Vec3d &a, const Vec3d &b, const Vec3d &c, const Vec3d &d) {
+    inline static double getTetVolume(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
         return (1.f / 6.f) * fabs(getTetDeterminant(a, b, c, d));
     }
-    inline static double getTetDeterminant(const Vec3d &a, const Vec3d &b, const Vec3d &c, const Vec3d &d) {
+    inline static double getTetDeterminant(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
         // When det(A) > 0, tet has positive orientation.
         // When det(A) = 0, tet is degenerate.
         // When det(A) < 0, tet has negative orientation.
-        return dot(d - a, cross(b - a, c - a));
+        return glm::dot(d - a, glm::cross(b - a, c - a));
     }
 
     int getNumVertices() const { return numVertices; }
-    Vec3d &getVertex(int i) { return vertices[i]; }
-    const Vec3d &getVertex(int i) const { return vertices[i]; }
-    Vec3d &getVertex(int element, int vertex) { return vertices[elements[element][vertex]]; }
-    const Vec3d &getVertex(int element, int vertex) const { return vertices[elements[element][vertex]]; }
+    dvec3 &getVertex(int i) { return vertices[i]; }
+    const dvec3 &getVertex(int i) const { return vertices[i]; }
+    dvec3 &getVertex(int element, int vertex) { return vertices[elements[element][vertex]]; }
+    const dvec3 &getVertex(int element, int vertex) const { return vertices[elements[element][vertex]]; }
     int getVertexIndex(int element, int vertex) const { return elements[element][vertex]; }
     int getNumElements() const { return numElements; }
-    void setVertex(int i, const Vec3d &pos) { vertices[i] = pos; } // set the position of a vertex
+    void setVertex(int i, const dvec3 &pos) { vertices[i] = pos; } // set the position of a vertex
 
     // mass density of an element
     double getElementDensity(int el) const { return material.getDensity(); }
@@ -103,7 +105,7 @@ struct TetMesh {
 
 private:
     int numVertices;
-    Vec3d *vertices;
+    dvec3 *vertices;
 
     int numElements;
     int **elements;
