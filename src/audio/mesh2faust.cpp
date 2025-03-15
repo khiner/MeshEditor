@@ -22,18 +22,6 @@
 using std::ranges::find_if, std::views::drop, std::views::reverse;
 
 namespace {
-// Isotropic material
-struct ENuMaterial {
-    ENuMaterial(double density, double E, double nu) : density(density), E(E), nu(nu) {}
-    ~ENuMaterial() {}
-
-    // Lame's lambda coefficient
-    double getLambda() const { return (nu * E) / ((1 + nu) * (1 - 2 * nu)); }
-    // Lame's mu coefficient
-    double getMu() const { return E / (2 * (1 + nu)); }
-
-    double density, E, nu; // Density, Young's modulus, Poisson's ratio
-};
 
 double GetTetDeterminant(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
     // When det(A) > 0, tet has positive orientation.
@@ -157,10 +145,10 @@ std::vector<ElementData> StVKABCD(const TetMesh &tets) {
 // Compute the tangent stiffness matrix of a StVK elastic deformable object.
 // As a special case, the routine can compute the stiffness matrix in the rest configuration.
 // `vertexDisplacements` is an array of vertex deformations, of length 3*n, where n is the total number of mesh vertices.
-SparseMatrix ComputeStiffnessMatrix(const TetMesh &tets, const ENuMaterial &material, const double *vertex_displacements) {
+SparseMatrix ComputeStiffnessMatrix(const TetMesh &tets, const AcousticMaterialProperties &material, const double *vertex_displacements) {
     const uint32_t ne = tets.getNumElements();
-    const double lambda = material.getLambda();
-    const double mu = material.getMu();
+    const double lambda = material.Lambda();
+    const double mu = material.Mu();
     const auto outline = GetStiffnessMatrixTopology(tets);
     SparseMatrix stiffness{outline};
     std::vector<int> vertices(NEV);
@@ -297,15 +285,14 @@ ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialPropertie
         int a = indices[tri_i], b = indices[tri_i + 1], c = indices[tri_i + 2], d = indices[tri_i + 3];
         tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
     }
-    const ENuMaterial enu_material{material.Density, material.YoungModulus, material.PoissonRatio};
     TetMesh tet_mesh{tets.numberofpoints, tets.pointlist, tets.numberoftetrahedra * 3, tet_indices.data()};
-    SparseMatrix mass_matrix = GenerateMassMatrix(tet_mesh, enu_material.density);
+    SparseMatrix mass_matrix = GenerateMassMatrix(tet_mesh, material.Density);
 
     const uint32_t vertex_dim = 3;
     const uint32_t num_vertices = tet_mesh.getNumVertices();
     // In linear modal analysis, the displacements are zero.
     double *displacements = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
-    const auto stiffness_matrix = ComputeStiffnessMatrix(tet_mesh, enu_material, displacements);
+    const auto stiffness_matrix = ComputeStiffnessMatrix(tet_mesh, material, displacements);
     free(displacements);
 
     // Copy Vega sparse matrices to Eigen matrices.
