@@ -5,11 +5,10 @@ static constexpr auto NEV = TetMesh::NumElementVertices;
 StVKStiffnessMatrix::StVKStiffnessMatrix(StVKInternalForces *stVKInternalForces) {
     precomputedIntegrals = stVKInternalForces->GetPrecomputedIntegrals();
     tetMesh = stVKInternalForces->GetTetMesh();
-    int numElements = tetMesh->getNumElements();
 
+    int numElements = tetMesh->getNumElements();
     lambdaLame = (double *)malloc(sizeof(double) * numElements);
     muLame = (double *)malloc(sizeof(double) * numElements);
-
     for (int el = 0; el < numElements; el++) {
         const auto &material = tetMesh->material;
         lambdaLame[el] = material.getLambda();
@@ -78,11 +77,9 @@ void StVKStiffnessMatrix::AddLinearTermsContribution(const double *vertexDisplac
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
     int *vertices = (int *)malloc(sizeof(int) * NEV);
-    void *elIter;
-    precomputedIntegrals->AllocateElementIterator(&elIter);
-
+    auto *elCache = new StVKTetABCD::ElementCache();
     for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elIter);
+        precomputedIntegrals->PrepareElement(el, elCache);
         for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
@@ -92,15 +89,15 @@ void StVKStiffnessMatrix::AddLinearTermsContribution(const double *vertexDisplac
             // linear terms, over all vertices
             for (uint32_t a = 0; a < NEV; a++) {
                 Mat3d matrix(1.0);
-                matrix *= mu * precomputedIntegrals->B(elIter, a, c);
-                matrix += lambda * precomputedIntegrals->A(elIter, c, a) + mu * precomputedIntegrals->A(elIter, a, c);
+                matrix *= mu * elCache->B(a, c);
+                matrix += lambda * elCache->A(c, a) + mu * elCache->A(a, c);
                 AddMatrix3x3Block(c, a, el, matrix, sparseMatrix);
             }
         }
     }
 
     free(vertices);
-    precomputedIntegrals->ReleaseElementIterator(elIter);
+    delete elCache;
 }
 
 #define ADD_MATRIX_BLOCK(where)                                                      \
@@ -114,15 +111,12 @@ void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisp
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
     int *vertices = (int *)malloc(sizeof(int) * NEV);
-    void *elIter;
-    precomputedIntegrals->AllocateElementIterator(&elIter);
-
+    auto *elCache = new StVKTetABCD::ElementCache();
     double **dataHandle = sparseMatrix->GetDataHandle();
     for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elIter);
+        precomputedIntegrals->PrepareElement(el, elCache);
         int *row = row_[el];
         int *column = column_[el];
-
         for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
@@ -137,10 +131,8 @@ void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisp
                 memset(matrix, 0, sizeof(double) * 9);
                 for (uint32_t a = 0; a < NEV; a++) {
                     double qa[3] = {vertexDisplacements[3 * vertices[a] + 0], vertexDisplacements[3 * vertices[a] + 1], vertexDisplacements[3 * vertices[a] + 2]};
-
-                    Vec3d C0v = lambda * precomputedIntegrals->C(elIter, c, a, e) + mu * (precomputedIntegrals->C(elIter, e, a, c) + precomputedIntegrals->C(elIter, a, e, c));
+                    Vec3d C0v = lambda * elCache->C(c, a, e) + mu * (elCache->C(e, a, c) + elCache->C(a, e, c));
                     double C0[3] = {C0v[0], C0v[1], C0v[2]};
-
                     // C0 tensor qa
                     matrix[0] += C0[0] * qa[0];
                     matrix[1] += C0[0] * qa[1];
@@ -152,9 +144,8 @@ void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisp
                     matrix[7] += C0[2] * qa[1];
                     matrix[8] += C0[2] * qa[2];
 
-                    Vec3d C1v = lambda * precomputedIntegrals->C(elIter, e, a, c) + mu * (precomputedIntegrals->C(elIter, c, e, a) + precomputedIntegrals->C(elIter, a, e, c));
+                    Vec3d C1v = lambda * elCache->C(e, a, c) + mu * (elCache->C(c, e, a) + elCache->C(a, e, c));
                     double C1[3] = {C1v[0], C1v[1], C1v[2]};
-
                     // qa tensor C1
                     matrix[0] += qa[0] * C1[0];
                     matrix[1] += qa[0] * C1[1];
@@ -166,9 +157,8 @@ void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisp
                     matrix[7] += qa[2] * C1[1];
                     matrix[8] += qa[2] * C1[2];
 
-                    Vec3d C2v = lambda * precomputedIntegrals->C(elIter, a, e, c) + mu * (precomputedIntegrals->C(elIter, c, a, e) + precomputedIntegrals->C(elIter, e, a, c));
+                    Vec3d C2v = lambda * elCache->C(a, e, c) + mu * (elCache->C(c, a, e) + elCache->C(e, a, c));
                     double C2[3] = {C2v[0], C2v[1], C2v[2]};
-
                     // qa dot C2
                     double dotp = qa[0] * C2[0] + qa[1] * C2[1] + qa[2] * C2[2];
                     matrix[0] += dotp;
@@ -182,7 +172,7 @@ void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisp
     }
 
     free(vertices);
-    precomputedIntegrals->ReleaseElementIterator(elIter);
+    delete elCache;
 }
 
 void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplacements, SparseMatrix *sparseMatrix, int elementLow, int elementHigh) {
@@ -190,20 +180,16 @@ void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplace
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
     int *vertices = (int *)malloc(sizeof(int) * NEV);
-    void *elIter;
-    precomputedIntegrals->AllocateElementIterator(&elIter);
-
+    auto *elCache = new StVKTetABCD::ElementCache();
     double **dataHandle = sparseMatrix->GetDataHandle();
     for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elIter);
+        precomputedIntegrals->PrepareElement(el, elCache);
         int *row = row_[el];
         int *column = column_[el];
-
         for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
         double mu = muLame[el];
-
         // over all vertices of the voxel, computing derivative on force on vertex c
         for (uint32_t c = 0; c < NEV; c++) {
             int rowc = 3 * row[c];
@@ -218,9 +204,7 @@ void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplace
                     for (uint32_t b = 0; b < NEV; b++) {
                         int vb = vertices[b];
                         const double *qb = &(vertexDisplacements[3 * vb]);
-                        double D0 = lambda * precomputedIntegrals->D(elIter, a, c, b, e) +
-                            mu * (precomputedIntegrals->D(elIter, a, e, b, c) + precomputedIntegrals->D(elIter, a, b, c, e));
-
+                        double D0 = lambda * elCache->D(a, c, b, e) + mu * (elCache->D(a, e, b, c) + elCache->D(a, b, c, e));
                         matrix[0] += D0 * qa[0] * qb[0];
                         matrix[1] += D0 * qa[0] * qb[1];
                         matrix[2] += D0 * qa[0] * qb[2];
@@ -231,8 +215,7 @@ void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplace
                         matrix[7] += D0 * qa[2] * qb[1];
                         matrix[8] += D0 * qa[2] * qb[2];
 
-                        double D1 = 0.5 * lambda * precomputedIntegrals->D(elIter, a, b, c, e) +
-                            mu * precomputedIntegrals->D(elIter, a, c, b, e);
+                        double D1 = 0.5 * lambda * elCache->D(a, b, c, e) + mu * elCache->D(a, c, b, e);
                         double dotpD = D1 * (qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2]);
                         matrix[0] += dotpD;
                         matrix[4] += dotpD;
@@ -246,5 +229,5 @@ void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplace
     }
 
     free(vertices);
-    precomputedIntegrals->ReleaseElementIterator(elIter);
+    delete elCache;
 }

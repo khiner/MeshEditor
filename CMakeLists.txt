@@ -50,7 +50,6 @@ add_executable(${PROJECT_NAME}
     ${VegaDir}/sparseMatrix/sparseMatrix.cpp
     ${VegaDir}/stvk/StVKInternalForces.cpp
     ${VegaDir}/stvk/StVKStiffnessMatrix.cpp
-    ${VegaDir}/stvk/StVKTetABCD.cpp
     ${SOURCES}
 )
 

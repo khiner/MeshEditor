@@ -49,26 +49,19 @@ void StVKInternalForces::AddLinearTermsContribution(const double *vertexDisplace
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
     int *vertices = (int *)malloc(sizeof(int) * NEV);
-    void *elIter;
-    precomputedIntegrals->AllocateElementIterator(&elIter);
-
+    auto *elCache = new StVKTetABCD::ElementCache();
     for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elIter);
-        for (int ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
+        precomputedIntegrals->PrepareElement(el, elCache);
+        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
         double mu = muLame[el];
-
         // over all vertices of the voxel, computing force on vertex c
-        for (int c = 0; c < NEV; c++) {
+        for (uint32_t c = 0; c < NEV; c++) {
             // linear terms, over all vertices
-            for (int a = 0; a < NEV; a++) {
+            for (uint32_t a = 0; a < NEV; a++) {
                 Vec3d qa(vertexDisplacements[3 * vertices[a] + 0], vertexDisplacements[3 * vertices[a] + 1], vertexDisplacements[3 * vertices[a] + 2]);
-
-                Vec3d force = lambda * (precomputedIntegrals->A(elIter, c, a) * qa) +
-                    (mu * precomputedIntegrals->B(elIter, a, c)) * qa +
-                    mu * (precomputedIntegrals->A(elIter, a, c) * qa);
-
+                Vec3d force = lambda * (elCache->A(c, a) * qa) + mu * elCache->B(a, c) * qa + mu * elCache->A(a, c) * qa;
                 forces[3 * vertices[c] + 0] += force[0];
                 forces[3 * vertices[c] + 1] += force[1];
                 forces[3 * vertices[c] + 2] += force[2];
@@ -77,8 +70,7 @@ void StVKInternalForces::AddLinearTermsContribution(const double *vertexDisplace
     }
 
     free(vertices);
-
-    precomputedIntegrals->ReleaseElementIterator(elIter);
+    delete elCache;
 }
 
 void StVKInternalForces::AddQuadraticTermsContribution(const double *vertexDisplacements, double *forces, int elementLow, int elementHigh) {
@@ -86,31 +78,23 @@ void StVKInternalForces::AddQuadraticTermsContribution(const double *vertexDispl
     if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
     int *vertices = (int *)malloc(sizeof(int) * NEV);
-    void *elIter;
-    precomputedIntegrals->AllocateElementIterator(&elIter);
-
+    auto *elCache = new StVKTetABCD::ElementCache();
     for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elIter);
-        for (int ver = 0; ver < NEV; ver++)
-            vertices[ver] = tetMesh->getVertexIndex(el, ver);
+        precomputedIntegrals->PrepareElement(el, elCache);
+        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
         double mu = muLame[el];
-
         // over all vertices of the voxel, computing force on vertex c
-        for (int c = 0; c < NEV; c++) {
+        for (uint32_t c = 0; c < NEV; c++) {
             // quadratic terms, over all vertices
-            for (int a = 0; a < NEV; a++)
-                for (int b = 0; b < NEV; b++) {
+            for (uint32_t a = 0; a < NEV; a++)
+                for (uint32_t b = 0; b < NEV; b++) {
                     double qa[3] = {vertexDisplacements[3 * vertices[a] + 0], vertexDisplacements[3 * vertices[a] + 1], vertexDisplacements[3 * vertices[a] + 2]};
                     double qb[3] = {vertexDisplacements[3 * vertices[b] + 0], vertexDisplacements[3 * vertices[b] + 1], vertexDisplacements[3 * vertices[b] + 2]};
                     double dotp = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2];
-
-                    Vec3d forceTerm1 = 0.5 * lambda * dotp * precomputedIntegrals->C(elIter, c, a, b) +
-                        mu * dotp * precomputedIntegrals->C(elIter, a, b, c);
-                    Vec3d C = lambda * precomputedIntegrals->C(elIter, a, b, c) +
-                        mu * (precomputedIntegrals->C(elIter, c, a, b) + precomputedIntegrals->C(elIter, b, a, c));
-
+                    Vec3d forceTerm1 = 0.5 * lambda * dotp * elCache->C(c, a, b) + mu * dotp * elCache->C(a, b, c);
+                    Vec3d C = lambda * elCache->C(a, b, c) + mu * (elCache->C(c, a, b) + elCache->C(b, a, c));
                     double dotCqa = C[0] * qa[0] + C[1] * qa[1] + C[2] * qa[2];
                     forces[3 * vertices[c] + 0] += forceTerm1[0] + dotCqa * qb[0];
                     forces[3 * vertices[c] + 1] += forceTerm1[1] + dotCqa * qb[1];
@@ -120,44 +104,37 @@ void StVKInternalForces::AddQuadraticTermsContribution(const double *vertexDispl
     }
 
     free(vertices);
-    precomputedIntegrals->ReleaseElementIterator(elIter);
+    delete elCache;
 }
 
 void StVKInternalForces::AddCubicTermsContribution(const double *vertexDisplacements, double *forces, int elementLow, int elementHigh) {
-    if (elementLow < 0)
-        elementLow = 0;
-    if (elementHigh < 0)
-        elementHigh = tetMesh->getNumElements();
+    if (elementLow < 0) elementLow = 0;
+    if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
 
     int *vertices = (int *)malloc(sizeof(int) * NEV);
-
-    void *elIter;
-    precomputedIntegrals->AllocateElementIterator(&elIter);
-
+    auto *elCache = new StVKTetABCD::ElementCache();
     for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elIter);
-        for (int ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
+        precomputedIntegrals->PrepareElement(el, elCache);
+        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
         double lambda = lambdaLame[el];
         double mu = muLame[el];
-
         // over all vertices of the voxel, computing force on vertex c
-        for (int c = 0; c < NEV; c++) {
+        for (uint32_t c = 0; c < NEV; c++) {
             int vc = vertices[c];
             // cubic terms, over all vertices
-            for (int a = 0; a < NEV; a++) {
+            for (uint32_t a = 0; a < NEV; a++) {
                 int va = vertices[a];
-                for (int b = 0; b < NEV; b++) {
+                for (uint32_t b = 0; b < NEV; b++) {
                     int vb = vertices[b];
-                    for (int d = 0; d < NEV; d++) {
+                    for (uint32_t d = 0; d < NEV; d++) {
                         int vd = vertices[d];
                         const double *qa = &(vertexDisplacements[3 * va]);
                         const double *qb = &(vertexDisplacements[3 * vb]);
                         const double *qd = &(vertexDisplacements[3 * vd]);
-                        double *force = &(forces[3 * vc]);
-
                         double dotp = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2];
-                        double scalar = dotp * (0.5 * lambda * precomputedIntegrals->D(elIter, a, b, c, d) + mu * precomputedIntegrals->D(elIter, a, c, b, d));
+                        double scalar = dotp * (0.5 * lambda * elCache->D(a, b, c, d) + mu * elCache->D(a, c, b, d));
+                        double *force = &(forces[3 * vc]);
                         force[0] += scalar * qd[0];
                         force[1] += scalar * qd[1];
                         force[2] += scalar * qd[2];
@@ -168,6 +145,5 @@ void StVKInternalForces::AddCubicTermsContribution(const double *vertexDisplacem
     }
 
     free(vertices);
-
-    precomputedIntegrals->ReleaseElementIterator(elIter);
+    delete elCache;
 }

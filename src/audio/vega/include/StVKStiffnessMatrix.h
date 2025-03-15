@@ -25,8 +25,6 @@ struct StVKStiffnessMatrix {
     TetMesh *GetTetMesh() { return tetMesh; }
     StVKTetABCD *GetPrecomputedIntegrals() { return precomputedIntegrals; }
 
-    // === the routines below are meant for advanced usage ===
-
     // auxiliary functions, these will add the contributions into 'forces'
     void AddLinearTermsContribution(const double *vertexDisplacements, SparseMatrix *, int elementLow = -1, int elementHigh = -1);
     void AddQuadraticTermsContribution(const double *vertexDisplacements, SparseMatrix *, int elementLow = -1, int elementHigh = -1);
