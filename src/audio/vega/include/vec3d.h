@@ -7,6 +7,11 @@ struct Vec3d {
         elt[1] = y;
         elt[2] = z;
     }
+    Vec3d(const double *v) {
+        elt[0] = v[0];
+        elt[1] = v[1];
+        elt[2] = v[2];
+    }
     double &operator[](int index) { return elt[index]; }
     const double &operator[](int index) const { return elt[index]; }
 

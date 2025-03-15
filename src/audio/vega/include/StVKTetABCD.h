@@ -37,7 +37,7 @@ struct StVKTetABCD {
         cache->element = &elementsData[el];
         for (int i = 0; i < 4; i++)
             for (int j = 0; j < 4; j++)
-                (cache->dots)[i][j] = dot(cache->element->Phig[i], cache->element->Phig[j]);
+                cache->dots[i][j] = dot(cache->element->Phig[i], cache->element->Phig[j]);
     }
 
 private:

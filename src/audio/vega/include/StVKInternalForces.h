@@ -22,10 +22,6 @@ struct StVKInternalForces {
     TetMesh *GetTetMesh() { return tetMesh; }
     StVKTetABCD *GetPrecomputedIntegrals() { return precomputedIntegrals; }
 
-    void AddLinearTermsContribution(const double *vertexDisplacements, double *forces, int elementLow = -1, int elementHigh = -1);
-    void AddQuadraticTermsContribution(const double *vertexDisplacements, double *forces, int elementLow = -1, int elementHigh = -1);
-    void AddCubicTermsContribution(const double *vertexDisplacements, double *forces, int elementLow = -1, int elementHigh = -1);
-
 private:
     TetMesh *tetMesh;
     StVKTetABCD *precomputedIntegrals;

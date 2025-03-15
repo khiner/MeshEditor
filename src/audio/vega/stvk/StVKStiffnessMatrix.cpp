@@ -23,10 +23,13 @@ StVKStiffnessMatrix::StVKStiffnessMatrix(StVKInternalForces *stVKInternalForces)
         row_[el] = (int *)malloc(sizeof(int) * NEV);
         column_[el] = (int *)malloc(sizeof(int) * NEV * NEV);
         for (uint32_t ver = 0; ver < NEV; ver++) row_[el][ver] = tetMesh->getVertexIndex(el, ver);
+
         // seek for value row[j] in list associated with row[i]
-        for (uint32_t i = 0; i < NEV; i++)
-            for (uint32_t j = 0; j < NEV; j++)
+        for (uint32_t i = 0; i < NEV; i++) {
+            for (uint32_t j = 0; j < NEV; j++) {
                 column_[el][NEV * i + j] = topology.GetInverseIndex(3 * row_[el][i], 3 * row_[el][j]) / 3;
+            }
+        }
     }
 }
 
@@ -42,7 +45,7 @@ SparseMatrix StVKStiffnessMatrix::GetStiffnessMatrixTopology() {
                     for (uint32_t l = 0; l < 3; l++) {
                         // Only add the entry if both vertices are free (non-fixed).
                         // The corresponding elt is in row 3*i+k, column 3*j+l
-                        outline.AddEntry(3 * vertices[i] + k, 3 * vertices[j] + l, 0.0);
+                        outline.AddEntry(3 * vertices[i] + k, 3 * vertices[j] + l, 0);
                     }
                 }
             }
@@ -67,167 +70,109 @@ StVKStiffnessMatrix::~StVKStiffnessMatrix() {
 // the master function
 void StVKStiffnessMatrix::ComputeStiffnessMatrix(const double *vertexDisplacements, SparseMatrix *sparseMatrix) {
     sparseMatrix->ResetToZero();
-    AddLinearTermsContribution(vertexDisplacements, sparseMatrix);
-    AddQuadraticTermsContribution(vertexDisplacements, sparseMatrix);
-    AddCubicTermsContribution(vertexDisplacements, sparseMatrix);
-}
-
-void StVKStiffnessMatrix::AddLinearTermsContribution(const double *vertexDisplacements, SparseMatrix *sparseMatrix, int elementLow, int elementHigh) {
-    if (elementLow < 0) elementLow = 0;
-    if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
-
     int *vertices = (int *)malloc(sizeof(int) * NEV);
     auto *elCache = new StVKTetABCD::ElementCache();
-    for (int el = elementLow; el < elementHigh; el++) {
+    double **dataHandle = sparseMatrix->GetDataHandle();
+    for (int el = 0; el < tetMesh->getNumElements(); el++) {
         precomputedIntegrals->PrepareElement(el, elCache);
         for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
 
+        int *row = row_[el];
+        int *column = column_[el];
         double lambda = lambdaLame[el];
         double mu = muLame[el];
-        // over all vertices of the voxel, computing row of vertex c
         for (uint32_t c = 0; c < NEV; c++) {
-            // linear terms, over all vertices
+            uint32_t rowc = 3 * row[c];
+            uint32_t c8 = NEV * c;
+            double matrix[9];
             for (uint32_t a = 0; a < NEV; a++) {
-                Mat3d matrix(1.0);
-                matrix *= mu * elCache->B(a, c);
-                matrix += lambda * elCache->A(c, a) + mu * elCache->A(a, c);
-                AddMatrix3x3Block(c, a, el, matrix, sparseMatrix);
-            }
-        }
-    }
-
-    free(vertices);
-    delete elCache;
-}
-
-#define ADD_MATRIX_BLOCK(where)                                                      \
-    for (k = 0; k < 3; k++)                                                          \
-        for (l = 0; l < 3; l++) {                                                    \
-            dataHandle[rowc + k][3 * column[c8 + (where)] + l] += matrix[3 * k + l]; \
-        }
-
-void StVKStiffnessMatrix::AddQuadraticTermsContribution(const double *vertexDisplacements, SparseMatrix *sparseMatrix, int elementLow, int elementHigh) {
-    if (elementLow < 0) elementLow = 0;
-    if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
-
-    int *vertices = (int *)malloc(sizeof(int) * NEV);
-    auto *elCache = new StVKTetABCD::ElementCache();
-    double **dataHandle = sparseMatrix->GetDataHandle();
-    for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elCache);
-        int *row = row_[el];
-        int *column = column_[el];
-        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
-
-        double lambda = lambdaLame[el];
-        double mu = muLame[el];
-        // over all vertices of the voxel, computing row of vertex c
-        for (uint32_t c = 0; c < NEV; c++) {
-            int rowc = 3 * row[c];
-            int c8 = NEV * c;
-            // quadratic terms, compute contribution to block (c,e) of the stiffness matrix
-            for (uint32_t e = 0; e < NEV; e++) {
-                double matrix[9];
-                memset(matrix, 0, sizeof(double) * 9);
-                for (uint32_t a = 0; a < NEV; a++) {
-                    double qa[3] = {vertexDisplacements[3 * vertices[a] + 0], vertexDisplacements[3 * vertices[a] + 1], vertexDisplacements[3 * vertices[a] + 2]};
-                    Vec3d C0v = lambda * elCache->C(c, a, e) + mu * (elCache->C(e, a, c) + elCache->C(a, e, c));
-                    double C0[3] = {C0v[0], C0v[1], C0v[2]};
-                    // C0 tensor qa
-                    matrix[0] += C0[0] * qa[0];
-                    matrix[1] += C0[0] * qa[1];
-                    matrix[2] += C0[0] * qa[2];
-                    matrix[3] += C0[1] * qa[0];
-                    matrix[4] += C0[1] * qa[1];
-                    matrix[5] += C0[1] * qa[2];
-                    matrix[6] += C0[2] * qa[0];
-                    matrix[7] += C0[2] * qa[1];
-                    matrix[8] += C0[2] * qa[2];
-
-                    Vec3d C1v = lambda * elCache->C(e, a, c) + mu * (elCache->C(c, e, a) + elCache->C(a, e, c));
-                    double C1[3] = {C1v[0], C1v[1], C1v[2]};
-                    // qa tensor C1
-                    matrix[0] += qa[0] * C1[0];
-                    matrix[1] += qa[0] * C1[1];
-                    matrix[2] += qa[0] * C1[2];
-                    matrix[3] += qa[1] * C1[0];
-                    matrix[4] += qa[1] * C1[1];
-                    matrix[5] += qa[1] * C1[2];
-                    matrix[6] += qa[2] * C1[0];
-                    matrix[7] += qa[2] * C1[1];
-                    matrix[8] += qa[2] * C1[2];
-
-                    Vec3d C2v = lambda * elCache->C(a, e, c) + mu * (elCache->C(c, a, e) + elCache->C(e, a, c));
-                    double C2[3] = {C2v[0], C2v[1], C2v[2]};
-                    // qa dot C2
-                    double dotp = qa[0] * C2[0] + qa[1] * C2[1] + qa[2] * C2[2];
-                    matrix[0] += dotp;
-                    matrix[4] += dotp;
-                    matrix[8] += dotp;
-                }
-                int k, l;
-                ADD_MATRIX_BLOCK(e);
-            }
-        }
-    }
-
-    free(vertices);
-    delete elCache;
-}
-
-void StVKStiffnessMatrix::AddCubicTermsContribution(const double *vertexDisplacements, SparseMatrix *sparseMatrix, int elementLow, int elementHigh) {
-    if (elementLow < 0) elementLow = 0;
-    if (elementHigh < 0) elementHigh = tetMesh->getNumElements();
-
-    int *vertices = (int *)malloc(sizeof(int) * NEV);
-    auto *elCache = new StVKTetABCD::ElementCache();
-    double **dataHandle = sparseMatrix->GetDataHandle();
-    for (int el = elementLow; el < elementHigh; el++) {
-        precomputedIntegrals->PrepareElement(el, elCache);
-        int *row = row_[el];
-        int *column = column_[el];
-        for (uint32_t ver = 0; ver < NEV; ver++) vertices[ver] = tetMesh->getVertexIndex(el, ver);
-
-        double lambda = lambdaLame[el];
-        double mu = muLame[el];
-        // over all vertices of the voxel, computing derivative on force on vertex c
-        for (uint32_t c = 0; c < NEV; c++) {
-            int rowc = 3 * row[c];
-            int c8 = NEV * c;
-            // cubic terms, compute contribution to block (c,e) of the stiffness matrix
-            for (uint32_t e = 0; e < NEV; e++) {
-                double matrix[9];
-                memset(matrix, 0, sizeof(double) * 9);
-                for (uint32_t a = 0; a < NEV; a++) {
-                    int va = vertices[a];
-                    const double *qa = &(vertexDisplacements[3 * va]);
-                    for (uint32_t b = 0; b < NEV; b++) {
-                        int vb = vertices[b];
-                        const double *qb = &(vertexDisplacements[3 * vb]);
-                        double D0 = lambda * elCache->D(a, c, b, e) + mu * (elCache->D(a, e, b, c) + elCache->D(a, b, c, e));
-                        matrix[0] += D0 * qa[0] * qb[0];
-                        matrix[1] += D0 * qa[0] * qb[1];
-                        matrix[2] += D0 * qa[0] * qb[2];
-                        matrix[3] += D0 * qa[1] * qb[0];
-                        matrix[4] += D0 * qa[1] * qb[1];
-                        matrix[5] += D0 * qa[1] * qb[2];
-                        matrix[6] += D0 * qa[2] * qb[0];
-                        matrix[7] += D0 * qa[2] * qb[1];
-                        matrix[8] += D0 * qa[2] * qb[2];
-
-                        double D1 = 0.5 * lambda * elCache->D(a, b, c, e) + mu * elCache->D(a, c, b, e);
-                        double dotpD = D1 * (qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2]);
-                        matrix[0] += dotpD;
-                        matrix[4] += dotpD;
-                        matrix[8] += dotpD;
+                const Vec3d qa{&(vertexDisplacements[3 * vertices[a]])};
+                { // Linear terms
+                    Mat3d matrix(1.0);
+                    matrix *= mu * elCache->B(a, c);
+                    matrix += lambda * elCache->A(c, a) + mu * elCache->A(a, c);
+                    // Add a 3x3 block matrix corresponding to a derivative of force on vertex c wrt to vertex a
+                    for (int k = 0; k < 3; k++) {
+                        for (int l = 0; l < 3; l++) {
+                            sparseMatrix->AddEntry(3 * row[c] + k, 3 * column[NEV * c + a] + l, matrix[k][l]);
+                        }
                     }
                 }
-                int k, l;
-                ADD_MATRIX_BLOCK(e);
+                { // Quadratic terms
+                    memset(matrix, 0, sizeof(double) * 9);
+                    for (uint32_t e = 0; e < NEV; e++) {
+                        const Vec3d C0 = lambda * elCache->C(c, a, e) + mu * (elCache->C(e, a, c) + elCache->C(a, e, c));
+                        // C0 tensor qa
+                        matrix[0] += C0[0] * qa[0];
+                        matrix[1] += C0[0] * qa[1];
+                        matrix[2] += C0[0] * qa[2];
+                        matrix[3] += C0[1] * qa[0];
+                        matrix[4] += C0[1] * qa[1];
+                        matrix[5] += C0[1] * qa[2];
+                        matrix[6] += C0[2] * qa[0];
+                        matrix[7] += C0[2] * qa[1];
+                        matrix[8] += C0[2] * qa[2];
+
+                        const Vec3d C1 = lambda * elCache->C(e, a, c) + mu * (elCache->C(c, e, a) + elCache->C(a, e, c));
+                        // qa tensor C1
+                        matrix[0] += qa[0] * C1[0];
+                        matrix[1] += qa[0] * C1[1];
+                        matrix[2] += qa[0] * C1[2];
+                        matrix[3] += qa[1] * C1[0];
+                        matrix[4] += qa[1] * C1[1];
+                        matrix[5] += qa[1] * C1[2];
+                        matrix[6] += qa[2] * C1[0];
+                        matrix[7] += qa[2] * C1[1];
+                        matrix[8] += qa[2] * C1[2];
+
+                        const Vec3d C2 = lambda * elCache->C(a, e, c) + mu * (elCache->C(c, a, e) + elCache->C(e, a, c));
+                        // qa dot C2
+                        const double dotp = dot(qa, C2);
+                        matrix[0] += dotp;
+                        matrix[4] += dotp;
+                        matrix[8] += dotp;
+                    }
+                    // Add matrix block
+                    for (uint32_t k = 0; k < 3; k++) {
+                        for (uint32_t l = 0; l < 3; l++) {
+                            dataHandle[rowc + k][3 * column[c8 + a] + l] += matrix[3 * k + l];
+                        }
+                    }
+                }
+                { // Cubic terms
+                  // Compute derivative on force on vertex c
+                    memset(matrix, 0, sizeof(double) * 9);
+                    for (uint32_t e = 0; e < NEV; e++) {
+                        for (uint32_t b = 0; b < NEV; b++) {
+                            const Vec3d qb{&(vertexDisplacements[3 * vertices[b]])};
+                            const double D0 = lambda * elCache->D(a, c, b, e) + mu * (elCache->D(a, e, b, c) + elCache->D(a, b, c, e));
+                            matrix[0] += D0 * qa[0] * qb[0];
+                            matrix[1] += D0 * qa[0] * qb[1];
+                            matrix[2] += D0 * qa[0] * qb[2];
+                            matrix[3] += D0 * qa[1] * qb[0];
+                            matrix[4] += D0 * qa[1] * qb[1];
+                            matrix[5] += D0 * qa[1] * qb[2];
+                            matrix[6] += D0 * qa[2] * qb[0];
+                            matrix[7] += D0 * qa[2] * qb[1];
+                            matrix[8] += D0 * qa[2] * qb[2];
+
+                            const double D1 = 0.5 * lambda * elCache->D(a, b, c, e) + mu * elCache->D(a, c, b, e);
+                            const double dotpD = D1 * dot(qa, qb);
+                            matrix[0] += dotpD;
+                            matrix[4] += dotpD;
+                            matrix[8] += dotpD;
+                        }
+                    }
+                    // Add matrix block
+                    for (uint32_t k = 0; k < 3; k++) {
+                        for (uint32_t l = 0; l < 3; l++) {
+                            dataHandle[rowc + k][3 * column[c8 + a] + l] += matrix[3 * k + l];
+                        }
+                    }
+                }
             }
         }
     }
-
     free(vertices);
     delete elCache;
 }

@@ -22,14 +22,6 @@ struct StVKStiffnessMatrix {
     // "vertexDisplacements" is an array of vertex deformations, of length 3*n, where n is the total number of mesh vertices
     void ComputeStiffnessMatrix(const double *vertexDisplacements, SparseMatrix *);
 
-    TetMesh *GetTetMesh() { return tetMesh; }
-    StVKTetABCD *GetPrecomputedIntegrals() { return precomputedIntegrals; }
-
-    // auxiliary functions, these will add the contributions into 'forces'
-    void AddLinearTermsContribution(const double *vertexDisplacements, SparseMatrix *, int elementLow = -1, int elementHigh = -1);
-    void AddQuadraticTermsContribution(const double *vertexDisplacements, SparseMatrix *, int elementLow = -1, int elementHigh = -1);
-    void AddCubicTermsContribution(const double *vertexDisplacements, SparseMatrix *, int elementLow = -1, int elementHigh = -1);
-
 private:
     // acceleration indices
     int **row_;
@@ -41,15 +33,4 @@ private:
 
     double *lambdaLame;
     double *muLame;
-
-    // adds a 3x3 block matrix corresponding to a derivative of force on vertex c wrt to vertex a
-    // c is 0..7
-    // a is 0..7
-    void AddMatrix3x3Block(int c, int a, int element, Mat3d &matrix, SparseMatrix *sparseMatrix) {
-        int *row = row_[element];
-        int *column = column_[element];
-        for (int k = 0; k < 3; k++)
-            for (int l = 0; l < 3; l++)
-                sparseMatrix->AddEntry(3 * row[c] + k, 3 * column[TetMesh::NumElementVertices * c + a] + l, matrix[k][l]);
-    }
 };
