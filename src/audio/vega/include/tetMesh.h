@@ -1,14 +1,8 @@
 #pragma once
 
-// Container for a tetrahedral volumetric 3D mesh.
-
 #include "numeric/vec3.h"
 
 #include <glm/geometric.hpp>
-
-#include <cmath>
-#include <memory.h>
-#include <stdlib.h>
 
 struct TetMesh {
     static constexpr uint32_t NumElementVertices = 4;
