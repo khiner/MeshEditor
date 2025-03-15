@@ -22,6 +22,7 @@ struct Mat3d {
     }
 
     const Vec3d &operator[](int index) const { return elt[index]; }
+    Vec3d &operator[](int index) { return elt[index]; }
 
     Mat3d operator+(const Mat3d &mat2) const {
         auto sum = *this;
@@ -63,17 +64,17 @@ struct Mat3d {
     }
     const Mat3d operator*(const Mat3d &mat2) const {
         return {
-            dot(elt[0], Vec3d(mat2.elt[0][0], mat2.elt[1][0], mat2.elt[2][0])),
-            dot(elt[0], Vec3d(mat2.elt[0][1], mat2.elt[1][1], mat2.elt[2][1])),
-            dot(elt[0], Vec3d(mat2.elt[0][2], mat2.elt[1][2], mat2.elt[2][2])),
+            dot(elt[0], {mat2.elt[0][0], mat2.elt[1][0], mat2.elt[2][0]}),
+            dot(elt[0], {mat2.elt[0][1], mat2.elt[1][1], mat2.elt[2][1]}),
+            dot(elt[0], {mat2.elt[0][2], mat2.elt[1][2], mat2.elt[2][2]}),
 
-            dot(elt[1], Vec3d(mat2.elt[0][0], mat2.elt[1][0], mat2.elt[2][0])),
-            dot(elt[1], Vec3d(mat2.elt[0][1], mat2.elt[1][1], mat2.elt[2][1])),
-            dot(elt[1], Vec3d(mat2.elt[0][2], mat2.elt[1][2], mat2.elt[2][2])),
+            dot(elt[1], {mat2.elt[0][0], mat2.elt[1][0], mat2.elt[2][0]}),
+            dot(elt[1], {mat2.elt[0][1], mat2.elt[1][1], mat2.elt[2][1]}),
+            dot(elt[1], {mat2.elt[0][2], mat2.elt[1][2], mat2.elt[2][2]}),
 
-            dot(elt[2], Vec3d(mat2.elt[0][0], mat2.elt[1][0], mat2.elt[2][0])),
-            dot(elt[2], Vec3d(mat2.elt[0][1], mat2.elt[1][1], mat2.elt[2][1])),
-            dot(elt[2], Vec3d(mat2.elt[0][2], mat2.elt[1][2], mat2.elt[2][2]))
+            dot(elt[2], {mat2.elt[0][0], mat2.elt[1][0], mat2.elt[2][0]}),
+            dot(elt[2], {mat2.elt[0][1], mat2.elt[1][1], mat2.elt[2][1]}),
+            dot(elt[2], {mat2.elt[0][2], mat2.elt[1][2], mat2.elt[2][2]})
         };
     }
 

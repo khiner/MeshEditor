@@ -4,7 +4,6 @@
 
 // Vega
 #include "StVKStiffnessMatrix.h"
-#include "StVKTetABCD.h"
 #include "sparseMatrix.h"
 #include "tetMesh.h"
 
@@ -63,24 +62,18 @@ inline static SparseMatrix GenerateMassMatrix(const TetMesh &tets) {
         }
     }
 
-    return {&outline};
+    return {outline};
 }
 
 ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
     SparseMatrix mass_matrix = GenerateMassMatrix(tet_mesh);
 
-    auto precomputed_integrals = std::make_unique<StVKTetABCD>(&tet_mesh);
-    StVKStiffnessMatrix stiffness_matrix_class{&tet_mesh, precomputed_integrals.get()};
-    SparseMatrix stiffness_matrix = stiffness_matrix_class.GetStiffnessMatrixTopology();
-
     const uint32_t vertex_dim = 3;
     const uint32_t num_vertices = tet_mesh.getNumVertices();
     // In linear modal analysis, the displacements are zero.
     double *displacements = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
-    stiffness_matrix_class.ComputeStiffnessMatrix(displacements, &stiffness_matrix);
-
+    const auto stiffness_matrix = StVKStiffnessMatrix::ComputeStiffnessMatrix(&tet_mesh, displacements);
     free(displacements);
-    precomputed_integrals = nullptr;
 
     // Copy Vega sparse matrices to Eigen matrices.
     // _Note: Eigen is column-major by default._
@@ -110,7 +103,7 @@ ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialPropertie
     tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
     // Turn each tetrahedron into 4 triangles.
     for (uint32_t i = 0; i < uint32_t(tets.numberoftetrahedra); ++i) {
-        auto &indices = tets.tetrahedronlist;
+        const auto &indices = tets.tetrahedronlist;
         uint32_t tri_i = i * 4;
         int a = indices[tri_i], b = indices[tri_i + 1], c = indices[tri_i + 2], d = indices[tri_i + 3];
         tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
