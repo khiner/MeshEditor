@@ -8,7 +8,6 @@
 #include <string_view>
 #include <vector>
 
-class TetMesh;
 class tetgenio;
 
 namespace Eigen {
@@ -27,7 +26,6 @@ struct Args {
     AcousticMaterialProperties Material = {};
 };
 
-ModalModes mesh2modes(TetMesh &, Args args = {});
 ModalModes mesh2modes(const tetgenio &, const AcousticMaterialProperties &, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq);
 
 ModalModes mesh2modes(

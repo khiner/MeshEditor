@@ -1,12 +1,12 @@
 #include "mesh2faust.h"
 
 #include "numeric/mat3.h"
+#include "numeric/vec3.h"
 
 #include <Eigen/SparseCore>
 
 // Vega
 #include "sparseMatrix.h"
-#include "tetMesh.h"
 
 // tetgen
 #include "tetgen.h"
@@ -22,6 +22,73 @@
 using std::ranges::find_if, std::views::drop, std::views::reverse;
 
 namespace {
+// Isotropic material
+struct ENuMaterial {
+    ENuMaterial(double density, double E, double nu) : density(density), E(E), nu(nu) {}
+    ~ENuMaterial() {}
+
+    // Lame's lambda coefficient
+    double getLambda() const { return (nu * E) / ((1 + nu) * (1 - 2 * nu)); }
+    // Lame's mu coefficient
+    double getMu() const { return E / (2 * (1 + nu)); }
+
+    double density, E, nu; // Density, Young's modulus, Poisson's ratio
+};
+
+double GetTetDeterminant(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
+    // When det(A) > 0, tet has positive orientation.
+    // When det(A) = 0, tet is degenerate.
+    // When det(A) < 0, tet has negative orientation.
+    return glm::dot(d - a, glm::cross(b - a, c - a));
+}
+// volume = 1/6 * |(d-a) . ((b-a) x (c-a))|
+double GetTetVolume(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
+    return (1.f / 6.f) * fabs(GetTetDeterminant(a, b, c, d));
+}
+
+struct TetMesh {
+    static constexpr uint32_t NumElementVertices = 4;
+
+    TetMesh(int numVertices_, double *vertices_, int numElements_, int *elements_)
+        : numVertices(numVertices_), vertices(new dvec3[numVertices]),
+          numElements(numElements_), elements((int **)malloc(sizeof(int *) * numElements)) {
+        for (int i = 0; i < numVertices; i++) vertices[i] = {vertices_[3 * i + 0], vertices_[3 * i + 1], vertices_[3 * i + 2]};
+
+        int *v = (int *)malloc(sizeof(int) * NumElementVertices);
+        for (uint32_t i = 0; i < uint32_t(numElements); i++) {
+            elements[i] = (int *)malloc(sizeof(int) * NumElementVertices);
+            for (uint32_t j = 0; j < NumElementVertices; j++) {
+                v[j] = elements_[NumElementVertices * i + j];
+                elements[i][j] = v[j];
+            }
+        }
+        free(v);
+    }
+
+    ~TetMesh() {
+        delete[] vertices;
+        for (int i = 0; i < numElements; i++) free(elements[i]);
+        free(elements);
+    }
+
+    int getNumVertices() const { return numVertices; }
+    const dvec3 &getVertex(int element, int vertex) const { return vertices[elements[element][vertex]]; }
+    int getVertexIndex(int element, int vertex) const { return elements[element][vertex]; }
+    int getNumElements() const { return numElements; }
+
+    // mass density of an element
+    double getElementVolume(int el) const {
+        return GetTetVolume(getVertex(el, 0), getVertex(el, 1), getVertex(el, 2), getVertex(el, 3));
+    }
+
+private:
+    int numVertices;
+    dvec3 *vertices;
+
+    int numElements;
+    int **elements;
+};
+
 constexpr auto NEV = TetMesh::NumElementVertices;
 
 using ElementMatrix = double[NEV][NEV];
@@ -56,13 +123,13 @@ struct ElementData {
 };
 
 // Create the St.Venant-Kirchhoff A,B,C,D coefficients for a tetrahedral element.
-std::vector<ElementData> StVKABCD(const TetMesh *tets) {
-    std::vector<ElementData> elements_data(tets->getNumElements());
+std::vector<ElementData> StVKABCD(const TetMesh &tets) {
+    std::vector<ElementData> elements_data(tets.getNumElements());
     dvec3 columns[2];
     for (uint32_t el = 0; el < elements_data.size(); el++) {
         auto &element_data = elements_data[el];
         // Create the element data structure for a tet
-        const double det = TetMesh::getTetDeterminant(tets->getVertex(el, 0), tets->getVertex(el, 1), tets->getVertex(el, 2), tets->getVertex(el, 3));
+        const double det = GetTetDeterminant(tets.getVertex(el, 0), tets.getVertex(el, 1), tets.getVertex(el, 2), tets.getVertex(el, 3));
         element_data.volume = fabs(det / 6);
         for (uint32_t i = 0; i < NEV; i++) {
             for (uint32_t j = 0; j < 3; j++) {
@@ -73,7 +140,7 @@ std::vector<ElementData> StVKABCD(const TetMesh *tets) {
                     uint32_t nj = 0;
                     for (uint32_t jj = 0; jj < 3; jj++) {
                         if (jj != j) {
-                            columns[nj][ni] = tets->getVertex(el, ii)[jj];
+                            columns[nj][ni] = tets.getVertex(el, ii)[jj];
                             nj++;
                         }
                     }
@@ -90,11 +157,11 @@ std::vector<ElementData> StVKABCD(const TetMesh *tets) {
 // Compute the tangent stiffness matrix of a StVK elastic deformable object.
 // As a special case, the routine can compute the stiffness matrix in the rest configuration.
 // `vertexDisplacements` is an array of vertex deformations, of length 3*n, where n is the total number of mesh vertices.
-SparseMatrix ComputeStiffnessMatrix(const TetMesh *tets, const double *vertex_displacements) {
-    const uint32_t ne = tets->getNumElements();
-    const double lambda = tets->material.getLambda();
-    const double mu = tets->material.getMu();
-    const auto outline = GetStiffnessMatrixTopology(*tets);
+SparseMatrix ComputeStiffnessMatrix(const TetMesh &tets, const ENuMaterial &material, const double *vertex_displacements) {
+    const uint32_t ne = tets.getNumElements();
+    const double lambda = material.getLambda();
+    const double mu = material.getMu();
+    const auto outline = GetStiffnessMatrixTopology(tets);
     SparseMatrix stiffness{outline};
     std::vector<int> vertices(NEV);
     auto **siffness_data = stiffness.GetDataHandle();
@@ -105,7 +172,7 @@ SparseMatrix ComputeStiffnessMatrix(const TetMesh *tets, const double *vertex_di
         // Seek for value row[j] in list associated with row[i]
         for (uint32_t i = 0; i < NEV; i++) {
             for (uint32_t j = 0; j < NEV; j++) {
-                column_[el][NEV * i + j] = stiffness.GetInverseIndex(3 * tets->getVertexIndex(el, i), 3 * tets->getVertexIndex(el, j)) / 3;
+                column_[el][NEV * i + j] = stiffness.GetInverseIndex(3 * tets.getVertexIndex(el, i), 3 * tets.getVertexIndex(el, j)) / 3;
             }
         }
     }
@@ -120,9 +187,9 @@ SparseMatrix ComputeStiffnessMatrix(const TetMesh *tets, const double *vertex_di
             }
         }
 
-        for (uint32_t v = 0; v < NEV; v++) vertices[v] = tets->getVertexIndex(el, v);
+        for (uint32_t v = 0; v < NEV; v++) vertices[v] = tets.getVertexIndex(el, v);
         for (uint32_t c = 0; c < NEV; c++) {
-            const uint32_t rowc = 3 * tets->getVertexIndex(el, c);
+            const uint32_t rowc = 3 * tets.getVertexIndex(el, c);
             for (uint32_t a = 0; a < NEV; a++) {
                 const auto *qav = &(vertex_displacements[3 * vertices[a]]);
                 const dvec3 qa{qav[0], qav[1], qav[2]};
@@ -179,7 +246,7 @@ SparseMatrix ComputeStiffnessMatrix(const TetMesh *tets, const double *vertex_di
 // Each matrix element z will be augmented to a 3x3 z*I matrix
 // (causing mtx dimensions to grow by a factor of 3).
 // Output matrix will be 3*n x 3*n, where n is the number of tet vertices.
-SparseMatrix GenerateMassMatrix(const TetMesh &tets) {
+SparseMatrix GenerateMassMatrix(const TetMesh &tets, double density) {
     const int n = tets.getNumVertices();
     SparseMatrixOutline outline{3 * n};
     for (int el = 0; el < tets.getNumElements(); el++) {
@@ -200,7 +267,7 @@ SparseMatrix GenerateMassMatrix(const TetMesh &tets) {
             1, 1, 2, 1,
             1, 1, 1, 2
         };
-        const double factor = tets.getElementDensity(el) * tets.getElementVolume(el) / 20;
+        const double factor = density * tets.getElementVolume(el) / 20;
         std::array<double, NEV * NEV> element_mass_matrix;
         for (uint32_t i = 0; i < NEV * NEV; i++) element_mass_matrix[i] = factor * coeffs[i];
 
@@ -215,19 +282,30 @@ SparseMatrix GenerateMassMatrix(const TetMesh &tets) {
             }
         }
     }
-
     return {outline};
 }
 } // namespace
 
-ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
-    SparseMatrix mass_matrix = GenerateMassMatrix(tet_mesh);
+ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
+    // Convert the tetrahedral mesh into a VegaFEM TetMesh.
+    std::vector<int> tet_indices;
+    tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
+    // Turn each tetrahedron into 4 triangles.
+    for (uint32_t i = 0; i < uint32_t(tets.numberoftetrahedra); ++i) {
+        const auto &indices = tets.tetrahedronlist;
+        uint32_t tri_i = i * 4;
+        int a = indices[tri_i], b = indices[tri_i + 1], c = indices[tri_i + 2], d = indices[tri_i + 3];
+        tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
+    }
+    const ENuMaterial enu_material{material.Density, material.YoungModulus, material.PoissonRatio};
+    TetMesh tet_mesh{tets.numberofpoints, tets.pointlist, tets.numberoftetrahedra * 3, tet_indices.data()};
+    SparseMatrix mass_matrix = GenerateMassMatrix(tet_mesh, enu_material.density);
 
     const uint32_t vertex_dim = 3;
     const uint32_t num_vertices = tet_mesh.getNumVertices();
     // In linear modal analysis, the displacements are zero.
     double *displacements = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
-    const auto stiffness_matrix = ComputeStiffnessMatrix(&tet_mesh, displacements);
+    const auto stiffness_matrix = ComputeStiffnessMatrix(tet_mesh, enu_material, displacements);
     free(displacements);
 
     // Copy Vega sparse matrices to Eigen matrices.
@@ -249,27 +327,8 @@ ModalModes m2f::mesh2modes(TetMesh &tet_mesh, Args args) {
     K.setFromTriplets(K_triplets.begin(), K_triplets.end());
     M.setFromTriplets(M_triplets.begin(), M_triplets.end());
 
-    return mesh2modes(M, K, num_vertices, vertex_dim, std::move(args));
-}
-
-ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
-    // Convert the tetrahedral mesh into a VegaFEM TetMesh.
-    std::vector<int> tet_indices;
-    tet_indices.reserve(tets.numberoftetrahedra * 4 * 3); // 4 triangles per tetrahedron, 3 indices per triangle.
-    // Turn each tetrahedron into 4 triangles.
-    for (uint32_t i = 0; i < uint32_t(tets.numberoftetrahedra); ++i) {
-        const auto &indices = tets.tetrahedronlist;
-        uint32_t tri_i = i * 4;
-        int a = indices[tri_i], b = indices[tri_i + 1], c = indices[tri_i + 2], d = indices[tri_i + 3];
-        tet_indices.insert(tet_indices.end(), {a, b, c, d, a, b, c, d, a, b, c, d});
-    }
-    TetMesh tet_mesh{
-        tets.numberofpoints, tets.pointlist, tets.numberoftetrahedra * 3, tet_indices.data(),
-        material.YoungModulus, material.PoissonRatio, material.Density
-    };
-
     return mesh2modes(
-        tet_mesh,
+        M, K, num_vertices, vertex_dim,
         {
             .MinModeFreq = 20,
             .MaxModeFreq = 16'000,
