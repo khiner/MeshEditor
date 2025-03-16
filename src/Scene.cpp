@@ -1241,16 +1241,16 @@ void Scene::RenderControls() {
         if (BeginTabItem("Lights")) {
             bool light_changed = false;
             SeparatorText("View light");
-            light_changed |= ColorEdit3("Color", &Lights.ViewColorAndAmbient[0]);
+            light_changed |= ColorEdit3("Color##View", &Lights.ViewColorAndAmbient[0]);
             SeparatorText("Ambient light");
-            light_changed |= SliderFloat("Intensity", &Lights.ViewColorAndAmbient[3], 0, 1);
+            light_changed |= SliderFloat("Intensity##Ambient", &Lights.ViewColorAndAmbient[3], 0, 1);
             SeparatorText("Directional light");
-            light_changed |= SliderFloat3("Direction", &Lights.Direction[0], -1, 1);
-            light_changed |= ColorEdit3("Color", &Lights.DirectionalColorAndIntensity[0]);
-            light_changed |= SliderFloat("Intensity", &Lights.DirectionalColorAndIntensity[3], 0, 1);
+            light_changed |= SliderFloat3("Direction##Directional", &Lights.Direction[0], -1, 1);
+            light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
+            light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
                 VC.UpdateBuffer(*LightsBuffer, &Lights);
-                SubmitCommandBuffer();
+                InvalidateCommandBuffer();
             }
             EndTabItem();
         }
