@@ -5,9 +5,6 @@
 
 #include <Eigen/SparseCore>
 
-// Vega
-#include "sparseMatrix.h"
-
 // tetgen
 #include "tetgen.h"
 
@@ -16,7 +13,6 @@
 #include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
 
-#include <memory>
 #include <ranges>
 
 using std::ranges::find_if, std::views::drop, std::views::reverse;
@@ -49,24 +45,6 @@ constexpr uint32_t NEV = NumTetElementVertices; // convenience
 
 using ElementMatrix = double[NEV][NEV];
 
-SparseMatrixOutline GetStiffnessMatrixTopology(const tetgenio &tets) {
-    SparseMatrixOutline outline{tets.numberofpoints * 3};
-    for (uint32_t el = 0; el < uint32_t(tets.numberoftetrahedra); el++) {
-        for (uint32_t i = 0; i < NEV; i++) {
-            const auto vi = 3 * GetVertexIndex(tets, el, i);
-            for (uint32_t j = 0; j < NEV; j++) {
-                const auto vj = 3 * GetVertexIndex(tets, el, j);
-                for (uint32_t k = 0; k < 3; k++) {
-                    for (uint32_t l = 0; l < 3; l++) {
-                        outline.AddEntry(vi + k, vj + l, 0);
-                    }
-                }
-            }
-        }
-    }
-    return outline;
-}
-
 struct ElementData {
     double volume;
     dvec3 Phig[NEV]; // gradient of a basis function
@@ -77,7 +55,7 @@ struct ElementData {
     double D(uint32_t i, uint32_t j, uint32_t k, uint32_t l, const ElementMatrix &dots) const { return volume * dots[i][j] * dots[k][l]; }
 };
 
-// Create the St.Venant-Kirchhoff A,B,C,D coefficients for a tetrahedral element.
+// Computes the St.Venant-Kirchhoff coefficients for each tetrahedral element.
 std::vector<ElementData> StVKABCD(const tetgenio &tets) {
     std::vector<ElementData> elements_data(tets.numberoftetrahedra);
     dvec3 columns[2];
@@ -112,28 +90,16 @@ std::vector<ElementData> StVKABCD(const tetgenio &tets) {
 // Compute the tangent stiffness matrix of a StVK elastic deformable object.
 // As a special case, the routine can compute the stiffness matrix in the rest configuration.
 // `vertexDisplacements` is an array of vertex deformations, of length 3*n, where n is the total number of mesh vertices.
-SparseMatrix ComputeStiffnessMatrix(const tetgenio &tets, const AcousticMaterialProperties &material, const double *vertex_displacements) {
+Eigen::SparseMatrix<double> ComputeStiffnessMatrix(const tetgenio &tets, const AcousticMaterialProperties &material, const double *vertex_displacements) {
     const uint32_t ne = tets.numberoftetrahedra;
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(ne * NEV * NEV * 9);
+
     const double lambda = material.Lambda();
     const double mu = material.Mu();
-    const auto outline = GetStiffnessMatrixTopology(tets);
-    SparseMatrix stiffness{outline};
-    std::vector<int> vertices(NEV);
-    auto **siffness_data = stiffness.GetDataHandle();
-    // Build acceleration indices
-    // auto **column_ = (int **)malloc(sizeof(int *) * ne);
-    std::vector<std::array<int, NEV * NEV>> column_(ne);
-    for (uint32_t el = 0; el < ne; el++) {
-        // Seek for value row[j] in list associated with row[i]
-        for (uint32_t i = 0; i < NEV; i++) {
-            for (uint32_t j = 0; j < NEV; j++) {
-                column_[el][NEV * i + j] = stiffness.GetInverseIndex(3 * GetVertexIndex(tets, el, i), 3 * GetVertexIndex(tets, el, j)) / 3;
-            }
-        }
-    }
-    dmat3 el_mat;
     auto precomputed_integrals = StVKABCD(tets);
-    ElementMatrix dots; // cache dot products
+    ElementMatrix dots; // Cache dot products between basis gradients for current element
+    std::vector<int> vertices(NEV);
     for (uint32_t el = 0; el < ne; el++) {
         const auto &ed = precomputed_integrals[el];
         for (uint32_t i = 0; i < NEV; i++) {
@@ -141,133 +107,105 @@ SparseMatrix ComputeStiffnessMatrix(const tetgenio &tets, const AcousticMaterial
                 dots[i][j] = dot(ed.Phig[i], ed.Phig[j]);
             }
         }
-
+        // Get global vertex indices for the element
         for (uint32_t v = 0; v < NEV; v++) vertices[v] = GetVertexIndex(tets, el, v);
+        // Loop over each pair of vertices in the element (block indices)
         for (uint32_t c = 0; c < NEV; c++) {
-            const uint32_t rowc = 3 * GetVertexIndex(tets, el, c);
+            const auto global_row = 3 * vertices[c];
             for (uint32_t a = 0; a < NEV; a++) {
-                const auto *qav = &(vertex_displacements[3 * vertices[a]]);
-                const dvec3 qa{qav[0], qav[1], qav[2]};
-                { // Linear terms
-                    el_mat = {mu * ed.B(a, c, dots)}; // diag
-                    el_mat += lambda * ed.A(c, a) + mu * ed.A(a, c);
-                    // Add a 3x3 block matrix corresponding to a derivative of force on vertex c wrt to vertex a
-                    for (uint32_t k = 0; k < 3; k++) {
-                        for (uint32_t l = 0; l < 3; l++) {
-                            stiffness.AddEntry(rowc + k, 3 * column_[el][NEV * c + a] + l, el_mat[k][l]);
-                        }
-                    }
-                }
-                { // Quadratic terms
-                    el_mat = {0};
+                // Linear terms
+                dmat3 lin_mat{mu * ed.B(a, c, dots)}; // diagonal
+                lin_mat += lambda * ed.A(c, a) + mu * ed.A(a, c);
+
+                const auto &qa = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * vertices[a]]);
+                // Quadratic terms
+                dmat3 quad_mat{0};
+                {
                     for (uint32_t e = 0; e < NEV; e++) {
                         const dvec3 C0 = lambda * ed.C(c, a, e, dots) + mu * (ed.C(e, a, c, dots) + ed.C(a, e, c, dots));
                         const dvec3 C1 = lambda * ed.C(e, a, c, dots) + mu * (ed.C(c, e, a, dots) + ed.C(a, e, c, dots));
                         const dvec3 C2 = lambda * ed.C(a, e, c, dots) + mu * (ed.C(c, a, e, dots) + ed.C(e, a, c, dots));
-                        el_mat += glm::outerProduct(C0, qa) + glm::outerProduct(qa, C1) + dmat3{dot(qa, C2)};
+                        quad_mat += glm::outerProduct(C0, qa) + glm::outerProduct(qa, C1) + dmat3{dot(qa, C2)};
                     }
-                    // Add matrix block
-                    for (uint32_t k = 0; k < 3; k++) {
-                        for (uint32_t l = 0; l < 3; l++) {
-                            siffness_data[rowc + k][3 * column_[el][NEV * c + a] + l] += el_mat[k][l];
+                }
+
+                // Cubic terms
+                dmat3 cubic_mat{0};
+                {
+                    for (uint32_t b = 0; b < NEV; b++) {
+                        const auto &qb = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * vertices[b]]);
+                        for (uint32_t e = 0; e < NEV; e++) {
+                            const double D0 = lambda * ed.D(a, c, b, e, dots) + mu * (ed.D(a, e, b, c, dots) + ed.D(a, b, c, e, dots));
+                            const double D1 = 0.5 * lambda * ed.D(a, b, c, e, dots) + mu * ed.D(a, c, b, e, dots);
+                            cubic_mat += D0 * glm::outerProduct(qa, qb) + dmat3{dot(qa, qb) * D1};
                         }
                     }
                 }
-                { // Cubic terms
-                  // Compute derivative on force on vertex c
-                    el_mat = {0};
-                    for (uint32_t e = 0; e < NEV; e++) {
-                        for (uint32_t b = 0; b < NEV; b++) {
-                            const double D0 = lambda * ed.D(a, c, b, e, dots) + mu * (ed.D(a, e, b, c, dots) + ed.D(a, b, c, e, dots));
-                            const double D1 = 0.5 * lambda * ed.D(a, b, c, e, dots) + mu * ed.D(a, c, b, e, dots);
-                            const auto *qbv = &(vertex_displacements[3 * vertices[b]]);
-                            const dvec3 qb{qbv[0], qbv[1], qbv[2]};
-                            el_mat += D0 * glm::outerProduct(qa, qb) + dmat3{dot(qa, qb) * D1};
-                        }
-                    }
-                    // Add matrix block
-                    for (uint32_t k = 0; k < 3; k++) {
-                        for (uint32_t l = 0; l < 3; l++) {
-                            siffness_data[rowc + k][3 * column_[el][NEV * c + a] + l] += el_mat[k][l];
-                        }
+
+                const dmat3 total_block = lin_mat + quad_mat + cubic_mat;
+                for (uint32_t k = 0; k < 3; k++) {
+                    for (uint32_t l = 0; l < 3; l++) {
+                        triplets.emplace_back(Eigen::Triplet<double>(global_row + k, 3 * vertices[a] + l, total_block[k][l]));
                     }
                 }
             }
         }
     }
+
+    const uint32_t n = 3 * tets.numberofpoints;
+    Eigen::SparseMatrix<double> stiffness(n, n);
+    stiffness.setFromTriplets(triplets.begin(), triplets.end());
     return stiffness;
 }
 
-// Each matrix element z will be augmented to a 3x3 z*I matrix
-// (causing mtx dimensions to grow by a factor of 3).
-// Output matrix will be 3*n x 3*n, where n is the number of tet vertices.
-SparseMatrix GenerateMassMatrix(const tetgenio &tets, double density) {
-    const int n = tets.numberofpoints;
-    SparseMatrixOutline outline{3 * n};
-    for (int el = 0; el < tets.numberoftetrahedra; el++) {
-        /*
-        Compute the mass matrix of a single element.
-        Consistent mass matrix of a tetrahedron:
-                    [ 2  1  1  1  ]
-                    [ 1  2  1  1  ]
-        mass / 20 * [ 1  1  2  1  ]
-                    [ 1  1  1  2  ]
-        with mass = density * volume.
-        The consistent mass matrix does not depend on the shape of the tetrahedron.
-        (Source: Singiresu S. Rao: The finite element method in engineering, 2004)
-        */
-        static constexpr double coeffs[]{
-            2, 1, 1, 1,
-            1, 2, 1, 1,
-            1, 1, 2, 1,
-            1, 1, 1, 2
-        };
-        const double factor = density * GetElementVolume(tets, el) / 20;
-        std::array<double, NEV * NEV> element_mass_matrix;
-        for (uint32_t i = 0; i < NEV * NEV; i++) element_mass_matrix[i] = factor * coeffs[i];
+// Each scalar matrix entry is augmented to a 3x3 diagonal block.
+// The resulting matrix is 3*n x 3*n, where n is the number of vertices.
+Eigen::SparseMatrix<double> GenerateMassMatrix(const tetgenio &tets, double density) {
+    const uint32_t ne = tets.numberoftetrahedra;
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(ne * NEV * NEV * 3);
 
+    // Consistent mass matrix coefficients for a tetrahedron.
+    // (See Rao, The Finite Element Method in Engineering, 2004.)
+    static constexpr double coeffs[]{
+        2, 1, 1, 1,
+        1, 2, 1, 1,
+        1, 1, 2, 1,
+        1, 1, 1, 2
+    };
+
+    for (uint32_t el = 0; el < ne; el++) {
+        const double factor = density * GetElementVolume(tets, el) / 20.0;
         for (uint32_t i = 0; i < NEV; i++) {
-            const uint32_t vi = 3 * GetVertexIndex(tets, el, i);
+            const auto vi = GetVertexIndex(tets, el, i);
+            const auto row_base = 3 * vi;
             for (uint32_t j = 0; j < NEV; j++) {
-                const uint32_t vj = 3 * GetVertexIndex(tets, el, j);
-                const double entry = element_mass_matrix[NEV * j + i];
-                outline.AddEntry(vi + 0, vj + 0, entry);
-                outline.AddEntry(vi + 1, vj + 1, entry);
-                outline.AddEntry(vi + 2, vj + 2, entry);
+                const auto vj = GetVertexIndex(tets, el, j);
+                const auto col_base = 3 * vj;
+                const auto entry = factor * coeffs[NEV * j + i];
+                // Augment to a 3x3 block (scalar times the identity matrix)
+                for (int k = 0; k < 3; k++) {
+                    triplets.emplace_back(Eigen::Triplet<double>(row_base + k, col_base + k, entry));
+                }
             }
         }
     }
-    return {outline};
+
+    const uint32_t n = 3 * tets.numberofpoints;
+    Eigen::SparseMatrix<double> mass(n, n);
+    mass.setFromTriplets(triplets.begin(), triplets.end());
+    return mass;
 }
 } // namespace
 
 ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
-    SparseMatrix mass_matrix = GenerateMassMatrix(tets, material.Density);
+    const auto M = GenerateMassMatrix(tets, material.Density);
     const uint32_t vertex_dim = 3;
     const uint32_t num_vertices = tets.numberofpoints;
     // In linear modal analysis, the displacements are zero.
     double *displacements = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
-    const auto stiffness_matrix = ComputeStiffnessMatrix(tets, material, displacements);
+    const auto K = ComputeStiffnessMatrix(tets, material, displacements);
     free(displacements);
-
-    // Copy Vega sparse matrices to Eigen matrices.
-    // _Note: Eigen is column-major by default._
-    std::vector<Eigen::Triplet<double, uint32_t>> K_triplets, M_triplets;
-    for (uint32_t i = 0; i < uint32_t(stiffness_matrix.GetNumRows()); ++i) {
-        for (uint32_t j = 0; j < uint32_t(stiffness_matrix.GetRowLength(i)); ++j) {
-            K_triplets.push_back({i, uint32_t(stiffness_matrix.GetColumnIndex(i, j)), stiffness_matrix.GetEntry(i, j)});
-        }
-    }
-    for (uint32_t i = 0; i < uint32_t(mass_matrix.GetNumRows()); ++i) {
-        for (uint32_t j = 0; j < uint32_t(mass_matrix.GetRowLength(i)); ++j) {
-            M_triplets.push_back({i, uint32_t(mass_matrix.GetColumnIndex(i, j)), mass_matrix.GetEntry(i, j)});
-        }
-    }
-
-    const uint32_t n = stiffness_matrix.Getn();
-    Eigen::SparseMatrix<double> K(n, n), M(n, n);
-    K.setFromTriplets(K_triplets.begin(), K_triplets.end());
-    M.setFromTriplets(M_triplets.begin(), M_triplets.end());
 
     return mesh2modes(
         M, K, num_vertices, vertex_dim,
