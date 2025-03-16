@@ -33,7 +33,6 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
 set(ImguiDir lib/imgui)
 set(ImplotDir lib/implot)
-set(VegaDir src/audio/vega)
 
 add_executable(${PROJECT_NAME}
     ${ImguiDir}/imgui_demo.cpp
@@ -68,7 +67,6 @@ include_directories(
     SYSTEM lib/faust/compiler/boxes
     SYSTEM lib/spectra/include
 
-    SYSTEM ${VegaDir}/include
     SYSTEM PkgConfig::FFTW3F
     src
 )

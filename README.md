@@ -126,7 +126,7 @@ $ cmake --build build --config Release
 - [fftw](https://www.fftw.org/) for computing spectrograms (visualized with ImPlot)
 - [Faust](https://github.com/grame-cncm/faust): Functional audio programming language, used to render an object audio model to an audio graph
 - [tetgen](https://github.com/libigl/tetgen): Fast conversion of triangular 3D surface meshes into tetrahedral volume meshes
-- 3D FEM: [VegaFEM](https://github.com/grame-cncm/faust/tree/master-dev/tools/physicalModeling/mesh2faust/vega) for generating mass/stiffness matrices from tet mesh + [Spectra](https://github.com/yixuan/spectra) for estimating eigenvalues/vectors
+- [Spectra](https://github.com/yixuan/spectra) for estimating eigenvalues/vectors
 - [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator): Efficient Vulkan memory allocation
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [ImPlot](https://github.com/epezent/implot): Plotting
