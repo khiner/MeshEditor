@@ -53,6 +53,7 @@ struct SoundObject {
 
 private:
     void SetModel(SoundObjectModel, entt::registry &, entt::entity);
+    void Stop();
 
     FaustDSP &Dsp;
     std::unique_ptr<ModalAudioModel> ModalModel;

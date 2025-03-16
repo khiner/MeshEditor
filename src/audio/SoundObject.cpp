@@ -290,11 +290,15 @@ void SoundObject::SetVertexForce(float force) {
     }
 }
 
+void SoundObject::Stop() {
+    if (ImpactModel) ImpactModel->Stop();
+    if (ModalModel) Dsp.Set(GateParamName, 0);
+}
+
 void SoundObject::SetModel(SoundObjectModel model, entt::registry &r, entt::entity entity) {
     if (Model == model) return;
 
-    if (ImpactModel) ImpactModel->Stop();
-    if (ModalModel) Dsp.Set(GateParamName, 0);
+    Stop();
     Model = model;
     const bool is_impact = Model == SoundObjectModel::ImpactAudio && ImpactModel;
     const bool is_modal = Model == SoundObjectModel::Modal && ModalModel;
@@ -433,6 +437,7 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
         }
 
         if (Button("Create")) {
+            Stop();
             r.emplace_or_replace<AcousticMaterial>(entity, info.Material);
             const auto scale = r.get<Scale>(entity).Value;
 
