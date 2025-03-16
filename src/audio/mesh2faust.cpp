@@ -3,12 +3,8 @@
 #include "numeric/mat3.h"
 #include "numeric/vec3.h"
 
-#include <Eigen/SparseCore>
-
-// tetgen
 #include "tetgen.h"
-
-// Spectra
+#include <Eigen/SparseCore>
 #include <Spectra/MatOp/SparseSymMatProd.h>
 #include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
@@ -20,12 +16,8 @@ using std::ranges::find_if, std::views::drop, std::views::reverse;
 namespace {
 
 double GetTetDeterminant(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
-    // When det(A) > 0, tet has positive orientation.
-    // When det(A) = 0, tet is degenerate.
-    // When det(A) < 0, tet has negative orientation.
     return glm::dot(d - a, glm::cross(b - a, c - a));
 }
-// volume = 1/6 * |(d-a) . ((b-a) x (c-a))|
 double GetTetVolume(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
     return (1.f / 6.f) * fabs(GetTetDeterminant(a, b, c, d));
 }
@@ -90,34 +82,27 @@ std::vector<ElementData> StVKABCD(const tetgenio &tets) {
 // Compute the tangent stiffness matrix of a StVK elastic deformable object.
 // As a special case, the routine can compute the stiffness matrix in the rest configuration.
 // `vertexDisplacements` is an array of vertex deformations, of length 3*n, where n is the total number of mesh vertices.
-Eigen::SparseMatrix<double> ComputeStiffnessMatrix(const tetgenio &tets, const AcousticMaterialProperties &material, const double *vertex_displacements) {
+// (Since we assume displacements are small for linear modal analysis, we neglect displacement terms.)
+Eigen::SparseMatrix<double> ComputeStiffnessMatrix(const tetgenio &tets, const AcousticMaterialProperties &material /*, const double *vertex_displacements*/) {
     const uint32_t ne = tets.numberoftetrahedra;
     std::vector<Eigen::Triplet<double>> triplets;
     triplets.reserve(ne * NEV * NEV * 9);
 
     const double lambda = material.Lambda();
     const double mu = material.Mu();
-    auto precomputed_integrals = StVKABCD(tets);
+    const auto coeffs = StVKABCD(tets);
     ElementMatrix dots; // Cache dot products between basis gradients for current element
-    std::vector<int> vertices(NEV);
     for (uint32_t el = 0; el < ne; el++) {
-        const auto &ed = precomputed_integrals[el];
+        const auto &ed = coeffs[el];
         for (uint32_t i = 0; i < NEV; i++) {
             for (uint32_t j = 0; j < NEV; j++) {
                 dots[i][j] = dot(ed.Phig[i], ed.Phig[j]);
             }
         }
-        // Get global vertex indices for the element
-        for (uint32_t v = 0; v < NEV; v++) vertices[v] = GetVertexIndex(tets, el, v);
-        // Loop over each pair of vertices in the element (block indices)
         for (uint32_t c = 0; c < NEV; c++) {
-            const auto global_row = 3 * vertices[c];
             for (uint32_t a = 0; a < NEV; a++) {
-                // Linear terms
-                dmat3 lin_mat{mu * ed.B(a, c, dots)}; // diagonal
-                lin_mat += lambda * ed.A(c, a) + mu * ed.A(a, c);
-
-                const auto &qa = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * vertices[a]]);
+                /*
+                const auto &qa = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * GetVertexIndex(tets, el, a)]);
                 // Quadratic terms
                 dmat3 quad_mat{0};
                 {
@@ -128,12 +113,11 @@ Eigen::SparseMatrix<double> ComputeStiffnessMatrix(const tetgenio &tets, const A
                         quad_mat += glm::outerProduct(C0, qa) + glm::outerProduct(qa, C1) + dmat3{dot(qa, C2)};
                     }
                 }
-
                 // Cubic terms
                 dmat3 cubic_mat{0};
                 {
                     for (uint32_t b = 0; b < NEV; b++) {
-                        const auto &qb = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * vertices[b]]);
+                        const auto &qb = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * GetVertexIndex(tets, el, b)]);
                         for (uint32_t e = 0; e < NEV; e++) {
                             const double D0 = lambda * ed.D(a, c, b, e, dots) + mu * (ed.D(a, e, b, c, dots) + ed.D(a, b, c, e, dots));
                             const double D1 = 0.5 * lambda * ed.D(a, b, c, e, dots) + mu * ed.D(a, c, b, e, dots);
@@ -141,11 +125,17 @@ Eigen::SparseMatrix<double> ComputeStiffnessMatrix(const tetgenio &tets, const A
                         }
                     }
                 }
+                */
 
-                const dmat3 total_block = lin_mat + quad_mat + cubic_mat;
+                // Linear terms
+                const auto lin_mat = dmat3{mu * ed.B(a, c, dots)} += lambda * ed.A(c, a) + mu * ed.A(a, c);
+
+                // const dmat3 total_block = lin_mat + quad_mat + cubic_mat;
+                const dmat3 total_block = lin_mat;
+                const auto vi_a = 3 * GetVertexIndex(tets, el, a), vi_c = 3 * GetVertexIndex(tets, el, c);
                 for (uint32_t k = 0; k < 3; k++) {
                     for (uint32_t l = 0; l < 3; l++) {
-                        triplets.emplace_back(Eigen::Triplet<double>(global_row + k, 3 * vertices[a] + l, total_block[k][l]));
+                        triplets.emplace_back(Eigen::Triplet<double>(vi_c + k, vi_a + l, total_block[k][l]));
                     }
                 }
             }
@@ -196,57 +186,43 @@ Eigen::SparseMatrix<double> GenerateMassMatrix(const tetgenio &tets, double dens
     mass.setFromTriplets(triplets.begin(), triplets.end());
     return mass;
 }
-} // namespace
 
-ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
-    const auto M = GenerateMassMatrix(tets, material.Density);
-    const uint32_t vertex_dim = 3;
-    const uint32_t num_vertices = tets.numberofpoints;
-    // In linear modal analysis, the displacements are zero.
-    double *displacements = (double *)calloc(num_vertices * vertex_dim, sizeof(double));
-    const auto K = ComputeStiffnessMatrix(tets, material, displacements);
-    free(displacements);
+struct ComputeModesOpts {
+    float MinModeFreq{20}; // Lowest mode freq
+    float MaxModeFreq{16'000}; // Highest mode freq
+    std::optional<float> FundamentalFreq{}; // Scale mode freqs so the lowest mode is at this fundamental
+    uint32_t NumModes{20}; // Number of synthesized modes
+    uint32_t NumFemModes{100}; // Number of modes to be computed with Finite Element Analysis (FEA)
+    std::vector<uint32_t> ExPos{}; // Excitation positions
+    AcousticMaterialProperties Material{};
+};
 
-    return mesh2modes(
-        M, K, num_vertices, vertex_dim,
-        {
-            .MinModeFreq = 20,
-            .MaxModeFreq = 16'000,
-            .FundamentalFreq = fundamental_freq,
-            .NumModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
-            .NumFemModes = 80, // number of modes to be computed for the finite element analysis
-            // Convert to signed ints.
-            .ExPos = excitable_vertices,
-            .Material = std::move(material),
-        }
-    );
-}
-
-ModalModes m2f::mesh2modes(
+ModalModes ComputeModes(
     const Eigen::SparseMatrix<double> &M,
     const Eigen::SparseMatrix<double> &K,
     uint32_t num_vertices, uint32_t vertex_dim,
-    Args args
+    ComputeModesOpts opts
 ) {
-    const uint32_t fem_n_modes = std::min(args.NumFemModes, num_vertices * vertex_dim - 1);
-
     /** Compute mass/stiffness eigenvalues and eigenvectors **/
     using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
     using BOpType = Spectra::SparseSymMatProd<double>;
+    using Spectra::GEigsMode::ShiftInvert;
 
-    const uint32_t convergence_ratio = std::min(std::max(2u * fem_n_modes + 1u, 20u), num_vertices * vertex_dim);
-    const double sigma = pow(2 * M_PI * args.MinModeFreq, 2);
-    OpType op(K, M);
-    BOpType Bop(M);
-    Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> eigs(op, Bop, fem_n_modes, convergence_ratio, sigma);
+    const uint32_t n = num_vertices * vertex_dim;
+    const uint32_t fem_n_modes = std::min(opts.NumFemModes, n - 1);
+    const uint32_t convergence_ratio = std::min(std::max(2 * fem_n_modes + 1, 20u), n);
+    const double sigma = pow(2 * M_PI * opts.MinModeFreq, 2);
+    OpType op{K, M};
+    BOpType Bop{M};
+    Spectra::SymGEigsShiftSolver<OpType, BOpType, ShiftInvert> eigs{op, Bop, fem_n_modes, convergence_ratio, sigma};
     eigs.init();
-    eigs.compute(Spectra::SortRule::LargestMagn, 1000, 1e-10, Spectra::SortRule::SmallestAlge);
+    eigs.compute(Spectra::SortRule::LargestMagn, 100, 1e-8, Spectra::SortRule::SmallestAlge);
     if (eigs.info() != Spectra::CompInfo::Successful) return {};
 
     const auto eigenvalues = eigs.eigenvalues();
     const auto eigenvectors = eigs.eigenvectors();
 
-    // Compute modes frequencies/gains/T60s
+    /** Compute modes frequencies/gains/T60s **/
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
     for (uint32_t mode = 0; mode < fem_n_modes; ++mode) {
         if (eigenvalues[mode] < 1) { // Ignore very small eigenvalues
@@ -258,7 +234,7 @@ ModalModes m2f::mesh2modes(
         // With good eigenvalue estimates, this should be nearly equivalent:
         // const auto &v = eigenvectors.col(mode);
         // const double Mv = v.transpose() * M * v, Kv = v.transpose() * K * v, omega_i = sqrt(Kv / Mv);
-        const double xi_i = 0.5 * (args.Material.Alpha / omega_i + args.Material.Beta * omega_i); // Damping ratio
+        const double xi_i = 0.5 * (opts.Material.Alpha / omega_i + opts.Material.Beta * omega_i); // Damping ratio
         const double omega_i_hz = omega_i / (2 * M_PI);
         mode_freqs[mode] = omega_i_hz * sqrt(1 - xi_i * xi_i); // Damped natural frequency
         // T60 is the time for the mode's amplitude to decay by 60 dB.
@@ -271,24 +247,24 @@ ModalModes m2f::mesh2modes(
 
     // Find the lowest mode based on the unscaled minimum frequency.
     // This is because we need to know the lowest mode to scale the other modes.
-    const float min_mode_freq = args.MinModeFreq;
+    const float min_mode_freq = opts.MinModeFreq;
     const uint32_t lowest_mode_i = find_if(mode_freqs | reverse, [min_mode_freq](auto freq) { return freq <= min_mode_freq; }).base() - mode_freqs.begin();
     // Find the highest mode based on the scaled maximum frequency.
-    const float max_mode_freq = args.FundamentalFreq ? mode_freqs[lowest_mode_i] * args.MaxModeFreq / *args.FundamentalFreq : args.MaxModeFreq;
+    const float max_mode_freq = opts.FundamentalFreq ? mode_freqs[lowest_mode_i] * opts.MaxModeFreq / *opts.FundamentalFreq : opts.MaxModeFreq;
     const uint32_t highest_mode_i = find_if(mode_freqs | drop(lowest_mode_i) | reverse, [max_mode_freq](auto freq) { return freq <= max_mode_freq; }).base() - mode_freqs.begin();
 
     // Adjust modes to include only the requested range.
-    const uint32_t n_modes = std::min(std::min(args.NumModes, fem_n_modes), highest_mode_i - lowest_mode_i);
+    const uint32_t n_modes = std::min(std::min(opts.NumModes, fem_n_modes), highest_mode_i - lowest_mode_i);
     mode_freqs.erase(mode_freqs.begin(), mode_freqs.begin() + lowest_mode_i);
     mode_freqs.resize(n_modes);
     mode_t60s.erase(mode_t60s.begin(), mode_t60s.begin() + lowest_mode_i);
     mode_t60s.resize(n_modes);
 
-    const uint32_t n_ex_pos = std::min(args.ExPos.size(), size_t(num_vertices));
+    const uint32_t n_ex_pos = std::min(opts.ExPos.size(), size_t(num_vertices));
     std::vector<std::vector<float>> gains(n_ex_pos); // Mode gains by [exitation position][mode]
     for (size_t ex_pos = 0; ex_pos < size_t(n_ex_pos); ++ex_pos) { // For each excitation position
         // If exPos was provided, retrieve data. Otherwise, distribute excitation positions linearly.
-        uint32_t ev_i = vertex_dim * (ex_pos < args.ExPos.size() ? args.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
+        uint32_t ev_i = vertex_dim * (ex_pos < opts.ExPos.size() ? opts.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
         gains[ex_pos] = std::vector<float>(n_modes);
         float max_gain = 0;
         for (uint32_t mode = 0; mode < n_modes; ++mode) {
@@ -302,4 +278,23 @@ ModalModes m2f::mesh2modes(
     }
 
     return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains)};
+}
+} // namespace
+
+ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint32_t> &excitable_vertices, std::optional<float> fundamental_freq) {
+    const auto M = GenerateMassMatrix(tets, material.Density);
+    const auto K = ComputeStiffnessMatrix(tets, material);
+    return ComputeModes(
+        M, K, tets.numberofpoints, 3,
+        {
+            .MinModeFreq = 20,
+            .MaxModeFreq = 16'000,
+            .FundamentalFreq = fundamental_freq,
+            .NumModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
+            .NumFemModes = 80, // number of modes to be computed for the finite element analysis
+            // Convert to signed ints.
+            .ExPos = excitable_vertices,
+            .Material = std::move(material),
+        }
+    );
 }
