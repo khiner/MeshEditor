@@ -838,7 +838,7 @@ void Scene::Interact() {
     const auto &io = GetIO();
     if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
         if (io.KeyCtrl || io.KeySuper) {
-            Camera.SetTargetDistance(Camera.Distance * (1 - wheel.y / 16.f));
+            Camera.SetTargetDistance(std::max(Camera.Distance * (1 - wheel.y / 16.f), 0.01f));
         } else {
             Camera.AddYawPitch(wheel * 0.1f);
         }
