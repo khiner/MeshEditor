@@ -172,10 +172,10 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
 }
 } // namespace
 
-struct ImpactAudioModel {
-    ImpactAudioModel(std::vector<std::vector<float>> &&frames, std::vector<uint> vertices)
+struct SampleAudioModel {
+    SampleAudioModel(std::vector<std::vector<float>> &&frames, std::vector<uint> vertices)
         : Frames(std::move(frames)), Excitable(vertices) {}
-    ~ImpactAudioModel() = default;
+    ~SampleAudioModel() = default;
 
     std::vector<std::vector<float>> Frames;
     Excitable Excitable;
@@ -237,24 +237,24 @@ SoundObject::~SoundObject() = default;
 
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices) {
     if (!impact_frames.empty()) {
-        ImpactModel = std::make_unique<ImpactAudioModel>(std::move(impact_frames), std::move(vertex_indices));
-        Model = SoundObjectModel::ImpactAudio;
+        SampleModel = std::make_unique<SampleAudioModel>(std::move(impact_frames), std::move(vertex_indices));
+        Model = SoundObjectModel::Samples;
     }
 }
 void SoundObject::SetImpactFrames(std::vector<std::vector<float>> &&impact_frames) {
-    if (ImpactModel) {
-        ImpactModel->Stop();
-        ImpactModel->Frames = std::move(impact_frames);
+    if (SampleModel) {
+        SampleModel->Stop();
+        SampleModel->Frames = std::move(impact_frames);
     }
 }
 
 void SoundObject::ProduceAudio(AudioBuffer &buffer, entt::registry &r, entt::entity entity) const {
-    if (Model == SoundObjectModel::ImpactAudio && ImpactModel) {
-        if (ImpactModel->Frames.empty()) return;
-        const auto &impact_samples = ImpactModel->Frames[r.get<Excitable>(entity).SelectedVertexIndex];
+    if (Model == SoundObjectModel::Samples && SampleModel) {
+        if (SampleModel->Frames.empty()) return;
+        const auto &impact_samples = SampleModel->Frames[r.get<Excitable>(entity).SelectedVertexIndex];
         // todo - resample from 48kHz to device sample rate if necessary
         for (uint i = 0; i < buffer.FrameCount; ++i) {
-            buffer.Output[i] += ImpactModel->Frame < impact_samples.size() ? impact_samples[ImpactModel->Frame++] : 0.0f;
+            buffer.Output[i] += SampleModel->Frame < impact_samples.size() ? impact_samples[SampleModel->Frame++] : 0.0f;
         }
     } else if (Model == SoundObjectModel::Modal && ModalModel) {
         const auto &recording = ModalModel->Recording;
@@ -272,9 +272,9 @@ void SoundObject::ProduceAudio(AudioBuffer &buffer, entt::registry &r, entt::ent
 
 void SoundObject::SetVertex(uint vertex) {
     // Update vertex in all present models.
-    if (ImpactModel) {
-        ImpactModel->Stop();
-        ImpactModel->Excitable.SelectedVertexIndex = vertex;
+    if (SampleModel) {
+        SampleModel->Stop();
+        SampleModel->Excitable.SelectedVertexIndex = vertex;
     }
     if (ModalModel) {
         Dsp.Set(GateParamName, 0);
@@ -283,15 +283,15 @@ void SoundObject::SetVertex(uint vertex) {
 }
 void SoundObject::SetVertexForce(float force) {
     // Update vertex force in the active model.
-    if (Model == SoundObjectModel::ImpactAudio && ImpactModel) {
-        if (force > 0) ImpactModel->Frame = 0;
+    if (Model == SoundObjectModel::Samples && SampleModel) {
+        if (force > 0) SampleModel->Frame = 0;
     } else if (Model == SoundObjectModel::Modal && ModalModel) {
         Dsp.Set(GateParamName, force);
     }
 }
 
 void SoundObject::Stop() {
-    if (ImpactModel) ImpactModel->Stop();
+    if (SampleModel) SampleModel->Stop();
     if (ModalModel) Dsp.Set(GateParamName, 0);
 }
 
@@ -300,11 +300,11 @@ void SoundObject::SetModel(SoundObjectModel model, entt::registry &r, entt::enti
 
     Stop();
     Model = model;
-    const bool is_impact = Model == SoundObjectModel::ImpactAudio && ImpactModel;
+    const bool is_impact = Model == SoundObjectModel::Samples && SampleModel;
     const bool is_modal = Model == SoundObjectModel::Modal && ModalModel;
     if (!is_impact && !is_modal) return;
 
-    auto excitable = is_impact ? ImpactModel->Excitable : r.get<ModalSoundObject>(entity).Excitable;
+    auto excitable = is_impact ? SampleModel->Excitable : r.get<ModalSoundObject>(entity).Excitable;
     r.emplace_or_replace<Excitable>(entity, std::move(excitable));
 }
 
@@ -323,17 +323,17 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
 
     auto new_model = Model;
     if (Model == SoundObjectModel::None) {
-        if (ImpactModel) new_model = SoundObjectModel::ImpactAudio;
+        if (SampleModel) new_model = SoundObjectModel::Samples;
         else if (ModalModel) new_model = SoundObjectModel::Modal;
-    } else if (Model == SoundObjectModel::ImpactAudio && !ImpactModel) {
+    } else if (Model == SoundObjectModel::Samples && !SampleModel) {
         new_model = SoundObjectModel::Modal;
     } else if (Model == SoundObjectModel::Modal && !ModalModel) {
-        new_model = SoundObjectModel::ImpactAudio;
+        new_model = SoundObjectModel::Samples;
     }
-    if (ImpactModel && ModalModel) {
+    if (SampleModel && ModalModel) {
         PushID("SelectAudioModel");
         auto model = int(new_model);
-        bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::ImpactAudio));
+        bool model_changed = RadioButton("Recordings", &model, int(SoundObjectModel::Samples));
         SameLine();
         model_changed |= RadioButton("Modal", &model, int(SoundObjectModel::Modal));
         PopID();
@@ -357,7 +357,7 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
             EndCombo();
         }
         const bool can_excite =
-            (Model == SoundObjectModel::ImpactAudio) ||
+            (Model == SoundObjectModel::Samples) ||
             (Model == SoundObjectModel::Modal && (!ModalModel->Recording || ModalModel->Recording->Complete()));
         if (!can_excite) BeginDisabled();
         Button("Excite");
@@ -367,10 +367,10 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
     }
 
     // Impact model
-    if (Model == SoundObjectModel::ImpactAudio) {
+    if (Model == SoundObjectModel::Samples) {
         SeparatorText("Real-world impact model");
-        const auto &frames = ImpactModel->GetFrames();
-        PlotFrames(frames, "Waveform", ImpactModel->Frame);
+        const auto &frames = SampleModel->GetFrames();
+        PlotFrames(frames, "Waveform", SampleModel->Frame);
         PlotMagnitudeSpectrum(frames, "Spectrum");
     }
 
@@ -426,10 +426,10 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
 
         SeparatorText("Excitable vertices");
         // If impact model is present, default the modal model to be excitable at exactly the same points.
-        if (ImpactModel) Checkbox("Use RealImpact vertices", &info.UseImpactVertices);
+        if (SampleModel) Checkbox("Use RealImpact vertices", &info.UseImpactVertices);
 
         const auto &mesh = r.get<const Mesh>(entity);
-        if (!ImpactModel || !info.UseImpactVertices) {
+        if (!SampleModel || !info.UseImpactVertices) {
             const uint num_vertices = mesh.GetVertexCount();
             info.NumExcitableVertices = std::min(info.NumExcitableVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
@@ -451,8 +451,8 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
 
                 // Use impact model vertices or linearly distribute the vertices across the tet mesh.
                 const auto num_vertices = mesh.GetVertexCount();
-                const auto excitable_vertices = ImpactModel && info.UseImpactVertices ?
-                    ImpactModel->Excitable.ExcitableVertices :
+                const auto excitable_vertices = SampleModel && info.UseImpactVertices ?
+                    SampleModel->Excitable.ExcitableVertices :
                     iota_view{0u, uint(info.NumExcitableVertices)} | transform([&](uint i) { return i * num_vertices / info.NumExcitableVertices; }) | to<std::vector<uint>>();
 
                 while (!DspGenerator) {}
@@ -460,7 +460,7 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
                 const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = info.QualityTets});
 
                 DspGenerator->SetMessage("Generating modal model...");
-                const auto fundamental = ImpactModel ? std::optional{GetPeakFrequencies(ComputeFft(ImpactModel->GetFrames()), 10).front()} : std::nullopt;
+                const auto fundamental = SampleModel ? std::optional{GetPeakFrequencies(ComputeFft(SampleModel->GetFrames()), 10).front()} : std::nullopt;
                 // const std::optional<float> fundamental = {};
                 r.remove<ModalModelCreateInfo>(entity);
                 ModalSoundObject obj{
@@ -523,8 +523,8 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
     if (Button("Record strike")) recording = std::make_unique<::Recording>(RecordFrames);
     if (is_recording) EndDisabled();
 
-    if (ImpactModel && recording && recording->Complete()) {
-        // const auto &modal = *ModalModel->FftData, &impact = ImpactModel->FftData;
+    if (SampleModel && recording && recording->Complete()) {
+        // const auto &modal = *ModalModel->FftData, &impact = SampleModel->FftData;
         // uint ModeCount() const { return modes.Freqs.size(); }
         // const uint n_test_modes = std::min(ModalModel->ModeCount(), 10u);
         // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
@@ -537,7 +537,7 @@ void SoundObject::Draw(entt::registry &r, entt::entity entity) {
             // Save wav files for both the modal and real-world impact sounds.
             static const auto WavOutDir = fs::path{".."} / "audio_samples";
             WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name));
-            WriteWav(ImpactModel->GetFrames(), WavOutDir / std::format("{}-impact", name));
+            WriteWav(SampleModel->GetFrames(), WavOutDir / std::format("{}-impact", name));
         }
     }
 }

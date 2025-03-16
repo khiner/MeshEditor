@@ -13,7 +13,7 @@
 enum class SoundObjectModel {
     None,
     // Play back recordings of impacts on the object at provided listener points/vertices.
-    ImpactAudio,
+    Samples,
     // Model a rigid body's response to an impact using modal analysis/synthesis:
     // - transform the object's geometry into a tetrahedral volume mesh
     // - use FEM to estimate the mass/sg/damping matrices from the mesh
@@ -26,7 +26,7 @@ enum class SoundObjectModel {
 struct ModalModelCreateInfo {
     AcousticMaterial Material{materials::acoustic::All.front()};
     uint32_t NumExcitableVertices{10};
-    bool UseImpactVertices{true}; // Only used in ImpactAudio mode
+    bool UseImpactVertices{true}; // Only used in Samples mode
     bool QualityTets{false};
 };
 
@@ -35,7 +35,7 @@ struct Excitable;
 struct FaustDSP;
 
 struct ModalAudioModel;
-struct ImpactAudioModel;
+struct SampleAudioModel;
 
 // Represents a rigid body that generates an audio stream in response to an impact at a given vertex.
 struct SoundObject {
@@ -57,7 +57,7 @@ private:
 
     FaustDSP &Dsp;
     std::unique_ptr<ModalAudioModel> ModalModel;
-    std::unique_ptr<ImpactAudioModel> ImpactModel;
+    std::unique_ptr<SampleAudioModel> SampleModel;
 
     SoundObjectModel Model{SoundObjectModel::None};
 };
