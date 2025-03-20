@@ -1,11 +1,13 @@
 #include "AudioDevice.h"
-#include "SoundObject.h"
 
 #include "imgui.h"
 #include "miniaudio.h"
 
 #include <format>
 #include <string_view>
+#include <vector>
+
+using uint = uint32_t;
 
 namespace {
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
