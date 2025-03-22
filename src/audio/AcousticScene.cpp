@@ -243,9 +243,13 @@ void AcousticScene::RenderControls(Scene &scene) {
     };
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
-        if (Button("Create audio model")) {
+        if (Button("Create sound object")) {
             R.emplace<Frozen>(selected_entity);
+            R.emplace<SoundObjectModel>(selected_entity, SoundObjectModel::Modal);
+            R.emplace<ModalModelCreateInfo>(selected_entity);
         }
+        // todo Create a sample sound object
+        //  - Load and assign a sample to the whole object, or assign to vertices.
         return;
     }
 
@@ -521,8 +525,6 @@ void AcousticScene::Stop(entt::entity entity) {
 }
 
 void AcousticScene::SetModel(entt::entity entity, SoundObjectModel model) {
-    if (auto *m = R.try_get<const SoundObjectModel>(entity); m && *m == model) return;
-
     Stop(entity);
 
     const auto *sample_object = R.try_get<const SampleSoundObject>(entity);
@@ -589,9 +591,8 @@ void AcousticScene::Draw(entt::entity entity) {
         if (!can_excite) EndDisabled();
     }
 
-    // Impact model
     if (model == SoundObjectModel::Samples) {
-        SeparatorText("Real-world impact model");
+        SeparatorText("Sound samples");
         const auto &frames = sample_object->GetFrames();
         PlotFrames(frames, "Waveform", sample_object->Frame);
         PlotMagnitudeSpectrum(frames, "Spectrum");
@@ -604,11 +605,10 @@ void AcousticScene::Draw(entt::entity entity) {
     auto *create_info = R.try_get<ModalModelCreateInfo>(entity);
     if (!create_info) {
         // Open create/edit
-        const auto *obj = R.try_get<const ModalSoundObject>(entity);
-        if (Button(std::format("{} modal model", obj ? "Edit" : "Create").c_str())) {
+        if (Button(std::format("{} modal model", modal_object ? "Edit" : "Create").c_str())) {
             ModalModelCreateInfo create_info{};
-            if (obj) {
-                create_info.NumExcitableVertices = obj->Excitable.ExcitableVertices.size();
+            if (modal_object) {
+                create_info.NumExcitableVertices = modal_object->Excitable.ExcitableVertices.size();
             }
             if (const auto *material = R.try_get<const AcousticMaterial>(entity)) {
                 create_info.Material = *material;
@@ -659,7 +659,7 @@ void AcousticScene::Draw(entt::entity entity) {
             SliderScalar("Num excitable vertices", ImGuiDataType_U32, &info.NumExcitableVertices, &min_vertices, &max_vertices);
         }
 
-        if (Button("Create")) {
+        if (Button(modal_object ? "Update" : "Create")) {
             Stop(entity);
             R.emplace_or_replace<AcousticMaterial>(entity, info.Material);
             DspGenerator = std::make_unique<Worker<ModalSoundObject>>(

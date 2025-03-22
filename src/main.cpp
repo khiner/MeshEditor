@@ -355,8 +355,8 @@ int main(int, char **) {
 
             if (GetFrameCount() == 1) {
                 // Initialize scene now that it has an extent.
-                static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
+                // static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
+                // if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
             }
         }
 
