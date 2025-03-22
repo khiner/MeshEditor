@@ -519,18 +519,18 @@ void AcousticScene::Stop(entt::entity entity) {
 }
 
 void AcousticScene::SetModel(entt::entity entity, SoundObjectModel model) {
-    if (auto *m = R.try_get<SoundObjectModel>(entity); m && *m == model) return;
+    if (auto *m = R.try_get<const SoundObjectModel>(entity); m && *m == model) return;
 
     Stop(entity);
-    const auto *sample_object = R.try_get<SampleSoundObject>(entity);
-    const auto *modal_object = R.try_get<ModalSoundObject>(entity);
-    const bool is_impact = model == SoundObjectModel::Samples && sample_object;
+
+    const auto *sample_object = R.try_get<const SampleSoundObject>(entity);
+    const auto *modal_object = R.try_get<const ModalSoundObject>(entity);
+    const bool is_sample = model == SoundObjectModel::Samples && sample_object;
     const bool is_modal = model == SoundObjectModel::Modal && modal_object;
-    if (!is_impact && !is_modal) return;
+    if (!is_sample && !is_modal) return;
 
     R.emplace_or_replace<SoundObjectModel>(entity, model);
-    auto excitable = is_impact ? sample_object->Excitable : modal_object->Excitable;
-    R.emplace_or_replace<Excitable>(entity, std::move(excitable));
+    R.emplace_or_replace<Excitable>(entity, is_sample ? sample_object->Excitable : modal_object->Excitable);
 }
 
 void AcousticScene::Draw(entt::entity entity) {
@@ -646,11 +646,11 @@ void AcousticScene::Draw(entt::entity entity) {
         MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
 
         SeparatorText("Excitable vertices");
-        // If impact model is present, default the modal model to be excitable at exactly the same points.
-        if (sample_object) Checkbox("Use RealImpact vertices", &info.UseImpactVertices);
+        // If a sample object is present, default the modal model to be excitable at the same points.
+        if (sample_object) Checkbox("Use sample vertices", &info.UseSampleVertices);
 
         const auto &mesh = R.get<const Mesh>(entity);
-        if (!sample_object || !info.UseImpactVertices) {
+        if (!sample_object || !info.UseSampleVertices) {
             const uint num_vertices = mesh.GetVertexCount();
             info.NumExcitableVertices = std::min(info.NumExcitableVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
@@ -751,7 +751,7 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, cons
     const auto scale = R.get<Scale>(entity).Value;
     // Use impact model vertices or linearly distribute the vertices across the tet mesh.
     const auto num_vertices = mesh.GetVertexCount();
-    const auto excitable_vertices = sample_object && info.UseImpactVertices ?
+    const auto excitable_vertices = sample_object && info.UseSampleVertices ?
         sample_object->Excitable.ExcitableVertices :
         iota_view{0u, uint(info.NumExcitableVertices)} | transform([&](uint i) { return i * num_vertices / info.NumExcitableVertices; }) | to<std::vector<uint>>();
 
@@ -763,7 +763,7 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, cons
     const auto fundamental = sample_object ? std::optional{GetPeakFrequencies(ComputeFft(sample_object->GetFrames()), 10).front()} : std::nullopt;
     ModalSoundObject obj{
         .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable_vertices, fundamental),
-        .Excitable = {excitable_vertices},
+        .Excitable = {excitable_vertices, 0},
     };
     if (fundamental) obj.FundamentalFreq = *fundamental;
     return obj;

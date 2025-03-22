@@ -30,7 +30,7 @@ enum class SoundObjectModel {
 struct ModalModelCreateInfo {
     AcousticMaterial Material{materials::acoustic::All.front()};
     uint32_t NumExcitableVertices{10};
-    bool UseImpactVertices{true}; // Only used in Samples mode
+    bool UseSampleVertices{true}; // Only used in Samples mode
     bool QualityTets{false};
 };
 

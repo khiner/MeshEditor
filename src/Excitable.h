@@ -7,10 +7,6 @@
 #include <vector>
 
 struct Excitable {
-    Excitable() = default;
-    Excitable(std::vector<uint32_t> vertices) : ExcitableVertices(std::move(vertices)), SelectedVertexIndex(0) {}
-    Excitable(std::vector<uint32_t> vertices, uint32_t selected_vertex_index) : ExcitableVertices(std::move(vertices)), SelectedVertexIndex(selected_vertex_index) {}
-
     uint32_t SelectedVertex() const { return ExcitableVertices[SelectedVertexIndex]; }
     void SelectVertex(uint32_t vertex) {
         auto it = std::ranges::find(ExcitableVertices, vertex);

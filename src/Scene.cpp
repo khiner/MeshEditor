@@ -318,8 +318,8 @@ void Scene::UpdateHighlightedVertices(entt::entity entity, const Excitable &exci
         for (const auto vertex : excitable.ExcitableVertices) {
             mesh->HighlightVertex(Mesh::VH(vertex));
         }
+        UpdateRenderBuffers(entity);
     }
-    UpdateRenderBuffers(entity);
 }
 
 void Scene::OnCreateExcitable(entt::registry &r, entt::entity entity) {
@@ -546,12 +546,12 @@ void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 sca
     InvalidateCommandBuffer();
 }
 
-void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex highlight_element) {
+void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex selected_element) {
     if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
         auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
-        const Mesh::ElementIndex highlight{highlight_element};
+        const Mesh::ElementIndex selected{selected_element};
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
-            VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, highlight));
+            VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected));
         }
         InvalidateCommandBuffer();
     }

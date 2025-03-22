@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <ranges>
-#include <unordered_set>
 
 using namespace om;
 
@@ -292,7 +291,7 @@ std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
     return indices;
 }
 
-std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const ElementIndex &highlight) const {
+std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const ElementIndex &selected) const {
     std::vector<VerticesHandle> handles;
     if (render_element == MeshElement::Vertex) {
         handles.reserve(M.n_vertices());
@@ -310,27 +309,22 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const Ele
         }
     }
 
-    static std::unordered_set<ElementIndex, MeshElementIndexHash> AllHighlights;
-    AllHighlights.clear();
-    AllHighlights.insert(HighlightedElements.begin(), HighlightedElements.end());
-    AllHighlights.emplace(highlight);
-
     std::vector<Vertex3D> vertices;
     for (const auto &handle : handles) {
-        const auto &parent = handle.Parent;
+        const auto parent = handle.Parent;
         const auto normal = ToGlm(render_element == MeshElement::Vertex || render_element == MeshElement::Edge ? M.normal(handle.VHs[0]) : M.normal(FH(handle.Parent)));
         for (const auto vh : handle.VHs) {
-            const bool is_highlighted =
-                // todo different colors for persistent/selection highlights (`HighlightedElements` vs `highlight`)
-                //   - actually, best approach may be to add a boolean `highlight` to `Vertex3D` and let the shader handle the color.
-                //   - this would enable very fast highlight color ubo updates, which we'll need for fading alpha representing strike response intensity.
-                AllHighlights.contains(vh) || AllHighlights.contains(parent) ||
+            const bool is_selected =
+                (selected == vh || selected == parent) ||
                 // Note: If we want to support `HighlightedElements` having `MeshElement::Edge` or `MeshElement::Face` elements (not just the selection `highlight`),
-                // we'd need to update the methods to accept sets of `ElementIndex` instead of just one.
-                (render_element == MeshElement::Vertex && (VertexBelongsToFace(parent, highlight) || VertexBelongsToEdge(parent, highlight))) ||
-                (render_element == MeshElement::Edge && EdgeBelongsToFace(parent, highlight)) ||
-                (render_element == MeshElement::Face && VertexBelongsToFaceEdge(vh, parent, highlight));
-            const vec4 color = is_highlighted         ? HighlightColor :
+                // we need to update the methods to accept sets of `ElementIndex` instead of just one.
+                (render_element == MeshElement::Vertex && (vh.idx() == selected.idx() || VertexBelongsToFace(parent, selected) || VertexBelongsToEdge(parent, selected))) ||
+                (render_element == MeshElement::Edge && EdgeBelongsToFace(parent, selected)) ||
+                (render_element == MeshElement::Face && VertexBelongsToFaceEdge(vh, parent, selected));
+            const bool is_highlighted =
+                HighlightedElements.contains(vh) || HighlightedElements.contains(parent);
+            const vec4 color = is_selected            ? SelectedColor :
+                is_highlighted                        ? HighlightedColor :
                 render_element == MeshElement::Vertex ? VertexColor :
                 render_element == MeshElement::Edge   ? EdgeColor :
                                                         ToGlm(M.color(FH(parent)));

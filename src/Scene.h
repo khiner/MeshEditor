@@ -180,7 +180,7 @@ struct Scene {
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
 
-    void UpdateRenderBuffers(entt::entity, MeshElementIndex highlight_element = {});
+    void UpdateRenderBuffers(entt::entity, MeshElementIndex selected_element = {});
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void InvalidateCommandBuffer();

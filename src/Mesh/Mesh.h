@@ -13,6 +13,7 @@
 #include "numeric/vec4.h"
 
 #include <filesystem>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -84,7 +85,8 @@ struct Mesh {
 
     inline static const vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
     inline static vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
-    inline static vec4 HighlightColor{0.929, 0.341, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Object Selected
+    inline static vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select
+    inline static vec4 HighlightedColor{0, 0.647, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Bevel
     inline static vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal
     inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
     static constexpr float NormalIndicatorLengthScale{0.25};
@@ -116,7 +118,7 @@ struct Mesh {
 
     float CalcFaceArea(FH) const;
 
-    std::vector<Vertex3D> CreateVertices(MeshElement, const ElementIndex &highlight = {}) const;
+    std::vector<Vertex3D> CreateVertices(MeshElement, const ElementIndex &select = {}) const;
     std::vector<uint> CreateIndices(MeshElement) const;
 
     std::vector<Vertex3D> CreateNormalVertices(MeshElement) const;
@@ -137,7 +139,7 @@ struct Mesh {
     //     }
     // }
 
-    void HighlightVertex(VH vh) { HighlightedElements.emplace_back(MeshElement::Vertex, vh.idx()); }
+    void HighlightVertex(VH vh) { HighlightedElements.emplace(MeshElement::Vertex, vh.idx()); }
     void ClearHighlights() { HighlightedElements.clear(); }
 
     void SetFaceColor(FH fh, vec4 color) { M.set_color(fh, ToOpenMesh(color)); }
@@ -179,5 +181,6 @@ struct Mesh {
 private:
     PolyMesh M;
     std::unique_ptr<BVH> Bvh;
-    std::vector<ElementIndex> HighlightedElements; // In addition to selection highlights (xxx should combine).
+    // In addition to selected elements.
+    std::unordered_set<ElementIndex, MeshElementIndexHash> HighlightedElements;
 };
