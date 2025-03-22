@@ -531,7 +531,7 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
     if (SelectionMode == mode) return;
 
     SelectionMode = mode;
-    const auto entity = GetParentEntity(R, SelectedEntity);
+    const auto entity = GetSelectedEntity();
     UpdateRenderBuffers(entity);
     UpdateHighlightedVertices(entity, R.get<Excitable>(entity));
 }
@@ -539,11 +539,11 @@ void Scene::SetEditingElement(MeshElementIndex element) {
     if (SelectedEntity == entt::null) return;
 
     EditingElement = element;
-    UpdateRenderBuffers(GetParentEntity(R, SelectedEntity));
+    UpdateRenderBuffers(GetSelectedEntity());
 }
-const Mesh &Scene::GetSelectedMesh() const {
-    return R.get<Mesh>(GetParentEntity(R, SelectedEntity));
-}
+
+entt::entity Scene::GetSelectedEntity() const { return GetParentEntity(R, SelectedEntity); }
+const Mesh &Scene::GetSelectedMesh() const { return R.get<Mesh>(GetSelectedEntity()); }
 
 void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 scale) {
     UpdateModel(R, entity, position, rotation, scale);
@@ -629,7 +629,7 @@ void Scene::RecordCommandBuffer() {
         }}
     );
 
-    const auto selected_mesh_entity = GetParentEntity(R, SelectedEntity);
+    const auto selected_mesh_entity = GetSelectedEntity();
     const auto selected_model_buffer_index = GetModelBufferIndex(SelectedEntity);
     const bool render_silhouette = selected_model_buffer_index && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
@@ -1059,7 +1059,7 @@ void Scene::RenderControls() {
                         InvalidateCommandBuffer();
                     }
                 }
-                if (Button("Add instance")) AddInstance(GetParentEntity(R, SelectedEntity));
+                if (Button("Add instance")) AddInstance(GetSelectedEntity());
 
                 if (CollapsingHeader("Transform")) {
                     auto pos = R.get<Position>(SelectedEntity).Value;
@@ -1186,7 +1186,7 @@ void Scene::RenderControls() {
             if (SelectedEntity != entt::null) {
                 AlignTextToFramePadding();
                 TextUnformatted("Normals:");
-                const auto mesh_entity = GetParentEntity(R, SelectedEntity);
+                const auto mesh_entity = GetSelectedEntity();
                 const auto &mesh = R.get<Mesh>(mesh_entity);
                 auto &normals = MeshVkData->NormalIndicators.at(mesh_entity);
                 for (const auto element : AllNormalElements) {

@@ -139,7 +139,6 @@ struct Scene {
     World World{};
 
     std::optional<uint> GetModelBufferIndex(entt::entity);
-    entt::entity GetSelectedEntity() const { return SelectedEntity; }
 
     entt::entity AddMesh(Mesh &&, MeshCreateInfo info = {});
     entt::entity AddMesh(const fs::path &, MeshCreateInfo info = {});
@@ -157,6 +156,7 @@ struct Scene {
 
     void SetVisible(entt::entity, bool);
 
+    entt::entity GetSelectedEntity() const;
     void SelectEntity(entt::entity entity) {
         SelectedEntity = entity;
         InvalidateCommandBuffer();
