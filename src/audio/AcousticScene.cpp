@@ -73,10 +73,12 @@ AcousticScene::~AcousticScene() = default;
 void AcousticScene::OnCreateExcitedVertex(entt::registry &r, entt::entity entity) {
     if (r.all_of<SoundObjectModel>(entity)) {
         const auto &excited_vertex = r.get<const ExcitedVertex>(entity);
-        auto &excitable = r.get<Excitable>(entity);
-        excitable.SelectVertex(excited_vertex.Vertex);
-        SetVertex(entity, excitable.SelectedVertexIndex);
-        SetVertexForce(entity, excited_vertex.Force);
+        const auto &excitable = r.get<const Excitable>(entity);
+        if (auto vi = excitable.FindVertexIndex(excited_vertex.Vertex)) {
+            R.patch<Excitable>(entity, [vi](auto &e) { e.SelectedVertexIndex = *vi; });
+            SetVertex(entity, *vi);
+            SetVertexForce(entity, excited_vertex.Force);
+        }
     }
 }
 void AcousticScene::OnDestroyExcitedVertex(entt::registry &r, entt::entity entity) {
@@ -563,7 +565,7 @@ void AcousticScene::Draw(entt::entity entity) {
 
     // Cross-model excite section
     auto *recording = R.try_get<Recording>(entity);
-    auto *excitable = R.try_get<Excitable>(entity);
+    const auto *excitable = R.try_get<const Excitable>(entity);
     if (excitable) {
         if (BeginCombo("Vertex", std::to_string(excitable->SelectedVertex()).c_str())) {
             const auto selected_vi = excitable->SelectedVertexIndex;
@@ -571,7 +573,7 @@ void AcousticScene::Draw(entt::entity entity) {
                 const auto vertex = excitable->ExcitableVertices[vi];
                 if (Selectable(std::to_string(vertex).c_str(), vi == selected_vi)) {
                     R.remove<ExcitedVertex>(entity);
-                    excitable->SelectedVertexIndex = vi;
+                    R.patch<Excitable>(entity, [vi](auto &e) { e.SelectedVertexIndex = vi; });
                     SetVertex(entity, vi);
                 }
             }
@@ -690,7 +692,10 @@ void AcousticScene::Draw(entt::entity entity) {
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-    excitable->SelectedVertexIndex = uint(Dsp->Get(ExciteIndexParamName));
+    const auto excite_index = uint(Dsp->Get(ExciteIndexParamName));
+    if (excitable->SelectedVertexIndex != excite_index) {
+        R.patch<Excitable>(entity, [excite_index](auto &e) { e.SelectedVertexIndex = excite_index; });
+    }
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
         const auto scaled_mode_freqs = modes.Freqs | transform([&](float f) { return modal.FundamentalFreq * f / modes.Freqs.front(); }) | to<std::vector>();

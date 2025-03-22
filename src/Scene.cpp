@@ -554,12 +554,17 @@ void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 sca
 void Scene::UpdateRenderBuffers(entt::entity mesh_entity) {
     if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
         auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
-        const Mesh::ElementIndex selected{SelectionMode == SelectionMode::Edit && mesh_entity == SelectedEntity ? EditingElement : MeshElementIndex{}};
+        const bool is_selected = GetSelectedEntity() == mesh_entity;
+        const Mesh::ElementIndex selected{
+            is_selected && SelectionMode == SelectionMode::Edit       ? EditingElement :
+                is_selected && SelectionMode == SelectionMode::Excite ? MeshElementIndex{MeshElement::Vertex, int(R.get<Excitable>(mesh_entity).SelectedVertex())} :
+                                                                        MeshElementIndex{}
+        };
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
             VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected));
         }
         InvalidateCommandBuffer();
-    }
+    };
 }
 
 void Scene::SetExtent(vk::Extent2D extent) {

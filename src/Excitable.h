@@ -8,9 +8,11 @@
 
 struct Excitable {
     uint32_t SelectedVertex() const { return ExcitableVertices[SelectedVertexIndex]; }
-    void SelectVertex(uint32_t vertex) {
-        auto it = std::ranges::find(ExcitableVertices, vertex);
-        if (it != ExcitableVertices.end()) SelectedVertexIndex = std::ranges::distance(ExcitableVertices.begin(), it);
+    std::optional<uint32_t> FindVertexIndex(uint32_t vertex) const {
+        if (auto it = std::ranges::find(ExcitableVertices, vertex); it != ExcitableVertices.end()) {
+            return std::ranges::distance(ExcitableVertices.begin(), it);
+        }
+        return std::nullopt;
     }
 
     std::vector<uint32_t> ExcitableVertices;
