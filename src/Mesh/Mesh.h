@@ -89,6 +89,7 @@ struct Mesh {
     inline static vec4 HighlightedColor{0, 0.647, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Bevel
     inline static vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal
     inline static vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
+    inline static vec4 HighlightedFaceColor{0.790, 0.930, 1, 1}; // Custom
     static constexpr float NormalIndicatorLengthScale{0.25};
 
     Mesh(Mesh &&);

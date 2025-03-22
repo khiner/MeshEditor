@@ -531,8 +531,12 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
     if (SelectionMode == mode) return;
 
     SelectionMode = mode;
+    for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
+        const bool highlight_faces = SelectionMode == SelectionMode::Excite && R.try_get<Excitable>(entity);
+        mesh.SetFaceColor(highlight_faces ? Mesh::HighlightedFaceColor : Mesh::DefaultFaceColor);
+        UpdateRenderBuffers(entity);
+    }
     const auto entity = GetSelectedEntity();
-    UpdateRenderBuffers(entity);
     UpdateHighlightedVertices(entity, R.get<Excitable>(entity));
 }
 void Scene::SetEditingElement(MeshElementIndex element) {
@@ -551,17 +555,17 @@ void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 sca
     InvalidateCommandBuffer();
 }
 
-void Scene::UpdateRenderBuffers(entt::entity mesh_entity) {
-    if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
-        auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
-        const bool is_selected = GetSelectedEntity() == mesh_entity;
-        const Mesh::ElementIndex selected{
+void Scene::UpdateRenderBuffers(entt::entity entity) {
+    if (const auto *mesh = R.try_get<Mesh>(entity)) {
+        auto &mesh_buffers = MeshVkData->Main.at(entity);
+        const bool is_selected = GetSelectedEntity() == entity;
+        const Mesh::ElementIndex selected_element{
             is_selected && SelectionMode == SelectionMode::Edit       ? EditingElement :
-                is_selected && SelectionMode == SelectionMode::Excite ? MeshElementIndex{MeshElement::Vertex, int(R.get<Excitable>(mesh_entity).SelectedVertex())} :
+                is_selected && SelectionMode == SelectionMode::Excite ? MeshElementIndex{MeshElement::Vertex, int(R.get<Excitable>(entity).SelectedVertex())} :
                                                                         MeshElementIndex{}
         };
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
-            VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected));
+            VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected_element));
         }
         InvalidateCommandBuffer();
     };
