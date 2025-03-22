@@ -648,11 +648,12 @@ void AcousticScene::Draw(entt::entity entity) {
         MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
 
         SeparatorText("Excitable vertices");
-        // If a sample object is present, default the modal model to be excitable at the same points.
-        if (sample_object) Checkbox("Use sample vertices", &info.UseSampleVertices);
-
-        const auto &mesh = R.get<const Mesh>(entity);
-        if (!sample_object || !info.UseSampleVertices) {
+        // If object is already excitable, default the modal model to be excitable at the same points.
+        if (excitable) {
+            Checkbox("Copy excitable vertices", &info.CopyExcitable);
+        }
+        if (!excitable || !info.CopyExcitable) {
+            const auto &mesh = R.get<const Mesh>(entity);
             const uint num_vertices = mesh.GetVertexCount();
             info.NumExcitableVertices = std::min(info.NumExcitableVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
@@ -756,9 +757,12 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, cons
     const auto scale = R.get<Scale>(entity).Value;
     // Use impact model vertices or linearly distribute the vertices across the tet mesh.
     const auto num_vertices = mesh.GetVertexCount();
-    const auto excitable_vertices = sample_object && info.UseSampleVertices ?
-        sample_object->Excitable.ExcitableVertices :
-        iota_view{0u, uint(info.NumExcitableVertices)} | transform([&](uint i) { return i * num_vertices / info.NumExcitableVertices; }) | to<std::vector<uint>>();
+    const auto excitable = info.CopyExcitable && R.all_of<Excitable>(entity) ?
+        R.get<const Excitable>(entity) :
+        Excitable{
+            iota_view{0u, uint(info.NumExcitableVertices)} | transform([&](uint i) { return i * num_vertices / info.NumExcitableVertices; }) | to<std::vector<uint>>(),
+            0
+        };
 
     while (!DspGenerator) {}
     DspGenerator->SetMessage("Generating tetrahedral mesh...");
@@ -767,8 +771,8 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, cons
     DspGenerator->SetMessage("Generating modal model...");
     const auto fundamental = sample_object ? std::optional{GetPeakFrequencies(ComputeFft(sample_object->GetFrames()), 10).front()} : std::nullopt;
     ModalSoundObject obj{
-        .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable_vertices, fundamental),
-        .Excitable = {excitable_vertices, 0},
+        .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable.ExcitableVertices, fundamental),
+        .Excitable = excitable,
     };
     if (fundamental) obj.FundamentalFreq = *fundamental;
     return obj;
