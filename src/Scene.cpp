@@ -315,8 +315,10 @@ Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anyt
 void Scene::UpdateHighlightedVertices(entt::entity entity, const Excitable &excitable) {
     if (auto *mesh = R.try_get<Mesh>(entity)) {
         mesh->ClearHighlights();
-        for (const auto vertex : excitable.ExcitableVertices) {
-            mesh->HighlightVertex(Mesh::VH(vertex));
+        if (SelectionMode == SelectionMode::Excite) {
+            for (const auto vertex : excitable.ExcitableVertices) {
+                mesh->HighlightVertex(Mesh::VH(vertex));
+            }
         }
         UpdateRenderBuffers(entity);
     }
@@ -325,7 +327,6 @@ void Scene::UpdateHighlightedVertices(entt::entity entity, const Excitable &exci
 void Scene::OnCreateExcitable(entt::registry &r, entt::entity entity) {
     SelectionModes.insert(SelectionMode::Excite);
     SetSelectionMode(SelectionMode::Excite);
-
     UpdateHighlightedVertices(entity, r.get<Excitable>(entity));
 }
 void Scene::OnUpdateExcitable(entt::registry &r, entt::entity entity) {
@@ -527,14 +528,18 @@ void Scene::DestroyInstance(entt::entity instance) {
     InvalidateCommandBuffer();
 }
 void Scene::SetSelectionMode(::SelectionMode mode) {
+    if (SelectionMode == mode) return;
+
     SelectionMode = mode;
-    InvalidateCommandBuffer();
+    const auto entity = GetParentEntity(R, SelectedEntity);
+    UpdateRenderBuffers(entity);
+    UpdateHighlightedVertices(entity, R.get<Excitable>(entity));
 }
-void Scene::SetSelectedElement(MeshElementIndex element) {
+void Scene::SetEditingElement(MeshElementIndex element) {
     if (SelectedEntity == entt::null) return;
 
-    SelectedElement = element;
-    UpdateRenderBuffers(GetParentEntity(R, SelectedEntity), SelectedElement);
+    EditingElement = element;
+    UpdateRenderBuffers(GetParentEntity(R, SelectedEntity));
 }
 const Mesh &Scene::GetSelectedMesh() const {
     return R.get<Mesh>(GetParentEntity(R, SelectedEntity));
@@ -546,10 +551,10 @@ void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 sca
     InvalidateCommandBuffer();
 }
 
-void Scene::UpdateRenderBuffers(entt::entity mesh_entity, MeshElementIndex selected_element) {
+void Scene::UpdateRenderBuffers(entt::entity mesh_entity) {
     if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
         auto &mesh_buffers = MeshVkData->Main.at(mesh_entity);
-        const Mesh::ElementIndex selected{selected_element};
+        const Mesh::ElementIndex selected{SelectionMode == SelectionMode::Edit && mesh_entity == SelectedEntity ? EditingElement : MeshElementIndex{}};
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
             VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected));
         }
@@ -725,7 +730,7 @@ void Scene::CompileShaders() {
 
 void Scene::UpdateEdgeColors() {
     Mesh::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (auto entity : R.view<Mesh>()) UpdateRenderBuffers(entity, entity == SelectedEntity ? SelectedElement : MeshElementIndex{});
+    for (auto entity : R.view<Mesh>()) UpdateRenderBuffers(entity);
 }
 
 void Scene::UpdateTransformBuffers() {
@@ -819,9 +824,9 @@ void Scene::Interact() {
             SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
         }
         if (SelectionMode == SelectionMode::Edit) {
-            if (IsKeyPressed(ImGuiKey_1)) SetSelectedElement({MeshElement::Vertex, -1});
-            else if (IsKeyPressed(ImGuiKey_2)) SetSelectedElement({MeshElement::Edge, -1});
-            else if (IsKeyPressed(ImGuiKey_3)) SetSelectedElement({MeshElement::Face, -1});
+            if (IsKeyPressed(ImGuiKey_1)) SetEditingElement({MeshElement::Vertex, -1});
+            else if (IsKeyPressed(ImGuiKey_2)) SetEditingElement({MeshElement::Edge, -1});
+            else if (IsKeyPressed(ImGuiKey_3)) SetEditingElement({MeshElement::Face, -1});
         }
         if (SelectedEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
             DestroyEntity(SelectedEntity);
@@ -848,15 +853,15 @@ void Scene::Interact() {
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay();
     if (SelectionMode == SelectionMode::Edit) {
-        if (SelectedElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
+        if (EditingElement.Element != MeshElement::None && SelectedEntity != entt::null && R.all_of<Visible>(SelectedEntity)) {
             const auto &model = R.get<Model>(SelectedEntity);
             const auto mouse_ray = WorldToLocal(mouse_world_ray, model.InvTransform);
             const auto &mesh = GetSelectedMesh();
             {
                 const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
-                if (SelectedElement.Element == MeshElement::Vertex) SetSelectedElement(Mesh::ElementIndex{nearest_vertex});
-                else if (SelectedElement.Element == MeshElement::Edge) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)});
-                else if (SelectedElement.Element == MeshElement::Face) SetSelectedElement(Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)});
+                if (EditingElement.Element == MeshElement::Vertex) SetEditingElement(Mesh::ElementIndex{nearest_vertex});
+                else if (EditingElement.Element == MeshElement::Edge) SetEditingElement(Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)});
+                else if (EditingElement.Element == MeshElement::Face) SetEditingElement(Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)});
             }
         }
     } else if (SelectionMode == SelectionMode::Object) {
@@ -1002,18 +1007,20 @@ void Scene::RenderControls() {
                 if (SelectionMode == SelectionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    int element_selection_mode = int(SelectedElement.Element);
+                    int element_selection_mode = int(EditingElement.Element);
                     for (const auto element : AllElements) {
-                        std::string name = to_string(element);
+                        auto name = to_string(element);
                         Capitalize(name);
                         SameLine();
-                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) SetSelectedElement({element, -1});
+                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) {
+                            SetEditingElement({element, -1});
+                        }
                     }
-                    Text("Selected %s: %s", to_string(SelectedElement.Element).c_str(), SelectedElement.is_valid() ? std::to_string(SelectedElement.idx()).c_str() : "None");
-                    if (SelectedElement.Element == MeshElement::Vertex && SelectedElement.is_valid() && SelectedEntity != entt::null) {
+                    Text("Editing %s: %s", to_string(EditingElement.Element).c_str(), EditingElement.is_valid() ? std::to_string(EditingElement.idx()).c_str() : "None");
+                    if (EditingElement.Element == MeshElement::Vertex && EditingElement.is_valid() && SelectedEntity != entt::null) {
                         const auto &mesh = GetSelectedMesh();
-                        const auto pos = mesh.GetPosition(Mesh::VH{SelectedElement.idx()});
-                        Text("Vertex %d: (%.4f, %.4f, %.4f)", SelectedElement.idx(), pos.x, pos.y, pos.z);
+                        const auto pos = mesh.GetPosition(Mesh::VH{EditingElement.idx()});
+                        Text("Vertex %d: (%.4f, %.4f, %.4f)", EditingElement.idx(), pos.x, pos.y, pos.z);
                     }
                 }
                 PopID();

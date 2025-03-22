@@ -180,7 +180,7 @@ struct Scene {
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
 
-    void UpdateRenderBuffers(entt::entity, MeshElementIndex selected_element = {});
+    void UpdateRenderBuffers(entt::entity);
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void InvalidateCommandBuffer();
@@ -207,7 +207,7 @@ private:
 
     std::set<SelectionMode> SelectionModes{SelectionMode::Object, SelectionMode::Edit};
     SelectionMode SelectionMode{SelectionMode::Object};
-    MeshElementIndex SelectedElement{MeshElement::Face, -1};
+    MeshElementIndex EditingElement{MeshElement::Face, -1};
 
     entt::entity SelectedEntity;
     std::unique_ptr<MeshVkData> MeshVkData;
@@ -237,7 +237,7 @@ private:
     bool CommandBufferDirty{false};
 
     void SetSelectionMode(::SelectionMode);
-    void SetSelectedElement(MeshElementIndex);
+    void SetEditingElement(MeshElementIndex);
 
     const Mesh &GetSelectedMesh() const;
 
