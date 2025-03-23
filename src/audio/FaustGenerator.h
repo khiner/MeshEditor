@@ -13,7 +13,7 @@ struct FaustGenerator {
     ~FaustGenerator();
 
     struct ModalDsp {
-        std::string Definition, Eval;
+        std::string Name, Definition, Eval;
     };
 
 private:
