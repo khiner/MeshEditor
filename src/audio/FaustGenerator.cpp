@@ -102,7 +102,10 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
         modal_evals << std::format("vgroup(\"{}\", {})", modal_dsp.Name, modal_dsp.Eval);
         ++i;
     }
-    return std::format("import(\"stdfaust.lib\");\n\n{}\n\n{}\n\nprocess = vgroup(\"Excite\", vgroup(\"Hammer\", {})) <: tgroup(\"Model\", {}) :> _;\n", HammerDefinition, modal_definitions.str(), HammerEval, modal_evals.str());
+    return std::format(
+        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\nprocess = vgroup(\"Excite\", vgroup(\"Hammer\", {})) <: tgroup(\"Model\", {}) :> /({});\n",
+        HammerDefinition, modal_definitions.str(), HammerEval, modal_evals.str(), modal_dsps.size()
+    );
 }
 } // namespace
 
