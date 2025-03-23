@@ -27,13 +27,26 @@ bool RadioButtons(const char *label, float *value, const std::span<std::string> 
     return changed;
 }
 
-void FaustParams::DrawItem(const FaustParams::Item &item) {
+void FaustParams::DrawItem(const Item &item) {
     const auto type = item.type;
     const auto *label = item.label.c_str();
     if (!item.items.empty()) {
-        // if (!item.label.empty()) SeparatorText(label); // turning off to not render model title
-        // xxx Relying on the knowledge that no groups are used in the modal audio Faust UI.
-        for (const auto &child_item : item.items) DrawItem(child_item);
+        if (type == ItemType_TGroup) {
+            BeginTabBar(label);
+            for (const auto &child_item : item.items) {
+                if (BeginTabItem(child_item.label.c_str())) {
+                    DrawItem(child_item);
+                    EndTabItem();
+                }
+            }
+            EndTabBar();
+        } else {
+            // if (!item.label.empty()) SeparatorText(label); // not rendering group titles
+            // Treating horizontal groups as vertical.
+            // (No horizontal groups are used in the modal audio Faust UI.)
+            for (const auto &child_item : item.items) DrawItem(child_item);
+        }
+        return;
     }
     if (type == ItemType_Button) {
         Button(label);
