@@ -91,22 +91,31 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
     static constexpr std::string_view HammerEval = "hammer(gate,hammerHardness,hammerSize)";
     static const auto HammerDefinition = std::format("{};\n{};\n{};\n{};", HammerGate, HammerHardness, HammerSize, Hammer);
 
-    const auto switch_definition = std::format("N={};\nswitchN(n, s) = par(i, n , _*(i==s));\nmodelIndex = nentry(\"Excite model\", 0, 0, N-1, 1);", modal_dsp_by_entity.size());
     const auto modal_dsps = modal_dsp_by_entity | std::views::values;
     std::stringstream modal_definitions;
     for (const auto &modal_dsp : modal_dsps) modal_definitions << modal_dsp.Definition << "\n\n";
+
+    const bool multiple_models = modal_dsp_by_entity.size() > 1;
     // clang doesn't have join_with yet
-    std::stringstream modal_evals;
+    std::stringstream models_eval;
+    if (multiple_models) models_eval << "tgroup(\"Models\", ";
     size_t i = 0;
     for (const auto &modal_dsp : modal_dsps) {
-        if (i > 0) modal_evals << ",";
-        modal_evals << std::format("vgroup(\"{}\", {})", modal_dsp.Name, modal_dsp.Eval);
+        if (i > 0) models_eval << ",";
+        models_eval << std::format("vgroup(\"{}\", {})", modal_dsp.Name, modal_dsp.Eval);
         ++i;
     }
+    if (multiple_models) models_eval << ")";
 
+    const auto switch_definition = multiple_models ? std::format("N={};\nswitchN(n, s) = par(i, n , _*(i==s));\nmodelIndex = nentry(\"Excite model\", 0, 0, N-1, 1);", modal_dsp_by_entity.size()) : "";
+    const std::string_view switch_eval = multiple_models ? "switchN(N, modelIndex) : " : "";
+    const std::string_view mix = multiple_models ? "/(N)" : "_";
+    auto hammer = std::format("vgroup(\"Hammer\", {})", HammerEval);
+    // Since models are in a tab group when there are multiple, the gate param needs to be one level deeper for its path to match.
+    if (multiple_models) hammer = std::format("vgroup(\"\", {})", hammer);
     return std::format(
-        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\nprocess = vgroup(\"\", vgroup(\"Hammer\", {})) <: switchN(N, modelIndex) : tgroup(\"Model\", {}) :> /(N);\n",
-        HammerDefinition, switch_definition, modal_definitions.str(), HammerEval, modal_evals.str()
+        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\nprocess = {} <: {}{} :> {};\n",
+        HammerDefinition, switch_definition, modal_definitions.str(), hammer, switch_eval, models_eval.str(), mix
     );
 }
 } // namespace
