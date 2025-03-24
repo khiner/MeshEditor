@@ -152,10 +152,32 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     }
 }
 
-void AcousticScene::ProduceAudio(AudioBuffer buffer) const {
+void AcousticScene::Process(AudioBuffer buffer) const {
+    // Faust DSP evaluates all modal sound objects.
     Dsp->Compute(buffer.FrameCount, &buffer.Input, &buffer.Output);
-    for (const auto e : R.view<SoundObjectModel>()) {
-        ProduceAudio(e, buffer);
+
+    // Play sample sound objects and handle recordings.
+    for (const auto [entity, model] : R.view<SoundObjectModel>().each()) {
+        if (model == SoundObjectModel::Samples) {
+            if (auto *sample_object = R.try_get<SampleSoundObject>(entity);
+                sample_object && !sample_object->Frames.empty()) {
+                const auto &impact_samples = sample_object->Frames[R.get<Excitable>(entity).SelectedVertexIndex];
+                // todo - resample from 48kHz to device sample rate if necessary
+                for (uint i = 0; i < buffer.FrameCount; ++i) {
+                    buffer.Output[i] += sample_object->Frame < impact_samples.size() ? impact_samples[sample_object->Frame++] : 0.0f;
+                }
+            }
+        } else if (model == SoundObjectModel::Modal) {
+            if (auto *recording = R.try_get<Recording>(entity)) {
+                if (recording->Frame == 0) Dsp->Set(GateParamName, 1);
+                if (!recording->Complete()) {
+                    for (uint i = 0; i < buffer.FrameCount && !recording->Complete(); ++i) {
+                        recording->Record(buffer.Output[i]);
+                    }
+                    if (recording->Complete()) Dsp->Set(GateParamName, 0);
+                }
+            }
+        }
     }
 }
 
@@ -468,32 +490,6 @@ void AcousticScene::SetImpactFrames(entt::entity entity, std::vector<std::vector
     if (auto *sample_object = R.try_get<SampleSoundObject>(entity)) {
         sample_object->Stop();
         sample_object->Frames = std::move(impact_frames);
-    }
-}
-
-void AcousticScene::ProduceAudio(entt::entity entity, AudioBuffer &buffer) const {
-    if (!R.all_of<SoundObjectModel>(entity)) return;
-
-    const auto model = R.get<SoundObjectModel>(entity);
-    auto *sample_object = R.try_get<SampleSoundObject>(entity);
-    const auto *modal_object = R.try_get<ModalSoundObject>(entity);
-    if (model == SoundObjectModel::Samples && sample_object) {
-        if (sample_object->Frames.empty()) return;
-        const auto &impact_samples = sample_object->Frames[R.get<Excitable>(entity).SelectedVertexIndex];
-        // todo - resample from 48kHz to device sample rate if necessary
-        for (uint i = 0; i < buffer.FrameCount; ++i) {
-            buffer.Output[i] += sample_object->Frame < impact_samples.size() ? impact_samples[sample_object->Frame++] : 0.0f;
-        }
-    } else if (model == SoundObjectModel::Modal && modal_object) {
-        if (auto *recording = R.try_get<Recording>(entity)) {
-            if (recording->Frame == 0) Dsp->Set(GateParamName, 1);
-            if (!recording->Complete()) {
-                for (uint i = 0; i < buffer.FrameCount && !recording->Complete(); ++i) {
-                    recording->Record(buffer.Output[i]);
-                }
-                if (recording->Complete()) Dsp->Set(GateParamName, 0);
-            }
-        }
     }
 }
 

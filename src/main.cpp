@@ -220,7 +220,7 @@ int main(int, char **) {
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {
              const auto *acoustic_scene = static_cast<const AcousticScene *>(user_data);
-             acoustic_scene->ProduceAudio(std::move(buffer));
+             acoustic_scene->Process(std::move(buffer));
          },
          .UserData = acoustic_scene.get()}
     };

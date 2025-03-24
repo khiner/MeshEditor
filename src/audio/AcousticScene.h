@@ -41,12 +41,10 @@ struct AcousticScene {
     void RenderControls(Scene &);
 
     void LoadRealImpact(const std::filesystem::path &directory, Scene &);
-    void ProduceAudio(AudioBuffer) const;
+    void Process(AudioBuffer) const;
 
 private:
     void Draw(entt::entity);
-
-    void ProduceAudio(entt::entity, AudioBuffer &) const;
 
     void SetVertex(entt::entity, uint);
     void SetVertexForce(entt::entity, float);
