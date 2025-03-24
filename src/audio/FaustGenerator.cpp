@@ -89,8 +89,9 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
     static constexpr std::string_view HammerSize{"hammerSize = hslider(\"Hammer size\",0.1,0,1,0.01)"};
     static constexpr std::string_view Hammer{"hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; }"};
     static constexpr std::string_view HammerEval = "hammer(gate,hammerHardness,hammerSize)";
-    static const auto HammerDefinition = std::format("{};\n{};\n{};{};", HammerGate, HammerHardness, HammerSize, Hammer);
+    static const auto HammerDefinition = std::format("{};\n{};\n{};\n{};", HammerGate, HammerHardness, HammerSize, Hammer);
 
+    const auto switch_definition = std::format("N={};\nswitchN(n, s) = par(i, n , _*(i==s));\nmodelIndex = nentry(\"Excite model\", 0, 0, N-1, 1);", modal_dsp_by_entity.size());
     const auto modal_dsps = modal_dsp_by_entity | std::views::values;
     std::stringstream modal_definitions;
     for (const auto &modal_dsp : modal_dsps) modal_definitions << modal_dsp.Definition << "\n\n";
@@ -102,9 +103,10 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
         modal_evals << std::format("vgroup(\"{}\", {})", modal_dsp.Name, modal_dsp.Eval);
         ++i;
     }
+
     return std::format(
-        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\nprocess = vgroup(\"Excite\", vgroup(\"Hammer\", {})) <: tgroup(\"Model\", {}) :> /({});\n",
-        HammerDefinition, modal_definitions.str(), HammerEval, modal_evals.str(), modal_dsps.size()
+        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\nprocess = vgroup(\"\", vgroup(\"Hammer\", {})) <: switchN(N, modelIndex) : tgroup(\"Model\", {}) :> /(N);\n",
+        HammerDefinition, switch_definition, modal_definitions.str(), HammerEval, modal_evals.str()
     );
 }
 } // namespace
