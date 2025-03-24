@@ -711,8 +711,7 @@ void AcousticScene::Draw(entt::entity entity) {
     }
 
     if (CollapsingHeader("DSP parameters")) Dsp->DrawParams();
-    static const fs::path FaustSvgDir{"MeshEditor-svg"};
-    if (CollapsingHeader("DSP graph")) Dsp->DrawGraph(FaustSvgDir);
+    if (CollapsingHeader("DSP graph")) Dsp->DrawGraph();
     if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", Dsp->GetCode());
 
     const bool is_recording = recording && !recording->Complete();

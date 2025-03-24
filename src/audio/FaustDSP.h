@@ -37,15 +37,12 @@ struct FaustDSP {
     void Compute(uint32_t n, const Sample **input, Sample **output) const;
 
     void DrawParams();
-    void DrawGraph(const fs::path &svg_dir);
+    void DrawGraph();
 
     Sample Get(std::string_view param_label) const;
     void Set(std::string_view param_label, Sample value) const;
 
     Sample *GetZone(std::string_view param_label) const;
-
-    std::unique_ptr<SvgResource> FaustSvg;
-    CreateSvgResource CreateSvg;
 
 private:
     void Init();
@@ -53,7 +50,7 @@ private:
     void Update();
     void DestroyDsp();
 
-    void SaveSvg(const fs::path &dir);
+    void SaveSvg();
 
     Box Box{nullptr};
     dsp *Dsp{nullptr};
@@ -62,4 +59,9 @@ private:
 
     std::string Code;
     std::string ErrorMessage;
+
+    constexpr static std::string_view RootSvgPath{"process.svg"};
+    fs::path SelectedSvgPath{RootSvgPath};
+    std::unique_ptr<SvgResource> FaustSvg;
+    CreateSvgResource CreateSvg;
 };

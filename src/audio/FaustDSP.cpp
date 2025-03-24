@@ -8,7 +8,10 @@
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
 
+namespace {
 constexpr uint SampleRate = 48'000; // todo respect device sample rate
+const fs::path FaustSvgDir{"MeshEditor-svg"};
+} // namespace
 
 FaustDSP::FaustDSP(CreateSvgResource create_svg) : CreateSvg(std::move(create_svg)) {}
 FaustDSP::~FaustDSP() {
@@ -22,16 +25,15 @@ void FaustDSP::Compute(uint n, const Sample **input, Sample **output) const {
 void FaustDSP::DrawParams() {
     if (Params) Params->Draw();
 }
-void FaustDSP::DrawGraph(const fs::path &svg_dir) {
-    if (!fs::exists(svg_dir)) SaveSvg(svg_dir);
+void FaustDSP::DrawGraph() {
+    if (!fs::exists(FaustSvgDir)) SaveSvg();
 
-    static fs::path SelectedSvg = "process.svg";
-    if (const auto faust_svg_path = svg_dir / SelectedSvg; fs::exists(faust_svg_path)) {
+    if (const auto faust_svg_path = FaustSvgDir / SelectedSvgPath; fs::exists(faust_svg_path)) {
         if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
             CreateSvg(FaustSvg, faust_svg_path);
         }
         if (auto clickedLinkOpt = FaustSvg->Render()) {
-            SelectedSvg = std::move(*clickedLinkOpt);
+            SelectedSvgPath = std::move(*clickedLinkOpt);
         }
     }
 }
@@ -49,7 +51,7 @@ Sample *FaustDSP::GetZone(std::string_view param_label) const {
     return Params ? Params->getZoneForLabel(param_label.data()) : nullptr;
 }
 
-void FaustDSP::SaveSvg(const fs::path &dir) { drawSchema(Box, dir.c_str(), "svg"); }
+void FaustDSP::SaveSvg() { drawSchema(Box, FaustSvgDir.c_str(), "svg"); }
 
 void FaustDSP::Init() {
     if (Code.empty()) return;
@@ -90,6 +92,10 @@ void FaustDSP::Uninit() {
     if (Box) Box = nullptr;
     ErrorMessage = "";
     destroyLibContext();
+
+    FaustSvg.reset();
+    SelectedSvgPath = RootSvgPath;
+    if (fs::exists(FaustSvgDir)) fs::remove_all(FaustSvgDir);
 }
 
 void FaustDSP::Update() {

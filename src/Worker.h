@@ -43,7 +43,7 @@ struct Worker {
         return {};
     }
 
-    void SetMessage(std::string_view message) { Message = message; }
+    void SetMessage(std::string message) { Message = std::move(message); }
 
 private:
     std::string Title, Message;
