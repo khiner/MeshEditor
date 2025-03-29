@@ -695,15 +695,15 @@ void AcousticScene::Draw(entt::entity entity) {
     }
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
-        const auto scaled_mode_freqs = modes.Freqs | transform([&](float f) { return modal.FundamentalFreq * f / modes.Freqs.front(); }) | to<std::vector>();
-        if (auto hovered = PlotModeData(scaled_mode_freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(modes.Freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(modes.Gains[excitable->SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
         if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < modes.Freqs.size()) {
             const auto index = *hovered_mode_index;
             Text(
-                "Mode %lu: Freq %.2f Hz, T60 %.2f s, Gain %.2f dB", index,
-                scaled_mode_freqs[index],
+                "Mode %lu: Freq (scaled) %.2f Hz, Freq (FEM) %.2f, T60 %.2f s, Gain %.2f dB", index,
+                modes.Freqs[index],
+                modes.Freqs[index] * modes.OriginalFundamentalFreq / modes.Freqs[0],
                 modes.T60s[index],
                 modes.Gains[excitable->SelectedVertexIndex][index]
             );
@@ -764,11 +764,12 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, cons
     const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = info.QualityTets});
 
     DspGenerator->SetMessage("Generating modal model...");
-    const auto fundamental = sample_object ? std::optional{GetPeakFrequencies(ComputeFft(sample_object->GetFrames()), 10).front()} : std::nullopt;
+    auto fundamental = sample_object ? std::optional{GetPeakFrequencies(ComputeFft(sample_object->GetFrames()), 10).front()} : std::nullopt;
+    if (fundamental && *fundamental > 10'000) fundamental = std::nullopt; // Arbitrary high frequency limit.
+
     ModalSoundObject obj{
         .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable.ExcitableVertices, fundamental),
         .Excitable = excitable,
     };
-    if (fundamental) obj.FundamentalFreq = *fundamental;
     return obj;
 }

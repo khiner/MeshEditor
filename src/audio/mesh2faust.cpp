@@ -250,13 +250,27 @@ ModalModes ComputeModes(
         mode_t60s[mode] = LN_1000 / (xi_i * omega_i_hz); // Damping is based on the _undamped_ natural frequency.
     }
 
-    // Find the lowest mode based on the unscaled minimum frequency.
-    // This is because we need to know the lowest mode to scale the other modes.
-    const float min_mode_freq = opts.MinModeFreq;
-    const uint lowest_mode_i = find_if(mode_freqs | reverse, [min_mode_freq](auto freq) { return freq <= min_mode_freq; }).base() - mode_freqs.begin();
-    // Find the highest mode based on the scaled maximum frequency.
-    const float max_mode_freq = opts.FundamentalFreq ? mode_freqs[lowest_mode_i] * opts.MaxModeFreq / *opts.FundamentalFreq : opts.MaxModeFreq;
-    const uint highest_mode_i = find_if(mode_freqs | drop(lowest_mode_i) | reverse, [max_mode_freq](auto freq) { return freq <= max_mode_freq; }).base() - mode_freqs.begin();
+    /** Scale mode frequencies in-place based on the configured fundamental frequency. **/
+    // First, find the lowest unscaled nonzero mode and keep track of it.
+    // (We need to know the lowest mode to scale the rest.)
+    const auto lowest_mode_it = find_if(mode_freqs, [](auto freq) { return freq > 0; });
+    if (lowest_mode_it == mode_freqs.end()) return {}; // No valid modes
+
+    const uint lowest_mode_i = lowest_mode_it - mode_freqs.begin();
+    const float lowest_mode_freq_orig = mode_freqs[lowest_mode_i]; // Save for return
+
+    // Scale all modes so the lowest valid mode is at the configured fundamental frequency.
+    const float freq_scale = opts.FundamentalFreq ? *opts.FundamentalFreq / mode_freqs[lowest_mode_i] : 1.f;
+    for (uint mode = lowest_mode_i; mode < fem_n_modes; ++mode) mode_freqs[mode] *= freq_scale;
+
+    // Keep modes that are only above the max frequency because of scaling.
+    // This allows changing the fundamental without losing the higher modes.
+    const float max_mode_freq = opts.MaxModeFreq * std::max(1.f, freq_scale);
+    const auto highest_mode_it = find_if(
+        mode_freqs | drop(lowest_mode_i) | reverse,
+        [max_mode_freq](auto mode_freq) { return mode_freq <= max_mode_freq; }
+    );
+    const uint highest_mode_i = highest_mode_it.base() - mode_freqs.begin();
 
     // Adjust modes to include only the requested range.
     const uint n_modes = std::min(std::min(opts.NumModes, fem_n_modes), highest_mode_i - lowest_mode_i);
@@ -268,7 +282,7 @@ ModalModes ComputeModes(
     const uint n_ex_pos = std::min(opts.ExPos.size(), size_t(num_vertices));
     std::vector<std::vector<float>> gains(n_ex_pos); // Mode gains by [exitation position][mode]
     for (size_t ex_pos = 0; ex_pos < size_t(n_ex_pos); ++ex_pos) { // For each excitation position
-        // If exPos was provided, retrieve data. Otherwise, distribute excitation positions linearly.
+        // If no `ExPos` was provided, distribute excitation positions linearly.
         uint ev_i = vertex_dim * (ex_pos < opts.ExPos.size() ? opts.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
         gains[ex_pos] = std::vector<float>(n_modes);
         float max_gain = 0;
@@ -282,7 +296,7 @@ ModalModes ComputeModes(
         for (float &gain : gains[ex_pos]) gain /= max_gain;
     }
 
-    return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains)};
+    return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains), lowest_mode_freq_orig};
 }
 } // namespace
 

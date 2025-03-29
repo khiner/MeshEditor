@@ -9,8 +9,8 @@
 static constexpr std::string_view ExciteIndexParamName{"Excite index"};
 static constexpr std::string_view GateParamName{"Gate"};
 
+// Assumes at least one mode is present.
 struct ModalSoundObject {
     ModalModes Modes;
     Excitable Excitable;
-    float FundamentalFreq{!Modes.Freqs.empty() ? Modes.Freqs.front() : 440.f}; // Override to scale mode frequencies
 };
