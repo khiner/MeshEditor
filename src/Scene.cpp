@@ -22,8 +22,9 @@ using std::views::transform;
 struct SceneNode {
     entt::entity Parent = entt::null;
     std::vector<entt::entity> Children;
-    // Maps entities to their index in the models buffer. Includes parent. Only present in parent nodes.
-    // This allows for contiguous storage of models in the buffer, with erases but no inserts (only appends, which avoids shuffling memory regions).
+    // `ModelIndices` maps entities to their index in the models buffer. Includes parent.
+    // It's only present in parent nodes.
+    // This enables contiguous storage of models in the buffer, with erases and appends but no inserts.
     std::unordered_map<entt::entity, uint> ModelIndices;
 };
 
@@ -499,6 +500,14 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
 
     return entity;
 }
+void Scene::DestroyInstance(entt::entity instance) {
+    if (instance == SelectedEntity) SelectEntity(entt::null);
+
+    SetVisible(instance, false);
+    std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).Parent).Children, instance);
+    R.destroy(instance);
+    InvalidateCommandBuffer();
+}
 
 void Scene::DestroyEntity(entt::entity entity) {
     if (entity == SelectedEntity) SelectEntity(entt::null);
@@ -519,14 +528,6 @@ void Scene::DestroyEntity(entt::entity entity) {
     InvalidateCommandBuffer();
 }
 
-void Scene::DestroyInstance(entt::entity instance) {
-    if (instance == SelectedEntity) SelectEntity(entt::null);
-
-    SetVisible(instance, false);
-    std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).Parent).Children, instance);
-    R.destroy(instance);
-    InvalidateCommandBuffer();
-}
 void Scene::SetSelectionMode(::SelectionMode mode) {
     if (SelectionMode == mode) return;
 
