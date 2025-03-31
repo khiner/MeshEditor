@@ -16,8 +16,9 @@
 #include <set>
 #include <unordered_map>
 
-struct Visible {}; // Tag to mark entities as visible in the scene
-struct Frozen {}; // Tag to disable entity transform changes
+struct Active {}; // Active selected entity (<=1)
+struct Visible {}; // Visible in the scene
+struct Frozen {}; // Disable entity transform changes
 
 struct Path {
     fs::path Value;
@@ -157,12 +158,10 @@ struct Scene {
     void SetVisible(entt::entity, bool);
 
     entt::entity GetActiveEntity() const;
-    void SelectEntity(entt::entity entity) {
-        ActiveEntity = entity;
-        InvalidateCommandBuffer();
-    }
+    void SetActiveEntity(entt::entity);
 
-    vk::Extent2D GetExtent() const { return Extent; }
+    vk::Extent2D GetExtent() const {
+        return Extent; }
     vk::ImageView GetResolveImageView() const;
 
     // Handle mouse/keyboard interactions.
@@ -209,7 +208,6 @@ private:
     SelectionMode SelectionMode{SelectionMode::Object};
     MeshElementIndex EditingElement{MeshElement::Face, -1};
 
-    entt::entity ActiveEntity;
     std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;

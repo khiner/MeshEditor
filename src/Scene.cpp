@@ -19,6 +19,7 @@
 using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;
 
+namespace {
 struct SceneNode {
     entt::entity Parent = entt::null;
     std::vector<entt::entity> Children;
@@ -36,6 +37,25 @@ entt::entity GetParentEntity(const entt::registry &r, entt::entity entity) {
     }
     return entity;
 }
+
+template<typename Component>
+entt::entity FindEntity(const entt::registry &registry) {
+    auto all_active = registry.view<Component>();
+    assert(all_active.size() <= 1);
+    return all_active.empty() ? entt::null : *all_active.begin();
+}
+} // namespace
+
+void Scene::SetActiveEntity(entt::entity entity) {
+    if (GetActiveEntity() == entity) return;
+
+    if (entity == entt::null) R.clear<Active>();
+    else R.emplace_or_replace<Active>(entity);
+    InvalidateCommandBuffer();
+}
+
+entt::entity Scene::GetActiveEntity() const { return GetParentEntity(R, FindEntity<Active>(R)); }
+const Mesh &Scene::GetActiveMesh() const { return R.get<Mesh>(GetActiveEntity()); }
 
 // Simple wrapper around vertex and index buffers.
 struct VkRenderBuffers {
@@ -372,7 +392,9 @@ void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity entity) {
     DestroyEntity(excited_vertex.IndicatorEntity);
 }
 
-vk::ImageView Scene::GetResolveImageView() const { return *MainResources->ResolveImage.View; }
+vk::ImageView Scene::GetResolveImageView() const {
+    return *MainResources->ResolveImage.View;
+}
 
 // Get the model VK buffer index.
 // Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
@@ -442,7 +464,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
     R.emplace<Mesh>(entity, std::move(mesh));
 
-    if (info.Select) SelectEntity(entity);
+    if (info.Select) SetActiveEntity(entity);
     InvalidateCommandBuffer();
     return entity;
 }
@@ -495,14 +517,12 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{} instance {}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     SetVisible(entity, info.Visible);
-    if (info.Select) SelectEntity(entity);
+    if (info.Select) SetActiveEntity(entity);
     InvalidateCommandBuffer();
 
     return entity;
 }
 void Scene::DestroyInstance(entt::entity instance) {
-    if (instance == ActiveEntity) SelectEntity(entt::null);
-
     SetVisible(instance, false);
     std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).Parent).Children, instance);
     R.destroy(instance);
@@ -510,7 +530,6 @@ void Scene::DestroyInstance(entt::entity instance) {
 }
 
 void Scene::DestroyEntity(entt::entity entity) {
-    if (entity == ActiveEntity) SelectEntity(entt::null);
     if (const auto parent_entity = GetParentEntity(R, entity); parent_entity != entity) return DestroyInstance(entity);
 
     VC.Device->waitIdle(); // xxx device blocking should be more targeted
@@ -520,10 +539,7 @@ void Scene::DestroyEntity(entt::entity entity) {
     MeshVkData->Boxes.erase(entity);
 
     const auto &node = R.get<SceneNode>(entity);
-    for (const auto child : node.Children) {
-        if (child == ActiveEntity) SelectEntity(entt::null);
-        R.destroy(child);
-    }
+    for (const auto child : node.Children) R.destroy(child);
     R.destroy(entity);
     InvalidateCommandBuffer();
 }
@@ -541,14 +557,11 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
     UpdateHighlightedVertices(entity, R.get<Excitable>(entity));
 }
 void Scene::SetEditingElement(MeshElementIndex element) {
-    if (ActiveEntity == entt::null) return;
+    if (R.storage<Active>().empty()) return;
 
     EditingElement = element;
     UpdateRenderBuffers(GetActiveEntity());
 }
-
-entt::entity Scene::GetActiveEntity() const { return GetParentEntity(R, ActiveEntity); }
-const Mesh &Scene::GetActiveMesh() const { return R.get<Mesh>(GetActiveEntity()); }
 
 void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 scale) {
     UpdateModel(R, entity, position, rotation, scale);
@@ -639,9 +652,10 @@ void Scene::RecordCommandBuffer() {
         }}
     );
 
-    const auto selected_mesh_entity = GetActiveEntity();
-    const auto selected_model_buffer_index = GetModelBufferIndex(ActiveEntity);
-    const bool render_silhouette = selected_model_buffer_index && SelectionMode == SelectionMode::Object;
+    const auto active_mesh_entity = GetActiveEntity();
+    const auto active_entity = GetActiveEntity();
+    const auto active_model_buffer_index = GetModelBufferIndex(active_entity);
+    const bool render_silhouette = active_model_buffer_index && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
         // Render the silhouette edges for the active mesh instance.
         {
@@ -653,9 +667,9 @@ void Scene::RecordCommandBuffer() {
         SilhouetteRenderer.Render(
             cb,
             SPT::Silhouette,
-            MeshVkData->Main.at(selected_mesh_entity).at(MeshElement::Vertex),
-            MeshVkData->Models.at(selected_mesh_entity),
-            *selected_model_buffer_index
+            MeshVkData->Main.at(active_mesh_entity).at(MeshElement::Vertex),
+            MeshVkData->Models.at(active_mesh_entity),
+            *active_model_buffer_index
         );
         cb.endRenderPass();
         {
@@ -826,6 +840,7 @@ ray Scene::GetMouseWorldRay() const {
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
 
+    const auto active_entity = GetActiveEntity();
     // Handle keyboard input.
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Tab)) {
@@ -838,14 +853,14 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_2)) SetEditingElement({MeshElement::Edge, -1});
             else if (IsKeyPressed(ImGuiKey_3)) SetEditingElement({MeshElement::Face, -1});
         }
-        if (ActiveEntity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
-            DestroyEntity(ActiveEntity);
+        if (active_entity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
+            DestroyEntity(active_entity);
         }
     }
 
     // Handle mouse input.
-    if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ExcitedVertex>(ActiveEntity)) {
-        R.erase<ExcitedVertex>(ActiveEntity);
+    if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ExcitedVertex>(active_entity)) {
+        R.erase<ExcitedVertex>(active_entity);
     }
     if (!IsWindowHovered()) return;
 
@@ -863,8 +878,8 @@ void Scene::Interact() {
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay();
     if (SelectionMode == SelectionMode::Edit) {
-        if (EditingElement.Element != MeshElement::None && ActiveEntity != entt::null && R.all_of<Visible>(ActiveEntity)) {
-            const auto &model = R.get<Model>(ActiveEntity);
+        if (EditingElement.Element != MeshElement::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
+            const auto &model = R.get<Model>(active_entity);
             const auto mouse_ray = WorldToLocal(mouse_world_ray, model.InvTransform);
             const auto &mesh = GetActiveMesh();
             {
@@ -877,12 +892,12 @@ void Scene::Interact() {
     } else if (SelectionMode == SelectionMode::Object) {
         if (const auto entities_by_distance = IntersectedEntitiesByDistance(R, mouse_world_ray); !entities_by_distance.empty()) {
             // Cycle through hovered entities.
-            auto it = find_if(entities_by_distance, [&](const auto &entry) { return entry.second == ActiveEntity; });
+            auto it = find_if(entities_by_distance, [active_entity](const auto &entry) { return entry.second == active_entity; });
             if (it != entities_by_distance.end()) ++it;
             if (it == entities_by_distance.end()) it = entities_by_distance.begin();
-            SelectEntity(it->second);
+            SetActiveEntity(it->second);
         } else {
-            SelectEntity(entt::null);
+            SetActiveEntity(entt::null);
         }
     } else if (SelectionMode == SelectionMode::Excite) {
         // Excite the nearest entity if it's excitable.
@@ -929,15 +944,16 @@ void Scene::RenderGizmo() {
     const float line_height = GetTextLineHeightWithSpacing();
     const auto window_pos = ToGlm(GetWindowPos());
     auto view = Camera.GetView();
-    if (MGizmo.Show && ActiveEntity != entt::null) {
+    if (MGizmo.Show && !R.storage<Active>().empty()) {
+        const auto active_entity = GetActiveEntity();
         const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
-        if (auto model = R.get<Model>(ActiveEntity).Transform;
+        if (auto model = R.get<Model>(active_entity).Transform;
             ModelGizmo::Draw(ModelGizmo::Local, MGizmo.Op, window_pos + line_height, content_region, model, view, proj, MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt)) {
             // Decompose affine model matrix into pos, scale, and orientation.
             const vec3 position = model[3];
             const vec3 scale{glm::length(model[0]), glm::length(model[1]), glm::length(model[2])};
             const auto orientation = glm::quat_cast(mat3{vec3{model[0]} / scale.x, vec3{model[1]} / scale.y, vec3{model[2]} / scale.z});
-            SetModel(ActiveEntity, position, orientation, scale);
+            SetModel(active_entity, position, orientation, scale);
         }
     }
     static constexpr float OGizmoSize{90};
@@ -1002,6 +1018,7 @@ void RenderMat4(const mat4 &m) {
 
 void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
+        const auto active_entity = GetActiveEntity();
         if (BeginTabItem("Object")) {
             {
                 PushID("SelectionMode");
@@ -1027,7 +1044,7 @@ void Scene::RenderControls() {
                         }
                     }
                     Text("Editing %s: %s", to_string(EditingElement.Element).c_str(), EditingElement.is_valid() ? std::to_string(EditingElement.idx()).c_str() : "None");
-                    if (EditingElement.Element == MeshElement::Vertex && EditingElement.is_valid() && ActiveEntity != entt::null) {
+                    if (EditingElement.Element == MeshElement::Vertex && EditingElement.is_valid() && active_entity != entt::null) {
                         const auto &mesh = GetActiveMesh();
                         const auto pos = mesh.GetPosition(Mesh::VH{EditingElement.idx()});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", EditingElement.idx(), pos.x, pos.y, pos.z);
@@ -1035,55 +1052,55 @@ void Scene::RenderControls() {
                 }
                 PopID();
             }
-            if (ActiveEntity != entt::null) {
-                PushID(uint(ActiveEntity));
-                Text("Active entity: %s", GetName(R, ActiveEntity).c_str());
+            if (active_entity != entt::null) {
+                PushID(uint(active_entity));
+                Text("Active entity: %s", GetName(R, active_entity).c_str());
                 Indent();
 
-                const auto &node = R.get<SceneNode>(ActiveEntity);
+                const auto &node = R.get<SceneNode>(active_entity);
                 if (auto parent_entity = node.Parent; parent_entity != entt::null) {
                     AlignTextToFramePadding();
                     Text("Parent: %s", GetName(R, parent_entity).c_str());
                     SameLine();
-                    if (Button("Select")) SelectEntity(parent_entity);
+                    if (Button("Select")) SetActiveEntity(parent_entity);
                 }
                 if (!node.Children.empty() && CollapsingHeader("Children")) {
                     RenderEntitiesTable("Children", node.Children);
                 }
-                const auto &selected_mesh = GetActiveMesh();
+                const auto &active_mesh = GetActiveMesh();
                 TextUnformatted(
-                    std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", selected_mesh.GetVertexCount(), selected_mesh.GetEdgeCount(), selected_mesh.GetFaceCount()).c_str()
+                    std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.GetVertexCount(), active_mesh.GetEdgeCount(), active_mesh.GetFaceCount()).c_str()
                 );
-                Text("Model buffer index: %s", GetModelBufferIndex(ActiveEntity) ? std::to_string(*GetModelBufferIndex(ActiveEntity)).c_str() : "None");
+                Text("Model buffer index: %s", GetModelBufferIndex(active_entity) ? std::to_string(*GetModelBufferIndex(active_entity)).c_str() : "None");
                 Unindent();
-                bool visible = R.all_of<Visible>(ActiveEntity);
+                bool visible = R.all_of<Visible>(active_entity);
                 if (Checkbox("Visible", &visible)) {
-                    SetVisible(ActiveEntity, visible);
+                    SetVisible(active_entity, visible);
                     InvalidateCommandBuffer();
                 }
 
-                if (const auto *primitive = R.try_get<Primitive>(ActiveEntity)) {
+                if (const auto *primitive = R.try_get<Primitive>(active_entity)) {
                     if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
-                        ReplaceMesh(ActiveEntity, std::move(*new_mesh));
+                        ReplaceMesh(active_entity, std::move(*new_mesh));
                         InvalidateCommandBuffer();
                     }
                 }
                 if (Button("Add instance")) AddInstance(GetActiveEntity());
 
                 if (CollapsingHeader("Transform")) {
-                    auto pos = R.get<Position>(ActiveEntity).Value;
-                    auto scale = R.get<Scale>(ActiveEntity).Value;
-                    auto rot = R.get<Rotation>(ActiveEntity).Value;
+                    auto pos = R.get<Position>(active_entity).Value;
+                    auto scale = R.get<Scale>(active_entity).Value;
+                    auto rot = R.get<Rotation>(active_entity).Value;
                     bool model_changed = false;
                     model_changed |= DragFloat3("Position", &pos[0], 0.01f);
                     model_changed |= DragFloat4("Rotation (quat WXYZ)", &rot[0], 0.01f);
 
-                    const bool frozen = R.all_of<Frozen>(ActiveEntity);
+                    const bool frozen = R.all_of<Frozen>(active_entity);
                     if (frozen) BeginDisabled();
                     const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
                     model_changed |= DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
                     if (frozen) EndDisabled();
-                    if (model_changed) SetModel(ActiveEntity, pos, rot, scale);
+                    if (model_changed) SetModel(active_entity, pos, rot, scale);
 
                     using namespace ModelGizmo;
                     const bool scale_enabled = !frozen;
@@ -1115,7 +1132,7 @@ void Scene::RenderControls() {
                     }
                     if (TreeNode("Model transform")) {
                         TextUnformatted("Transform");
-                        const auto &model = R.get<Model>(ActiveEntity);
+                        const auto &model = R.get<Model>(active_entity);
                         RenderMat4(model.Transform);
                         Spacing();
                         TextUnformatted("Inverse transform");
@@ -1192,7 +1209,7 @@ void Scene::RenderControls() {
             SeparatorText("Indicators");
             // todo go back to storing normal settings in a map of element type to bool,
             //   and ensure meshes/instances are created with the current normals
-            if (ActiveEntity != entt::null) {
+            if (active_entity != entt::null) {
                 AlignTextToFramePadding();
                 TextUnformatted("Normals:");
                 const auto mesh_entity = GetActiveEntity();
@@ -1286,7 +1303,7 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
             PushID(uint(entity));
             TableNextColumn();
             AlignTextToFramePadding();
-            if (entity == ActiveEntity) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+            if (R.all_of<Active>(entity)) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
             TextUnformatted(IdString(entity).c_str());
             TableNextColumn();
             TextUnformatted(R.get<Name>(entity).Value.c_str());
@@ -1296,7 +1313,7 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
             if (Button("Delete")) entity_to_delete = entity;
             PopID();
         }
-        if (entity_to_select != entt::null) SelectEntity(entity_to_select);
+        if (entity_to_select != entt::null) SetActiveEntity(entity_to_select);
         if (entity_to_delete != entt::null) DestroyEntity(entity_to_delete);
         EndTable();
     }
