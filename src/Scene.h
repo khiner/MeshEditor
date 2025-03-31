@@ -156,9 +156,9 @@ struct Scene {
 
     void SetVisible(entt::entity, bool);
 
-    entt::entity GetSelectedEntity() const;
+    entt::entity GetActiveEntity() const;
     void SelectEntity(entt::entity entity) {
-        SelectedEntity = entity;
+        ActiveEntity = entity;
         InvalidateCommandBuffer();
     }
 
@@ -209,7 +209,7 @@ private:
     SelectionMode SelectionMode{SelectionMode::Object};
     MeshElementIndex EditingElement{MeshElement::Face, -1};
 
-    entt::entity SelectedEntity;
+    entt::entity ActiveEntity;
     std::unique_ptr<MeshVkData> MeshVkData;
 
     vk::Extent2D Extent;
@@ -239,7 +239,7 @@ private:
     void SetSelectionMode(::SelectionMode);
     void SetEditingElement(MeshElementIndex);
 
-    const Mesh &GetSelectedMesh() const;
+    const Mesh &GetActiveMesh() const;
 
     void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
 

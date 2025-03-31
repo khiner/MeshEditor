@@ -25,7 +25,7 @@ General features:
 * Edit lighting parameters
 * Render face/vertex normals as lines for debugging
 * Render bounding box / BVH wireframes for debugging
-* Edge-detection-based silhouette outline of selected mesh/instance, embedded into the scene with accurate per-pixel depth
+* Edge-detection-based silhouette outline of active mesh/instance, embedded into the scene with accurate per-pixel depth
 * Fast infinite grid with horizon fade
 
 Audio-specific features:

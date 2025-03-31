@@ -151,8 +151,8 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
     // Create descriptor pool.
     const std::vector pool_sizes{
         // Image samplers:
-        // 1) (2D filled shape) silhouette of the selected mesh
-        // 2) (2D line) silhouette of the selected mesh, after edge detection
+        // 1) (2D filled shape) silhouette of the active mesh
+        // 2) (2D line) silhouette of the active mesh, after edge detection
         // 3) Final scene texture sampler
         // 4) ImGui fonts
         // 5) SVG image texture

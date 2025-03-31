@@ -186,7 +186,7 @@ using namespace ImGui;
 void AcousticScene::RenderControls(Scene &scene) {
     static const float CharWidth = CalcTextSize("A").x;
 
-    const auto selected_entity = scene.GetSelectedEntity();
+    const auto active_entity = scene.GetActiveEntity();
     if (!R.storage<SoundObjectModel>().empty() && CollapsingHeader("Sound objects")) {
         if (MeshEditor::BeginTable("Sound objects", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
@@ -195,7 +195,7 @@ void AcousticScene::RenderControls(Scene &scene) {
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
             for (auto entity : R.view<SoundObjectModel>()) {
-                const bool is_selected = entity == selected_entity;
+                const bool is_selected = entity == active_entity;
                 PushID(uint(entity));
                 TableNextColumn();
                 AlignTextToFramePadding();
@@ -227,7 +227,7 @@ void AcousticScene::RenderControls(Scene &scene) {
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
             for (auto entity : R.view<SoundObjectListenerPoint>()) {
-                const bool is_selected = entity == selected_entity;
+                const bool is_selected = entity == active_entity;
                 PushID(uint(entity));
                 TableNextColumn();
                 AlignTextToFramePadding();
@@ -248,49 +248,49 @@ void AcousticScene::RenderControls(Scene &scene) {
             EndTable();
         }
     }
-    if (selected_entity == entt::null) {
+    if (active_entity == entt::null) {
         TextUnformatted("No selection");
         return;
     }
 
     // Display the selected sound object (which could be the object listened to if a listener is selected).
     const auto FindSelectedSoundEntity = [&]() -> entt::entity {
-        if (R.all_of<SoundObjectModel>(selected_entity)) return selected_entity;
+        if (R.all_of<SoundObjectModel>(active_entity)) return active_entity;
         if (R.storage<SoundObjectListener>().empty()) return entt::null;
         for (const auto &[entity, listener] : R.view<const SoundObjectListener>().each()) {
-            if (listener.Listener == selected_entity) return entity;
+            if (listener.Listener == active_entity) return entity;
         }
-        if (R.all_of<SoundObjectListenerPoint>(selected_entity)) return *R.view<SoundObjectModel>().begin();
+        if (R.all_of<SoundObjectListenerPoint>(active_entity)) return *R.view<SoundObjectModel>().begin();
         return entt::null;
     };
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
         if (Button("Create sound object")) {
-            R.emplace<Frozen>(selected_entity);
-            R.emplace<SoundObjectModel>(selected_entity, SoundObjectModel::Modal);
-            R.emplace<ModalModelCreateInfo>(selected_entity);
+            R.emplace<Frozen>(active_entity);
+            R.emplace<SoundObjectModel>(active_entity, SoundObjectModel::Modal);
+            R.emplace<ModalModelCreateInfo>(active_entity);
         }
         // todo Create a sample sound object
         //  - Load and assign a sample to the whole object, or assign to vertices.
         return;
     }
 
-    if (sound_entity != selected_entity && Button("Select sound object")) {
+    if (sound_entity != active_entity && Button("Select sound object")) {
         scene.SelectEntity(sound_entity);
     }
 
     const auto *listener = R.try_get<SoundObjectListener>(sound_entity);
-    if (listener && listener->Listener != selected_entity) {
+    if (listener && listener->Listener != active_entity) {
         if (Button("Select listener point")) {
             scene.SelectEntity(listener->Listener);
         }
     }
 
-    if (const auto *listener_point = R.try_get<SoundObjectListenerPoint>(selected_entity);
-        listener_point && (!listener || selected_entity != listener->Listener)) {
+    if (const auto *listener_point = R.try_get<SoundObjectListenerPoint>(active_entity);
+        listener_point && (!listener || active_entity != listener->Listener)) {
         if (Button("Set listener point")) {
             SetImpactFrames(sound_entity, to<std::vector>(RealImpact::LoadSamples(R.get<Path>(sound_entity).Value.parent_path(), listener_point->Index)));
-            R.emplace_or_replace<SoundObjectListener>(sound_entity, selected_entity);
+            R.emplace_or_replace<SoundObjectListener>(sound_entity, active_entity);
         }
     }
 
@@ -741,7 +741,7 @@ void AcousticScene::Draw(entt::entity entity) {
 
 ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, const ModalModelCreateInfo &info) const {
     // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
-    // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(selected_entity).Transform;, .Select = false, .Visible = false});
+    // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(active_entity).Transform;, .Select = false, .Visible = false});
 
     // We rely on `PreserveSurface` behavior for excitable vertices;
     // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
