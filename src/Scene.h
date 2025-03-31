@@ -16,7 +16,13 @@
 #include <set>
 #include <unordered_map>
 
-struct Active {}; // Active selected entity (<=1)
+struct Selected {}; // Entity is selected (multiple can be selected)
+// Active selected entity
+// Invariants:
+//   * <=1 entity is active at a time.
+//   * If an entity is Active, it is also Selected.
+//   * Most recently Selected entity is Active.
+struct Active {};
 struct Visible {}; // Visible in the scene
 struct Frozen {}; // Disable entity transform changes
 
@@ -157,11 +163,12 @@ struct Scene {
 
     void SetVisible(entt::entity, bool);
 
+    entt::entity GetParentEntity(entt::entity) const;
+    void SetActive(entt::entity);
     entt::entity GetActiveEntity() const;
-    void SetActiveEntity(entt::entity);
+    void ToggleSelected(entt::entity);
 
-    vk::Extent2D GetExtent() const {
-        return Extent; }
+    vk::Extent2D GetExtent() const { return Extent; }
     vk::ImageView GetResolveImageView() const;
 
     // Handle mouse/keyboard interactions.
