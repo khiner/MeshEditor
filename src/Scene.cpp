@@ -92,8 +92,7 @@ using MeshBuffers = std::unordered_map<MeshElement, VkRenderBuffers>;
 struct MeshVkData {
     std::unordered_map<entt::entity, MeshBuffers> Main, NormalIndicators;
     std::unordered_map<entt::entity, VulkanBuffer> Models;
-    std::unordered_map<entt::entity, VkRenderBuffers> Boxes;
-    std::unordered_map<entt::entity, VkRenderBuffers> BvhBoxes;
+    std::unordered_map<entt::entity, VkRenderBuffers> Boxes, BvhBoxes;
 };
 
 std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
@@ -393,12 +392,16 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
 
     UpdateEdgeColors();
-    TransformBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
-    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
+
+    const auto &allocator = *VC.BufferAllocator.get();
+    TransformBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
+    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
     UpdateTransformBuffers();
 
-    LightsBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, &Lights, sizeof(Lights)));
-    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(VC.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, &SilhouetteDisplay, sizeof(SilhouetteDisplay)));
+    LightsBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
+    VC.UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
+    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer,sizeof(ActiveSilhouetteColor)));
+    VC.UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
     VC.Device->updateDescriptorSets(
@@ -540,7 +543,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, CreateName(R, info.Name));
 
-    MeshVkData->Models.emplace(entity, VC.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
+    MeshVkData->Models.emplace(entity, VC.BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(entity, false);
 
@@ -1355,8 +1358,8 @@ void Scene::RenderControls() {
                 InvalidateCommandBuffer();
             }
             SeparatorText("Silhouette");
-            if (ColorEdit4("Color", &SilhouetteDisplay.Color[0])) {
-                VC.UpdateBuffer(*SilhouetteDisplayBuffer, &SilhouetteDisplay);
+            if (ColorEdit4("Color", &ActiveSilhouetteColor[0])) {
+                VC.UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor);
                 InvalidateCommandBuffer();
             }
             EndTabItem();

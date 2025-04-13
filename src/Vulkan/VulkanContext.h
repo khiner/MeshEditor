@@ -52,20 +52,17 @@ struct VulkanContext {
     vk::UniqueCommandBuffer TransferCommandBuffer;
     vk::UniqueFence RenderFence;
 
-    // Create the staging and device buffers and their memory.
-    VulkanBuffer CreateBuffer(vk::BufferUsageFlags, vk::DeviceSize) const;
-
+    void WriteBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
     // Uses `buffer.Size` if `bytes` is not set.
     // Automatically grows the buffer if the buffer is too small (using the nearest large enough power of 2).
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
-
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
     // This is for dynamic buffers, and it doesn't free memory, so the allocated size will be greater than the used size.
     void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize bytes) const;
 
     VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize bytes) const {
-        auto buffer = CreateBuffer(flags, bytes);
-        UpdateBuffer(buffer, data, 0, bytes);
+        auto buffer = BufferAllocator->CreateBuffer(flags, bytes);
+        WriteBuffer(buffer, data, 0, bytes);
         return buffer;
     }
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {

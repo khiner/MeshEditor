@@ -1,4 +1,4 @@
-#include "VmaBuffer.h"
+#include "VulkanBuffer.h"
 
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
@@ -92,6 +92,7 @@ void VmaBuffer::MoveRegion(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSiz
     // Shift the data to "erase" the region (dst is first, src is second.)
     memmove(MappedData + to, MappedData + from, size_t(bytes));
 }
+
 
 struct VulkanBufferAllocator::AllocatorInfo {
     VmaVulkanFunctions VulkanFunctions{};

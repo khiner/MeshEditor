@@ -143,9 +143,7 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
     static constexpr std::array queue_priority{1.0f};
     const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
     Device = PhysicalDevice.createDeviceUnique({{}, queue_info, {}, device_extensions, &device_features});
-
     BufferAllocator = std::make_unique<VulkanBufferAllocator>(PhysicalDevice, *Device, *Instance);
-
     Queue = Device->getQueue(QueueFamily, 0);
 
     // Create descriptor pool.
@@ -171,16 +169,6 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions) {
     RenderFence = Device->createFenceUnique({});
 }
 
-VulkanBuffer VulkanContext::CreateBuffer(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
-    return {
-        usage, bytes,
-        // Host buffer: host-visible and coherent staging buffer for CPU writes.
-        BufferAllocator->CreateBuffer(bytes, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly),
-        // Device buffer: device-local for fast GPU access.
-        BufferAllocator->CreateBuffer(bytes, vk::BufferUsageFlagBits::eTransferDst | usage, MemoryUsage::GpuOnly)
-    };
-}
-
 // Adapted from https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2 for 64-bits.
 uint64_t NextPowerOfTwo(uint64_t x) {
     if (x == 0) return 1;
@@ -195,10 +183,20 @@ uint64_t NextPowerOfTwo(uint64_t x) {
     return x + 1;
 }
 
+void VulkanContext::WriteBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
+    // Copy data to the host buffer.
+    buffer.HostBuffer.WriteRegion(data, offset, bytes);
+
+    // Copy data from the staging buffer to the device buffer.
+    const auto &cb = *TransferCommandBuffer;
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});
+    cb.end();
+    SubmitTransfer();
+}
+
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0) bytes = buffer.Size;
-
-    const auto &cb = *TransferCommandBuffer;
 
     // Note: `buffer.Size` is the _used_ size, not the allocated size.
     const auto required_bytes = offset + bytes;
@@ -206,10 +204,11 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         // Create a new buffer with the first large enough power of two.
         // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
         const auto new_bytes = NextPowerOfTwo(required_bytes);
-        auto new_buffer = CreateBuffer(buffer.Usage, new_bytes);
+        auto new_buffer = BufferAllocator->CreateBuffer(buffer.Usage, new_bytes);
         // Host copy:
         new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetMappedData(), 0, buffer.Size);
         // Host->device copy:
+        const auto &cb = *TransferCommandBuffer;
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
         cb.end();
@@ -221,14 +220,7 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         buffer.Size = std::max(buffer.Size, required_bytes);
     }
 
-    // Copy data to the host buffer.
-    buffer.HostBuffer.WriteRegion(data, offset, bytes);
-
-    // Copy data from the staging buffer to the device buffer.
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});
-    cb.end();
-    SubmitTransfer();
+    WriteBuffer(buffer, data, offset, bytes);
 }
 
 void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize bytes) const {
@@ -276,7 +268,7 @@ ImageResource VulkanContext::RenderBitmapToImage(const void *data, uint32_t widt
     );
     // Write the bitmap into a staging buffer.
     const auto buffer_size = width * height * 4; // 4 bytes per pixel
-    auto staging_buffer = BufferAllocator->CreateBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
+    auto staging_buffer = BufferAllocator->CreateVmaBuffer(buffer_size, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
     staging_buffer.WriteRegion(data, 0, buffer_size);
 
     // Record commands to copy from staging buffer to Vulkan image.

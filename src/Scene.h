@@ -73,10 +73,6 @@ struct Lights {
     vec3 Direction;
 };
 
-struct SilhouetteDisplay {
-    vec4 Color;
-};
-
 enum class ShaderPipelineType {
     Fill,
     Line,
@@ -237,7 +233,8 @@ private:
     ModelGizmoState MGizmo;
 
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
-    SilhouetteDisplay SilhouetteDisplay{{1, 0.627, 0.157, 1.}}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
+    vec4 ActiveSilhouetteColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
+    vec4 SelectedSilhouetteColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
 
     bool CommandBufferDirty{false};
 
