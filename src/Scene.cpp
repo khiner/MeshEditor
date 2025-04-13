@@ -202,19 +202,75 @@ PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
+
     std::unordered_map<SPT, ShaderPipeline> pipelines;
-    pipelines.emplace(SPT::Fill, ShaderPipeline{*vc.Device, *vc.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}}, CreateVertexInputState(), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples});
-    pipelines.emplace(SPT::Line, ShaderPipeline{*vc.Device, *vc.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}}, CreateVertexInputState(), vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples});
-    pipelines.emplace(SPT::Grid, ShaderPipeline{*vc.Device, *vc.DescriptorPool, Shaders{{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}}, vk::PipelineVertexInputStateCreateInfo{}, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(true), CreateDepthStencil(true, false), MsaaSamples});
+    pipelines.emplace(
+        SPT::Fill,
+        ShaderPipeline{
+            *vc.Device, *vc.DescriptorPool,
+            Shaders{
+                {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}
+            },
+            CreateVertexInputState(),
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
+        }
+    );
+    pipelines.emplace(
+        SPT::Line,
+        ShaderPipeline{
+            *vc.Device, *vc.DescriptorPool,
+            Shaders{
+                {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}
+            },
+            CreateVertexInputState(),
+            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
+        }
+    );
+    pipelines.emplace(
+        SPT::Grid,
+        ShaderPipeline{
+            *vc.Device, *vc.DescriptorPool,
+            Shaders{
+                {{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}
+            },
+            vk::PipelineVertexInputStateCreateInfo{},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            CreateColorBlendAttachment(true), CreateDepthStencil(true, false), MsaaSamples
+        }
+    );
     // We render all the silhouette edge texture's pixels regardless of the tested depth value,
     // but also explicitly override the depth buffer to make edge pixels "stick" to the mesh they are derived from.
     // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers
     // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
-
-    pipelines.emplace(SPT::Texture, ShaderPipeline{*vc.Device, *vc.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}}, vk::PipelineVertexInputStateCreateInfo{}, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples});
-    pipelines.emplace(SPT::DebugNormals, ShaderPipeline{*vc.Device, *vc.DescriptorPool, Shaders{{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}}, CreateVertexInputState(), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples});
+    pipelines.emplace(
+        SPT::Texture,
+        ShaderPipeline{
+            *vc.Device, *vc.DescriptorPool,
+            Shaders{
+                {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}
+            },
+            vk::PipelineVertexInputStateCreateInfo{},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways), MsaaSamples
+        }
+    );
+    pipelines.emplace(
+        SPT::DebugNormals,
+        ShaderPipeline{
+            *vc.Device, *vc.DescriptorPool,
+            Shaders{
+                {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}
+            },
+            CreateVertexInputState(),
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
+        }
+    );
     return {vc.Device->createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
+
 PipelineRenderer SilhouettePipelineRenderer(const VulkanContext &vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
@@ -223,9 +279,21 @@ PipelineRenderer SilhouettePipelineRenderer(const VulkanContext &vc) {
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
-    pipelines.emplace(SPT::Silhouette, ShaderPipeline{*vc.Device, *vc.DescriptorPool, Shaders{{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}}, CreateVertexInputState(), vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList, CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1});
+    pipelines.emplace(
+        SPT::Silhouette,
+        ShaderPipeline{
+            *vc.Device, *vc.DescriptorPool,
+            Shaders{
+                {{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}
+            },
+            CreateVertexInputState(),
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+        }
+    );
     return {vc.Device->createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
+
 PipelineRenderer EdgeDetectionPipelineRenderer(const VulkanContext &vc) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
@@ -234,7 +302,18 @@ PipelineRenderer EdgeDetectionPipelineRenderer(const VulkanContext &vc) {
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
-    pipelines.emplace(SPT::EdgeDetection, ShaderPipeline{*vc.Device, *vc.DescriptorPool, Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "MeshEdges.frag"}}}, vk::PipelineVertexInputStateCreateInfo{}, vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip, CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1});
+    pipelines.emplace(
+        SPT::EdgeDetection,
+        ShaderPipeline{
+            *vc.Device, *vc.DescriptorPool,
+            Shaders{
+                {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "MeshEdges.frag"}}
+            },
+            vk::PipelineVertexInputStateCreateInfo{},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+        }
+    );
     return {vc.Device->createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 } // namespace
