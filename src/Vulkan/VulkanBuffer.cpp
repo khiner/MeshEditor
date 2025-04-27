@@ -2,6 +2,8 @@
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
+#include <print>
+
 struct VmaBuffer::AllocationInfo {
     VmaAllocation Allocation{nullptr};
     VmaAllocationInfo Info{};
@@ -17,6 +19,15 @@ VmaMemoryUsage ToVmaMemoryUsage(MemoryUsage usage) {
         case MemoryUsage::GpuToCpu: return VMA_MEMORY_USAGE_GPU_TO_CPU;
     }
 }
+
+#ifndef RELEASE_BUILD
+void LoggingVmaAllocate(VmaAllocator, uint32_t memoryType, VkDeviceMemory, VkDeviceSize size, void *) {
+    std::println("Allocating {} bytes of memory of type {}", size, memoryType);
+}
+void LoggingVmaFree(VmaAllocator, uint32_t memoryType, VkDeviceMemory, VkDeviceSize size, void *) {
+    std::println("Freeing {} bytes of memory of type {}", size, memoryType);
+}
+#endif
 } // namespace
 
 VmaBuffer::VmaBuffer(const VmaAllocator &allocator, vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage)
@@ -90,6 +101,10 @@ VulkanBufferAllocator::VulkanBufferAllocator(vk::PhysicalDevice physical, vk::De
     Info->CreateInfo.device = device;
     Info->CreateInfo.instance = instance;
     Info->CreateInfo.pVulkanFunctions = &Info->VulkanFunctions;
+#ifndef RELEASE_BUILD
+    VmaDeviceMemoryCallbacks memoryCallbacks{LoggingVmaAllocate, LoggingVmaFree, nullptr};
+    Info->CreateInfo.pDeviceMemoryCallbacks = &memoryCallbacks;
+#endif
 
     if (vmaCreateAllocator(&Info->CreateInfo, &Allocator) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create VMA allocator.");

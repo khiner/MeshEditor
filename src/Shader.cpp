@@ -8,11 +8,11 @@
 
 #include <format>
 
-#ifdef DEBUG_BUILD
-static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
-#elif defined(RELEASE_BUILD)
+#ifdef RELEASE_BUILD
 // All files in `src/shaders` are copied to `build/shaders` at build time.
 static const fs::path ShadersDir = "Shaders";
+#else
+static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
 #endif
 
 Shaders::Shaders(std::unordered_map<ShaderType, fs::path> &&paths) : Paths(std::move(paths)) {}
