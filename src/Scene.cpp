@@ -71,23 +71,6 @@ void Scene::ToggleSelected(entt::entity entity) {
     InvalidateCommandBuffer();
 }
 
-// Simple wrapper around vertex and index buffers.
-struct VkRenderBuffers {
-    VulkanBuffer Vertices, Indices;
-    VkRenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices)
-        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size())),
-          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * indices.size())) {}
-
-    VkRenderBuffers(const VulkanContext &vc, RenderBuffers &&buffers)
-        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, buffers.Vertices.data(), sizeof(Vertex3D) * buffers.Vertices.size())),
-          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, buffers.Indices.data(), sizeof(uint) * buffers.Indices.size())) {}
-
-    template<size_t N>
-    VkRenderBuffers(const VulkanContext &vc, std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices)
-        : Vertices(vc.CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size())),
-          Indices(vc.CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * N)) {}
-};
-
 using MeshBuffers = std::unordered_map<MeshElement, VkRenderBuffers>;
 struct MeshVkData {
     std::unordered_map<entt::entity, MeshBuffers> Main, NormalIndicators;
@@ -317,6 +300,104 @@ PipelineRenderer EdgeDetectionPipelineRenderer(const VulkanContext &vc) {
 }
 } // namespace
 
+namespace {
+uint FindMemoryType(vk::PhysicalDevice pd, uint type_filter, vk::MemoryPropertyFlags prop_flags) {
+    auto mem_props = pd.getMemoryProperties();
+    for (uint i = 0; i < mem_props.memoryTypeCount; i++) {
+        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & prop_flags) == prop_flags) return i;
+    }
+    throw std::runtime_error("failed to find suitable memory type!");
+}
+
+ImageResource CreateImage(vk::Device d, vk::PhysicalDevice pd, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags = vk::MemoryPropertyFlagBits::eDeviceLocal) {
+    auto image = d.createImageUnique(image_info);
+    const auto mem_reqs = d.getImageMemoryRequirements(*image);
+    auto memory = d.allocateMemoryUnique({mem_reqs.size, FindMemoryType(pd, mem_reqs.memoryTypeBits, mem_flags)});
+    d.bindImageMemory(*image, *memory, 0);
+    view_info.image = *image;
+    return {std::move(memory), std::move(image), d.createImageViewUnique(view_info), image_info.extent};
+}
+
+// Adapted from https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2 for 64-bits.
+uint64_t NextPowerOfTwo(uint64_t x) {
+    if (x == 0) return 1;
+
+    x--;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    x |= x >> 32;
+    return x + 1;
+}
+
+} // namespace
+
+ImageResource Scene::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
+    auto image = CreateImage(*VC.Device, VC.PhysicalDevice, {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    // Write the bitmap into a staging buffer.
+    const auto buffer_size = width * height * 4; // 4 bytes per pixel
+    auto staging_buffer = BufferAllocator->CreateStagingBuffer(buffer_size);
+    staging_buffer.WriteRegion(data, 0, buffer_size);
+
+    // Record commands to copy from staging buffer to Vulkan image.
+    const auto &cb = *TransferCommandBuffer;
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Transition the image layout to be ready for data transfer.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eTransfer,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            {}, // srcAccessMask
+            vk::AccessFlagBits::eTransferWrite, // dstAccessMask
+            vk::ImageLayout::eUndefined, // oldLayout
+            vk::ImageLayout::eTransferDstOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image.Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    // Copy buffer to image.
+    cb.copyBufferToImage(
+        *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
+        vk::BufferImageCopy{
+            0, // bufferOffset
+            0, // bufferRowLength (tightly packed)
+            0, // bufferImageHeight
+            {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
+            {0, 0, 0}, // imageOffset
+            {width, height, 1} // imageExtent
+        }
+    );
+
+    // Transition the image layout to be ready for shader sampling.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eFragmentShader,
+        {}, {}, {},
+        vk::ImageMemoryBarrier{
+            vk::AccessFlagBits::eTransferWrite, // srcAccessMask
+            vk::AccessFlagBits::eShaderRead, // dstAccessMask
+            vk::ImageLayout::eTransferDstOptimal, // oldLayout
+            vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
+            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            *image.Image, // image
+            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+        }
+    );
+
+    cb.end();
+    SubmitTransfer();
+
+    return image;
+}
+
 std::vector<vk::WriteDescriptorSet> PipelineRenderer::GetDescriptors(std::vector<ShaderBindingDescriptor> &&descriptors) const {
     std::vector<vk::WriteDescriptorSet> write_descriptor_sets;
     for (const auto &descriptor : descriptors) {
@@ -331,21 +412,12 @@ std::vector<vk::WriteDescriptorSet> PipelineRenderer::GetDescriptors(std::vector
 }
 
 struct MainPipelineResources {
-    MainPipelineResources(const VulkanContext &vc, vk::RenderPass render_pass, vk::Extent2D extent, vk::SampleCountFlagBits msaa_samples)
-        : DepthImage{vc.CreateImage(
-              {{}, vk::ImageType::e2D, ImageFormat::Depth, vk::Extent3D{extent, 1}, 1, 1, msaa_samples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive},
-              {{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
-          )},
-          OffscreenImage{vc.CreateImage(
-              {{}, vk::ImageType::e2D, ImageFormat::Color, vk::Extent3D{extent, 1}, 1, 1, msaa_samples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-              {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-          )},
-          ResolveImage{vc.CreateImage(
-              {{}, vk::ImageType::e2D, ImageFormat::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-              {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-          )} {
+    MainPipelineResources(vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::Extent2D extent, vk::SampleCountFlagBits msaa_samples)
+        : DepthImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Depth, vk::Extent3D{extent, 1}, 1, 1, msaa_samples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}})},
+          OffscreenImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Color, vk::Extent3D{extent, 1}, 1, 1, msaa_samples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})},
+          ResolveImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})} {
         const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
-        Framebuffer = vc.Device->createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+        Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
     }
 
     // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
@@ -353,26 +425,20 @@ struct MainPipelineResources {
     vk::UniqueFramebuffer Framebuffer;
 };
 struct SilhouettePipelineResources {
-    SilhouettePipelineResources(const VulkanContext &vc, vk::RenderPass render_pass, vk::Extent2D extent)
-        : OffscreenImage{vc.CreateImage(
-              {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-              {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-          )} {
+    SilhouettePipelineResources(vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::Extent2D extent)
+        : OffscreenImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})} {
         const std::array image_views{*OffscreenImage.View};
-        Framebuffer = vc.Device->createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+        Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
     }
 
     ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
     vk::UniqueFramebuffer Framebuffer;
 };
 struct EdgeDetectionPipelineResources {
-    EdgeDetectionPipelineResources(const VulkanContext &vc, vk::RenderPass render_pass, vk::Extent2D extent)
-        : OffscreenImage{vc.CreateImage(
-              {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive},
-              {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
-          )} {
+    EdgeDetectionPipelineResources(vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::Extent2D extent)
+        : OffscreenImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})} {
         const std::array image_views{*OffscreenImage.View};
-        Framebuffer = vc.Device->createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+        Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
     }
 
     ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
@@ -380,9 +446,15 @@ struct EdgeDetectionPipelineResources {
 };
 
 Scene::Scene(const VulkanContext &vc, entt::registry &r)
-    : VC(vc), R(r), CommandBuffer(std::move(VC.Device->allocateCommandBuffersUnique({*VC.CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
-      MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(vc)),
-      SilhouetteRenderer(SilhouettePipelineRenderer(vc)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(vc)) {
+    : VC(vc),
+      BufferAllocator(std::make_unique<VulkanBufferAllocator>(VC.PhysicalDevice, *VC.Device, *VC.Instance)),
+      R(r),
+      CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
+      CommandBuffer(std::move(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
+      TransferCommandBuffer(std::move(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())),
+      RenderFence(VC.Device->createFenceUnique({})),
+      MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(VC)),
+      SilhouetteRenderer(SilhouettePipelineRenderer(VC)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(VC)) {
     // EnTT listeners
     R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
     R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
@@ -393,15 +465,14 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
 
     UpdateEdgeColors();
 
-    const auto &allocator = *VC.BufferAllocator.get();
-    TransformBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
-    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
+    TransformBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
+    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
     UpdateTransformBuffers();
 
-    LightsBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
-    VC.UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
-    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(allocator.CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer,sizeof(ActiveSilhouetteColor)));
-    VC.UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
+    LightsBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
+    UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
+    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ActiveSilhouetteColor)));
+    UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
     VC.Device->updateDescriptorSets(
@@ -528,12 +599,19 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     } else {
         R.remove<Visible>(entity);
         const uint old_model_index = *GetModelBufferIndex(entity);
-        VC.EraseBufferRegion(MeshVkData->Models.at(GetParentEntity(entity)), old_model_index * sizeof(Model), sizeof(Model));
+        EraseBufferRegion(MeshVkData->Models.at(GetParentEntity(entity)), old_model_index * sizeof(Model), sizeof(Model));
         model_indices.erase(entity);
         for (auto &[_, model_index] : model_indices) {
             if (model_index > old_model_index) --model_index;
         }
     }
+}
+
+VkRenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
+    return {
+        CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, buffers.Vertices.data(), sizeof(Vertex3D) * buffers.Vertices.size()),
+        CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, buffers.Indices.data(), sizeof(uint) * buffers.Indices.size())
+    };
 }
 
 entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
@@ -543,19 +621,19 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, CreateName(R, info.Name));
 
-    MeshVkData->Models.emplace(entity, VC.BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
+    MeshVkData->Models.emplace(entity, BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(entity, false);
 
     MeshBuffers mesh_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        mesh_buffers.emplace(element, VkRenderBuffers{VC, mesh.CreateVertices(element), mesh.CreateIndices(element)});
+        mesh_buffers.emplace(element, CreateRenderBuffers(mesh.CreateVertices(element), mesh.CreateIndices(element)));
     }
     MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
     MeshVkData->NormalIndicators.emplace(entity, MeshBuffers{});
 
     if (ShowBoundingBoxes) {
-        MeshVkData->Boxes.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
+        MeshVkData->Boxes.emplace(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
     }
 
     R.emplace<Mesh>(entity, std::move(mesh));
@@ -589,15 +667,15 @@ void Scene::ClearMeshes() {
 
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     for (auto &[element, buffers] : MeshVkData->Main.at(entity)) {
-        VC.UpdateBuffer(buffers.Vertices, mesh.CreateVertices(element));
-        VC.UpdateBuffer(buffers.Indices, mesh.CreateIndices(element));
+        UpdateBuffer(buffers.Vertices, mesh.CreateVertices(element));
+        UpdateBuffer(buffers.Indices, mesh.CreateIndices(element));
     }
     for (auto &[element, buffers] : MeshVkData->NormalIndicators.at(entity)) {
-        VC.UpdateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
-        VC.UpdateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
+        UpdateBuffer(buffers.Vertices, mesh.CreateNormalVertices(element));
+        UpdateBuffer(buffers.Indices, mesh.CreateNormalIndices(element));
     }
     if (auto buffers = MeshVkData->Boxes.find(entity); buffers != MeshVkData->Boxes.end()) {
-        VC.UpdateBuffer(buffers->second.Vertices, CreateBoxVertices(mesh.BoundingBox, EdgeColor));
+        UpdateBuffer(buffers->second.Vertices, CreateBoxVertices(mesh.BoundingBox, EdgeColor));
         // Box indices are always the same.
     }
 
@@ -665,6 +743,21 @@ void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 sca
     InvalidateCommandBuffer();
 }
 
+void Scene::WaitForRender() const {
+    if (auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    VC.Device->resetFences(*RenderFence);
+}
+
+// TODO Use separate fence/semaphores for buffer updates and rendering?
+void Scene::SubmitTransfer() const {
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(*TransferCommandBuffer);
+    VC.Queue.submit(submit, *RenderFence);
+    WaitForRender();
+}
+
 void Scene::UpdateRenderBuffers(entt::entity entity) {
     if (const auto *mesh = R.try_get<Mesh>(entity)) {
         auto &mesh_buffers = MeshVkData->Main.at(entity);
@@ -675,18 +768,81 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
                                                                       MeshElementIndex{}
         };
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
-            VC.UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected_element));
+            UpdateBuffer(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected_element));
         }
         InvalidateCommandBuffer();
     };
+}
+
+VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize bytes) const {
+    auto buffer = BufferAllocator->CreateBuffer(flags, bytes);
+    buffer.HostBuffer.WriteRegion(data, 0, bytes);
+    // Copy data from the staging buffer to the device buffer.
+    const auto &cb = *TransferCommandBuffer;
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{0, 0, bytes});
+    cb.end();
+    SubmitTransfer();
+    return buffer;
+}
+
+void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
+    if (bytes == 0) bytes = buffer.Size;
+
+    // Note: `buffer.Size` is the _used_ size, not the allocated size.
+    const auto required_bytes = offset + bytes;
+    if (required_bytes > buffer.GetAllocatedSize()) {
+        // Create a new buffer with the first large enough power of two.
+        // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
+        const auto new_bytes = NextPowerOfTwo(required_bytes);
+        auto new_buffer = BufferAllocator->CreateBuffer(buffer.Usage, new_bytes);
+        // Host copy:
+        new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetData(), 0, buffer.Size);
+        // Host->device copy:
+        const auto &cb = *TransferCommandBuffer;
+        cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
+        cb.end();
+        SubmitTransfer();
+
+        buffer = std::move(new_buffer);
+        buffer.Size = required_bytes; // `buffer.Size` is the newly allocated size, so we may need to shrink it.
+    } else {
+        buffer.Size = std::max(buffer.Size, required_bytes);
+    }
+
+    // Copy data to the host buffer.
+    buffer.HostBuffer.WriteRegion(data, offset, bytes);
+
+    // Copy data from the staging buffer to the device buffer.
+    const auto &cb = *TransferCommandBuffer;
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});
+    cb.end();
+    SubmitTransfer();
+}
+
+void Scene::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize bytes) const {
+    if (bytes == 0 || offset + bytes > buffer.Size) return;
+
+    if (const auto move_bytes = buffer.Size - (offset + bytes); move_bytes > 0) {
+        buffer.HostBuffer.MoveRegion(offset + bytes, offset, move_bytes);
+
+        const auto &cb = *TransferCommandBuffer;
+        cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_bytes});
+        cb.end();
+        SubmitTransfer();
+    }
+    buffer.Size -= bytes;
 }
 
 void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     UpdateTransformBuffers(); // Depends on the aspect ratio.
 
-    MainResources = std::make_unique<MainPipelineResources>(VC, *MainRenderer.RenderPass, extent, GetMaxUsableSampleCount(VC.PhysicalDevice));
-    SilhouetteResources = std::make_unique<SilhouettePipelineResources>(VC, *SilhouetteRenderer.RenderPass, extent);
+    MainResources = std::make_unique<MainPipelineResources>(*VC.Device, VC.PhysicalDevice, *MainRenderer.RenderPass, extent, GetMaxUsableSampleCount(VC.PhysicalDevice));
+    SilhouetteResources = std::make_unique<SilhouettePipelineResources>(*VC.Device, VC.PhysicalDevice, *SilhouetteRenderer.RenderPass, extent);
     SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
         {},
         vk::Filter::eNearest,
@@ -705,7 +861,7 @@ void Scene::SetExtent(vk::Extent2D extent) {
         }),
         {}
     );
-    EdgeDetectionResources = std::make_unique<EdgeDetectionPipelineResources>(VC, *EdgeDetectionRenderer.RenderPass, extent);
+    EdgeDetectionResources = std::make_unique<EdgeDetectionPipelineResources>(*VC.Device, VC.PhysicalDevice, *EdgeDetectionRenderer.RenderPass, extent);
     SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
     VC.Device->updateDescriptorSets(
         MainRenderer.GetDescriptors({
@@ -856,17 +1012,17 @@ void Scene::UpdateEdgeColors() {
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetView(), Camera.GetProjection(aspect_ratio)};
-    VC.UpdateBuffer(*TransformBuffer, &view_proj);
+    UpdateBuffer(*TransformBuffer, &view_proj);
 
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
-    VC.UpdateBuffer(*ViewProjNearFarBuffer, &vpnf);
+    UpdateBuffer(*ViewProjNearFarBuffer, &vpnf);
     InvalidateCommandBuffer();
 }
 
 void Scene::UpdateModelBuffer(entt::entity entity) {
     if (const auto buffer_index = GetModelBufferIndex(entity)) {
         const auto &model = R.get<Model>(entity);
-        VC.UpdateBuffer(MeshVkData->Models.at(GetParentEntity(entity)), &model, *buffer_index * sizeof(Model), sizeof(Model));
+        UpdateBuffer(MeshVkData->Models.at(GetParentEntity(entity)), &model, *buffer_index * sizeof(Model), sizeof(Model));
     }
 }
 
@@ -1042,12 +1198,12 @@ bool Scene::Render() {
 
     if (extent_changed) SetExtent(ToVkExtent(content_region));
     RecordCommandBuffer();
-    SubmitCommandBuffer(*VC.RenderFence);
+    SubmitCommandBuffer(*RenderFence);
     CommandBufferDirty = false;
 
     // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
-    VC.WaitForRender();
+    WaitForRender();
     return extent_changed;
 }
 
@@ -1334,7 +1490,7 @@ void Scene::RenderControls() {
                     Capitalize(name);
                     if (Checkbox(name.c_str(), &has_normals)) {
                         if (has_normals) {
-                            normals.emplace(element, VkRenderBuffers{VC, mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)});
+                            normals.emplace(element, CreateRenderBuffers(mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)));
                         } else {
                             normals.erase(element);
                         }
@@ -1343,7 +1499,7 @@ void Scene::RenderControls() {
                 }
                 if (Checkbox("BVH boxes", &ShowBvhBoxes)) {
                     auto &buffers = MeshVkData->BvhBoxes;
-                    if (ShowBvhBoxes) buffers.emplace(active_mesh_entity, VkRenderBuffers{VC, mesh.CreateBvhBuffers(EdgeColor)});
+                    if (ShowBvhBoxes) buffers.emplace(active_mesh_entity, CreateRenderBuffers(mesh.CreateBvhBuffers(EdgeColor)));
                     else buffers.erase(active_mesh_entity);
                     InvalidateCommandBuffer();
                 }
@@ -1352,14 +1508,14 @@ void Scene::RenderControls() {
             if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
                 auto &buffers = MeshVkData->Boxes;
                 for (const auto &[entity, mesh] : R.view<const Mesh>().each()) {
-                    if (ShowBoundingBoxes) buffers.emplace(entity, VkRenderBuffers{VC, CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices});
+                    if (ShowBoundingBoxes) buffers.emplace(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
                     else buffers.erase(entity);
                 }
                 InvalidateCommandBuffer();
             }
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &ActiveSilhouetteColor[0])) {
-                VC.UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor);
+                UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor);
                 InvalidateCommandBuffer();
             }
             EndTabItem();
@@ -1394,7 +1550,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                VC.UpdateBuffer(*LightsBuffer, &Lights);
+                UpdateBuffer(*LightsBuffer, &Lights);
                 InvalidateCommandBuffer();
             }
             EndTabItem();

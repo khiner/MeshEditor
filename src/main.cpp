@@ -118,14 +118,6 @@ bool PushFont(FontFamily family) {
 } // namespace MeshEditor
 */
 
-std::unique_ptr<VulkanContext> VC;
-
-void CreateSvg(std::unique_ptr<SvgResource> &svg, fs::path path) {
-    VC->Device->waitIdle();
-    svg.reset(); // Ensure destruction before creation.
-    svg = std::make_unique<SvgResource>(*VC, std::move(path));
-};
-
 int main(int, char **) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
@@ -139,7 +131,7 @@ int main(int, char **) {
 
     uint extensions_count = 0;
     const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
-    VC = std::make_unique<VulkanContext>(std::vector<const char *>{instance_extensions_raw, instance_extensions_raw + extensions_count});
+    auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{instance_extensions_raw, instance_extensions_raw + extensions_count});
 
     constexpr static uint MinImageCount = 2;
     ImGui_ImplVulkanH_Window wd;
@@ -147,21 +139,21 @@ int main(int, char **) {
     {
         VkSurfaceKHR surface;
         // Create window surface.
-        if (!SDL_Vulkan_CreateSurface(window, *VC->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
+        if (!SDL_Vulkan_CreateSurface(window, *vc->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
         wd.Surface = surface;
 
         int w, h;
         SDL_GetWindowSize(window, &w, &h);
 
         // Check for WSI support
-        if (auto res = VC->PhysicalDevice.getSurfaceSupportKHR(VC->QueueFamily, wd.Surface); res != VK_TRUE) {
+        if (auto res = vc->PhysicalDevice.getSurfaceSupportKHR(vc->QueueFamily, wd.Surface); res != VK_TRUE) {
             throw std::runtime_error("Error no WSI support on physical device 0\n");
         }
 
         // Select surface format.
         const VkFormat requestSurfaceImageFormat[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
         const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-        wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(VC->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
+        wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(vc->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
         // Select present mode.
 #ifdef IMGUI_UNLIMITED_FRAME_RATE
@@ -169,8 +161,8 @@ int main(int, char **) {
 #else
         VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 #endif
-        wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(VC->PhysicalDevice, wd.Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
-        ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, w, h, MinImageCount);
+        wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(vc->PhysicalDevice, wd.Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
+        ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount);
     }
 
     // Setup ImGui context.
@@ -188,17 +180,17 @@ int main(int, char **) {
     // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo init_info{
-        .Instance = *VC->Instance,
-        .PhysicalDevice = VC->PhysicalDevice,
-        .Device = *VC->Device,
-        .QueueFamily = VC->QueueFamily,
-        .Queue = VC->Queue,
-        .DescriptorPool = *VC->DescriptorPool,
+        .Instance = *vc->Instance,
+        .PhysicalDevice = vc->PhysicalDevice,
+        .Device = *vc->Device,
+        .QueueFamily = vc->QueueFamily,
+        .Queue = vc->Queue,
+        .DescriptorPool = *vc->DescriptorPool,
         .RenderPass = wd.RenderPass,
         .MinImageCount = MinImageCount,
         .ImageCount = wd.ImageCount,
         .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
-        .PipelineCache = *VC->PipelineCache,
+        .PipelineCache = *vc->PipelineCache,
         .Subpass = 0,
         .DescriptorPoolSize = 0,
         .UseDynamicRendering = false,
@@ -214,8 +206,19 @@ int main(int, char **) {
     InitFonts();
 
     NFD_Init();
-
     entt::registry r;
+    std::unique_ptr<Scene> scene = std::make_unique<Scene>(*vc, r);
+    auto device = *vc->Device;
+
+    const auto CreateSvg = [device, &scene](std::unique_ptr<SvgResource> &svg, fs::path path) {
+        const auto RenderBitmap = [&scene](const void *data, uint32_t width, uint32_t height) {
+            return scene->RenderBitmapToImage(data, width, height);
+        };
+        device.waitIdle();
+        svg.reset(); // Ensure destruction before creation.
+        svg = std::make_unique<SvgResource>(device, RenderBitmap, std::move(path));
+    };
+
     auto acoustic_scene = std::make_unique<AcousticScene>(r, CreateSvg);
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {
@@ -226,7 +229,6 @@ int main(int, char **) {
     };
     audio_device.Start();
 
-    std::unique_ptr<Scene> scene = std::make_unique<Scene>(*VC, r);
     std::unique_ptr<ImGuiTexture> scene_texture;
     WindowsState windows;
 
@@ -246,7 +248,7 @@ int main(int, char **) {
             SDL_GetWindowSize(window, &width, &height);
             if (width > 0 && height > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(*VC->Instance, VC->PhysicalDevice, *VC->Device, &wd, VC->QueueFamily, nullptr, width, height, MinImageCount);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, width, height, MinImageCount);
                 wd.FrameIndex = 0;
                 RebuildSwapchain = false;
             }
@@ -340,7 +342,7 @@ int main(int, char **) {
                 if (scene->Render()) {
                     // Extent changed. Update the scene texture.
                     scene_texture.reset(); // Ensure destruction before creation.
-                    scene_texture = std::make_unique<ImGuiTexture>(*VC->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
+                    scene_texture = std::make_unique<ImGuiTexture>(*vc->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
                 }
                 if (scene_texture) {
                     const auto cursor = GetCursorPos();
@@ -363,13 +365,13 @@ int main(int, char **) {
         ImGui::Render();
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
-            RenderFrame(*VC->Device, VC->Queue, wd, draw_data);
-            PresentFrame(VC->Queue, wd);
+            RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
+            PresentFrame(vc->Queue, wd);
         }
     }
 
     // Cleanup
-    VC->Device->waitIdle();
+    vc->Device->waitIdle();
     r.clear();
 
     audio_device.Uninit();
@@ -383,8 +385,8 @@ int main(int, char **) {
     ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
-    ImGui_ImplVulkanH_DestroyWindow(*VC->Instance, *VC->Device, &wd, nullptr);
-    VC.reset();
+    ImGui_ImplVulkanH_DestroyWindow(*vc->Instance, *vc->Device, &wd, nullptr);
+    vc.reset();
 
     SDL_DestroyWindow(window);
     SDL_Quit();

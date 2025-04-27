@@ -7,9 +7,12 @@
 #include "World.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
+#include "mesh/Vertex.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
+#include "vulkan/Vulkan.h"
+#include "vulkan/VulkanBuffer.h"
 
 #include <entt/entity/fwd.hpp>
 
@@ -33,9 +36,8 @@ struct Path {
 struct Mesh;
 struct MeshVkData;
 struct Excitable;
+struct RenderBuffers;
 struct VulkanContext;
-struct VkRenderBuffers;
-struct VulkanBuffer;
 
 struct Position {
     vec3 Value;
@@ -178,6 +180,7 @@ struct Scene {
     bool Render();
     void RenderGizmo();
     void RenderControls();
+    ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const;
 
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
@@ -195,8 +198,12 @@ struct Scene {
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
 private:
+    std::unique_ptr<VulkanBufferAllocator> BufferAllocator;
     entt::registry &R;
+    vk::UniqueCommandPool CommandPool;
     vk::UniqueCommandBuffer CommandBuffer;
+    vk::UniqueCommandBuffer TransferCommandBuffer;
+    vk::UniqueFence RenderFence;
 
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
@@ -245,11 +252,43 @@ private:
 
     void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
 
+    void SetExtent(vk::Extent2D);
+
     // VK buffer update methods.
     void UpdateTransformBuffers();
     void UpdateModelBuffer(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
 
-    void SetExtent(vk::Extent2D);
+    // Uses `buffer.Size` if `bytes` is not set.
+    // Automatically grows the buffer if the buffer is too small (using the nearest large enough power of 2).
+    void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
+    template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
+        UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
+    }
+
+    // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
+    // This is for dynamic buffers, and it doesn't free memory, so the allocated size will be greater than the used size.
+    void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize bytes) const;
+
+    VulkanBuffer CreateBuffer(vk::BufferUsageFlags, const void *data, vk::DeviceSize bytes) const;
+    VkRenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
+        return {
+            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size()),
+            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * indices.size())
+        };
+    }
+
+    VkRenderBuffers CreateRenderBuffers(RenderBuffers &&);
+
+    template<size_t N>
+    VkRenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
+        return {
+            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size()),
+            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * N)
+        };
+    }
+
+    void WaitForRender() const;
+    void SubmitTransfer() const;
 };

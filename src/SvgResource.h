@@ -4,13 +4,14 @@
 #include <memory>
 #include <optional>
 
+#include "vulkan/Vulkan.h"
+
 namespace fs = std::filesystem;
 
 struct SvgResourceImpl;
-struct VulkanContext;
 
 struct SvgResource {
-    SvgResource(const VulkanContext &, fs::path);
+    SvgResource(vk::Device, RenderBitmapToImage, fs::path);
     ~SvgResource();
 
     // Returns the clicked link path.

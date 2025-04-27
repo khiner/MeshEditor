@@ -1,5 +1,4 @@
 #include "SvgResource.h"
-#include "vulkan/VulkanContext.h"
 
 #include "imgui.h"
 #include "lunasvg.h"
@@ -36,11 +35,11 @@ lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale
 } // namespace
 
 struct SvgResourceImpl {
-    SvgResourceImpl(const VulkanContext &vc, fs::path path) {
+    SvgResourceImpl(vk::Device device, RenderBitmapToImage render, fs::path path) {
         if (Document = lunasvg::Document::loadFromFile(path); Document) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
-                Image = std::make_unique<ImageResource>(vc.RenderBitmapToImage(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
-                Texture = std::make_unique<ImGuiTexture>(*vc.Device, *Image->View);
+                Image = std::make_unique<ImageResource>(render(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
+                Texture = std::make_unique<ImGuiTexture>(device, *Image->View);
             }
         }
     }
@@ -78,7 +77,8 @@ private:
     static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap.
 };
 
-SvgResource::SvgResource(const VulkanContext &vc, fs::path path) : Path(std::move(path)), Impl(std::make_unique<SvgResourceImpl>(vc, Path)) {}
+SvgResource::SvgResource(vk::Device device, RenderBitmapToImage render, fs::path path)
+    : Path(std::move(path)), Impl(std::make_unique<SvgResourceImpl>(device, std::move(render), Path)) {}
 SvgResource::~SvgResource() = default;
 
 std::optional<fs::path> SvgResource::Render() { return Impl->Render(); }

@@ -1,4 +1,4 @@
-#include "VulkanBuffer.h"
+#include "VmaBuffer.h"
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
@@ -90,12 +90,12 @@ void VmaBuffer::MoveRegion(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSiz
     memmove(mapped_data + to, mapped_data + from, size_t(bytes));
 }
 
-struct VulkanBufferAllocator::AllocatorInfo {
+struct VmaBufferAllocator::AllocatorInfo {
     VmaVulkanFunctions VulkanFunctions{};
     VmaAllocatorCreateInfo CreateInfo{};
 };
 
-VulkanBufferAllocator::VulkanBufferAllocator(vk::PhysicalDevice physical, vk::Device device, VkInstance instance)
+VmaBufferAllocator::VmaBufferAllocator(vk::PhysicalDevice physical, vk::Device device, VkInstance instance)
     : Info(std::make_unique<AllocatorInfo>()) {
     Info->CreateInfo.physicalDevice = physical;
     Info->CreateInfo.device = device;
@@ -111,11 +111,11 @@ VulkanBufferAllocator::VulkanBufferAllocator(vk::PhysicalDevice physical, vk::De
     }
 }
 
-VulkanBufferAllocator::~VulkanBufferAllocator() {
+VmaBufferAllocator::~VmaBufferAllocator() {
     vmaDestroyAllocator(Allocator);
 }
 
-VmaBuffer VulkanBufferAllocator::CreateVmaBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage) const {
+VmaBuffer VmaBufferAllocator::CreateVmaBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage) const {
     VmaAllocationCreateInfo aci{};
     aci.usage = ToVmaMemoryUsage(memory_usage);
     vk::BufferCreateInfo bci{{}, size, usage, vk::SharingMode::eExclusive};
