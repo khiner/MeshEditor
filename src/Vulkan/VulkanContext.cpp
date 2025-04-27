@@ -183,18 +183,6 @@ uint64_t NextPowerOfTwo(uint64_t x) {
     return x + 1;
 }
 
-void VulkanContext::WriteBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
-    // Copy data to the host buffer.
-    buffer.HostBuffer.WriteRegion(data, offset, bytes);
-
-    // Copy data from the staging buffer to the device buffer.
-    const auto &cb = *TransferCommandBuffer;
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});
-    cb.end();
-    SubmitTransfer();
-}
-
 void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
     if (bytes == 0) bytes = buffer.Size;
 
@@ -206,7 +194,7 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         const auto new_bytes = NextPowerOfTwo(required_bytes);
         auto new_buffer = BufferAllocator->CreateBuffer(buffer.Usage, new_bytes);
         // Host copy:
-        new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetMappedData(), 0, buffer.Size);
+        new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetData(), 0, buffer.Size);
         // Host->device copy:
         const auto &cb = *TransferCommandBuffer;
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -220,7 +208,15 @@ void VulkanContext::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::Dev
         buffer.Size = std::max(buffer.Size, required_bytes);
     }
 
-    WriteBuffer(buffer, data, offset, bytes);
+    // Copy data to the host buffer.
+    buffer.HostBuffer.WriteRegion(data, offset, bytes);
+
+    // Copy data from the staging buffer to the device buffer.
+    const auto &cb = *TransferCommandBuffer;
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});
+    cb.end();
+    SubmitTransfer();
 }
 
 void VulkanContext::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize bytes) const {
@@ -261,6 +257,7 @@ ImageResource VulkanContext::CreateImage(vk::ImageCreateInfo image_info, vk::Ima
     view_info.image = *image;
     return {std::move(memory), std::move(image), Device->createImageViewUnique(view_info), image_info.extent};
 }
+
 ImageResource VulkanContext::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
     auto image = CreateImage(
         {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},

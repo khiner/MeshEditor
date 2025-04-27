@@ -52,23 +52,28 @@ struct VulkanContext {
     vk::UniqueCommandBuffer TransferCommandBuffer;
     vk::UniqueFence RenderFence;
 
-    void WriteBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
     // Uses `buffer.Size` if `bytes` is not set.
     // Automatically grows the buffer if the buffer is too small (using the nearest large enough power of 2).
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
+    template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
+        UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
+    }
+
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
     // This is for dynamic buffers, and it doesn't free memory, so the allocated size will be greater than the used size.
     void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize bytes) const;
 
     VulkanBuffer CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize bytes) const {
         auto buffer = BufferAllocator->CreateBuffer(flags, bytes);
-        WriteBuffer(buffer, data, 0, bytes);
+        buffer.HostBuffer.WriteRegion(data, 0, bytes);
+        // Copy data from the staging buffer to the device buffer.
+        const auto &cb = *TransferCommandBuffer;
+        cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{0, 0, bytes});
+        cb.end();
+        SubmitTransfer();
         return buffer;
     }
-    template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
-        UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
-    }
-
     void WaitForRender() const;
     void SubmitTransfer() const;
 

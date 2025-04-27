@@ -1,13 +1,13 @@
 #include "VulkanBuffer.h"
-
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
 struct VmaBuffer::AllocationInfo {
-    VmaAllocation Allocation{VK_NULL_HANDLE};
+    VmaAllocation Allocation{nullptr};
     VmaAllocationInfo Info{};
 };
 
+namespace {
 VmaMemoryUsage ToVmaMemoryUsage(MemoryUsage usage) {
     switch (usage) {
         case MemoryUsage::Unknown: return VMA_MEMORY_USAGE_UNKNOWN;
@@ -15,104 +15,108 @@ VmaMemoryUsage ToVmaMemoryUsage(MemoryUsage usage) {
         case MemoryUsage::CpuOnly: return VMA_MEMORY_USAGE_CPU_ONLY;
         case MemoryUsage::CpuToGpu: return VMA_MEMORY_USAGE_CPU_TO_GPU;
         case MemoryUsage::GpuToCpu: return VMA_MEMORY_USAGE_GPU_TO_CPU;
-        default: throw std::runtime_error("Invalid VMA memory usage.");
     }
 }
+} // namespace
 
 VmaBuffer::VmaBuffer(const VmaAllocator &allocator, vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage)
-    : Allocator(allocator), Allocation(std::make_unique<AllocationInfo>()) {
-    VmaAllocationCreateInfo alloc_info{};
-    alloc_info.usage = ToVmaMemoryUsage(memory_usage);
+    : Allocator(allocator),
+      Allocation(std::make_unique<AllocationInfo>()) {
+    VmaAllocationCreateInfo aci{};
+    aci.usage = ToVmaMemoryUsage(memory_usage);
+    if (memory_usage == MemoryUsage::CpuOnly || memory_usage == MemoryUsage::CpuToGpu) {
+        aci.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    }
 
-    vk::BufferCreateInfo buffer_create_info{{}, size, vk::BufferUsageFlagBits::eTransferSrc | usage, vk::SharingMode::eExclusive};
-    if (vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo *>(&buffer_create_info), &alloc_info, &Buffer, &Allocation->Allocation, nullptr) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create VMA buffer.");
+    vk::BufferCreateInfo bci{{}, size, vk::BufferUsageFlagBits::eTransferSrc | usage, vk::SharingMode::eExclusive};
+    if (vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Buffer), &Allocation->Allocation, nullptr) != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateBuffer failed");
     }
     vmaGetAllocationInfo(allocator, Allocation->Allocation, &Allocation->Info);
-    MapMemory();
 }
-VmaBuffer::VmaBuffer(VmaBuffer &&other)
-    : Allocator(other.Allocator), Allocation(std::move(other.Allocation)), Buffer(other.Buffer), MappedData(other.MappedData) {
-    other.Buffer = VK_NULL_HANDLE;
-    other.Allocation = {};
-    other.MappedData = nullptr;
-}
-VmaBuffer::~VmaBuffer() {
-    UnmapMemory();
-    if (Buffer != VK_NULL_HANDLE) vmaDestroyBuffer(Allocator, Buffer, Allocation->Allocation);
-}
+
+VmaBuffer::VmaBuffer(const VmaAllocator &allocator, VmaAllocation allocation, const VmaAllocationInfo &info, vk::Buffer buffer)
+    : Allocator(allocator),
+      Allocation(std::make_unique<AllocationInfo>(allocation, info)),
+      Buffer(buffer) {}
+
+VmaBuffer::VmaBuffer(VmaBuffer &&other) noexcept
+    : Allocator(other.Allocator),
+      Allocation(std::move(other.Allocation)),
+      Buffer(std::exchange(other.Buffer, nullptr)) {}
 
 VmaBuffer &VmaBuffer::operator=(VmaBuffer &&other) noexcept {
     if (this != &other) {
-        // Free resources
-        UnmapMemory();
-        if (Buffer != VK_NULL_HANDLE) vmaDestroyBuffer(Allocator, Buffer, Allocation->Allocation);
-        // Transfer resources
-        Buffer = other.Buffer;
+        if (Buffer) {
+            vmaDestroyBuffer(Allocator, Buffer, Allocation->Allocation);
+        }
+        Buffer = std::exchange(other.Buffer, nullptr);
         Allocation = std::move(other.Allocation);
-        MappedData = other.MappedData;
-        // Prevent double-free
-        other.Buffer = VK_NULL_HANDLE;
-        other.MappedData = nullptr;
     }
     return *this;
 }
 
-VkBuffer VmaBuffer::operator*() const { return Buffer; }
+VmaBuffer::~VmaBuffer() {
+    if (Buffer) {
+        vmaDestroyBuffer(Allocator, Buffer, Allocation->Allocation);
+    }
+}
 
+const void *VmaBuffer::GetData() const { return Allocation->Info.pMappedData; }
+void *VmaBuffer::GetMappedData() { return Allocation->Info.pMappedData; }
 vk::DeviceSize VmaBuffer::GetAllocatedSize() const { return Allocation->Info.size; }
-
-void VmaBuffer::MapMemory() {
-    VkMemoryPropertyFlags memory_props;
-    vmaGetMemoryTypeProperties(Allocator, Allocation->Info.memoryType, &memory_props);
-    if (memory_props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-        void *mapped_data = nullptr;
-        if (vmaMapMemory(Allocator, Allocation->Allocation, &mapped_data) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to map VMA buffer memory.");
-        }
-        MappedData = static_cast<char *>(mapped_data);
-    }
-}
-void VmaBuffer::UnmapMemory() {
-    if (MappedData) {
-        vmaUnmapMemory(Allocator, Allocation->Allocation);
-        MappedData = nullptr;
-    }
-}
 
 void VmaBuffer::WriteRegion(const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) {
     if (bytes == 0 || offset >= GetAllocatedSize()) return;
-
-    memcpy(MappedData + offset, data, size_t(bytes));
+    memcpy(reinterpret_cast<char *>(GetMappedData()) + offset, data, size_t(bytes));
 }
 
 void VmaBuffer::MoveRegion(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize bytes) {
-    if (bytes == 0 || from + bytes >= GetAllocatedSize() || to + bytes >= GetAllocatedSize()) return;
+    if (bytes == 0 || from + bytes > GetAllocatedSize() || to + bytes > GetAllocatedSize()) return;
 
-    // Shift the data to "erase" the region (dst is first, src is second.)
-    memmove(MappedData + to, MappedData + from, size_t(bytes));
+    // Shift the data to "erase" the region (dst is first, src is second).
+    auto *mapped_data = reinterpret_cast<char *>(GetMappedData());
+    memmove(mapped_data + to, mapped_data + from, size_t(bytes));
 }
-
 
 struct VulkanBufferAllocator::AllocatorInfo {
     VmaVulkanFunctions VulkanFunctions{};
     VmaAllocatorCreateInfo CreateInfo{};
 };
 
-VulkanBufferAllocator::VulkanBufferAllocator(vk::PhysicalDevice physical_device, vk::Device device, VkInstance instance)
+VulkanBufferAllocator::VulkanBufferAllocator(vk::PhysicalDevice physical, vk::Device device, VkInstance instance)
     : Info(std::make_unique<AllocatorInfo>()) {
-    // VulkanFunctions.vkGetInstanceProcAddr = &vkGetInstanceProcAddr;
-    // VulkanFunctions.vkGetDeviceProcAddr = &vkGetDeviceProcAddr;
-
-    // AllocatorCreateInfo.flags = VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
-    // AllocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_2;
-    Info->CreateInfo.physicalDevice = physical_device;
+    Info->CreateInfo.physicalDevice = physical;
     Info->CreateInfo.device = device;
     Info->CreateInfo.instance = instance;
     Info->CreateInfo.pVulkanFunctions = &Info->VulkanFunctions;
 
-    vmaCreateAllocator(&Info->CreateInfo, &Allocator);
+    if (vmaCreateAllocator(&Info->CreateInfo, &Allocator) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create VMA allocator.");
+    }
 }
+
 VulkanBufferAllocator::~VulkanBufferAllocator() {
     vmaDestroyAllocator(Allocator);
+}
+
+VmaBuffer VulkanBufferAllocator::CreateVmaBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage) const {
+    VmaAllocationCreateInfo aci{};
+    aci.usage = ToVmaMemoryUsage(memory_usage);
+    vk::BufferCreateInfo bci{{}, size, usage, vk::SharingMode::eExclusive};
+    if (memory_usage == MemoryUsage::CpuOnly || memory_usage == MemoryUsage::CpuToGpu) {
+        aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        bci.usage |= vk::BufferUsageFlagBits::eTransferSrc;
+    } else {
+        bci.usage |= vk::BufferUsageFlagBits::eTransferDst;
+    }
+
+    vk::Buffer vk_buffer;
+    VmaAllocation alloc;
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(Allocator, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&vk_buffer), &alloc, &info) != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateBuffer in CreateVmaBuffer");
+    }
+
+    return {Allocator, alloc, info, vk_buffer};
 }
