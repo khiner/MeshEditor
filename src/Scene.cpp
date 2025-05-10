@@ -1236,7 +1236,7 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
         InputFloat("Radius", &r);
         if (Button(create_label)) return Circle(r);
     } else if (primitive == Primitive::Cube) {
-        static vec3 size = {1.0, 1.0, 1.0};
+        static vec3 size{1.0, 1.0, 1.0};
         InputFloat3("Size", &size.x);
         if (Button(create_label)) return Cuboid(size / 2.f);
     } else if (primitive == Primitive::IcoSphere) {
@@ -1250,7 +1250,7 @@ std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) 
         InputFloat("Radius", &r);
         if (Button(create_label)) return UVSphere(r);
     } else if (primitive == Primitive::Torus) {
-        static vec2 radii = {0.5, 0.2};
+        static vec2 radii{0.5, 0.2};
         static glm::ivec2 n_segments = {32, 16};
         InputFloat2("Major/minor radius", &radii.x);
         InputInt2("Major/minor segments", &n_segments.x);
@@ -1340,15 +1340,7 @@ void Scene::RenderControls() {
                     SetVisible(active_entity, visible);
                     InvalidateCommandBuffer();
                 }
-
-                if (const auto *primitive = R.try_get<Primitive>(active_mesh_entity)) {
-                    if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
-                        ReplaceMesh(active_entity, std::move(*new_mesh));
-                        InvalidateCommandBuffer();
-                    }
-                }
                 if (Button("Add instance")) AddInstance(active_mesh_entity);
-
                 if (CollapsingHeader("Transform")) {
                     auto pos = R.get<Position>(active_entity).Value;
                     auto scale = R.get<Scale>(active_entity).Value;
@@ -1400,6 +1392,14 @@ void Scene::RenderControls() {
                         TextUnformatted("Inverse transform");
                         RenderMat4(model.InvTransform);
                         TreePop();
+                    }
+                }
+                if (const auto *primitive = R.try_get<Primitive>(active_mesh_entity)) {
+                    if (CollapsingHeader("Update primitive")) {
+                        if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
+                            ReplaceMesh(active_mesh_entity, std::move(*new_mesh));
+                            InvalidateCommandBuffer();
+                        }
                     }
                 }
                 PopID();
