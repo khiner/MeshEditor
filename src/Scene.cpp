@@ -570,20 +570,21 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     auto &parent_node = R.get<SceneNode>(parent);
     auto &model_indices = parent_node.ModelIndices;
     if (visible) {
-        R.emplace<Visible>(entity);
         // Insert model index as the max value + 1.
         const uint new_model_index = entity == parent || model_indices.empty() ?
             0 :
-            std::max_element(model_indices.begin(), model_indices.end(), [](const auto &a, const auto &b) { return a.second < b.second; })->second + 1;
+            std::ranges::max_element(model_indices, [](auto &a, auto &b) { return a.second < b.second; })->second + 1;
         for (auto &[_, model_index] : model_indices) {
             if (model_index >= new_model_index) ++model_index;
         }
         model_indices.emplace(entity, new_model_index);
-        UpdateModelBuffer(entity);
+        const auto &model = R.get<Model>(entity);
+        InsertBufferRegion(MeshVkData->Models.at(parent), &model, new_model_index * sizeof(Model), sizeof(Model));
+        R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
         const uint old_model_index = *GetModelBufferIndex(entity);
-        EraseBufferRegion(MeshVkData->Models.at(GetParentEntity(entity)), old_model_index * sizeof(Model), sizeof(Model));
+        EraseBufferRegion(MeshVkData->Models.at(parent), old_model_index * sizeof(Model), sizeof(Model));
         model_indices.erase(entity);
         for (auto &[_, model_index] : model_indices) {
             if (model_index > old_model_index) --model_index;
@@ -673,6 +674,8 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     parent_node.Children.emplace_back(entity);
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{} instance {}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
+    auto &model_buffer = MeshVkData->Models.at(parent);
+    EnsureBufferHasAllocated(model_buffer, model_buffer.Size + sizeof(Model));
     SetVisible(entity, info.Visible);
     if (info.Select) SetActive(entity);
     InvalidateCommandBuffer();
@@ -749,8 +752,8 @@ std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
     const auto parent_entity = GetParentEntity(entity);
     if (parent_entity == entt::null) return std::nullopt;
 
-    if (const auto *scene_node = R.try_get<SceneNode>(GetParentEntity(entity))) {
-        const auto &model_indices = scene_node->ModelIndices;
+    if (const auto *parent_node = R.try_get<SceneNode>(parent_entity)) {
+        const auto &model_indices = parent_node->ModelIndices;
         if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
     }
     return std::nullopt;
@@ -774,6 +777,7 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
 
 VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize size) const {
     auto buffer = BufferAllocator->Allocate(flags, size);
+    buffer.Size = size;
     buffer.HostBuffer.WriteRegion(data, 0, size);
     // Copy data from the staging buffer to the device buffer.
     const auto &cb = *TransferCommandBuffer;
@@ -784,27 +788,36 @@ VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, v
     return buffer;
 }
 
-void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
-    if (size == 0) size = buffer.Size;
+bool Scene::EnsureBufferHasAllocated(VulkanBuffer &buffer, vk::DeviceSize required_size) const {
+    if (required_size == 0) return false;
 
-    const auto required_size = offset + size;
     if (required_size > buffer.GetAllocatedSize()) {
         // Create a new buffer with enough space.
         // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
         auto new_buffer = BufferAllocator->Allocate(buffer.Usage, NextPowerOfTwo(required_size));
-        new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetData(), 0, buffer.Size);
-        new_buffer.Size = required_size; // `Size` is the _used_ size, not the allocated size.
-        // Device->device copy
-        const auto &cb = *TransferCommandBuffer;
-        cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
-        cb.end();
-        SubmitTransfer();
+        if (buffer.Size > 0) {
+            new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetData(), 0, buffer.Size);
+            new_buffer.Size = buffer.Size;
+            // Device->device copy
+            const auto &cb = *TransferCommandBuffer;
+            cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+            cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
+            cb.end();
+            SubmitTransfer();
+        }
 
         buffer = std::move(new_buffer);
-    } else {
-        buffer.Size = std::max(buffer.Size, required_size);
+        return true;
     }
+    return false;
+}
+void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
+    if (size == 0) size = buffer.Size;
+    assert(size > 0);
+
+    const auto required_size = offset + size;
+    EnsureBufferHasAllocated(buffer, required_size);
+    buffer.Size = std::max(buffer.Size, required_size);
     buffer.HostBuffer.WriteRegion(data, offset, size);
 
     // Staging->device copy
@@ -814,7 +827,23 @@ void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize 
     cb.end();
     SubmitTransfer();
 }
+void Scene::InsertBufferRegion(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
+    if (size == 0 || buffer.Size + size > buffer.GetAllocatedSize()) return;
 
+    if (offset < buffer.Size) {
+        buffer.HostBuffer.MoveRegion(offset, offset + size, buffer.Size - offset);
+    }
+    buffer.HostBuffer.WriteRegion(data, offset, size);
+    buffer.Size += size;
+
+    // Staging->device copy
+    const auto &cb = *TransferCommandBuffer;
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    assert(buffer.Size > offset);
+    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, buffer.Size - offset});
+    cb.end();
+    SubmitTransfer();
+}
 void Scene::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
     if (size == 0 || offset + size > buffer.Size) return;
 
@@ -1005,10 +1034,10 @@ void Scene::UpdateEdgeColors() {
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetView(), Camera.GetProjection(aspect_ratio)};
-    UpdateBuffer(*TransformBuffer, &view_proj);
+    UpdateBuffer(*TransformBuffer, &view_proj, 0, sizeof(ViewProj));
 
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
-    UpdateBuffer(*ViewProjNearFarBuffer, &vpnf);
+    UpdateBuffer(*ViewProjNearFarBuffer, &vpnf, 0, sizeof(ViewProjNearFar));
     InvalidateCommandBuffer();
 }
 
@@ -1508,7 +1537,7 @@ void Scene::RenderControls() {
             }
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &ActiveSilhouetteColor[0])) {
-                UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor);
+                UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
                 InvalidateCommandBuffer();
             }
             EndTabItem();
@@ -1543,7 +1572,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                UpdateBuffer(*LightsBuffer, &Lights);
+                UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
                 InvalidateCommandBuffer();
             }
             EndTabItem();

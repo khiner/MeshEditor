@@ -272,11 +272,16 @@ private:
     // Grows the buffer if it's not big enough (to the next power of 2).
     // If `bytes == 0` (or is not set) `bytes = buffer.Size`
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize size = 0) const;
+    // Returns true if the buffer had to be resized.
+    bool EnsureBufferHasAllocated(VulkanBuffer &, vk::DeviceSize required_size) const;
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
         UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
     }
+    // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
+    // **It does nothing if the buffer doesn't have enough enough space allocated.**
+    void InsertBufferRegion(VulkanBuffer &, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const;
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
-    // This is for dynamic buffers, and it doesn't free memory, so the allocated size will be greater than the used size.
+    // It doesn't free memory, so the allocated size will be greater than the used size.
     void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
     VulkanBuffer CreateBuffer(vk::BufferUsageFlags, const void *data, vk::DeviceSize size) const;

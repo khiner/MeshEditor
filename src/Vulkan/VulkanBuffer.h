@@ -23,7 +23,7 @@ struct VulkanBufferAllocator {
     VulkanBuffer Allocate(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
         return {
             usage,
-            bytes,
+            0, // Used size (not allocated size)
             AllocateStaging(bytes),
             // Device buffer: device (GPU)-local
             BufferAllocator.Allocate(bytes, MemoryUsage::GpuOnly, usage),
