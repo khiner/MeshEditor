@@ -7,8 +7,7 @@
 #include "Scale.h"
 #include "mesh/Arrow.h"
 #include "mesh/Primitives.h"
-#include "vulkan/VulkanContext.h"
-#include <numeric/mat3.h>
+#include "numeric/mat3.h"
 
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -170,8 +169,8 @@ void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const VkRenderBuffe
 }
 
 namespace {
-PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
-    const auto MsaaSamples = GetMaxUsableSampleCount(vc.PhysicalDevice);
+PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice physical_device, vk::DescriptorPool descriptor_pool) {
+    const auto MsaaSamples = GetMaxUsableSampleCount(physical_device);
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
         {{}, ImageFormat::Depth, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -189,7 +188,7 @@ PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
     pipelines.emplace(
         SPT::Fill,
         ShaderPipeline{
-            *vc.Device, *vc.DescriptorPool,
+            device, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}
             },
@@ -201,7 +200,7 @@ PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
     pipelines.emplace(
         SPT::Line,
         ShaderPipeline{
-            *vc.Device, *vc.DescriptorPool,
+            device, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}
             },
@@ -213,7 +212,7 @@ PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
     pipelines.emplace(
         SPT::Grid,
         ShaderPipeline{
-            *vc.Device, *vc.DescriptorPool,
+            device, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}
             },
@@ -229,7 +228,7 @@ PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
     pipelines.emplace(
         SPT::Texture,
         ShaderPipeline{
-            *vc.Device, *vc.DescriptorPool,
+            device, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}
             },
@@ -241,7 +240,7 @@ PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
     pipelines.emplace(
         SPT::DebugNormals,
         ShaderPipeline{
-            *vc.Device, *vc.DescriptorPool,
+            device, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}
             },
@@ -250,10 +249,10 @@ PipelineRenderer MainPipelineRenderer(const VulkanContext &vc) {
             CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
         }
     );
-    return {vc.Device->createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
-PipelineRenderer SilhouettePipelineRenderer(const VulkanContext &vc) {
+PipelineRenderer SilhouettePipelineRenderer(vk::Device device, vk::DescriptorPool descriptor_pool) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
         {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -264,7 +263,7 @@ PipelineRenderer SilhouettePipelineRenderer(const VulkanContext &vc) {
     pipelines.emplace(
         SPT::Silhouette,
         ShaderPipeline{
-            *vc.Device, *vc.DescriptorPool,
+            device, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}
             },
@@ -273,10 +272,10 @@ PipelineRenderer SilhouettePipelineRenderer(const VulkanContext &vc) {
             CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
         }
     );
-    return {vc.Device->createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
-PipelineRenderer EdgeDetectionPipelineRenderer(const VulkanContext &vc) {
+PipelineRenderer EdgeDetectionPipelineRenderer(vk::Device device, vk::DescriptorPool descriptor_pool) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
         {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -287,7 +286,7 @@ PipelineRenderer EdgeDetectionPipelineRenderer(const VulkanContext &vc) {
     pipelines.emplace(
         SPT::EdgeDetection,
         ShaderPipeline{
-            *vc.Device, *vc.DescriptorPool,
+            device, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "MeshEdges.frag"}}
             },
@@ -296,7 +295,7 @@ PipelineRenderer EdgeDetectionPipelineRenderer(const VulkanContext &vc) {
             CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
         }
     );
-    return {vc.Device->createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 } // namespace
 
@@ -335,7 +334,7 @@ uint64_t NextPowerOfTwo(uint64_t x) {
 } // namespace
 
 ImageResource Scene::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
-    auto image = CreateImage(*VC.Device, VC.PhysicalDevice, {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+    auto image = CreateImage(Vk.Device, Vk.PhysicalDevice, {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
     // Write the bitmap into a staging buffer.
     const auto buffer_size = width * height * 4; // 4 bytes per pixel
     auto staging_buffer = BufferAllocator->CreateStagingBuffer(buffer_size);
@@ -445,16 +444,16 @@ struct EdgeDetectionPipelineResources {
     vk::UniqueFramebuffer Framebuffer;
 };
 
-Scene::Scene(const VulkanContext &vc, entt::registry &r)
-    : VC(vc),
-      BufferAllocator(std::make_unique<VulkanBufferAllocator>(VC.PhysicalDevice, *VC.Device, *VC.Instance)),
+Scene::Scene(SceneVulkanResources vc, entt::registry &r)
+    : Vk(vc),
+      BufferAllocator(std::make_unique<VulkanBufferAllocator>(Vk.PhysicalDevice, Vk.Device, Vk.Instance)),
       R(r),
-      CommandPool(VC.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VC.QueueFamily})),
-      CommandBuffer(std::move(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
-      TransferCommandBuffer(std::move(VC.Device->allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())),
-      RenderFence(VC.Device->createFenceUnique({})),
-      MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(VC)),
-      SilhouetteRenderer(SilhouettePipelineRenderer(VC)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(VC)) {
+      CommandPool(Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})),
+      CommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
+      TransferCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())),
+      RenderFence(Vk.Device.createFenceUnique({})),
+      MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
+      SilhouetteRenderer(SilhouettePipelineRenderer(Vk.Device, Vk.DescriptorPool)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(Vk.Device, Vk.DescriptorPool)) {
     // EnTT listeners
     R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
     R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
@@ -475,7 +474,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
     UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
-    VC.Device->updateDescriptorSets(
+    Vk.Device.updateDescriptorSets(
         MainRenderer.GetDescriptors({
             {SPT::Fill, "ViewProjectionUBO", transform_buffer},
             {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{*LightsBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE}},
@@ -486,7 +485,7 @@ Scene::Scene(const VulkanContext &vc, entt::registry &r)
         }),
         {}
     );
-    VC.Device->updateDescriptorSets(
+    Vk.Device.updateDescriptorSets(
         SilhouetteRenderer.GetDescriptors({
             {SPT::Silhouette, "ViewProjectionUBO", transform_buffer},
         }),
@@ -706,7 +705,7 @@ void Scene::DestroyInstance(entt::entity instance) {
 void Scene::DestroyEntity(entt::entity entity) {
     if (const auto parent_entity = GetParentEntity(entity); parent_entity != entity) return DestroyInstance(entity);
 
-    VC.Device->waitIdle(); // xxx device blocking should be more targeted
+    Vk.Device.waitIdle(); // xxx device blocking should be more targeted
     MeshVkData->Main.erase(entity);
     MeshVkData->NormalIndicators.erase(entity);
     MeshVkData->Models.erase(entity);
@@ -744,17 +743,17 @@ void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 sca
 }
 
 void Scene::WaitForRender() const {
-    if (auto wait_result = VC.Device->waitForFences(*RenderFence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
+    if (auto wait_result = Vk.Device.waitForFences(*RenderFence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
     }
-    VC.Device->resetFences(*RenderFence);
+    Vk.Device.resetFences(*RenderFence);
 }
 
 // TODO Use separate fence/semaphores for buffer updates and rendering?
 void Scene::SubmitTransfer() const {
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*TransferCommandBuffer);
-    VC.Queue.submit(submit, *RenderFence);
+    Vk.Queue.submit(submit, *RenderFence);
     WaitForRender();
 }
 
@@ -841,9 +840,9 @@ void Scene::SetExtent(vk::Extent2D extent) {
     Extent = extent;
     UpdateTransformBuffers(); // Depends on the aspect ratio.
 
-    MainResources = std::make_unique<MainPipelineResources>(*VC.Device, VC.PhysicalDevice, *MainRenderer.RenderPass, extent, GetMaxUsableSampleCount(VC.PhysicalDevice));
-    SilhouetteResources = std::make_unique<SilhouettePipelineResources>(*VC.Device, VC.PhysicalDevice, *SilhouetteRenderer.RenderPass, extent);
-    SilhouetteFillImageSampler = VC.Device->createSamplerUnique({
+    MainResources = std::make_unique<MainPipelineResources>(Vk.Device, Vk.PhysicalDevice, *MainRenderer.RenderPass, extent, GetMaxUsableSampleCount(Vk.PhysicalDevice));
+    SilhouetteResources = std::make_unique<SilhouettePipelineResources>(Vk.Device, Vk.PhysicalDevice, *SilhouetteRenderer.RenderPass, extent);
+    SilhouetteFillImageSampler = Vk.Device.createSamplerUnique({
         {},
         vk::Filter::eNearest,
         vk::Filter::eNearest,
@@ -855,15 +854,15 @@ void Scene::SetExtent(vk::Extent2D extent) {
         vk::SamplerAddressMode::eClampToEdge,
     });
 
-    VC.Device->updateDescriptorSets(
+    Vk.Device.updateDescriptorSets(
         EdgeDetectionRenderer.GetDescriptors({
             {SPT::EdgeDetection, "Tex", std::nullopt, vk::DescriptorImageInfo{*SilhouetteFillImageSampler, *SilhouetteResources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
         }),
         {}
     );
-    EdgeDetectionResources = std::make_unique<EdgeDetectionPipelineResources>(*VC.Device, VC.PhysicalDevice, *EdgeDetectionRenderer.RenderPass, extent);
-    SilhouetteEdgeImageSampler = VC.Device->createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
-    VC.Device->updateDescriptorSets(
+    EdgeDetectionResources = std::make_unique<EdgeDetectionPipelineResources>(Vk.Device, Vk.PhysicalDevice, *EdgeDetectionRenderer.RenderPass, extent);
+    SilhouetteEdgeImageSampler = Vk.Device.createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
+    Vk.Device.updateDescriptorSets(
         MainRenderer.GetDescriptors({
             {SPT::Texture, "SilhouetteEdgeTexture", std::nullopt, vk::DescriptorImageInfo{*SilhouetteEdgeImageSampler, *EdgeDetectionResources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal}},
         }),
@@ -991,7 +990,7 @@ void Scene::RecordCommandBuffer() {
 void Scene::SubmitCommandBuffer(vk::Fence fence) const {
     vk::SubmitInfo submit;
     submit.setCommandBuffers(*CommandBuffer);
-    VC.Queue.submit(submit, fence);
+    Vk.Queue.submit(submit, fence);
 }
 
 void Scene::InvalidateCommandBuffer() {

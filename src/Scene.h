@@ -16,8 +16,11 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <memory>
 #include <set>
 #include <unordered_map>
+
+using uint = u_int32_t;
 
 struct Selected {}; // Entity is selected (multiple can be selected)
 // Active selected entity
@@ -37,7 +40,6 @@ struct Mesh;
 struct MeshVkData;
 struct Excitable;
 struct RenderBuffers;
-struct VulkanContext;
 
 struct Position {
     vec3 Value;
@@ -136,11 +138,19 @@ struct MainPipelineResources;
 struct SilhouettePipelineResources;
 struct EdgeDetectionPipelineResources;
 
+struct SceneVulkanResources {
+    vk::Instance Instance;
+    vk::PhysicalDevice PhysicalDevice;
+    vk::Device Device;
+    uint32_t QueueFamily;
+    vk::Queue Queue;
+    vk::DescriptorPool DescriptorPool;
+};
+
 struct Scene {
-    Scene(const VulkanContext &, entt::registry &);
+    Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
 
-    const VulkanContext &VC;
     World World{};
 
     std::optional<uint> GetModelBufferIndex(entt::entity);
@@ -198,6 +208,7 @@ struct Scene {
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
 private:
+    SceneVulkanResources Vk;
     std::unique_ptr<VulkanBufferAllocator> BufferAllocator;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
