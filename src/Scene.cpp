@@ -772,31 +772,29 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
     };
 }
 
-VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize bytes) const {
-    auto buffer = BufferAllocator->Allocate(flags, bytes);
-    buffer.HostBuffer.WriteRegion(data, 0, bytes);
+VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize size) const {
+    auto buffer = BufferAllocator->Allocate(flags, size);
+    buffer.HostBuffer.WriteRegion(data, 0, size);
     // Copy data from the staging buffer to the device buffer.
     const auto &cb = *TransferCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{0, 0, bytes});
+    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{0, 0, size});
     cb.end();
     SubmitTransfer();
     return buffer;
 }
 
-void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) const {
-    if (bytes == 0) bytes = buffer.Size;
+void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
+    if (size == 0) size = buffer.Size;
 
-    // Note: `buffer.Size` is the _used_ size, not the allocated size.
-    const auto required_bytes = offset + bytes;
-    if (required_bytes > buffer.GetAllocatedSize()) {
-        // Create a new buffer with the first large enough power of two.
+    const auto required_size = offset + size;
+    if (required_size > buffer.GetAllocatedSize()) {
+        // Create a new buffer with enough space.
         // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
-        const auto new_bytes = NextPowerOfTwo(required_bytes);
-        auto new_buffer = BufferAllocator->Allocate(buffer.Usage, new_bytes);
-        // Host write:
+        auto new_buffer = BufferAllocator->Allocate(buffer.Usage, NextPowerOfTwo(required_size));
         new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetData(), 0, buffer.Size);
-        // Device->device copy:
+        new_buffer.Size = required_size; // `Size` is the _used_ size, not the allocated size.
+        // Device->device copy
         const auto &cb = *TransferCommandBuffer;
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
@@ -804,35 +802,32 @@ void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize 
         SubmitTransfer();
 
         buffer = std::move(new_buffer);
-        buffer.Size = required_bytes; // `buffer.Size` is the newly allocated size, so we may need to shrink it.
     } else {
-        buffer.Size = std::max(buffer.Size, required_bytes);
+        buffer.Size = std::max(buffer.Size, required_size);
     }
+    buffer.HostBuffer.WriteRegion(data, offset, size);
 
-    // Write to the host buffer.
-    buffer.HostBuffer.WriteRegion(data, offset, bytes);
-
-    // Copy from the staging buffer to the device buffer.
+    // Staging->device copy
     const auto &cb = *TransferCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});
+    cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, size});
     cb.end();
     SubmitTransfer();
 }
 
-void Scene::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize bytes) const {
-    if (bytes == 0 || offset + bytes > buffer.Size) return;
+void Scene::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
+    if (size == 0 || offset + size > buffer.Size) return;
 
-    if (const auto move_bytes = buffer.Size - (offset + bytes); move_bytes > 0) {
-        buffer.HostBuffer.MoveRegion(offset + bytes, offset, move_bytes);
+    if (const auto move_size = buffer.Size - (offset + size); move_size > 0) {
+        buffer.HostBuffer.MoveRegion(offset + size, offset, move_size);
 
         const auto &cb = *TransferCommandBuffer;
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_bytes});
+        cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
         cb.end();
         SubmitTransfer();
     }
-    buffer.Size -= bytes;
+    buffer.Size -= size;
 }
 
 void Scene::SetExtent(vk::Extent2D extent) {

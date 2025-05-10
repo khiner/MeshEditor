@@ -4,7 +4,7 @@
 
 struct VulkanBuffer {
     vk::BufferUsageFlags Usage;
-    vk::DeviceSize Size;
+    vk::DeviceSize Size; // Used size (not allocated size)
     VmaBuffer HostBuffer, DeviceBuffer;
 
     vk::DeviceSize GetAllocatedSize() const { return DeviceBuffer.GetAllocatedSize(); }

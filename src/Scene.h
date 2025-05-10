@@ -269,19 +269,17 @@ private:
     void UpdateModelBuffer(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
-
     // Grows the buffer if it's not big enough (to the next power of 2).
     // If `bytes == 0` (or is not set) `bytes = buffer.Size`
-    void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
+    void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize size = 0) const;
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
         UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
     }
-
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
     // This is for dynamic buffers, and it doesn't free memory, so the allocated size will be greater than the used size.
-    void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize bytes) const;
+    void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
-    VulkanBuffer CreateBuffer(vk::BufferUsageFlags, const void *data, vk::DeviceSize bytes) const;
+    VulkanBuffer CreateBuffer(vk::BufferUsageFlags, const void *data, vk::DeviceSize size) const;
     VkRenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
             CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size()),
