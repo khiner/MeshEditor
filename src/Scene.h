@@ -153,13 +153,11 @@ struct Scene {
 
     World World{};
 
-    std::optional<uint> GetModelBufferIndex(entt::entity);
+    entt::entity AddMesh(Mesh &&, MeshCreateInfo = {});
+    entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
 
-    entt::entity AddMesh(Mesh &&, MeshCreateInfo info = {});
-    entt::entity AddMesh(const fs::path &, MeshCreateInfo info = {});
-
-    entt::entity AddPrimitive(Primitive, MeshCreateInfo info = {});
-    entt::entity AddInstance(entt::entity, MeshCreateInfo info = {});
+    entt::entity AddPrimitive(Primitive, MeshCreateInfo = {});
+    entt::entity AddInstance(entt::entity, MeshCreateInfo = {});
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
@@ -195,6 +193,7 @@ struct Scene {
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
 
+    std::optional<uint> GetModelBufferIndex(entt::entity);
     void UpdateRenderBuffers(entt::entity);
     void RecordCommandBuffer();
     void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
@@ -265,14 +264,14 @@ private:
 
     void SetExtent(vk::Extent2D);
 
-    // VK buffer update methods.
+    // VK buffer update methods
     void UpdateTransformBuffers();
     void UpdateModelBuffer(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
 
-    // Uses `buffer.Size` if `bytes` is not set.
-    // Automatically grows the buffer if the buffer is too small (using the nearest large enough power of 2).
+    // Grows the buffer if it's not big enough (to the next power of 2).
+    // If `bytes == 0` (or is not set) `bytes = buffer.Size`
     void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize bytes = 0) const;
     template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
         UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());

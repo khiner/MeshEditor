@@ -13,14 +13,13 @@ struct VmaAllocationInfo;
 
 enum class MemoryUsage {
     Unknown,
-    GpuOnly,
     CpuOnly,
     CpuToGpu,
+    GpuOnly,
     GpuToCpu,
 };
 
 struct VmaBuffer {
-    VmaBuffer(const VmaAllocator &, vk::DeviceSize, vk::BufferUsageFlags, MemoryUsage);
     VmaBuffer(const VmaAllocator &, VmaAllocation, const VmaAllocationInfo &, vk::Buffer);
     VmaBuffer(VmaBuffer &&) noexcept;
 
@@ -48,7 +47,7 @@ struct VmaBufferAllocator {
     VmaBufferAllocator(vk::PhysicalDevice, vk::Device, VkInstance);
     ~VmaBufferAllocator();
 
-    VmaBuffer CreateVmaBuffer(vk::DeviceSize, vk::BufferUsageFlags, MemoryUsage) const;
+    VmaBuffer Allocate(vk::DeviceSize, MemoryUsage, vk::BufferUsageFlags = vk::BufferUsageFlagBits::eTransferSrc) const;
 
 private:
     VmaAllocator Allocator{};

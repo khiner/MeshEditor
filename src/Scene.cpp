@@ -337,7 +337,7 @@ ImageResource Scene::RenderBitmapToImage(const void *data, uint32_t width, uint3
     auto image = CreateImage(Vk.Device, Vk.PhysicalDevice, {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
     // Write the bitmap into a staging buffer.
     const auto buffer_size = width * height * 4; // 4 bytes per pixel
-    auto staging_buffer = BufferAllocator->CreateStagingBuffer(buffer_size);
+    auto staging_buffer = BufferAllocator->AllocateStaging(buffer_size);
     staging_buffer.WriteRegion(data, 0, buffer_size);
 
     // Record commands to copy from staging buffer to Vulkan image.
@@ -464,13 +464,13 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     UpdateEdgeColors();
 
-    TransformBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
-    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
+    TransformBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
+    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
     UpdateTransformBuffers();
 
-    LightsBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
+    LightsBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
     UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
-    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ActiveSilhouetteColor)));
+    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ActiveSilhouetteColor)));
     UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
@@ -562,21 +562,6 @@ vk::ImageView Scene::GetResolveImageView() const {
     return *MainResources->ResolveImage.View;
 }
 
-// Get the model VK buffer index.
-// Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
-std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
-    if (entity == entt::null) return std::nullopt;
-
-    const auto parent_entity = GetParentEntity(entity);
-    if (parent_entity == entt::null) return std::nullopt;
-
-    if (const auto *scene_node = R.try_get<SceneNode>(GetParentEntity(entity))) {
-        const auto &model_indices = scene_node->ModelIndices;
-        if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
-    }
-    return std::nullopt;
-}
-
 void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<Visible>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
@@ -620,7 +605,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, CreateName(R, info.Name));
 
-    MeshVkData->Models.emplace(entity, BufferAllocator->CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
+    MeshVkData->Models.emplace(entity, BufferAllocator->Allocate(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(entity, false);
 
@@ -677,7 +662,6 @@ void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
         UpdateBuffer(buffers->second.Vertices, CreateBoxVertices(mesh.BoundingBox, EdgeColor));
         // Box indices are always the same.
     }
-
     R.replace<Mesh>(entity, std::move(mesh));
 }
 
@@ -757,6 +741,21 @@ void Scene::SubmitTransfer() const {
     WaitForRender();
 }
 
+// Get the model VK buffer index.
+// Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
+std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
+    if (entity == entt::null) return std::nullopt;
+
+    const auto parent_entity = GetParentEntity(entity);
+    if (parent_entity == entt::null) return std::nullopt;
+
+    if (const auto *scene_node = R.try_get<SceneNode>(GetParentEntity(entity))) {
+        const auto &model_indices = scene_node->ModelIndices;
+        if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
+    }
+    return std::nullopt;
+}
+
 void Scene::UpdateRenderBuffers(entt::entity entity) {
     if (const auto *mesh = R.try_get<Mesh>(entity)) {
         auto &mesh_buffers = MeshVkData->Main.at(entity);
@@ -774,7 +773,7 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
 }
 
 VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize bytes) const {
-    auto buffer = BufferAllocator->CreateBuffer(flags, bytes);
+    auto buffer = BufferAllocator->Allocate(flags, bytes);
     buffer.HostBuffer.WriteRegion(data, 0, bytes);
     // Copy data from the staging buffer to the device buffer.
     const auto &cb = *TransferCommandBuffer;
@@ -794,10 +793,10 @@ void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize 
         // Create a new buffer with the first large enough power of two.
         // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
         const auto new_bytes = NextPowerOfTwo(required_bytes);
-        auto new_buffer = BufferAllocator->CreateBuffer(buffer.Usage, new_bytes);
-        // Host copy:
+        auto new_buffer = BufferAllocator->Allocate(buffer.Usage, new_bytes);
+        // Host write:
         new_buffer.HostBuffer.WriteRegion(buffer.HostBuffer.GetData(), 0, buffer.Size);
-        // Host->device copy:
+        // Device->device copy:
         const auto &cb = *TransferCommandBuffer;
         cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         cb.copyBuffer(*buffer.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
@@ -810,10 +809,10 @@ void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize 
         buffer.Size = std::max(buffer.Size, required_bytes);
     }
 
-    // Copy data to the host buffer.
+    // Write to the host buffer.
     buffer.HostBuffer.WriteRegion(data, offset, bytes);
 
-    // Copy data from the staging buffer to the device buffer.
+    // Copy from the staging buffer to the device buffer.
     const auto &cb = *TransferCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     cb.copyBuffer(*buffer.HostBuffer, *buffer.DeviceBuffer, vk::BufferCopy{offset, offset, bytes});

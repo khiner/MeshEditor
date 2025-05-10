@@ -20,19 +20,19 @@ struct VulkanBufferAllocator {
         : BufferAllocator(physical, device, instance) {}
     ~VulkanBufferAllocator() = default;
 
-    VulkanBuffer CreateBuffer(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
+    VulkanBuffer Allocate(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
         return {
             usage,
             bytes,
-            CreateStagingBuffer(bytes),
+            AllocateStaging(bytes),
             // Device buffer: device (GPU)-local
-            BufferAllocator.CreateVmaBuffer(bytes, vk::BufferUsageFlagBits::eTransferDst | usage, MemoryUsage::GpuOnly),
+            BufferAllocator.Allocate(bytes, MemoryUsage::GpuOnly, usage),
         };
     }
 
     // Host-visible and coherent CPU staging buffer
-    VmaBuffer CreateStagingBuffer(vk::DeviceSize bytes) const {
-        return BufferAllocator.CreateVmaBuffer(bytes, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CpuOnly);
+    VmaBuffer AllocateStaging(vk::DeviceSize bytes) const {
+        return BufferAllocator.Allocate(bytes, MemoryUsage::CpuOnly);
     }
 
 private:

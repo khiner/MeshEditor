@@ -30,22 +30,6 @@ void LoggingVmaFree(VmaAllocator, uint32_t memoryType, VkDeviceMemory, VkDeviceS
 #endif
 } // namespace
 
-VmaBuffer::VmaBuffer(const VmaAllocator &allocator, vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage)
-    : Allocator(allocator),
-      Allocation(std::make_unique<AllocationInfo>()) {
-    VmaAllocationCreateInfo aci{};
-    aci.usage = ToVmaMemoryUsage(memory_usage);
-    if (memory_usage == MemoryUsage::CpuOnly || memory_usage == MemoryUsage::CpuToGpu) {
-        aci.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    }
-
-    vk::BufferCreateInfo bci{{}, size, vk::BufferUsageFlagBits::eTransferSrc | usage, vk::SharingMode::eExclusive};
-    if (vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Buffer), &Allocation->Allocation, nullptr) != VK_SUCCESS) {
-        throw std::runtime_error("vmaCreateBuffer failed");
-    }
-    vmaGetAllocationInfo(allocator, Allocation->Allocation, &Allocation->Info);
-}
-
 VmaBuffer::VmaBuffer(const VmaAllocator &allocator, VmaAllocation allocation, const VmaAllocationInfo &info, vk::Buffer buffer)
     : Allocator(allocator),
       Allocation(std::make_unique<AllocationInfo>(allocation, info)),
@@ -115,13 +99,13 @@ VmaBufferAllocator::~VmaBufferAllocator() {
     vmaDestroyAllocator(Allocator);
 }
 
-VmaBuffer VmaBufferAllocator::CreateVmaBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, MemoryUsage memory_usage) const {
+VmaBuffer VmaBufferAllocator::Allocate(vk::DeviceSize size, MemoryUsage memory_usage, vk::BufferUsageFlags usage) const {
     VmaAllocationCreateInfo aci{};
     aci.usage = ToVmaMemoryUsage(memory_usage);
-    vk::BufferCreateInfo bci{{}, size, usage, vk::SharingMode::eExclusive};
+    // All staging and device buffers act as transfer sources, since buffer updates include a device->device copy.
+    vk::BufferCreateInfo bci{{}, size, usage | vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive};
     if (memory_usage == MemoryUsage::CpuOnly || memory_usage == MemoryUsage::CpuToGpu) {
         aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        bci.usage |= vk::BufferUsageFlagBits::eTransferSrc;
     } else {
         bci.usage |= vk::BufferUsageFlagBits::eTransferDst;
     }
@@ -130,7 +114,7 @@ VmaBuffer VmaBufferAllocator::CreateVmaBuffer(vk::DeviceSize size, vk::BufferUsa
     VmaAllocation alloc;
     VmaAllocationInfo info;
     if (vmaCreateBuffer(Allocator, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&vk_buffer), &alloc, &info) != VK_SUCCESS) {
-        throw std::runtime_error("vmaCreateBuffer in CreateVmaBuffer");
+        throw std::runtime_error("vmaCreateBuffer failed");
     }
 
     return {Allocator, alloc, info, vk_buffer};
