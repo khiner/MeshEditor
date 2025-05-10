@@ -398,7 +398,7 @@ int main(int, char **) {
     };
     audio_device.Start();
 
-    std::unique_ptr<ImGuiTexture> scene_texture;
+    std::unique_ptr<mvk::ImGuiTexture> scene_texture;
     WindowsState windows;
 
     // Main loop
@@ -511,7 +511,7 @@ int main(int, char **) {
                 if (scene->Render()) {
                     // Extent changed. Update the scene texture.
                     scene_texture.reset(); // Ensure destruction before creation.
-                    scene_texture = std::make_unique<ImGuiTexture>(*vc->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
+                    scene_texture = std::make_unique<mvk::ImGuiTexture>(*vc->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
                 }
                 if (scene_texture) {
                     const auto cursor = GetCursorPos();

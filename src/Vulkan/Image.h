@@ -6,6 +6,7 @@
 
 #include <functional>
 
+namespace mvk {
 struct ImageResource {
     vk::UniqueDeviceMemory Memory;
     vk::UniqueImage Image;
@@ -13,7 +14,7 @@ struct ImageResource {
     vk::Extent3D Extent;
 };
 
-using RenderBitmapToImage = std::function<ImageResource(const void *data, uint32_t width, uint32_t height)>;
+using BitmapToImage = std::function<ImageResource(const void *data, uint32_t width, uint32_t height)>;
 
 namespace ImageFormat {
 const auto Color = vk::Format::eB8G8R8A8Unorm;
@@ -32,3 +33,8 @@ private:
     vk::DescriptorSet DescriptorSet;
     const vec2 Uv0, Uv1; // UV coordinates.
 };
+
+uint32_t FindMemoryType(vk::PhysicalDevice, uint32_t, vk::MemoryPropertyFlags);
+
+ImageResource CreateImage(vk::Device, vk::PhysicalDevice, vk::ImageCreateInfo, vk::ImageViewCreateInfo, vk::MemoryPropertyFlags = vk::MemoryPropertyFlagBits::eDeviceLocal);
+} // namespace mvk

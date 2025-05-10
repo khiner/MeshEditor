@@ -70,11 +70,11 @@ void Scene::ToggleSelected(entt::entity entity) {
     InvalidateCommandBuffer();
 }
 
-using MeshBuffers = std::unordered_map<MeshElement, VkRenderBuffers>;
+using MeshBuffers = std::unordered_map<MeshElement, mvk::RenderBuffers>;
 struct MeshVkData {
     std::unordered_map<entt::entity, MeshBuffers> Main, NormalIndicators;
-    std::unordered_map<entt::entity, VulkanBuffer> Models;
-    std::unordered_map<entt::entity, VkRenderBuffers> Boxes, BvhBoxes;
+    std::unordered_map<entt::entity, mvk::Buffer> Models;
+    std::unordered_map<entt::entity, mvk::RenderBuffers> Boxes, BvhBoxes;
 };
 
 std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
@@ -105,8 +105,8 @@ void UpdateModel(entt::registry &r, entt::entity entity, vec3 position, quat rot
     r.emplace_or_replace<Model>(entity, glm::translate({1}, position) * glm::mat4_cast(glm::normalize(rotation)) * glm::scale({1}, scale));
 }
 
-vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice physical_device) {
-    const auto props = physical_device.getProperties();
+vk::SampleCountFlagBits GetMaxUsableSampleCount(const vk::PhysicalDevice pd) {
+    const auto props = pd.getProperties();
     const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
     if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
     if (counts & vk::SampleCountFlagBits::e32) return vk::SampleCountFlagBits::e32;
@@ -146,7 +146,7 @@ void PipelineRenderer::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
 }
 
-void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index) const {
+void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::Buffer &vertices, const mvk::Buffer &indices, const mvk::Buffer &models, std::optional<uint> model_index) const {
     const auto &shader_pipeline = ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
@@ -164,20 +164,20 @@ void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const VulkanBuffer 
     cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
 }
 
-void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const VkRenderBuffers &render_buffers, const VulkanBuffer &models, std::optional<uint> model_index) const {
+void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::RenderBuffers &render_buffers, const mvk::Buffer &models, std::optional<uint> model_index) const {
     Render(cb, spt, render_buffers.Vertices, render_buffers.Indices, models, model_index);
 }
 
 namespace {
-PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice physical_device, vk::DescriptorPool descriptor_pool) {
-    const auto MsaaSamples = GetMaxUsableSampleCount(physical_device);
+PipelineRenderer MainPipelineRenderer(vk::Device d, vk::PhysicalDevice pd, vk::DescriptorPool descriptor_pool) {
+    const auto MsaaSamples = GetMaxUsableSampleCount(pd);
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
-        {{}, ImageFormat::Depth, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        {{}, mvk::ImageFormat::Depth, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
         // Multisampled offscreen image.
-        {{}, ImageFormat::Color, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, mvk::ImageFormat::Color, MsaaSamples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         // Single-sampled resolve.
-        {{}, ImageFormat::Color, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, mvk::ImageFormat::Color, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -188,7 +188,7 @@ PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice phys
     pipelines.emplace(
         SPT::Fill,
         ShaderPipeline{
-            device, descriptor_pool,
+            d, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}
             },
@@ -200,7 +200,7 @@ PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice phys
     pipelines.emplace(
         SPT::Line,
         ShaderPipeline{
-            device, descriptor_pool,
+            d, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}
             },
@@ -212,7 +212,7 @@ PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice phys
     pipelines.emplace(
         SPT::Grid,
         ShaderPipeline{
-            device, descriptor_pool,
+            d, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}
             },
@@ -228,7 +228,7 @@ PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice phys
     pipelines.emplace(
         SPT::Texture,
         ShaderPipeline{
-            device, descriptor_pool,
+            d, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeTexture.frag"}}
             },
@@ -240,7 +240,7 @@ PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice phys
     pipelines.emplace(
         SPT::DebugNormals,
         ShaderPipeline{
-            device, descriptor_pool,
+            d, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}
             },
@@ -249,13 +249,13 @@ PipelineRenderer MainPipelineRenderer(vk::Device device, vk::PhysicalDevice phys
             CreateColorBlendAttachment(true), CreateDepthStencil(), MsaaSamples
         }
     );
-    return {device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
-PipelineRenderer SilhouettePipelineRenderer(vk::Device device, vk::DescriptorPool descriptor_pool) {
+PipelineRenderer SilhouettePipelineRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
-        {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, mvk::ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
@@ -263,7 +263,7 @@ PipelineRenderer SilhouettePipelineRenderer(vk::Device device, vk::DescriptorPoo
     pipelines.emplace(
         SPT::Silhouette,
         ShaderPipeline{
-            device, descriptor_pool,
+            d, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}
             },
@@ -272,13 +272,13 @@ PipelineRenderer SilhouettePipelineRenderer(vk::Device device, vk::DescriptorPoo
             CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
         }
     );
-    return {device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
-PipelineRenderer EdgeDetectionPipelineRenderer(vk::Device device, vk::DescriptorPool descriptor_pool) {
+PipelineRenderer EdgeDetectionPipelineRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
-        {{}, ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, mvk::ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
@@ -286,7 +286,7 @@ PipelineRenderer EdgeDetectionPipelineRenderer(vk::Device device, vk::Descriptor
     pipelines.emplace(
         SPT::EdgeDetection,
         ShaderPipeline{
-            device, descriptor_pool,
+            d, descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "MeshEdges.frag"}}
             },
@@ -295,28 +295,11 @@ PipelineRenderer EdgeDetectionPipelineRenderer(vk::Device device, vk::Descriptor
             CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
         }
     );
-    return {device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 } // namespace
 
 namespace {
-uint FindMemoryType(vk::PhysicalDevice pd, uint type_filter, vk::MemoryPropertyFlags prop_flags) {
-    auto mem_props = pd.getMemoryProperties();
-    for (uint i = 0; i < mem_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & prop_flags) == prop_flags) return i;
-    }
-    throw std::runtime_error("failed to find suitable memory type!");
-}
-
-ImageResource CreateImage(vk::Device d, vk::PhysicalDevice pd, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags = vk::MemoryPropertyFlagBits::eDeviceLocal) {
-    auto image = d.createImageUnique(image_info);
-    const auto mem_reqs = d.getImageMemoryRequirements(*image);
-    auto memory = d.allocateMemoryUnique({mem_reqs.size, FindMemoryType(pd, mem_reqs.memoryTypeBits, mem_flags)});
-    d.bindImageMemory(*image, *memory, 0);
-    view_info.image = *image;
-    return {std::move(memory), std::move(image), d.createImageViewUnique(view_info), image_info.extent};
-}
-
 // Adapted from https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2 for 64-bits.
 uint64_t NextPowerOfTwo(uint64_t x) {
     if (x == 0) return 1;
@@ -330,11 +313,23 @@ uint64_t NextPowerOfTwo(uint64_t x) {
     x |= x >> 32;
     return x + 1;
 }
-
 } // namespace
 
-ImageResource Scene::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
-    auto image = CreateImage(Vk.Device, Vk.PhysicalDevice, {{}, vk::ImageType::e2D, ImageFormat::Color, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
+mvk::ImageResource Scene::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
+    auto image = mvk::CreateImage(
+        Vk.Device, Vk.PhysicalDevice,
+        {{},
+         vk::ImageType::e2D,
+         mvk::ImageFormat::Color,
+         {width, height, 1},
+         1,
+         1,
+         vk::SampleCountFlagBits::e1,
+         vk::ImageTiling::eOptimal,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+         vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+    );
     // Write the bitmap into a staging buffer.
     const auto buffer_size = width * height * 4; // 4 bytes per pixel
     auto staging_buffer = BufferAllocator->AllocateStaging(buffer_size);
@@ -412,41 +407,108 @@ std::vector<vk::WriteDescriptorSet> PipelineRenderer::GetDescriptors(std::vector
 
 struct MainPipelineResources {
     MainPipelineResources(vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::Extent2D extent, vk::SampleCountFlagBits msaa_samples)
-        : DepthImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Depth, vk::Extent3D{extent, 1}, 1, 1, msaa_samples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}})},
-          OffscreenImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Color, vk::Extent3D{extent, 1}, 1, 1, msaa_samples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})},
-          ResolveImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})} {
+        : DepthImage{mvk::CreateImage(
+              d, pd,
+              {{},
+               vk::ImageType::e2D,
+               mvk::ImageFormat::Depth,
+               vk::Extent3D{extent, 1},
+               1,
+               1,
+               msaa_samples,
+               vk::ImageTiling::eOptimal,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment,
+               vk::SharingMode::eExclusive},
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+          )},
+          OffscreenImage{mvk::CreateImage(
+              d, pd,
+              {{},
+               vk::ImageType::e2D,
+               mvk::ImageFormat::Color,
+               vk::Extent3D{extent, 1},
+               1,
+               1,
+               msaa_samples,
+               vk::ImageTiling::eOptimal,
+               vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+               vk::SharingMode::eExclusive},
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+          )},
+          ResolveImage{mvk::CreateImage(
+              d, pd,
+              {
+                  {},
+                  vk::ImageType::e2D,
+                  mvk::ImageFormat::Color,
+                  vk::Extent3D{extent, 1},
+                  1,
+                  1,
+                  vk::SampleCountFlagBits::e1,
+                  vk::ImageTiling::eOptimal,
+                  vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+                  vk::SharingMode::eExclusive,
+              },
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+          )} {
         const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
         Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
     }
 
     // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
-    ImageResource DepthImage, OffscreenImage, ResolveImage;
+    mvk::ImageResource DepthImage, OffscreenImage, ResolveImage;
     vk::UniqueFramebuffer Framebuffer;
 };
 struct SilhouettePipelineResources {
     SilhouettePipelineResources(vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::Extent2D extent)
-        : OffscreenImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})} {
+        : OffscreenImage{mvk::CreateImage(
+              d, pd,
+              {{},
+               vk::ImageType::e2D,
+               mvk::ImageFormat::Float,
+               vk::Extent3D{extent, 1},
+               1,
+               1,
+               vk::SampleCountFlagBits::e1,
+               vk::ImageTiling::eOptimal,
+               vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+               vk::SharingMode::eExclusive},
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+          )} {
         const std::array image_views{*OffscreenImage.View};
         Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
     }
 
-    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+    mvk::ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
     vk::UniqueFramebuffer Framebuffer;
 };
 struct EdgeDetectionPipelineResources {
     EdgeDetectionPipelineResources(vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::Extent2D extent)
-        : OffscreenImage{CreateImage(d, pd, {{}, vk::ImageType::e2D, ImageFormat::Float, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}})} {
+        : OffscreenImage{mvk::CreateImage(
+              d, pd,
+              {{},
+               vk::ImageType::e2D,
+               mvk::ImageFormat::Float,
+               vk::Extent3D{extent, 1},
+               1,
+               1,
+               vk::SampleCountFlagBits::e1,
+               vk::ImageTiling::eOptimal,
+               vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+               vk::SharingMode::eExclusive},
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+          )} {
         const std::array image_views{*OffscreenImage.View};
         Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
     }
 
-    ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+    mvk::ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
     vk::UniqueFramebuffer Framebuffer;
 };
 
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : Vk(vc),
-      BufferAllocator(std::make_unique<VulkanBufferAllocator>(Vk.PhysicalDevice, Vk.Device, Vk.Instance)),
+      BufferAllocator(std::make_unique<mvk::BufferAllocator>(Vk.PhysicalDevice, Vk.Device, Vk.Instance)),
       R(r),
       CommandPool(Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})),
       CommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
@@ -464,13 +526,13 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     UpdateEdgeColors();
 
-    TransformBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
-    ViewProjNearFarBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
+    TransformBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
+    ViewProjNearFarBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
     UpdateTransformBuffers();
 
-    LightsBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
+    LightsBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
     UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
-    SilhouetteDisplayBuffer = std::make_unique<VulkanBuffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ActiveSilhouetteColor)));
+    SilhouetteDisplayBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->Allocate(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ActiveSilhouetteColor)));
     UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
     vk::DescriptorBufferInfo transform_buffer{*TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
@@ -592,7 +654,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     }
 }
 
-VkRenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
+mvk::RenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
     return {
         CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, buffers.Vertices.data(), sizeof(Vertex3D) * buffers.Vertices.size()),
         CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, buffers.Indices.data(), sizeof(uint) * buffers.Indices.size())
@@ -775,7 +837,7 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
     };
 }
 
-VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize size) const {
+mvk::Buffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize size) const {
     auto buffer = BufferAllocator->Allocate(flags, size);
     buffer.Size = size;
     buffer.HostBuffer.WriteRegion(data, 0, size);
@@ -787,8 +849,7 @@ VulkanBuffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, v
     SubmitTransfer();
     return buffer;
 }
-
-bool Scene::EnsureBufferHasAllocated(VulkanBuffer &buffer, vk::DeviceSize required_size) const {
+bool Scene::EnsureBufferHasAllocated(mvk::Buffer &buffer, vk::DeviceSize required_size) const {
     if (required_size == 0) return false;
 
     if (required_size > buffer.GetAllocatedSize()) {
@@ -811,7 +872,7 @@ bool Scene::EnsureBufferHasAllocated(VulkanBuffer &buffer, vk::DeviceSize requir
     }
     return false;
 }
-void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
+void Scene::UpdateBuffer(mvk::Buffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
     if (size == 0) size = buffer.Size;
     assert(size > 0);
 
@@ -827,7 +888,7 @@ void Scene::UpdateBuffer(VulkanBuffer &buffer, const void *data, vk::DeviceSize 
     cb.end();
     SubmitTransfer();
 }
-void Scene::InsertBufferRegion(VulkanBuffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
+void Scene::InsertBufferRegion(mvk::Buffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
     if (size == 0 || buffer.Size + size > buffer.GetAllocatedSize()) return;
 
     if (offset < buffer.Size) {
@@ -844,7 +905,7 @@ void Scene::InsertBufferRegion(VulkanBuffer &buffer, const void *data, vk::Devic
     cb.end();
     SubmitTransfer();
 }
-void Scene::EraseBufferRegion(VulkanBuffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
+void Scene::EraseBufferRegion(mvk::Buffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
     if (size == 0 || offset + size > buffer.Size) return;
 
     if (const auto move_size = buffer.Size - (offset + size); move_size > 0) {

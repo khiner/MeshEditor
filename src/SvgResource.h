@@ -1,17 +1,17 @@
 #pragma once
 
+#include "vulkan/Image.h"
+
 #include <filesystem>
 #include <memory>
 #include <optional>
-
-#include "vulkan/Vulkan.h"
 
 namespace fs = std::filesystem;
 
 struct SvgResourceImpl;
 
 struct SvgResource {
-    SvgResource(vk::Device, RenderBitmapToImage, fs::path);
+    SvgResource(vk::Device, mvk::BitmapToImage, fs::path);
     ~SvgResource();
 
     // Returns the clicked link path.

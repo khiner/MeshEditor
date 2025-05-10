@@ -11,8 +11,8 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
-#include "vulkan/Vulkan.h"
-#include "vulkan/VulkanBuffer.h"
+#include "vulkan/Buffer.h"
+#include "vulkan/Image.h"
 
 #include <entt/entity/fwd.hpp>
 
@@ -104,8 +104,8 @@ struct PipelineRenderer {
 
     // If `model_index` is set, only the model at that index is rendered.
     // Otherwise, all models are rendered.
-    void Render(vk::CommandBuffer, SPT, const VulkanBuffer &vertices, const VulkanBuffer &indices, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
-    void Render(vk::CommandBuffer, SPT, const VkRenderBuffers &, const VulkanBuffer &models, std::optional<uint> model_index = std::nullopt) const;
+    void Render(vk::CommandBuffer, SPT, const mvk::Buffer &vertices, const mvk::Buffer &indices, const mvk::Buffer &models, std::optional<uint> model_index = std::nullopt) const;
+    void Render(vk::CommandBuffer, SPT, const mvk::RenderBuffers &, const mvk::Buffer &models, std::optional<uint> model_index = std::nullopt) const;
 };
 
 enum class SelectionMode {
@@ -188,7 +188,7 @@ struct Scene {
     bool Render();
     void RenderGizmo();
     void RenderControls();
-    ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const;
+    mvk::ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const;
 
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
@@ -208,7 +208,7 @@ struct Scene {
 
 private:
     SceneVulkanResources Vk;
-    std::unique_ptr<VulkanBufferAllocator> BufferAllocator;
+    std::unique_ptr<mvk::BufferAllocator> BufferAllocator;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
     vk::UniqueCommandBuffer CommandBuffer;
@@ -234,7 +234,7 @@ private:
     vk::ClearColorValue BackgroundColor{0.22, 0.22, 0.22, 1.f};
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
-    std::unique_ptr<VulkanBuffer> TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
+    std::unique_ptr<mvk::Buffer> TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
     PipelineRenderer MainRenderer, SilhouetteRenderer, EdgeDetectionRenderer;
     std::unique_ptr<MainPipelineResources> MainResources;
@@ -271,31 +271,31 @@ private:
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     // Grows the buffer if it's not big enough (to the next power of 2).
     // If `bytes == 0` (or is not set) `bytes = buffer.Size`
-    void UpdateBuffer(VulkanBuffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize size = 0) const;
+    void UpdateBuffer(mvk::Buffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize size = 0) const;
     // Returns true if the buffer had to be resized.
-    bool EnsureBufferHasAllocated(VulkanBuffer &, vk::DeviceSize required_size) const;
-    template<typename T> void UpdateBuffer(VulkanBuffer &buffer, const std::vector<T> &data) const {
+    bool EnsureBufferHasAllocated(mvk::Buffer &, vk::DeviceSize required_size) const;
+    template<typename T> void UpdateBuffer(mvk::Buffer &buffer, const std::vector<T> &data) const {
         UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
     }
     // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
     // **It does nothing if the buffer doesn't have enough enough space allocated.**
-    void InsertBufferRegion(VulkanBuffer &, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const;
+    void InsertBufferRegion(mvk::Buffer &, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const;
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
     // It doesn't free memory, so the allocated size will be greater than the used size.
-    void EraseBufferRegion(VulkanBuffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
+    void EraseBufferRegion(mvk::Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
-    VulkanBuffer CreateBuffer(vk::BufferUsageFlags, const void *data, vk::DeviceSize size) const;
-    VkRenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
+    mvk::Buffer CreateBuffer(vk::BufferUsageFlags, const void *data, vk::DeviceSize size) const;
+    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
             CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size()),
             CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * indices.size())
         };
     }
 
-    VkRenderBuffers CreateRenderBuffers(RenderBuffers &&);
+    mvk::RenderBuffers CreateRenderBuffers(RenderBuffers &&);
 
     template<size_t N>
-    VkRenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
+    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
         return {
             CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size()),
             CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * N)

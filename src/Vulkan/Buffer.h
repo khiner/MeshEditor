@@ -2,7 +2,9 @@
 
 #include "VmaBuffer.h"
 
-struct VulkanBuffer {
+// mvk as in "MeshEditor Vulkan" or "My Vulkan"
+namespace mvk {
+struct Buffer {
     vk::BufferUsageFlags Usage;
     vk::DeviceSize Size; // Used size (not allocated size)
     VmaBuffer HostBuffer, DeviceBuffer;
@@ -11,30 +13,31 @@ struct VulkanBuffer {
 };
 
 // Simple wrapper around vertex and index buffers.
-struct VkRenderBuffers {
-    VulkanBuffer Vertices, Indices;
+struct RenderBuffers {
+    Buffer Vertices, Indices;
 };
 
-struct VulkanBufferAllocator {
-    VulkanBufferAllocator(vk::PhysicalDevice physical, vk::Device device, VkInstance instance)
-        : BufferAllocator(physical, device, instance) {}
-    ~VulkanBufferAllocator() = default;
+struct BufferAllocator {
+    BufferAllocator(vk::PhysicalDevice physical, vk::Device device, VkInstance instance)
+        : Vma(physical, device, instance) {}
+    ~BufferAllocator() = default;
 
-    VulkanBuffer Allocate(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
+    Buffer Allocate(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
         return {
             usage,
             0, // Used size (not allocated size)
             AllocateStaging(bytes),
             // Device buffer: device (GPU)-local
-            BufferAllocator.Allocate(bytes, MemoryUsage::GpuOnly, usage),
+            Vma.Allocate(bytes, MemoryUsage::GpuOnly, usage),
         };
     }
 
     // Host-visible and coherent CPU staging buffer
     VmaBuffer AllocateStaging(vk::DeviceSize bytes) const {
-        return BufferAllocator.Allocate(bytes, MemoryUsage::CpuOnly);
+        return Vma.Allocate(bytes, MemoryUsage::CpuOnly);
     }
 
 private:
-    VmaBufferAllocator BufferAllocator;
+    VmaBufferAllocator Vma;
 };
+} // namespace mvk
