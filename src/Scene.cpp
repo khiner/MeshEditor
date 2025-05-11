@@ -315,7 +315,7 @@ uint64_t NextPowerOfTwo(uint64_t x) {
 }
 } // namespace
 
-mvk::ImageResource Scene::RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const {
+mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
     auto image = mvk::CreateImage(
         Vk.Device, Vk.PhysicalDevice,
         {{},
@@ -331,9 +331,8 @@ mvk::ImageResource Scene::RenderBitmapToImage(const void *data, uint32_t width, 
         {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
     // Write the bitmap into a staging buffer.
-    const auto buffer_size = width * height * 4; // 4 bytes per pixel
-    auto staging_buffer = BufferAllocator->Allocate(buffer_size, mvk::MemoryUsage::CpuOnly);
-    BufferAllocator->WriteRegion(staging_buffer, data, 0, buffer_size);
+    auto staging_buffer = BufferAllocator->Allocate(data.size(), mvk::MemoryUsage::CpuOnly);
+    BufferAllocator->WriteRegion(staging_buffer, data);
 
     // Record commands to copy from staging buffer to Vulkan image.
     const auto &cb = *TransferCommandBuffer;
@@ -531,9 +530,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     UpdateTransformBuffers();
 
     LightsBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
-    UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
+    UpdateBuffer(*LightsBuffer, as_bytes(Lights));
     SilhouetteDisplayBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ActiveSilhouetteColor)));
-    UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
+    UpdateBuffer(*SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
     vk::DescriptorBufferInfo transform_buffer{TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
     Vk.Device.updateDescriptorSets(
@@ -641,7 +640,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         }
         model_indices.emplace(entity, new_model_index);
         const auto &model = R.get<Model>(entity);
-        InsertBufferRegion(MeshVkData->Models.at(parent), &model, new_model_index * sizeof(Model), sizeof(Model));
+        InsertBufferRegion(MeshVkData->Models.at(parent), as_bytes(model), new_model_index * sizeof(Model));
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
@@ -656,8 +655,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 mvk::RenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
     return {
-        CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, buffers.Vertices.data(), sizeof(Vertex3D) * buffers.Vertices.size()),
-        CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, buffers.Indices.data(), sizeof(uint) * buffers.Indices.size())
+        CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, as_bytes(buffers.Vertices)),
+        CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, as_bytes(buffers.Indices))
     };
 }
 
@@ -837,14 +836,14 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
     };
 }
 
-mvk::Buffer Scene::CreateBuffer(vk::BufferUsageFlags flags, const void *data, vk::DeviceSize size) const {
-    auto buffer = BufferAllocator->AllocateMvk(flags, size);
-    buffer.Size = size;
-    BufferAllocator->WriteRegion(buffer.HostBuffer, data, 0, size);
+mvk::Buffer Scene::CreateBuffer(vk::BufferUsageFlags flags, std::span<const std::byte> data) const {
+    auto buffer = BufferAllocator->AllocateMvk(flags, data.size());
+    buffer.Size = data.size();
+    BufferAllocator->WriteRegion(buffer.HostBuffer, data);
     // Copy data from the staging buffer to the device buffer.
     const auto &cb = *TransferCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{0, 0, size});
+    cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{0, 0, data.size()});
     cb.end();
     SubmitTransfer();
     return buffer;
@@ -857,7 +856,7 @@ bool Scene::EnsureBufferHasAllocated(mvk::Buffer &buffer, vk::DeviceSize require
         // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
         auto new_buffer = BufferAllocator->AllocateMvk(buffer.Usage, NextPowerOfTwo(required_size));
         if (buffer.Size > 0) {
-            BufferAllocator->WriteRegion(new_buffer.HostBuffer, BufferAllocator->GetData(buffer.HostBuffer), 0, buffer.Size);
+            BufferAllocator->WriteRegion(new_buffer.HostBuffer, BufferAllocator->GetData(buffer.HostBuffer));
             new_buffer.Size = buffer.Size;
             // Device->device copy
             const auto &cb = *TransferCommandBuffer;
@@ -872,30 +871,29 @@ bool Scene::EnsureBufferHasAllocated(mvk::Buffer &buffer, vk::DeviceSize require
     }
     return false;
 }
-void Scene::UpdateBuffer(mvk::Buffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
-    if (size == 0) size = buffer.Size;
-    assert(size > 0);
+void Scene::UpdateBuffer(mvk::Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
+    if (data.empty()) return;
 
-    const auto required_size = offset + size;
+    const auto required_size = offset + data.size();
     EnsureBufferHasAllocated(buffer, required_size);
     buffer.Size = std::max(buffer.Size, required_size);
-    BufferAllocator->WriteRegion(buffer.HostBuffer, data, offset, size);
+    BufferAllocator->WriteRegion(buffer.HostBuffer, data, offset);
 
     // Staging->device copy
     const auto &cb = *TransferCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, size});
+    cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
     cb.end();
     SubmitTransfer();
 }
-void Scene::InsertBufferRegion(mvk::Buffer &buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const {
-    if (size == 0 || buffer.Size + size > BufferAllocator->GetAllocatedSize(buffer)) return;
+void Scene::InsertBufferRegion(mvk::Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
+    if (data.empty() || buffer.Size + data.size() > BufferAllocator->GetAllocatedSize(buffer)) return;
 
     if (offset < buffer.Size) {
-        BufferAllocator->MoveRegion(buffer.HostBuffer, offset, offset + size, buffer.Size - offset);
+        BufferAllocator->MoveRegion(buffer.HostBuffer, offset, offset + data.size(), buffer.Size - offset);
     }
-    BufferAllocator->WriteRegion(buffer.HostBuffer, data, offset, size);
-    buffer.Size += size;
+    BufferAllocator->WriteRegion(buffer.HostBuffer, data, offset);
+    buffer.Size += data.size();
 
     // Staging->device copy
     const auto &cb = *TransferCommandBuffer;
@@ -1095,17 +1093,17 @@ void Scene::UpdateEdgeColors() {
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetView(), Camera.GetProjection(aspect_ratio)};
-    UpdateBuffer(*TransformBuffer, &view_proj, 0, sizeof(ViewProj));
+    UpdateBuffer(*TransformBuffer, as_bytes(view_proj));
 
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
-    UpdateBuffer(*ViewProjNearFarBuffer, &vpnf, 0, sizeof(ViewProjNearFar));
+    UpdateBuffer(*ViewProjNearFarBuffer, as_bytes(vpnf));
     InvalidateCommandBuffer();
 }
 
 void Scene::UpdateModelBuffer(entt::entity entity) {
     if (const auto buffer_index = GetModelBufferIndex(entity)) {
         const auto &model = R.get<Model>(entity);
-        UpdateBuffer(MeshVkData->Models.at(GetParentEntity(entity)), &model, *buffer_index * sizeof(Model), sizeof(Model));
+        UpdateBuffer(MeshVkData->Models.at(GetParentEntity(entity)), as_bytes(model), *buffer_index * sizeof(Model));
     }
 }
 
@@ -1598,7 +1596,7 @@ void Scene::RenderControls() {
             }
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &ActiveSilhouetteColor[0])) {
-                UpdateBuffer(*SilhouetteDisplayBuffer, &ActiveSilhouetteColor, 0, sizeof(ActiveSilhouetteColor));
+                UpdateBuffer(*SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
                 InvalidateCommandBuffer();
             }
             EndTabItem();
@@ -1633,7 +1631,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                UpdateBuffer(*LightsBuffer, &Lights, 0, sizeof(Lights));
+                UpdateBuffer(*LightsBuffer, as_bytes(Lights));
                 InvalidateCommandBuffer();
             }
             EndTabItem();

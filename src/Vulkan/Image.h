@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include <functional>
+#include <span>
 
 namespace mvk {
 struct ImageResource {
@@ -14,7 +15,7 @@ struct ImageResource {
     vk::Extent3D Extent;
 };
 
-using BitmapToImage = std::function<ImageResource(const void *data, uint32_t width, uint32_t height)>;
+using BitmapToImage = std::function<ImageResource(std::span<const std::byte> data, uint32_t width, uint32_t height)>;
 
 namespace ImageFormat {
 const auto Color = vk::Format::eB8G8R8A8Unorm;

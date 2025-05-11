@@ -153,6 +153,13 @@ struct SceneVulkanResources {
     vk::DescriptorPool DescriptorPool;
 };
 
+template<typename T>
+constexpr std::span<const std::byte> as_bytes(const std::vector<T> &v) { return std::as_bytes(std::span{v}); }
+template<typename T, uint N>
+constexpr std::span<const std::byte> as_bytes(const std::array<T, N> &v) { return std::as_bytes(std::span{v}); }
+template<typename T>
+constexpr std::span<const std::byte> as_bytes(const T &v) { return {reinterpret_cast<const std::byte *>(&v), sizeof(T)}; }
+
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
@@ -194,7 +201,7 @@ struct Scene {
     bool Render();
     void RenderGizmo();
     void RenderControls();
-    mvk::ImageResource RenderBitmapToImage(const void *data, uint32_t width, uint32_t height) const;
+    mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const;
 
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
@@ -277,24 +284,24 @@ private:
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     // Grows the buffer if it's not big enough (to the next power of 2).
     // If `bytes == 0` (or is not set) `bytes = buffer.Size`
-    void UpdateBuffer(mvk::Buffer &, const void *data, vk::DeviceSize offset = 0, vk::DeviceSize size = 0) const;
+    void UpdateBuffer(mvk::Buffer &, std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     // Returns true if the buffer had to be resized.
     bool EnsureBufferHasAllocated(mvk::Buffer &, vk::DeviceSize required_size) const;
     template<typename T> void UpdateBuffer(mvk::Buffer &buffer, const std::vector<T> &data) const {
-        UpdateBuffer(buffer, data.data(), 0, sizeof(T) * data.size());
+        UpdateBuffer(buffer, as_bytes(data));
     }
     // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
     // **It does nothing if the buffer doesn't have enough enough space allocated.**
-    void InsertBufferRegion(mvk::Buffer &, const void *data, vk::DeviceSize offset, vk::DeviceSize size) const;
+    void InsertBufferRegion(mvk::Buffer &, std::span<const std::byte>, vk::DeviceSize offset) const;
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
     // It doesn't free memory, so the allocated size will be greater than the used size.
     void EraseBufferRegion(mvk::Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
-    mvk::Buffer CreateBuffer(vk::BufferUsageFlags, const void *data, vk::DeviceSize size) const;
+    mvk::Buffer CreateBuffer(vk::BufferUsageFlags, std::span<const std::byte>) const;
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
-            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size()),
-            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * indices.size())
+            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, as_bytes(vertices)),
+            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, as_bytes(indices))
         };
     }
 
@@ -303,8 +310,8 @@ private:
     template<size_t N>
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
         return {
-            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, vertices.data(), sizeof(Vertex3D) * vertices.size()),
-            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, indices.data(), sizeof(uint) * N)
+            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, as_bytes(vertices)),
+            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, as_bytes(indices))
         };
     }
 

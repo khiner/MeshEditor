@@ -38,7 +38,9 @@ struct SvgResourceImpl {
     SvgResourceImpl(vk::Device device, mvk::BitmapToImage render, fs::path path) {
         if (Document = lunasvg::Document::loadFromFile(path); Document) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
-                Image = std::make_unique<mvk::ImageResource>(render(bitmap.data(), uint32_t(bitmap.width()), uint32_t(bitmap.height())));
+                const auto width = uint32_t(bitmap.width()), height = uint32_t(bitmap.height());
+                const auto size = width * height * 4; // 4 bytes per pixel
+                Image = std::make_unique<mvk::ImageResource>(render({reinterpret_cast<const std::byte *>(bitmap.data()), size}, width, height));
                 Texture = std::make_unique<mvk::ImGuiTexture>(device, *Image->View);
             }
         }

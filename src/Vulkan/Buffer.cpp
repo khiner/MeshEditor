@@ -71,11 +71,11 @@ struct AllocatorInfo {
 };
 
 #ifndef RELEASE_BUILD
-void LoggingVmaAllocate(VmaAllocator, uint32_t memoryType, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("Allocating {} bytes of memory of type {}", size, memoryType);
+void LoggingVmaAllocate(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
+    std::println("Allocating {} bytes of memory of type {}", size, memory_type);
 }
-void LoggingVmaFree(VmaAllocator, uint32_t memoryType, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("Freeing {} bytes of memory of type {}", size, memoryType);
+void LoggingVmaFree(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
+    std::println("Freeing {} bytes of memory of type {}", size, memory_type);
 }
 #endif
 } // namespace
@@ -88,8 +88,8 @@ BufferAllocator::BufferAllocator(vk::PhysicalDevice pd, vk::Device d, VkInstance
     create_info.device = d;
     create_info.instance = instance;
 #ifndef RELEASE_BUILD
-    VmaDeviceMemoryCallbacks memoryCallbacks{LoggingVmaAllocate, LoggingVmaFree, nullptr};
-    create_info.pDeviceMemoryCallbacks = &memoryCallbacks;
+    VmaDeviceMemoryCallbacks memory_callbacks{LoggingVmaAllocate, LoggingVmaFree, nullptr};
+    create_info.pDeviceMemoryCallbacks = &memory_callbacks;
 #endif
 
     if (vmaCreateAllocator(&create_info, &Vma) != VK_SUCCESS) {
@@ -103,21 +103,29 @@ BufferAllocator::~BufferAllocator() {
     vmaDestroyAllocator(Vma);
 }
 
-void *BufferAllocator::GetMappedData(vk::Buffer b) { return GetBufferInfo(Vma, b).pMappedData; }
-const void *BufferAllocator::GetData(vk::Buffer b) const { return GetBufferInfo(Vma, b).pMappedData; }
+std::span<std::byte> BufferAllocator::GetMappedData(vk::Buffer b) {
+    auto &info = GetBufferInfo(Vma, b);
+    return {static_cast<std::byte *>(info.pMappedData), info.size};
+}
+std::span<const std::byte> BufferAllocator::GetData(vk::Buffer b) const {
+    const auto &info = GetBufferInfo(Vma, b);
+    return {static_cast<const std::byte *>(info.pMappedData), info.size};
+}
 vk::DeviceSize BufferAllocator::GetAllocatedSize(vk::Buffer b) const { return GetBufferInfo(Vma, b).size; }
 
-void BufferAllocator::WriteRegion(vk::Buffer b, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes) {
-    if (bytes == 0 || offset >= GetAllocatedSize(b)) return;
-    memcpy(reinterpret_cast<char *>(GetMappedData(b)) + offset, data, size_t(bytes));
+void BufferAllocator::WriteRegion(vk::Buffer b, std::span<const std::byte> src, vk::DeviceSize offset) {
+    if (src.empty() || offset >= GetAllocatedSize(b)) return;
+
+    std::copy(src.begin(), src.end(), GetMappedData(b).subspan(offset).data());
 }
 
-void BufferAllocator::MoveRegion(vk::Buffer b, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize bytes) {
-    if (bytes == 0 || from + bytes > GetAllocatedSize(b) || to + bytes > GetAllocatedSize(b)) return;
+void BufferAllocator::MoveRegion(vk::Buffer b, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) {
+    const auto allocated_size = GetAllocatedSize(b);
+    if (size == 0 || from + size > allocated_size || to + size > allocated_size) return;
 
     // Shift the data to "erase" the region (dst is first, src is second).
-    auto *mapped_data = reinterpret_cast<char *>(GetMappedData(b));
-    memmove(mapped_data + to, mapped_data + from, size_t(bytes));
+    auto mapped_data = GetMappedData(b);
+    std::memmove(mapped_data.subspan(to).data(), mapped_data.subspan(from).data(), size_t(size));
 }
 
 namespace {

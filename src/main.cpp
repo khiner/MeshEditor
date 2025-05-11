@@ -380,7 +380,7 @@ int main(int, char **) {
     auto device = *vc->Device;
 
     const auto CreateSvg = [device, &scene](std::unique_ptr<SvgResource> &svg, fs::path path) {
-        const auto RenderBitmap = [&scene](const void *data, uint32_t width, uint32_t height) {
+        const auto RenderBitmap = [&scene](std::span<const std::byte> data, uint32_t width, uint32_t height) {
             return scene->RenderBitmapToImage(data, width, height);
         };
         device.waitIdle();

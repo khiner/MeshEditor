@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include <memory>
+#include <span>
 
 // Forwards to avoid including `vk_mem_alloc.h`.
 struct VmaAllocator_T;
@@ -30,19 +31,19 @@ struct BufferAllocator {
 
     vk::Buffer Allocate(vk::DeviceSize, MemoryUsage, vk::BufferUsageFlags = vk::BufferUsageFlagBits::eTransferSrc) const;
 
-    mvk::Buffer AllocateMvk(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
-        return {usage, Allocate(bytes, MemoryUsage::CpuOnly), Allocate(bytes, MemoryUsage::GpuOnly, usage)};
+    mvk::Buffer AllocateMvk(vk::BufferUsageFlags usage, vk::DeviceSize size) const {
+        return {usage, Allocate(size, MemoryUsage::CpuOnly), Allocate(size, MemoryUsage::GpuOnly, usage)};
     }
 
-    const void *GetData(vk::Buffer) const;
+    std::span<const std::byte> GetData(vk::Buffer) const;
     vk::DeviceSize GetAllocatedSize(vk::Buffer) const;
     vk::DeviceSize GetAllocatedSize(const mvk::Buffer &b) const { return GetAllocatedSize(b.DeviceBuffer); }
 
-    void WriteRegion(vk::Buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes);
-    void MoveRegion(vk::Buffer, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize bytes);
+    void WriteRegion(vk::Buffer, std::span<const std::byte>, vk::DeviceSize offset = 0);
+    void MoveRegion(vk::Buffer, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size);
 
 private:
-    void *GetMappedData(vk::Buffer);
+    std::span<std::byte> GetMappedData(vk::Buffer);
 
     VmaAllocator Vma{nullptr};
 };
