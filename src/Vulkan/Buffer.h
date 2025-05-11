@@ -1,43 +1,49 @@
 #pragma once
 
-#include "VmaBuffer.h"
+#include <vulkan/vulkan.hpp>
 
-// mvk as in "MeshEditor Vulkan" or "My Vulkan"
+#include <memory>
+
+// Forwards to avoid including `vk_mem_alloc.h`.
+struct VmaAllocator_T;
+using VmaAllocator = VmaAllocator_T *;
+
 namespace mvk {
 struct Buffer {
     vk::BufferUsageFlags Usage;
-    vk::DeviceSize Size; // Used size (not allocated size)
-    VmaBuffer HostBuffer, DeviceBuffer;
-
-    vk::DeviceSize GetAllocatedSize() const { return DeviceBuffer.GetAllocatedSize(); }
+    vk::Buffer HostBuffer; // Host (staging) buffer (CPU)
+    vk::Buffer DeviceBuffer; // Device buffer (GPU)
+    vk::DeviceSize Size{0}; // Used size (not allocated size)
 };
 
-// Simple wrapper around vertex and index buffers.
-struct RenderBuffers {
-    Buffer Vertices, Indices;
+enum class MemoryUsage {
+    Unknown,
+    CpuOnly,
+    CpuToGpu,
+    GpuOnly,
+    GpuToCpu,
 };
 
 struct BufferAllocator {
-    BufferAllocator(vk::PhysicalDevice physical, vk::Device device, VkInstance instance)
-        : Vma(physical, device, instance) {}
-    ~BufferAllocator() = default;
+    BufferAllocator(vk::PhysicalDevice, vk::Device, VkInstance);
+    ~BufferAllocator();
 
-    Buffer Allocate(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
-        return {
-            usage,
-            0, // Used size (not allocated size)
-            AllocateStaging(bytes),
-            // Device buffer: device (GPU)-local
-            Vma.Allocate(bytes, MemoryUsage::GpuOnly, usage),
-        };
+    vk::Buffer Allocate(vk::DeviceSize, MemoryUsage, vk::BufferUsageFlags = vk::BufferUsageFlagBits::eTransferSrc) const;
+
+    mvk::Buffer AllocateMvk(vk::BufferUsageFlags usage, vk::DeviceSize bytes) const {
+        return {usage, Allocate(bytes, MemoryUsage::CpuOnly), Allocate(bytes, MemoryUsage::GpuOnly, usage)};
     }
 
-    // Host-visible and coherent CPU staging buffer
-    VmaBuffer AllocateStaging(vk::DeviceSize bytes) const {
-        return Vma.Allocate(bytes, MemoryUsage::CpuOnly);
-    }
+    const void *GetData(vk::Buffer) const;
+    vk::DeviceSize GetAllocatedSize(vk::Buffer) const;
+    vk::DeviceSize GetAllocatedSize(const mvk::Buffer &b) const { return GetAllocatedSize(b.DeviceBuffer); }
+
+    void WriteRegion(vk::Buffer, const void *data, vk::DeviceSize offset, vk::DeviceSize bytes);
+    void MoveRegion(vk::Buffer, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize bytes);
 
 private:
-    VmaBufferAllocator Vma;
+    void *GetMappedData(vk::Buffer);
+
+    VmaAllocator Vma{nullptr};
 };
 } // namespace mvk

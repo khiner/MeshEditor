@@ -22,6 +22,12 @@
 
 using uint = u_int32_t;
 
+namespace mvk {
+struct RenderBuffers {
+    Buffer Vertices, Indices;
+};
+} // namespace mvk
+
 struct Selected {}; // Entity is selected (multiple can be selected)
 // Active selected entity
 // Invariants:
@@ -39,7 +45,7 @@ struct Path {
 struct Mesh;
 struct MeshVkData;
 struct Excitable;
-struct RenderBuffers;
+struct RenderBuffers; // Mesh render buffers
 
 struct Position {
     vec3 Value;
