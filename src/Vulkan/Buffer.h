@@ -31,7 +31,7 @@ struct BufferAllocator {
 
     vk::Buffer Allocate(vk::DeviceSize, MemoryUsage, vk::BufferUsageFlags = vk::BufferUsageFlagBits::eTransferSrc) const;
 
-    mvk::Buffer AllocateMvk(vk::BufferUsageFlags usage, vk::DeviceSize size) const {
+    mvk::Buffer AllocateMvk(vk::DeviceSize size, vk::BufferUsageFlags usage) const {
         return {usage, Allocate(size, MemoryUsage::CpuOnly), Allocate(size, MemoryUsage::GpuOnly, usage)};
     }
 

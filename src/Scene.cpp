@@ -525,13 +525,13 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     UpdateEdgeColors();
 
-    TransformBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProj)));
-    ViewProjNearFarBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ViewProjNearFar)));
+    TransformBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer));
+    ViewProjNearFarBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer));
     UpdateTransformBuffers();
 
-    LightsBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(Lights)));
+    LightsBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(sizeof(Lights), vk::BufferUsageFlagBits::eUniformBuffer));
     UpdateBuffer(*LightsBuffer, as_bytes(Lights));
-    SilhouetteDisplayBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(vk::BufferUsageFlagBits::eUniformBuffer, sizeof(ActiveSilhouetteColor)));
+    SilhouetteDisplayBuffer = std::make_unique<mvk::Buffer>(BufferAllocator->AllocateMvk(sizeof(ActiveSilhouetteColor), vk::BufferUsageFlagBits::eUniformBuffer));
     UpdateBuffer(*SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
     vk::DescriptorBufferInfo transform_buffer{TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
 
@@ -655,8 +655,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 mvk::RenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
     return {
-        CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, as_bytes(buffers.Vertices)),
-        CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, as_bytes(buffers.Indices))
+        CreateBuffer(as_bytes(buffers.Vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+        CreateBuffer(as_bytes(buffers.Indices), vk::BufferUsageFlagBits::eIndexBuffer)
     };
 }
 
@@ -667,7 +667,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, CreateName(R, info.Name));
 
-    MeshVkData->Models.emplace(entity, BufferAllocator->AllocateMvk(vk::BufferUsageFlagBits::eVertexBuffer, sizeof(Model)));
+    MeshVkData->Models.emplace(entity, BufferAllocator->AllocateMvk(sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(entity, false);
 
@@ -736,7 +736,9 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{} instance {}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     auto &model_buffer = MeshVkData->Models.at(parent);
-    EnsureBufferHasAllocated(model_buffer, model_buffer.Size + sizeof(Model));
+    if (auto new_buffer = EnsureBufferHasAllocated(model_buffer, model_buffer.Size + sizeof(Model))) {
+        model_buffer = std::move(*new_buffer);
+    }
     SetVisible(entity, info.Visible);
     if (info.Select) SetActive(entity);
     InvalidateCommandBuffer();
@@ -836,8 +838,8 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
     };
 }
 
-mvk::Buffer Scene::CreateBuffer(vk::BufferUsageFlags flags, std::span<const std::byte> data) const {
-    auto buffer = BufferAllocator->AllocateMvk(flags, data.size());
+mvk::Buffer Scene::CreateBuffer(std::span<const std::byte> data, vk::BufferUsageFlags usage) const {
+    auto buffer = BufferAllocator->AllocateMvk(data.size(), usage);
     buffer.Size = data.size();
     BufferAllocator->WriteRegion(buffer.HostBuffer, data);
     // Copy data from the staging buffer to the device buffer.
@@ -848,34 +850,32 @@ mvk::Buffer Scene::CreateBuffer(vk::BufferUsageFlags flags, std::span<const std:
     SubmitTransfer();
     return buffer;
 }
-bool Scene::EnsureBufferHasAllocated(mvk::Buffer &buffer, vk::DeviceSize required_size) const {
-    if (required_size == 0) return false;
+std::optional<mvk::Buffer> Scene::EnsureBufferHasAllocated(const mvk::Buffer &buffer, vk::DeviceSize required_size) const {
+    if (required_size == 0) return {};
+    if (required_size <= BufferAllocator->GetAllocatedSize(buffer)) return {};
 
-    if (required_size > BufferAllocator->GetAllocatedSize(buffer)) {
-        // Create a new buffer with enough space.
-        // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
-        auto new_buffer = BufferAllocator->AllocateMvk(buffer.Usage, NextPowerOfTwo(required_size));
-        if (buffer.Size > 0) {
-            BufferAllocator->WriteRegion(new_buffer.HostBuffer, BufferAllocator->GetData(buffer.HostBuffer));
-            new_buffer.Size = buffer.Size;
-            // Device->device copy
-            const auto &cb = *TransferCommandBuffer;
-            cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-            cb.copyBuffer(buffer.DeviceBuffer, new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
-            cb.end();
-            SubmitTransfer();
-        }
-
-        buffer = std::move(new_buffer);
-        return true;
+    // Create a new buffer with enough space.
+    // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
+    auto new_buffer = BufferAllocator->AllocateMvk(NextPowerOfTwo(required_size), buffer.Usage);
+    if (buffer.Size > 0) {
+        BufferAllocator->WriteRegion(new_buffer.HostBuffer, BufferAllocator->GetData(buffer.HostBuffer));
+        new_buffer.Size = buffer.Size;
+        // Device->device copy
+        const auto &cb = *TransferCommandBuffer;
+        cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        cb.copyBuffer(buffer.DeviceBuffer, new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
+        cb.end();
+        SubmitTransfer();
     }
-    return false;
+    return new_buffer;
 }
 void Scene::UpdateBuffer(mvk::Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
     if (data.empty()) return;
 
     const auto required_size = offset + data.size();
-    EnsureBufferHasAllocated(buffer, required_size);
+    if (auto new_buffer = EnsureBufferHasAllocated(buffer, required_size)) {
+        buffer = std::move(*new_buffer);
+    }
     buffer.Size = std::max(buffer.Size, required_size);
     BufferAllocator->WriteRegion(buffer.HostBuffer, data, offset);
 
@@ -898,7 +898,6 @@ void Scene::InsertBufferRegion(mvk::Buffer &buffer, std::span<const std::byte> d
     // Staging->device copy
     const auto &cb = *TransferCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    assert(buffer.Size > offset);
     cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, buffer.Size - offset});
     cb.end();
     SubmitTransfer();

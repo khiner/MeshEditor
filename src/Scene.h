@@ -2,9 +2,7 @@
 
 #include "Camera.h"
 #include "ModelGizmo.h"
-#include "RenderMode.h"
 #include "Shader.h"
-#include "World.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
 #include "mesh/Vertex.h"
@@ -20,7 +18,7 @@
 #include <set>
 #include <unordered_map>
 
-using uint = u_int32_t;
+using uint = uint32_t;
 
 namespace mvk {
 struct RenderBuffers {
@@ -83,6 +81,10 @@ struct Lights {
     vec3 Direction;
 };
 
+struct World {
+    const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
+};
+
 enum class ShaderPipelineType {
     Fill,
     Line,
@@ -120,6 +122,19 @@ enum class SelectionMode {
     // Available when any `Excitable` objects are present.
     // Mouse-down on an excitable object adds an `ExcitedVertex` component to the object entity, and mouse-up removes it.
     Excite,
+};
+
+enum class RenderMode {
+    None,
+    FacesAndEdges,
+    Faces,
+    Edges,
+    Vertices,
+};
+
+enum class ColorMode {
+    Mesh,
+    Normals,
 };
 
 inline std::string to_string(SelectionMode mode) {
@@ -201,7 +216,7 @@ struct Scene {
     bool Render();
     void RenderGizmo();
     void RenderControls();
-    mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const;
+    mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders();
@@ -282,11 +297,13 @@ private:
     void UpdateModelBuffer(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
+
+    mvk::Buffer CreateBuffer(std::span<const std::byte>, vk::BufferUsageFlags) const;
     // Grows the buffer if it's not big enough (to the next power of 2).
     // If `bytes == 0` (or is not set) `bytes = buffer.Size`
     void UpdateBuffer(mvk::Buffer &, std::span<const std::byte>, vk::DeviceSize offset = 0) const;
-    // Returns true if the buffer had to be resized.
-    bool EnsureBufferHasAllocated(mvk::Buffer &, vk::DeviceSize required_size) const;
+    // Returns a new buffer if resize is needed.
+    std::optional<mvk::Buffer> EnsureBufferHasAllocated(const mvk::Buffer &, vk::DeviceSize required_size) const;
     template<typename T> void UpdateBuffer(mvk::Buffer &buffer, const std::vector<T> &data) const {
         UpdateBuffer(buffer, as_bytes(data));
     }
@@ -297,11 +314,10 @@ private:
     // It doesn't free memory, so the allocated size will be greater than the used size.
     void EraseBufferRegion(mvk::Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
-    mvk::Buffer CreateBuffer(vk::BufferUsageFlags, std::span<const std::byte>) const;
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
-            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, as_bytes(vertices)),
-            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, as_bytes(indices))
+            CreateBuffer(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            CreateBuffer(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 
@@ -310,8 +326,8 @@ private:
     template<size_t N>
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
         return {
-            CreateBuffer(vk::BufferUsageFlagBits::eVertexBuffer, as_bytes(vertices)),
-            CreateBuffer(vk::BufferUsageFlagBits::eIndexBuffer, as_bytes(indices))
+            CreateBuffer(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            CreateBuffer(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 

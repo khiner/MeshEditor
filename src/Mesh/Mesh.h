@@ -3,7 +3,6 @@
 #include "BBox.h"
 #include "Intersection.h"
 #include "MeshElement.h"
-#include "RenderMode.h"
 #include "Vertex.h"
 
 #include <OpenMesh/Core/IO/MeshIO.hh>
