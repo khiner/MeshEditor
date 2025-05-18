@@ -372,7 +372,8 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     submit.setCommandBuffers(cb);
     Vk.Queue.submit(submit, *RenderFence);
     WaitForRender();
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    BufferManager->Invalidate(staging_buffer);
+    BufferManager->Begin();
 
     return image;
 }
@@ -723,9 +724,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{} instance {}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     auto &model_buffer = MeshVkData->Models.at(parent);
-    if (auto new_buffer = BufferManager->EnsureAllocated(model_buffer, model_buffer.Size + sizeof(Model))) {
-        model_buffer = std::move(*new_buffer);
-    }
+    BufferManager->EnsureAllocated(model_buffer, model_buffer.Size + sizeof(Model));
     SetVisible(entity, info.Visible);
     if (info.Select) SetActive(entity);
     InvalidateCommandBuffer();
@@ -1182,7 +1181,7 @@ bool Scene::Render() {
     // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
     WaitForRender();
-    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    BufferManager->Begin();
     return extent_changed;
 }
 

@@ -19,21 +19,10 @@ struct VmaBuffer {
           Allocation(std::exchange(other.Allocation, nullptr)),
           Info(other.Info) {}
 
-    VmaBuffer &operator=(VmaBuffer &&other) noexcept {
-        if (this != &other) {
-            if (Buffer) {
-                std::println("Destroying buffer in =");
-                vmaDestroyBuffer(Vma, Buffer, Allocation);
-            }
-            Buffer = std::exchange(other.Buffer, nullptr);
-            Allocation = std::move(other.Allocation);
-        }
-        return *this;
-    }
+    VmaBuffer &operator=(VmaBuffer &&) = delete;
 
     ~VmaBuffer() {
         if (Buffer) {
-            std::println("Destroying buffer in ~");
             vmaDestroyBuffer(Vma, Buffer, Allocation);
         }
     }
@@ -115,17 +104,16 @@ std::span<const std::byte> BufferAllocator::GetData(vk::Buffer b) const {
 }
 vk::DeviceSize BufferAllocator::GetAllocatedSize(vk::Buffer b) const { return GetBufferInfo(Vma, b).size; }
 
-void BufferAllocator::WriteRegion(vk::Buffer b, std::span<const std::byte> src, vk::DeviceSize offset) const {
+void BufferAllocator::Write(vk::Buffer b, std::span<const std::byte> src, vk::DeviceSize offset) const {
     if (src.empty() || offset >= GetAllocatedSize(b)) return;
 
     std::copy(src.begin(), src.end(), GetMappedData(b).subspan(offset).data());
 }
 
-void BufferAllocator::MoveRegion(vk::Buffer b, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const {
+void BufferAllocator::Move(vk::Buffer b, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const {
     const auto allocated_size = GetAllocatedSize(b);
     if (size == 0 || from + size > allocated_size || to + size > allocated_size) return;
 
-    // Shift the data to "erase" the region (dst is first, src is second).
     auto mapped_data = GetMappedData(b);
     std::memmove(mapped_data.subspan(to).data(), mapped_data.subspan(from).data(), size_t(size));
 }
@@ -161,4 +149,9 @@ vk::Buffer BufferAllocator::Allocate(vk::DeviceSize size, MemoryUsage memory_usa
     }
     return SetBuffer(Vma, {Vma, vk_buffer, alloc, info});
 }
+
+void BufferAllocator::Destroy(vk::Buffer buffer) const {
+    BuffersByAllocator.at(Vma).erase(static_cast<VkBuffer>(buffer));
+}
+
 } // namespace mvk
