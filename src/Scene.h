@@ -217,7 +217,6 @@ struct Scene {
     std::optional<uint> GetModelBufferIndex(entt::entity);
     void UpdateRenderBuffers(entt::entity);
     void RecordCommandBuffer();
-    void SubmitCommandBuffer(vk::Fence fence = nullptr) const;
     void InvalidateCommandBuffer();
 
     void OnCreateExcitable(entt::registry &, entt::entity);
@@ -231,9 +230,9 @@ private:
     SceneVulkanResources Vk;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
-    vk::UniqueCommandBuffer CommandBuffer;
+    vk::UniqueCommandBuffer TransferCommandBuffer, RenderCommandBuffer;
+    std::array<vk::CommandBuffer, 2> CommandBuffers;
     vk::UniqueFence RenderFence;
-    vk::UniqueCommandBuffer TransferCommandBuffer;
     std::unique_ptr<mvk::BufferManager> BufferManager;
 
     Camera Camera{CreateDefaultCamera()};
@@ -309,5 +308,4 @@ private:
     }
 
     void WaitForRender() const;
-    void SubmitTransfer() const;
 };

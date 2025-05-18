@@ -27,11 +27,7 @@ mvk::Buffer BufferManager::Create(std::span<const std::byte> data, vk::BufferUsa
     auto buffer = Allocate(data.size(), usage);
     buffer.Size = data.size();
     Allocator.WriteRegion(buffer.HostBuffer, data);
-    // Copy data from the staging buffer to the device buffer.
-    Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{0, 0, data.size()});
-    Cb.end();
-    SubmitTransfer();
     return buffer;
 }
 std::optional<mvk::Buffer> BufferManager::EnsureAllocated(const mvk::Buffer &buffer, vk::DeviceSize required_size) const {
@@ -39,16 +35,12 @@ std::optional<mvk::Buffer> BufferManager::EnsureAllocated(const mvk::Buffer &buf
     if (required_size <= GetAllocatedSize(buffer)) return {};
 
     // Create a new buffer with enough space.
-    // Copy the old buffer into the new buffer (host and device), and replace the old buffer.
     auto new_buffer = Allocate(NextPowerOfTwo(required_size), buffer.Usage);
     if (buffer.Size > 0) {
+        // Copy the old buffer into the new buffer (host and device).
         Allocator.WriteRegion(new_buffer.HostBuffer, Allocator.GetData(buffer.HostBuffer));
         new_buffer.Size = buffer.Size;
-        // Device->device copy
-        Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         Cb.copyBuffer(buffer.DeviceBuffer, new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
-        Cb.end();
-        SubmitTransfer();
     }
     return new_buffer;
 }
@@ -61,12 +53,7 @@ void BufferManager::Update(mvk::Buffer &buffer, std::span<const std::byte> data,
     }
     buffer.Size = std::max(buffer.Size, required_size);
     Allocator.WriteRegion(buffer.HostBuffer, data, offset);
-
-    // Staging->device copy
-    Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
-    Cb.end();
-    SubmitTransfer();
 }
 void BufferManager::InsertRegion(mvk::Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
     if (data.empty() || buffer.Size + data.size() > GetAllocatedSize(buffer)) return;
@@ -76,23 +63,14 @@ void BufferManager::InsertRegion(mvk::Buffer &buffer, std::span<const std::byte>
     }
     Allocator.WriteRegion(buffer.HostBuffer, data, offset);
     buffer.Size += data.size();
-
-    // Staging->device copy
-    Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, buffer.Size - offset});
-    Cb.end();
-    SubmitTransfer();
 }
 void BufferManager::EraseRegion(mvk::Buffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
     if (size == 0 || offset + size > buffer.Size) return;
 
     if (const auto move_size = buffer.Size - (offset + size); move_size > 0) {
         Allocator.MoveRegion(buffer.HostBuffer, offset + size, offset, move_size);
-
-        Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
-        Cb.end();
-        SubmitTransfer();
     }
     buffer.Size -= size;
 }

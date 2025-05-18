@@ -319,7 +319,6 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
 
     // Record commands to copy from staging buffer to Vulkan image.
     const auto &cb = *TransferCommandBuffer;
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     // Transition the image layout to be ready for data transfer.
     cb.pipelineBarrier(
@@ -369,7 +368,11 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     );
 
     cb.end();
-    SubmitTransfer();
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    Vk.Queue.submit(submit, *RenderFence);
+    WaitForRender();
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     return image;
 }
@@ -492,10 +495,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : Vk(vc),
       R(r),
       CommandPool(Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})),
-      CommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
-      RenderFence(Vk.Device.createFenceUnique({})),
       TransferCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())),
-      BufferManager(std::make_unique<mvk::BufferManager>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *TransferCommandBuffer, [this]() { this->SubmitTransfer(); })),
+      RenderCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
+      CommandBuffers{*TransferCommandBuffer, *RenderCommandBuffer},
+      RenderFence(Vk.Device.createFenceUnique({})),
+      BufferManager(std::make_unique<mvk::BufferManager>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *TransferCommandBuffer)),
       MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
       SilhouetteRenderer(SilhouettePipelineRenderer(Vk.Device, Vk.DescriptorPool)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(Vk.Device, Vk.DescriptorPool)) {
     // EnTT listeners
@@ -782,14 +786,6 @@ void Scene::WaitForRender() const {
     Vk.Device.resetFences(*RenderFence);
 }
 
-// TODO Use separate fence/semaphores for buffer updates and rendering?
-void Scene::SubmitTransfer() const {
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(*TransferCommandBuffer);
-    Vk.Queue.submit(submit, *RenderFence);
-    WaitForRender();
-}
-
 // Get the model VK buffer index.
 // Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
 std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
@@ -867,7 +863,7 @@ std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_m
 }
 
 void Scene::RecordCommandBuffer() {
-    const auto &cb = *CommandBuffer;
+    const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
@@ -970,12 +966,6 @@ void Scene::RecordCommandBuffer() {
 
     cb.endRenderPass();
     cb.end();
-}
-
-void Scene::SubmitCommandBuffer(vk::Fence fence) const {
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(*CommandBuffer);
-    Vk.Queue.submit(submit, fence);
 }
 
 void Scene::InvalidateCommandBuffer() {
@@ -1181,13 +1171,18 @@ bool Scene::Render() {
     if (!extent_changed && !CommandBufferDirty) return false;
 
     if (extent_changed) SetExtent(ToVkExtent(content_region));
+    TransferCommandBuffer->end();
     RecordCommandBuffer();
-    SubmitCommandBuffer(*RenderFence);
+
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(CommandBuffers);
+    Vk.Queue.submit(submit, *RenderFence);
     CommandBufferDirty = false;
 
     // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
     WaitForRender();
+    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     return extent_changed;
 }
 

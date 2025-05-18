@@ -3,7 +3,6 @@
 #include "BufferAllocator.h"
 
 #include <array>
-#include <functional>
 #include <vector>
 
 template<typename T>
@@ -21,13 +20,16 @@ struct Buffer {
     vk::DeviceSize Size{0}; // Used size (not allocated size)
 };
 
-// Wraps an allocator and a transfer command buffer.
+// Wraps an allocator and a transfer command buffer to manage `mvk::Buffer`s.
 struct BufferManager {
-    using SubmitTransferFn = std::function<void()>;
+    BufferManager(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandBuffer cb)
+        : Allocator(pd, d, instance), Cb(cb) {
+        Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    }
 
-    BufferManager(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandBuffer cb, SubmitTransferFn submit_transfer)
-        : Allocator(pd, d, instance), Cb(cb), SubmitTransfer(std::move(submit_transfer)) {}
-    ~BufferManager() = default;
+    ~BufferManager() {
+        Cb.end();
+    }
 
     Buffer Allocate(vk::DeviceSize size, vk::BufferUsageFlags usage) const {
         return {usage, Allocator.Allocate(size, MemoryUsage::CpuOnly), Allocator.Allocate(size, MemoryUsage::GpuOnly, usage)};
@@ -45,17 +47,14 @@ struct BufferManager {
         Update(buffer, as_bytes(data));
     }
     // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
-    // **It does nothing if the buffer doesn't have enough enough space allocated.**
+    // **Does nothing if the buffer doesn't have enough enough space allocated.**
     void InsertRegion(mvk::Buffer &, std::span<const std::byte>, vk::DeviceSize offset) const;
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
-    // It doesn't free memory, so the allocated size will be greater than the used size.
+    // Doesn't free memory, so the allocated size will be greater than the used size.
     void EraseRegion(mvk::Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
-
-    const vk::CommandBuffer &GetCommandBuffer() const { return Cb; }
 
 private:
     BufferAllocator Allocator;
     vk::CommandBuffer Cb; // Transfer command buffer
-    SubmitTransferFn SubmitTransfer; // xxx temporary until decoupled
 };
 } // namespace mvk

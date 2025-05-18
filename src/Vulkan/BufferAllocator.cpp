@@ -22,6 +22,7 @@ struct VmaBuffer {
     VmaBuffer &operator=(VmaBuffer &&other) noexcept {
         if (this != &other) {
             if (Buffer) {
+                std::println("Destroying buffer in =");
                 vmaDestroyBuffer(Vma, Buffer, Allocation);
             }
             Buffer = std::exchange(other.Buffer, nullptr);
@@ -32,6 +33,7 @@ struct VmaBuffer {
 
     ~VmaBuffer() {
         if (Buffer) {
+            std::println("Destroying buffer in ~");
             vmaDestroyBuffer(Vma, Buffer, Allocation);
         }
     }
