@@ -1,4 +1,4 @@
-#include "Buffer.h"
+#include "BufferAllocator.h"
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
@@ -103,7 +103,7 @@ BufferAllocator::~BufferAllocator() {
     vmaDestroyAllocator(Vma);
 }
 
-std::span<std::byte> BufferAllocator::GetMappedData(vk::Buffer b) {
+std::span<std::byte> BufferAllocator::GetMappedData(vk::Buffer b) const {
     auto &info = GetBufferInfo(Vma, b);
     return {static_cast<std::byte *>(info.pMappedData), info.size};
 }
@@ -113,13 +113,13 @@ std::span<const std::byte> BufferAllocator::GetData(vk::Buffer b) const {
 }
 vk::DeviceSize BufferAllocator::GetAllocatedSize(vk::Buffer b) const { return GetBufferInfo(Vma, b).size; }
 
-void BufferAllocator::WriteRegion(vk::Buffer b, std::span<const std::byte> src, vk::DeviceSize offset) {
+void BufferAllocator::WriteRegion(vk::Buffer b, std::span<const std::byte> src, vk::DeviceSize offset) const {
     if (src.empty() || offset >= GetAllocatedSize(b)) return;
 
     std::copy(src.begin(), src.end(), GetMappedData(b).subspan(offset).data());
 }
 
-void BufferAllocator::MoveRegion(vk::Buffer b, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) {
+void BufferAllocator::MoveRegion(vk::Buffer b, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const {
     const auto allocated_size = GetAllocatedSize(b);
     if (size == 0 || from + size > allocated_size || to + size > allocated_size) return;
 

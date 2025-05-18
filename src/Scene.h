@@ -9,7 +9,7 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
-#include "vulkan/Buffer.h"
+#include "vulkan/BufferManager.h"
 #include "vulkan/Image.h"
 
 #include <entt/entity/fwd.hpp>
@@ -168,13 +168,6 @@ struct SceneVulkanResources {
     vk::DescriptorPool DescriptorPool;
 };
 
-template<typename T>
-constexpr std::span<const std::byte> as_bytes(const std::vector<T> &v) { return std::as_bytes(std::span{v}); }
-template<typename T, uint N>
-constexpr std::span<const std::byte> as_bytes(const std::array<T, N> &v) { return std::as_bytes(std::span{v}); }
-template<typename T>
-constexpr std::span<const std::byte> as_bytes(const T &v) { return {reinterpret_cast<const std::byte *>(&v), sizeof(T)}; }
-
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
@@ -236,12 +229,12 @@ struct Scene {
 
 private:
     SceneVulkanResources Vk;
-    std::unique_ptr<mvk::BufferAllocator> BufferAllocator;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
     vk::UniqueCommandBuffer CommandBuffer;
-    vk::UniqueCommandBuffer TransferCommandBuffer;
     vk::UniqueFence RenderFence;
+    vk::UniqueCommandBuffer TransferCommandBuffer;
+    std::unique_ptr<mvk::BufferManager> BufferManager;
 
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
@@ -298,26 +291,10 @@ private:
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
 
-    mvk::Buffer CreateBuffer(std::span<const std::byte>, vk::BufferUsageFlags) const;
-    // Grows the buffer if it's not big enough (to the next power of 2).
-    // If `bytes == 0` (or is not set) `bytes = buffer.Size`
-    void UpdateBuffer(mvk::Buffer &, std::span<const std::byte>, vk::DeviceSize offset = 0) const;
-    // Returns a new buffer if resize is needed.
-    std::optional<mvk::Buffer> EnsureBufferHasAllocated(const mvk::Buffer &, vk::DeviceSize required_size) const;
-    template<typename T> void UpdateBuffer(mvk::Buffer &buffer, const std::vector<T> &data) const {
-        UpdateBuffer(buffer, as_bytes(data));
-    }
-    // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
-    // **It does nothing if the buffer doesn't have enough enough space allocated.**
-    void InsertBufferRegion(mvk::Buffer &, std::span<const std::byte>, vk::DeviceSize offset) const;
-    // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
-    // It doesn't free memory, so the allocated size will be greater than the used size.
-    void EraseBufferRegion(mvk::Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
-
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
-            CreateBuffer(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            CreateBuffer(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            BufferManager->Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            BufferManager->Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 
@@ -326,8 +303,8 @@ private:
     template<size_t N>
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
         return {
-            CreateBuffer(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            CreateBuffer(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            BufferManager->Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            BufferManager->Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 
