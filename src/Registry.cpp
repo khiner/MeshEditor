@@ -27,3 +27,18 @@ std::string CreateName(const entt::registry &r, std::string_view prefix) {
     assert(false);
     return prefix_str;
 }
+
+entt::entity FindActiveEntity(const entt::registry &registry) {
+    auto all_active = registry.view<Active>();
+    assert(all_active.size() <= 1);
+    return all_active.empty() ? entt::null : *all_active.begin();
+}
+
+entt::entity GetParentEntity(const entt::registry &r, entt::entity entity) {
+    if (entity == entt::null) return entt::null;
+
+    if (const auto *node = r.try_get<SceneNode>(entity)) {
+        return node->Parent == entt::null ? entity : GetParentEntity(r, node->Parent);
+    }
+    return entity;
+}

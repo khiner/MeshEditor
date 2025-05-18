@@ -26,16 +26,6 @@ struct RenderBuffers {
 };
 } // namespace mvk
 
-struct Selected {}; // Entity is selected (multiple can be selected)
-// Active selected entity
-// Invariants:
-//   * <=1 entity is active at a time.
-//   * If an entity is Active, it is also Selected.
-//   * Most recently Selected entity is Active.
-struct Active {};
-struct Visible {}; // Visible in the scene
-struct Frozen {}; // Disable entity transform changes
-
 struct Path {
     fs::path Value;
 };
@@ -192,7 +182,6 @@ struct Scene {
 
     entt::entity GetParentEntity(entt::entity) const;
     void SetActive(entt::entity);
-    entt::entity GetActiveEntity() const;
     void ToggleSelected(entt::entity);
 
     vk::Extent2D GetExtent() const { return Extent; }

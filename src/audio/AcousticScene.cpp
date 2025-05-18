@@ -91,7 +91,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     if (!fs::exists(directory)) throw std::runtime_error(std::format("RealImpact directory does not exist: {}", directory.string()));
 
     scene.ClearMeshes();
-    const auto object_entity = scene.AddMesh(
+    const auto entity = scene.AddMesh(
         directory / "transformed.obj",
         {
             .Name = *RealImpact::FindObjectName(directory),
@@ -105,7 +105,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         auto impact_positions = RealImpact::LoadPositions(directory);
         // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
         // so we don't even load them. Instead, we look up by position here.
-        const auto &mesh = R.get<Mesh>(object_entity);
+        const auto &mesh = R.get<Mesh>(entity);
         for (uint i = 0; i < impact_positions.size(); ++i) {
             vertex_indices[i] = uint(mesh.FindNearestVertex(ToOpenMesh(impact_positions[i])).idx());
         }
@@ -114,7 +114,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     const auto listener_entity = scene.AddMesh(
         Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
         {
-            .Name = std::format("RealImpact Listeners: {}", R.get<Name>(object_entity).Value),
+            .Name = std::format("RealImpact Listeners: {}", R.get<Name>(entity).Value),
             .Select = false,
             .Visible = false,
         }
@@ -134,7 +134,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
 
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
         if (listener_point.Index == CenterListenerIndex) {
-            R.emplace<SoundObjectListener>(object_entity, listener_instance_entity);
+            R.emplace<SoundObjectListener>(entity, listener_instance_entity);
 
             static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
                 for (const auto &material : materials::acoustic::All) {
@@ -142,12 +142,12 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
                 }
                 return {};
             };
-            auto material_name = RealImpact::FindMaterialName(R.get<Name>(object_entity).Value);
+            auto material_name = RealImpact::FindMaterialName(R.get<Name>(entity).Value);
             const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
-            if (real_impact_material) R.emplace<AcousticMaterial>(object_entity, *real_impact_material);
-            R.emplace<Frozen>(object_entity);
-            R.emplace<Excitable>(object_entity, vertex_indices);
-            SetImpactFrames(object_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
+            if (real_impact_material) R.emplace<AcousticMaterial>(entity, *real_impact_material);
+            R.emplace<Frozen>(entity);
+            R.emplace<Excitable>(entity, vertex_indices);
+            SetImpactFrames(entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
         }
     }
 }
@@ -186,7 +186,7 @@ using namespace ImGui;
 void AcousticScene::RenderControls(Scene &scene) {
     static const float CharWidth = CalcTextSize("A").x;
 
-    const auto active_entity = scene.GetActiveEntity();
+    const auto active_entity = GetParentEntity(R, FindActiveEntity(R)); // todo straighten out acoustic models for instances vs parents
     if (!R.storage<SoundObjectModel>().empty() && CollapsingHeader("Sound objects")) {
         if (MeshEditor::BeginTable("Sound objects", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
@@ -649,7 +649,7 @@ void AcousticScene::Draw(entt::entity entity) {
             Checkbox("Copy excitable vertices", &info.CopyExcitable);
         }
         if (!excitable || !info.CopyExcitable) {
-            const auto &mesh = R.get<const Mesh>(entity);
+            const auto &mesh = R.get<Mesh>(entity);
             const uint num_vertices = mesh.GetVertexCount();
             info.NumExcitableVertices = std::min(info.NumExcitableVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
@@ -748,8 +748,6 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, cons
     // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
     const auto &mesh = R.get<const Mesh>(entity);
-    const auto *sample_object = R.try_get<const SampleSoundObject>(entity);
-    const auto scale = R.get<Scale>(entity).Value;
     // Use impact model vertices or linearly distribute the vertices across the tet mesh.
     const auto num_vertices = mesh.GetVertexCount();
     const auto excitable = info.CopyExcitable && R.all_of<Excitable>(entity) ?
@@ -761,9 +759,10 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity entity, cons
 
     while (!DspGenerator) {}
     DspGenerator->SetMessage("Generating tetrahedral mesh...");
-    const auto tets = GenerateTets(mesh, scale, {.PreserveSurface = true, .Quality = info.QualityTets});
+    const auto tets = GenerateTets(mesh, R.get<Scale>(entity).Value, {.PreserveSurface = true, .Quality = info.QualityTets});
 
     DspGenerator->SetMessage("Generating modal model...");
+    const auto *sample_object = R.try_get<const SampleSoundObject>(entity);
     auto fundamental = sample_object ? std::optional{GetPeakFrequencies(ComputeFft(sample_object->GetFrames()), 10).front()} : std::nullopt;
     if (fundamental && *fundamental > 10'000) fundamental = std::nullopt; // Arbitrary high frequency limit.
 

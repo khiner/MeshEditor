@@ -18,39 +18,11 @@
 using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;
 
-namespace {
-struct SceneNode {
-    entt::entity Parent = entt::null;
-    std::vector<entt::entity> Children;
-    // `ModelIndices` maps entities to their index in the models buffer. Includes parent.
-    // It's only present in parent nodes.
-    // This enables contiguous storage of models in the buffer, with erases and appends but no inserts.
-    std::unordered_map<entt::entity, uint> ModelIndices;
-};
-
-entt::entity GetParentEntity(const entt::registry &r, entt::entity entity) {
-    if (entity == entt::null) return entt::null;
-
-    if (const auto *node = r.try_get<SceneNode>(entity)) {
-        return node->Parent == entt::null ? entity : GetParentEntity(r, node->Parent);
-    }
-    return entity;
-}
-
-template<typename Component>
-entt::entity FindEntity(const entt::registry &registry) {
-    auto all_active = registry.view<Component>();
-    assert(all_active.size() <= 1);
-    return all_active.empty() ? entt::null : *all_active.begin();
-}
-} // namespace
-
 entt::entity Scene::GetParentEntity(entt::entity entity) const { return ::GetParentEntity(R, entity); }
-const Mesh &Scene::GetActiveMesh() const { return R.get<Mesh>(GetParentEntity(FindEntity<Active>(R))); }
-entt::entity Scene::GetActiveEntity() const { return FindEntity<Active>(R); }
+const Mesh &Scene::GetActiveMesh() const { return R.get<Mesh>(GetParentEntity(FindActiveEntity(R))); }
 
 void Scene::SetActive(entt::entity entity) {
-    if (FindEntity<Active>(R) == entity) return;
+    if (FindActiveEntity(R) == entity) return;
 
     R.clear<Active, Selected>();
     if (entity != entt::null) {
@@ -722,7 +694,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     auto &parent_node = R.get<SceneNode>(parent);
     parent_node.Children.emplace_back(entity);
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
-    R.emplace<Name>(entity, info.Name.empty() ? std::format("{} instance {}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
+    R.emplace<Name>(entity, info.Name.empty() ? std::format("{}_instance_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     auto &model_buffer = MeshVkData->Models.at(parent);
     BufferManager->EnsureAllocated(model_buffer, model_buffer.Size + sizeof(Model));
     SetVisible(entity, info.Visible);
@@ -762,14 +734,16 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
         mesh.SetFaceColor(highlight_faces ? Mesh::HighlightedFaceColor : Mesh::DefaultFaceColor);
         UpdateRenderBuffers(entity);
     }
-    const auto entity = FindEntity<Active>(R);
-    UpdateHighlightedVertices(entity, R.get<Excitable>(entity));
+    const auto entity = FindActiveEntity(R);
+    if (auto excitable = R.try_get<Excitable>(entity)) {
+        UpdateHighlightedVertices(entity, *excitable);
+    }
 }
 void Scene::SetEditingElement(MeshElementIndex element) {
     if (R.storage<Active>().empty()) return;
 
     EditingElement = element;
-    UpdateRenderBuffers(GetParentEntity(FindEntity<Active>(R)));
+    UpdateRenderBuffers(GetParentEntity(FindActiveEntity(R)));
 }
 
 void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 scale) {
@@ -803,7 +777,7 @@ std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
 void Scene::UpdateRenderBuffers(entt::entity entity) {
     if (const auto *mesh = R.try_get<Mesh>(entity)) {
         auto &mesh_buffers = MeshVkData->Main.at(entity);
-        const bool is_active = GetParentEntity(FindEntity<Active>(R)) == entity;
+        const bool is_active = GetParentEntity(FindActiveEntity(R)) == entity;
         const Mesh::ElementIndex selected_element{
             is_active && SelectionMode == SelectionMode::Edit       ? EditingElement :
                 is_active && SelectionMode == SelectionMode::Excite ? MeshElementIndex{MeshElement::Vertex, int(R.get<Excitable>(entity).SelectedVertex())} :
@@ -883,7 +857,7 @@ void Scene::RecordCommandBuffer() {
         }}
     );
 
-    const auto active_entity = FindEntity<Active>(R);
+    const auto active_entity = FindActiveEntity(R);
     const auto active_mesh_entity = GetParentEntity(active_entity);
     const auto active_model_buffer_index = GetModelBufferIndex(active_entity);
     const bool render_silhouette = active_model_buffer_index && SelectionMode == SelectionMode::Object;
@@ -1077,7 +1051,7 @@ ray Scene::GetMouseWorldRay() const {
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
 
-    const auto active_entity = FindEntity<Active>(R);
+    const auto active_entity = FindActiveEntity(R);
     // Handle keyboard input.
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Tab)) {
@@ -1191,7 +1165,7 @@ void Scene::RenderGizmo() {
     const auto window_pos = ToGlm(GetWindowPos());
     auto view = Camera.GetView();
     if (MGizmo.Show && !R.storage<Active>().empty()) {
-        const auto active_entity = FindEntity<Active>(R);
+        const auto active_entity = FindActiveEntity(R);
         const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
         if (auto model = R.get<Model>(active_entity).Transform;
             ModelGizmo::Draw(ModelGizmo::Local, MGizmo.Op, window_pos + line_height, content_region, model, view, proj, MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt)) {
@@ -1264,7 +1238,7 @@ void RenderMat4(const mat4 &m) {
 
 void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
-        const auto active_entity = FindEntity<Active>(R);
+        const auto active_entity = FindActiveEntity(R);
         const auto active_mesh_entity = GetParentEntity(active_entity);
         if (BeginTabItem("Object")) {
             {
