@@ -31,7 +31,6 @@ struct Path {
 };
 
 struct Mesh;
-struct MeshVkData;
 struct Excitable;
 struct RenderBuffers; // Mesh render buffers
 
@@ -222,7 +221,7 @@ private:
     vk::UniqueCommandBuffer TransferCommandBuffer, RenderCommandBuffer;
     std::array<vk::CommandBuffer, 2> CommandBuffers;
     vk::UniqueFence RenderFence;
-    std::unique_ptr<mvk::BufferManager> BufferManager;
+    mvk::BufferManager BufferManager;
 
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
@@ -237,13 +236,11 @@ private:
     SelectionMode SelectionMode{SelectionMode::Object};
     MeshElementIndex EditingElement{MeshElement::Face, -1};
 
-    std::unique_ptr<MeshVkData> MeshVkData;
-
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.22, 0.22, 0.22, 1.f};
     vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
-    std::unique_ptr<mvk::Buffer> TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
+    mvk::Buffer TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
     PipelineRenderer MainRenderer, SilhouetteRenderer, EdgeDetectionRenderer;
     std::unique_ptr<MainPipelineResources> MainResources;
@@ -281,8 +278,8 @@ private:
 
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
-            BufferManager->Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            BufferManager->Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            BufferManager.Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            BufferManager.Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 
@@ -291,8 +288,8 @@ private:
     template<size_t N>
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
         return {
-            BufferManager->Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            BufferManager->Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            BufferManager.Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            BufferManager.Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 

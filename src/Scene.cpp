@@ -18,6 +18,22 @@
 using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;
 
+// Stored on parent entities.
+// Holds the `Model` of the parent entity at position 0, and children at 1+.
+struct ModelsBuffer {
+    mvk::Buffer Buffer;
+};
+struct BoundingBoxesBuffers {
+    mvk::RenderBuffers Buffers;
+};
+struct BvhBoxesBuffers {
+    mvk::RenderBuffers Buffers;
+};
+using MeshElementBuffers = std::unordered_map<MeshElement, mvk::RenderBuffers>;
+struct MeshBuffers {
+    MeshElementBuffers Mesh, NormalIndicators;
+};
+
 entt::entity Scene::GetParentEntity(entt::entity entity) const { return ::GetParentEntity(R, entity); }
 const Mesh &Scene::GetActiveMesh() const { return R.get<Mesh>(GetParentEntity(FindActiveEntity(R))); }
 
@@ -42,13 +58,6 @@ void Scene::ToggleSelected(entt::entity entity) {
     InvalidateCommandBuffer();
 }
 
-using MeshBuffers = std::unordered_map<MeshElement, mvk::RenderBuffers>;
-struct MeshVkData {
-    std::unordered_map<entt::entity, MeshBuffers> Main, NormalIndicators;
-    std::unordered_map<entt::entity, mvk::Buffer> Models;
-    std::unordered_map<entt::entity, mvk::RenderBuffers> Boxes, BvhBoxes;
-};
-
 std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
     return box.Corners() |
         // Normals don't matter for wireframes.
@@ -61,8 +70,8 @@ const std::vector AllNormalElements{MeshElement::Vertex, MeshElement::Face};
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
 namespace Format {
-const auto Vec3 = vk::Format::eR32G32B32Sfloat;
-const auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
+constexpr auto Vec3 = vk::Format::eR32G32B32Sfloat;
+constexpr auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
 namespace {
@@ -287,7 +296,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
     );
     // Write the bitmap into a staging buffer.
-    auto staging_buffer = BufferManager->CreateStaging(as_bytes(data));
+    auto staging_buffer = BufferManager.CreateStaging(as_bytes(data));
 
     // Record commands to copy from staging buffer to Vulkan image.
     const auto &cb = *TransferCommandBuffer;
@@ -344,8 +353,8 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     submit.setCommandBuffers(cb);
     Vk.Queue.submit(submit, *RenderFence);
     WaitForRender();
-    BufferManager->Invalidate(staging_buffer);
-    BufferManager->Begin();
+    BufferManager.Invalidate(staging_buffer);
+    BufferManager.Begin();
 
     return image;
 }
@@ -472,8 +481,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       RenderCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
       CommandBuffers{*TransferCommandBuffer, *RenderCommandBuffer},
       RenderFence(Vk.Device.createFenceUnique({})),
-      BufferManager(std::make_unique<mvk::BufferManager>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *TransferCommandBuffer)),
-      MeshVkData(std::make_unique<::MeshVkData>()), MainRenderer(MainPipelineRenderer(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
+      BufferManager(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *TransferCommandBuffer),
+      MainRenderer(MainPipelineRenderer(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
       SilhouetteRenderer(SilhouettePipelineRenderer(Vk.Device, Vk.DescriptorPool)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(Vk.Device, Vk.DescriptorPool)) {
     // EnTT listeners
     R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
@@ -485,23 +494,21 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     UpdateEdgeColors();
 
-    TransformBuffer = std::make_unique<mvk::Buffer>(BufferManager->Allocate(sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer));
-    ViewProjNearFarBuffer = std::make_unique<mvk::Buffer>(BufferManager->Allocate(sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer));
+    TransformBuffer = BufferManager.Allocate(sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer);
+    ViewProjNearFarBuffer = BufferManager.Allocate(sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer);
     UpdateTransformBuffers();
 
-    LightsBuffer = std::make_unique<mvk::Buffer>(BufferManager->Allocate(sizeof(Lights), vk::BufferUsageFlagBits::eUniformBuffer));
-    BufferManager->Update(*LightsBuffer, as_bytes(Lights));
-    SilhouetteDisplayBuffer = std::make_unique<mvk::Buffer>(BufferManager->Allocate(sizeof(ActiveSilhouetteColor), vk::BufferUsageFlagBits::eUniformBuffer));
-    BufferManager->Update(*SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
-    vk::DescriptorBufferInfo transform_buffer{TransformBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE};
+    LightsBuffer = BufferManager.Create(as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer);
+    SilhouetteDisplayBuffer = BufferManager.Create(as_bytes(ActiveSilhouetteColor), vk::BufferUsageFlagBits::eUniformBuffer);
+    vk::DescriptorBufferInfo transform_buffer{TransformBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE};
 
     Vk.Device.updateDescriptorSets(
         MainRenderer.GetDescriptors({
             {SPT::Fill, "ViewProjectionUBO", transform_buffer},
-            {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{LightsBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE}},
+            {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{LightsBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE}},
             {SPT::Line, "ViewProjectionUBO", transform_buffer},
-            {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{ViewProjNearFarBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE}},
-            {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{SilhouetteDisplayBuffer->DeviceBuffer, 0, VK_WHOLE_SIZE}},
+            {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{ViewProjNearFarBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE}},
+            {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{SilhouetteDisplayBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE}},
             {SPT::DebugNormals, "ViewProjectionUBO", transform_buffer},
         }),
         {}
@@ -590,6 +597,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     const auto parent = GetParentEntity(entity);
     auto &parent_node = R.get<SceneNode>(parent);
     auto &model_indices = parent_node.ModelIndices;
+    auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     if (visible) {
         // Insert model index as the max value + 1.
         const uint new_model_index = entity == parent || model_indices.empty() ?
@@ -600,12 +608,12 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         }
         model_indices.emplace(entity, new_model_index);
         const auto &model = R.get<Model>(entity);
-        BufferManager->InsertRegion(MeshVkData->Models.at(parent), as_bytes(model), new_model_index * sizeof(Model));
+        BufferManager.InsertRegion(model_buffer, as_bytes(model), new_model_index * sizeof(Model));
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
         const uint old_model_index = *GetModelBufferIndex(entity);
-        BufferManager->EraseRegion(MeshVkData->Models.at(parent), old_model_index * sizeof(Model), sizeof(Model));
+        BufferManager.EraseRegion(model_buffer, old_model_index * sizeof(Model), sizeof(Model));
         model_indices.erase(entity);
         for (auto &[_, model_index] : model_indices) {
             if (model_index > old_model_index) --model_index;
@@ -615,8 +623,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 mvk::RenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
     return {
-        BufferManager->Create(as_bytes(buffers.Vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-        BufferManager->Create(as_bytes(buffers.Indices), vk::BufferUsageFlagBits::eIndexBuffer)
+        BufferManager.Create(as_bytes(buffers.Vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+        BufferManager.Create(as_bytes(buffers.Indices), vk::BufferUsageFlagBits::eIndexBuffer)
     };
 }
 
@@ -627,19 +635,18 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, CreateName(R, info.Name));
 
-    MeshVkData->Models.emplace(entity, BufferManager->Allocate(sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer));
+    R.emplace<ModelsBuffer>(entity, BufferManager.Allocate(sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer));
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(entity, false);
 
-    MeshBuffers mesh_buffers{};
+    MeshElementBuffers element_buffers{};
     for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        mesh_buffers.emplace(element, CreateRenderBuffers(mesh.CreateVertices(element), mesh.CreateIndices(element)));
+        element_buffers.emplace(element, CreateRenderBuffers(mesh.CreateVertices(element), mesh.CreateIndices(element)));
     }
-    MeshVkData->Main.emplace(entity, std::move(mesh_buffers));
-    MeshVkData->NormalIndicators.emplace(entity, MeshBuffers{});
+    R.emplace<MeshBuffers>(entity, std::move(element_buffers), MeshElementBuffers{});
 
     if (ShowBoundingBoxes) {
-        MeshVkData->Boxes.emplace(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
+        R.emplace<BoundingBoxesBuffers>(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
     }
 
     R.emplace<Mesh>(entity, std::move(mesh));
@@ -672,16 +679,17 @@ void Scene::ClearMeshes() {
 }
 
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
-    for (auto &[element, buffers] : MeshVkData->Main.at(entity)) {
-        BufferManager->Update(buffers.Vertices, mesh.CreateVertices(element));
-        BufferManager->Update(buffers.Indices, mesh.CreateIndices(element));
+    auto &mesh_buffers = R.get<MeshBuffers>(entity);
+    for (auto &[element, buffers] : mesh_buffers.Mesh) {
+        BufferManager.Update(buffers.Vertices, mesh.CreateVertices(element));
+        BufferManager.Update(buffers.Indices, mesh.CreateIndices(element));
     }
-    for (auto &[element, buffers] : MeshVkData->NormalIndicators.at(entity)) {
-        BufferManager->Update(buffers.Vertices, mesh.CreateNormalVertices(element));
-        BufferManager->Update(buffers.Indices, mesh.CreateNormalIndices(element));
+    for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
+        BufferManager.Update(buffers.Vertices, mesh.CreateNormalVertices(element));
+        BufferManager.Update(buffers.Indices, mesh.CreateNormalIndices(element));
     }
-    if (auto buffers = MeshVkData->Boxes.find(entity); buffers != MeshVkData->Boxes.end()) {
-        BufferManager->Update(buffers->second.Vertices, CreateBoxVertices(mesh.BoundingBox, EdgeColor));
+    if (auto buffers = R.try_get<BoundingBoxesBuffers>(entity)) {
+        BufferManager.Update(buffers->Buffers.Vertices, CreateBoxVertices(mesh.BoundingBox, EdgeColor));
         // Box indices are always the same.
     }
     R.replace<Mesh>(entity, std::move(mesh));
@@ -695,8 +703,8 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     parent_node.Children.emplace_back(entity);
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{}_instance_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
-    auto &model_buffer = MeshVkData->Models.at(parent);
-    BufferManager->EnsureAllocated(model_buffer, model_buffer.Size + sizeof(Model));
+    auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
+    BufferManager.EnsureAllocated(model_buffer, model_buffer.Size + sizeof(Model));
     SetVisible(entity, info.Visible);
     if (info.Select) SetActive(entity);
     InvalidateCommandBuffer();
@@ -714,10 +722,10 @@ void Scene::DestroyEntity(entt::entity entity) {
     if (const auto parent_entity = GetParentEntity(entity); parent_entity != entity) return DestroyInstance(entity);
 
     Vk.Device.waitIdle(); // xxx device blocking should be more targeted
-    MeshVkData->Main.erase(entity);
-    MeshVkData->NormalIndicators.erase(entity);
-    MeshVkData->Models.erase(entity);
-    MeshVkData->Boxes.erase(entity);
+    R.erase<ModelsBuffer>(entity);
+    R.erase<MeshBuffers>(entity);
+    R.remove<BoundingBoxesBuffers>(entity);
+    R.remove<BvhBoxesBuffers>(entity);
 
     const auto &node = R.get<SceneNode>(entity);
     for (const auto child : node.Children) R.destroy(child);
@@ -776,7 +784,7 @@ std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
 
 void Scene::UpdateRenderBuffers(entt::entity entity) {
     if (const auto *mesh = R.try_get<Mesh>(entity)) {
-        auto &mesh_buffers = MeshVkData->Main.at(entity);
+        auto &mesh_buffers = R.get<MeshBuffers>(entity);
         const bool is_active = GetParentEntity(FindActiveEntity(R)) == entity;
         const Mesh::ElementIndex selected_element{
             is_active && SelectionMode == SelectionMode::Edit       ? EditingElement :
@@ -784,7 +792,7 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
                                                                       MeshElementIndex{}
         };
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
-            BufferManager->Update(mesh_buffers.at(element).Vertices, mesh->CreateVertices(element, selected_element));
+            BufferManager.Update(mesh_buffers.Mesh.at(element).Vertices, mesh->CreateVertices(element, selected_element));
         }
         InvalidateCommandBuffer();
     };
@@ -872,8 +880,8 @@ void Scene::RecordCommandBuffer() {
         SilhouetteRenderer.Render(
             cb,
             SPT::Silhouette,
-            MeshVkData->Main.at(active_mesh_entity).at(MeshElement::Vertex),
-            MeshVkData->Models.at(active_mesh_entity),
+            R.get<MeshBuffers>(active_mesh_entity).Mesh.at(MeshElement::Vertex),
+            R.get<ModelsBuffer>(active_mesh_entity).Buffer,
             *active_model_buffer_index
         );
         cb.endRenderPass();
@@ -901,8 +909,8 @@ void Scene::RecordCommandBuffer() {
         cb.beginRenderPass({*MainRenderer.RenderPass, *MainResources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
     meshes.each([this, &cb](auto entity, auto &) {
-        const auto &buffers = MeshVkData->Main.at(entity);
-        const auto &models = MeshVkData->Models.at(entity);
+        const auto &buffers = R.get<MeshBuffers>(entity).Mesh;
+        const auto &models = R.get<ModelsBuffer>(entity).Buffer;
         for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
             MainRenderer.Render(cb, pipeline, buffers.at(element), models);
         }
@@ -913,8 +921,8 @@ void Scene::RecordCommandBuffer() {
 
     // Render normal indicators.
     meshes.each([this, &cb](auto entity, auto &) {
-        const auto &buffers = MeshVkData->NormalIndicators.at(entity);
-        const auto &models = MeshVkData->Models.at(entity);
+        const auto &buffers = R.get<MeshBuffers>(entity).NormalIndicators;
+        const auto &models = R.get<ModelsBuffer>(entity).Buffer;
         for (const auto &[element, normal_indicators] : buffers) {
             MainRenderer.Render(cb, SPT::Line, normal_indicators, models);
         }
@@ -922,15 +930,15 @@ void Scene::RecordCommandBuffer() {
 
     if (ShowBoundingBoxes) {
         meshes.each([this, &cb](auto entity, auto &) {
-            if (auto buffers = MeshVkData->Boxes.find(entity); buffers != MeshVkData->Boxes.end()) {
-                MainRenderer.Render(cb, SPT::Line, buffers->second, MeshVkData->Models.at(entity));
+            if (auto buffers = R.try_get<BoundingBoxesBuffers>(entity)) {
+                MainRenderer.Render(cb, SPT::Line, buffers->Buffers, R.get<ModelsBuffer>(entity).Buffer);
             }
         });
     }
     if (ShowBvhBoxes) {
         meshes.each([this, &cb](auto entity, auto &) {
-            if (auto buffers = MeshVkData->BvhBoxes.find(entity); buffers != MeshVkData->BvhBoxes.end()) {
-                MainRenderer.Render(cb, SPT::Line, buffers->second, MeshVkData->Models.at(entity));
+            if (auto buffers = R.try_get<BvhBoxesBuffers>(entity)) {
+                MainRenderer.Render(cb, SPT::Line, buffers->Buffers, R.get<ModelsBuffer>(entity).Buffer);
             }
         });
     }
@@ -959,17 +967,17 @@ void Scene::UpdateEdgeColors() {
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetView(), Camera.GetProjection(aspect_ratio)};
-    BufferManager->Update(*TransformBuffer, as_bytes(view_proj));
+    BufferManager.Update(TransformBuffer, as_bytes(view_proj));
 
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
-    BufferManager->Update(*ViewProjNearFarBuffer, as_bytes(vpnf));
+    BufferManager.Update(ViewProjNearFarBuffer, as_bytes(vpnf));
     InvalidateCommandBuffer();
 }
 
 void Scene::UpdateModelBuffer(entt::entity entity) {
     if (const auto buffer_index = GetModelBufferIndex(entity)) {
         const auto &model = R.get<Model>(entity);
-        BufferManager->Update(MeshVkData->Models.at(GetParentEntity(entity)), as_bytes(model), *buffer_index * sizeof(Model));
+        BufferManager.Update(R.get<ModelsBuffer>(GetParentEntity(entity)).Buffer, as_bytes(model), *buffer_index * sizeof(Model));
     }
 }
 
@@ -1155,7 +1163,7 @@ bool Scene::Render() {
     // The contract is that the caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
     WaitForRender();
-    BufferManager->Begin();
+    BufferManager.Begin();
     return extent_changed;
 }
 
@@ -1434,7 +1442,7 @@ void Scene::RenderControls() {
                 AlignTextToFramePadding();
                 TextUnformatted("Normals:");
                 const auto &mesh = R.get<Mesh>(active_mesh_entity);
-                auto &normals = MeshVkData->NormalIndicators.at(active_mesh_entity);
+                auto &normals = R.get<MeshBuffers>(active_mesh_entity).NormalIndicators;
                 for (const auto element : AllNormalElements) {
                     SameLine();
                     bool has_normals = normals.contains(element);
@@ -1450,24 +1458,22 @@ void Scene::RenderControls() {
                     }
                 }
                 if (Checkbox("BVH boxes", &ShowBvhBoxes)) {
-                    auto &buffers = MeshVkData->BvhBoxes;
-                    if (ShowBvhBoxes) buffers.emplace(active_mesh_entity, CreateRenderBuffers(mesh.CreateBvhBuffers(EdgeColor)));
-                    else buffers.erase(active_mesh_entity);
+                    if (ShowBvhBoxes) R.emplace<BvhBoxesBuffers>(active_mesh_entity, CreateRenderBuffers(mesh.CreateBvhBuffers(EdgeColor)));
+                    else R.remove<BvhBoxesBuffers>(active_mesh_entity);
                     InvalidateCommandBuffer();
                 }
                 SameLine(); // For Bounding boxes checkbox
             }
             if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
-                auto &buffers = MeshVkData->Boxes;
                 for (const auto &[entity, mesh] : R.view<const Mesh>().each()) {
-                    if (ShowBoundingBoxes) buffers.emplace(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
-                    else buffers.erase(entity);
+                    if (ShowBoundingBoxes) R.emplace<BoundingBoxesBuffers>(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
+                    else R.remove<BoundingBoxesBuffers>(entity);
                 }
                 InvalidateCommandBuffer();
             }
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &ActiveSilhouetteColor[0])) {
-                BufferManager->Update(*SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
+                BufferManager.Update(SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
                 InvalidateCommandBuffer();
             }
             EndTabItem();
@@ -1502,7 +1508,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                BufferManager->Update(*LightsBuffer, as_bytes(Lights));
+                BufferManager.Update(LightsBuffer, as_bytes(Lights));
                 InvalidateCommandBuffer();
             }
             EndTabItem();

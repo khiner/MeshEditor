@@ -11,7 +11,6 @@ using Sample = float;
 #include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace fs = std::filesystem;
 

@@ -8,6 +8,8 @@
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
 
+#include <vector>
+
 namespace {
 constexpr uint SampleRate = 48'000; // todo respect device sample rate
 const fs::path FaustSvgDir{"MeshEditor-svg"};
@@ -60,7 +62,7 @@ void FaustDSP::Init() {
 
     static constexpr std::string AppName{"MeshEditor"};
     static const std::string LibrariesPath{std::filesystem::relative("../lib/faust/libraries")};
-    std::vector<const char *> argv = {"-I", LibrariesPath.c_str()};
+    std::vector<const char *> argv{"-I", LibrariesPath.c_str()};
     if (std::is_same_v<Sample, double>) argv.push_back("-double");
     const int argc = argv.size();
 
