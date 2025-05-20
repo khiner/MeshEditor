@@ -50,11 +50,8 @@ void Scene::SetActive(entt::entity entity) {
 void Scene::ToggleSelected(entt::entity entity) {
     if (entity == entt::null) return;
 
-    if (R.all_of<Selected>(entity)) {
-        R.remove<Selected>(entity);
-    } else {
-        R.emplace_or_replace<Selected>(entity);
-    }
+    if (R.all_of<Selected>(entity)) R.remove<Selected>(entity);
+    else R.emplace_or_replace<Selected>(entity);
     InvalidateCommandBuffer();
 }
 
@@ -133,7 +130,7 @@ void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::Buffer &
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
 
     // Bind buffers
-    static const vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
+    static constexpr vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
     cb.bindVertexBuffers(0, {vertices.DeviceBuffer}, vertex_buffer_offsets);
     cb.bindIndexBuffer(indices.DeviceBuffer, 0, vk::IndexType::eUint32);
     cb.bindVertexBuffers(1, {models.DeviceBuffer}, models_buffer_offsets);
@@ -595,28 +592,21 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
     const auto parent = GetParentEntity(entity);
-    auto &parent_node = R.get<SceneNode>(parent);
-    auto &model_indices = parent_node.ModelIndices;
+    auto &node = R.get<SceneNode>(entity);
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     if (visible) {
-        // Insert model index as the max value + 1.
-        const uint new_model_index = entity == parent || model_indices.empty() ?
-            0 :
-            std::ranges::max_element(model_indices, [](auto &a, auto &b) { return a.second < b.second; })->second + 1;
-        for (auto &[_, model_index] : model_indices) {
-            if (model_index >= new_model_index) ++model_index;
-        }
-        model_indices.emplace(entity, new_model_index);
-        const auto &model = R.get<Model>(entity);
-        BufferManager.InsertRegion(model_buffer, as_bytes(model), new_model_index * sizeof(Model));
+        node.ModelBufferIndex = model_buffer.Size / sizeof(Model);
+        BufferManager.Insert(model_buffer, as_bytes(R.get<Model>(entity)), model_buffer.Size);
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
-        const uint old_model_index = *GetModelBufferIndex(entity);
-        BufferManager.EraseRegion(model_buffer, old_model_index * sizeof(Model), sizeof(Model));
-        model_indices.erase(entity);
-        for (auto &[_, model_index] : model_indices) {
-            if (model_index > old_model_index) --model_index;
+        const uint old_model_index = node.ModelBufferIndex;
+        BufferManager.Erase(model_buffer, old_model_index * sizeof(Model), sizeof(Model));
+        auto &parent_node = R.get<SceneNode>(parent);
+        for (auto child : parent_node.Children) {
+            if (auto &child_node = R.get<SceneNode>(child); child_node.ModelBufferIndex > old_model_index) {
+                --child_node.ModelBufferIndex;
+            }
         }
     }
 }
@@ -770,16 +760,8 @@ void Scene::WaitForRender() const {
 // Get the model VK buffer index.
 // Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
 std::optional<uint> Scene::GetModelBufferIndex(entt::entity entity) {
-    if (entity == entt::null) return std::nullopt;
-
-    const auto parent_entity = GetParentEntity(entity);
-    if (parent_entity == entt::null) return std::nullopt;
-
-    if (const auto *parent_node = R.try_get<SceneNode>(parent_entity)) {
-        const auto &model_indices = parent_node->ModelIndices;
-        if (const auto it = model_indices.find(entity); it != model_indices.end()) return it->second;
-    }
-    return std::nullopt;
+    if (entity == entt::null || !R.all_of<Visible>(entity)) return std::nullopt;
+    return R.get<SceneNode>(entity).ModelBufferIndex;
 }
 
 void Scene::UpdateRenderBuffers(entt::entity entity) {
@@ -898,8 +880,7 @@ void Scene::RecordCommandBuffer() {
     // Render meshes.
     // todo:
     //   - reorganize mesh VK buffers to reduce the number of draw calls and pipeline switches.
-    //   - update `MeshVkData->Models` and `GetModelBufferIndex` to keep `Models` contiguous with only visible, or
-    //   - keep all models in the `MeshVkData` but then update `drawIndexed` to use a different strategy:
+    //   - consider updating `drawIndexed` to use a different strategy:
     //     -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
     //        vkCmdDrawIndexedIndirectCount & put the offsets in a UBO indexed with gl_DrawId.
     const auto &meshes = R.view<const Mesh>();
@@ -1263,7 +1244,7 @@ void Scene::RenderControls() {
                 if (SelectionMode == SelectionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    int element_selection_mode = int(EditingElement.Element);
+                    auto element_selection_mode = int(EditingElement.Element);
                     for (const auto element : AllElements) {
                         auto name = to_string(element);
                         Capitalize(name);
@@ -1376,7 +1357,7 @@ void Scene::RenderControls() {
 
             if (CollapsingHeader("Add primitive")) {
                 PushID("AddPrimitive");
-                static int select_primitive = int(Primitive::Cube);
+                static auto select_primitive = int(Primitive::Cube);
                 for (uint i = 0; i < AllPrimitives.size(); ++i) {
                     if (i % 3 != 0) SameLine();
                     const auto primitive = AllPrimitives[i];
@@ -1407,7 +1388,7 @@ void Scene::RenderControls() {
             }
             SeparatorText("Render mode");
             PushID("RenderMode");
-            int render_mode = int(RenderMode);
+            auto render_mode = int(RenderMode);
             bool render_mode_changed = RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
             SameLine();
             render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
@@ -1417,7 +1398,7 @@ void Scene::RenderControls() {
             render_mode_changed |= RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
             PopID();
 
-            int color_mode = int(ColorMode);
+            auto color_mode = int(ColorMode);
             bool color_mode_changed = false;
             if (RenderMode != RenderMode::Edges) {
                 SeparatorText("Fill color mode");
@@ -1549,7 +1530,9 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
         }
         if (toggle_active != entt::null) {
             SetActive(R.all_of<Active>(toggle_active) ? entt::null : toggle_active);
-        } else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
+        } else if (toggle_selected != entt::null) {
+            ToggleSelected(toggle_selected);
+        }
         if (delete_entity != entt::null) DestroyEntity(delete_entity);
         EndTable();
     }

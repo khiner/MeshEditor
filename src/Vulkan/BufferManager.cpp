@@ -54,7 +54,7 @@ void BufferManager::Update(Buffer &buffer, std::span<const std::byte> data, vk::
     Allocator.Write(buffer.HostBuffer, data, offset);
     Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
 }
-void BufferManager::InsertRegion(Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
+void BufferManager::Insert(Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
     if (data.empty() || buffer.Size + data.size() > GetAllocatedSize(buffer)) return;
 
     if (offset < buffer.Size) {
@@ -64,7 +64,7 @@ void BufferManager::InsertRegion(Buffer &buffer, std::span<const std::byte> data
     buffer.Size += data.size();
     Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, buffer.Size - offset});
 }
-void BufferManager::EraseRegion(Buffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
+void BufferManager::Erase(Buffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
     if (size == 0 || offset + size > buffer.Size) return;
 
     if (const auto move_size = buffer.Size - (offset + size); move_size > 0) {

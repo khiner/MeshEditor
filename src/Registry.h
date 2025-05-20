@@ -4,7 +4,6 @@
 
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 struct Name {
@@ -24,10 +23,7 @@ struct Frozen {}; // Disable entity transform changes
 struct SceneNode {
     entt::entity Parent{entt::null};
     std::vector<entt::entity> Children;
-    // `ModelIndices` maps entities to their index in the models buffer. Includes parent.
-    // It's only present in parent nodes.
-    // This enables contiguous storage of models in the buffer, with erases and appends but no inserts.
-    std::unordered_map<entt::entity, uint32_t> ModelIndices;
+    uint32_t ModelBufferIndex{0}; // Index in the contiguous model buffer.
 };
 
 std::string IdString(entt::entity);

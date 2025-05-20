@@ -62,10 +62,10 @@ struct BufferManager {
     }
     // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
     // **Does nothing if the buffer doesn't have enough enough space allocated.**
-    void InsertRegion(Buffer &, std::span<const std::byte>, vk::DeviceSize offset) const;
+    void Insert(Buffer &, std::span<const std::byte>, vk::DeviceSize offset) const;
     // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
     // Doesn't free memory, so the allocated size will be greater than the used size.
-    void EraseRegion(Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
+    void Erase(Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
 private:
     BufferAllocator Allocator;
