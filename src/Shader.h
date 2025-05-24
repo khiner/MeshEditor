@@ -37,14 +37,14 @@ struct Shaders {
 };
 
 // Convenience generators for default pipeline states.
-constexpr vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test_depth = true, bool write_depth = true, vk::CompareOp depth_compare_op = vk::CompareOp::eLess) {
+constexpr vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test = true, bool write = true, vk::CompareOp compare_op = vk::CompareOp::eLess) {
     return {
         {}, // flags
-        test_depth, // depthTestEnable
-        write_depth, // depthWriteEnable
-        depth_compare_op, // depthCompareOp
-        VK_FALSE, // depthBoundsTestEnable
-        VK_FALSE, // stencilTestEnable
+        test, // depthTestEnable
+        write, // depthWriteEnable
+        compare_op, // depthCompareOp
+        vk::False, // depthBoundsTestEnable
+        vk::False, // stencilTestEnable
         {}, // front (stencil state for front faces)
         {}, // back (stencil state for back faces)
         0.f, // minDepthBounds
@@ -54,7 +54,7 @@ constexpr vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test_d
 constexpr vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool blend = true) {
     if (blend) {
         return {
-            true,
+            true, // blendEnable
             vk::BlendFactor::eSrcAlpha, // srcCol
             vk::BlendFactor::eOneMinusSrcAlpha, // dstCol
             vk::BlendOp::eAdd, // colBlend
@@ -84,7 +84,8 @@ struct ShaderPipeline {
         vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
         vk::PipelineColorBlendAttachmentState color_blend_attachment = {},
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state = {},
-        vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1
+        vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1,
+        std::optional<vk::PushConstantRange> push_constant_range = std::nullopt
     );
     ShaderPipeline(ShaderPipeline &&) = default;
     ShaderPipeline &operator=(ShaderPipeline &&) = default;

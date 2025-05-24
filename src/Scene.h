@@ -101,7 +101,6 @@ struct PipelineRenderer {
 
     // If `model_index` is set, only the model at that index is rendered.
     // Otherwise, all models are rendered.
-    void Render(vk::CommandBuffer, SPT, const mvk::Buffer &vertices, const mvk::Buffer &indices, const mvk::Buffer &models, std::optional<uint> model_index = std::nullopt) const;
     void Render(vk::CommandBuffer, SPT, const mvk::RenderBuffers &, const mvk::Buffer &models, std::optional<uint> model_index = std::nullopt) const;
 };
 

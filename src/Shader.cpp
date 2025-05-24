@@ -86,7 +86,8 @@ ShaderPipeline::ShaderPipeline(
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
     vk::PipelineColorBlendAttachmentState color_blend_attachment,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
-    vk::SampleCountFlagBits msaa_samples
+    vk::SampleCountFlagBits msaa_samples,
+    std::optional<vk::PushConstantRange> push_constant_range
 ) : Device(device), Shaders(std::move(shaders)),
     VertexInputState(std::move(vertex_input_state)),
     MultisampleState({{}, msaa_samples}),
@@ -96,7 +97,7 @@ ShaderPipeline::ShaderPipeline(
     InputAssemblyState({{}, topology}) {
     Shaders.CompileAll(Device); // Populates descriptor sets. todo This is done redundantly for all shaders in `Compile` at app startup.
     DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.LayoutBindings});
-    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), 0});
+    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
     const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, 1, &(*DescriptorSetLayout)};
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());
 }

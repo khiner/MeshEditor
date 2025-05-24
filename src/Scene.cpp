@@ -118,32 +118,36 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
     };
     return {{}, bindings, attrs};
 }
+
+// todo: consider updating `drawIndexed` to use a different strategy:
+//   -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
+//      vkCmdDrawIndexedIndirectCount & put the offsets in a UBO indexed with gl_DrawId.
+void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const mvk::RenderBuffers &render_buffers, const mvk::Buffer &models) {
+    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
+
+    // Bind buffers
+    static constexpr vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
+    cb.bindVertexBuffers(0, {render_buffers.Vertices.DeviceBuffer}, vertex_buffer_offsets);
+    cb.bindIndexBuffer(render_buffers.Indices.DeviceBuffer, 0, vk::IndexType::eUint32);
+    cb.bindVertexBuffers(1, {models.DeviceBuffer}, models_buffer_offsets);
+}
+
+void DrawIndexed(vk::CommandBuffer cb, const mvk::Buffer &indices, const mvk::Buffer &models, std::optional<uint> model_index = std::nullopt) {
+    const uint index_count = indices.Size / sizeof(uint);
+    const uint first_instance = model_index.value_or(0);
+    const uint instance_count = model_index.has_value() ? 1 : models.Size / sizeof(Model);
+    cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
+}
 } // namespace
 
 void PipelineRenderer::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
 }
 
-void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::Buffer &vertices, const mvk::Buffer &indices, const mvk::Buffer &models, std::optional<uint> model_index) const {
-    const auto &shader_pipeline = ShaderPipelines.at(spt);
-    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
-
-    // Bind buffers
-    static constexpr vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
-    cb.bindVertexBuffers(0, {vertices.DeviceBuffer}, vertex_buffer_offsets);
-    cb.bindIndexBuffer(indices.DeviceBuffer, 0, vk::IndexType::eUint32);
-    cb.bindVertexBuffers(1, {models.DeviceBuffer}, models_buffer_offsets);
-
-    // Draw
-    const uint index_count = indices.Size / sizeof(uint);
-    const uint first_instance = model_index.value_or(0);
-    const uint instance_count = model_index.has_value() ? 1 : models.Size / sizeof(Model);
-    cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
-}
-
 void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::RenderBuffers &render_buffers, const mvk::Buffer &models, std::optional<uint> model_index) const {
-    Render(cb, spt, render_buffers.Vertices, render_buffers.Indices, models, model_index);
+    Bind(cb, ShaderPipelines.at(spt), render_buffers, models);
+    DrawIndexed(cb, render_buffers.Indices, models, model_index);
 }
 
 namespace {
@@ -162,6 +166,7 @@ PipelineRenderer MainPipelineRenderer(vk::Device d, vk::PhysicalDevice pd, vk::D
     const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
 
+    // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
         SPT::Fill,
@@ -232,22 +237,30 @@ PipelineRenderer MainPipelineRenderer(vk::Device d, vk::PhysicalDevice pd, vk::D
 
 PipelineRenderer SilhouettePipelineRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
     const std::vector<vk::AttachmentDescription> attachments{
-        // Single-sampled offscreen image.
-        {{}, mvk::ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // We need to test depth since we want silhouette edges to respect mutual occlusion when multiple meshes are selected.
+        {{}, mvk::ImageFormat::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        // Single-sampled offscreen "image" of two channels: depth and object ID.
+        {{}, mvk::ImageFormat::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
+    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
+    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
         SPT::Silhouette,
         ShaderPipeline{
-            d, descriptor_pool,
+            d,
+            descriptor_pool,
             Shaders{
                 {{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}
             },
             CreateVertexInputState(),
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+            vk::PolygonMode::eFill,
+            vk::PrimitiveTopology::eTriangleList,
+            CreateColorBlendAttachment(false),
+            CreateDepthStencil(),
+            vk::SampleCountFlagBits::e1,
+            vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)},
         }
     );
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
@@ -256,7 +269,7 @@ PipelineRenderer SilhouettePipelineRenderer(vk::Device d, vk::DescriptorPool des
 PipelineRenderer EdgeDetectionPipelineRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Single-sampled offscreen image.
-        {{}, mvk::ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, mvk::ImageFormat::Float4, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
@@ -270,7 +283,7 @@ PipelineRenderer EdgeDetectionPipelineRenderer(vk::Device d, vk::DescriptorPool 
             },
             vk::PipelineVertexInputStateCreateInfo{},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            CreateColorBlendAttachment(false), std::nullopt, vk::SampleCountFlagBits::e1
+            CreateColorBlendAttachment(false), CreateDepthStencil(true, false), vk::SampleCountFlagBits::e1
         }
     );
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
@@ -425,11 +438,25 @@ struct MainPipelineResources {
 };
 struct SilhouettePipelineResources {
     SilhouettePipelineResources(vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::Extent2D extent)
-        : OffscreenImage{mvk::CreateImage(
+        : DepthImage{mvk::CreateImage(
               d, pd,
               {{},
                vk::ImageType::e2D,
-               mvk::ImageFormat::Float,
+               mvk::ImageFormat::Depth,
+               vk::Extent3D{extent, 1},
+               1,
+               1,
+               vk::SampleCountFlagBits::e1,
+               vk::ImageTiling::eOptimal,
+               vk::ImageUsageFlagBits::eDepthStencilAttachment,
+               vk::SharingMode::eExclusive},
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+          )},
+          OffscreenImage{mvk::CreateImage(
+              d, pd,
+              {{},
+               vk::ImageType::e2D,
+               mvk::ImageFormat::Float2,
                vk::Extent3D{extent, 1},
                1,
                1,
@@ -437,13 +464,13 @@ struct SilhouettePipelineResources {
                vk::ImageTiling::eOptimal,
                vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                vk::SharingMode::eExclusive},
-              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float2, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
           )} {
-        const std::array image_views{*OffscreenImage.View};
+        const std::array image_views{*DepthImage.View, *OffscreenImage.View};
         Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
     }
 
-    mvk::ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
+    mvk::ImageResource DepthImage, OffscreenImage; // Single-sampled image with a depth buffer.
     vk::UniqueFramebuffer Framebuffer;
 };
 struct EdgeDetectionPipelineResources {
@@ -452,7 +479,7 @@ struct EdgeDetectionPipelineResources {
               d, pd,
               {{},
                vk::ImageType::e2D,
-               mvk::ImageFormat::Float,
+               mvk::ImageFormat::Float4,
                vk::Extent3D{extent, 1},
                1,
                1,
@@ -460,7 +487,7 @@ struct EdgeDetectionPipelineResources {
                vk::ImageTiling::eOptimal,
                vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                vk::SharingMode::eExclusive},
-              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+              {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float4, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
           )} {
         const std::array image_views{*OffscreenImage.View};
         Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
@@ -497,15 +524,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     LightsBuffer = BufferManager.Create(as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer);
     SilhouetteDisplayBuffer = BufferManager.Create(as_bytes(ActiveSilhouetteColor), vk::BufferUsageFlagBits::eUniformBuffer);
-    vk::DescriptorBufferInfo transform_buffer{TransformBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE};
+    vk::DescriptorBufferInfo transform_buffer{TransformBuffer.DeviceBuffer, 0, vk::WholeSize};
 
     Vk.Device.updateDescriptorSets(
         MainRenderer.GetDescriptors({
             {SPT::Fill, "ViewProjectionUBO", transform_buffer},
-            {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{LightsBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE}},
+            {SPT::Fill, "LightsUBO", vk::DescriptorBufferInfo{LightsBuffer.DeviceBuffer, 0, vk::WholeSize}},
             {SPT::Line, "ViewProjectionUBO", transform_buffer},
-            {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{ViewProjNearFarBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE}},
-            {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{SilhouetteDisplayBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE}},
+            {SPT::Grid, "ViewProjNearFarUBO", vk::DescriptorBufferInfo{ViewProjNearFarBuffer.DeviceBuffer, 0, vk::WholeSize}},
+            {SPT::Texture, "SilhouetteDisplayUBO", vk::DescriptorBufferInfo{SilhouetteDisplayBuffer.DeviceBuffer, 0, vk::WholeSize}},
             {SPT::DebugNormals, "ViewProjectionUBO", transform_buffer},
         }),
         {}
@@ -848,24 +875,34 @@ void Scene::RecordCommandBuffer() {
     );
 
     const auto active_entity = FindActiveEntity(R);
-    const auto active_mesh_entity = GetParentEntity(active_entity);
     const auto active_model_buffer_index = GetModelBufferIndex(active_entity);
     const bool render_silhouette = active_model_buffer_index && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
-        // Render the silhouette edges for the active mesh instance.
+        // Render the silhouette edges for all selected mesh instances.
         {
-            static const std::vector<vk::ClearValue> clear_values{{Transparent}};
+            static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
             const vk::Rect2D rect{{0, 0}, {SilhouetteResources->OffscreenImage.Extent.width, SilhouetteResources->OffscreenImage.Extent.height}};
             cb.beginRenderPass({*SilhouetteRenderer.RenderPass, *SilhouetteResources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
         }
 
-        SilhouetteRenderer.Render(
-            cb,
-            SPT::Silhouette,
-            R.get<MeshBuffers>(active_mesh_entity).Mesh.at(MeshElement::Vertex),
-            R.get<ModelsBuffer>(active_mesh_entity).Buffer,
-            *active_model_buffer_index
-        );
+        for (const auto selected_entity : R.view<Selected>()) {
+            const auto &shader_pipeline = SilhouetteRenderer.ShaderPipelines.at(SPT::Silhouette);
+            const auto mesh_entity = GetParentEntity(selected_entity);
+            const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(MeshElement::Vertex);
+            const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
+            const auto object_index = uint32_t(selected_entity);
+            Bind(cb, shader_pipeline, render_buffers, models);
+            // Push per-object ID
+            cb.pushConstants(
+                *shader_pipeline.PipelineLayout,
+                vk::ShaderStageFlagBits::eFragment,
+                0, // offset
+                sizeof(object_index),
+                &object_index
+            );
+            DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(selected_entity));
+        }
+
         cb.endRenderPass();
         {
             static const std::vector<vk::ClearValue> clear_values{{Transparent}};
@@ -877,18 +914,13 @@ void Scene::RecordCommandBuffer() {
         cb.endRenderPass();
     }
 
-    // Render meshes.
-    // todo:
-    //   - reorganize mesh VK buffers to reduce the number of draw calls and pipeline switches.
-    //   - consider updating `drawIndexed` to use a different strategy:
-    //     -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
-    //        vkCmdDrawIndexedIndirectCount & put the offsets in a UBO indexed with gl_DrawId.
-    const auto &meshes = R.view<const Mesh>();
+    // Render meshes
     {
         const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}};
         const vk::Rect2D rect{{0, 0}, {MainResources->OffscreenImage.Extent.width, MainResources->OffscreenImage.Extent.height}};
         cb.beginRenderPass({*MainRenderer.RenderPass, *MainResources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
+    const auto &meshes = R.view<const Mesh>();
     meshes.each([this, &cb](auto entity, auto &) {
         const auto &buffers = R.get<MeshBuffers>(entity).Mesh;
         const auto &models = R.get<ModelsBuffer>(entity).Buffer;
@@ -897,10 +929,10 @@ void Scene::RecordCommandBuffer() {
         }
     });
 
-    // Render silhouette edge texture.
+    // Render silhouette edge texture
     if (render_silhouette) MainRenderer.ShaderPipelines.at(SPT::Texture).RenderQuad(cb);
 
-    // Render normal indicators.
+    // Render normal indicators
     meshes.each([this, &cb](auto entity, auto &) {
         const auto &buffers = R.get<MeshBuffers>(entity).NormalIndicators;
         const auto &models = R.get<ModelsBuffer>(entity).Buffer;

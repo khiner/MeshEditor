@@ -1,8 +1,12 @@
 #version 450
 
-layout(location = 0) out vec4 OutColor; // {depth, depth, depth, HasMesh}
+layout(push_constant) uniform PC {
+    uint objectIndex; // [0, N)
+} pc;
+
+layout(location = 0) out vec2 OutColor; // {depth, ObjectID=(ObjectIndex + 1)}
 
 void main() {
     const float depth = gl_FragCoord.z;
-    OutColor = vec4(depth, depth, depth, 1);
+    OutColor = vec2(depth, float(pc.objectIndex + 1));
 }

@@ -18,9 +18,10 @@ struct ImageResource {
 using BitmapToImage = std::function<ImageResource(std::span<const std::byte> data, uint32_t width, uint32_t height)>;
 
 namespace ImageFormat {
-const auto Color = vk::Format::eB8G8R8A8Unorm;
-const auto Float = vk::Format::eR32G32B32A32Sfloat;
-const auto Depth = vk::Format::eD32Sfloat;
+constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
+constexpr auto Float2 = vk::Format::eR32G32Sfloat;
+constexpr auto Float4 = vk::Format::eR32G32B32A32Sfloat;
+constexpr auto Depth = vk::Format::eD32Sfloat;
 } // namespace ImageFormat
 
 struct ImGuiTexture {
