@@ -18,7 +18,7 @@ void main() {
             const vec2 neighbor_value = texture(Tex, TexCoord + vec2(i, j) * neighborhood_half_extent).rg;
             const float neighbor_id = neighbor_value.g;
             if (this_id != neighbor_id) {
-                const float mesh_depth = min(this_value.r, neighbor_value.r);
+                const float mesh_depth = this_value.r > 0 ? this_value.r : neighbor_value.r;
                 min_depth = min(min_depth, mesh_depth);
             }
         }
