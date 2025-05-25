@@ -32,7 +32,7 @@ vec4 Grid(vec3 pos_3d, float scale) {
 float LinearDepth() {
     const float near = ViewProjection.Near, far = ViewProjection.Far;
     const float clip_space_depth = gl_FragDepth * 2.0 - 1.0; // Normalize to [-1, 1].
-    const float linear_depth = (2.0 * near * far) / (near + far - clip_space_depth * (far - near)); // Linear value between `Near` and `Far`.
+    const float linear_depth = (2.0 * near * far) / (near + far - clip_space_depth * (far - near));
     return linear_depth / far; // Normalize.
 }
 

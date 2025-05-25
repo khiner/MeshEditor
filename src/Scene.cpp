@@ -62,8 +62,6 @@ std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
         to<std::vector>();
 }
 
-const std::vector AllNormalElements{MeshElement::Vertex, MeshElement::Face};
-
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
 namespace Format {
@@ -205,8 +203,8 @@ PipelineRenderer MainPipelineRenderer(vk::Device d, vk::PhysicalDevice pd, vk::D
         }
     );
     // We render all the silhouette edge texture's pixels regardless of the tested depth value,
-    // but also explicitly override the depth buffer to make edge pixels "stick" to the mesh they are derived from.
-    // We should be able to just set depth testing to false and depth writing to true, but it seems that some GPUs or drivers
+    // but also override the depth buffer to make edge pixels "stick" to the mesh they are derived from.
+    // We should be able to just disable depth tests and enabling depth writes, but it seems that some GPUs or drivers
     // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
     pipelines.emplace(
         SPT::Texture,
@@ -509,6 +507,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       MainRenderer(MainPipelineRenderer(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
       SilhouetteRenderer(SilhouettePipelineRenderer(Vk.Device, Vk.DescriptorPool)), EdgeDetectionRenderer(EdgeDetectionPipelineRenderer(Vk.Device, Vk.DescriptorPool)) {
     // EnTT listeners
+    R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
+    R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
+
     R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
     R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
     R.on_destroy<Excitable>().connect<&Scene::OnDestroyExcitable>(*this);
@@ -551,16 +552,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
 
-void Scene::UpdateHighlightedVertices(entt::entity entity, const Excitable &excitable) {
-    if (auto *mesh = R.try_get<Mesh>(entity)) {
-        mesh->ClearHighlights();
-        if (SelectionMode == SelectionMode::Excite) {
-            for (const auto vertex : excitable.ExcitableVertices) {
-                mesh->HighlightVertex(Mesh::VH(vertex));
-            }
-        }
-        UpdateRenderBuffers(entity);
-    }
+void Scene::OnCreateSelected(entt::registry &, entt::entity entity) {
+    UpdateEntitySelectionOverlays(entity);
+}
+void Scene::OnDestroySelected(entt::registry &, entt::entity entity) {
+    RemoveEntitySelectionOverlays(entity);
 }
 
 void Scene::OnCreateExcitable(entt::registry &r, entt::entity entity) {
@@ -878,82 +874,61 @@ void Scene::RecordCommandBuffer() {
     const auto active_model_buffer_index = GetModelBufferIndex(active_entity);
     const bool render_silhouette = active_model_buffer_index && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
-        // Render the silhouette edges for all selected mesh instances.
+        // Render the silhouette edges for all selected mesh instances into a texture.
         {
             static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
             const vk::Rect2D rect{{0, 0}, {SilhouetteResources->OffscreenImage.Extent.width, SilhouetteResources->OffscreenImage.Extent.height}};
             cb.beginRenderPass({*SilhouetteRenderer.RenderPass, *SilhouetteResources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
         }
-
         for (const auto selected_entity : R.view<Selected>()) {
             const auto &shader_pipeline = SilhouetteRenderer.ShaderPipelines.at(SPT::Silhouette);
             const auto mesh_entity = GetParentEntity(selected_entity);
             const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(MeshElement::Vertex);
             const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
-            const auto object_index = uint32_t(selected_entity);
             Bind(cb, shader_pipeline, render_buffers, models);
-            // Push per-object ID
-            cb.pushConstants(
-                *shader_pipeline.PipelineLayout,
-                vk::ShaderStageFlagBits::eFragment,
-                0, // offset
-                sizeof(object_index),
-                &object_index
-            );
+            // Push object index to the shader.
+            const auto object_index = uint32_t(selected_entity);
+            cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_index), &object_index);
             DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(selected_entity));
         }
-
         cb.endRenderPass();
+
         {
             static const std::vector<vk::ClearValue> clear_values{{Transparent}};
             const vk::Rect2D rect{{0, 0}, {EdgeDetectionResources->OffscreenImage.Extent.width, EdgeDetectionResources->OffscreenImage.Extent.height}};
             cb.beginRenderPass({*EdgeDetectionRenderer.RenderPass, *EdgeDetectionResources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
         }
-
         EdgeDetectionRenderer.ShaderPipelines.at(SPT::EdgeDetection).RenderQuad(cb);
         cb.endRenderPass();
     }
 
-    // Render meshes
+    // Main rendering pass
     {
         const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}};
         const vk::Rect2D rect{{0, 0}, {MainResources->OffscreenImage.Extent.width, MainResources->OffscreenImage.Extent.height}};
         cb.beginRenderPass({*MainRenderer.RenderPass, *MainResources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
-    const auto &meshes = R.view<const Mesh>();
-    meshes.each([this, &cb](auto entity, auto &) {
-        const auto &buffers = R.get<MeshBuffers>(entity).Mesh;
-        const auto &models = R.get<ModelsBuffer>(entity).Buffer;
+    // Meshes
+    for (const auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
         for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
-            MainRenderer.Render(cb, pipeline, buffers.at(element), models);
+            MainRenderer.Render(cb, pipeline, mesh_buffers.Mesh.at(element), models.Buffer);
         }
-    });
+    }
 
-    // Render silhouette edge texture
+    // Silhouette edge texture
     if (render_silhouette) MainRenderer.ShaderPipelines.at(SPT::Texture).RenderQuad(cb);
 
-    // Render normal indicators
-    meshes.each([this, &cb](auto entity, auto &) {
-        const auto &buffers = R.get<MeshBuffers>(entity).NormalIndicators;
-        const auto &models = R.get<ModelsBuffer>(entity).Buffer;
-        for (const auto &[element, normal_indicators] : buffers) {
-            MainRenderer.Render(cb, SPT::Line, normal_indicators, models);
+    // Selection overlays
+    for (const auto &[_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+        for (const auto &[element, buffers] : mesh_buffers.NormalIndicators) {
+            MainRenderer.Render(cb, SPT::Line, buffers, models.Buffer);
         }
-    });
-
-    if (ShowBoundingBoxes) {
-        meshes.each([this, &cb](auto entity, auto &) {
-            if (auto buffers = R.try_get<BoundingBoxesBuffers>(entity)) {
-                MainRenderer.Render(cb, SPT::Line, buffers->Buffers, R.get<ModelsBuffer>(entity).Buffer);
-            }
-        });
     }
-    if (ShowBvhBoxes) {
-        meshes.each([this, &cb](auto entity, auto &) {
-            if (auto buffers = R.try_get<BvhBoxesBuffers>(entity)) {
-                MainRenderer.Render(cb, SPT::Line, buffers->Buffers, R.get<ModelsBuffer>(entity).Buffer);
-            }
-        });
+    for (const auto &[_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
+        MainRenderer.Render(cb, SPT::Line, bvh_boxes.Buffers, models.Buffer);
+    }
+    for (const auto &[_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
+        MainRenderer.Render(cb, SPT::Line, bounding_boxes.Buffers, models.Buffer);
     }
 
     if (ShowGrid) MainRenderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
@@ -992,6 +967,49 @@ void Scene::UpdateModelBuffer(entt::entity entity) {
         const auto &model = R.get<Model>(entity);
         BufferManager.Update(R.get<ModelsBuffer>(GetParentEntity(entity)).Buffer, as_bytes(model), *buffer_index * sizeof(Model));
     }
+}
+
+void Scene::UpdateHighlightedVertices(entt::entity entity, const Excitable &excitable) {
+    if (auto *mesh = R.try_get<Mesh>(entity)) {
+        mesh->ClearHighlights();
+        if (SelectionMode == SelectionMode::Excite) {
+            for (const auto vertex : excitable.ExcitableVertices) {
+                mesh->HighlightVertex(Mesh::VH(vertex));
+            }
+        }
+        UpdateRenderBuffers(entity);
+    }
+}
+
+// todo selection overlays for _only selected instances_ (currently all instances of selected meshes)
+void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
+    const auto entity = GetParentEntity(instance_entity);
+    const auto &mesh = R.get<const Mesh>(entity);
+    auto &mesh_buffers = R.get<MeshBuffers>(entity);
+    for (const auto element : NormalElements) {
+        if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
+            mesh_buffers.NormalIndicators.emplace(element, CreateRenderBuffers(mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)));
+        } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
+            mesh_buffers.NormalIndicators.erase(element);
+        }
+    }
+    if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(entity)) {
+        R.emplace<BoundingBoxesBuffers>(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
+    } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(entity)) {
+        R.remove<BoundingBoxesBuffers>(entity);
+    }
+    if (ShowBvhBoxes && !R.all_of<BvhBoxesBuffers>(entity)) {
+        R.emplace<BvhBoxesBuffers>(entity, CreateRenderBuffers(mesh.CreateBvhBuffers(EdgeColor)));
+    } else if (!ShowBvhBoxes && R.all_of<BvhBoxesBuffers>(entity)) {
+        R.remove<BvhBoxesBuffers>(entity);
+    }
+}
+
+void Scene::RemoveEntitySelectionOverlays(entt::entity instance_entity) {
+    const auto entity = GetParentEntity(instance_entity);
+    if (auto *buffers = R.try_get<MeshBuffers>(entity)) buffers->NormalIndicators.clear();
+    R.remove<BoundingBoxesBuffers>(entity);
+    R.remove<BvhBoxesBuffers>(entity);
 }
 
 using namespace ImGui;
@@ -1448,46 +1466,36 @@ void Scene::RenderControls() {
                 auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
                 if (ColorEdit3("Edge color", &edge_color.x)) UpdateEdgeColors();
             }
-            SeparatorText("Indicators");
-            // todo go back to storing normal settings in a map of element type to bool,
-            //   and ensure meshes/instances are created with the current normals
-            if (active_entity != entt::null) {
-                AlignTextToFramePadding();
-                TextUnformatted("Normals:");
-                const auto &mesh = R.get<Mesh>(active_mesh_entity);
-                auto &normals = R.get<MeshBuffers>(active_mesh_entity).NormalIndicators;
-                for (const auto element : AllNormalElements) {
-                    SameLine();
-                    bool has_normals = normals.contains(element);
-                    auto name = to_string(element);
-                    Capitalize(name);
-                    if (Checkbox(name.c_str(), &has_normals)) {
-                        if (has_normals) {
-                            normals.emplace(element, CreateRenderBuffers(mesh.CreateNormalVertices(element), mesh.CreateNormalIndices(element)));
-                        } else {
-                            normals.erase(element);
-                        }
-                        InvalidateCommandBuffer();
-                    }
-                }
-                if (Checkbox("BVH boxes", &ShowBvhBoxes)) {
-                    if (ShowBvhBoxes) R.emplace<BvhBoxesBuffers>(active_mesh_entity, CreateRenderBuffers(mesh.CreateBvhBuffers(EdgeColor)));
-                    else R.remove<BvhBoxesBuffers>(active_mesh_entity);
-                    InvalidateCommandBuffer();
-                }
-                SameLine(); // For Bounding boxes checkbox
-            }
-            if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) {
-                for (const auto &[entity, mesh] : R.view<const Mesh>().each()) {
-                    if (ShowBoundingBoxes) R.emplace<BoundingBoxesBuffers>(entity, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
-                    else R.remove<BoundingBoxesBuffers>(entity);
-                }
-                InvalidateCommandBuffer();
-            }
             SeparatorText("Silhouette");
             if (ColorEdit4("Color", &ActiveSilhouetteColor[0])) {
                 BufferManager.Update(SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
                 InvalidateCommandBuffer();
+            }
+            if (active_entity != entt::null) {
+                SeparatorText("Selection overlays");
+                AlignTextToFramePadding();
+                TextUnformatted("Normals:");
+                bool changed = false;
+                for (const auto element : NormalElements) {
+                    SameLine();
+                    bool show_normal_element = ShownNormalElements.contains(element);
+                    auto element_name = to_string(element);
+                    Capitalize(element_name);
+                    if (Checkbox(element_name.c_str(), &show_normal_element)) {
+                        if (show_normal_element) ShownNormalElements.insert(element);
+                        else ShownNormalElements.erase(element);
+                        changed = true;
+                    }
+                }
+                if (Checkbox("BVH boxes", &ShowBvhBoxes)) changed = true;
+                SameLine();
+                if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) changed = true;
+                if (changed) {
+                    for (auto selected_entity : R.view<Selected>()) {
+                        UpdateEntitySelectionOverlays(selected_entity);
+                    }
+                    InvalidateCommandBuffer();
+                }
             }
             EndTabItem();
         }

@@ -206,6 +206,9 @@ struct Scene {
     void RecordCommandBuffer();
     void InvalidateCommandBuffer();
 
+    void OnCreateSelected(entt::registry &, entt::entity);
+    void OnDestroySelected(entt::registry &, entt::entity);
+
     void OnCreateExcitable(entt::registry &, entt::entity);
     void OnUpdateExcitable(entt::registry &, entt::entity);
     void OnDestroyExcitable(entt::registry &, entt::entity);
@@ -254,7 +257,12 @@ private:
     };
     ModelGizmoState MGizmo;
 
-    bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowBvhBoxes{false};
+    bool ShowGrid{true};
+
+    // Selected entity render settings
+    bool ShowBoundingBoxes{false}, ShowBvhBoxes{false};
+    static inline const std::vector NormalElements{MeshElement::Vertex, MeshElement::Face};
+    std::unordered_set<MeshElement> ShownNormalElements{};
     vec4 ActiveSilhouetteColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
     vec4 SelectedSilhouetteColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
 
@@ -274,6 +282,8 @@ private:
     void UpdateModelBuffer(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
+    void UpdateEntitySelectionOverlays(entt::entity);
+    void RemoveEntitySelectionOverlays(entt::entity);
 
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
