@@ -202,9 +202,10 @@ PipelineRenderer MainPipelineRenderer(vk::Device d, vk::PhysicalDevice pd, vk::D
             CreateColorBlendAttachment(true), CreateDepthStencil(true, false), MsaaSamples
         }
     );
-    // We render all the silhouette edge texture's pixels regardless of the tested depth value,
+
+    // Render all the silhouette edge texture's pixels regardless of the tested depth value,
     // but also override the depth buffer to make edge pixels "stick" to the mesh they are derived from.
-    // We should be able to just disable depth tests and enabling depth writes, but it seems that some GPUs or drivers
+    // We should be able to just disable depth tests and enable depth writes, but it seems that some GPUs or drivers
     // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
     pipelines.emplace(
         SPT::Texture,
@@ -250,7 +251,7 @@ PipelineRenderer SilhouettePipelineRenderer(vk::Device d, vk::DescriptorPool des
             d,
             descriptor_pool,
             Shaders{
-                {{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "Depth.frag"}}
+                {{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "DepthObjectID.frag"}}
             },
             CreateVertexInputState(),
             vk::PolygonMode::eFill,
@@ -863,8 +864,8 @@ void Scene::RecordCommandBuffer() {
             {},
             vk::ImageLayout::eUndefined,
             vk::ImageLayout::eColorAttachmentOptimal,
-            VK_QUEUE_FAMILY_IGNORED,
-            VK_QUEUE_FAMILY_IGNORED,
+            vk::QueueFamilyIgnored,
+            vk::QueueFamilyIgnored,
             *MainResources->ResolveImage.Image,
             {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
         }}
@@ -931,6 +932,7 @@ void Scene::RecordCommandBuffer() {
         MainRenderer.Render(cb, SPT::Line, bounding_boxes.Buffers, models.Buffer);
     }
 
+    // Grid lines texture
     if (ShowGrid) MainRenderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
 
     cb.endRenderPass();
