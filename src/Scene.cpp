@@ -735,7 +735,6 @@ void Scene::DestroyInstance(entt::entity instance) {
 void Scene::DestroyEntity(entt::entity entity) {
     if (const auto parent_entity = GetParentEntity(entity); parent_entity != entity) return DestroyInstance(entity);
 
-    Vk.Device.waitIdle(); // xxx device blocking should be more targeted
     R.erase<ModelsBuffer>(entity);
     R.erase<MeshBuffers>(entity);
     R.remove<BoundingBoxesBuffers>(entity);
