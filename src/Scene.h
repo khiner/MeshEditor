@@ -267,8 +267,13 @@ private:
     bool ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     static inline const std::vector NormalElements{MeshElement::Vertex, MeshElement::Face};
     std::unordered_set<MeshElement> ShownNormalElements{};
-    vec4 ActiveSilhouetteColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
-    vec4 SelectedSilhouetteColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
+
+    struct SilhouetteDisplay {
+        vec4 ActiveColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
+        vec4 SelectedColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
+    };
+
+    SilhouetteDisplay SilhouetteDisplay;
 
     bool CommandBufferDirty{false};
 

@@ -579,7 +579,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     UpdateTransformBuffers();
 
     LightsBuffer = BufferManager.Create(as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer);
-    SilhouetteDisplayBuffer = BufferManager.Create(as_bytes(ActiveSilhouetteColor), vk::BufferUsageFlagBits::eUniformBuffer);
+    SilhouetteDisplayBuffer = BufferManager.Create(as_bytes(SilhouetteDisplay), vk::BufferUsageFlagBits::eUniformBuffer);
     const auto transform_buffer = TransformBuffer.GetDescriptor();
     const auto lights_buffer = LightsBuffer.GetDescriptor();
     const auto view_proj_near_far_buffer = ViewProjNearFarBuffer.GetDescriptor();
@@ -899,15 +899,16 @@ void Scene::RecordRenderCommandBuffer() {
             const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
             cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
         }
+        static constexpr uint32_t active_id = 1;
+        uint32_t selected_id = 2; // 2+
         for (const auto selected_entity : R.view<Selected>()) {
             const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
             const auto mesh_entity = GetParentEntity(selected_entity);
             const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(MeshElement::Vertex);
             const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
             Bind(cb, shader_pipeline, render_buffers, models);
-            // Push object index to the shader.
-            const auto object_index = uint32_t(selected_entity);
-            cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_index), &object_index);
+            const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
+            cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_id), &object_id);
             DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(selected_entity));
         }
         cb.endRenderPass();
@@ -1511,10 +1512,13 @@ void Scene::RenderControls() {
                 auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
                 if (ColorEdit3("Edge color", &edge_color.x)) UpdateEdgeColors();
             }
-            SeparatorText("Silhouette");
-            if (ColorEdit4("Color", &ActiveSilhouetteColor[0])) {
-                BufferManager.Update(SilhouetteDisplayBuffer, as_bytes(ActiveSilhouetteColor));
-                InvalidateCommandBuffer();
+            {
+                SeparatorText("Silhouette");
+                if (ColorEdit4("Active color", &SilhouetteDisplay.ActiveColor[0]) ||
+                    ColorEdit4("Selected color", &SilhouetteDisplay.SelectedColor[0])) {
+                    BufferManager.Update(SilhouetteDisplayBuffer, as_bytes(SilhouetteDisplay));
+                    InvalidateCommandBuffer();
+                }
             }
             if (active_entity != entt::null) {
                 SeparatorText("Selection overlays");
