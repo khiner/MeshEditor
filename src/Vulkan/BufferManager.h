@@ -19,12 +19,14 @@ struct Buffer {
     vk::Buffer HostBuffer; // Host (staging) buffer (CPU)
     vk::Buffer DeviceBuffer; // Device buffer (GPU)
     vk::DeviceSize Size{0}; // Used size (not allocated size)
+
+    vk::DescriptorBufferInfo GetDescriptor() const { return {DeviceBuffer, 0, vk::WholeSize}; }
 };
 
 // Wraps an allocator and a transfer command buffer to manage `mvk::Buffer`s.
 struct BufferManager {
     BufferManager(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandBuffer cb)
-        : Allocator(pd, d, instance), Cb(cb) {
+        : Cb(cb), Allocator(pd, d, instance)  {
         Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     }
     ~BufferManager() {
@@ -67,9 +69,10 @@ struct BufferManager {
     // Doesn't free memory, so the allocated size will be greater than the used size.
     void Erase(Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
+    vk::CommandBuffer Cb; // Transfer command buffer
+
 private:
     BufferAllocator Allocator;
-    vk::CommandBuffer Cb; // Transfer command buffer
     // Buffers that are no longer used and can be destroyed after the command buffer is submitted.
     mutable std::unordered_set<VkBuffer> StaleBuffers;
 };

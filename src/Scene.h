@@ -3,14 +3,14 @@
 #include "Camera.h"
 #include "ModelGizmo.h"
 #include "Shader.h"
+#include "Vulkan/BufferManager.h"
+#include "Vulkan/Image.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
 #include "mesh/Vertex.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
-#include "vulkan/BufferManager.h"
-#include "vulkan/Image.h"
 
 #include <entt/entity/fwd.hpp>
 
@@ -79,7 +79,7 @@ enum class ShaderPipelineType {
     Line,
     Grid,
     Silhouette,
-    EdgeDetection,
+    SilhouetteEdge,
     Texture,
     DebugNormals,
 };
@@ -87,9 +87,9 @@ using SPT = ShaderPipelineType;
 
 struct ShaderBindingDescriptor {
     SPT PipelineType;
-    std::string BindingName;
-    std::optional<vk::DescriptorBufferInfo> BufferInfo{};
-    std::optional<vk::DescriptorImageInfo> ImageInfo{};
+    std::string_view BindingName;
+    const vk::DescriptorBufferInfo *BufferInfo{nullptr};
+    const vk::DescriptorImageInfo *ImageInfo{nullptr};
 };
 struct PipelineRenderer {
     vk::UniqueRenderPass RenderPass;
@@ -144,8 +144,55 @@ struct MeshCreateInfo {
 static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, 60, 0.01, 100}; }
 
 struct MainPipelineResources;
+struct MainPipeline {
+    PipelineRenderer Renderer;
+    std::unique_ptr<MainPipelineResources> Resources;
+};
+
 struct SilhouettePipelineResources;
-struct EdgeDetectionPipelineResources;
+struct SilhouettePipeline {
+    PipelineRenderer Renderer;
+    std::unique_ptr<SilhouettePipelineResources> Resources;
+};
+
+struct SilhouetteEdgePipelineResources;
+struct SilhouetteEdgePipeline {
+    PipelineRenderer Renderer;
+    std::unique_ptr<SilhouetteEdgePipelineResources> Resources;
+};
+
+inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice pd) {
+    const auto props = pd.getProperties();
+    const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
+    if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
+    if (counts & vk::SampleCountFlagBits::e32) return vk::SampleCountFlagBits::e32;
+    if (counts & vk::SampleCountFlagBits::e16) return vk::SampleCountFlagBits::e16;
+    if (counts & vk::SampleCountFlagBits::e8) return vk::SampleCountFlagBits::e8;
+    if (counts & vk::SampleCountFlagBits::e4) return vk::SampleCountFlagBits::e4;
+    if (counts & vk::SampleCountFlagBits::e2) return vk::SampleCountFlagBits::e2;
+
+    return vk::SampleCountFlagBits::e1;
+}
+
+struct ScenePipelines {
+    ScenePipelines(vk::Device, vk::PhysicalDevice, vk::DescriptorPool);
+
+    vk::Device d;
+    vk::PhysicalDevice pd;
+    vk::SampleCountFlagBits Samples;
+
+    MainPipeline Main;
+    SilhouettePipeline Silhouette;
+    SilhouetteEdgePipeline SilhouetteEdge;
+
+    void SetExtent(vk::Extent2D);
+    // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
+    void CompileShaders() {
+        Main.Renderer.CompileShaders();
+        Silhouette.Renderer.CompileShaders();
+        SilhouetteEdge.Renderer.CompileShaders();
+    }
+};
 
 struct SceneVulkanResources {
     vk::Instance Instance;
@@ -198,12 +245,9 @@ struct Scene {
     void RenderControls();
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
-    // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
-    void CompileShaders();
-
     std::optional<uint> GetModelBufferIndex(entt::entity);
     void UpdateRenderBuffers(entt::entity);
-    void RecordCommandBuffer();
+    void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
 
     void OnCreateSelected(entt::registry &, entt::entity);
@@ -222,7 +266,7 @@ private:
     vk::UniqueCommandPool CommandPool;
     vk::UniqueCommandBuffer TransferCommandBuffer, RenderCommandBuffer;
     std::array<vk::CommandBuffer, 2> CommandBuffers;
-    vk::UniqueFence RenderFence;
+    vk::UniqueFence RenderFence, TransferFence;
     mvk::BufferManager BufferManager;
 
     Camera Camera{CreateDefaultCamera()};
@@ -240,14 +284,10 @@ private:
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.22, 0.22, 0.22, 1.f};
-    vk::UniqueSampler SilhouetteFillImageSampler, SilhouetteEdgeImageSampler;
 
     mvk::Buffer TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
-    PipelineRenderer MainRenderer, SilhouetteRenderer, EdgeDetectionRenderer;
-    std::unique_ptr<MainPipelineResources> MainResources;
-    std::unique_ptr<SilhouettePipelineResources> SilhouetteResources;
-    std::unique_ptr<EdgeDetectionPipelineResources> EdgeDetectionResources;
+    ScenePipelines Pipelines;
 
     struct ModelGizmoState {
         ModelGizmo::Op Op{ModelGizmo::Op::Translate};
@@ -275,8 +315,6 @@ private:
 
     void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
 
-    void SetExtent(vk::Extent2D);
-
     // VK buffer update methods
     void UpdateTransformBuffers();
     void UpdateModelBuffer(entt::entity);
@@ -302,5 +340,5 @@ private:
         };
     }
 
-    void WaitForRender() const;
+    void WaitFor(vk::Fence) const;
 };
