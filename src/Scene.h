@@ -78,9 +78,9 @@ enum class ShaderPipelineType {
     Fill,
     Line,
     Grid,
-    Silhouette,
-    SilhouetteEdge,
-    Texture,
+    SilhouetteDepthObject,
+    SilhouetteEdgeDepthObject,
+    SilhouetteEdgeColor,
     DebugNormals,
 };
 using SPT = ShaderPipelineType;
@@ -143,24 +143,6 @@ struct MeshCreateInfo {
 
 static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, 60, 0.01, 100}; }
 
-struct MainPipelineResources;
-struct MainPipeline {
-    PipelineRenderer Renderer;
-    std::unique_ptr<MainPipelineResources> Resources;
-};
-
-struct SilhouettePipelineResources;
-struct SilhouettePipeline {
-    PipelineRenderer Renderer;
-    std::unique_ptr<SilhouettePipelineResources> Resources;
-};
-
-struct SilhouetteEdgePipelineResources;
-struct SilhouetteEdgePipeline {
-    PipelineRenderer Renderer;
-    std::unique_ptr<SilhouetteEdgePipelineResources> Resources;
-};
-
 inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice pd) {
     const auto props = pd.getProperties();
     const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
@@ -174,25 +156,7 @@ inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice
     return vk::SampleCountFlagBits::e1;
 }
 
-struct ScenePipelines {
-    ScenePipelines(vk::Device, vk::PhysicalDevice, vk::DescriptorPool);
-
-    vk::Device d;
-    vk::PhysicalDevice pd;
-    vk::SampleCountFlagBits Samples;
-
-    MainPipeline Main;
-    SilhouettePipeline Silhouette;
-    SilhouetteEdgePipeline SilhouetteEdge;
-
-    void SetExtent(vk::Extent2D);
-    // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
-    void CompileShaders() {
-        Main.Renderer.CompileShaders();
-        Silhouette.Renderer.CompileShaders();
-        SilhouetteEdge.Renderer.CompileShaders();
-    }
-};
+struct ScenePipelines;
 
 struct SceneVulkanResources {
     vk::Instance Instance;
@@ -287,7 +251,7 @@ private:
 
     mvk::Buffer TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
-    ScenePipelines Pipelines;
+    std::unique_ptr<ScenePipelines> Pipelines;
 
     struct ModelGizmoState {
         ModelGizmo::Op Op{ModelGizmo::Op::Translate};

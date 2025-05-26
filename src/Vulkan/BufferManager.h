@@ -26,7 +26,7 @@ struct Buffer {
 // Wraps an allocator and a transfer command buffer to manage `mvk::Buffer`s.
 struct BufferManager {
     BufferManager(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandBuffer cb)
-        : Cb(cb), Allocator(pd, d, instance)  {
+        : Cb(cb), Allocator(pd, d, instance) {
         Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     }
     ~BufferManager() {
