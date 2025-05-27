@@ -115,6 +115,8 @@ vk::PhysicalDevice FindPhysicalDevice(const vk::UniqueInstance &instance) {
     return physical_devices[0];
 }
 
+constexpr auto VkApiVersion = VK_API_VERSION_1_4;
+
 struct VulkanContext {
     VulkanContext(std::vector<const char *> enabled_extensions) {
         const auto IsLayerAvailable = [&](std::string_view layer) {
@@ -142,15 +144,14 @@ struct VulkanContext {
                 enabled_extensions.push_back(extension.data());
                 flags |= flag;
                 return true;
-            } else {
-                std::cerr << "Warning: Extension " << extension << " not available." << std::endl;
-                return false;
             }
+            std::cerr << "Warning: Extension " << extension << " not available." << std::endl;
+            return false;
         };
         AddExtensionIfAvailable(vk::KHRPortabilityEnumerationExtensionName, vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR);
         AddExtensionIfAvailable(vk::EXTDebugUtilsExtensionName);
 
-        const vk::ApplicationInfo app{"", {}, "", {}, VK_API_VERSION_1_3};
+        const vk::ApplicationInfo app{"", {}, "", {}, VkApiVersion};
         Instance = vk::createInstanceUnique({flags, &app, enabled_layers, enabled_extensions});
         PhysicalDevice = FindPhysicalDevice(Instance);
 
@@ -281,6 +282,7 @@ int main(int, char **) {
     // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo init_info{
+        .ApiVersion = VkApiVersion,
         .Instance = *vc->Instance,
         .PhysicalDevice = vc->PhysicalDevice,
         .Device = *vc->Device,
