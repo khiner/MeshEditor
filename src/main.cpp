@@ -104,45 +104,6 @@ void InitFonts(float scale = 1.f) {
     ImGui::GetIO().FontGlobalScale = scale / FontAtlasScale;
 }
 
-/*
-After upgrading from Vulkan SDK 1.3.290.0 to 1.4.304.0, I get:
-Undefined symbols for architecture arm64:
-"_vkCreateDebugUtilsMessengerEXT", referenced from:
-    vk::detail::DispatchLoaderStatic::vkCreateDebugUtilsMessengerEXT(VkInstance_T*, VkDebugUtilsMessengerCreateInfoEXT const*, VkAllocationCallbacks const*, VkDebugUtilsMessengerEXT_T**) const in VulkanContext.cpp.o
-ld: symbol(s) not found for architecture arm64
-So disabling the debug messenger for now.
-vk::Bool32 DebugCallback(
-    vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
-    vk::DebugUtilsMessageTypeFlagsEXT type,
-    const vk::DebugUtilsMessengerCallbackDataEXT *callback_data,
-    void *user_data
-) {
-    (void)user_data;
-    const char *severity_str = "";
-    switch (severity) {
-        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose: severity_str = "Verbose"; break;
-        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo: severity_str = "Info"; break;
-        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning: severity_str = "Warning"; break;
-        case vk::DebugUtilsMessageSeverityFlagBitsEXT::eError: severity_str = "Error"; break;
-        default: break;
-    }
-
-    std::string type_str;
-    if (type & vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral) {
-        type_str = "General";
-    }
-    if (type & vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation) {
-        type_str = "Validation";
-    }
-    if (type & vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance) {
-        type_str = "Performance";
-    }
-
-    std::cerr << "[Vulkan|" << severity_str << "|" << type_str << "]" << ": " << callback_data->pMessage << '\n';
-    return vk::False;
-}
-*/
-
 // Find a discrete GPU, or the first available (integrated) GPU.
 vk::PhysicalDevice FindPhysicalDevice(const vk::UniqueInstance &instance) {
     const auto physical_devices = instance->enumeratePhysicalDevices();
@@ -191,25 +152,6 @@ struct VulkanContext {
 
         const vk::ApplicationInfo app{"", {}, "", {}, VK_API_VERSION_1_3};
         Instance = vk::createInstanceUnique({flags, &app, enabled_layers, enabled_extensions});
-        /*
-        if (AddExtensionIfAvailable(vk::EXTDebugUtilsExtensionName)) {
-            const auto _ = Instance->createDebugUtilsMessengerEXT(
-                vk::DebugUtilsMessengerCreateInfoEXT{
-                    {},
-                    vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
-                        vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                        vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                        vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo,
-                    vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                        vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                        vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
-                    DebugCallback,
-                    nullptr
-                }
-            );
-        }
-        */
-
         PhysicalDevice = FindPhysicalDevice(Instance);
 
         const auto qfp = PhysicalDevice.getQueueFamilyProperties();
