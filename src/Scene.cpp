@@ -471,7 +471,7 @@ struct SilhouetteEdgePipeline {
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
         const std::vector<vk::AttachmentDescription> attachments{
             // Single-sampled offscreen image.
-            {{}, mvk::ImageFormat::Float4, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {{}, mvk::ImageFormat::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
         const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
@@ -497,7 +497,7 @@ struct SilhouetteEdgePipeline {
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Float4,
+                   mvk::ImageFormat::Float2,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -505,7 +505,7 @@ struct SilhouetteEdgePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float4, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float2, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
               )} {
             const std::array image_views{*OffscreenImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});

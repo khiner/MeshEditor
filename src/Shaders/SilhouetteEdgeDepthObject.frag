@@ -2,7 +2,7 @@
 
 layout(binding = 0) uniform sampler2D SilhouetteSampler; // Assumes {Depth, ObjectID} at each pixel.
 layout(location = 0) in vec2 TexCoord;
-layout(location = 0) out vec4 OutColor; // {Depth, ObjectID} for edge pixels, discarded otherwise.
+layout(location = 0) out vec2 Out; // {Depth, ObjectID} for edge pixels, discarded otherwise.
 
 const float EdgeThicknessPixels = 4;
 
@@ -27,7 +27,7 @@ void main() {
     }
 
     if (min_depth < 100) {
-        OutColor = vec4(min_depth, min_depth_id, 0, 0);
+        Out = vec2(min_depth, min_depth_id);
     } else {
         discard;
     }
