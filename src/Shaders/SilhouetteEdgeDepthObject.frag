@@ -2,7 +2,7 @@
 
 layout(binding = 0) uniform sampler2D SilhouetteSampler; // Assumes {Depth, ObjectID} at each pixel.
 layout(location = 0) in vec2 TexCoord;
-layout(location = 0) out vec2 Out; // {Depth, ObjectID} for edge pixels, discarded otherwise.
+layout(location = 0) out float Out; // ObjectID for edge pixels, discarded otherwise.
 
 const float EdgeThicknessPixels = 4;
 
@@ -16,6 +16,7 @@ void main() {
     for (int i = -1; i <= 1; i++) {
         for (int j = -1; j <= 1; j++) {
             if (i == 0 && j == 0) continue;
+
             const vec2 neighbor_value = texture(SilhouetteSampler, TexCoord + vec2(i, j) * neighborhood_half_extent).xy;
             const float neighbor_id = neighbor_value.y;
             if (this_id != neighbor_id) {
@@ -27,7 +28,8 @@ void main() {
     }
 
     if (min_depth < 100) {
-        Out = vec2(min_depth, min_depth_id);
+        gl_FragDepth = min_depth;
+        Out = min_depth_id;
     } else {
         discard;
     }

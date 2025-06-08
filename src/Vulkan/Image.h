@@ -19,6 +19,7 @@ using BitmapToImage = std::function<ImageResource(std::span<const std::byte> dat
 
 namespace ImageFormat {
 constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
+constexpr auto Float = vk::Format::eR32Sfloat;
 constexpr auto Float2 = vk::Format::eR32G32Sfloat;
 constexpr auto Float4 = vk::Format::eR32G32B32A32Sfloat;
 constexpr auto Depth = vk::Format::eD32Sfloat;

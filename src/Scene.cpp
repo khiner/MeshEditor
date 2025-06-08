@@ -284,10 +284,22 @@ struct MainPipeline {
             }
         );
 
-        // Render all the silhouette edge texture's pixels regardless of the tested depth value,
-        // but also override the depth buffer to make edge pixels "stick" to the mesh they are derived from.
+        // Render the silhouette edge depth regardless of the tested depth value.
         // We should be able to just disable depth tests and enable depth writes, but it seems that some GPUs or drivers
         // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
+        pipelines.emplace(
+            SPT::SilhouetteEdgeDepth,
+            ShaderPipeline{
+                d, descriptor_pool,
+                Shaders{
+                    {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SampleDepth.frag"}}
+                },
+                vk::PipelineVertexInputStateCreateInfo{},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+                CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways), msaa_samples
+            }
+        );
+        // Render silhouette edge color regardless of the tested depth value.
         pipelines.emplace(
             SPT::SilhouetteEdgeColor,
             ShaderPipeline{
@@ -297,7 +309,7 @@ struct MainPipeline {
                 },
                 vk::PipelineVertexInputStateCreateInfo{},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways), msaa_samples
+                CreateColorBlendAttachment(true), CreateDepthStencil(false, false), msaa_samples
             }
         );
         pipelines.emplace(
@@ -380,7 +392,7 @@ struct MainPipeline {
 struct SilhouettePipeline {
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
         const std::vector<vk::AttachmentDescription> attachments{
-            // We need to test depth since we want silhouette edges to respect mutual occlusion when multiple meshes are selected.
+            // We need to test and write depth since we want silhouette edges to respect mutual occlusion when multiple meshes are selected.
             {{}, mvk::ImageFormat::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
             // Single-sampled offscreen "image" of two channels: depth and object ID.
             {{}, mvk::ImageFormat::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -454,7 +466,7 @@ struct SilhouettePipeline {
             });
         }
 
-        mvk::ImageResource DepthImage, OffscreenImage; // Single-sampled image with a depth buffer.
+        mvk::ImageResource DepthImage, OffscreenImage;
         vk::UniqueSampler ImageSampler;
         vk::UniqueFramebuffer Framebuffer;
     };
@@ -470,11 +482,12 @@ struct SilhouettePipeline {
 struct SilhouetteEdgePipeline {
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
         const std::vector<vk::AttachmentDescription> attachments{
-            // Single-sampled offscreen image.
-            {{}, mvk::ImageFormat::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {{}, mvk::ImageFormat::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal},
+            {{}, mvk::ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
-        const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
+        const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
+        const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
             SPT::SilhouetteEdgeDepthObject,
@@ -485,7 +498,7 @@ struct SilhouetteEdgePipeline {
                 },
                 vk::PipelineVertexInputStateCreateInfo{},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(false), CreateDepthStencil(true, false), vk::SampleCountFlagBits::e1
+                CreateColorBlendAttachment(false), CreateDepthStencil(), vk::SampleCountFlagBits::e1
             }
         );
         return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
@@ -493,11 +506,25 @@ struct SilhouetteEdgePipeline {
 
     struct ResourcesT {
         ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass)
-            : OffscreenImage{mvk::CreateImage(
+            : DepthImage{mvk::CreateImage(
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Float2,
+                   mvk::ImageFormat::Depth,
+                   vk::Extent3D{extent, 1},
+                   1,
+                   1,
+                   vk::SampleCountFlagBits::e1,
+                   vk::ImageTiling::eOptimal,
+                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                   vk::SharingMode::eExclusive},
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+              )},
+              OffscreenImage{mvk::CreateImage(
+                  d, pd,
+                  {{},
+                   vk::ImageType::e2D,
+                   mvk::ImageFormat::Float,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -505,15 +532,16 @@ struct SilhouetteEdgePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float2, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
               )} {
-            const std::array image_views{*OffscreenImage.View};
+            const std::array image_views{*DepthImage.View, *OffscreenImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
-            ImageSampler = d.createSamplerUnique({{}, vk::Filter::eNearest, vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest});
+            ImageSampler = d.createSamplerUnique(vk::SamplerCreateInfo{});
+            DepthSampler = d.createSamplerUnique(vk::SamplerCreateInfo{});
         }
 
-        mvk::ImageResource OffscreenImage; // Single-sampled image without a depth buffer.
-        vk::UniqueSampler ImageSampler;
+        mvk::ImageResource DepthImage, OffscreenImage;
+        vk::UniqueSampler ImageSampler, DepthSampler;
         vk::UniqueFramebuffer Framebuffer;
     };
 
@@ -915,7 +943,7 @@ void Scene::RecordRenderCommandBuffer() {
 
         {
             const auto &silhouette_edge = Pipelines->SilhouetteEdge;
-            static const std::vector<vk::ClearValue> clear_values{{Transparent}};
+            static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
             const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
             cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
             silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject).RenderQuad(cb);
@@ -929,6 +957,10 @@ void Scene::RecordRenderCommandBuffer() {
         const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines->Main.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*Pipelines->Main.Renderer.RenderPass, *Pipelines->Main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
+
+    // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
+    if (render_silhouette) main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth).RenderQuad(cb);
+
     // Meshes
     for (const auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
         for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
@@ -936,7 +968,7 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    // Silhouette edge texture
+    // Silhouette edge color (rendered ontop of meshes)
     if (render_silhouette) main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor).RenderQuad(cb);
 
     // Selection overlays
@@ -1199,12 +1231,14 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     SilhouetteEdge.SetExtent(extent, d, pd);
 
     const auto silhouette_info = vk::DescriptorImageInfo{*Silhouette.Resources->ImageSampler, *Silhouette.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-    const auto silhouette_edge_info = vk::DescriptorImageInfo{*SilhouetteEdge.Resources->ImageSampler, *SilhouetteEdge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     auto ds = SilhouetteEdge.Renderer.GetDescriptors({
         {SPT::SilhouetteEdgeDepthObject, "SilhouetteSampler", nullptr, &silhouette_info},
     });
+    const auto object_id_info = vk::DescriptorImageInfo{*SilhouetteEdge.Resources->ImageSampler, *SilhouetteEdge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+    const auto depth_info = vk::DescriptorImageInfo{*SilhouetteEdge.Resources->DepthSampler, *SilhouetteEdge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
     ds.append_range(Main.Renderer.GetDescriptors({
-        {SPT::SilhouetteEdgeColor, "SilhouetteEdgeSampler", nullptr, &silhouette_edge_info},
+        {SPT::SilhouetteEdgeDepth, "DepthSampler", nullptr, &depth_info},
+        {SPT::SilhouetteEdgeColor, "ObjectIdSampler", nullptr, &object_id_info},
     }));
     d.updateDescriptorSets(ds, {});
 };

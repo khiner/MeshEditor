@@ -80,6 +80,7 @@ enum class ShaderPipelineType {
     Grid,
     SilhouetteDepthObject,
     SilhouetteEdgeDepthObject,
+    SilhouetteEdgeDepth,
     SilhouetteEdgeColor,
     DebugNormals,
 };
