@@ -127,6 +127,8 @@ void DrawIndexed(vk::CommandBuffer cb, const mvk::Buffer &indices, const mvk::Bu
 
 vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 
+constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 } // namespace
 
 void PipelineRenderer::CompileShaders() {
@@ -151,7 +153,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
          vk::ImageTiling::eOptimal,
          vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
          vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+        {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
     );
     // Write the bitmap into a staging buffer.
     auto staging_buffer = BufferManager.CreateStaging(as_bytes(data));
@@ -163,16 +165,16 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eTransfer,
-        {}, {}, {},
+        {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
         vk::ImageMemoryBarrier{
             {}, // srcAccessMask
             vk::AccessFlagBits::eTransferWrite, // dstAccessMask
-            vk::ImageLayout::eUndefined, // oldLayout
+            {}, // oldLayout
             vk::ImageLayout::eTransferDstOptimal, // newLayout
-            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
-            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            {}, // srcQueueFamilyIndex
+            {}, // dstQueueFamilyIndex
             *image.Image, // image
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+            ColorSubresourceRange // subresourceRange
         }
     );
 
@@ -199,14 +201,14 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
             vk::AccessFlagBits::eShaderRead, // dstAccessMask
             vk::ImageLayout::eTransferDstOptimal, // oldLayout
             vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
-            VK_QUEUE_FAMILY_IGNORED, // srcQueueFamilyIndex
-            VK_QUEUE_FAMILY_IGNORED, // dstQueueFamilyIndex
+            {}, // srcQueueFamilyIndex
+            {}, // dstQueueFamilyIndex
             *image.Image, // image
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1} // subresourceRange
+            ColorSubresourceRange // subresourceRange
         }
     );
-
     cb.end();
+
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
     Vk.Queue.submit(submit, *TransferFence);
@@ -341,7 +343,7 @@ struct MainPipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, DepthSubresourceRange}
               )},
               OffscreenImage{mvk::CreateImage(
                   d, pd,
@@ -355,7 +357,7 @@ struct MainPipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
               )},
               ResolveImage{mvk::CreateImage(
                   d, pd,
@@ -371,7 +373,7 @@ struct MainPipeline {
                       vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                       vk::SharingMode::eExclusive,
                   },
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
               )} {
             const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
@@ -435,7 +437,7 @@ struct SilhouettePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, DepthSubresourceRange}
               )},
               OffscreenImage{mvk::CreateImage(
                   d, pd,
@@ -449,7 +451,7 @@ struct SilhouettePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float2, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float2, {}, ColorSubresourceRange}
               )} {
             const std::array image_views{*DepthImage.View, *OffscreenImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
@@ -518,7 +520,7 @@ struct SilhouetteEdgePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eDepthStencilAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, DepthSubresourceRange}
               )},
               OffscreenImage{mvk::CreateImage(
                   d, pd,
@@ -532,7 +534,7 @@ struct SilhouetteEdgePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}
+                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, ColorSubresourceRange}
               )} {
             const std::array image_views{*DepthImage.View, *OffscreenImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
@@ -904,16 +906,16 @@ void Scene::RecordRenderCommandBuffer() {
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eColorAttachmentOutput,
         {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
-        std::vector<vk::ImageMemoryBarrier>{{
-            {},
-            {},
-            vk::ImageLayout::eUndefined,
-            vk::ImageLayout::eColorAttachmentOptimal,
-            vk::QueueFamilyIgnored,
-            vk::QueueFamilyIgnored,
+        vk::ImageMemoryBarrier{
+            {}, // srcAccessMask
+            {}, // dstAccessMask
+            {}, // oldLayout
+            vk::ImageLayout::eColorAttachmentOptimal, // newLayout
+            {}, // srcQueueFamilyIndex
+            {}, // dstQueueFamilyIndex
             *main.Resources->ResolveImage.Image,
-            {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
-        }}
+            ColorSubresourceRange
+        }
     );
 
     const auto active_entity = FindActiveEntity(R);
