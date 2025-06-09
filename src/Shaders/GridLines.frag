@@ -10,7 +10,7 @@ layout(binding = 0) uniform ViewProjNearFarUBO {
 layout(location = 0) in vec3 NearPos;
 layout(location = 1) in vec3 FarPos;
 
-layout(location = 0) out vec4 OutColor;
+layout(location = 0) out vec4 Color;
 
 const float ScaleFactor = 0.2;
 
@@ -49,6 +49,6 @@ void main() {
     const vec4 clip_space_pos = ViewProjection.Projection * ViewProjection.View * vec4(pos_3d.xyz, 1);
     gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
 
-    OutColor = BlendGrids(Grid(pos_3d, 10), Grid(pos_3d, 1)) * float(t > 0); // Draw grid at two scales.
-    OutColor.a *= (0.5 * (1 - LinearDepth())); // Fade out at the edge of the grid.
+    Color = BlendGrids(Grid(pos_3d, 10), Grid(pos_3d, 1)) * float(t > 0); // Draw grid at two scales.
+    Color.a *= (0.5 * (1 - LinearDepth())); // Fade out at the edge of the grid.
 }

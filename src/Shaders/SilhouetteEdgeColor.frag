@@ -7,7 +7,7 @@ layout(binding = 1) uniform SilhouetteDisplayUBO {
 } SilhouetteDisplay;
 
 layout(location = 0) in vec2 TexCoord;
-layout(location = 0) out vec4 OutColor;
+layout(location = 0) out vec4 EdgeColor;
 
 void main() {
     const ivec2 texel = ivec2(TexCoord * textureSize(ObjectIdSampler, 0));
@@ -15,7 +15,6 @@ void main() {
     if (object_id < 1) {
         discard;
     } else {
-        if (object_id == 1) OutColor = SilhouetteDisplay.ActiveColor;
-        else OutColor = SilhouetteDisplay.SelectedColor;
+        EdgeColor = object_id == 1 ? SilhouetteDisplay.ActiveColor : SilhouetteDisplay.SelectedColor;
     }
 }

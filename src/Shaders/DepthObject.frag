@@ -4,9 +4,9 @@ layout(push_constant) uniform PC {
     uint objectId;
 } pc;
 
-layout(location = 0) out vec2 OutColor; // {Depth, ObjectID)}
+layout(location = 0) out vec2 DepthObjectId; // {Depth, ObjectID)}
 
 void main() {
     const float depth = gl_FragCoord.z;
-    OutColor = vec2(depth, float(pc.objectId));
+    DepthObjectId = vec2(depth, float(pc.objectId));
 }

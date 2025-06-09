@@ -2,7 +2,7 @@
 
 layout(binding = 0) uniform sampler2D SilhouetteSampler; // Assumes {Depth, ObjectID} at each pixel.
 layout(location = 0) in vec2 TexCoord;
-layout(location = 0) out float Out; // ObjectID for edge pixels, discarded otherwise.
+layout(location = 0) out float ObjectId; // ObjectID for edge pixels, discarded otherwise.
 
 const int EdgeHalfWidth = 2;
 
@@ -28,7 +28,7 @@ void main() {
 
     if (min_depth_id.y != 0) {
         gl_FragDepth = min_depth_id.x;
-        Out = min_depth_id.y;
+        ObjectId = min_depth_id.y;
     } else {
         discard;
     }
