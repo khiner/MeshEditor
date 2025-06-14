@@ -7,68 +7,63 @@
 
 namespace {
 struct VmaBuffer {
-    VmaBuffer(VmaAllocator vma, vk::Buffer buffer, VmaAllocation allocation, VmaAllocationInfo info)
-        : Vma(vma),
-          Buffer(buffer),
-          Allocation(allocation),
-          Info(info) {}
+    VmaBuffer(VmaAllocator vma, VmaAllocationCreateInfo aci, vk::BufferCreateInfo bci) : Vma(vma) {
+        if (vmaCreateBuffer(Vma, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Handle), &Allocation, &Info) != VK_SUCCESS) {
+            throw std::runtime_error("vmaCreateBuffer failed");
+        }
+    }
 
     VmaBuffer(VmaBuffer &&other) noexcept
         : Vma(other.Vma),
-          Buffer(std::exchange(other.Buffer, nullptr)),
+          Handle(std::exchange(other.Handle, nullptr)),
           Allocation(std::exchange(other.Allocation, nullptr)),
           Info(other.Info) {}
 
     VmaBuffer &operator=(VmaBuffer &&) = delete;
 
     ~VmaBuffer() {
-        if (Buffer) {
-            vmaDestroyBuffer(Vma, Buffer, Allocation);
-        }
+        vmaDestroyBuffer(Vma, Handle, Allocation);
     }
 
-    vk::Buffer operator*() const {
-        return Buffer;
-    }
+    vk::Buffer operator*() const { return Handle; }
 
     VmaAllocator Vma;
-    vk::Buffer Buffer;
-    VmaAllocation Allocation{nullptr};
-    VmaAllocationInfo Info{};
+    vk::Buffer Handle;
+    VmaAllocation Allocation;
+    VmaAllocationInfo Info;
 };
 
-using BufferMap = std::unordered_map<VkBuffer, VmaBuffer>;
-std::unordered_map<VmaAllocator, BufferMap> BuffersByAllocator;
+std::string FormatBytes(uint32_t bytes) {
+    static constexpr std::array<std::string_view, 6> Suffixes{"B", "KB", "MB", "GB", "TB", "PB"};
+    static constexpr float K = 1024;
 
-VmaBuffer &GetVmaBuffer(VmaAllocator vma, vk::Buffer buffer) {
-    return BuffersByAllocator.at(vma).at(static_cast<VkBuffer>(buffer));
-}
-// vk::Buffer GetBuffer(VmaAllocator vma, vk::Buffer buffer) {
-//     const auto &vma_buffer = GetVmaBuffer(vma, buffer);
-//     return vma_buffer.Buffer;
-// }
-const VmaAllocationInfo &GetBufferInfo(VmaAllocator vma, vk::Buffer buffer) {
-    return GetVmaBuffer(vma, buffer).Info;
-}
+    auto value = float(bytes);
+    size_t pow;
+    for (pow = 0; value >= K && pow + 1 < Suffixes.size(); ++pow) value /= K;
 
-vk::Buffer SetBuffer(VmaAllocator vma, VmaBuffer buffer) {
-    auto vk_buffer = *buffer;
-    BuffersByAllocator.at(vma).emplace(static_cast<VkBuffer>(vk_buffer), std::move(buffer));
-    return vk_buffer;
+    return std::format("{:.2f} {}", value, Suffixes[pow]);
 }
-
-struct AllocatorInfo {
-    VmaVulkanFunctions VulkanFunctions{};
-};
 
 #ifndef RELEASE_BUILD
 void LoggingVmaAllocate(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("Allocating {} bytes of memory of type {}", size, memory_type);
+    std::println("Allocating {} bytes of memory of type {}", FormatBytes(size), memory_type);
 }
 void LoggingVmaFree(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("Freeing {} bytes of memory of type {}", size, memory_type);
+    std::println("Freeing {} bytes of memory of type {}", FormatBytes(size), memory_type);
 }
 #endif
+
+std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevice pd) {
+    VkPhysicalDeviceMemoryProperties memory_props;
+    vkGetPhysicalDeviceMemoryProperties(static_cast<VkPhysicalDevice>(pd), &memory_props);
+    std::vector<VmaBudget> budgets(memory_props.memoryHeapCount);
+    vmaGetHeapBudgets(allocator, budgets.data());
+    return budgets;
+}
+
+using BufferByHandle = std::unordered_map<VkBuffer, VmaBuffer>;
+std::unordered_map<VmaAllocator, BufferByHandle> BuffersByAllocator;
+const VmaAllocationInfo &GetAllocationInfo(VmaAllocator vma, vk::Buffer b) { return BuffersByAllocator.at(vma).at(static_cast<VkBuffer>(b)).Info; }
 } // namespace
 
 // vmaDestroyBuffer(Vma, Buffer, Allocation->Allocation);
@@ -86,7 +81,7 @@ BufferAllocator::BufferAllocator(vk::PhysicalDevice pd, vk::Device d, VkInstance
     if (vmaCreateAllocator(&create_info, &Vma) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create VMA allocator.");
     }
-    BuffersByAllocator.emplace(Vma, BufferMap{});
+    BuffersByAllocator.emplace(Vma, BufferByHandle{});
 }
 
 BufferAllocator::~BufferAllocator() {
@@ -95,14 +90,14 @@ BufferAllocator::~BufferAllocator() {
 }
 
 std::span<std::byte> BufferAllocator::GetMappedData(vk::Buffer b) const {
-    auto &info = GetBufferInfo(Vma, b);
+    auto &info = GetAllocationInfo(Vma, b);
     return {static_cast<std::byte *>(info.pMappedData), info.size};
 }
 std::span<const std::byte> BufferAllocator::GetData(vk::Buffer b) const {
-    const auto &info = GetBufferInfo(Vma, b);
+    const auto &info = GetAllocationInfo(Vma, b);
     return {static_cast<const std::byte *>(info.pMappedData), info.size};
 }
-vk::DeviceSize BufferAllocator::GetAllocatedSize(vk::Buffer b) const { return GetBufferInfo(Vma, b).size; }
+vk::DeviceSize BufferAllocator::GetAllocatedSize(vk::Buffer b) const { return GetAllocationInfo(Vma, b).size; }
 
 void BufferAllocator::Write(vk::Buffer b, std::span<const std::byte> src, vk::DeviceSize offset) const {
     if (src.empty() || offset >= GetAllocatedSize(b)) return;
@@ -140,18 +135,41 @@ vk::Buffer BufferAllocator::Allocate(vk::DeviceSize size, MemoryUsage memory_usa
     } else {
         bci.usage |= vk::BufferUsageFlagBits::eTransferDst;
     }
-
-    vk::Buffer vk_buffer;
-    VmaAllocation alloc;
-    VmaAllocationInfo info;
-    if (vmaCreateBuffer(Vma, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&vk_buffer), &alloc, &info) != VK_SUCCESS) {
-        throw std::runtime_error("vmaCreateBuffer failed");
-    }
-    return SetBuffer(Vma, {Vma, vk_buffer, alloc, info});
+    VmaBuffer vma_buffer{Vma, aci, bci};
+    auto vk_buffer = *vma_buffer;
+    BuffersByAllocator.at(Vma).emplace(static_cast<VkBuffer>(vk_buffer), std::move(vma_buffer));
+    return vk_buffer;
 }
 
-void BufferAllocator::Destroy(vk::Buffer buffer) const {
-    BuffersByAllocator.at(Vma).erase(static_cast<VkBuffer>(buffer));
+void BufferAllocator::Destroy(vk::Buffer b) const { BuffersByAllocator.at(Vma).erase(static_cast<VkBuffer>(b)); }
+
+std::string BufferAllocator::DebugHeapUsage(vk::PhysicalDevice pd) const {
+    const auto budgets = QueryHeapBudgets(Vma, pd);
+    std::string result;
+    for (uint32_t i = 0; i < budgets.size(); ++i) {
+        const auto &b = budgets[i];
+        result += std::format(
+            "Heap {}/{}:\n"
+            "\tAllocations:\n"
+            "\t\tCount: {}\n"
+            "\t\tBytes: {}\n"
+            "\tBlocks:\n"
+            "\t\tCount: {}\n"
+            "\t\tBytes: {}\n"
+            "\tTotal:\n"
+            "\t\tUsed: {}\n"
+            "\t\tBudget: {}\n",
+            i + 1,
+            budgets.size(),
+            b.statistics.allocationCount,
+            FormatBytes(b.statistics.allocationBytes),
+            b.statistics.blockCount,
+            FormatBytes(b.statistics.blockBytes),
+            FormatBytes(b.usage),
+            FormatBytes(b.budget)
+        );
+    }
+    return result;
 }
 
 } // namespace mvk

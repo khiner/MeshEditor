@@ -159,7 +159,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     auto staging_buffer = BufferManager.CreateStaging(as_bytes(data));
 
     // Record commands to copy from staging buffer to Vulkan image.
-    const auto &cb = BufferManager.Cb;
+    const auto &cb = BufferManager.TransferCb;
 
     // Transition the image layout to be ready for data transfer.
     cb.pipelineBarrier(
@@ -1258,15 +1258,15 @@ bool Scene::Render() {
         // Must submit the transfer command buffer before updating the pipelines,
         // so we need two submits for the extent change.
         UpdateTransformBuffers(); // Depends on the aspect ratio.
-        BufferManager.Cb.end();
-        submit.setCommandBuffers(BufferManager.Cb);
+        BufferManager.TransferCb.end();
+        submit.setCommandBuffers(BufferManager.TransferCb);
         Vk.Queue.submit(submit, *TransferFence);
         WaitFor(*TransferFence);
         Pipelines->SetExtent(Extent);
         RecordRenderCommandBuffer();
         submit.setCommandBuffers(*RenderCommandBuffer);
     } else {
-        BufferManager.Cb.end();
+        BufferManager.TransferCb.end();
         RecordRenderCommandBuffer();
         submit.setCommandBuffers(CommandBuffers);
     }

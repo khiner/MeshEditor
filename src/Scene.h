@@ -225,6 +225,8 @@ struct Scene {
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
+    std::string DebugBufferHeapUsage(vk::PhysicalDevice pd) const { return BufferManager.GetAllocator().DebugHeapUsage(pd); }
+
 private:
     SceneVulkanResources Vk;
     entt::registry &R;

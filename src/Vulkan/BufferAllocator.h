@@ -31,6 +31,8 @@ struct BufferAllocator {
     void Write(vk::Buffer, std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::Buffer, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
 
+    std::string DebugHeapUsage(vk::PhysicalDevice) const;
+
 private:
     std::span<std::byte> GetMappedData(vk::Buffer) const;
 

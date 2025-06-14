@@ -27,7 +27,7 @@ Buffer BufferManager::Create(std::span<const std::byte> data, vk::BufferUsageFla
     auto buffer = Allocate(data.size(), usage);
     buffer.Size = data.size();
     Allocator.Write(buffer.HostBuffer, data);
-    Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{0, 0, data.size()});
+    TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{0, 0, data.size()});
     return buffer;
 }
 void BufferManager::EnsureAllocated(Buffer &buffer, vk::DeviceSize required_size) const {
@@ -40,7 +40,7 @@ void BufferManager::EnsureAllocated(Buffer &buffer, vk::DeviceSize required_size
         // Copy the old buffer into the new buffer (host and device).
         Allocator.Write(new_buffer.HostBuffer, Allocator.GetData(buffer.HostBuffer));
         new_buffer.Size = buffer.Size;
-        Cb.copyBuffer(buffer.DeviceBuffer, new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
+        TransferCb.copyBuffer(buffer.DeviceBuffer, new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
     }
     Invalidate(buffer);
     buffer = std::move(new_buffer);
@@ -52,7 +52,7 @@ void BufferManager::Update(Buffer &buffer, std::span<const std::byte> data, vk::
     EnsureAllocated(buffer, required_size);
     buffer.Size = std::max(buffer.Size, required_size);
     Allocator.Write(buffer.HostBuffer, data, offset);
-    Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
+    TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
 }
 void BufferManager::Insert(Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
     if (data.empty() || buffer.Size + data.size() > GetAllocatedSize(buffer)) return;
@@ -62,14 +62,14 @@ void BufferManager::Insert(Buffer &buffer, std::span<const std::byte> data, vk::
     }
     Allocator.Write(buffer.HostBuffer, data, offset);
     buffer.Size += data.size();
-    Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, buffer.Size - offset});
+    TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, buffer.Size - offset});
 }
 void BufferManager::Erase(Buffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
     if (size == 0 || offset + size > buffer.Size) return;
 
     if (const auto move_size = buffer.Size - (offset + size); move_size > 0) {
         Allocator.Move(buffer.HostBuffer, offset + size, offset, move_size);
-        Cb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
+        TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
     }
     buffer.Size -= size;
 }

@@ -14,6 +14,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <entt/entity/registry.hpp>
 #include <nfd.h>
+#include <vulkan/vulkan_to_string.hpp>
 
 #include <array>
 #include <format>
@@ -379,7 +380,7 @@ int main(int, char **) {
         if (GetFrameCount() == 1) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.35f, nullptr, &dockspace_id);
             auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-            DockBuilderDockWindow(windows.Metrics.Name, extra_node_id);
+            DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
@@ -421,7 +422,7 @@ int main(int, char **) {
                 EndMenu();
             }
             if (BeginMenu("Windows")) {
-                MenuItem(windows.Metrics.Name, nullptr, &windows.Metrics.Visible);
+                MenuItem(windows.Debug.Name, nullptr, &windows.Debug.Visible);
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
                 MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
                 MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
@@ -431,10 +432,49 @@ int main(int, char **) {
             EndMainMenuBar();
         }
 
-        if (windows.Metrics.Visible) {
-            if (Begin(windows.Metrics.Name, &windows.Metrics.Visible)) {
-                const float example = 0.5f;
-                SliderFloat("example", (float *)&example, 0.f, 1.f);
+        if (windows.Debug.Visible) {
+            if (Begin(windows.Debug.Name, &windows.Debug.Visible)) {
+                if (BeginTabBar("Debug")) {
+                    if (BeginTabItem("ImGui")) {
+                        Text("Dear ImGui %s (%d)", IMGUI_VERSION, IMGUI_VERSION_NUM);
+                        Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+                        Text("%d vertices, %d indices (%d triangles)", io.MetricsRenderVertices, io.MetricsRenderIndices, io.MetricsRenderIndices / 3);
+                        const auto &g = *GImGui;
+                        Text("%d visible windows, %d current allocations", io.MetricsRenderWindows, g.DebugAllocInfo.TotalAllocCount - g.DebugAllocInfo.TotalFreeCount);
+                        Separator();
+                        Text("See [Windows->%s] for more details.", windows.ImGuiDemo.Name);
+                        EndTabItem();
+                    }
+                    if (BeginTabItem("Vulkan")) {
+                        SeparatorText("General");
+                        const auto &props = vc->PhysicalDevice.getProperties();
+                        Text("API version: %d.%d.%d", VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion));
+                        Text("Driver version: %d.%d.%d", VK_VERSION_MAJOR(props.driverVersion), VK_VERSION_MINOR(props.driverVersion), VK_VERSION_PATCH(props.driverVersion));
+                        Text("Vendor ID: 0x%04X", props.vendorID);
+                        SeparatorText("Device");
+                        Text("ID: 0x%04X", props.deviceID);
+                        Text("Type: %s", vk::to_string(props.deviceType).c_str());
+                        Text("Name: %s", props.deviceName.data());
+
+                        SeparatorText("ImGui_ImplVulkanH_Window");
+                        Text("Dimensions: %dx%d", wd.Width, wd.Height);
+                        Text(
+                            "Surface\n\tFormat: %s\n\tColor space: %s",
+                            vk::to_string(vk::Format(wd.SurfaceFormat.format)).c_str(),
+                            vk::to_string(vk::ColorSpaceKHR(wd.SurfaceFormat.colorSpace)).c_str()
+                        );
+                        Text("Present mode: %s", vk::to_string(vk::PresentModeKHR(wd.PresentMode)).c_str());
+                        Text("Image count: %d", wd.ImageCount);
+                        Text("Semaphore count: %d", wd.SemaphoreCount);
+                        EndTabItem();
+                    }
+                    if (BeginTabItem("Scene")) {
+                        SeparatorText("Buffer memory");
+                        TextUnformatted(scene->DebugBufferHeapUsage(vc->PhysicalDevice).c_str());
+                        EndTabItem();
+                    }
+                    EndTabBar();
+                }
             }
             End();
         }

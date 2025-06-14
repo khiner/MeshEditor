@@ -25,18 +25,18 @@ struct Buffer {
 
 // Wraps an allocator and a transfer command buffer to manage `mvk::Buffer`s.
 struct BufferManager {
-    BufferManager(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandBuffer cb)
-        : Cb(cb), Allocator(pd, d, instance) {
-        Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    BufferManager(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandBuffer transfer_cb)
+        : TransferCb(transfer_cb), Allocator(pd, d, instance) {
+        TransferCb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     }
     ~BufferManager() {
-        Cb.end();
+        TransferCb.end();
     }
 
     void Begin() const {
         for (auto stale_buffer : StaleBuffers) Allocator.Destroy(stale_buffer);
         StaleBuffers.clear();
-        Cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        TransferCb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     }
 
     Buffer Allocate(vk::DeviceSize size, vk::BufferUsageFlags usage) const {
@@ -50,6 +50,7 @@ struct BufferManager {
         Invalidate(buffer.DeviceBuffer);
     }
 
+    const BufferAllocator &GetAllocator() const { return Allocator; }
     vk::DeviceSize GetAllocatedSize(const Buffer &b) const { return Allocator.GetAllocatedSize(b.DeviceBuffer); }
 
     Buffer Create(std::span<const std::byte>, vk::BufferUsageFlags) const;
@@ -69,7 +70,7 @@ struct BufferManager {
     // Doesn't free memory, so the allocated size will be greater than the used size.
     void Erase(Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
 
-    vk::CommandBuffer Cb; // Transfer command buffer
+    vk::CommandBuffer TransferCb;
 
 private:
     BufferAllocator Allocator;
