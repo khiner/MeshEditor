@@ -15,8 +15,13 @@ struct ShaderResources;
 
 using ShaderType = vk::ShaderStageFlagBits;
 
+struct ShaderTypePath {
+    ShaderType Type;
+    fs::path Path; // Paths are relative to the `Shaders` directory.
+};
+
 struct Shaders {
-    Shaders(std::unordered_map<ShaderType, fs::path> &&paths);
+    Shaders(std::vector<ShaderTypePath>);
     Shaders(Shaders &&);
     ~Shaders();
 
@@ -24,16 +29,21 @@ struct Shaders {
 
     // Populates all fields.
     std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(vk::Device);
-    std::vector<uint> Compile(ShaderType) const;
 
     bool HasBinding(std::string_view name) const { return BindingByName.contains(name); }
     uint GetBinding(std::string_view name) const { return BindingByName.at(name); }
+    const auto &GetLayoutBindings() const { return LayoutBindings; }
 
-    std::unordered_map<ShaderType, fs::path> Paths; // Paths are relative to the `Shaders` directory.
-    std::unordered_map<ShaderType, vk::UniqueShaderModule> Modules;
-    std::unordered_map<ShaderType, std::unique_ptr<spirv_cross::ShaderResources>> Resources;
-    std::vector<vk::DescriptorSetLayoutBinding> LayoutBindings; // Sorted by binding number.
-    std::unordered_map<std::string_view, uint> BindingByName;
+private:
+    std::vector<vk::DescriptorSetLayoutBinding> LayoutBindings{}; // Sorted by binding number.
+    std::unordered_map<std::string_view, uint> BindingByName{};
+
+    struct ShaderResource {
+        ShaderTypePath TypePath;
+        vk::UniqueShaderModule Module{};
+        std::unique_ptr<spirv_cross::ShaderResources> Resources{};
+    };
+    std::vector<ShaderResource> Resources;
 };
 
 // Convenience generators for default pipeline states.

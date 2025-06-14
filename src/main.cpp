@@ -15,6 +15,7 @@
 #include <entt/entity/registry.hpp>
 #include <nfd.h>
 
+#include <array>
 #include <format>
 #include <iostream>
 #include <numeric>
@@ -84,19 +85,21 @@ using namespace ImGui;
 enum class FontFamily {
     Main,
     Monospace,
+    Count
 };
 
 constexpr float FontAtlasScale = 2; // Rasterize to a scaled-up texture and scale down the font size globally, for sharper text.
 ImFont *MainFont{nullptr}, *MonospaceFont{nullptr};
 ImFont *AddFont(FontFamily family, const std::string_view font_file) {
     static const auto FontsPath = fs::path("./") / "res" / "fonts";
-    // These are eyeballed.
-    static const std::unordered_map<FontFamily, uint> PixelsForFamily{
-        {FontFamily::Main, 15},
-        {FontFamily::Monospace, 17},
-    };
-
-    return GetIO().Fonts->AddFontFromFileTTF((FontsPath / font_file).c_str(), PixelsForFamily.at(family) * FontAtlasScale);
+    static constexpr auto PixelsForFamily = [] {
+        // These are eyeballed.
+        std::array<uint, size_t(FontFamily::Count)> v{};
+        v[size_t(FontFamily::Main)] = 15;
+        v[size_t(FontFamily::Monospace)] = 17;
+        return v;
+    }();
+    return GetIO().Fonts->AddFontFromFileTTF((FontsPath / font_file).c_str(), PixelsForFamily[size_t(family)] * FontAtlasScale);
 }
 void InitFonts(float scale = 1.f) {
     MainFont = AddFont(FontFamily::Main, "Inter-Regular.ttf");

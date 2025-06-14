@@ -7,6 +7,9 @@
 #include <spirv_cross/spirv_cross.hpp>
 
 #include <format>
+#include <ranges>
+
+using std::views::transform, std::ranges::to;
 
 #ifdef RELEASE_BUILD
 // All files in `src/shaders` are copied to `build/shaders` at build time.
@@ -15,68 +18,62 @@ static const fs::path ShadersDir = "Shaders";
 static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
 #endif
 
-Shaders::Shaders(std::unordered_map<ShaderType, fs::path> &&paths) : Paths(std::move(paths)) {}
+Shaders::Shaders(std::vector<ShaderTypePath> type_paths)
+    : Resources(type_paths | transform([](const auto &tp) { return ShaderResource{tp}; }) | to<std::vector>()) {}
 Shaders::Shaders(Shaders &&) = default;
 Shaders::~Shaders() = default;
+
 Shaders &Shaders::operator=(Shaders &&) = default;
 
-std::vector<uint> Shaders::Compile(ShaderType type) const {
-    if (!Paths.contains(type)) throw std::runtime_error(std::format("No path for shader type: {}", int(type)));
-
-    static const shaderc::Compiler compiler;
-    static shaderc::CompileOptions compile_opts;
-    compile_opts.SetGenerateDebugInfo(); // To get resource variable names for linking with their binding.
-    compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
-
-    shaderc_shader_kind kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader : shaderc_glsl_fragment_shader;
-    const std::string path = Paths.at(type);
-    const std::string shader_text = File::Read(ShadersDir / path);
-
-    const auto spirv = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
-    if (spirv.GetCompilationStatus() != shaderc_compilation_status_success) {
-        // todo type to string
-        throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), spirv.GetErrorMessage()));
-    }
-    return {spirv.cbegin(), spirv.cend()};
-}
-
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
-    Modules.clear();
-    Resources.clear();
     LayoutBindings.clear();
     BindingByName.clear();
 
-    std::vector<vk::PipelineShaderStageCreateInfo> stages;
-    stages.reserve(Paths.size());
-    for (const auto &[type, path] : Paths) {
-        const auto &spirv = Compile(type);
-        spirv_cross::Compiler comp(spirv);
-        Resources[type] = std::make_unique<spirv_cross::ShaderResources>(comp.get_shader_resources());
-        Modules[type] = device.createShaderModuleUnique({{}, spirv});
-
-        for (const auto &resource : Resources.at(type)->uniform_buffers) {
-            // Only using a single set for now. Otherwise, we'd group LayoutBindings by set.
-            // uint set = comp.get_decoration(resource.id, spv::DecorationDescriptorSet);
-
-            const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-            if (!BindingByName.contains(resource.name)) {
-                BindingByName.emplace(resource.name, binding);
-                // Keep LayoutBindings sorted by binding number.
-                const auto pos = std::lower_bound(LayoutBindings.begin(), LayoutBindings.end(), binding, [](const auto &b, uint i) { return b.binding < i; });
-                LayoutBindings.insert(pos, {binding, vk::DescriptorType::eUniformBuffer, 1, type, nullptr});
-            } else {
-                LayoutBindings[binding].stageFlags |= type; // This binding is used in multiple stages.
+    auto stages =
+        Resources | transform([this, device](auto &resource) {
+            static const shaderc::Compiler compiler;
+            static const auto compile_opts = [] {
+                shaderc::CompileOptions opts;
+                opts.SetGenerateDebugInfo(); // To get resource variable names for linking with their binding.
+                opts.SetOptimizationLevel(shaderc_optimization_level_performance);
+                return opts;
+            }();
+            const auto type = resource.TypePath.Type;
+            const auto shader_text = File::Read(ShadersDir / resource.TypePath.Path);
+            const auto kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader : shaderc_glsl_fragment_shader;
+            const auto comp_result = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
+            if (comp_result.GetCompilationStatus() != shaderc_compilation_status_success) {
+                // todo type to string
+                throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), comp_result.GetErrorMessage()));
             }
-        }
+            std::vector<uint> spirv_words{comp_result.cbegin(), comp_result.cend()};
+            resource.Module = device.createShaderModuleUnique({{}, spirv_words});
+            spirv_cross::Compiler comp(std::move(spirv_words));
+            resource.Resources = std::make_unique<spirv_cross::ShaderResources>(comp.get_shader_resources());
 
-        for (const auto &resource : Resources.at(type)->sampled_images) {
-            const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-            LayoutBindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
-            BindingByName.emplace(resource.name, binding);
-        }
+            for (const auto &resource : resource.Resources->uniform_buffers) {
+                // Only using a single set for now. Otherwise, we'd group LayoutBindings by set.
+                // uint set = comp.get_decoration(resource.id, spv::DecorationDescriptorSet);
 
-        stages.push_back({vk::PipelineShaderStageCreateFlags{}, type, *Modules.at(type), "main"});
-    }
+                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+                if (!BindingByName.contains(resource.name)) {
+                    BindingByName.emplace(resource.name, binding);
+                    // Keep LayoutBindings sorted by binding number.
+                    const auto pos = std::lower_bound(LayoutBindings.begin(), LayoutBindings.end(), binding, [](const auto &b, uint i) { return b.binding < i; });
+                    LayoutBindings.insert(pos, {binding, vk::DescriptorType::eUniformBuffer, 1, type, nullptr});
+                } else {
+                    LayoutBindings[binding].stageFlags |= type; // This binding is used in multiple stages.
+                }
+            }
+
+            for (const auto &resource : resource.Resources->sampled_images) {
+                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+                LayoutBindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
+                BindingByName.emplace(resource.name, binding);
+            }
+            return vk::PipelineShaderStageCreateInfo{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
+        }) |
+        to<std::vector>();
     return stages;
 }
 
@@ -96,7 +93,7 @@ ShaderPipeline::ShaderPipeline(
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
     Shaders.CompileAll(Device); // Populates descriptor sets. todo This is done redundantly for all shaders in `Compile` at app startup.
-    DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.LayoutBindings});
+    DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.GetLayoutBindings()});
     PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
     const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, 1, &(*DescriptorSetLayout)};
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());

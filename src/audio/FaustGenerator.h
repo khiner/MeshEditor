@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <string_view>
+#include <unordered_map>
 
 using OnFaustCodeChanged = std::function<void(std::string_view)>;
 
