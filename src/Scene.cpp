@@ -1134,7 +1134,7 @@ ray Scene::GetMouseWorldRay() const {
     const vec2 mouse_pos = ToGlm((GetMousePos() - GetCursorScreenPos()) / GetContentRegionAvail());
     // Normalized Device Coordinates in [-1,1]^2
     const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y};
-    return Camera.ClipPosToWorldRay(mouse_pos_ndc, Extent.width / Extent.height);
+    return Camera.ClipPosToWorldRay(mouse_pos_ndc, float(Extent.width) / float(Extent.height));
 }
 
 void Scene::Interact() {
