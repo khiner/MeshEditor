@@ -10,5 +10,6 @@ struct WindowsState {
         SceneControls{"Scene controls"},
         Scene{"Scene"},
         ImGuiDemo{"Dear ImGui Demo", false},
-        ImPlotDemo{"ImPlot Demo", false};
+        ImPlotDemo{"ImPlot Demo", false},
+        Metrics{"Metrics", false};
 };

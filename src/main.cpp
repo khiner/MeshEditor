@@ -375,9 +375,10 @@ int main(int, char **) {
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (GetFrameCount() == 1) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.35f, nullptr, &dockspace_id);
-            auto demo_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-            DockBuilderDockWindow(windows.ImGuiDemo.Name, demo_node_id);
-            DockBuilderDockWindow(windows.ImPlotDemo.Name, demo_node_id);
+            auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
+            DockBuilderDockWindow(windows.Metrics.Name, extra_node_id);
+            DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
+            DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
             DockBuilderDockWindow(windows.Scene.Name, dockspace_id);
         }
@@ -417,6 +418,7 @@ int main(int, char **) {
                 EndMenu();
             }
             if (BeginMenu("Windows")) {
+                MenuItem(windows.Metrics.Name, nullptr, &windows.Metrics.Visible);
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
                 MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
                 MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
@@ -426,11 +428,18 @@ int main(int, char **) {
             EndMainMenuBar();
         }
 
+        if (windows.Metrics.Visible) {
+            if (Begin(windows.Metrics.Name, &windows.Metrics.Visible)) {
+                const float example = 0.5f;
+                SliderFloat("example", (float *)&example, 0.f, 1.f);
+            }
+            End();
+        }
         if (windows.ImGuiDemo.Visible) ImGui::ShowDemoWindow(&windows.ImGuiDemo.Visible);
         if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
 
-        if (windows.SceneControls.Visible && Begin(windows.SceneControls.Name, &windows.SceneControls.Visible)) {
-            if (BeginTabBar("Controls")) {
+        if (windows.SceneControls.Visible) {
+            if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible) && BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
                     scene->RenderControls();
                     EndTabItem();
@@ -464,8 +473,8 @@ int main(int, char **) {
                     SetCursorPos(cursor);
                 }
                 scene->RenderGizmo();
-                End();
             }
+            End();
             PopStyleVar();
 
             if (GetFrameCount() == 1) {
