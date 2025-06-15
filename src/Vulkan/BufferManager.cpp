@@ -17,60 +17,86 @@ uint64_t NextPowerOfTwo(uint64_t x) {
 }
 } // namespace
 
-vk::Buffer BufferManager::CreateStaging(std::span<const std::byte> data) const {
-    auto staging_buffer = Allocator.Allocate(data.size(), MemoryUsage::CpuOnly);
-    Allocator.Write(staging_buffer, data);
-    return staging_buffer;
+UniqueBuffers::UniqueBuffers(const BufferManager &manager, vk::DeviceSize size, vk::BufferUsageFlags usage)
+    : Manager(manager),
+      Usage(usage),
+      HostBuffer(*Manager, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc),
+      DeviceBuffer(*Manager, size, MemoryUsage::GpuOnly, usage) {}
+
+UniqueBuffers::UniqueBuffers(const BufferManager &manager, std::span<const std::byte> data, vk::BufferUsageFlags usage)
+    : UniqueBuffers(manager, data.size(), usage) {
+    Size = data.size();
+    HostBuffer.Write(data);
+    Manager.TransferCb.copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{0, 0, data.size()});
 }
 
-Buffer BufferManager::Create(std::span<const std::byte> data, vk::BufferUsageFlags usage) const {
-    auto buffer = Allocate(data.size(), usage);
-    buffer.Size = data.size();
-    Allocator.Write(buffer.HostBuffer, data);
-    TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{0, 0, data.size()});
-    return buffer;
-}
-void BufferManager::EnsureAllocated(Buffer &buffer, vk::DeviceSize required_size) const {
-    if (required_size == 0) return;
-    if (required_size <= GetAllocatedSize(buffer)) return;
+UniqueBuffers::UniqueBuffers(UniqueBuffers &&other)
+    : Manager(other.Manager),
+      Usage(other.Usage),
+      HostBuffer(std::move(other.HostBuffer)),
+      DeviceBuffer(std::move(other.DeviceBuffer)),
+      Size(other.Size) {}
 
-    // Create a new buffer with enough space.
-    auto new_buffer = Allocate(NextPowerOfTwo(required_size), buffer.Usage);
-    if (buffer.Size > 0) {
-        // Copy the old buffer into the new buffer (host and device).
-        Allocator.Write(new_buffer.HostBuffer, Allocator.GetData(buffer.HostBuffer));
-        new_buffer.Size = buffer.Size;
-        TransferCb.copyBuffer(buffer.DeviceBuffer, new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffer.Size});
+UniqueBuffers::~UniqueBuffers() {
+    Manager.MarkStale(std::move(HostBuffer));
+    Manager.MarkStale(std::move(DeviceBuffer));
+}
+
+UniqueBuffers &UniqueBuffers::operator=(UniqueBuffers &&other) {
+    if (this != &other) {
+        Manager.MarkStale(std::move(HostBuffer));
+        Manager.MarkStale(std::move(DeviceBuffer));
+        HostBuffer = std::move(other.HostBuffer);
+        DeviceBuffer = std::move(other.DeviceBuffer);
+        Size = other.Size;
+        Usage = other.Usage;
     }
-    Invalidate(buffer);
-    buffer = std::move(new_buffer);
+    return *this;
 }
-void BufferManager::Update(Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
+
+void UniqueBuffers::Update(std::span<const std::byte> data, vk::DeviceSize offset) {
     if (data.empty()) return;
 
     const auto required_size = offset + data.size();
-    EnsureAllocated(buffer, required_size);
-    buffer.Size = std::max(buffer.Size, required_size);
-    Allocator.Write(buffer.HostBuffer, data, offset);
-    TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
+    EnsureAllocated(required_size);
+    Size = std::max(Size, required_size);
+    HostBuffer.Write(data, offset);
+    Manager.TransferCb.copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
 }
-void BufferManager::Insert(Buffer &buffer, std::span<const std::byte> data, vk::DeviceSize offset) const {
-    if (data.empty() || buffer.Size + data.size() > GetAllocatedSize(buffer)) return;
 
-    if (offset < buffer.Size) {
-        Allocator.Move(buffer.HostBuffer, offset, offset + data.size(), buffer.Size - offset);
+void UniqueBuffers::EnsureAllocated(vk::DeviceSize required_size) {
+    if (required_size == 0) return;
+    if (required_size <= DeviceBuffer.GetAllocatedSize()) return;
+
+    // Create a new buffer with enough space.
+    const auto new_size = NextPowerOfTwo(required_size);
+    UniqueBuffers new_buffer(Manager, new_size, Usage);
+    if (Size > 0) {
+        // Copy the old buffer into the new buffer (host and device).
+        new_buffer.HostBuffer.Write(HostBuffer.GetData());
+        new_buffer.Size = Size;
+        Manager.TransferCb.copyBuffer(*DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, Size});
     }
-    Allocator.Write(buffer.HostBuffer, data, offset);
-    buffer.Size += data.size();
-    TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, buffer.Size - offset});
+    *this = std::move(new_buffer);
 }
-void BufferManager::Erase(Buffer &buffer, vk::DeviceSize offset, vk::DeviceSize size) const {
-    if (size == 0 || offset + size > buffer.Size) return;
 
-    if (const auto move_size = buffer.Size - (offset + size); move_size > 0) {
-        Allocator.Move(buffer.HostBuffer, offset + size, offset, move_size);
-        TransferCb.copyBuffer(buffer.HostBuffer, buffer.DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
+void UniqueBuffers::Insert(std::span<const std::byte> data, vk::DeviceSize offset) {
+    if (data.empty() || Size + data.size() > DeviceBuffer.GetAllocatedSize()) return;
+
+    if (offset < Size) {
+        HostBuffer.Move(offset, offset + data.size(), Size - offset);
     }
-    buffer.Size -= size;
+    HostBuffer.Write(data, offset);
+    Size += data.size();
+    Manager.TransferCb.copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{offset, offset, Size - offset});
+}
+void UniqueBuffers::Erase(vk::DeviceSize offset, vk::DeviceSize size) {
+    if (size == 0 || offset + size > Size) return;
+
+    if (const auto move_size = Size - (offset + size); move_size > 0) {
+        HostBuffer.Move(offset + size, offset, move_size);
+        Manager.TransferCb.copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
+    }
+    Size -= size;
 }
 } // namespace mvk

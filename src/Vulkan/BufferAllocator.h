@@ -9,6 +9,8 @@
 struct VmaAllocator_T;
 using VmaAllocator = VmaAllocator_T *;
 
+struct BufferAllocator;
+
 namespace mvk {
 enum class MemoryUsage {
     Unknown,
@@ -18,24 +20,43 @@ enum class MemoryUsage {
     GpuToCpu,
 };
 
-struct BufferAllocator {
-    BufferAllocator(vk::PhysicalDevice, vk::Device, VkInstance);
-    ~BufferAllocator();
+struct UniqueBuffer {
+    UniqueBuffer(VmaAllocator, vk::DeviceSize, mvk::MemoryUsage, vk::BufferUsageFlags = vk::BufferUsageFlagBits::eTransferSrc);
+    UniqueBuffer(VmaAllocator, std::span<const std::byte>, mvk::MemoryUsage, vk::BufferUsageFlags = vk::BufferUsageFlagBits::eTransferSrc);
+    UniqueBuffer(UniqueBuffer &&);
+    UniqueBuffer(const UniqueBuffer &) = delete;
+    ~UniqueBuffer();
 
-    vk::Buffer Allocate(vk::DeviceSize, MemoryUsage, vk::BufferUsageFlags = vk::BufferUsageFlagBits::eTransferSrc) const;
-    void Destroy(vk::Buffer) const;
+    UniqueBuffer &operator=(UniqueBuffer &&);
+    UniqueBuffer &operator=(const UniqueBuffer &) = delete;
 
-    std::span<const std::byte> GetData(vk::Buffer) const;
-    vk::DeviceSize GetAllocatedSize(vk::Buffer) const;
+    vk::Buffer operator*() const { return Get(); }
+    vk::Buffer Get() const;
+    std::span<const std::byte> GetData() const;
+    vk::DeviceSize GetAllocatedSize() const;
 
-    void Write(vk::Buffer, std::span<const std::byte>, vk::DeviceSize offset = 0) const;
-    void Move(vk::Buffer, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
-
-    std::string DebugHeapUsage(vk::PhysicalDevice) const;
+    void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
+    void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
 
 private:
-    std::span<std::byte> GetMappedData(vk::Buffer) const;
+    std::span<std::byte> GetMappedData() const;
 
-    VmaAllocator Vma{nullptr};
+    struct Impl;
+    std::unique_ptr<Impl> Imp;
+};
+
+struct UniqueVmaAllocator {
+    UniqueVmaAllocator(vk::PhysicalDevice, vk::Device, VkInstance);
+    ~UniqueVmaAllocator();
+
+    VmaAllocator operator*() const { return Get(); }
+    VmaAllocator Get() const;
+
+    std::string DebugHeapUsage() const;
+
+private:
+    vk::PhysicalDevice PhysicalDevice;
+    vk::Device Device;
+    VmaAllocator Vma;
 };
 } // namespace mvk

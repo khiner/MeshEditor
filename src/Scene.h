@@ -17,12 +17,19 @@
 #include <memory>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 using uint = uint32_t;
 
 namespace mvk {
 struct RenderBuffers {
-    Buffer Vertices, Indices;
+    RenderBuffers(UniqueBuffers &&vertices, UniqueBuffers &&indices)
+        : Vertices(std::move(vertices)), Indices(std::move(indices)) {}
+    RenderBuffers(RenderBuffers &&) = default;
+    RenderBuffers(const RenderBuffers &) = delete;
+    RenderBuffers &operator=(const RenderBuffers &) = delete;
+
+    UniqueBuffers Vertices, Indices;
 };
 } // namespace mvk
 
@@ -102,7 +109,7 @@ struct PipelineRenderer {
 
     // If `model_index` is set, only the model at that index is rendered.
     // Otherwise, all models are rendered.
-    void Render(vk::CommandBuffer, SPT, const mvk::RenderBuffers &, const mvk::Buffer &models, std::optional<uint> model_index = std::nullopt) const;
+    void Render(vk::CommandBuffer, SPT, const mvk::RenderBuffers &, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) const;
 };
 
 enum class SelectionMode {
@@ -225,7 +232,7 @@ struct Scene {
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
-    std::string DebugBufferHeapUsage(vk::PhysicalDevice pd) const { return BufferManager.GetAllocator().DebugHeapUsage(pd); }
+    std::string DebugBufferHeapUsage() const { return BufferManager.GetAllocator().DebugHeapUsage(); }
 
 private:
     SceneVulkanResources Vk;
@@ -234,7 +241,6 @@ private:
     vk::UniqueCommandBuffer TransferCommandBuffer, RenderCommandBuffer;
     std::array<vk::CommandBuffer, 2> CommandBuffers;
     vk::UniqueFence RenderFence, TransferFence;
-    mvk::BufferManager BufferManager;
 
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
@@ -251,10 +257,17 @@ private:
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.22, 0.22, 0.22, 1.f};
+    struct SilhouetteDisplay {
+        vec4 ActiveColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
+        vec4 SelectedColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
+    };
 
-    mvk::Buffer TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
+    SilhouetteDisplay SilhouetteDisplay;
 
     std::unique_ptr<ScenePipelines> Pipelines;
+
+    mvk::BufferManager BufferManager;
+    mvk::UniqueBuffers TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
     struct ModelGizmoState {
         ModelGizmo::Op Op{ModelGizmo::Op::Translate};
@@ -270,13 +283,6 @@ private:
     bool ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     static inline const std::vector NormalElements{MeshElement::Vertex, MeshElement::Face};
     std::unordered_set<MeshElement> ShownNormalElements{};
-
-    struct SilhouetteDisplay {
-        vec4 ActiveColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
-        vec4 SelectedColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
-    };
-
-    SilhouetteDisplay SilhouetteDisplay;
 
     bool CommandBufferDirty{false};
 
@@ -297,8 +303,8 @@ private:
 
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
-            BufferManager.Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            BufferManager.Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            mvk::UniqueBuffers(BufferManager, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            mvk::UniqueBuffers(BufferManager, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 
@@ -307,8 +313,8 @@ private:
     template<size_t N>
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
         return {
-            BufferManager.Create(as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            BufferManager.Create(as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            mvk::UniqueBuffers(BufferManager, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            mvk::UniqueBuffers(BufferManager, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 

@@ -98,7 +98,6 @@ struct ShaderPipeline {
         std::optional<vk::PushConstantRange> push_constant_range = std::nullopt
     );
     ShaderPipeline(ShaderPipeline &&) = default;
-    ShaderPipeline &operator=(ShaderPipeline &&) = default;
     ~ShaderPipeline() = default;
 
     vk::Device Device;

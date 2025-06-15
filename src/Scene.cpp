@@ -21,7 +21,7 @@ using std::views::transform;
 // Stored on parent entities.
 // Holds the `Model` of the parent entity at position 0, and children at 1+.
 struct ModelsBuffer {
-    mvk::Buffer Buffer;
+    mvk::UniqueBuffers Buffer;
 };
 struct BoundingBoxesBuffers {
     mvk::RenderBuffers Buffers;
@@ -31,6 +31,11 @@ struct BvhBoxesBuffers {
 };
 using MeshElementBuffers = std::unordered_map<MeshElement, mvk::RenderBuffers>;
 struct MeshBuffers {
+    MeshBuffers(MeshElementBuffers &&mesh, MeshElementBuffers &&normal_indicators)
+        : Mesh{std::move(mesh)}, NormalIndicators{std::move(normal_indicators)} {}
+    MeshBuffers(const MeshBuffers &) = delete;
+    MeshBuffers &operator=(const MeshBuffers &) = delete;
+
     MeshElementBuffers Mesh, NormalIndicators;
 };
 
@@ -107,18 +112,18 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
 // todo: consider updating `drawIndexed` to use a different strategy:
 //   -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
 //      vkCmdDrawIndexedIndirectCount & put the offsets in a UBO indexed with gl_DrawId.
-void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const mvk::RenderBuffers &render_buffers, const mvk::Buffer &models) {
+void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const mvk::RenderBuffers &render_buffers, const mvk::UniqueBuffers &models) {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
 
     // Bind buffers
     static constexpr vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
-    cb.bindVertexBuffers(0, {render_buffers.Vertices.DeviceBuffer}, vertex_buffer_offsets);
-    cb.bindIndexBuffer(render_buffers.Indices.DeviceBuffer, 0, vk::IndexType::eUint32);
-    cb.bindVertexBuffers(1, {models.DeviceBuffer}, models_buffer_offsets);
+    cb.bindVertexBuffers(0, {*render_buffers.Vertices.DeviceBuffer}, vertex_buffer_offsets);
+    cb.bindIndexBuffer(*render_buffers.Indices.DeviceBuffer, 0, vk::IndexType::eUint32);
+    cb.bindVertexBuffers(1, {*models.DeviceBuffer}, models_buffer_offsets);
 }
 
-void DrawIndexed(vk::CommandBuffer cb, const mvk::Buffer &indices, const mvk::Buffer &models, std::optional<uint> model_index = std::nullopt) {
+void DrawIndexed(vk::CommandBuffer cb, const mvk::UniqueBuffers &indices, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) {
     const uint index_count = indices.Size / sizeof(uint);
     const uint first_instance = model_index.value_or(0);
     const uint instance_count = model_index.has_value() ? 1 : models.Size / sizeof(Model);
@@ -135,7 +140,7 @@ void PipelineRenderer::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
 }
 
-void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::RenderBuffers &render_buffers, const mvk::Buffer &models, std::optional<uint> model_index) const {
+void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::RenderBuffers &render_buffers, const mvk::UniqueBuffers &models, std::optional<uint> model_index) const {
     Bind(cb, ShaderPipelines.at(spt), render_buffers, models);
     DrawIndexed(cb, render_buffers.Indices, models, model_index);
 }
@@ -155,65 +160,67 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
          vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
     );
-    // Write the bitmap into a staging buffer.
-    auto staging_buffer = BufferManager.CreateStaging(as_bytes(data));
+    {
+        // Write the bitmap into a temporary staging buffer.
+        mvk::UniqueBuffer staging_buffer(*BufferManager, as_bytes(data), mvk::MemoryUsage::CpuOnly);
 
-    // Record commands to copy from staging buffer to Vulkan image.
-    const auto &cb = BufferManager.TransferCb;
+        // Record commands to copy from staging buffer to Vulkan image.
+        const auto &cb = BufferManager.TransferCb;
 
-    // Transition the image layout to be ready for data transfer.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe,
-        vk::PipelineStageFlagBits::eTransfer,
-        {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
-        vk::ImageMemoryBarrier{
-            {}, // srcAccessMask
-            vk::AccessFlagBits::eTransferWrite, // dstAccessMask
-            {}, // oldLayout
-            vk::ImageLayout::eTransferDstOptimal, // newLayout
-            {}, // srcQueueFamilyIndex
-            {}, // dstQueueFamilyIndex
-            *image.Image, // image
-            ColorSubresourceRange // subresourceRange
-        }
-    );
+        // Transition the image layout to be ready for data transfer.
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe,
+            vk::PipelineStageFlagBits::eTransfer,
+            {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
+            vk::ImageMemoryBarrier{
+                {}, // srcAccessMask
+                vk::AccessFlagBits::eTransferWrite, // dstAccessMask
+                {}, // oldLayout
+                vk::ImageLayout::eTransferDstOptimal, // newLayout
+                {}, // srcQueueFamilyIndex
+                {}, // dstQueueFamilyIndex
+                *image.Image, // image
+                ColorSubresourceRange // subresourceRange
+            }
+        );
 
-    // Copy buffer to image.
-    cb.copyBufferToImage(
-        staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
-        vk::BufferImageCopy{
-            0, // bufferOffset
-            0, // bufferRowLength (tightly packed)
-            0, // bufferImageHeight
-            {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
-            {0, 0, 0}, // imageOffset
-            {width, height, 1} // imageExtent
-        }
-    );
+        // Copy buffer to image.
+        cb.copyBufferToImage(
+            *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
+            vk::BufferImageCopy{
+                0, // bufferOffset
+                0, // bufferRowLength (tightly packed)
+                0, // bufferImageHeight
+                {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
+                {0, 0, 0}, // imageOffset
+                {width, height, 1} // imageExtent
+            }
+        );
 
-    // Transition the image layout to be ready for shader sampling.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer,
-        vk::PipelineStageFlagBits::eFragmentShader,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{
-            vk::AccessFlagBits::eTransferWrite, // srcAccessMask
-            vk::AccessFlagBits::eShaderRead, // dstAccessMask
-            vk::ImageLayout::eTransferDstOptimal, // oldLayout
-            vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
-            {}, // srcQueueFamilyIndex
-            {}, // dstQueueFamilyIndex
-            *image.Image, // image
-            ColorSubresourceRange // subresourceRange
-        }
-    );
-    cb.end();
+        // Transition the image layout to be ready for shader sampling.
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eFragmentShader,
+            {}, {}, {},
+            vk::ImageMemoryBarrier{
+                vk::AccessFlagBits::eTransferWrite, // srcAccessMask
+                vk::AccessFlagBits::eShaderRead, // dstAccessMask
+                vk::ImageLayout::eTransferDstOptimal, // oldLayout
+                vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
+                {}, // srcQueueFamilyIndex
+                {}, // dstQueueFamilyIndex
+                *image.Image, // image
+                ColorSubresourceRange // subresourceRange
+            }
+        );
+        cb.end();
 
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    Vk.Queue.submit(submit, *TransferFence);
-    WaitFor(*TransferFence);
-    BufferManager.Invalidate(staging_buffer);
+        vk::SubmitInfo submit;
+        submit.setCommandBuffers(cb);
+        Vk.Queue.submit(submit, *TransferFence);
+        WaitFor(*TransferFence);
+    } // staging buffer is destroyed here
+
     BufferManager.Begin();
 
     return image;
@@ -589,8 +596,12 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       CommandBuffers{*TransferCommandBuffer, *RenderCommandBuffer},
       RenderFence(Vk.Device.createFenceUnique({})),
       TransferFence(Vk.Device.createFenceUnique({})),
+      Pipelines(std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
       BufferManager(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *TransferCommandBuffer),
-      Pipelines(std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)) {
+      TransformBuffer(BufferManager, sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer),
+      ViewProjNearFarBuffer(BufferManager, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer),
+      LightsBuffer(BufferManager, as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer),
+      SilhouetteDisplayBuffer(BufferManager, as_bytes(SilhouetteDisplay), vk::BufferUsageFlagBits::eUniformBuffer) {
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
@@ -603,13 +614,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
 
     UpdateEdgeColors();
-
-    TransformBuffer = BufferManager.Allocate(sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer);
-    ViewProjNearFarBuffer = BufferManager.Allocate(sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer);
     UpdateTransformBuffers();
 
-    LightsBuffer = BufferManager.Create(as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer);
-    SilhouetteDisplayBuffer = BufferManager.Create(as_bytes(SilhouetteDisplay), vk::BufferUsageFlagBits::eUniformBuffer);
     const auto transform_buffer = TransformBuffer.GetDescriptor();
     const auto lights_buffer = LightsBuffer.GetDescriptor();
     const auto view_proj_near_far_buffer = ViewProjNearFarBuffer.GetDescriptor();
@@ -701,12 +707,12 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     if (visible) {
         node.ModelBufferIndex = model_buffer.Size / sizeof(Model);
-        BufferManager.Insert(model_buffer, as_bytes(R.get<Model>(entity)), model_buffer.Size);
+        model_buffer.Insert(as_bytes(R.get<Model>(entity)), model_buffer.Size);
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
         const uint old_model_index = node.ModelBufferIndex;
-        BufferManager.Erase(model_buffer, old_model_index * sizeof(Model), sizeof(Model));
+        model_buffer.Erase(old_model_index * sizeof(Model), sizeof(Model));
         auto &parent_node = R.get<SceneNode>(parent);
         for (auto child : parent_node.Children) {
             if (auto &child_node = R.get<SceneNode>(child); child_node.ModelBufferIndex > old_model_index) {
@@ -718,8 +724,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 mvk::RenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
     return {
-        BufferManager.Create(as_bytes(buffers.Vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-        BufferManager.Create(as_bytes(buffers.Indices), vk::BufferUsageFlagBits::eIndexBuffer)
+        mvk::UniqueBuffers{BufferManager, as_bytes(buffers.Vertices), vk::BufferUsageFlagBits::eVertexBuffer},
+        mvk::UniqueBuffers{BufferManager, as_bytes(buffers.Indices), vk::BufferUsageFlagBits::eIndexBuffer}
     };
 }
 
@@ -729,8 +735,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, CreateName(R, info.Name));
-
-    R.emplace<ModelsBuffer>(entity, BufferManager.Allocate(sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer));
+    R.emplace<ModelsBuffer>(entity, mvk::UniqueBuffers{BufferManager, sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer});
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(entity, false);
 
@@ -776,15 +781,15 @@ void Scene::ClearMeshes() {
 void Scene::ReplaceMesh(entt::entity entity, Mesh &&mesh) {
     auto &mesh_buffers = R.get<MeshBuffers>(entity);
     for (auto &[element, buffers] : mesh_buffers.Mesh) {
-        BufferManager.Update(buffers.Vertices, mesh.CreateVertices(element));
-        BufferManager.Update(buffers.Indices, mesh.CreateIndices(element));
+        buffers.Vertices.Update(mesh.CreateVertices(element));
+        buffers.Indices.Update(mesh.CreateIndices(element));
     }
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-        BufferManager.Update(buffers.Vertices, mesh.CreateNormalVertices(element));
-        BufferManager.Update(buffers.Indices, mesh.CreateNormalIndices(element));
+        buffers.Vertices.Update(mesh.CreateNormalVertices(element));
+        buffers.Indices.Update(mesh.CreateNormalIndices(element));
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(entity)) {
-        BufferManager.Update(buffers->Buffers.Vertices, CreateBoxVertices(mesh.BoundingBox, EdgeColor));
+        buffers->Buffers.Vertices.Update(CreateBoxVertices(mesh.BoundingBox, EdgeColor));
         // Box indices are always the same.
     }
     R.replace<Mesh>(entity, std::move(mesh));
@@ -799,7 +804,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{}_instance_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
-    BufferManager.EnsureAllocated(model_buffer, model_buffer.Size + sizeof(Model));
+    model_buffer.EnsureAllocated(model_buffer.Size + sizeof(Model));
     SetVisible(entity, info.Visible);
     if (info.Select) SetActive(entity);
     InvalidateCommandBuffer();
@@ -878,7 +883,7 @@ void Scene::UpdateRenderBuffers(entt::entity entity) {
                                                                       MeshElementIndex{}
         };
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
-            BufferManager.Update(mesh_buffers.Mesh.at(element).Vertices, mesh->CreateVertices(element, selected_element));
+            mesh_buffers.Mesh.at(element).Vertices.Update(mesh->CreateVertices(element, selected_element));
         }
         InvalidateCommandBuffer();
     };
@@ -1005,17 +1010,17 @@ void Scene::UpdateEdgeColors() {
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const ViewProj view_proj{Camera.GetView(), Camera.GetProjection(aspect_ratio)};
-    BufferManager.Update(TransformBuffer, as_bytes(view_proj));
+    TransformBuffer.Update(as_bytes(view_proj));
 
     const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
-    BufferManager.Update(ViewProjNearFarBuffer, as_bytes(vpnf));
+    ViewProjNearFarBuffer.Update(as_bytes(vpnf));
     InvalidateCommandBuffer();
 }
 
 void Scene::UpdateModelBuffer(entt::entity entity) {
     if (const auto buffer_index = GetModelBufferIndex(entity)) {
         const auto &model = R.get<Model>(entity);
-        BufferManager.Update(R.get<ModelsBuffer>(GetParentEntity(entity)).Buffer, as_bytes(model), *buffer_index * sizeof(Model));
+        R.get<ModelsBuffer>(GetParentEntity(entity)).Buffer.Update(as_bytes(model), *buffer_index * sizeof(Model));
     }
 }
 
@@ -1552,7 +1557,7 @@ void Scene::RenderControls() {
                 SeparatorText("Silhouette");
                 if (ColorEdit4("Active color", &SilhouetteDisplay.ActiveColor[0]) ||
                     ColorEdit4("Selected color", &SilhouetteDisplay.SelectedColor[0])) {
-                    BufferManager.Update(SilhouetteDisplayBuffer, as_bytes(SilhouetteDisplay));
+                    SilhouetteDisplayBuffer.Update(as_bytes(SilhouetteDisplay));
                     InvalidateCommandBuffer();
                 }
             }
@@ -1614,7 +1619,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                BufferManager.Update(LightsBuffer, as_bytes(Lights));
+                LightsBuffer.Update(as_bytes(Lights));
                 InvalidateCommandBuffer();
             }
             EndTabItem();

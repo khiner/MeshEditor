@@ -3,7 +3,6 @@
 #include "BufferAllocator.h"
 
 #include <array>
-#include <unordered_set>
 #include <vector>
 
 template<typename T>
@@ -14,16 +13,41 @@ template<typename T>
 constexpr std::span<const std::byte> as_bytes(const T &v) { return {reinterpret_cast<const std::byte *>(&v), sizeof(T)}; }
 
 namespace mvk {
-struct Buffer {
+struct BufferManager;
+
+struct UniqueBuffers {
+    UniqueBuffers(const BufferManager &, vk::DeviceSize, vk::BufferUsageFlags);
+    UniqueBuffers(const BufferManager &, std::span<const std::byte>, vk::BufferUsageFlags);
+    UniqueBuffers(const UniqueBuffers &) = delete;
+    UniqueBuffers(UniqueBuffers &&);
+    UniqueBuffers &operator=(const UniqueBuffers &) = delete;
+    ~UniqueBuffers();
+
+    UniqueBuffers &operator=(UniqueBuffers &&);
+
+    // Updates the buffer with the given data, growing it if necessary.
+    void Update(std::span<const std::byte>, vk::DeviceSize offset = 0);
+
+    // Grows the buffer if it's not big enough (to the next power of 2).
+    void EnsureAllocated(vk::DeviceSize required_size);
+    template<typename T> void Update(const std::vector<T> &data) { Update(as_bytes(data)); }
+    // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
+    // **Does nothing if the buffer doesn't have enough enough space allocated.**
+    void Insert(std::span<const std::byte>, vk::DeviceSize offset);
+    // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
+    // Doesn't free memory, so the allocated size will be greater than the used size.
+    void Erase(vk::DeviceSize offset, vk::DeviceSize size);
+
+    const BufferManager &Manager;
     vk::BufferUsageFlags Usage;
-    vk::Buffer HostBuffer; // Host (staging) buffer (CPU)
-    vk::Buffer DeviceBuffer; // Device buffer (GPU)
+    UniqueBuffer HostBuffer; // Host (staging) buffer (CPU)
+    UniqueBuffer DeviceBuffer; // Device buffer (GPU)
     vk::DeviceSize Size{0}; // Used size (not allocated size)
 
-    vk::DescriptorBufferInfo GetDescriptor() const { return {DeviceBuffer, 0, vk::WholeSize}; }
+    vk::DescriptorBufferInfo GetDescriptor() const { return {*DeviceBuffer, 0, vk::WholeSize}; }
 };
 
-// Wraps an allocator and a transfer command buffer to manage `mvk::Buffer`s.
+// Wraps an allocator and a transfer command buffer to manage `mvk::UniqueBuffer`s.
 struct BufferManager {
     BufferManager(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandBuffer transfer_cb)
         : TransferCb(transfer_cb), Allocator(pd, d, instance) {
@@ -33,48 +57,22 @@ struct BufferManager {
         TransferCb.end();
     }
 
+    VmaAllocator operator*() const { return *GetAllocator(); }
+    const UniqueVmaAllocator &GetAllocator() const { return Allocator; }
+
     void Begin() const {
-        for (auto stale_buffer : StaleBuffers) Allocator.Destroy(stale_buffer);
         StaleBuffers.clear();
         TransferCb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     }
 
-    Buffer Allocate(vk::DeviceSize size, vk::BufferUsageFlags usage) const {
-        return {usage, Allocator.Allocate(size, MemoryUsage::CpuOnly), Allocator.Allocate(size, MemoryUsage::GpuOnly, usage)};
-    }
-
     // Mark the buffer as unused so it can be garbage collected after the command buffer is submitted.
-    void Invalidate(vk::Buffer buffer) const { StaleBuffers.insert(static_cast<VkBuffer>(buffer)); }
-    void Invalidate(const Buffer &buffer) const {
-        Invalidate(buffer.HostBuffer);
-        Invalidate(buffer.DeviceBuffer);
-    }
-
-    const BufferAllocator &GetAllocator() const { return Allocator; }
-    vk::DeviceSize GetAllocatedSize(const Buffer &b) const { return Allocator.GetAllocatedSize(b.DeviceBuffer); }
-
-    Buffer Create(std::span<const std::byte>, vk::BufferUsageFlags) const;
-    vk::Buffer CreateStaging(std::span<const std::byte>) const;
-
-    // Updates the buffer with the given data, growing it if necessary.
-    void Update(Buffer &, std::span<const std::byte>, vk::DeviceSize offset = 0) const;
-    // Grows the buffer if it's not big enough (to the next power of 2).
-    void EnsureAllocated(Buffer &, vk::DeviceSize required_size) const;
-    template<typename T> void Update(Buffer &buffer, const std::vector<T> &data) const {
-        Update(buffer, as_bytes(data));
-    }
-    // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
-    // **Does nothing if the buffer doesn't have enough enough space allocated.**
-    void Insert(Buffer &, std::span<const std::byte>, vk::DeviceSize offset) const;
-    // Erase a region of a buffer by moving the data after the region to the beginning of the region and reducing the buffer size.
-    // Doesn't free memory, so the allocated size will be greater than the used size.
-    void Erase(Buffer &, vk::DeviceSize offset, vk::DeviceSize size) const;
+    void MarkStale(UniqueBuffer &&buffer) const { StaleBuffers.emplace_back(std::move(buffer)); }
 
     vk::CommandBuffer TransferCb;
 
 private:
-    BufferAllocator Allocator;
+    UniqueVmaAllocator Allocator;
     // Buffers that are no longer used and can be destroyed after the command buffer is submitted.
-    mutable std::unordered_set<VkBuffer> StaleBuffers;
+    mutable std::vector<UniqueBuffer> StaleBuffers;
 };
 } // namespace mvk

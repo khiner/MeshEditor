@@ -3,29 +3,43 @@
 #include "vk_mem_alloc.h"
 
 #include <print>
-#include <unordered_map>
 
-namespace {
-struct VmaBuffer {
-    VmaBuffer(VmaAllocator vma, VmaAllocationCreateInfo aci, vk::BufferCreateInfo bci) : Vma(vma) {
+namespace mvk {
+VmaMemoryUsage ToVmaMemoryUsage(MemoryUsage usage) {
+    switch (usage) {
+        case MemoryUsage::Unknown: return VMA_MEMORY_USAGE_UNKNOWN;
+        case MemoryUsage::GpuOnly: return VMA_MEMORY_USAGE_GPU_ONLY;
+        case MemoryUsage::CpuOnly: return VMA_MEMORY_USAGE_CPU_ONLY;
+        case MemoryUsage::CpuToGpu: return VMA_MEMORY_USAGE_CPU_TO_GPU;
+        case MemoryUsage::GpuToCpu: return VMA_MEMORY_USAGE_GPU_TO_CPU;
+    }
+}
+
+struct UniqueBuffer::Impl {
+    Impl(VmaAllocator vma, vk::DeviceSize size, mvk::MemoryUsage memory_usage, vk::BufferUsageFlags usage) : Vma(vma) {
+        VmaAllocationCreateInfo aci{};
+        aci.usage = ToVmaMemoryUsage(memory_usage);
+        // All staging and device buffers act as transfer sources, since buffer updates include a device->device copy.
+        vk::BufferCreateInfo bci{{}, size, usage | vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive};
+        if (memory_usage == mvk::MemoryUsage::CpuOnly || memory_usage == mvk::MemoryUsage::CpuToGpu) {
+            aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        } else {
+            bci.usage |= vk::BufferUsageFlagBits::eTransferDst;
+        }
         if (vmaCreateBuffer(Vma, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Handle), &Allocation, &Info) != VK_SUCCESS) {
             throw std::runtime_error("vmaCreateBuffer failed");
         }
     }
 
-    VmaBuffer(VmaBuffer &&other) noexcept
+    Impl(Impl &&other) noexcept
         : Vma(other.Vma),
           Handle(std::exchange(other.Handle, nullptr)),
           Allocation(std::exchange(other.Allocation, nullptr)),
           Info(other.Info) {}
 
-    VmaBuffer &operator=(VmaBuffer &&) = delete;
-
-    ~VmaBuffer() {
+    ~Impl() {
         vmaDestroyBuffer(Vma, Handle, Allocation);
     }
-
-    vk::Buffer operator*() const { return Handle; }
 
     VmaAllocator Vma;
     vk::Buffer Handle;
@@ -33,6 +47,43 @@ struct VmaBuffer {
     VmaAllocationInfo Info;
 };
 
+UniqueBuffer::UniqueBuffer(VmaAllocator vma, vk::DeviceSize size, mvk::MemoryUsage memory_usage, vk::BufferUsageFlags usage)
+    : Imp(std::make_unique<Impl>(vma, size, memory_usage, usage)) {}
+
+UniqueBuffer::UniqueBuffer(VmaAllocator vma, std::span<const std::byte> data, mvk::MemoryUsage memory_usage, vk::BufferUsageFlags usage)
+    : Imp(std::make_unique<Impl>(vma, data.size(), memory_usage, usage)) {
+    Write(data);
+}
+UniqueBuffer::UniqueBuffer(UniqueBuffer &&other) : Imp(std::move(other.Imp)) {}
+
+UniqueBuffer::~UniqueBuffer() = default;
+
+UniqueBuffer &UniqueBuffer::operator=(UniqueBuffer &&other) {
+    if (this != &other) Imp = std::move(other.Imp);
+    return *this;
+}
+
+vk::Buffer UniqueBuffer::Get() const { return Imp->Handle; }
+std::span<const std::byte> UniqueBuffer::GetData() const { return {static_cast<const std::byte *>(Imp->Info.pMappedData), Imp->Info.size}; }
+std::span<std::byte> UniqueBuffer::GetMappedData() const { return {static_cast<std::byte *>(Imp->Info.pMappedData), Imp->Info.size}; }
+vk::DeviceSize UniqueBuffer::GetAllocatedSize() const { return Imp->Info.size; }
+
+void UniqueBuffer::Write(std::span<const std::byte> src, vk::DeviceSize offset) const {
+    if (src.empty() || offset >= GetAllocatedSize()) return;
+
+    std::copy(src.begin(), src.end(), GetMappedData().subspan(offset).data());
+}
+
+void UniqueBuffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const {
+    const auto allocated_size = GetAllocatedSize();
+    if (size == 0 || from + size > allocated_size || to + size > allocated_size) return;
+
+    const auto mapped_data = GetMappedData();
+    std::memmove(mapped_data.subspan(to).data(), mapped_data.subspan(from).data(), size_t(size));
+}
+} // namespace mvk
+
+namespace {
 std::string FormatBytes(uint32_t bytes) {
     static constexpr std::array<std::string_view, 6> Suffixes{"B", "KB", "MB", "GB", "TB", "PB"};
     static constexpr float K = 1024;
@@ -60,18 +111,14 @@ std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevi
     vmaGetHeapBudgets(allocator, budgets.data());
     return budgets;
 }
-
-using BufferByHandle = std::unordered_map<VkBuffer, VmaBuffer>;
-std::unordered_map<VmaAllocator, BufferByHandle> BuffersByAllocator;
-const VmaAllocationInfo &GetAllocationInfo(VmaAllocator vma, vk::Buffer b) { return BuffersByAllocator.at(vma).at(static_cast<VkBuffer>(b)).Info; }
 } // namespace
 
 // vmaDestroyBuffer(Vma, Buffer, Allocation->Allocation);
 namespace mvk {
-BufferAllocator::BufferAllocator(vk::PhysicalDevice pd, vk::Device d, VkInstance instance) {
+UniqueVmaAllocator::UniqueVmaAllocator(vk::PhysicalDevice pd, vk::Device d, VkInstance instance) : PhysicalDevice(pd), Device(d) {
     VmaAllocatorCreateInfo create_info{};
-    create_info.physicalDevice = pd;
-    create_info.device = d;
+    create_info.physicalDevice = PhysicalDevice;
+    create_info.device = Device;
     create_info.instance = instance;
 #ifndef RELEASE_BUILD
     VmaDeviceMemoryCallbacks memory_callbacks{LoggingVmaAllocate, LoggingVmaFree, nullptr};
@@ -81,70 +128,16 @@ BufferAllocator::BufferAllocator(vk::PhysicalDevice pd, vk::Device d, VkInstance
     if (vmaCreateAllocator(&create_info, &Vma) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create VMA allocator.");
     }
-    BuffersByAllocator.emplace(Vma, BufferByHandle{});
 }
 
-BufferAllocator::~BufferAllocator() {
-    BuffersByAllocator.erase(Vma);
+UniqueVmaAllocator::~UniqueVmaAllocator() {
     vmaDestroyAllocator(Vma);
 }
 
-std::span<std::byte> BufferAllocator::GetMappedData(vk::Buffer b) const {
-    auto &info = GetAllocationInfo(Vma, b);
-    return {static_cast<std::byte *>(info.pMappedData), info.size};
-}
-std::span<const std::byte> BufferAllocator::GetData(vk::Buffer b) const {
-    const auto &info = GetAllocationInfo(Vma, b);
-    return {static_cast<const std::byte *>(info.pMappedData), info.size};
-}
-vk::DeviceSize BufferAllocator::GetAllocatedSize(vk::Buffer b) const { return GetAllocationInfo(Vma, b).size; }
+VmaAllocator UniqueVmaAllocator::Get() const { return Vma; }
 
-void BufferAllocator::Write(vk::Buffer b, std::span<const std::byte> src, vk::DeviceSize offset) const {
-    if (src.empty() || offset >= GetAllocatedSize(b)) return;
-
-    std::copy(src.begin(), src.end(), GetMappedData(b).subspan(offset).data());
-}
-
-void BufferAllocator::Move(vk::Buffer b, vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const {
-    const auto allocated_size = GetAllocatedSize(b);
-    if (size == 0 || from + size > allocated_size || to + size > allocated_size) return;
-
-    auto mapped_data = GetMappedData(b);
-    std::memmove(mapped_data.subspan(to).data(), mapped_data.subspan(from).data(), size_t(size));
-}
-
-namespace {
-VmaMemoryUsage ToVmaMemoryUsage(MemoryUsage usage) {
-    switch (usage) {
-        case MemoryUsage::Unknown: return VMA_MEMORY_USAGE_UNKNOWN;
-        case MemoryUsage::GpuOnly: return VMA_MEMORY_USAGE_GPU_ONLY;
-        case MemoryUsage::CpuOnly: return VMA_MEMORY_USAGE_CPU_ONLY;
-        case MemoryUsage::CpuToGpu: return VMA_MEMORY_USAGE_CPU_TO_GPU;
-        case MemoryUsage::GpuToCpu: return VMA_MEMORY_USAGE_GPU_TO_CPU;
-    }
-}
-} // namespace
-
-vk::Buffer BufferAllocator::Allocate(vk::DeviceSize size, MemoryUsage memory_usage, vk::BufferUsageFlags usage) const {
-    VmaAllocationCreateInfo aci{};
-    aci.usage = ToVmaMemoryUsage(memory_usage);
-    // All staging and device buffers act as transfer sources, since buffer updates include a device->device copy.
-    vk::BufferCreateInfo bci{{}, size, usage | vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive};
-    if (memory_usage == MemoryUsage::CpuOnly || memory_usage == MemoryUsage::CpuToGpu) {
-        aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    } else {
-        bci.usage |= vk::BufferUsageFlagBits::eTransferDst;
-    }
-    VmaBuffer vma_buffer{Vma, aci, bci};
-    auto vk_buffer = *vma_buffer;
-    BuffersByAllocator.at(Vma).emplace(static_cast<VkBuffer>(vk_buffer), std::move(vma_buffer));
-    return vk_buffer;
-}
-
-void BufferAllocator::Destroy(vk::Buffer b) const { BuffersByAllocator.at(Vma).erase(static_cast<VkBuffer>(b)); }
-
-std::string BufferAllocator::DebugHeapUsage(vk::PhysicalDevice pd) const {
-    const auto budgets = QueryHeapBudgets(Vma, pd);
+std::string UniqueVmaAllocator::DebugHeapUsage() const {
+    const auto budgets = QueryHeapBudgets(Vma, PhysicalDevice);
     std::string result;
     for (uint32_t i = 0; i < budgets.size(); ++i) {
         const auto &b = budgets[i];

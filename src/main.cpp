@@ -470,7 +470,7 @@ int main(int, char **) {
                     }
                     if (BeginTabItem("Scene")) {
                         SeparatorText("Buffer memory");
-                        TextUnformatted(scene->DebugBufferHeapUsage(vc->PhysicalDevice).c_str());
+                        TextUnformatted(scene->DebugBufferHeapUsage().c_str());
                         EndTabItem();
                     }
                     EndTabBar();
