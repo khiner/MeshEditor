@@ -3,8 +3,8 @@
 #include "Camera.h"
 #include "ModelGizmo.h"
 #include "Shader.h"
-#include "Vulkan/BufferManager.h"
 #include "Vulkan/Image.h"
+#include "Vulkan/UniqueBuffers.h"
 #include "mesh/MeshElement.h"
 #include "mesh/Primitive.h"
 #include "mesh/Vertex.h"
@@ -232,14 +232,13 @@ struct Scene {
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
-    std::string DebugBufferHeapUsage() const { return BufferManager.GetAllocator().DebugHeapUsage(); }
+    std::string DebugBufferHeapUsage() const { return BufferContext.Allocator.DebugHeapUsage(); }
 
 private:
     SceneVulkanResources Vk;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
-    vk::UniqueCommandBuffer TransferCommandBuffer, RenderCommandBuffer;
-    std::array<vk::CommandBuffer, 2> CommandBuffers;
+    vk::UniqueCommandBuffer RenderCommandBuffer;
     vk::UniqueFence RenderFence, TransferFence;
 
     Camera Camera{CreateDefaultCamera()};
@@ -266,7 +265,8 @@ private:
 
     std::unique_ptr<ScenePipelines> Pipelines;
 
-    mvk::BufferManager BufferManager;
+    mvk::BufferContext BufferContext;
+    std::array<vk::CommandBuffer, 2> CommandBuffers{*BufferContext.TransferCb, *RenderCommandBuffer};
     mvk::UniqueBuffers TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
 
     struct ModelGizmoState {
@@ -301,20 +301,19 @@ private:
     void UpdateEntitySelectionOverlays(entt::entity);
     void RemoveEntitySelectionOverlays(entt::entity);
 
-    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
+    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
         return {
-            mvk::UniqueBuffers(BufferManager, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            mvk::UniqueBuffers(BufferManager, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            mvk::UniqueBuffers(BufferContext, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            mvk::UniqueBuffers(BufferContext, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
-
     mvk::RenderBuffers CreateRenderBuffers(RenderBuffers &&);
 
     template<size_t N>
-    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
+    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) const {
         return {
-            mvk::UniqueBuffers(BufferManager, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            mvk::UniqueBuffers(BufferManager, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
+            mvk::UniqueBuffers(BufferContext, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
+            mvk::UniqueBuffers(BufferContext, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
 

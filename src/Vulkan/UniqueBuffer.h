@@ -9,8 +9,6 @@
 struct VmaAllocator_T;
 using VmaAllocator = VmaAllocator_T *;
 
-struct BufferAllocator;
-
 namespace mvk {
 enum class MemoryUsage {
     Unknown,
@@ -29,8 +27,8 @@ struct UniqueBuffer {
 
     UniqueBuffer &operator=(UniqueBuffer &&);
     UniqueBuffer &operator=(const UniqueBuffer &) = delete;
-
     vk::Buffer operator*() const { return Get(); }
+
     vk::Buffer Get() const;
     std::span<const std::byte> GetData() const;
     vk::DeviceSize GetAllocatedSize() const;
@@ -50,8 +48,8 @@ struct UniqueVmaAllocator {
     ~UniqueVmaAllocator();
 
     VmaAllocator operator*() const { return Get(); }
-    VmaAllocator Get() const;
 
+    VmaAllocator Get() const;
     std::string DebugHeapUsage() const;
 
 private:

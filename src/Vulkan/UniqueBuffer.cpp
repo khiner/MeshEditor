@@ -1,4 +1,4 @@
-#include "BufferAllocator.h"
+#include "UniqueBuffer.h"
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
@@ -113,7 +113,6 @@ std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevi
 }
 } // namespace
 
-// vmaDestroyBuffer(Vma, Buffer, Allocation->Allocation);
 namespace mvk {
 UniqueVmaAllocator::UniqueVmaAllocator(vk::PhysicalDevice pd, vk::Device d, VkInstance instance) : PhysicalDevice(pd), Device(d) {
     VmaAllocatorCreateInfo create_info{};

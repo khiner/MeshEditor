@@ -124,9 +124,9 @@ void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const mvk
 }
 
 void DrawIndexed(vk::CommandBuffer cb, const mvk::UniqueBuffers &indices, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) {
-    const uint index_count = indices.Size / sizeof(uint);
+    const uint index_count = indices.UsedSize / sizeof(uint);
     const uint first_instance = model_index.value_or(0);
-    const uint instance_count = model_index.has_value() ? 1 : models.Size / sizeof(Model);
+    const uint instance_count = model_index.has_value() ? 1 : models.UsedSize / sizeof(Model);
     cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
 }
 
@@ -160,12 +160,11 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
          vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
     );
+
+    const auto cb = *BufferContext.TransferCb;
     {
         // Write the bitmap into a temporary staging buffer.
-        mvk::UniqueBuffer staging_buffer(*BufferManager, as_bytes(data), mvk::MemoryUsage::CpuOnly);
-
-        // Record commands to copy from staging buffer to Vulkan image.
-        const auto &cb = BufferManager.TransferCb;
+        mvk::UniqueBuffer staging_buffer(*BufferContext.Allocator, as_bytes(data), mvk::MemoryUsage::CpuOnly);
 
         // Transition the image layout to be ready for data transfer.
         cb.pipelineBarrier(
@@ -221,7 +220,8 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         WaitFor(*TransferFence);
     } // staging buffer is destroyed here
 
-    BufferManager.Begin();
+    BufferContext.Reclaimer.Reclaim();
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     return image;
 }
@@ -591,17 +591,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : Vk(vc),
       R(r),
       CommandPool(Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})),
-      TransferCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())),
-      RenderCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1u}).front())),
-      CommandBuffers{*TransferCommandBuffer, *RenderCommandBuffer},
+      RenderCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())),
       RenderFence(Vk.Device.createFenceUnique({})),
       TransferFence(Vk.Device.createFenceUnique({})),
       Pipelines(std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
-      BufferManager(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *TransferCommandBuffer),
-      TransformBuffer(BufferManager, sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer),
-      ViewProjNearFarBuffer(BufferManager, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer),
-      LightsBuffer(BufferManager, as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer),
-      SilhouetteDisplayBuffer(BufferManager, as_bytes(SilhouetteDisplay), vk::BufferUsageFlagBits::eUniformBuffer) {
+      BufferContext(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool),
+      TransformBuffer(BufferContext, sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer),
+      ViewProjNearFarBuffer(BufferContext, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer),
+      LightsBuffer(BufferContext, as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer),
+      SilhouetteDisplayBuffer(BufferContext, as_bytes(SilhouetteDisplay), vk::BufferUsageFlagBits::eUniformBuffer) {
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
@@ -706,8 +704,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     auto &node = R.get<SceneNode>(entity);
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     if (visible) {
-        node.ModelBufferIndex = model_buffer.Size / sizeof(Model);
-        model_buffer.Insert(as_bytes(R.get<Model>(entity)), model_buffer.Size);
+        node.ModelBufferIndex = model_buffer.UsedSize / sizeof(Model);
+        model_buffer.Insert(as_bytes(R.get<Model>(entity)), model_buffer.UsedSize);
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
@@ -724,8 +722,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 mvk::RenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
     return {
-        mvk::UniqueBuffers{BufferManager, as_bytes(buffers.Vertices), vk::BufferUsageFlagBits::eVertexBuffer},
-        mvk::UniqueBuffers{BufferManager, as_bytes(buffers.Indices), vk::BufferUsageFlagBits::eIndexBuffer}
+        mvk::UniqueBuffers{BufferContext, as_bytes(buffers.Vertices), vk::BufferUsageFlagBits::eVertexBuffer},
+        mvk::UniqueBuffers{BufferContext, as_bytes(buffers.Indices), vk::BufferUsageFlagBits::eIndexBuffer}
     };
 }
 
@@ -735,7 +733,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, CreateName(R, info.Name));
-    R.emplace<ModelsBuffer>(entity, mvk::UniqueBuffers{BufferManager, sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer});
+    R.emplace<ModelsBuffer>(entity, mvk::UniqueBuffers{BufferContext, sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer});
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(entity, false);
 
@@ -804,7 +802,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{}_instance_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
-    model_buffer.EnsureAllocated(model_buffer.Size + sizeof(Model));
+    model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
     SetVisible(entity, info.Visible);
     if (info.Select) SetActive(entity);
     InvalidateCommandBuffer();
@@ -1257,21 +1255,22 @@ bool Scene::Render() {
 
     CommandBufferDirty = false;
 
+    const auto transfer_cb = *BufferContext.TransferCb;
     vk::SubmitInfo submit;
     if (extent_changed) {
         Extent = ToExtent(content_region);
         // Must submit the transfer command buffer before updating the pipelines,
         // so we need two submits for the extent change.
         UpdateTransformBuffers(); // Depends on the aspect ratio.
-        BufferManager.TransferCb.end();
-        submit.setCommandBuffers(BufferManager.TransferCb);
+        transfer_cb.end();
+        submit.setCommandBuffers(transfer_cb);
         Vk.Queue.submit(submit, *TransferFence);
         WaitFor(*TransferFence);
         Pipelines->SetExtent(Extent);
         RecordRenderCommandBuffer();
         submit.setCommandBuffers(*RenderCommandBuffer);
     } else {
-        BufferManager.TransferCb.end();
+        transfer_cb.end();
         RecordRenderCommandBuffer();
         submit.setCommandBuffers(CommandBuffers);
     }
@@ -1280,7 +1279,8 @@ bool Scene::Render() {
     // The caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
     WaitFor(*RenderFence);
-    BufferManager.Begin();
+    BufferContext.Reclaimer.Reclaim();
+    transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     return extent_changed;
 }
