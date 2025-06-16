@@ -70,8 +70,12 @@ std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
 namespace Format {
-constexpr auto Vec3 = vk::Format::eR32G32B32Sfloat;
-constexpr auto Vec4 = vk::Format::eR32G32B32A32Sfloat;
+constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
+constexpr auto Depth = vk::Format::eD32Sfloat;
+constexpr auto Float = vk::Format::eR32Sfloat;
+constexpr auto Float2 = vk::Format::eR32G32Sfloat;
+constexpr auto Float3 = vk::Format::eR32G32B32Sfloat;
+constexpr auto Float4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
 namespace {
@@ -92,19 +96,19 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
         {1, 2 * sizeof(mat4), vk::VertexInputRate::eInstance},
     };
     static const std::vector<vk::VertexInputAttributeDescription> attrs{
-        {0, 0, Format::Vec3, offsetof(Vertex3D, Position)},
-        {1, 0, Format::Vec3, offsetof(Vertex3D, Normal)},
-        {2, 0, Format::Vec4, offsetof(Vertex3D, Color)},
+        {0, 0, Format::Float3, offsetof(Vertex3D, Position)},
+        {1, 0, Format::Float3, offsetof(Vertex3D, Normal)},
+        {2, 0, Format::Float4, offsetof(Vertex3D, Color)},
         // Model mat4, one vec4 per row
-        {3, 1, Format::Vec4, 0},
-        {4, 1, Format::Vec4, sizeof(vec4)},
-        {5, 1, Format::Vec4, 2 * sizeof(vec4)},
-        {6, 1, Format::Vec4, 3 * sizeof(vec4)},
+        {3, 1, Format::Float4, 0},
+        {4, 1, Format::Float4, sizeof(vec4)},
+        {5, 1, Format::Float4, 2 * sizeof(vec4)},
+        {6, 1, Format::Float4, 3 * sizeof(vec4)},
         // Inverse model mat4, one vec4 per row
-        {7, 1, Format::Vec4, 4 * sizeof(vec4)},
-        {8, 1, Format::Vec4, 5 * sizeof(vec4)},
-        {9, 1, Format::Vec4, 6 * sizeof(vec4)},
-        {10, 1, Format::Vec4, 7 * sizeof(vec4)},
+        {7, 1, Format::Float4, 4 * sizeof(vec4)},
+        {8, 1, Format::Float4, 5 * sizeof(vec4)},
+        {9, 1, Format::Float4, 6 * sizeof(vec4)},
+        {10, 1, Format::Float4, 7 * sizeof(vec4)},
     };
     return {{}, bindings, attrs};
 }
@@ -150,7 +154,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         Vk.Device, Vk.PhysicalDevice,
         {{},
          vk::ImageType::e2D,
-         mvk::ImageFormat::Color,
+         Format::Color,
          {width, height, 1},
          1,
          1,
@@ -158,7 +162,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
          vk::ImageTiling::eOptimal,
          vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
          vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
+        {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
     );
 
     const auto cb = *BufferContext.TransferCb;
@@ -243,11 +247,11 @@ struct MainPipeline {
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool, vk::SampleCountFlagBits msaa_samples) {
         const std::vector<vk::AttachmentDescription> attachments{
             // Depth attachment.
-            {{}, mvk::ImageFormat::Depth, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+            {{}, Format::Depth, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
             // Multisampled offscreen image.
-            {{}, mvk::ImageFormat::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {{}, Format::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
             // Single-sampled resolve.
-            {{}, mvk::ImageFormat::Color, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {{}, Format::Color, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
         const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
         const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -342,7 +346,7 @@ struct MainPipeline {
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Depth,
+                   Format::Depth,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -350,13 +354,13 @@ struct MainPipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, DepthSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
               )},
               OffscreenImage{mvk::CreateImage(
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Color,
+                   Format::Color,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -364,14 +368,14 @@ struct MainPipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
               )},
               ResolveImage{mvk::CreateImage(
                   d, pd,
                   {
                       {},
                       vk::ImageType::e2D,
-                      mvk::ImageFormat::Color,
+                      Format::Color,
                       vk::Extent3D{extent, 1},
                       1,
                       1,
@@ -380,7 +384,7 @@ struct MainPipeline {
                       vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                       vk::SharingMode::eExclusive,
                   },
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Color, {}, ColorSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
               )} {
             const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
@@ -402,9 +406,9 @@ struct SilhouettePipeline {
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
         const std::vector<vk::AttachmentDescription> attachments{
             // We need to test and write depth since we want silhouette edges to respect mutual occlusion when multiple meshes are selected.
-            {{}, mvk::ImageFormat::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
             // Single-sampled offscreen "image" of two channels: depth and object ID.
-            {{}, mvk::ImageFormat::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {{}, Format::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
         const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
         const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -436,7 +440,7 @@ struct SilhouettePipeline {
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Depth,
+                   Format::Depth,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -444,13 +448,13 @@ struct SilhouettePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, DepthSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
               )},
               OffscreenImage{mvk::CreateImage(
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Float2,
+                   Format::Float2,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -458,7 +462,7 @@ struct SilhouettePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float2, {}, ColorSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::Float2, {}, ColorSubresourceRange}
               )} {
             const std::array image_views{*DepthImage.View, *OffscreenImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
@@ -491,8 +495,8 @@ struct SilhouettePipeline {
 struct SilhouetteEdgePipeline {
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
         const std::vector<vk::AttachmentDescription> attachments{
-            {{}, mvk::ImageFormat::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal},
-            {{}, mvk::ImageFormat::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal},
+            {{}, Format::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
         const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
         const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -519,7 +523,7 @@ struct SilhouetteEdgePipeline {
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Depth,
+                   Format::Depth,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -527,13 +531,13 @@ struct SilhouetteEdgePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eDepthStencilAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Depth, {}, DepthSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
               )},
               OffscreenImage{mvk::CreateImage(
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   mvk::ImageFormat::Float,
+                   Format::Float,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
@@ -541,7 +545,7 @@ struct SilhouetteEdgePipeline {
                    vk::ImageTiling::eOptimal,
                    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, mvk::ImageFormat::Float, {}, ColorSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::Float, {}, ColorSubresourceRange}
               )} {
             const std::array image_views{*DepthImage.View, *OffscreenImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});

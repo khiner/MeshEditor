@@ -5,7 +5,6 @@
 #include <vulkan/vulkan.hpp>
 
 #include <functional>
-#include <span>
 
 namespace mvk {
 struct ImageResource {
@@ -14,16 +13,6 @@ struct ImageResource {
     vk::UniqueImageView View;
     vk::Extent3D Extent;
 };
-
-using BitmapToImage = std::function<ImageResource(std::span<const std::byte> data, uint32_t width, uint32_t height)>;
-
-namespace ImageFormat {
-constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
-constexpr auto Float = vk::Format::eR32Sfloat;
-constexpr auto Float2 = vk::Format::eR32G32Sfloat;
-constexpr auto Float4 = vk::Format::eR32G32B32A32Sfloat;
-constexpr auto Depth = vk::Format::eD32Sfloat;
-} // namespace ImageFormat
 
 struct ImGuiTexture {
     ImGuiTexture(vk::Device, vk::ImageView, vec2 uv0 = {0, 0}, vec2 uv1 = {1, 1});

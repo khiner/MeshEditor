@@ -34,9 +34,9 @@ lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale
 }
 } // namespace
 
-struct SvgResourceImpl {
-    SvgResourceImpl(vk::Device device, mvk::BitmapToImage render, fs::path path) {
-        if (Document = lunasvg::Document::loadFromFile(path); Document) {
+struct SvgResource::Impl {
+    Impl(vk::Device device, BitmapToImage render, fs::path path) {
+        if ((Document = lunasvg::Document::loadFromFile(path))) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
                 const auto width = uint32_t(bitmap.width()), height = uint32_t(bitmap.height());
                 const auto size = width * height * 4; // 4 bytes per pixel
@@ -79,8 +79,8 @@ private:
     static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap.
 };
 
-SvgResource::SvgResource(vk::Device device, mvk::BitmapToImage render, fs::path path)
-    : Path(std::move(path)), Impl(std::make_unique<SvgResourceImpl>(device, std::move(render), Path)) {}
+SvgResource::SvgResource(vk::Device device, BitmapToImage render, fs::path path)
+    : Path(std::move(path)), Imp(std::make_unique<SvgResource::Impl>(device, std::move(render), Path)) {}
 SvgResource::~SvgResource() = default;
 
-std::optional<fs::path> SvgResource::Render() { return Impl->Render(); }
+std::optional<fs::path> SvgResource::Render() { return Imp->Render(); }
