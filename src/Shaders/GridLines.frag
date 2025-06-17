@@ -12,19 +12,26 @@ layout(location = 1) in vec3 FarPos;
 
 layout(location = 0) out vec4 Color;
 
-const float ScaleFactor = 0.2;
-const float Gray = 0.45; // Used for the grid lines.
-
 vec4 Grid(vec3 pos_3d, float scale) {
+    const float AxisWidth = 0.5;
+    const float Gray = 0.4; // For the grid lines.
+    const float ScaleFactor = 0.2;
+    const vec3 XAxis = vec3(0.17, 0.56, 1.0);
+    const vec3 ZAxis = vec3(1.0, 0.21, 0.32);
+
     const vec2 coord = pos_3d.xz * scale * ScaleFactor;
     const vec2 derivative = fwidth(coord);
     const vec2 grid = abs(fract(coord - 0.5) - 0.5) / derivative;
-    // Highlight the axes.
-    const float AxisWidth = 0.4;
-    const vec2 clipped_deriv = min(derivative, 1);
-    return pos_3d.x >= -AxisWidth * clipped_deriv.x && pos_3d.x <= AxisWidth * clipped_deriv.x ? vec4(0.17, 0.56, 1, 1) :
-           pos_3d.z >= -AxisWidth * clipped_deriv.y && pos_3d.z <= AxisWidth * clipped_deriv.y ? vec4(1, 0.21, 0.32, 1) :
-           vec4(Gray, Gray, Gray, (1.0 - min(min(grid.x, grid.y), 1)) * 0.6);
+    const vec2 clipped_deriv = min(derivative, 1.0);
+
+    const vec2 fades = exp(-pow(abs(pos_3d.xz) / (AxisWidth * clipped_deriv), vec2(5.0)));
+    const float xfade = fades.x;
+    const float zfade = fades.y;
+    const vec3 axis_color = mix(XAxis, ZAxis, step(xfade, zfade));
+
+    const float axis_alpha = max(xfade, zfade);
+    const float grid_alpha = (1.0 - min(min(grid.x, grid.y), 1.0)) * 0.85;
+    return vec4(mix(vec3(Gray), axis_color, axis_alpha), max(grid_alpha, axis_alpha));
 }
 
 // Assumes `gl_FragDepth` is set to the depth of the fragment in clip space.
