@@ -255,7 +255,7 @@ private:
     MeshElementIndex EditingElement{MeshElement::Face, -1};
 
     vk::Extent2D Extent;
-    vk::ClearColorValue BackgroundColor{0.22, 0.22, 0.22, 1.f};
+    vk::ClearColorValue BackgroundColor{0.25, 0.25, 0.25, 1.f};
     struct SilhouetteDisplay {
         vec4 ActiveColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
         vec4 SelectedColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.

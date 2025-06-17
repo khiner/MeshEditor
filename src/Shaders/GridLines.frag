@@ -13,19 +13,18 @@ layout(location = 1) in vec3 FarPos;
 layout(location = 0) out vec4 Color;
 
 const float ScaleFactor = 0.2;
+const float Gray = 0.45; // Used for the grid lines.
 
 vec4 Grid(vec3 pos_3d, float scale) {
     const vec2 coord = pos_3d.xz * scale * ScaleFactor;
     const vec2 derivative = fwidth(coord);
     const vec2 grid = abs(fract(coord - 0.5) - 0.5) / derivative;
-    vec4 color = vec4(0.329, 0.329, 0.329, 1.0 - min(min(grid.x, grid.y), 1));
     // Highlight the axes.
     const float AxisWidth = 0.4;
     const vec2 clipped_deriv = min(derivative, 1);
-    if (pos_3d.x >= -AxisWidth * clipped_deriv.x && pos_3d.x <= AxisWidth * clipped_deriv.x) color = vec4(0, 0, 1, 1);
-    if (pos_3d.z >= -AxisWidth * clipped_deriv.y && pos_3d.z <= AxisWidth * clipped_deriv.y) color = vec4(1, 0, 0, 1);
-    color.a *= 0.55;
-    return color;
+    return pos_3d.x >= -AxisWidth * clipped_deriv.x && pos_3d.x <= AxisWidth * clipped_deriv.x ? vec4(0.17, 0.56, 1, 1) :
+           pos_3d.z >= -AxisWidth * clipped_deriv.y && pos_3d.z <= AxisWidth * clipped_deriv.y ? vec4(1, 0.21, 0.32, 1) :
+           vec4(Gray, Gray, Gray, (1.0 - min(min(grid.x, grid.y), 1)) * 0.6);
 }
 
 // Assumes `gl_FragDepth` is set to the depth of the fragment in clip space.
@@ -37,10 +36,10 @@ float LinearDepth() {
 }
 
 // Blend the two grids using their alpha values.
-vec4 BlendGrids(vec4 grid1, vec4 grid2) {
-    const float alpha = 1.0 - (1.0 - grid1.a) * (1.0 - grid2.a);
-    const vec3 color = (grid1.rgb * grid1.a + grid2.rgb * grid2.a * (1.0 - grid1.a)) / alpha;
-    return vec4(color, alpha);
+vec4 BlendGrids(vec4 a, vec4 b) {
+    const float alpha = 1.0 - (1.0 - a.a) * (1.0 - b.a);
+    const vec3 c = (a.rgb * a.a + b.rgb * b.a * (1.0 - a.a)) / alpha;
+    return vec4(c, alpha);
 }
 
 void main() {
@@ -49,6 +48,7 @@ void main() {
     const vec4 clip_space_pos = ViewProjection.Projection * ViewProjection.View * vec4(pos_3d.xyz, 1);
     gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
 
-    Color = BlendGrids(Grid(pos_3d, 10), Grid(pos_3d, 1)) * float(t > 0); // Draw grid at two scales.
-    Color.a *= (0.5 * (1 - LinearDepth())); // Fade out at the edge of the grid.
+    // Draw grid at three scales.
+    Color = BlendGrids(BlendGrids(Grid(pos_3d, 10), Grid(pos_3d, 1)), Grid(pos_3d, 0.1)) * float(t > 0);
+    Color.a *= (0.6 * (1 - LinearDepth())); // Fade out at the edge of the grid.
 }
