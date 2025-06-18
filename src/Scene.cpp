@@ -1571,8 +1571,9 @@ void Scene::RenderControls() {
             }
             {
                 SeparatorText("Silhouette");
-                if (ColorEdit3("Active color", &SilhouetteColors.Active[0]) ||
-                    ColorEdit3("Selected color", &SilhouetteColors.Selected[0])) {
+                bool color_changed = ColorEdit3("Active color", &SilhouetteColors.Active[0]);
+                color_changed |= ColorEdit3("Selected color", &SilhouetteColors.Selected[0]);
+                if (color_changed) {
                     SilhouetteColorsBuffer.Update(as_bytes(SilhouetteColors));
                     InvalidateCommandBuffer();
                 }
