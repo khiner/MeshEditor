@@ -505,13 +505,18 @@ struct SilhouetteEdgePipeline {
         pipelines.emplace(
             SPT::SilhouetteEdgeDepthObject,
             ShaderPipeline{
-                d, descriptor_pool,
+                d,
+                descriptor_pool,
                 Shaders{
                     {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeDepthObject.frag"}}
                 },
                 vk::PipelineVertexInputStateCreateInfo{},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(false), CreateDepthStencil(), vk::SampleCountFlagBits::e1
+                vk::PolygonMode::eFill,
+                vk::PrimitiveTopology::eTriangleStrip,
+                CreateColorBlendAttachment(false),
+                CreateDepthStencil(),
+                vk::SampleCountFlagBits::e1,
+                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(float)},
             }
         );
         return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
@@ -603,7 +608,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       TransformBuffer(BufferContext, sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer),
       ViewProjNearFarBuffer(BufferContext, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer),
       LightsBuffer(BufferContext, as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer),
-      SilhouetteDisplayBuffer(BufferContext, as_bytes(SilhouetteDisplay), vk::BufferUsageFlagBits::eUniformBuffer) {
+      SilhouetteColorsBuffer(BufferContext, as_bytes(SilhouetteColors), vk::BufferUsageFlagBits::eUniformBuffer) {
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
@@ -621,13 +626,13 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     const auto transform_buffer = TransformBuffer.GetDescriptor();
     const auto lights_buffer = LightsBuffer.GetDescriptor();
     const auto view_proj_near_far_buffer = ViewProjNearFarBuffer.GetDescriptor();
-    const auto silhouette_display_buffer = SilhouetteDisplayBuffer.GetDescriptor();
+    const auto silhouette_display_buffer = SilhouetteColorsBuffer.GetDescriptor();
     auto descriptors = Pipelines->Main.Renderer.GetDescriptors({
         {SPT::Fill, "ViewProjectionUBO", &transform_buffer},
         {SPT::Fill, "LightsUBO", &lights_buffer},
         {SPT::Line, "ViewProjectionUBO", &transform_buffer},
         {SPT::Grid, "ViewProjNearFarUBO", &view_proj_near_far_buffer},
-        {SPT::SilhouetteEdgeColor, "SilhouetteDisplayUBO", &silhouette_display_buffer},
+        {SPT::SilhouetteEdgeColor, "SilhouetteColorsUBO", &silhouette_display_buffer},
         {SPT::DebugNormals, "ViewProjectionUBO", &transform_buffer},
     });
     descriptors.append_range(
@@ -955,7 +960,9 @@ void Scene::RecordRenderCommandBuffer() {
             static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
             const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
             cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-            silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject).RenderQuad(cb);
+            const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
+            cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(SilhouetteEdgeWidth), &SilhouetteEdgeWidth);
+            silhouette_edo.RenderQuad(cb);
             cb.endRenderPass();
         }
     }
@@ -963,8 +970,8 @@ void Scene::RecordRenderCommandBuffer() {
     // Main rendering pass
     {
         const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}};
-        const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines->Main.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*Pipelines->Main.Renderer.RenderPass, *Pipelines->Main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+        const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->OffscreenImage.Extent)};
+        cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
 
     // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
@@ -1364,6 +1371,11 @@ void RenderMat4(const mat4 &m) {
         Text("%.2f, %.2f, %.2f, %.2f", m[0][i], m[1][i], m[2][i], m[3][i]);
     }
 }
+
+bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
+    return SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
+}
+
 } // namespace
 
 void Scene::RenderControls() {
@@ -1559,11 +1571,12 @@ void Scene::RenderControls() {
             }
             {
                 SeparatorText("Silhouette");
-                if (ColorEdit4("Active color", &SilhouetteDisplay.ActiveColor[0]) ||
-                    ColorEdit4("Selected color", &SilhouetteDisplay.SelectedColor[0])) {
-                    SilhouetteDisplayBuffer.Update(as_bytes(SilhouetteDisplay));
+                if (ColorEdit3("Active color", &SilhouetteColors.Active[0]) ||
+                    ColorEdit3("Selected color", &SilhouetteColors.Selected[0])) {
+                    SilhouetteColorsBuffer.Update(as_bytes(SilhouetteColors));
                     InvalidateCommandBuffer();
                 }
+                if (SliderUInt("Edge width", &SilhouetteEdgeWidth, 1, 4)) InvalidateCommandBuffer();
             }
             if (active_entity != entt::null) {
                 SeparatorText("Selection overlays");

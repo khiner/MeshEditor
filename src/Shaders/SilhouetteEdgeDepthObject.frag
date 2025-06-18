@@ -4,7 +4,9 @@ layout(binding = 0) uniform sampler2D SilhouetteSampler; // Assumes {Depth, Obje
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out float ObjectId; // ObjectID for edge pixels, discarded otherwise.
 
-const int EdgeHalfWidth = 2;
+layout(push_constant) uniform PC {
+    uint SilhouetteEdgeWidth; // Really half-width
+} pc;
 
 void main() {
     const ivec2 tex_size = textureSize(SilhouetteSampler, 0);
@@ -16,8 +18,12 @@ void main() {
         for (int j = -1; j <= 1; j++) {
             if (i == 0 && j == 0) continue;
 
+            // Jumping over pixels in neighborhood test to extend the "edge width".
+            // This avoids looping over all pixels in the extended neighborhood,
+            // so it's fast and looks decent enough for small line widths.
+            // More than that, and the missing corner pixels are noticeable.
             // We use vk::SamplerAddressMode::eClampToEdge, so there's no need to check for out-of-bounds.
-            const ivec2 neighbor_texel = texel + ivec2(i, j) * EdgeHalfWidth;
+            const ivec2 neighbor_texel = texel + ivec2(i, j) * int(pc.SilhouetteEdgeWidth);
             const vec2 neighbor_depth_id = texelFetch(SilhouetteSampler, neighbor_texel, 0).xy;
             if (depth_id.y != neighbor_depth_id.y) {
                 const vec2 edge_depth_id = depth_id.x != 0 ? depth_id : neighbor_depth_id;

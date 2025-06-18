@@ -1,10 +1,10 @@
 #version 450
 
 layout(binding = 0) uniform sampler2D ObjectIdSampler;
-layout(binding = 1) uniform SilhouetteDisplayUBO {
-    vec4 ActiveColor;
-    vec4 SelectedColor;
-} SilhouetteDisplay;
+layout(binding = 1) uniform SilhouetteColorsUBO {
+    vec4 Active;
+    vec4 Selected;
+} SilhouetteColors;
 
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out vec4 EdgeColor;
@@ -15,6 +15,6 @@ void main() {
     if (object_id < 1) {
         discard;
     } else {
-        EdgeColor = object_id == 1 ? SilhouetteDisplay.ActiveColor : SilhouetteDisplay.SelectedColor;
+        EdgeColor = object_id == 1 ? SilhouetteColors.Active : SilhouetteColors.Selected;
     }
 }

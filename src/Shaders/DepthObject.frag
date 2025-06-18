@@ -1,12 +1,11 @@
 #version 450
 
 layout(push_constant) uniform PC {
-    uint objectId;
+    uint ObjectId;
 } pc;
 
-layout(location = 0) out vec2 DepthObjectId; // {Depth, ObjectID)}
+layout(location = 0) out vec2 DepthObjectId; // {Depth, ObjectID}
 
 void main() {
-    const float depth = gl_FragCoord.z;
-    DepthObjectId = vec2(depth, float(pc.objectId));
+    DepthObjectId = vec2(gl_FragCoord.z, float(pc.ObjectId));
 }

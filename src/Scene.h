@@ -256,18 +256,19 @@ private:
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.25, 0.25, 0.25, 1.f};
-    struct SilhouetteDisplay {
-        vec4 ActiveColor{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
-        vec4 SelectedColor{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
+    struct SilhouetteColors {
+        vec4 Active{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
+        vec4 Selected{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
     };
 
-    SilhouetteDisplay SilhouetteDisplay;
+    SilhouetteColors SilhouetteColors;
+    uint SilhouetteEdgeWidth{2};
 
     std::unique_ptr<ScenePipelines> Pipelines;
 
     mvk::BufferContext BufferContext;
     std::array<vk::CommandBuffer, 2> CommandBuffers{*BufferContext.TransferCb, *RenderCommandBuffer};
-    mvk::UniqueBuffers TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteDisplayBuffer;
+    mvk::UniqueBuffers TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteColorsBuffer;
 
     struct ModelGizmoState {
         ModelGizmo::Op Op{ModelGizmo::Op::Translate};
