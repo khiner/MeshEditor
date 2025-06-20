@@ -215,6 +215,8 @@ struct Scene {
     bool Render();
     void RenderGizmo();
     void RenderControls();
+    void RenderEntityControls(entt::entity);
+
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
     std::optional<uint> GetModelBufferIndex(entt::entity);

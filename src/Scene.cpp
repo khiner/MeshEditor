@@ -1082,8 +1082,13 @@ namespace {
 vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
 vk::Extent2D ToExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
-void Capitalize(std::string &str) {
-    if (!str.empty() && str[0] >= 'a' && str[0] <= 'z') str[0] += 'A' - 'a';
+constexpr std::string Capitalize(std::string_view str) {
+    if (str.empty()) return {};
+
+    std::string result{str};
+    char &c = result[0];
+    if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
+    return result;
 }
 
 // We already cache the transpose of the inverse transform for all models,
@@ -1375,13 +1380,117 @@ void RenderMat4(const mat4 &m) {
 bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
     return SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
 }
-
 } // namespace
+
+void Scene::RenderEntityControls(entt::entity active_entity) {
+    if (active_entity == entt::null) {
+        TextUnformatted("Active object: None");
+        return;
+    }
+
+    PushID(uint(active_entity));
+    Text("Active entity: %s", GetName(R, active_entity).c_str());
+    Indent();
+
+    entt::entity toggle_active = entt::null, toggle_selected = entt::null, delete_entity = entt::null;
+    const auto &node = R.get<SceneNode>(active_entity);
+    if (Button("Delete")) delete_entity = active_entity;
+    if (auto parent_entity = node.Parent; parent_entity != entt::null) {
+        AlignTextToFramePadding();
+        Text("Parent: %s", GetName(R, parent_entity).c_str());
+        SameLine();
+        if (Button("Activate")) toggle_active = parent_entity;
+        SameLine();
+        if (Button(R.all_of<Selected>(parent_entity) ? "Deselect" : "Select")) toggle_selected = parent_entity;
+    }
+    if (!node.Children.empty() && CollapsingHeader("Children")) {
+        RenderEntitiesTable("Children", node.Children);
+    }
+
+    const auto active_mesh_entity = GetParentEntity(active_entity);
+    const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
+    TextUnformatted(
+        std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.GetVertexCount(), active_mesh.GetEdgeCount(), active_mesh.GetFaceCount()).c_str()
+    );
+    Text("Model buffer index: %s", GetModelBufferIndex(active_entity) ? std::to_string(*GetModelBufferIndex(active_entity)).c_str() : "None");
+    Unindent();
+    bool visible = R.all_of<Visible>(active_entity);
+    if (Checkbox("Visible", &visible)) {
+        SetVisible(active_entity, visible);
+        InvalidateCommandBuffer();
+    }
+    if (Button("Add instance")) AddInstance(active_mesh_entity);
+    if (CollapsingHeader("Transform")) {
+        auto pos = R.get<Position>(active_entity).Value;
+        auto scale = R.get<Scale>(active_entity).Value;
+        auto rot = R.get<Rotation>(active_entity).Value;
+        bool model_changed = false;
+        model_changed |= DragFloat3("Position", &pos[0], 0.01f);
+        model_changed |= DragFloat4("Rotation (quat WXYZ)", &rot[0], 0.01f);
+
+        const bool frozen = R.all_of<Frozen>(active_entity);
+        if (frozen) BeginDisabled();
+        const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
+        model_changed |= DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
+        if (frozen) EndDisabled();
+        if (model_changed) SetModel(active_entity, pos, rot, scale);
+
+        using namespace ModelGizmo;
+        const bool scale_enabled = !frozen;
+        if (!scale_enabled && MGizmo.Op == Op::Scale) MGizmo.Op = Op::Translate;
+
+        Checkbox("Gizmo", &MGizmo.Show);
+        if (MGizmo.Show) {
+            if (const auto label = ToString(CurrentOp()); label != "") Text("Op: %s", label.data());
+            if (IsActive()) Text("Active");
+
+            auto &op = MGizmo.Op;
+            if (IsKeyPressed(ImGuiKey_T)) op = Op::Translate;
+            if (IsKeyPressed(ImGuiKey_R)) op = Op::Rotate;
+            if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = Op::Scale;
+            if (RadioButton("Translate (T)", op == Op::Translate)) op = Op::Translate;
+            if (RadioButton("Rotate (R)", op == Op::Rotate)) op = Op::Rotate;
+            if (!scale_enabled) BeginDisabled();
+            const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
+            if (RadioButton(label.c_str(), op == Op::Scale)) op = Op::Scale;
+            if (!scale_enabled) EndDisabled();
+            if (RadioButton("Universal", op == Op::Universal)) op = Op::Universal;
+            Spacing();
+            Checkbox("Snap", &MGizmo.Snap);
+            if (MGizmo.Snap) {
+                SameLine();
+                // todo link/unlink snap values
+                DragFloat3("Snap", &MGizmo.SnapValue.x, 1.f, 0.01f, 100.f);
+            }
+        }
+        if (TreeNode("Model transform")) {
+            TextUnformatted("Transform");
+            const auto &model = R.get<Model>(active_entity);
+            RenderMat4(model.Transform);
+            Spacing();
+            TextUnformatted("Inverse transform");
+            RenderMat4(model.InvTransform);
+            TreePop();
+        }
+    }
+    if (const auto *primitive = R.try_get<Primitive>(active_mesh_entity)) {
+        if (CollapsingHeader("Update primitive")) {
+            if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
+                ReplaceMesh(active_mesh_entity, std::move(*new_mesh));
+                InvalidateCommandBuffer();
+            }
+        }
+    }
+    PopID();
+
+    if (delete_entity != entt::null) DestroyEntity(delete_entity);
+    else if (toggle_active != entt::null) SetActive(R.all_of<Active>(toggle_active) ? entt::null : toggle_active);
+    else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
+}
 
 void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
         const auto active_entity = FindActiveEntity(R);
-        const auto active_mesh_entity = GetParentEntity(active_entity);
         if (BeginTabItem("Object")) {
             {
                 PushID("SelectionMode");
@@ -1399,8 +1508,7 @@ void Scene::RenderControls() {
                     TextUnformatted("Edit mode:");
                     auto element_selection_mode = int(EditingElement.Element);
                     for (const auto element : AllElements) {
-                        auto name = to_string(element);
-                        Capitalize(name);
+                        auto name = Capitalize(to_string(element));
                         SameLine();
                         if (RadioButton(name.c_str(), &element_selection_mode, int(element))) {
                             SetEditingElement({element, -1});
@@ -1415,98 +1523,7 @@ void Scene::RenderControls() {
                 }
                 PopID();
             }
-            if (active_entity != entt::null) {
-                PushID(uint(active_entity));
-                Text("Active entity: %s", GetName(R, active_entity).c_str());
-                Indent();
-
-                const auto &node = R.get<SceneNode>(active_entity);
-                if (auto parent_entity = node.Parent; parent_entity != entt::null) {
-                    AlignTextToFramePadding();
-                    Text("Parent: %s", GetName(R, parent_entity).c_str());
-                    SameLine();
-                    if (Button("Select")) SetActive(parent_entity);
-                }
-                if (!node.Children.empty() && CollapsingHeader("Children")) {
-                    RenderEntitiesTable("Children", node.Children);
-                }
-                const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
-                TextUnformatted(
-                    std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.GetVertexCount(), active_mesh.GetEdgeCount(), active_mesh.GetFaceCount()).c_str()
-                );
-                Text("Model buffer index: %s", GetModelBufferIndex(active_entity) ? std::to_string(*GetModelBufferIndex(active_entity)).c_str() : "None");
-                Unindent();
-                bool visible = R.all_of<Visible>(active_entity);
-                if (Checkbox("Visible", &visible)) {
-                    SetVisible(active_entity, visible);
-                    InvalidateCommandBuffer();
-                }
-                if (Button("Add instance")) AddInstance(active_mesh_entity);
-                if (CollapsingHeader("Transform")) {
-                    auto pos = R.get<Position>(active_entity).Value;
-                    auto scale = R.get<Scale>(active_entity).Value;
-                    auto rot = R.get<Rotation>(active_entity).Value;
-                    bool model_changed = false;
-                    model_changed |= DragFloat3("Position", &pos[0], 0.01f);
-                    model_changed |= DragFloat4("Rotation (quat WXYZ)", &rot[0], 0.01f);
-
-                    const bool frozen = R.all_of<Frozen>(active_entity);
-                    if (frozen) BeginDisabled();
-                    const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-                    model_changed |= DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
-                    if (frozen) EndDisabled();
-                    if (model_changed) SetModel(active_entity, pos, rot, scale);
-
-                    using namespace ModelGizmo;
-                    const bool scale_enabled = !frozen;
-                    if (!scale_enabled && MGizmo.Op == Op::Scale) MGizmo.Op = Op::Translate;
-
-                    Checkbox("Gizmo", &MGizmo.Show);
-                    if (MGizmo.Show) {
-                        if (const auto label = ToString(CurrentOp()); label != "") Text("Op: %s", label.data());
-                        if (IsActive()) Text("Active");
-
-                        auto &op = MGizmo.Op;
-                        if (IsKeyPressed(ImGuiKey_T)) op = Op::Translate;
-                        if (IsKeyPressed(ImGuiKey_R)) op = Op::Rotate;
-                        if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = Op::Scale;
-                        if (RadioButton("Translate (T)", op == Op::Translate)) op = Op::Translate;
-                        if (RadioButton("Rotate (R)", op == Op::Rotate)) op = Op::Rotate;
-                        if (!scale_enabled) BeginDisabled();
-                        const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
-                        if (RadioButton(label.c_str(), op == Op::Scale)) op = Op::Scale;
-                        if (!scale_enabled) EndDisabled();
-                        if (RadioButton("Universal", op == Op::Universal)) op = Op::Universal;
-                        Spacing();
-                        Checkbox("Snap", &MGizmo.Snap);
-                        if (MGizmo.Snap) {
-                            SameLine();
-                            // todo link/unlink snap values
-                            DragFloat3("Snap", &MGizmo.SnapValue.x, 1.f, 0.01f, 100.f);
-                        }
-                    }
-                    if (TreeNode("Model transform")) {
-                        TextUnformatted("Transform");
-                        const auto &model = R.get<Model>(active_entity);
-                        RenderMat4(model.Transform);
-                        Spacing();
-                        TextUnformatted("Inverse transform");
-                        RenderMat4(model.InvTransform);
-                        TreePop();
-                    }
-                }
-                if (const auto *primitive = R.try_get<Primitive>(active_mesh_entity)) {
-                    if (CollapsingHeader("Update primitive")) {
-                        if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
-                            ReplaceMesh(active_mesh_entity, std::move(*new_mesh));
-                            InvalidateCommandBuffer();
-                        }
-                    }
-                }
-                PopID();
-            } else {
-                Text("Selected object: None");
-            }
+            RenderEntityControls(active_entity);
 
             if (CollapsingHeader("Add primitive")) {
                 PushID("AddPrimitive");
@@ -1587,8 +1604,7 @@ void Scene::RenderControls() {
                 for (const auto element : NormalElements) {
                     SameLine();
                     bool show_normal_element = ShownNormalElements.contains(element);
-                    auto element_name = to_string(element);
-                    Capitalize(element_name);
+                    auto element_name = Capitalize(to_string(element));
                     if (Checkbox(element_name.c_str(), &show_normal_element)) {
                         if (show_normal_element) ShownNormalElements.insert(element);
                         else ShownNormalElements.erase(element);
@@ -1653,7 +1669,7 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
         TableSetupColumn("Name");
         TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
         TableHeadersRow();
-        entt::entity toggle_active = entt::null, delete_entity = entt::null, toggle_selected = entt::null;
+        entt::entity toggle_active = entt::null, toggle_selected = entt::null;
         for (const auto entity : entities) {
             PushID(uint(entity));
             TableNextColumn();
@@ -1667,21 +1683,15 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
                 const bool is_active = R.all_of<Active>(entity);
                 if (Button(is_active ? "Deactivate" : "Activate")) toggle_active = entity;
             }
+            SameLine();
             {
                 const bool is_selected = R.all_of<Selected>(entity);
                 if (Button(is_selected ? "Deselect" : "Select")) toggle_selected = entity;
             }
-
-            SameLine();
-            if (Button("Delete")) delete_entity = entity;
             PopID();
         }
-        if (toggle_active != entt::null) {
-            SetActive(R.all_of<Active>(toggle_active) ? entt::null : toggle_active);
-        } else if (toggle_selected != entt::null) {
-            ToggleSelected(toggle_selected);
-        }
-        if (delete_entity != entt::null) DestroyEntity(delete_entity);
+        if (toggle_active != entt::null) SetActive(R.all_of<Active>(toggle_active) ? entt::null : toggle_active);
+        else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
         EndTable();
     }
 }
