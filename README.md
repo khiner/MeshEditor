@@ -97,7 +97,6 @@ If you want a Linux build, I'd be happy to get this working!)
 
 ```shell
 $ sudo apt install llvm sld3 libeigen3-dev
-$ ln -s llvm-config-19 llvm-config
 $ export PATH="$(llvm-config --bindir):$PATH"
 ```
 
