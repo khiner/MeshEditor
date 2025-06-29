@@ -1394,6 +1394,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
     entt::entity toggle_active = entt::null, toggle_selected = entt::null, delete_entity = entt::null;
     const auto &node = R.get<SceneNode>(active_entity);
+    if (Button("Deactivate")) toggle_active = active_entity;
+    SameLine();
     if (Button("Delete")) delete_entity = active_entity;
     if (auto parent_entity = node.Parent; parent_entity != entt::null) {
         AlignTextToFramePadding();
