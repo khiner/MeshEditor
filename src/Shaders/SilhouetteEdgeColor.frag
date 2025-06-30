@@ -6,8 +6,14 @@ layout(binding = 1) uniform SilhouetteColorsUBO {
     vec4 Selected;
 } SilhouetteColors;
 
+layout(push_constant) uniform PC {
+    int Manipulating;
+} pc;
+
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out vec4 EdgeColor;
+
+const vec4 ManipulatingColor = vec4(1, 1, 1, 1);
 
 void main() {
     const ivec2 texel = ivec2(TexCoord * textureSize(ObjectIdSampler, 0));
@@ -15,6 +21,6 @@ void main() {
     if (object_id < 1) {
         discard;
     } else {
-        EdgeColor = object_id == 1 ? SilhouetteColors.Active : SilhouetteColors.Selected;
+        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor : object_id == 1 ? SilhouetteColors.Active : SilhouetteColors.Selected;
     }
 }

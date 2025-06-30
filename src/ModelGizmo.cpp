@@ -619,7 +619,8 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
     const auto ray_o = ToNDC(view_proj_inv * vec4{mox, moy, z_near, 1});
     const ray mouse_ray{ray_o, glm::normalize(ToNDC(view_proj_inv * vec4{mox, moy, z_far, 1}) - ray_o)};
 
-    if (!ImGui::GetIO().MouseDown[0]) g.Using = false;
+    const bool commit_model = !ImGui::GetIO().MouseDown[0] && g.Using;
+    if (commit_model) g.Using = false;
 
     if (g.Using) {
         m = Transform({m, m_ortho, m_inv}, mode, g.CurrentOp, mouse_ray, snap);
@@ -669,6 +670,6 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
     }
 
     Render({g.Model, m_ortho, m_inv}, op, g.CurrentOp, view_proj, view_inv, camera_ray);
-    return g.CurrentOp != NoOp && g.Using;
+    return (g.CurrentOp != NoOp && g.Using) || commit_model;
 }
 } // namespace ModelGizmo

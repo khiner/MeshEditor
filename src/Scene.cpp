@@ -317,13 +317,18 @@ struct MainPipeline {
         pipelines.emplace(
             SPT::SilhouetteEdgeColor,
             ShaderPipeline{
-                d, descriptor_pool,
+                d,
+                descriptor_pool,
                 Shaders{
                     {{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeColor.frag"}}
                 },
                 vk::PipelineVertexInputStateCreateInfo{},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(true), CreateDepthStencil(false, false), msaa_samples
+                vk::PolygonMode::eFill,
+                vk::PrimitiveTopology::eTriangleStrip,
+                CreateColorBlendAttachment(true),
+                CreateDepthStencil(false, false),
+                msaa_samples,
+                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)} // Manipulating flag (push constant has min 4 bytes)
             }
         );
         pipelines.emplace(
@@ -942,20 +947,21 @@ void Scene::RecordRenderCommandBuffer() {
             const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
             cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
         }
-        static constexpr uint32_t active_id = 1;
-        uint32_t selected_id = 2; // 2+
-        for (const auto selected_entity : R.view<Selected>()) {
-            const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
-            const auto mesh_entity = GetParentEntity(selected_entity);
-            const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(MeshElement::Vertex);
-            const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
-            Bind(cb, shader_pipeline, render_buffers, models);
-            const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
-            cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_id), &object_id);
-            DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(selected_entity));
+        {
+            static constexpr uint32_t active_id = 1;
+            uint32_t selected_id = 2; // 2+
+            for (const auto selected_entity : R.view<Selected>()) {
+                const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
+                const auto mesh_entity = GetParentEntity(selected_entity);
+                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(MeshElement::Vertex);
+                const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
+                Bind(cb, shader_pipeline, render_buffers, models);
+                const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
+                cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_id), &object_id);
+                DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(selected_entity));
+            }
+            cb.endRenderPass();
         }
-        cb.endRenderPass();
-
         {
             const auto &silhouette_edge = Pipelines->SilhouetteEdge;
             static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
@@ -986,7 +992,12 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     // Silhouette edge color (rendered ontop of meshes)
-    if (render_silhouette) main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor).RenderQuad(cb);
+    if (render_silhouette) {
+        const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
+        const uint32_t manipulating = ModelGizmo::IsActive();
+        cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t), &manipulating);
+        silhouette_edc.RenderQuad(cb);
+    }
 
     // Selection overlays
     for (const auto &[_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
