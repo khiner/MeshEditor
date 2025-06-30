@@ -1197,6 +1197,7 @@ void Scene::Interact() {
         AccumulatedWrapMouseDelta = {0, 0};
     }
     if (ModelGizmo::IsActive()) {
+        GImGui->MouseCursor = ImGuiMouseCursor_ResizeAll;
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
     }
     if (!IsWindowHovered()) return;
