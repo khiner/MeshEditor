@@ -46,6 +46,7 @@ struct Context {
     float SaveMousePosX;
 
     vec2 Pos{0, 0}, Size{0, 0};
+    ImVec2 MousePos{0, 0};
     ImVec2 ScreenSquareCenter, ScreenSquareMin, ScreenSquareMax;
     float RadiusSquareCenter;
 
@@ -311,7 +312,7 @@ mat4 Transform(Model model, Mode mode, Op type, const ray &mouse_ray, std::optio
             const float ratio = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
             g.Scale[axis_i] = std::max(ratio, 0.001f);
         } else {
-            const float scale_delta = (ImGui::GetIO().MousePos.x - g.SaveMousePosX) * 0.01f;
+            const float scale_delta = (g.MousePos.x - g.SaveMousePosX) * 0.01f;
             g.Scale = vec3{std::max(1.f + scale_delta, 0.001f)};
         }
 
@@ -347,11 +348,10 @@ constexpr float RotationDisplayScale{1.2};
 Op FindHoveredOp(Model model, Op op, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
     // Op selection check order is important because of universal mode.
     // Universal = Scale | Translate | Rotate
-    const auto mouse_pos = ImGui::GetIO().MousePos;
     if (HasAnyOp(op, Scale)) {
         if (op != Universal) {
-            if (mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
-                mouse_pos.y >= g.ScreenSquareMin.y && mouse_pos.y <= g.ScreenSquareMax.y) {
+            if (g.MousePos.x >= g.ScreenSquareMin.x && g.MousePos.x <= g.ScreenSquareMax.x &&
+                g.MousePos.y >= g.ScreenSquareMin.y && g.MousePos.y <= g.ScreenSquareMax.y) {
                 return ScaleXYZ;
             }
             for (uint32_t i = 0; i < 3; ++i) {
@@ -363,24 +363,24 @@ Op FindHoveredOp(Model model, Op op, const ray &mouse_ray, const mat4 &view, con
                 if (ImLengthSqr(closest_on_axis - pos_plane) < SelectDistSq) return Scale | AxisOp(i);
             }
         } else { // Universal
-            if (float dist_sq = ImLengthSqr(mouse_pos - g.ScreenSquareCenter); dist_sq >= 17 * 17 && dist_sq < 23 * 23) {
+            if (float dist_sq = ImLengthSqr(g.MousePos - g.ScreenSquareCenter); dist_sq >= 17 * 17 && dist_sq < 23 * 23) {
                 return ScaleXYZ;
             }
             for (uint32_t i = 0; i < 3; ++i) {
                 if (auto dir_axis = ComputeDirAxis(i, true); ComputeAxisVisibility(dir_axis, true)) {
                     const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
-                    if (ImLengthSqr(end - mouse_pos) < SelectDistSq) return Scale | AxisOp(i);
+                    if (ImLengthSqr(end - g.MousePos) < SelectDistSq) return Scale | AxisOp(i);
                 }
             }
         }
     }
     if (HasAnyOp(op, Translate)) {
-        if (mouse_pos.x >= g.ScreenSquareMin.x && mouse_pos.x <= g.ScreenSquareMax.x &&
-            mouse_pos.y >= g.ScreenSquareMin.y && mouse_pos.y <= g.ScreenSquareMax.y) {
+        if (g.MousePos.x >= g.ScreenSquareMin.x && g.MousePos.x <= g.ScreenSquareMax.x &&
+            g.MousePos.y >= g.ScreenSquareMin.y && g.MousePos.y <= g.ScreenSquareMax.y) {
             return TranslateScreen;
         }
 
-        const auto pos = ToImVec(g.Pos), pos_screen{mouse_pos - pos};
+        const auto pos = ToImVec(g.Pos), pos_screen{g.MousePos - pos};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir_axis = model.M * vec4{ComputeDirAxis(i), 0};
             const auto dir_plane_x = model.M * vec4{ComputeDirPlaneX(i), 0};
@@ -400,7 +400,7 @@ Op FindHoveredOp(Model model, Op op, const ray &mouse_ray, const mat4 &view, con
     }
     if (HasAnyOp(op, Rotate)) {
         static constexpr float SelectDist = 8;
-        const auto dist_sq = ImLengthSqr(mouse_pos - g.ScreenSquareCenter);
+        const auto dist_sq = ImLengthSqr(g.MousePos - g.ScreenSquareCenter);
         const auto inner_rad = g.RadiusSquareCenter - SelectDist / 2, outer_rad = g.RadiusSquareCenter + SelectDist / 2;
         if (dist_sq >= inner_rad * inner_rad && dist_sq < outer_rad * outer_rad) return RotateScreen;
 
@@ -413,7 +413,7 @@ Op FindHoveredOp(Model model, Op op, const ray &mouse_ray, const mat4 &view, con
 
             const auto circle_pos = model.Inv * vec4{glm::normalize(intersect_world_pos - Pos(model.M)), 0};
             const auto circle_pos_screen = WorldToPos(circle_pos * RotationDisplayScale * g.ScreenFactor, g.MVP);
-            if (ImLengthSqr(circle_pos_screen - mouse_pos) < SelectDist * SelectDist) return Rotate | AxisOp(i);
+            if (ImLengthSqr(circle_pos_screen - g.MousePos) < SelectDist * SelectDist) return Rotate | AxisOp(i);
         }
     }
     return NoOp;
@@ -570,9 +570,10 @@ void Render(Model model, Op op, Op type, const mat4 &view_proj, const mat4 &view
 } // namespace
 
 namespace ModelGizmo {
-bool Draw(Mode mode, Op op, vec2 pos, vec2 size, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
+bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
     g.Pos = pos;
     g.Size = size;
+    g.MousePos = ToImVec(mouse_pos);
 
     mat4 m_ortho; // orthonormalized model
     m_ortho[0] = glm::normalize(m[0]);
@@ -607,7 +608,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, mat4 &m, const mat4 &view, cons
 
     // Compute mouse ray
     const auto view_proj_inv = glm::inverse(proj * view);
-    const auto mouse_pos_rel = ImGui::GetIO().MousePos - ToImVec(g.Pos);
+    const auto mouse_pos_rel = g.MousePos - ToImVec(g.Pos);
     const float mox = (mouse_pos_rel.x / g.Size.x) * 2 - 1;
     const float moy = (1 - mouse_pos_rel.y / g.Size.y) * 2 - 1;
     const vec4 near_pos{proj * vec4{0, 0, 1, 1}};
@@ -619,6 +620,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, mat4 &m, const mat4 &view, cons
     const ray mouse_ray{ray_o, glm::normalize(ToNDC(view_proj_inv * vec4{mox, moy, z_far, 1}) - ray_o)};
 
     if (!ImGui::GetIO().MouseDown[0]) g.Using = false;
+
     if (g.Using) {
         m = Transform({m, m_ortho, m_inv}, mode, g.CurrentOp, mouse_ray, snap);
     } else if (ImGui::IsWindowHovered()) {
@@ -636,7 +638,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, mat4 &m, const mat4 &view, cons
                 g.MatrixOrigin = Pos(model.M);
                 g.RelativeOrigin = (g.TranslationPlaneOrigin - Pos(model.M)) / g.ScreenFactor;
                 g.ScaleOrigin = {glm::length(Right(m)), glm::length(Up(m)), glm::length(Dir(m))};
-                g.SaveMousePosX = ImGui::GetIO().MousePos.x;
+                g.SaveMousePosX = g.MousePos.x;
             }
             if (HasAnyOp(type, Translate)) {
                 const auto GetTranslationPlane = [&](Op op) {

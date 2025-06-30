@@ -255,6 +255,7 @@ private:
     std::set<SelectionMode> SelectionModes{SelectionMode::Object, SelectionMode::Edit};
     SelectionMode SelectionMode{SelectionMode::Object};
     MeshElementIndex EditingElement{MeshElement::Face, -1};
+    vec2 AccumulatedWrapMouseDelta{0, 0};
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.25, 0.25, 0.25, 1.f};
@@ -281,7 +282,6 @@ private:
     ModelGizmoState MGizmo;
 
     bool ShowGrid{true};
-
     // Selected entity render settings
     bool ShowBoundingBoxes{false}, ShowBvhBoxes{false};
     static inline const std::vector NormalElements{MeshElement::Vertex, MeshElement::Face};

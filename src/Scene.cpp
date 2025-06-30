@@ -11,6 +11,7 @@
 
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
+#include <imgui_internal.h>
 
 #include <format>
 #include <ranges>
@@ -1145,6 +1146,19 @@ std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, cons
     }
     return nearest;
 }
+
+void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
+    const auto &g = *GImGui;
+    ImVec2 mouse_delta{0, 0};
+    for (int axis = 0; axis < 2; ++axis) {
+        if (g.IO.MousePos[axis] >= wrap_rect.Max[axis]) mouse_delta[axis] = -wrap_rect.GetSize()[axis] + 1;
+        else if (g.IO.MousePos[axis] <= wrap_rect.Min[axis]) mouse_delta[axis] = wrap_rect.GetSize()[axis] - 1;
+    }
+    if (mouse_delta != ImVec2{0, 0}) {
+        accumulated_wrap_mouse_delta -= ToGlm(mouse_delta);
+        TeleportMousePos(g.IO.MousePos + mouse_delta);
+    }
+}
 } // namespace
 
 // Returns a world space ray from the mouse into the scene.
@@ -1178,8 +1192,12 @@ void Scene::Interact() {
     }
 
     // Handle mouse input.
-    if (!IsMouseDown(ImGuiMouseButton_Left) && R.all_of<ExcitedVertex>(active_entity)) {
-        R.erase<ExcitedVertex>(active_entity);
+    if (!IsMouseDown(ImGuiMouseButton_Left)) {
+        R.remove<ExcitedVertex>(active_entity);
+        AccumulatedWrapMouseDelta = {0, 0};
+    }
+    if (ModelGizmo::IsActive()) {
+        WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
     }
     if (!IsWindowHovered()) return;
 
@@ -1310,7 +1328,10 @@ void Scene::RenderGizmo() {
         const auto active_entity = FindActiveEntity(R);
         const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
         if (auto model = R.get<Model>(active_entity).Transform;
-            ModelGizmo::Draw(ModelGizmo::Local, MGizmo.Op, window_pos + line_height, content_region, model, view, proj, MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt)) {
+            ModelGizmo::Draw(
+                ModelGizmo::Local, MGizmo.Op, window_pos + line_height, content_region, ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
+                model, view, proj, MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt
+            )) {
             // Decompose affine model matrix into pos, scale, and orientation.
             const vec3 position = model[3];
             const vec3 scale{glm::length(model[0]), glm::length(model[1]), glm::length(model[2])};
