@@ -150,13 +150,13 @@ constexpr float Length2(vec3 v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
 // Homogeneous clip space to NDC
 constexpr vec3 ToNDC(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
 
-constexpr float Length2ClipSpace(vec3 v, bool local = false) {
+constexpr float LengthClipSpaceSq(vec3 v, bool local = false) {
     const auto &mvp = local ? g.MVPLocal : g.MVP;
     return Length2(ToNDC(mvp * vec4{v, 1}) - ToNDC(mvp * vec4{0, 0, 0, 1}));
 }
 
 constexpr bool IsDirNeg(vec3 dir, bool local = false) {
-    return Length2ClipSpace(dir, local) + FLT_EPSILON < Length2ClipSpace(-dir, local);
+    return LengthClipSpaceSq(dir, local) + FLT_EPSILON < LengthClipSpaceSq(-dir, local);
 }
 
 constexpr mat3 DirUnary{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -172,7 +172,7 @@ constexpr vec3 DirPlaneY(uint32_t axis_i, bool local = false) {
 
 constexpr bool IsAxisVisible(vec3 dir_axis, bool local = false) {
     static constexpr float AxisLimit{0.02};
-    return Length2ClipSpace(dir_axis * g.ScreenFactor, local) > AxisLimit * AxisLimit;
+    return LengthClipSpaceSq(dir_axis * g.ScreenFactor, local) > AxisLimit * AxisLimit;
 }
 constexpr bool IsPlaneVisible(vec3 dir_plane_x, vec3 dir_plane_y) {
     static constexpr auto ToScreenNDC = [](vec3 v) { return vec2{ToNDC(g.MVP * vec4{v, 1})}; };
@@ -301,8 +301,8 @@ mat4 Transform(const mat4 &m, Model model, Mode mode, Op type, vec2 mouse_pos, c
     return res;
 }
 
-constexpr ImVec2 WorldToPos(vec3 pos_world, const mat4 &m) {
-    auto trans = vec2{m * vec4{pos_world, 1}} * (0.5f / glm::dot(glm::transpose(m)[3], vec4{pos_world, 1})) + 0.5f;
+constexpr ImVec2 WorldToScreen(vec3 world, const mat4 &m) {
+    auto trans = vec2{m * vec4{world, 1}} * (0.5f / glm::dot(glm::transpose(m)[3], vec4{world, 1})) + 0.5f;
     trans.y = 1 - trans.y;
     return std::bit_cast<ImVec2>(g.Pos + trans * g.Size);
 }
@@ -323,7 +323,7 @@ constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
 Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
     static constexpr auto SelectDistSq = Style.CircleRad * Style.CircleRad;
 
-    const auto center = WorldToPos(vec3{0}, g.MVP);
+    const auto center = WorldToScreen(vec3{0}, g.MVP);
     // Op selection check order is important because of universal mode.
     // Universal = Scale | Translate | Rotate
     if (HasAnyOp(op, Scale)) {
@@ -332,9 +332,9 @@ Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, con
 
             for (uint32_t i = 0; i < 3; ++i) {
                 const auto dir_axis = model.Ortho * vec4{DirAxis(i, true), 0};
-                const auto pos_plane = WorldToPos(mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(Pos(model.Ortho), dir_axis))), view_proj);
-                const auto axis_start = WorldToPos(vec4{Pos(model.Ortho), 1} + dir_axis * g.ScreenFactor * 0.1f, view_proj);
-                const auto axis_end = WorldToPos(vec4{Pos(model.Ortho), 1} + dir_axis * g.ScreenFactor, view_proj);
+                const auto pos_plane = WorldToScreen(mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(Pos(model.Ortho), dir_axis))), view_proj);
+                const auto axis_start = WorldToScreen(vec4{Pos(model.Ortho), 1} + dir_axis * g.ScreenFactor * 0.1f, view_proj);
+                const auto axis_end = WorldToScreen(vec4{Pos(model.Ortho), 1} + dir_axis * g.ScreenFactor, view_proj);
                 const auto closest_on_axis = PointOnSegment(pos_plane, axis_start, axis_end);
                 if (ImLengthSqr(closest_on_axis - pos_plane) < SelectDistSq) return Scale | AxisOp(i);
             }
@@ -344,7 +344,7 @@ Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, con
             }
             for (uint32_t i = 0; i < 3; ++i) {
                 if (auto dir_axis = DirAxis(i, true); IsAxisVisible(dir_axis, true)) {
-                    const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
+                    const auto end = WorldToScreen(dir_axis * g.ScreenFactor, g.MVPLocal);
                     if (ImLengthSqr(end - mouse_pos) < SelectDistSq) return Scale | AxisOp(i);
                 }
             }
@@ -358,8 +358,8 @@ Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, con
             const auto dir_axis = model.M * vec4{DirAxis(i), 0};
             const auto dir_plane_x = model.M * vec4{DirPlaneX(i), 0};
             const auto dir_plane_y = model.M * vec4{DirPlaneY(i), 0};
-            const auto axis_start = WorldToPos(vec4{Pos(model.M), 1} + dir_axis * g.ScreenFactor * 0.1f, view_proj) - pos;
-            const auto axis_end = WorldToPos(vec4{Pos(model.M), 1} + dir_axis * g.ScreenFactor, view_proj) - pos;
+            const auto axis_start = WorldToScreen(vec4{Pos(model.M), 1} + dir_axis * g.ScreenFactor * 0.1f, view_proj) - pos;
+            const auto axis_end = WorldToScreen(vec4{Pos(model.M), 1} + dir_axis * g.ScreenFactor, view_proj) - pos;
             const auto closest_on_axis = PointOnSegment(pos_screen, axis_start, axis_end);
             if (ImLengthSqr(closest_on_axis - pos_screen) < SelectDistSq) return Translate | AxisOp(i);
 
@@ -385,7 +385,7 @@ Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, con
             if (ImAbs(mv_pos.z) - ImAbs(intersect_view_pos.z) < -FLT_EPSILON) continue;
 
             const auto circle_pos = model.Inv * vec4{glm::normalize(intersect_world_pos - Pos(model.M)), 0};
-            const auto circle_pos_screen = WorldToPos(circle_pos * RotationDisplayScale * g.ScreenFactor, g.MVP);
+            const auto circle_pos_screen = WorldToScreen(circle_pos * RotationDisplayScale * g.ScreenFactor, g.MVP);
             if (ImLengthSqr(circle_pos_screen - mouse_pos) < SelectDist * SelectDist) return Rotate | AxisOp(i);
         }
     }
@@ -397,8 +397,8 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
         if (Style.HatchedAxisLineWidth <= 0) return;
 
         for (uint32_t i = 1; i < 10; ++i) {
-            const auto base = WorldToPos(axis * 0.05f * float(i * 2) * g.ScreenFactor, g.MVP);
-            const auto end = WorldToPos(axis * 0.05f * float(i * 2 + 1) * g.ScreenFactor, g.MVP);
+            const auto base = WorldToScreen(axis * 0.05f * float(i * 2) * g.ScreenFactor, g.MVP);
+            const auto end = WorldToScreen(axis * 0.05f * float(i * 2 + 1) * g.ScreenFactor, g.MVP);
             ImGui::GetWindowDrawList()->AddLine(base, end, Color.HatchedAxisLines, Style.HatchedAxisLineWidth);
         }
     };
@@ -406,7 +406,7 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
     static constexpr bool orthographic{false};
     const bool universal = op == Universal;
     auto &dl = *ImGui::GetWindowDrawList();
-    const auto origin = WorldToPos(Pos(m), view_proj);
+    const auto origin = WorldToScreen(Pos(m), view_proj);
     if (HasAnyOp(op, Translate)) {
         for (uint32_t i = 0; i < 3; ++i) {
             const bool is_neg = IsDirNeg(DirUnary[i]);
@@ -414,8 +414,8 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
             const bool below_axis_limit = IsAxisVisible(dir_axis);
             const bool using_type = type == (Translate | AxisOp(i));
             if ((!g.Using || using_type) && below_axis_limit) {
-                const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
-                const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
+                const auto base = WorldToScreen(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
+                const auto end = WorldToScreen(dir_axis * g.ScreenFactor, g.MVP);
                 const auto color = using_type ? Color.Selection : Color.Directions[i];
                 dl.AddLine(base, end, color, Style.LineWidth);
                 // In universal mode, draw scale circles instead of translate arrows.
@@ -433,7 +433,7 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
                     static ImVec2 quad_pts_screen[4];
                     for (uint32_t j = 0; j < 4; ++j) {
                         const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
-                        quad_pts_screen[j] = WorldToPos(corner_pos_world, g.MVP);
+                        quad_pts_screen[j] = WorldToScreen(corner_pos_world, g.MVP);
                     }
                     dl.AddPolyline(quad_pts_screen, 4, Color.Directions[i], true, 1.0f);
                     dl.AddConvexPolyFilled(quad_pts_screen, 4, type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i]);
@@ -442,11 +442,11 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
         }
         if (!g.Using || type == TranslateScreen) {
             const auto color = type == TranslateScreen ? Color.Selection : IM_COL32_WHITE;
-            dl.AddCircleFilled(WorldToPos(vec3{0}, g.MVP), Style.CircleRad, color, 32);
+            dl.AddCircleFilled(WorldToScreen(vec3{0}, g.MVP), Style.CircleRad, color, 32);
         }
         if (g.Using && HasAnyOp(type, Translate)) {
             const auto translation_line_color = Color.TranslationLine;
-            const auto source_pos_screen = WorldToPos(g.MatrixOrigin, view_proj);
+            const auto source_pos_screen = WorldToScreen(g.MatrixOrigin, view_proj);
             const auto dif = std::bit_cast<ImVec2>(vec2{glm::normalize(vec4{origin.x - source_pos_screen.x, origin.y - source_pos_screen.y, 0, 0}) * 5.f});
             dl.AddCircle(source_pos_screen, 6.f, translation_line_color);
             dl.AddCircle(origin, 6.f, translation_line_color);
@@ -475,7 +475,7 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
                 const float ng = angle_start + float(circle_mul) * M_PI * (float(i) / float(point_count - 1));
                 const vec4 axis_pos{cosf(ng), sinf(ng), 0, 0};
                 const auto pos = vec4{axis_pos[axis], axis_pos[(axis + 1) % 3], axis_pos[(axis + 2) % 3], 0} * g.ScreenFactor * RotationDisplayScale;
-                CirclePositions[i] = WorldToPos(pos, g.MVP);
+                CirclePositions[i] = WorldToScreen(pos, g.MVP);
             }
             if (!g.Using || is_type) {
                 const auto color = is_type ? Color.Selection : Color.Directions[2 - axis];
@@ -497,7 +497,7 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
                 const float ng = g.RotationAngle * (float(i - 1) / float(HalfCircleSegmentCount - 1));
                 const mat4 rotate{glm::rotate(mat4{1}, ng, vec3{g.TranslationPlane})};
                 const auto pos = vec3{rotate * vec4{g.RotationVectorSource, 1}} * g.ScreenFactor * RotationDisplayScale;
-                CirclePositions[i] = WorldToPos(pos + Pos(m), view_proj);
+                CirclePositions[i] = WorldToScreen(pos + Pos(m), view_proj);
             }
             dl.AddConvexPolyFilled(CirclePositions, HalfCircleSegmentCount + 1, Color.RotationFillActive);
             dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, Color.RotationBorderActive, true, Style.RotationLineWidth);
@@ -517,18 +517,18 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
                 if (IsAxisVisible(dir_axis, true)) {
                     const auto color = type == (Scale | AxisOp(i)) ? Color.Selection : Color.Directions[i];
                     if (!universal) {
-                        const auto base = WorldToPos(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
+                        const auto base = WorldToScreen(dir_axis * g.ScreenFactor * 0.1f, g.MVP);
                         if (g.Using) {
-                            const auto center = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
+                            const auto center = WorldToScreen(dir_axis * g.ScreenFactor, g.MVP);
                             dl.AddLine(base, center, Color.ScaleLine, Style.LineWidth);
                             dl.AddCircleFilled(center, Style.CircleRad, Color.ScaleLine);
                         }
-                        const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVP);
+                        const auto end = WorldToScreen(dir_axis * g.ScreenFactor, g.MVP);
                         dl.AddLine(base, end, color, Style.LineWidth);
                         dl.AddCircleFilled(end, Style.CircleRad, color);
                         if (is_neg) DrawHatchedAxis(dir_axis);
                     } else {
-                        const auto end = WorldToPos(dir_axis * g.ScreenFactor, g.MVPLocal);
+                        const auto end = WorldToScreen(dir_axis * g.ScreenFactor, g.MVPLocal);
                         dl.AddCircleFilled(end, Style.CircleRad, color);
                     }
                 }
@@ -536,7 +536,7 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
         }
         if (!g.Using || HasAnyOp(type, Scale)) {
             const auto circle_color = g.Using || type == ScaleXYZ ? Color.Selection : IM_COL32_WHITE;
-            const auto circle_pos = WorldToPos(vec3{0}, g.MVP);
+            const auto circle_pos = WorldToScreen(vec3{0}, g.MVP);
             if (!universal) dl.AddCircleFilled(circle_pos, Style.CircleRad, circle_color, 32);
             else dl.AddCircle(circle_pos, 20.f, circle_color, 32, Style.CircleRad);
             if (g.Using) {
@@ -579,7 +579,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
 
     // Compute scale from camera right vector projected onto screen at m pos
     static constexpr float GizmoSizeClipSpace{0.1};
-    g.ScreenFactor = GizmoSizeClipSpace / sqrtf(Length2ClipSpace(m_inv * vec4{vec3{Right(view_inv)}, 0}));
+    g.ScreenFactor = GizmoSizeClipSpace / sqrtf(LengthClipSpaceSq(m_inv * vec4{vec3{Right(view_inv)}, 0}));
 
     // Compute mouse ray
     const auto view_proj_inv = glm::inverse(proj * view);
