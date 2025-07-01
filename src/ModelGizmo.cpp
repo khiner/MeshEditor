@@ -38,7 +38,7 @@ struct Context {
     vec3 MatrixOrigin;
 
     vec3 RotationVectorSource;
-    float RotationAngle, RotationAngleOrigin, RotationRadius;
+    float RotationAngle, RotationRadius;
 
     vec3 Scale, ScaleOrigin;
     vec2 StartMousePos;
@@ -147,25 +147,28 @@ constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) {
     return {vec3{normal}, glm::dot(normal, vec4{p, 1})};
 }
 
+constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
+constexpr float Length2(vec3 v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
+
 constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
     const auto vec = ToGlm(s2 - s1);
     const auto v = glm::normalize(vec);
     const float t = glm::dot(v, ToGlm(p - s1));
-    if (t < 0) return s1;
-    if (t > glm::length(vec)) return s2;
+    if (t <= 0) return s1;
+    if (t * t > Length2(vec)) return s2;
     return s1 + ToImVec(v) * t;
 }
 
 // Homogeneous clip space to NDC
-constexpr vec3 ToNDC(vec4 v) { return {(fabsf(v.w) > FLT_EPSILON) ? v / v.w : v}; }
+constexpr vec3 ToNDC(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
 
-constexpr float LengthClipSpace(vec3 v, bool local = false) {
+constexpr float Length2ClipSpace(vec3 v, bool local = false) {
     const auto &mvp = local ? g.MVPLocal : g.MVP;
-    return glm::length(ToNDC(mvp * vec4{v, 1}) - ToNDC(mvp * vec4{0, 0, 0, 1}));
+    return Length2(ToNDC(mvp * vec4{v, 1}) - ToNDC(mvp * vec4{0, 0, 0, 1}));
 }
 
 constexpr bool IsDirNeg(vec3 dir, bool local = false) {
-    return LengthClipSpace(dir, local) + FLT_EPSILON < LengthClipSpace(-dir, local);
+    return Length2ClipSpace(dir, local) + FLT_EPSILON < Length2ClipSpace(-dir, local);
 }
 
 constexpr mat3 DirUnary{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -181,7 +184,7 @@ constexpr vec3 DirPlaneY(uint32_t axis_i, bool local = false) {
 
 constexpr bool IsAxisVisible(vec3 dir_axis, bool local = false) {
     static constexpr float AxisLimit{0.02};
-    return LengthClipSpace(dir_axis * g.ScreenFactor, local) > AxisLimit;
+    return Length2ClipSpace(dir_axis * g.ScreenFactor, local) > AxisLimit * AxisLimit;
 }
 constexpr bool IsPlaneVisible(vec3 dir_plane_x, vec3 dir_plane_y) {
     static constexpr auto ToScreenNDC = [](vec3 v) { return vec2{ToNDC(g.MVP * vec4{v, 1})}; };
@@ -289,18 +292,20 @@ mat4 Transform(const mat4 &m, Model model, Mode mode, Op type, vec2 mouse_pos, c
 
         return model.Ortho * glm::scale(mat4{1}, g.Scale * g.ScaleOrigin);
     }
+
     assert(HasAnyOp(type, Rotate));
-    g.RotationAngle = ComputeAngleOnPlane(m, mouse_ray);
-    if (snap) g.RotationAngle = Snap(g.RotationAngle, snap->x * M_PI / 180.f);
+    float rotation_angle = ComputeAngleOnPlane(m, mouse_ray);
+    if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
 
     const vec3 rot_axis_local = glm::normalize(glm::mat3{model.Inv} * g.TranslationPlane); // Assumes affine model
-    const mat4 delta_rot{glm::rotate(mat4{1}, g.RotationAngle - g.RotationAngleOrigin, rot_axis_local)};
-    if (g.RotationAngle != g.RotationAngleOrigin) g.RotationAngleOrigin = g.RotationAngle;
+    const mat4 delta_rot{glm::rotate(mat4{1}, rotation_angle - g.RotationAngle, rot_axis_local)};
+    g.RotationAngle = rotation_angle;
 
     if (mode == Local) {
         const vec3 model_scale{glm::length(model.M[0]), glm::length(model.M[1]), glm::length(model.M[2])};
         return model.Ortho * delta_rot * glm::scale(mat4{1}, model_scale);
     }
+
     auto res = model.M;
     res[3] = {0, 0, 0, 1};
     res = delta_rot * res;
@@ -578,7 +583,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
 
     // Compute scale from camera right vector projected onto screen at m pos
     static constexpr float GizmoSizeClipSpace{0.1};
-    g.ScreenFactor = GizmoSizeClipSpace / LengthClipSpace(m_inv * vec4{vec3{Right(view_inv)}, 0});
+    g.ScreenFactor = GizmoSizeClipSpace / sqrtf(Length2ClipSpace(m_inv * vec4{vec3{Right(view_inv)}, 0}));
 
     // Compute mouse ray
     const auto view_proj_inv = glm::inverse(proj * view);
@@ -634,7 +639,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
                                     vec4{DirUnary[AxisIndex(g.Op, Rotate)], 0};
                 g.TranslationPlane = BuildPlane(Pos(g.Op == RotateScreen || mode == Local ? m_ : m), translation_plane);
                 g.RotationVectorSource = glm::normalize(mouse_ray(IntersectRayPlane(mouse_ray, g.TranslationPlane)) - p);
-                g.RotationAngleOrigin = ComputeAngleOnPlane(m_, mouse_ray);
+                g.RotationAngle = ComputeAngleOnPlane(m_, mouse_ray);
             }
         }
     }
