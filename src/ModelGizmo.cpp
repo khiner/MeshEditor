@@ -106,9 +106,6 @@ constexpr vec4 Up(const mat4 &m) { return {m[1]}; }
 constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
 
-constexpr vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
-constexpr ImVec2 ToImVec(vec2 v) { return {v.x, v.y}; }
-
 constexpr Op AxisOp(uint32_t axis_i) { return AxisX << axis_i; }
 constexpr uint32_t AxisIndex(Op op, Op type) {
     const auto axis_only = Op(uint32_t(op) - uint32_t(type));
@@ -149,15 +146,6 @@ constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) {
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 constexpr float Length2(vec3 v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
-
-constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
-    const auto vec = ToGlm(s2 - s1);
-    const auto v = glm::normalize(vec);
-    const float t = glm::dot(v, ToGlm(p - s1));
-    if (t <= 0) return s1;
-    if (t * t > Length2(vec)) return s2;
-    return s1 + ToImVec(v) * t;
-}
 
 // Homogeneous clip space to NDC
 constexpr vec3 ToNDC(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
@@ -316,12 +304,21 @@ mat4 Transform(const mat4 &m, Model model, Mode mode, Op type, vec2 mouse_pos, c
 constexpr ImVec2 WorldToPos(vec3 pos_world, const mat4 &m) {
     auto trans = vec2{m * vec4{pos_world, 1}} * (0.5f / glm::dot(glm::transpose(m)[3], vec4{pos_world, 1})) + 0.5f;
     trans.y = 1 - trans.y;
-    return ToImVec(g.Pos + trans * g.Size);
+    return std::bit_cast<ImVec2>(g.Pos + trans * g.Size);
 }
 
 constexpr float RotationDisplayScale{1.2}; // Scale a bit so translate axes don't touch when in universal.
 constexpr float QuadMin{0.5}, QuadMax{0.8};
 constexpr float QuadUV[]{QuadMin, QuadMin, QuadMin, QuadMax, QuadMax, QuadMax, QuadMax, QuadMin};
+
+constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
+    const auto vec = std::bit_cast<vec2>(s2 - s1);
+    const auto v = glm::normalize(vec);
+    const float t = glm::dot(v, std::bit_cast<vec2>(p - s1));
+    if (t <= 0) return s1;
+    if (t * t > Length2(vec)) return s2;
+    return s1 + std::bit_cast<ImVec2>(v) * t;
+}
 
 Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
     static constexpr auto SelectDistSq = Style.CircleRad * Style.CircleRad;
@@ -356,7 +353,7 @@ Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, con
     if (HasAnyOp(op, Translate)) {
         if (ImLengthSqr(mouse_pos - center) <= Style.CircleRad * Style.CircleRad) return TranslateScreen;
 
-        const auto pos = ToImVec(g.Pos), pos_screen{mouse_pos - pos};
+        const auto pos = std::bit_cast<ImVec2>(g.Pos), pos_screen{mouse_pos - pos};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir_axis = model.M * vec4{DirAxis(i), 0};
             const auto dir_plane_x = model.M * vec4{DirPlaneX(i), 0};
@@ -433,14 +430,13 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
             if (!g.Using || type == TranslatePlanes[i]) {
                 const auto dir_plane_x = DirPlaneX(i), dir_plane_y = DirPlaneY(i);
                 if (IsPlaneVisible(dir_plane_x, dir_plane_y)) {
-                    ImVec2 quad_pts_screen[4];
+                    static ImVec2 quad_pts_screen[4];
                     for (uint32_t j = 0; j < 4; ++j) {
                         const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
                         quad_pts_screen[j] = WorldToPos(corner_pos_world, g.MVP);
                     }
                     dl.AddPolyline(quad_pts_screen, 4, Color.Directions[i], true, 1.0f);
-                    const auto color = type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i];
-                    dl.AddConvexPolyFilled(quad_pts_screen, 4, color);
+                    dl.AddConvexPolyFilled(quad_pts_screen, 4, type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i]);
                 }
             }
         }
@@ -451,7 +447,7 @@ void Render(const mat4 &m, const mat4 &m_inv, Op op, Op type, const mat4 &view_p
         if (g.Using && HasAnyOp(type, Translate)) {
             const auto translation_line_color = Color.TranslationLine;
             const auto source_pos_screen = WorldToPos(g.MatrixOrigin, view_proj);
-            const auto dif = ToImVec(glm::normalize(vec4{origin.x - source_pos_screen.x, origin.y - source_pos_screen.y, 0, 0}) * 5.f);
+            const auto dif = std::bit_cast<ImVec2>(vec2{glm::normalize(vec4{origin.x - source_pos_screen.x, origin.y - source_pos_screen.y, 0, 0}) * 5.f});
             dl.AddCircle(source_pos_screen, 6.f, translation_line_color);
             dl.AddCircle(origin, 6.f, translation_line_color);
             dl.AddLine(source_pos_screen + dif, origin - dif, translation_line_color, 2.f);
@@ -587,9 +583,9 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
 
     // Compute mouse ray
     const auto view_proj_inv = glm::inverse(proj * view);
-    const auto mouse_pos_rel = mouse_pos - g.Pos;
-    const float mox = (mouse_pos_rel.x / g.Size.x) * 2 - 1;
-    const float moy = (1 - mouse_pos_rel.y / g.Size.y) * 2 - 1;
+    const auto mouse_pos_rel = mouse_pos - pos;
+    const float mox = (mouse_pos_rel.x / size.x) * 2 - 1;
+    const float moy = (1 - mouse_pos_rel.y / size.y) * 2 - 1;
     const vec4 near_pos{proj * vec4{0, 0, 1, 1}};
     const vec4 far_pos{proj * vec4{0, 0, 2, 1}};
     const bool reversed = near_pos.z / near_pos.w > far_pos.z / far_pos.w;
@@ -604,7 +600,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
     if (g.Using) {
         m = Transform(m_, {m, m_ortho, m_inv}, mode, g.Op, mouse_pos, mouse_ray, snap);
     } else if (ImGui::IsWindowHovered()) {
-        if (g.Op = FindHoveredOp({m_, m_ortho, m_inv}, op, ToImVec(mouse_pos), mouse_ray, view, view_proj);
+        if (g.Op = FindHoveredOp({m_, m_ortho, m_inv}, op, std::bit_cast<ImVec2>(mouse_pos), mouse_ray, view, view_proj);
             g.Op != NoOp && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             g.Using = true;
             const auto p = Pos(m_);

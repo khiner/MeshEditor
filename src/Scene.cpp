@@ -1091,8 +1091,8 @@ void Scene::RemoveEntitySelectionOverlays(entt::entity instance_entity) {
 using namespace ImGui;
 
 namespace {
-vec2 ToGlm(ImVec2 v) { return {v.x, v.y}; }
-vk::Extent2D ToExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
+constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
+constexpr vk::Extent2D ToExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 constexpr std::string Capitalize(std::string_view str) {
     if (str.empty()) return {};

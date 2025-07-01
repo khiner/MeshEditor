@@ -31,12 +31,12 @@ using Point = OpenMesh::Vec3f;
 
 std::optional<om::PolyMesh> LoadPolyMesh(const fs::path &file_path);
 
-static constexpr vec3 ToGlm(const OpenMesh::Vec3f &v) { return {v[0], v[1], v[2]}; }
+static constexpr vec3 ToGlm(OpenMesh::Vec3f v) { return std::bit_cast<vec3>(v); }
 static constexpr vec4 ToGlm(const OpenMesh::Vec3uc &c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
     return {cc[0], cc[1], cc[2], 1};
 }
-static constexpr om::Point ToOpenMesh(vec3 v) { return {v.x, v.y, v.z}; }
+static constexpr om::Point ToOpenMesh(vec3 v) { return std::bit_cast<om::Point>(v); }
 static constexpr OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
     const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
     return {cc[0], cc[1], cc[2]};
