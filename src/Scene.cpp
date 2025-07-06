@@ -19,6 +19,16 @@
 using std::ranges::find, std::ranges::find_if, std::ranges::to;
 using std::views::transform;
 
+struct CameraUBO {
+    mat4 View{1}, Proj{1};
+    vec3 Position{0, 0, 0};
+};
+
+struct ViewProjNearFar {
+    mat4 View{1}, Projection{1};
+    float Near, Far;
+};
+
 // Stored on parent entities.
 // Holds the `Model` of the parent entity at position 0, and children at 1+.
 struct ModelsBuffer {
@@ -611,7 +621,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       TransferFence(Vk.Device.createFenceUnique({})),
       Pipelines(std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
       BufferContext(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool),
-      TransformBuffer(BufferContext, sizeof(ViewProj), vk::BufferUsageFlagBits::eUniformBuffer),
+      CameraUBOBuffer(BufferContext, sizeof(CameraUBO), vk::BufferUsageFlagBits::eUniformBuffer),
       ViewProjNearFarBuffer(BufferContext, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer),
       LightsBuffer(BufferContext, as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer),
       SilhouetteColorsBuffer(BufferContext, as_bytes(SilhouetteColors), vk::BufferUsageFlagBits::eUniformBuffer) {
@@ -629,21 +639,21 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     UpdateEdgeColors();
     UpdateTransformBuffers();
 
-    const auto transform_buffer = TransformBuffer.GetDescriptor();
+    const auto transform_buffer = CameraUBOBuffer.GetDescriptor();
     const auto lights_buffer = LightsBuffer.GetDescriptor();
     const auto view_proj_near_far_buffer = ViewProjNearFarBuffer.GetDescriptor();
     const auto silhouette_display_buffer = SilhouetteColorsBuffer.GetDescriptor();
     auto descriptors = Pipelines->Main.Renderer.GetDescriptors({
-        {SPT::Fill, "ViewProjectionUBO", &transform_buffer},
+        {SPT::Fill, "CameraUBO", &transform_buffer},
         {SPT::Fill, "LightsUBO", &lights_buffer},
-        {SPT::Line, "ViewProjectionUBO", &transform_buffer},
+        {SPT::Line, "CameraUBO", &transform_buffer},
         {SPT::Grid, "ViewProjNearFarUBO", &view_proj_near_far_buffer},
         {SPT::SilhouetteEdgeColor, "SilhouetteColorsUBO", &silhouette_display_buffer},
-        {SPT::DebugNormals, "ViewProjectionUBO", &transform_buffer},
+        {SPT::DebugNormals, "CameraUBO", &transform_buffer},
     });
     descriptors.append_range(
         Pipelines->Silhouette.Renderer.GetDescriptors({
-            {SPT::SilhouetteDepthObject, "ViewProjectionUBO", &transform_buffer},
+            {SPT::SilhouetteDepthObject, "CameraUBO", &transform_buffer},
         })
     );
     Vk.Device.updateDescriptorSets(descriptors, {});
@@ -1030,10 +1040,10 @@ void Scene::UpdateEdgeColors() {
 
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    const ViewProj view_proj{Camera.GetView(), Camera.GetProjection(aspect_ratio)};
-    TransformBuffer.Update(as_bytes(view_proj));
+    const CameraUBO camera_ubo{Camera.GetView(), Camera.GetProjection(aspect_ratio), Camera.GetPosition()};
+    CameraUBOBuffer.Update(as_bytes(camera_ubo));
 
-    const ViewProjNearFar vpnf{view_proj.View, view_proj.Projection, Camera.NearClip, Camera.FarClip};
+    const ViewProjNearFar vpnf{camera_ubo.View, camera_ubo.Proj, Camera.NearClip, Camera.FarClip};
     ViewProjNearFarBuffer.Update(as_bytes(vpnf));
     InvalidateCommandBuffer();
 }

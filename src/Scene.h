@@ -58,15 +58,6 @@ struct Model {
     mat4 InvTransform;
 };
 
-struct ViewProj {
-    mat4 View{1}, Projection{1};
-};
-
-struct ViewProjNearFar {
-    mat4 View{1}, Projection{1};
-    float Near, Far;
-};
-
 struct Lights {
     // RGB: Color of the light emitting from the view position.
     // A: Ambient intensity. (Using a single vec4 for 16-byte alignment.)
@@ -271,7 +262,7 @@ private:
 
     mvk::BufferContext BufferContext;
     std::array<vk::CommandBuffer, 2> CommandBuffers{*BufferContext.TransferCb, *RenderCommandBuffer};
-    mvk::UniqueBuffers TransformBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteColorsBuffer;
+    mvk::UniqueBuffers CameraUBOBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteColorsBuffer;
 
     struct ModelGizmoState {
         ModelGizmo::Op Op{ModelGizmo::Op::Translate};

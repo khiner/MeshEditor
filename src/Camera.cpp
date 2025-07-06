@@ -16,7 +16,7 @@ vec3 Camera::YAxis() const {
     return {0, (is_flipped ? -1.f : 1.f), 0};
 }
 
-mat4 Camera::GetView() const { return glm::lookAt(Target + Distance * Forward(), Target, YAxis()); }
+mat4 Camera::GetView() const { return glm::lookAt(GetPosition(), Target, YAxis()); }
 mat4 Camera::GetProjection(float aspect_ratio) const {
     return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip);
 }

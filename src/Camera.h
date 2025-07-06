@@ -26,6 +26,7 @@ struct Camera {
 
     mat4 GetView() const;
     mat4 GetProjection(float aspect_ratio) const;
+    vec3 GetPosition() const { return Target + Distance * Forward(); }
     ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
 
     vec3 Forward() const;
