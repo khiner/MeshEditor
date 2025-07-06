@@ -105,6 +105,12 @@ constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
 constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
 
+// Assumes no scaling or shearing, only rotation and translation
+constexpr mat4 InverseRigid(const mat4 &m) {
+    const auto r = glm::transpose(mat3{m});
+    return {{r[0], 0}, {r[1], 0}, {r[2], 0}, {-r * vec3{m[3]}, 1}};
+}
+
 constexpr Op AxisOp(uint32_t axis_i) { return AxisX << axis_i; }
 constexpr uint32_t AxisIndex(Op op, Op type) {
     const auto axis_only = Op(uint32_t(op) - uint32_t(type));
@@ -220,27 +226,17 @@ mat4 Transform(const mat4 &m, Model model, Mode mode, Op type, vec2 mouse_pos, c
     if (HasAnyOp(type, Translate)) {
         auto delta = mouse_ray(fabsf(IntersectRayPlane(mouse_ray, g.InteractionPlane))) -
             (g.MouseRayOrigin(IntersectRayPlane(g.MouseRayOrigin, g.InteractionPlane)) - g.MatrixOrigin) - p;
-
-        // 1 axis constraint
+        // Single axis constraint
         if (type == (Translate | AxisX) || type == (Translate | AxisY) || type == (Translate | AxisZ)) {
             const auto axis_i = AxisIndex(type, Translate);
             delta = m[axis_i] * glm::dot(m[axis_i], vec4{delta, 0});
         }
         if (snap) {
-            auto delta_cumulative = p + delta - vec3{g.MatrixOrigin};
-            if (mode == Local || type == TranslateScreen) {
-                auto ms_norm = model.M;
-                ms_norm[0] = glm::normalize(model.M[0]);
-                ms_norm[1] = glm::normalize(model.M[1]);
-                ms_norm[2] = glm::normalize(model.M[2]);
-                delta_cumulative = ms_norm * vec4{Snap(glm::inverse(ms_norm) * vec4{delta_cumulative, 0}, *snap), 0};
-            } else {
-                delta_cumulative = Snap(vec4{delta_cumulative, 0}, *snap);
-            }
+            const vec4 d{p + delta - g.MatrixOrigin, 0};
+            const vec3 delta_cumulative = mode == Local || type == TranslateScreen ? model.M * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
             delta = g.MatrixOrigin + delta_cumulative - p;
         }
-
-        return glm::translate(mat4{1}, vec3{delta}) * model.M;
+        return glm::translate(mat4{1}, delta) * model.M;
     }
     if (HasAnyOp(type, Scale)) {
         if (type == ScaleXYZ) {
@@ -536,16 +532,15 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
     const auto p = Pos(m);
     const mat4 m_ortho{glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]};
     const auto m_ = mode == Local ? m_ortho : glm::translate(mat4{1}, p);
+    const mat3 m_inv = InverseRigid(m_);
     const mat4 view_proj = proj * view;
     g.MVP = view_proj * m_;
     g.MVPLocal = view_proj * m_ortho;
 
-    // Check if behind camera
-    const auto pos_cam_space = g.MVP * vec4{vec3{0}, 1};
-    if (pos_cam_space.z < 0.001 && !g.Using) return false;
+    // Behind‐camera cull
+    if (!g.Using && (g.MVP * vec4{vec3{0}, 1}).z < 0.001f) return false;
 
-    const auto m_inv = glm::inverse(m_);
-    const mat4 view_inv = glm::inverse(view);
+    const auto view_inv = InverseRigid(view);
     const ray camera_ray{Pos(view_inv), Dir(view_inv)};
 
     // Compute scale from camera right vector projected onto screen at m pos
