@@ -544,7 +544,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
 
     const auto m_inv = glm::inverse(m_);
     const mat4 view_inv = glm::inverse(view);
-    const ray camera_ray{Dir(view_inv), Pos(view_inv)};
+    const ray camera_ray{Pos(view_inv), Dir(view_inv)};
 
     // Compute scale from camera right vector projected onto screen at m pos
     g.ScreenFactor = Style.SizeClipSpace / sqrtf(LengthClipSpaceSq(m_inv * vec4{vec3{Right(view_inv)}, 0}));
