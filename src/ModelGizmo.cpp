@@ -36,7 +36,7 @@ struct Context {
     vec3 MatrixOrigin;
 
     float ScreenFactor;
-    float RotationAngle;
+    float RotationAngle; // Relative to the start rotation
 
     vec3 Scale, ScaleOrigin;
     vec2 MousePosOrigin;
@@ -102,7 +102,6 @@ std::string_view ToString(Op op) {
 
 namespace {
 constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
-constexpr vec4 Up(const mat4 &m) { return {m[1]}; }
 constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
 
@@ -262,8 +261,7 @@ mat4 Transform(const mat4 &m, Model model, Mode mode, Op type, vec2 mouse_pos, c
         return model.Ortho * glm::scale(mat4{1}, g.Scale * g.ScaleOrigin);
     }
 
-    assert(HasAnyOp(type, Rotate));
-    // Compute angle on plane relative to the rotation origin
+    // Rotation: Compute angle on plane relative to the rotation origin
     const auto rotation_origin = glm::normalize(g.MouseRayOrigin(IntersectRayPlane(g.MouseRayOrigin, g.InteractionPlane)) - g.MatrixOrigin);
     const auto perp = glm::normalize(glm::cross(rotation_origin, vec3{g.InteractionPlane}));
     const auto pos_local = glm::normalize(mouse_ray(IntersectRayPlane(mouse_ray, g.InteractionPlane)) - p);
@@ -445,12 +443,15 @@ void Render(const mat4 &m, Op op, Op type, const mat4 &view_proj, vec3 cam_to_mo
         static constexpr uint32_t HalfCircleSegmentCount{128}, FullCircleSegmentCount{HalfCircleSegmentCount * 2 + 1};
         static ImVec2 CirclePositions[FullCircleSegmentCount];
         if (g.Using) {
-            const vec4 rotation_origin{glm::normalize(g.MouseRayOrigin(IntersectRayPlane(g.MouseRayOrigin, g.InteractionPlane)) - g.MatrixOrigin), 1};
+            const auto u = glm::normalize(g.MouseRayOrigin(IntersectRayPlane(g.MouseRayOrigin, g.InteractionPlane)) - p);
+            const auto v = glm::cross(glm::normalize(vec3{g.InteractionPlane}), u);
+            const auto sign = g.RotationAngle < 0 ? -1.f : 1.f;
             for (uint32_t i = 0; i < FullCircleSegmentCount; ++i) {
-                const float ng = 2 * M_PI * float(i) / float(FullCircleSegmentCount - 1) * (g.RotationAngle < 0 ? -1.f : 1.f);
-                const auto pos = vec3{glm::rotate(mat4{1}, ng, vec3{g.InteractionPlane}) * rotation_origin};
+                const float ng = sign * 2 * M_PI * float(i) / float(FullCircleSegmentCount - 1);
+                const vec3 pos = cosf(ng) * u + sinf(ng) * v;
                 CirclePositions[i] = WorldToScreen(p + pos * g.ScreenFactor * Style.RotationDisplayScale * (type == RotateScreen ? 1.2f : 1.f), view_proj);
             }
+
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, Color.Selection, false, Style.RotationLineWidth);
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
             if (angle_i > 1) {
@@ -575,29 +576,20 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
             g.MatrixOrigin = p;
             g.MousePosOrigin = mouse_pos;
             g.MouseRayOrigin = mouse_ray;
-            if (HasAnyOp(g.Op, Scale)) {
-                g.InteractionPlane = BuildPlane(g.MatrixOrigin, g.Op == ScaleXYZ ? -vec4{camera_ray.d, 0} : m_[(AxisIndex(g.Op, Scale) + 1) % 3]);
-                g.Scale = {1, 1, 1};
-                g.ScaleOrigin = {glm::length(Right(m)), glm::length(Up(m)), glm::length(Dir(m))};
-            }
-            if (HasAnyOp(g.Op, Translate)) {
-                const auto GetPlane = [&](Op op) {
-                    if (op == TranslateScreen) return -vec4{camera_ray.d, 0};
-                    if (auto plane_index = TranslatePlaneIndex(op)) return m_[*plane_index];
+            g.Scale = {1, 1, 1};
+            g.RotationAngle = 0;
+            if (HasAnyOp(g.Op, Scale)) g.ScaleOrigin = {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])};
+            const auto GetPlaneNormal = [&](Op op) {
+                if (g.Op == ScaleXYZ || g.Op == RotateScreen || g.Op == TranslateScreen) return -vec4{camera_ray.d, 0};
+                if (HasAnyOp(g.Op, Scale)) return m_[(AxisIndex(g.Op, Scale) + 1) % 3];
+                if (HasAnyOp(g.Op, Rotate)) return mode == Local ? m_[AxisIndex(g.Op, Rotate)] : vec4{DirUnary[AxisIndex(g.Op, Rotate)], 0};
+                if (auto plane_index = TranslatePlaneIndex(op)) return m_[*plane_index];
 
-                    const auto plane = m_[AxisIndex(op, Translate)];
-                    return glm::normalize(vec4{glm::cross(vec3{plane}, glm::cross(vec3{plane}, glm::normalize(g.MatrixOrigin - camera_ray.o))), 0});
-                };
-                g.InteractionPlane = BuildPlane(g.MatrixOrigin, GetPlane(g.Op));
-            }
-            if (HasAnyOp(g.Op, Rotate)) {
-                const auto plane = g.Op == RotateScreen ?
-                    -vec4{camera_ray.d, 0} :
-                    mode == Local ? m_[AxisIndex(g.Op, Rotate)] :
-                                    vec4{DirUnary[AxisIndex(g.Op, Rotate)], 0};
-                g.InteractionPlane = BuildPlane(g.MatrixOrigin, plane);
-                g.RotationAngle = 0;
-            }
+                const auto n = glm::normalize(vec3{m_[AxisIndex(op, Translate)]});
+                const auto v = glm::normalize(g.MatrixOrigin - camera_ray.o);
+                return vec4{v - n * glm::dot(n, v), 0};
+            };
+            g.InteractionPlane = BuildPlane(g.MatrixOrigin, GetPlaneNormal(g.Op));
         }
     }
     Render(m_, op, g.Op, view_proj, mat3{m_inv} * glm::normalize(p - camera_ray.o));
