@@ -3,6 +3,7 @@
 #pragma once
 
 #include "numeric/mat4.h"
+#include "numeric/ray.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
@@ -42,5 +43,5 @@ bool IsActive();
 Op CurrentOp(); // Hovered or active operation.
 std::string_view ToString(Op);
 
-bool Draw(Mode, Op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap = std::nullopt);
+bool Draw(Mode, Op, vec2 pos, vec2 size, vec2 mouse_pos, ray mouse_ray, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap = std::nullopt);
 } // namespace ModelGizmo

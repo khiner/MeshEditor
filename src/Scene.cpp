@@ -1180,15 +1180,21 @@ void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
         TeleportMousePos(g.IO.MousePos + mouse_delta);
     }
 }
+
+constexpr ray ClipPosToWorldRay(mat4 vp_inv, vec2 pos_clip) {
+    auto near_point = vp_inv * vec4{pos_clip.x, pos_clip.y, 0, 1};
+    near_point /= near_point.w;
+    auto far_point = vp_inv * vec4{pos_clip.x, pos_clip.y, 1, 1};
+    far_point /= far_point.w;
+    return {near_point, glm::normalize(far_point - near_point)};
+}
 } // namespace
 
 // Returns a world space ray from the mouse into the scene.
 ray Scene::GetMouseWorldRay() const {
-    // Mouse pos in content region
     const vec2 mouse_pos = ToGlm((GetMousePos() - GetCursorScreenPos()) / GetContentRegionAvail());
-    // Normalized Device Coordinates in [-1,1]^2
-    const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y};
-    return Camera.ClipPosToWorldRay(mouse_pos_ndc, float(Extent.width) / float(Extent.height));
+    const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}; // [-1,1]^2
+    return ClipPosToWorldRay(glm::inverse(Camera.GetProjection(float(Extent.width) / float(Extent.height)) * Camera.GetView()), mouse_pos_ndc);
 }
 
 void Scene::Interact() {
@@ -1342,17 +1348,22 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    const auto content_region = ToGlm(GetContentRegionAvail());
     const float line_height = GetTextLineHeightWithSpacing();
     const auto window_pos = ToGlm(GetWindowPos());
-    auto view = Camera.GetView();
     if (MGizmo.Show && !R.storage<Active>().empty()) {
-        const auto active_entity = FindActiveEntity(R);
+        const auto size = ToGlm(GetContentRegionAvail());
+        const auto pos = window_pos + line_height;
+        const auto mouse_pos = ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta;
+        const auto mouse_pos_rel = (mouse_pos - pos) / size;
+        const auto pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
+        const auto view = Camera.GetView();
         const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
+        const auto mouse_ray = ClipPosToWorldRay(glm::inverse(proj * view), pos_clip);
+        const auto active_entity = FindActiveEntity(R);
         if (auto model = R.get<Model>(active_entity).Transform;
             ModelGizmo::Draw(
-                ModelGizmo::Local, MGizmo.Op, window_pos + line_height, content_region, ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
-                model, view, proj, MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt
+                ModelGizmo::Local, MGizmo.Op, pos, size, mouse_pos, mouse_ray, model, view, proj,
+                MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt
             )) {
             // Decompose affine model matrix into pos, scale, and orientation.
             const vec3 position = model[3];

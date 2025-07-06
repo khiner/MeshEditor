@@ -20,15 +20,6 @@ mat4 Camera::GetView() const { return glm::lookAt(GetPosition(), Target, YAxis()
 mat4 Camera::GetProjection(float aspect_ratio) const {
     return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip);
 }
-ray Camera::ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const {
-    const auto vp_inv = glm::inverse(GetProjection(aspect_ratio) * GetView());
-    auto near_point = vp_inv * vec4{pos_clip.x, pos_clip.y, -1, 1};
-    near_point /= near_point.w;
-    auto far_point = vp_inv * vec4{pos_clip.x, pos_clip.y, 1, 1};
-    far_point /= far_point.w;
-    return {near_point, glm::normalize(far_point - near_point)};
-}
-
 vec3 Camera::Forward() const { return {glm::cos(Yaw) * glm::cos(Pitch), glm::sin(Pitch), glm::sin(Yaw) * glm::cos(Pitch)}; }
 mat3 Camera::Basis() const {
     const auto forward = Forward();

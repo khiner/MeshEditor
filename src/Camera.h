@@ -2,8 +2,8 @@
 
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
-#include "numeric/ray.h"
 #include "numeric/vec2.h"
+#include "numeric/vec3.h"
 
 #include <optional>
 
@@ -27,7 +27,6 @@ struct Camera {
     mat4 GetView() const;
     mat4 GetProjection(float aspect_ratio) const;
     vec3 GetPosition() const { return Target + Distance * Forward(); }
-    ray ClipPosToWorldRay(vec2 pos_clip, float aspect_ratio) const;
 
     vec3 Forward() const;
     mat3 Basis() const;

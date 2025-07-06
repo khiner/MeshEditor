@@ -341,9 +341,12 @@ Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, con
             if (IsPlaneVisible(model.M * vec4{dir_plane_x, 0}, model.M * vec4{dir_plane_y, 0})) {
                 const auto p_world = Pos(model.M);
                 const auto pos_plane = mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(p_world, dir)));
-                const auto delta_model = mat3{model.Inv} * (pos_plane - p_world) / g.ScreenFactor;
-                const float dx = glm::dot(delta_model, dir_plane_x);
-                const float dy = glm::dot(delta_model, dir_plane_y);
+                const auto plane_x_world = vec3{model.M * vec4{dir_plane_x, 0}};
+                const auto plane_y_world = vec3{model.M * vec4{dir_plane_y, 0}};
+                const auto delta_world = (pos_plane - p_world) / g.ScreenFactor;
+
+                const float dx = glm::dot(delta_world, plane_x_world);
+                const float dy = glm::dot(delta_world, plane_y_world);
                 if (dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3]) return TranslatePlanes[i];
             }
         }
@@ -523,7 +526,7 @@ void Render(const mat4 &m, Op op, Op type, const mat4 &view_proj, vec3 cam_to_mo
 } // namespace
 
 namespace ModelGizmo {
-bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
+bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, ray mouse_ray, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
     g.Pos = pos;
     g.Size = size;
     // Scale is always local or m will be skewed when applying world scale or rotated m
@@ -545,19 +548,6 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, mat4 &m, const 
 
     // Compute scale from camera right vector projected onto screen at m pos
     g.ScreenFactor = Style.SizeClipSpace / sqrtf(LengthClipSpaceSq(m_inv * vec4{vec3{Right(view_inv)}, 0}));
-
-    // Compute mouse ray
-    const auto view_proj_inv = glm::inverse(proj * view);
-    const auto mouse_pos_rel = mouse_pos - pos;
-    const float mox = (mouse_pos_rel.x / size.x) * 2 - 1;
-    const float moy = (1 - mouse_pos_rel.y / size.y) * 2 - 1;
-    const vec4 near_pos{proj * vec4{0, 0, 1, 1}};
-    const vec4 far_pos{proj * vec4{0, 0, 2, 1}};
-    const bool reversed = near_pos.z / near_pos.w > far_pos.z / far_pos.w;
-    const float z_near = reversed ? 1 - FLT_EPSILON : 0;
-    const float z_far = reversed ? 0 : 1 - FLT_EPSILON;
-    const auto ray_o = ToNDC(view_proj_inv * vec4{mox, moy, z_near, 1});
-    const ray mouse_ray{ray_o, glm::normalize(ToNDC(view_proj_inv * vec4{mox, moy, z_far, 1}) - ray_o)};
 
     const bool commit = g.Using && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
     if (commit) g.Using = false;
