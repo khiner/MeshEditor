@@ -345,10 +345,11 @@ Op FindHoveredOp(Model model, Op op, ImVec2 mouse_pos, const ray &mouse_ray, con
 
             const auto [dir_plane_x, dir_plane_y] = DirPlaneXY(i);
             if (IsPlaneVisible(model.M * vec4{dir_plane_x, 0}, model.M * vec4{dir_plane_y, 0})) {
-                const auto p = Pos(model.M);
-                const auto pos_plane = mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(p, dir)));
-                const float dx = glm::dot(vec3{dir_plane_x}, vec3{pos_plane - p} / g.ScreenFactor);
-                const float dy = glm::dot(vec3{dir_plane_y}, vec3{pos_plane - p} / g.ScreenFactor);
+                const auto p_world = Pos(model.M);
+                const auto pos_plane = mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(p_world, dir)));
+                const auto delta_model = mat3{model.Inv} * (pos_plane - p_world) / g.ScreenFactor;
+                const float dx = glm::dot(delta_model, dir_plane_x);
+                const float dy = glm::dot(delta_model, dir_plane_y);
                 if (dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3]) return TranslatePlanes[i];
             }
         }
