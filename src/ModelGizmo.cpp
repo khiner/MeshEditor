@@ -48,7 +48,7 @@ struct Context {
 
 struct Style {
     float SizeClipSpace{0.1};
-    float LineWidth{3}; // Thickness of lines for translate/scale gizmo
+    float LineWidth{2}; // Thickness of lines for translate/scale gizmo
     float HatchedAxisLineWidth{6}; // Thickness of hatched axis lines
     float LineArrowSize{6}; // Size of arrow at the end of translation lines
     float CircleRad{6}; // Radius of circle at the end of scale lines and the center of the translate/scale gizmo
@@ -400,7 +400,7 @@ void Render(const mat4 &m, Op op, Op type, const mat4 &view_proj, vec3 cam_to_mo
                 dl.AddLine(base, end, color, Style.LineWidth);
                 // In universal mode, draw scale circles instead of translate arrows.
                 // (Show arrow when using though.)
-                if (op != Universal || g.Using) {
+                if (g.Using || op != Universal) {
                     const auto dir = (origin - end) * Style.LineArrowSize / sqrtf(ImLengthSqr(origin - end));
                     const ImVec2 orth_dir{dir.y, -dir.x};
                     dl.AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, color);
@@ -426,11 +426,11 @@ void Render(const mat4 &m, Op op, Op type, const mat4 &view_proj, vec3 cam_to_mo
         }
         if (g.Using && HasAnyOp(type, Translate)) {
             const auto translation_line_color = Color.TranslationLine;
-            const auto source_pos_screen = WorldToScreen(g.MatrixOrigin, view_proj);
-            const auto dif = std::bit_cast<ImVec2>(vec2{glm::normalize(vec4{origin.x - source_pos_screen.x, origin.y - source_pos_screen.y, 0, 0}) * 5.f});
-            dl.AddCircle(source_pos_screen, 6.f, translation_line_color);
+            const auto source_pos = WorldToScreen(g.MatrixOrigin, view_proj);
+            dl.AddCircle(source_pos, 6.f, translation_line_color);
             dl.AddCircle(origin, 6.f, translation_line_color);
-            dl.AddLine(source_pos_screen + dif, origin - dif, translation_line_color, 2.f);
+            const auto dif = std::bit_cast<ImVec2>(glm::normalize(std::bit_cast<vec2>(origin - source_pos)) * 5.f);
+            dl.AddLine(source_pos + dif, origin - dif, translation_line_color, 2.f);
 
             const auto delta_info = p - g.MatrixOrigin;
             const auto formatted = Format::Translation(type, delta_info);
@@ -441,7 +441,7 @@ void Render(const mat4 &m, Op op, Op type, const mat4 &view_proj, vec3 cam_to_mo
     if (HasAnyOp(op, Rotate)) {
         static constexpr uint32_t HalfCircleSegmentCount{128}, FullCircleSegmentCount{HalfCircleSegmentCount * 2 + 1};
         static ImVec2 CirclePositions[FullCircleSegmentCount];
-        if (g.Using) {
+        if (g.Using && HasAnyOp(type, Rotate)) {
             const auto u = glm::normalize(g.MouseRayOrigin(IntersectRayPlane(g.MouseRayOrigin, g.InteractionPlane)) - p);
             const auto v = glm::cross(glm::normalize(vec3{g.InteractionPlane}), u);
             const auto sign = g.RotationAngle < 0 ? -1.f : 1.f;
@@ -465,7 +465,7 @@ void Render(const mat4 &m, Op op, Op type, const mat4 &view_proj, vec3 cam_to_mo
                 dl.AddText(dest_pos + ImVec2{15, 15}, Color.TextShadow, formatted.data());
                 dl.AddText(dest_pos + ImVec2{14, 14}, Color.Text, formatted.data());
             }
-        } else {
+        } else if (!g.Using) {
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 const auto point_count = HalfCircleSegmentCount + 1;
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
@@ -490,31 +490,26 @@ void Render(const mat4 &m, Op op, Op type, const mat4 &view_proj, vec3 cam_to_mo
             for (uint32_t i = 0; i < 3; ++i) {
                 const bool is_neg = IsDirNeg(DirUnary[i], true);
                 const auto dir = DirUnary[i] * (is_neg ? -1.f : 1.f);
-                if (IsAxisVisible(dir, true)) {
-                    const auto color = type == (Scale | AxisOp(i)) ? Color.Selection : Color.Directions[i];
-                    if (op != Universal) {
-                        const auto base = WorldToScreen(dir * g.ScreenFactor * 0.1f, g.MVP);
-                        if (g.Using) {
-                            const auto center = WorldToScreen(dir * g.ScreenFactor, g.MVP);
-                            dl.AddLine(base, center, Color.ScaleLine, Style.LineWidth);
-                            dl.AddCircleFilled(center, Style.CircleRad, Color.ScaleLine);
-                        }
-                        const auto end = WorldToScreen(dir * g.ScreenFactor, g.MVP);
-                        dl.AddLine(base, end, color, Style.LineWidth);
-                        dl.AddCircleFilled(end, Style.CircleRad, color);
-                        if (is_neg) DrawHatchedAxis(dir);
-                    } else {
-                        const auto end = WorldToScreen(dir * g.ScreenFactor, g.MVPLocal);
-                        dl.AddCircleFilled(end, Style.CircleRad, color);
-                    }
+                if (!IsAxisVisible(dir, true)) continue;
+
+                const auto color = type == (Scale | AxisOp(i)) ? Color.Selection : Color.Directions[i];
+                if (op == Universal) {
+                    const auto end = WorldToScreen(dir * g.ScreenFactor, g.MVPLocal);
+                    dl.AddCircleFilled(end, Style.CircleRad, color);
+                } else {
+                    const auto base = WorldToScreen(dir * g.ScreenFactor * 0.1f, g.MVP);
+                    const auto end = WorldToScreen(dir * g.ScreenFactor, g.MVP);
+                    dl.AddLine(base, end, color, Style.LineWidth);
+                    dl.AddCircleFilled(end, Style.CircleRad, color);
+                    if (is_neg) DrawHatchedAxis(dir);
                 }
             }
         }
         if (!g.Using || HasAnyOp(type, Scale)) {
-            const auto circle_color = g.Using || type == ScaleXYZ ? Color.Selection : IM_COL32_WHITE;
-            const auto circle_pos = WorldToScreen(vec3{0}, g.MVP);
-            if (op != Universal) dl.AddCircleFilled(circle_pos, Style.CircleRad, circle_color, 32);
-            else dl.AddCircle(circle_pos, 20.f, circle_color, 32, Style.CircleRad);
+            const auto color = g.Using || type == ScaleXYZ ? Color.Selection : IM_COL32_WHITE;
+            const auto pos = WorldToScreen(vec3{0}, g.MVP);
+            if (op != Universal) dl.AddCircleFilled(pos, Style.CircleRad, color, 32);
+            else dl.AddCircle(pos, 20.f, color, 32, Style.CircleRad);
             if (g.Using) {
                 const auto formatted = Format::Scale(type, g.Scale);
                 dl.AddText(origin + ImVec2{15, 15}, Color.TextShadow, formatted.data());
@@ -564,6 +559,7 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, ray mouse_ray, 
             g.Scale = {1, 1, 1};
             g.RotationAngle = 0;
             if (HasAnyOp(g.Op, Scale)) g.ScaleOrigin = {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])};
+
             const auto GetPlaneNormal = [&](Op op) {
                 if (g.Op == ScaleXYZ || g.Op == RotateScreen || g.Op == TranslateScreen) return -vec4{camera_ray.d, 0};
                 if (HasAnyOp(g.Op, Scale)) return m_[(AxisIndex(g.Op, Scale) + 1) % 3];
