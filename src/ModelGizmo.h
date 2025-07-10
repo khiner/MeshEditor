@@ -35,8 +35,8 @@ enum class Op {
 };
 
 enum Mode {
-    Local,
-    World
+    Local, // Align to object’s orientation
+    World // Align to global axes (no rotation)
 };
 
 bool IsActive();
