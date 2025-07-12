@@ -46,14 +46,14 @@ static internal::Context Context;
 bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.DragEndPos; }
 
 void Draw(vec2 pos, float size, Camera &camera) {
-    auto *draw_list = ImGui::GetWindowDrawList();
+    auto &dl = *ImGui::GetWindowDrawList();
 
     const auto mouse_pos_imgui = ImGui::GetIO().MousePos;
     const vec2 mouse_pos{mouse_pos_imgui.x, mouse_pos_imgui.y};
     const auto hover_circle_r = size * Scale.HoverCircleRadius;
     const auto center = pos + vec2{size, size} * 0.5f;
     Context.Hovered = glm::dot(mouse_pos - center, mouse_pos - center) <= hover_circle_r * hover_circle_r;
-    if (Context.Hovered) draw_list->AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
+    if (Context.Hovered) dl.AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
 
     // Project camera-relative axes to screen space.
     const mat3 transform = glm::transpose(camera.Basis());
@@ -87,16 +87,16 @@ void Draw(vec2 pos, float size, Camera &camera) {
         const bool positive = i < 3;
         const float radius = size * Scale.CircleRadius;
         const auto line_end = ToImVec(center + axis);
-        if (positive) draw_list->AddLine(ToImVec(center), line_end, color, 1.5);
-        draw_list->AddCircleFilled(line_end, radius, color);
-        if (hovered_i && *hovered_i == i) draw_list->AddCircle(line_end, radius, IM_COL32_WHITE, 20, 1.1f);
-        else if (!positive) draw_list->AddCircle(line_end, radius, Color.Axes[i - 3], 20, 1.f);
+        if (positive) dl.AddLine(ToImVec(center), line_end, color, 1.5);
+        dl.AddCircleFilled(line_end, radius, color);
+        if (hovered_i && *hovered_i == i) dl.AddCircle(line_end, radius, IM_COL32_WHITE, 0, 1.1f);
+        else if (!positive) dl.AddCircle(line_end, radius, Color.Axes[i - 3], 0, 1.f);
         if (const bool selected = (hovered_i && *hovered_i == i);
             positive || selected || is_aligned[positive ? i : i - 3]) {
             static constexpr std::string_view AxisLabels[]{"X", "Y", "Z", "-X", "-Y", "-Z"};
             const auto *label = AxisLabels[i].data();
             const auto text_pos = line_end - ImGui::CalcTextSize(label) * 0.5f + ImVec2{0.5, 0};
-            draw_list->AddText(text_pos, selected ? IM_COL32_WHITE : IM_COL32_BLACK, label);
+            dl.AddText(text_pos, selected ? IM_COL32_WHITE : IM_COL32_BLACK, label);
         }
     }
 
