@@ -144,10 +144,9 @@ constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) {
 }
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
-constexpr float Length2(vec3 v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
 
 // Homogeneous clip space to NDC
-constexpr vec3 ToNDC(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
+constexpr vec2 ToNDC(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
 
 constexpr float LengthClipSpaceSq(vec3 v, bool local = false) {
     const auto &mvp = local ? g.MVPLocal : g.MVP;
@@ -174,7 +173,7 @@ constexpr bool IsAxisVisible(vec3 dir, bool local = false) {
     return LengthClipSpaceSq(dir * g.ScreenFactor, local) > AxisLimit * AxisLimit;
 }
 constexpr bool IsPlaneVisible(vec3 dir_x, vec3 dir_y) {
-    static constexpr auto ToScreenNDC = [](vec3 v) { return vec2{ToNDC(g.MVP * vec4{v, 1})}; };
+    static constexpr auto ToScreenNDC = [](vec3 v) { return ToNDC(g.MVP * vec4{v, 1}); };
     static constexpr float ParallelogramAreaLimit{0.0025};
     const auto o = ToScreenNDC(vec3{0});
     const auto pa = ToScreenNDC(dir_x * g.ScreenFactor) - o;
@@ -283,10 +282,10 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Op type, vec2 mouse
     return res;
 }
 
-constexpr ImVec2 WorldToScreen(vec3 world, const mat4 &m) {
-    auto trans = vec2{m * vec4{world, 1}} * (0.5f / glm::dot(glm::transpose(m)[3], vec4{world, 1})) + 0.5f;
-    trans.y = 1 - trans.y;
-    return std::bit_cast<ImVec2>(g.Pos + trans * g.Size);
+constexpr ImVec2 WorldToScreen(vec3 world, const mat4 &view_proj) {
+    const vec2 uv = ToNDC(view_proj * vec4{world, 1}) * 0.5f + 0.5f; // [0,1]
+    // Flip y (ImGui’s origin is top-left), and scale to gizmo rect.
+    return std::bit_cast<ImVec2>(g.Pos + vec2{uv.x, 1.f - uv.y} * g.Size);
 }
 
 constexpr float QuadMin{0.5}, QuadMax{0.8};
