@@ -14,6 +14,7 @@
 
 #include <format>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace {
@@ -382,6 +383,20 @@ void Label(std::string_view label, ImVec2 pos) {
     dl.AddText(pos + ImVec2{14, 14}, Color.Text, label.data());
 }
 
+// Fast approximation of an ellipse by stepping a 2D rotation matrix instead of using sin/cos.
+// For a half circle, pass `step_mult = 0.5`.
+void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clockwise = true, float step_mult = 1.f) {
+    const uint32_t count = out.size();
+    const float d = (clockwise ? -2.f : 2.f) * step_mult * M_PI / float(count - 1);
+    const float cos_d = cosf(d), sin_d = sinf(d);
+    const glm::mat2 rot{cos_d, -sin_d, sin_d, cos_d};
+    vec2 cs{1, 0}; // (cos0, sin0)
+    for (uint32_t i = 0; i < count; ++i) {
+        out[i] = o + u * cs.x + v * cs.y;
+        cs = rot * cs;
+    }
+}
+
 void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_origin) {
     static const auto DrawHatchedAxis = [](vec3 axis) {
         if (Style.HatchedAxisLineWidth <= 0) return;
@@ -447,17 +462,13 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
         static ImVec2 CirclePositions[FullCircleSegmentCount];
         if (g.Using && HasAnyOp(type, Rotate)) {
             {
-                const auto sign = g.RotationAngle < 0 ? -1.f : 1.f;
                 const auto p = Pos(model.M);
                 const auto u = glm::normalize(g.MouseRayOrigin(IntersectRayPlane(g.MouseRayOrigin, g.InteractionPlane)) - p);
                 const auto v = glm::cross(glm::normalize(vec3{g.InteractionPlane}), u);
                 const float r = g.ScreenFactor * Style.RotationDisplayScale * (type == RotateScreen ? 1.2f : 1.0f);
                 const auto u_screen = WorldToScreen(p + glm::normalize(u) * r, view_proj) - origin_screen;
                 const auto v_screen = WorldToScreen(p + glm::normalize(v) * r, view_proj) - origin_screen;
-                for (uint32_t i = 0; i < FullCircleSegmentCount; ++i) {
-                    const float angle = sign * 2 * M_PI * float(i) / float(FullCircleSegmentCount - 1);
-                    CirclePositions[i] = origin_screen + u_screen * cosf(angle) + v_screen * sinf(angle);
-                }
+                FastEllipse(std::span{CirclePositions}, origin_screen, u_screen, v_screen, g.RotationAngle >= 0);
             }
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, Color.Selection, false, Style.RotationLineWidth);
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
@@ -478,10 +489,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 const vec3 v_local{axis_offset[axis], axis_offset[(axis + 1) % 3], axis_offset[(axis + 2) % 3]};
                 const auto u_screen = WorldToScreen(u_local * r, g.MVP) - origin_screen;
                 const auto v_screen = WorldToScreen(v_local * r, g.MVP) - origin_screen;
-                for (uint32_t i = 0; i <= HalfCircleSegmentCount; ++i) {
-                    const float angle = M_PI * float(i) / HalfCircleSegmentCount;
-                    CirclePositions[i] = origin_screen + u_screen * cosf(angle) + v_screen * sinf(angle);
-                }
+                FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), origin_screen, u_screen, v_screen, true, 0.5f);
                 const auto color = (type == (Rotate | AxisOp(2 - axis))) ? Color.Selection : Color.Directions[2 - axis];
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
