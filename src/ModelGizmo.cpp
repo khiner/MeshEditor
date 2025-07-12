@@ -394,8 +394,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
     };
 
     auto &dl = *ImGui::GetWindowDrawList();
-    const auto p = Pos(model.M);
-    const auto origin = WorldToScreen(p, view_proj);
+    const auto origin_screen = WorldToScreen(vec3{0}, g.MVP);
     if (HasAnyOp(op, Translate)) {
         for (uint32_t i = 0; i < 3; ++i) {
             const bool is_neg = IsDirNeg(DirUnary[i]);
@@ -410,7 +409,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 // In universal mode, draw scale circles instead of translate arrows.
                 // (Show arrow when using though.)
                 if (g.Using || op != Universal) {
-                    const auto dir = (origin - end) * Style.LineArrowSize / sqrtf(ImLengthSqr(origin - end));
+                    const auto dir = (origin_screen - end) * Style.LineArrowSize / sqrtf(ImLengthSqr(origin_screen - end));
                     const ImVec2 orth_dir{dir.y, -dir.x};
                     dl.AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, color);
                 }
@@ -431,16 +430,16 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
         }
         if (!g.Using || type == TranslateScreen) {
             const auto color = type == TranslateScreen ? Color.Selection : IM_COL32_WHITE;
-            dl.AddCircleFilled(WorldToScreen(vec3{0}, g.MVP), Style.CircleRad, color, 32);
+            dl.AddCircleFilled(origin_screen, Style.CircleRad, color, 32);
         }
         if (g.Using && HasAnyOp(type, Translate)) {
             const auto translation_line_color = Color.TranslationLine;
             const auto source_pos = WorldToScreen(g.MatrixOrigin, view_proj);
             dl.AddCircle(source_pos, 6.f, translation_line_color);
-            dl.AddCircle(origin, 6.f, translation_line_color);
-            const auto dif = std::bit_cast<ImVec2>(glm::normalize(std::bit_cast<vec2>(origin - source_pos)) * 5.f);
-            dl.AddLine(source_pos + dif, origin - dif, translation_line_color, 2.f);
-            Label(Format::Translation(type, p - g.MatrixOrigin), origin);
+            dl.AddCircle(origin_screen, 6.f, translation_line_color);
+            const auto dif = std::bit_cast<ImVec2>(glm::normalize(std::bit_cast<vec2>(origin_screen - source_pos)) * 5.f);
+            dl.AddLine(source_pos + dif, origin_screen - dif, translation_line_color, 2.f);
+            Label(Format::Translation(type, Pos(model.M) - g.MatrixOrigin), origin_screen);
         }
     }
     if (HasAnyOp(op, Rotate)) {
@@ -448,40 +447,51 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
         static ImVec2 CirclePositions[FullCircleSegmentCount];
         if (g.Using && HasAnyOp(type, Rotate)) {
             {
+                const auto sign = g.RotationAngle < 0 ? -1.f : 1.f;
+                const auto p = Pos(model.M);
                 const auto u = glm::normalize(g.MouseRayOrigin(IntersectRayPlane(g.MouseRayOrigin, g.InteractionPlane)) - p);
                 const auto v = glm::cross(glm::normalize(vec3{g.InteractionPlane}), u);
-                const auto sign = g.RotationAngle < 0 ? -1.f : 1.f;
+                const float r = g.ScreenFactor * Style.RotationDisplayScale * (type == RotateScreen ? 1.2f : 1.0f);
+                const auto u_screen = WorldToScreen(p + glm::normalize(u) * r, view_proj) - origin_screen;
+                const auto v_screen = WorldToScreen(p + glm::normalize(v) * r, view_proj) - origin_screen;
                 for (uint32_t i = 0; i < FullCircleSegmentCount; ++i) {
-                    const float ng = sign * 2 * M_PI * float(i) / float(FullCircleSegmentCount - 1);
-                    const vec3 pos = cosf(ng) * u + sinf(ng) * v;
-                    CirclePositions[i] = WorldToScreen(p + pos * g.ScreenFactor * Style.RotationDisplayScale * (type == RotateScreen ? 1.2f : 1.f), view_proj);
+                    const float angle = sign * 2 * M_PI * float(i) / float(FullCircleSegmentCount - 1);
+                    CirclePositions[i] = origin_screen + u_screen * cosf(angle) + v_screen * sinf(angle);
                 }
             }
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, Color.Selection, false, Style.RotationLineWidth);
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
-            CirclePositions[angle_i + 1] = origin;
+            CirclePositions[angle_i + 1] = origin_screen;
             dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationFillActive);
-            dl.AddLine(origin, CirclePositions[0], Color.RotationBorderActive, Style.RotationLineWidth / 2);
-            dl.AddLine(origin, CirclePositions[angle_i], Color.RotationBorderActive, Style.RotationLineWidth);
+            dl.AddLine(origin_screen, CirclePositions[0], Color.RotationBorderActive, Style.RotationLineWidth / 2);
+            dl.AddLine(origin_screen, CirclePositions[angle_i], Color.RotationBorderActive, Style.RotationLineWidth);
             Label(Format::Rotation(type, g.RotationAngle), CirclePositions[1]);
         } else if (!g.Using) {
+            // Half-circles facing the camera
+            const float r = g.ScreenFactor * Style.RotationDisplayScale;
+            const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(Pos(model.M) - cam_origin);
             for (uint32_t axis = 0; axis < 3; ++axis) {
-                const auto point_count = HalfCircleSegmentCount + 1;
-                const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(p - cam_origin);
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
-                for (uint32_t i = 0; i < point_count; ++i) {
-                    const float ng = angle_start + M_PI * float(i) / float(point_count - 1);
-                    const vec4 axis_pos{cosf(ng), sinf(ng), 0, 0};
-                    const vec3 pos{axis_pos[axis], axis_pos[(axis + 1) % 3], axis_pos[(axis + 2) % 3]};
-                    CirclePositions[i] = WorldToScreen(pos * g.ScreenFactor * Style.RotationDisplayScale, g.MVP);
+                const vec4 axis_start{cosf(angle_start), sinf(angle_start), 0.f, 0.f};
+                const vec4 axis_offset{-axis_start.y, axis_start.x, 0.f, 0.f};
+                const vec3 u_local{axis_start[axis], axis_start[(axis + 1) % 3], axis_start[(axis + 2) % 3]};
+                const vec3 v_local{axis_offset[axis], axis_offset[(axis + 1) % 3], axis_offset[(axis + 2) % 3]};
+                const auto u_screen = WorldToScreen(u_local * r, g.MVP) - origin_screen;
+                const auto v_screen = WorldToScreen(v_local * r, g.MVP) - origin_screen;
+                for (uint32_t i = 0; i <= HalfCircleSegmentCount; ++i) {
+                    const float angle = M_PI * float(i) / HalfCircleSegmentCount;
+                    CirclePositions[i] = origin_screen + u_screen * cosf(angle) + v_screen * sinf(angle);
                 }
-                const auto color = type == (Rotate | AxisOp(2 - axis)) ? Color.Selection : Color.Directions[2 - axis];
-                dl.AddPolyline(CirclePositions, point_count, color, false, Style.RotationLineWidth);
+                const auto color = (type == (Rotate | AxisOp(2 - axis))) ? Color.Selection : Color.Directions[2 - axis];
+                dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
+            // Screen rotation circle
             dl.AddCircle(
-                origin,
-                (g.Size.y / 2) * Style.SizeClipSpace * Style.RotationDisplayScale * 1.3f,
-                type == RotateScreen ? Color.Selection : IM_COL32_WHITE, FullCircleSegmentCount, Style.RotationLineWidth * 1.5f
+                origin_screen,
+                (g.Size.y * 0.5f) * Style.SizeClipSpace * Style.RotationDisplayScale * 1.3f,
+                (type == RotateScreen) ? Color.Selection : IM_COL32_WHITE,
+                FullCircleSegmentCount,
+                Style.RotationLineWidth * 1.5f
             );
         }
     }
@@ -510,7 +520,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
             const auto pos = WorldToScreen(vec3{0}, g.MVP);
             if (op != Universal) dl.AddCircleFilled(pos, Style.CircleRad, color, 32);
             else dl.AddCircle(pos, 20.f, color, 32, Style.CircleRad);
-            if (g.Using) Label(Format::Scale(type, g.Scale), origin);
+            if (g.Using) Label(Format::Scale(type, g.Scale), origin_screen);
         }
     }
 }
