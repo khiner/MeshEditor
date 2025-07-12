@@ -339,17 +339,17 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
             if (ImLengthSqr(PointOnSegment(pos_screen, start, end) - pos_screen) < SelectDistSq) return Translate | AxisOp(i);
 
             const auto [dir_plane_x, dir_plane_y] = DirPlaneXY(i);
-            if (IsPlaneVisible(model.M * vec4{dir_plane_x, 0}, model.M * vec4{dir_plane_y, 0})) {
-                const auto p_world = Pos(model.M);
-                const auto pos_plane = mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(p_world, dir)));
-                const auto plane_x_world = vec3{model.M * vec4{dir_plane_x, 0}};
-                const auto plane_y_world = vec3{model.M * vec4{dir_plane_y, 0}};
-                const auto delta_world = (pos_plane - p_world) / g.ScreenFactor;
+            if (!IsPlaneVisible(dir_plane_x, dir_plane_y)) continue;
 
-                const float dx = glm::dot(delta_world, plane_x_world);
-                const float dy = glm::dot(delta_world, plane_y_world);
-                if (dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3]) return TranslatePlanes[i];
-            }
+            const auto p_world = Pos(model.M);
+            const auto pos_plane = mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(p_world, dir)));
+            const auto plane_x_world = vec3{model.M * vec4{dir_plane_x, 0}};
+            const auto plane_y_world = vec3{model.M * vec4{dir_plane_y, 0}};
+            const auto delta_world = (pos_plane - p_world) / g.ScreenFactor;
+
+            const float dx = glm::dot(delta_world, plane_x_world);
+            const float dy = glm::dot(delta_world, plane_y_world);
+            if (dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3]) return TranslatePlanes[i];
         }
     }
     if (HasAnyOp(op, Rotate)) {
@@ -429,15 +429,15 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
             }
             if (!g.Using || type == TranslatePlanes[i]) {
                 const auto [dir_plane_x, dir_plane_y] = DirPlaneXY(i);
-                if (IsPlaneVisible(dir_plane_x, dir_plane_y)) {
-                    static ImVec2 quad_pts_screen[4];
-                    for (uint32_t j = 0; j < 4; ++j) {
-                        const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
-                        quad_pts_screen[j] = WorldToScreen(corner_pos_world, g.MVP);
-                    }
-                    dl.AddPolyline(quad_pts_screen, 4, Color.Directions[i], true, 1.0f);
-                    dl.AddConvexPolyFilled(quad_pts_screen, 4, type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i]);
+                if (!IsPlaneVisible(dir_plane_x, dir_plane_y)) continue;
+
+                static ImVec2 quad_pts_screen[4];
+                for (uint32_t j = 0; j < 4; ++j) {
+                    const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
+                    quad_pts_screen[j] = WorldToScreen(corner_pos_world, g.MVP);
                 }
+                dl.AddPolyline(quad_pts_screen, 4, Color.Directions[i], true, 1.0f);
+                dl.AddConvexPolyFilled(quad_pts_screen, 4, type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i]);
             }
         }
         if (!g.Using || type == TranslateScreen) {
