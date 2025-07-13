@@ -306,55 +306,38 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
     const auto center = WorldToScreen(vec3{0}, g.MVP);
     // Op selection check order is important because of universal mode.
     // Universal = Scale | Translate | Rotate
-    if (HasAnyOp(op, Scale)) {
-        if (op != Universal) {
-            if (ImLengthSqr(mouse_pos - center) <= Style.CircleRad * Style.CircleRad) return ScaleXYZ;
-
-            for (uint32_t i = 0; i < 3; ++i) {
-                const auto dir = model.RT * vec4{DirAxis(i, true), 0};
-                const auto p = Pos(model.RT);
-                const auto pos_plane = WorldToScreen(mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(p, dir))), view_proj);
-                const auto start = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor * 0.1f, view_proj);
-                const auto end = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor, view_proj);
-                if (ImLengthSqr(PointOnSegment(pos_plane, start, end) - pos_plane) < SelectDistSq) return Scale | AxisOp(i);
-            }
-        } else { // Universal
-            if (float dist_sq = ImLengthSqr(mouse_pos - center); dist_sq >= 17 * 17 && dist_sq < 23 * 23) {
-                return ScaleXYZ;
-            }
-            for (uint32_t i = 0; i < 3; ++i) {
-                if (auto dir = DirAxis(i, true); IsAxisVisible(dir, true)) {
-                    const auto end = WorldToScreen(dir * g.ScreenFactor, g.MVPLocal);
-                    if (ImLengthSqr(end - mouse_pos) < SelectDistSq) return Scale | AxisOp(i);
-                }
-            }
-        }
-    }
-    if (HasAnyOp(op, Translate)) {
-        if (ImLengthSqr(mouse_pos - center) <= Style.CircleRad * Style.CircleRad) return TranslateScreen;
+    const auto is_translate = HasAnyOp(op, Translate), is_scale = HasAnyOp(op, Scale), is_rotate = HasAnyOp(op, Rotate);
+    if (is_translate || is_scale) {
+        const float dist_sq = ImLengthSqr(mouse_pos - center);
+        if (dist_sq <= SelectDistSq) return is_translate || op == Universal ? TranslateScreen : ScaleXYZ;
+        if (op == Universal && dist_sq >= 17 * 17 && dist_sq < 23 * 23) return ScaleXYZ;
 
         const auto pos = std::bit_cast<ImVec2>(g.Pos), pos_screen{mouse_pos - pos};
         for (uint32_t i = 0; i < 3; ++i) {
-            const auto dir = model.M * vec4{DirAxis(i), 0};
-            const auto start = WorldToScreen(vec4{Pos(model.M), 1} + dir * g.ScreenFactor * 0.1f, view_proj) - pos;
-            const auto end = WorldToScreen(vec4{Pos(model.M), 1} + dir * g.ScreenFactor, view_proj) - pos;
-            if (ImLengthSqr(PointOnSegment(pos_screen, start, end) - pos_screen) < SelectDistSq) return Translate | AxisOp(i);
+            const auto dir = model.M * vec4{DirAxis(i, true), 0};
+            const auto p = Pos(model.M);
+            const auto start = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor * 0.1f, view_proj) - pos;
+            const auto end = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor, view_proj) - pos;
+            if (is_scale && ImLengthSqr(end - pos_screen) < SelectDistSq) return Scale | AxisOp(i);
+            if (ImLengthSqr(PointOnSegment(pos_screen, start, end) - pos_screen) < SelectDistSq) {
+                return (is_translate ? Translate : Scale) | AxisOp(i);
+            }
+            if (!is_translate) continue;
 
-            const auto [dir_plane_x, dir_plane_y] = DirPlaneXY(i);
-            if (!IsPlaneVisible(dir_plane_x, dir_plane_y)) continue;
+            const auto [dir_x, dir_y] = DirPlaneXY(i);
+            if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
             const auto p_world = Pos(model.M);
             const auto pos_plane = mouse_ray(IntersectRayPlane(mouse_ray, BuildPlane(p_world, dir)));
-            const auto plane_x_world = vec3{model.M * vec4{dir_plane_x, 0}};
-            const auto plane_y_world = vec3{model.M * vec4{dir_plane_y, 0}};
+            const auto plane_x_world = vec3{model.M * vec4{dir_x, 0}};
+            const auto plane_y_world = vec3{model.M * vec4{dir_y, 0}};
             const auto delta_world = (pos_plane - p_world) / g.ScreenFactor;
-
             const float dx = glm::dot(delta_world, plane_x_world);
             const float dy = glm::dot(delta_world, plane_y_world);
             if (dx >= QuadUV[0] && dx <= QuadUV[4] && dy >= QuadUV[1] && dy <= QuadUV[3]) return TranslatePlanes[i];
         }
     }
-    if (HasAnyOp(op, Rotate)) {
+    if (is_rotate) {
         static constexpr float SelectDist = 8;
         const auto dist_sq = ImLengthSqr(mouse_pos - center);
         const auto rotation_radius = 0.5f * g.Size.x * Style.SizeNDC * Style.RotationDisplayScale * Style.RotationScreenScale;
@@ -430,12 +413,12 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 if (is_neg) DrawHatchedAxis(dir);
             }
             if (!g.Using || type == TranslatePlanes[i]) {
-                const auto [dir_plane_x, dir_plane_y] = DirPlaneXY(i);
-                if (!IsPlaneVisible(dir_plane_x, dir_plane_y)) continue;
+                const auto [dir_x, dir_y] = DirPlaneXY(i);
+                if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
                 static ImVec2 quad_pts_screen[4];
                 for (uint32_t j = 0; j < 4; ++j) {
-                    const auto corner_pos_world = (dir_plane_x * QuadUV[j * 2] + dir_plane_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
+                    const auto corner_pos_world = (dir_x * QuadUV[j * 2] + dir_y * QuadUV[j * 2 + 1]) * g.ScreenFactor;
                     quad_pts_screen[j] = WorldToScreen(corner_pos_world, g.MVP);
                 }
                 dl.AddPolyline(quad_pts_screen, 4, Color.Directions[i], true, 1.0f);
