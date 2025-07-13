@@ -51,7 +51,8 @@ struct Context {
 struct Style {
     float SizeNDC{0.1};
     float LineWidth{2}; // Thickness of lines for translate/scale gizmo
-    float LineArrowSize{6}; // Size of arrow at the end of translation lines
+    // Radius and length of the arrow at the end of translation axes, as a ratio of the axis line.
+    float TranslationArrowRad{0.1}, TranslationArrowLength{0.3};
     float CircleRad{6}; // Radius of circle at the end of scale lines and the center of the translate/scale gizmo
     float UniversalScaleCircleRad{20}, UniversalScaleCircleWidth{3};
     float RotationDisplayScale{1.2}; // Scale a bit so translate axes don't touch when in universal.
@@ -380,9 +381,21 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 // In universal mode, draw scale circles instead of translate arrows.
                 // (Show arrow when using though.)
                 if (g.Using || op != Universal) {
-                    const auto dir = (center - end) * Style.LineArrowSize / sqrtf(ImLengthSqr(center - end));
-                    const ImVec2 orth_dir{dir.y, -dir.x};
-                    dl.AddTriangleFilled(end - dir, end + dir + orth_dir, end + dir - orth_dir, color);
+                    // Draw billboard triangles that always face the camera.
+                    const float arrow_len_ws = Style.TranslationArrowLength * g.ScreenFactor;
+                    const float arrow_rad_ws = Style.TranslationArrowRad * g.ScreenFactor;
+                    const auto axis_dir_ws = glm::normalize(vec3{model.M * vec4{Axes[i], 0}});
+                    // Position the middle of the triangle at the end of the axis.
+                    const auto end_ws = vec3{model.M * vec4{Axes[i] * g.ScreenFactor, 1}};
+                    const auto base_ws = end_ws - axis_dir_ws * arrow_len_ws / 2.f;
+                    const auto tip_ws = base_ws + axis_dir_ws * arrow_len_ws;
+                    const auto center_ws = vec3{model.M * vec4{0, 0, 0, 1}};
+                    const auto cam_dir_ws = glm::normalize(cam_origin - center_ws);
+                    const auto perp_ws = glm::normalize(glm::cross(axis_dir_ws, cam_dir_ws));
+                    const auto p_tip = WorldToScreen(tip_ws, view_proj);
+                    const auto p_b1 = WorldToScreen(base_ws + perp_ws * arrow_rad_ws, view_proj);
+                    const auto p_b2 = WorldToScreen(base_ws - perp_ws * arrow_rad_ws, view_proj);
+                    dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
                 }
             }
             if (!g.Using || type == TranslatePlanes[i]) {
