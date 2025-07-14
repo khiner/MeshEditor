@@ -306,9 +306,15 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
             const auto end = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor, view_proj) - pos;
             if (is_scale && ImLengthSqr(end - pos_screen) < SelectDistSq) return Scale | AxisOp(i);
             if (ImLengthSqr(PointOnSegment(pos_screen, start, end) - pos_screen) < SelectDistSq) {
-                return (is_translate ? Translate : Scale) | AxisOp(i);
+                return (is_translate && op != Universal ? Translate : Scale) | AxisOp(i);
             }
             if (!is_translate) continue;
+
+            if (op == Universal) {
+                const float scale = Style.RotationDisplayScale * Style.RotationScreenScale * Style.RotationScreenScale;
+                const auto translate_pos = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor * scale, view_proj) - pos;
+                if (ImLengthSqr(translate_pos - pos_screen) < SelectDistSq) return Translate | AxisOp(i);
+            }
 
             const auto [dir_x, dir_y] = DirPlaneXY(i);
             if (!IsPlaneVisible(dir_x, dir_y)) continue;
@@ -381,30 +387,29 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 const auto base = WorldToScreen(Axes[i] * g.ScreenFactor * 0.1f, g.MVP);
                 const auto end = WorldToScreen(Axes[i] * g.ScreenFactor, g.MVP);
                 const auto color = using_type ? Color.Selection : Color.Directions[i];
-                dl.AddLine(base, end, color, Style.LineWidth);
-                if (g.Using || op != Universal) {
-                    // Draw translation arrows as cone silhouettes.
+                if (op != Universal) dl.AddLine(base, end, color, Style.LineWidth);
+                // Draw translation arrows as cone silhouettes.
 
-                    // Billboard triangle facing the camera, with the middle of the triangle at the end of the axis line.
-                    const auto axis_dir_ws = vec3{model.RT[i]};
-                    const auto u_ws = glm::normalize(cam_dir_ws - glm::dot(cam_dir_ws, axis_dir_ws) * axis_dir_ws);
-                    const auto v_ws = glm::cross(axis_dir_ws, u_ws);
+                // Billboard triangle facing the camera, with the middle of the triangle at the end of the axis line.
+                const auto axis_dir_ws = vec3{model.RT[i]};
+                const auto u_ws = glm::normalize(cam_dir_ws - glm::dot(cam_dir_ws, axis_dir_ws) * axis_dir_ws);
+                const auto v_ws = glm::cross(axis_dir_ws, u_ws);
 
-                    const auto base_ws = center_ws + axis_dir_ws * (g.ScreenFactor - arrow_len_ws * 0.5f);
-                    const auto p_tip = WorldToScreen(base_ws + axis_dir_ws * arrow_len_ws, view_proj);
-                    const auto p_b1 = WorldToScreen(base_ws + v_ws * arrow_rad_ws, view_proj);
-                    const auto p_b2 = WorldToScreen(base_ws - v_ws * arrow_rad_ws, view_proj);
-                    dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
+                const float scale = op == Universal ? (Style.RotationDisplayScale * Style.RotationScreenScale * Style.RotationScreenScale) : 1.f;
+                const auto base_ws = center_ws + axis_dir_ws * (g.ScreenFactor * scale - arrow_len_ws * 0.5f);
+                const auto p_tip = WorldToScreen(base_ws + axis_dir_ws * arrow_len_ws, view_proj);
+                const auto p_b1 = WorldToScreen(base_ws + v_ws * arrow_rad_ws, view_proj);
+                const auto p_b2 = WorldToScreen(base_ws - v_ws * arrow_rad_ws, view_proj);
+                dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
 
-                    // Ellipse at the base of the triangle.
-                    static constexpr uint32_t EllipsePointCount{16};
-                    static ImVec2 ellipse_pts[EllipsePointCount];
+                // Ellipse at the base of the triangle.
+                static constexpr uint32_t EllipsePointCount{16};
+                static ImVec2 ellipse_pts[EllipsePointCount];
 
-                    const auto base = (p_b1 + p_b2) * 0.5f;
-                    const auto p_u = WorldToScreen(base_ws + u_ws * arrow_rad_ws, view_proj);
-                    FastEllipse(std::span{ellipse_pts}, base, p_u - base, p_b1 - base);
-                    dl.AddConvexPolyFilled(ellipse_pts, EllipsePointCount, color);
-                }
+                const auto ellipse_base = (p_b1 + p_b2) * 0.5f;
+                const auto p_u = WorldToScreen(base_ws + u_ws * arrow_rad_ws, view_proj);
+                FastEllipse(std::span{ellipse_pts}, ellipse_base, p_u - ellipse_base, p_b1 - ellipse_base);
+                dl.AddConvexPolyFilled(ellipse_pts, EllipsePointCount, color);
             }
             if (!g.Using || type == TranslatePlanes[i]) {
                 const auto [dir_x, dir_y] = DirPlaneXY(i);
@@ -433,21 +438,23 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
         }
     }
     if (HasAnyOp(op, Scale)) {
-        if (!g.Using) {
-            for (uint32_t i = 0; i < 3; ++i) {
-                if (!IsAxisVisible(Axes[i])) continue;
-
+        for (uint32_t i = 0; i < 3; ++i) {
+            const bool using_type = type == (Scale | AxisOp(i));
+            if ((!g.Using || using_type) && IsAxisVisible(Axes[i])) {
                 const auto color = type == (Scale | AxisOp(i)) ? Color.Selection : Color.Directions[i];
                 const auto base = WorldToScreen(Axes[i] * g.ScreenFactor * 0.1f, g.MVP);
                 const auto end = WorldToScreen(Axes[i] * g.ScreenFactor, g.MVP);
                 dl.AddCircleFilled(end, Style.CircleRad, color);
-                if (op != Universal) dl.AddLine(base, end, color, Style.LineWidth);
+                dl.AddLine(base, end, color, Style.LineWidth);
             }
         }
         if (!g.Using || HasAnyOp(type, Scale)) {
             const auto color = g.Using || type == ScaleXYZ ? Color.Selection : IM_COL32_WHITE;
-            if (op == Universal) dl.AddCircle(center, Style.UniversalScaleCircleRad, color, 0, Style.UniversalScaleCircleWidth);
-            else dl.AddCircleFilled(center, Style.CircleRad, color, 0);
+            if (op == Universal && (!g.Using || type == ScaleXYZ)) {
+                dl.AddCircle(center, Style.UniversalScaleCircleRad, color, 0, Style.UniversalScaleCircleWidth);
+            } else {
+                dl.AddCircleFilled(center, Style.CircleRad, color, 0);
+            }
             if (g.Using) Label(Format::Scale(type, g.Scale), center);
         }
     }
