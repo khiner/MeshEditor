@@ -52,14 +52,14 @@ struct Style {
     float SizeNDC{0.1};
     float LineWidth{2}; // Thickness of lines for translate/scale gizmo
     // Radius and length of the arrow at the end of translation axes, as a ratio of the axis line.
-    float TranslationArrowRad{0.1}, TranslationArrowLength{0.3};
+    float TranslationArrowRad{0.075}, TranslationArrowLength{0.3};
     float CircleRad{6}; // Radius of circle at the end of scale lines and the center of the translate/scale gizmo
     float UniversalScaleCircleRad{20}, UniversalScaleCircleWidth{3};
     float RotationDisplayScale{1.2}; // Scale a bit so translate axes don't touch when in universal.
     float RotationScreenScale{1.25}; // Screen rotation circle is larger than the translate axes circles.
     float RotationLineWidth{2}; // Base thickness of lines for rotation gizmo
     float PlaneCenterAxisRatio{0.5f}, PlaneSizeAxisRatio{0.2f};
-    float AxisLengthVisibilityMin{0.02};
+    float AxisLengthVisibilityMin{0.03};
 };
 
 struct Color {
@@ -370,7 +370,11 @@ void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clock
 void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_origin) {
     auto &dl = *ImGui::GetWindowDrawList();
     const auto center = WorldToScreen(vec3{0}, g.MVP);
+    const auto center_ws = Pos(model.M);
     if (HasAnyOp(op, Translate)) {
+        const float arrow_len_ws = Style.TranslationArrowLength * g.ScreenFactor;
+        const float arrow_rad_ws = Style.TranslationArrowRad * g.ScreenFactor;
+        const auto cam_dir_ws = glm::normalize(cam_origin - center_ws);
         for (uint32_t i = 0; i < 3; ++i) {
             const bool using_type = type == (Translate | AxisOp(i));
             if ((!g.Using || using_type) && IsAxisVisible(Axes[i])) {
@@ -378,24 +382,28 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 const auto end = WorldToScreen(Axes[i] * g.ScreenFactor, g.MVP);
                 const auto color = using_type ? Color.Selection : Color.Directions[i];
                 dl.AddLine(base, end, color, Style.LineWidth);
-                // In universal mode, draw scale circles instead of translate arrows.
-                // (Show arrow when using though.)
                 if (g.Using || op != Universal) {
-                    // Draw billboard triangles that always face the camera.
-                    const float arrow_len_ws = Style.TranslationArrowLength * g.ScreenFactor;
-                    const float arrow_rad_ws = Style.TranslationArrowRad * g.ScreenFactor;
-                    const auto axis_dir_ws = glm::normalize(vec3{model.M * vec4{Axes[i], 0}});
-                    // Position the middle of the triangle at the end of the axis.
-                    const auto end_ws = vec3{model.M * vec4{Axes[i] * g.ScreenFactor, 1}};
-                    const auto base_ws = end_ws - axis_dir_ws * arrow_len_ws / 2.f;
-                    const auto tip_ws = base_ws + axis_dir_ws * arrow_len_ws;
-                    const auto center_ws = vec3{model.M * vec4{0, 0, 0, 1}};
-                    const auto cam_dir_ws = glm::normalize(cam_origin - center_ws);
-                    const auto perp_ws = glm::normalize(glm::cross(axis_dir_ws, cam_dir_ws));
-                    const auto p_tip = WorldToScreen(tip_ws, view_proj);
-                    const auto p_b1 = WorldToScreen(base_ws + perp_ws * arrow_rad_ws, view_proj);
-                    const auto p_b2 = WorldToScreen(base_ws - perp_ws * arrow_rad_ws, view_proj);
+                    // Draw translation arrows as cone silhouettes.
+
+                    // Billboard triangle facing the camera, with the middle of the triangle at the end of the axis line.
+                    const auto axis_dir_ws = vec3{model.RT[i]};
+                    const auto u_ws = glm::normalize(cam_dir_ws - glm::dot(cam_dir_ws, axis_dir_ws) * axis_dir_ws);
+                    const auto v_ws = glm::cross(axis_dir_ws, u_ws);
+
+                    const auto base_ws = center_ws + axis_dir_ws * (g.ScreenFactor - arrow_len_ws * 0.5f);
+                    const auto p_tip = WorldToScreen(base_ws + axis_dir_ws * arrow_len_ws, view_proj);
+                    const auto p_b1 = WorldToScreen(base_ws + v_ws * arrow_rad_ws, view_proj);
+                    const auto p_b2 = WorldToScreen(base_ws - v_ws * arrow_rad_ws, view_proj);
                     dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
+
+                    // Ellipse at the base of the triangle.
+                    static constexpr uint32_t EllipsePointCount{16};
+                    static ImVec2 ellipse_pts[EllipsePointCount];
+
+                    const auto base = (p_b1 + p_b2) * 0.5f;
+                    const auto p_u = WorldToScreen(base_ws + u_ws * arrow_rad_ws, view_proj);
+                    FastEllipse(std::span{ellipse_pts}, base, p_u - base, p_b1 - base);
+                    dl.AddConvexPolyFilled(ellipse_pts, EllipsePointCount, color);
                 }
             }
             if (!g.Using || type == TranslatePlanes[i]) {
@@ -403,9 +411,8 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
                 const auto screen_pos = [&](float sx, float sy) {
-                    const float u = Style.PlaneCenterAxisRatio + sx * Style.PlaneSizeAxisRatio * 0.5f;
-                    const float v = Style.PlaneCenterAxisRatio + sy * Style.PlaneSizeAxisRatio * 0.5f;
-                    return WorldToScreen((dir_x * u + dir_y * v) * g.ScreenFactor, g.MVP);
+                    const auto uv = vec2{sx, sy} * Style.PlaneSizeAxisRatio * 0.5f + Style.PlaneCenterAxisRatio;
+                    return WorldToScreen((dir_x * uv.x + dir_y * uv.y) * g.ScreenFactor, g.MVP);
                 };
                 const auto p1{screen_pos(-1, -1)}, p2{screen_pos(-1, 1)}, p3{screen_pos(1, 1)}, p4{screen_pos(1, -1)};
                 dl.AddQuad(p1, p2, p3, p4, Color.Directions[i], 1.f);
@@ -422,7 +429,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
             dl.AddCircle(center, 6.f, translation_line_color);
             const auto dif = std::bit_cast<ImVec2>(glm::normalize(std::bit_cast<vec2>(center - source_pos)) * 5.f);
             dl.AddLine(source_pos + dif, center - dif, translation_line_color, 2.f);
-            Label(Format::Translation(type, Pos(model.M) - g.PosStart), center);
+            Label(Format::Translation(type, center_ws - g.PosStart), center);
         }
     }
     if (HasAnyOp(op, Scale)) {
@@ -449,12 +456,11 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
         static ImVec2 CirclePositions[FullCircleSegmentCount];
         if (g.Using && HasAnyOp(type, Rotate)) {
             {
-                const auto p = Pos(model.M);
-                const auto u = glm::normalize(g.MouseRayStart(IntersectPlane(g.MouseRayStart, g.InteractionPlane)) - p);
+                const auto u = glm::normalize(g.MouseRayStart(IntersectPlane(g.MouseRayStart, g.InteractionPlane)) - center_ws);
                 const auto v = glm::cross(vec3{g.InteractionPlane}, u);
                 const float r = g.ScreenFactor * Style.RotationDisplayScale * (type == RotateScreen ? Style.RotationScreenScale : 1.0f);
-                const auto u_screen = WorldToScreen(p + u * r, view_proj) - center;
-                const auto v_screen = WorldToScreen(p + v * r, view_proj) - center;
+                const auto u_screen = WorldToScreen(center_ws + u * r, view_proj) - center;
+                const auto v_screen = WorldToScreen(center_ws + v * r, view_proj) - center;
                 FastEllipse(std::span{CirclePositions}, center, u_screen, v_screen, g.RotationAngle >= 0);
             }
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, Color.Selection, false, Style.RotationLineWidth);
@@ -467,7 +473,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
         } else if (!g.Using) {
             // Half-circles facing the camera
             const float r = g.ScreenFactor * Style.RotationDisplayScale;
-            const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(Pos(model.M) - cam_origin);
+            const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(center_ws - cam_origin);
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
                 const vec4 axis_start{cosf(angle_start), sinf(angle_start), 0.f, 0.f};
