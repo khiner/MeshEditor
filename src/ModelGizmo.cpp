@@ -31,24 +31,27 @@ namespace state {
 struct Context {
     mat4 MVP;
     mat4 MVPLocal; // Full MVP model, whereas MVP might only be translation in case of World space edition
-    vec2 Pos{0, 0}, Size{0, 0};
+    ImRect ScreenRect{{0, 0}, {0, 0}};
 
-    vec4 InteractionPlane;
+    // World-space distance that projects to Style.SizeNDC, computed as:
+    // Style.SizeNDC / (NDC-length of a world-space unit vector along the camera’s right direction, projected at the model’s origin)
+    float WorldToSizeNDC;
 
-    // World-space distance that projects to exactly Style.SizeNDC
-    float ScreenFactor; // = Style.SizeNDC / (NDC length of a unit world-space direction under the current view/projection).
     float RotationAngle; // Relative to the start rotation
-
     vec3 PosStart;
     vec3 Scale, ScaleStart;
     vec2 MousePosStart;
     ray MouseRayStart;
+    vec4 InteractionPlane;
 
     Op Op{NoOp};
     bool Using{false};
 };
 
 struct Style {
+    // Size of the gizmo in NDC coordinates, relative to the screen size.
+    // todo Actually, it's currently the size of an axis handle, but I want to change it to be the size of the whole gizmo,
+    // and make all other scales <= 1.
     float SizeNDC{0.1};
     float LineWidth{2}; // Thickness of lines for translate/scale gizmo
     // Radius and length of the arrow at the end of translation axes, as a ratio of the axis line.
@@ -58,7 +61,7 @@ struct Style {
     float RotationDisplayScale{1.2}; // Scale a bit so translate axes don't touch when in universal.
     float RotationScreenScale{1.25}; // Screen rotation circle is larger than the translate axes circles.
     float RotationLineWidth{2}; // Base thickness of lines for rotation gizmo
-    float PlaneCenterAxisRatio{0.5f}, PlaneSizeAxisRatio{0.2f};
+    float PlaneCenterAxisScale{0.5}, PlaneSizeAxisScale{0.2}; // todo define in terms of SizeNDC rather than axis handle
     float AxisLengthVisibilityMin{0.03};
 };
 
@@ -126,6 +129,7 @@ constexpr uint32_t AxisIndex(Op op, Op type) {
     return -1;
 }
 
+constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 constexpr Op TranslatePlanes[]{TranslateYZ, TranslateZX, TranslateXY}; // In axis order
 
 constexpr std::optional<uint32_t> TranslatePlaneIndex(Op op) {
@@ -134,14 +138,6 @@ constexpr std::optional<uint32_t> TranslatePlaneIndex(Op op) {
     if (op == TranslateXY) return 2;
     return {};
 }
-
-// Homogeneous clip space to NDC
-constexpr vec2 ToNDC(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
-constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
-constexpr float LengthClipSpaceSq(vec3 v) { return Length2(ToNDC(g.MVP * vec4{v, 1}) - ToNDC(g.MVP * vec4{0, 0, 0, 1})); }
-
-constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-
 constexpr std::pair<vec3, vec3> DirPlaneXY(uint32_t axis_i) { return {Axes[(axis_i + 1) % 3], Axes[(axis_i + 2) % 3]}; }
 
 // Assumes p_normal is normalized
@@ -153,15 +149,25 @@ constexpr float IntersectPlane(const ray &r, vec4 plane) {
     return fabsf(den) < FLT_EPSILON ? -1 : -num / den; // if normal is orthogonal to vector, can't intersect
 }
 
-constexpr bool IsAxisVisible(vec3 dir) {
-    return LengthClipSpaceSq(dir * g.ScreenFactor) >= Style.AxisLengthVisibilityMin * Style.AxisLengthVisibilityMin;
+// Camera _right_ vector is used to calculate WorldToSizeNDC,
+// so screen _width_ is used to convert back to pixels.
+constexpr float GetSizePixels() { return g.ScreenRect.GetWidth() * Style.SizeNDC; }
+
+// Homogeneous clip space to NDC
+constexpr vec2 ToNDC(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
+constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
+
+constexpr bool IsAxisVisible(uint32_t axis_i) {
+    const auto dir = Axes[axis_i] * g.WorldToSizeNDC;
+    const auto length2_ndc = Length2(ToNDC(g.MVP * vec4{dir, 1}) - ToNDC(g.MVP * vec4{0, 0, 0, 1}));
+    return length2_ndc >= Style.AxisLengthVisibilityMin * Style.AxisLengthVisibilityMin;
 }
 constexpr bool IsPlaneVisible(vec3 dir_x, vec3 dir_y) {
     static constexpr auto ToScreenNDC = [](vec3 v) { return ToNDC(g.MVP * vec4{v, 1}); };
     static constexpr float ParallelogramAreaLimit{0.0025};
     const auto o = ToScreenNDC(vec3{0});
-    const auto pa = ToScreenNDC(dir_x * g.ScreenFactor) - o;
-    const auto pb = ToScreenNDC(dir_y * g.ScreenFactor) - o;
+    const auto pa = ToScreenNDC(dir_x * g.WorldToSizeNDC) - o;
+    const auto pb = ToScreenNDC(dir_y * g.WorldToSizeNDC) - o;
     return fabsf(pa.x * pb.y - pa.y * pb.x) > ParallelogramAreaLimit; // abs cross product
 }
 
@@ -233,7 +239,7 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Op type, vec2 mouse
             const vec3 axis_value{model.RT[axis_i]};
             const auto relative_origin = g.MouseRayStart(IntersectPlane(g.MouseRayStart, g.InteractionPlane)) - g.PosStart;
             const auto p_ortho = Pos(model.RT);
-            const auto base = relative_origin / g.ScreenFactor - p_ortho;
+            const auto base = relative_origin / g.WorldToSizeNDC - p_ortho;
             const auto delta = axis_value * glm::dot(axis_value, mouse_ray(IntersectPlane(mouse_ray, g.InteractionPlane)) - relative_origin - p_ortho);
             g.Scale[axis_i] = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
         }
@@ -269,7 +275,7 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Op type, vec2 mouse
 constexpr ImVec2 WorldToScreen(vec3 world, const mat4 &view_proj) {
     const vec2 uv = ToNDC(view_proj * vec4{world, 1}) * 0.5f + 0.5f; // [0,1]
     // Flip y (ImGui’s origin is top-left), and scale to gizmo rect.
-    return std::bit_cast<ImVec2>(g.Pos + vec2{uv.x, 1.f - uv.y} * g.Size);
+    return g.ScreenRect.Min + ImVec2{uv.x, 1.f - uv.y} * g.ScreenRect.GetSize();
 }
 
 constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
@@ -298,22 +304,22 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
             if (dist_sq >= inner_rad * inner_rad && dist_sq < outer_rad * outer_rad) return ScaleXYZ;
         }
 
-        const auto pos = std::bit_cast<ImVec2>(g.Pos), pos_screen{mouse_pos - pos};
+        const auto screen_pos = g.ScreenRect.Min, mouse_pos_rel{mouse_pos - screen_pos};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
             const auto p = Pos(model.M);
-            const auto start = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor * 0.1f, view_proj) - pos;
-            const auto end = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor, view_proj) - pos;
-            if (is_scale && ImLengthSqr(end - pos_screen) < SelectDistSq) return Scale | AxisOp(i);
-            if (ImLengthSqr(PointOnSegment(pos_screen, start, end) - pos_screen) < SelectDistSq) {
+            const auto start = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNDC * 0.1f, view_proj) - screen_pos;
+            const auto end = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNDC, view_proj) - screen_pos;
+            if (is_scale && ImLengthSqr(end - mouse_pos_rel) < SelectDistSq) return Scale | AxisOp(i);
+            if (ImLengthSqr(PointOnSegment(mouse_pos_rel, start, end) - mouse_pos_rel) < SelectDistSq) {
                 return (is_translate && op != Universal ? Translate : Scale) | AxisOp(i);
             }
             if (!is_translate) continue;
 
             if (op == Universal) {
                 const float scale = Style.RotationDisplayScale * Style.RotationScreenScale * Style.RotationScreenScale;
-                const auto translate_pos = WorldToScreen(vec4{p, 1} + dir * g.ScreenFactor * scale, view_proj) - pos;
-                if (ImLengthSqr(translate_pos - pos_screen) < SelectDistSq) return Translate | AxisOp(i);
+                const auto translate_pos = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNDC * scale, view_proj) - screen_pos;
+                if (ImLengthSqr(translate_pos - mouse_pos_rel) < SelectDistSq) return Translate | AxisOp(i);
             }
 
             const auto [dir_x, dir_y] = DirPlaneXY(i);
@@ -323,18 +329,18 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
             const auto pos_plane = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(p_world, dir)));
             const auto plane_x_world = vec3{model.M * vec4{dir_x, 0}};
             const auto plane_y_world = vec3{model.M * vec4{dir_y, 0}};
-            const auto delta_world = (pos_plane - p_world) / g.ScreenFactor;
+            const auto delta_world = (pos_plane - p_world) / g.WorldToSizeNDC;
             const float dx = glm::dot(delta_world, plane_x_world);
             const float dy = glm::dot(delta_world, plane_y_world);
-            const float PlaneQuadUVMin = Style.PlaneCenterAxisRatio - Style.PlaneSizeAxisRatio * 0.5f;
-            const float PlaneQuadUVMax = Style.PlaneCenterAxisRatio + Style.PlaneSizeAxisRatio * 0.5f;
+            const float PlaneQuadUVMin = Style.PlaneCenterAxisScale - Style.PlaneSizeAxisScale * 0.5f;
+            const float PlaneQuadUVMax = Style.PlaneCenterAxisScale + Style.PlaneSizeAxisScale * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) return TranslatePlanes[i];
         }
     }
     if (is_rotate) {
         static constexpr float SelectDist = 8;
         const auto dist_sq = ImLengthSqr(mouse_pos - center);
-        const auto rotation_radius = 0.5f * g.Size.x * Style.SizeNDC * Style.RotationDisplayScale * Style.RotationScreenScale;
+        const auto rotation_radius = 0.5f * GetSizePixels() * Style.RotationDisplayScale * Style.RotationScreenScale;
         const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
         if (dist_sq >= inner_rad * inner_rad && dist_sq < outer_rad * outer_rad) return RotateScreen;
 
@@ -346,7 +352,7 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
             if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
 
             const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - p), 0};
-            const auto circle_pos = WorldToScreen(circle_pos_world * Style.RotationDisplayScale * g.ScreenFactor, g.MVP);
+            const auto circle_pos = WorldToScreen(circle_pos_world * Style.RotationDisplayScale * g.WorldToSizeNDC, g.MVP);
             if (ImLengthSqr(circle_pos - mouse_pos) < SelectDist * SelectDist) return Rotate | AxisOp(i);
         }
     }
@@ -378,14 +384,14 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
     const auto center = WorldToScreen(vec3{0}, g.MVP);
     const auto center_ws = Pos(model.M);
     if (HasAnyOp(op, Translate)) {
-        const float arrow_len_ws = Style.TranslationArrowLength * g.ScreenFactor;
-        const float arrow_rad_ws = Style.TranslationArrowRad * g.ScreenFactor;
+        const float arrow_len_ws = Style.TranslationArrowLength * g.WorldToSizeNDC;
+        const float arrow_rad_ws = Style.TranslationArrowRad * g.WorldToSizeNDC;
         const auto cam_dir_ws = glm::normalize(cam_origin - center_ws);
         for (uint32_t i = 0; i < 3; ++i) {
             const bool using_type = type == (Translate | AxisOp(i));
-            if ((!g.Using || using_type) && IsAxisVisible(Axes[i])) {
-                const auto base = WorldToScreen(Axes[i] * g.ScreenFactor * 0.1f, g.MVP);
-                const auto end = WorldToScreen(Axes[i] * g.ScreenFactor, g.MVP);
+            if ((!g.Using || using_type) && IsAxisVisible(i)) {
+                const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNDC * 0.1f, g.MVP);
+                const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNDC, g.MVP);
                 const auto color = using_type ? Color.Selection : Color.Directions[i];
                 if (op != Universal) dl.AddLine(base, end, color, Style.LineWidth);
                 // Draw translation arrows as cone silhouettes.
@@ -396,7 +402,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 const auto v_ws = glm::cross(axis_dir_ws, u_ws);
 
                 const float scale = op == Universal ? (Style.RotationDisplayScale * Style.RotationScreenScale * Style.RotationScreenScale) : 1.f;
-                const auto base_ws = center_ws + axis_dir_ws * (g.ScreenFactor * scale - arrow_len_ws * 0.5f);
+                const auto base_ws = center_ws + axis_dir_ws * (g.WorldToSizeNDC * scale - arrow_len_ws * 0.5f);
                 const auto p_tip = WorldToScreen(base_ws + axis_dir_ws * arrow_len_ws, view_proj);
                 const auto p_b1 = WorldToScreen(base_ws + v_ws * arrow_rad_ws, view_proj);
                 const auto p_b2 = WorldToScreen(base_ws - v_ws * arrow_rad_ws, view_proj);
@@ -416,8 +422,8 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
                 const auto screen_pos = [&](float sx, float sy) {
-                    const auto uv = vec2{sx, sy} * Style.PlaneSizeAxisRatio * 0.5f + Style.PlaneCenterAxisRatio;
-                    return WorldToScreen((dir_x * uv.x + dir_y * uv.y) * g.ScreenFactor, g.MVP);
+                    const auto uv = vec2{sx, sy} * Style.PlaneSizeAxisScale * 0.5f + Style.PlaneCenterAxisScale;
+                    return WorldToScreen((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNDC, g.MVP);
                 };
                 const auto p1{screen_pos(-1, -1)}, p2{screen_pos(-1, 1)}, p3{screen_pos(1, 1)}, p4{screen_pos(1, -1)};
                 dl.AddQuad(p1, p2, p3, p4, Color.Directions[i], 1.f);
@@ -440,10 +446,10 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
     if (HasAnyOp(op, Scale)) {
         for (uint32_t i = 0; i < 3; ++i) {
             const bool using_type = type == (Scale | AxisOp(i));
-            if ((!g.Using || using_type) && IsAxisVisible(Axes[i])) {
+            if ((!g.Using || using_type) && IsAxisVisible(i)) {
                 const auto color = type == (Scale | AxisOp(i)) ? Color.Selection : Color.Directions[i];
-                const auto base = WorldToScreen(Axes[i] * g.ScreenFactor * 0.1f, g.MVP);
-                const auto end = WorldToScreen(Axes[i] * g.ScreenFactor, g.MVP);
+                const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNDC * 0.1f, g.MVP);
+                const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNDC, g.MVP);
                 dl.AddCircleFilled(end, Style.CircleRad, color);
                 dl.AddLine(base, end, color, Style.LineWidth);
             }
@@ -465,7 +471,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
             {
                 const auto u = glm::normalize(g.MouseRayStart(IntersectPlane(g.MouseRayStart, g.InteractionPlane)) - center_ws);
                 const auto v = glm::cross(vec3{g.InteractionPlane}, u);
-                const float r = g.ScreenFactor * Style.RotationDisplayScale * (type == RotateScreen ? Style.RotationScreenScale : 1.0f);
+                const float r = g.WorldToSizeNDC * Style.RotationDisplayScale * (type == RotateScreen ? Style.RotationScreenScale : 1.0f);
                 const auto u_screen = WorldToScreen(center_ws + u * r, view_proj) - center;
                 const auto v_screen = WorldToScreen(center_ws + v * r, view_proj) - center;
                 FastEllipse(std::span{CirclePositions}, center, u_screen, v_screen, g.RotationAngle >= 0);
@@ -479,7 +485,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
             Label(Format::Rotation(type, g.RotationAngle), CirclePositions[1]);
         } else if (!g.Using) {
             // Half-circles facing the camera
-            const float r = g.ScreenFactor * Style.RotationDisplayScale;
+            const float r = g.WorldToSizeNDC * Style.RotationDisplayScale;
             const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(center_ws - cam_origin);
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
@@ -496,7 +502,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
             // Screen rotation circle
             dl.AddCircle(
                 center,
-                0.5f * g.Size.x * Style.SizeNDC * Style.RotationDisplayScale * Style.RotationScreenScale,
+                0.5f * GetSizePixels() * Style.RotationDisplayScale * Style.RotationScreenScale,
                 (type == RotateScreen) ? Color.Selection : IM_COL32_WHITE,
                 FullCircleSegmentCount,
                 Style.RotationLineWidth * 1.5f
@@ -508,8 +514,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
 
 namespace ModelGizmo {
 bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, ray mouse_ray, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
-    g.Pos = pos;
-    g.Size = size;
+    g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
     // Scale is always local or m will be skewed when applying world scale or rotated m
     if (HasAnyOp(op, Scale)) mode = Local;
 
@@ -517,16 +522,14 @@ bool Draw(Mode mode, Op op, vec2 pos, vec2 size, vec2 mouse_pos, ray mouse_ray, 
     const mat4 view_proj = proj * view;
     g.MVP = view_proj * model.M;
     g.MVPLocal = view_proj * model.RT;
-
     // Behind‐camera cull
-    if (!g.Using && (g.MVP * vec4{vec3{0}, 1}).z < 0.001f) return false;
+    if (!g.Using && g.MVP[3].z < 0.001f) return false;
 
     const auto view_inv = InverseRigid(view);
     const ray camera_ray{Pos(view_inv), Dir(view_inv)};
 
-    // Compute scale from camera right vector projected onto screen at m pos
-    g.ScreenFactor = Style.SizeNDC / sqrtf(LengthClipSpaceSq(model.Inv * vec4{vec3{Right(view_inv)}, 0}));
-
+    // Compute scale from camera right vector projected onto screen at model position.
+    g.WorldToSizeNDC = Style.SizeNDC / glm::length(ToNDC(view_proj * vec4{Pos(model.RT) + vec3{Right(view_inv)}, 1}) - ToNDC(view_proj * vec4{Pos(model.RT), 1}));
     const bool commit = g.Using && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
     if (commit) g.Using = false;
 
