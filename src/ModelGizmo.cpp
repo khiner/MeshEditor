@@ -61,12 +61,12 @@ struct Style {
     float AxisHandleScale{1.f - TranslationArrowScale}; // Tip is exacly at the gizmo size
     float AxisHandleLineWidth{2}; // in pixels
     // Radius and length of the arrow at the end of translation axes
-    float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo.
+    float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
     float CircleRadScale{0.03}; // Radius of circle at the end of scale lines and the center of the translate/scale gizmo
-    float UniversalScaleCircleRad{20}; // Pixels (todo: scale)
+    float InnerCircleRadScale{0.1}; // Radius of the inner selection circle at the center for translate/scale selection
+    float OuterCircleRadScale{0.5}; // Outer circle is exactly the size of the gizmo
     float UniversalScaleCircleWidth{3}; // Pixels
-    float RotationScreenCircleScale{1}; // Screen rotation circle is larger than other rotation circles, exactly the size of the gizmo.
-    float RotationAxesCircleScale{AxisHandleScale}; // Rotation axes circles are smaller than the screen circle, equal to the the translation arrow base.
+    float RotationAxesCircleScale{AxisHandleScale}; // Rotation axes circles are smaller than the screen circle, equal to the the translation arrow base
     float RotationLineWidth{2}; // Base thickness of lines for rotation gizmo, in pixels
     float PlaneCenterAxisScale{0.4}, PlaneSizeAxisScale{0.1};
 };
@@ -75,11 +75,13 @@ struct Color {
     ImU32 Selection{IM_COL32(255, 128, 16, 138)};
     ImU32 TranslationLine{IM_COL32(170, 170, 170, 170)};
     ImU32 ScaleLine{IM_COL32(64, 64, 64, 255)};
+    ImU32 StartGhost{IM_COL32(255, 128, 128, 128)};
     ImU32 RotationBorderActive{IM_COL32(255, 128, 16, 255)};
     ImU32 RotationFillActive{IM_COL32(255, 128, 16, 128)};
     ImU32 Text{IM_COL32(255, 255, 255, 255)}, TextShadow{IM_COL32(0, 0, 0, 255)};
 
-    ImU32 Directions[3]{IM_COL32(255, 54, 83, 255), IM_COL32(138, 219, 0, 255), IM_COL32(44, 143, 255, 255)};
+    ImU32 Axes[3]{IM_COL32(255, 54, 83, 255), IM_COL32(138, 219, 0, 255), IM_COL32(44, 143, 255, 255)};
+    ImU32 AxesDark[3]{IM_COL32(154, 57, 71, 255), IM_COL32(98, 138, 34, 255), IM_COL32(52, 100, 154, 255)};
     ImU32 Planes[3]{IM_COL32(255, 54, 83, 100), IM_COL32(138, 219, 0, 100), IM_COL32(44, 143, 255, 100)};
 };
 } // namespace state
@@ -299,24 +301,17 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
     // Op selection check order is important because of universal mode.
     // Universal = Scale | Translate | Rotate
     const auto is_translate = HasAnyOp(op, Translate), is_scale = HasAnyOp(op, Scale), is_rotate = HasAnyOp(op, Rotate);
+    const auto mouse_r_sq = ImLengthSqr(mouse_pos - center);
     if (is_translate || is_scale) {
-        const float dist_sq = ImLengthSqr(mouse_pos - center);
-        const auto circle_rad_pixels = ScaleToPixels(Style.CircleRadScale);
-        if (dist_sq <= circle_rad_pixels * circle_rad_pixels) return is_translate || op == Universal ? TranslateScreen : ScaleXYZ;
-
-        if (op == Universal) {
-            static constexpr float SelectDist = 8;
-            const auto inner_rad = Style.UniversalScaleCircleRad - SelectDist / 2;
-            const auto outer_rad = Style.UniversalScaleCircleRad + SelectDist / 2;
-            if (dist_sq >= inner_rad * inner_rad && dist_sq < outer_rad * outer_rad) return ScaleXYZ;
-        }
+        const auto inner_circle_rad_px = ScaleToPixels(Style.InnerCircleRadScale);
+        if ((is_translate || op == Universal) && mouse_r_sq <= inner_circle_rad_px * inner_circle_rad_px) return TranslateScreen;
 
         const auto half_arrow_px = ScaleToPixels(Style.TranslationArrowScale) * 0.5f;
         const auto screen_pos = g.ScreenRect.Min, mouse_pos_rel{mouse_pos - screen_pos};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
             const auto p = Pos(model.M);
-            const auto start = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNDC * Style.AxisHandleScale * 0.1f, view_proj) - screen_pos;
+            const auto start = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNDC * Style.AxisHandleScale * Style.InnerCircleRadScale, view_proj) - screen_pos;
             const auto end = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNDC * (Style.AxisHandleScale + Style.TranslationArrowScale), view_proj) - screen_pos;
             if (is_scale && ImLengthSqr(end - mouse_pos_rel) <= half_arrow_px * half_arrow_px) return Scale | AxisOp(i);
             if (ImLengthSqr(PointOnSegment(mouse_pos_rel, start, end) - mouse_pos_rel) < half_arrow_px * half_arrow_px) {
@@ -344,13 +339,19 @@ Op FindHoveredOp(const Model &model, Op op, ImVec2 mouse_pos, const ray &mouse_r
             const float PlaneQuadUVMax = Style.PlaneCenterAxisScale + Style.PlaneSizeAxisScale * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) return TranslatePlanes[i];
         }
+        if (is_scale) {
+            const auto outer_circle_rad_px = ScaleToPixels(Style.OuterCircleRadScale);
+            if (mouse_r_sq >= inner_circle_rad_px * inner_circle_rad_px &&
+                mouse_r_sq < outer_circle_rad_px * outer_circle_rad_px) {
+                return ScaleXYZ;
+            }
+        }
     }
     if (is_rotate) {
         static constexpr float SelectDist = 8;
-        const auto dist_sq = ImLengthSqr(mouse_pos - center);
-        const auto rotation_radius = 0.5f * ScaleToPixels(Style.RotationScreenCircleScale);
+        const auto rotation_radius = ScaleToPixels(Style.OuterCircleRadScale);
         const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
-        if (dist_sq >= inner_rad * inner_rad && dist_sq < outer_rad * outer_rad) return RotateScreen;
+        if (mouse_r_sq >= inner_rad * inner_rad && mouse_r_sq < outer_rad * outer_rad) return RotateScreen;
 
         const auto p = Pos(model.M);
         const auto mv_pos = view * vec4{p, 1};
@@ -388,23 +389,37 @@ void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clock
 }
 
 void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_origin) {
-    const auto CircleRadPixels = ScaleToPixels(Style.CircleRadScale);
     auto &dl = *ImGui::GetWindowDrawList();
     const auto center = WorldToScreen(vec3{0}, g.MVP);
     const auto center_ws = Pos(model.M);
+    if ((g.Using && (type == TranslateScreen || type == ScaleXYZ)) || (!g.Using && (!HasAnyOp(op, Rotate) || op == Universal))) {
+        const auto color = g.Using ? Color.StartGhost : IM_COL32_WHITE;
+        dl.AddCircle(center, ScaleToPixels(Style.InnerCircleRadScale), color);
+    }
+    if ((HasAnyOp(op, Rotate) && (!g.Using || type == RotateScreen)) || (!g.Using && op == Universal) || (!g.Using && HasAnyOp(op, Scale))) {
+        // Screen rotation circle
+        dl.AddCircle(
+            center,
+            ScaleToPixels(Style.OuterCircleRadScale),
+            type == RotateScreen ? Color.Selection : IM_COL32_WHITE,
+            0,
+            Style.RotationLineWidth * 1.5f
+        );
+    }
     if (HasAnyOp(op, Translate)) {
         const float arrow_len_ws = Style.TranslationArrowScale * g.WorldToSizeNDC;
         const float arrow_rad_ws = Style.TranslationArrowRadScale * g.WorldToSizeNDC;
         const auto cam_dir_ws = glm::normalize(cam_origin - center_ws);
         for (uint32_t i = 0; i < 3; ++i) {
-            const bool using_type = type == (Translate | AxisOp(i));
-            if ((!g.Using || using_type) && IsAxisVisible(i)) {
-                const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.AxisHandleScale * 0.1f, g.MVP);
+            const bool is_type = type == (Translate | AxisOp(i));
+            if ((!g.Using || is_type) && IsAxisVisible(i)) {
+                const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.InnerCircleRadScale, g.MVP);
                 const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.AxisHandleScale, g.MVP);
-                const auto color = using_type ? Color.Selection : Color.Directions[i];
+                const auto color = is_type ? Color.Selection : Color.Axes[i];
                 // Extend line a bit into the middle of the arrow, to avoid gaps between the the axis line and arrow base.
                 if (op != Universal) dl.AddLine(base, end, color, Style.AxisHandleLineWidth + arrow_len_ws * 0.5f);
-                // Draw translation arrows as cone silhouettes.
+
+                // Draw translation arrows as cone silhouettes:
 
                 // Billboard triangle facing the camera, with the middle of the triangle at the end of the axis line.
                 const auto axis_dir_ws = vec3{model.RT[i]};
@@ -431,47 +446,40 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 const auto [dir_x, dir_y] = DirPlaneXY(i);
                 if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
-                const auto screen_pos = [&](float sx, float sy) {
-                    const auto uv = vec2{sx, sy} * Style.PlaneSizeAxisScale * 0.5f + Style.PlaneCenterAxisScale;
+                const auto screen_pos = [&](vec2 s) {
+                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + Style.PlaneCenterAxisScale;
                     return WorldToScreen((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNDC, g.MVP);
                 };
-                const auto p1{screen_pos(-1, -1)}, p2{screen_pos(-1, 1)}, p3{screen_pos(1, 1)}, p4{screen_pos(1, -1)};
-                dl.AddQuad(p1, p2, p3, p4, Color.Directions[i], 1.f);
-                dl.AddQuadFilled(p1, p2, p3, p4, (type == TranslatePlanes[i]) ? Color.Selection : Color.Planes[i]);
+                const auto p1{screen_pos({-1, -1})}, p2{screen_pos({-1, 1})}, p3{screen_pos({1, 1})}, p4{screen_pos({1, -1})};
+                dl.AddQuad(p1, p2, p3, p4, Color.Axes[i], 1.f);
+                dl.AddQuadFilled(p1, p2, p3, p4, type == TranslatePlanes[i] ? Color.Selection : Color.Planes[i]);
             }
-        }
-        if (!g.Using || type == TranslateScreen) {
-            dl.AddCircleFilled(center, CircleRadPixels, type == TranslateScreen ? Color.Selection : IM_COL32_WHITE);
-        }
-        if (g.Using && HasAnyOp(type, Translate)) {
-            const auto translation_line_color = Color.TranslationLine;
-            const auto source_pos = WorldToScreen(g.PosStart, view_proj);
-            dl.AddCircle(source_pos, 6.f, translation_line_color);
-            dl.AddCircle(center, 6.f, translation_line_color);
-            const auto dif = std::bit_cast<ImVec2>(glm::normalize(std::bit_cast<vec2>(center - source_pos)) * 5.f);
-            dl.AddLine(source_pos + dif, center - dif, translation_line_color, 2.f);
-            Label(Format::Translation(type, center_ws - g.PosStart), center);
+            if (g.Using) Label(Format::Translation(type, g.Scale), center);
         }
     }
     if (HasAnyOp(op, Scale)) {
         for (uint32_t i = 0; i < 3; ++i) {
-            const bool using_type = type == (Scale | AxisOp(i));
-            if ((!g.Using || using_type) && IsAxisVisible(i)) {
-                const auto color = type == (Scale | AxisOp(i)) ? Color.Selection : Color.Directions[i];
-                const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.AxisHandleScale * .1f, g.MVP);
-                const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.AxisHandleScale, g.MVP);
-                dl.AddCircleFilled(end, CircleRadPixels, color);
+            const bool is_type = type == (Scale | AxisOp(i));
+            if ((!g.Using || is_type) && IsAxisVisible(i)) {
+                const auto base = is_type ? center : WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.InnerCircleRadScale, g.MVP);
+                const float handle_scale = g.Using ? g.Scale[i] : 1.f;
+                const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.AxisHandleScale * handle_scale, g.MVP);
+                const auto color = is_type && !g.Using ? Color.Selection : Color.Axes[i];
                 dl.AddLine(base, end, color, Style.AxisHandleLineWidth);
+                dl.AddCircleFilled(end, ScaleToPixels(Style.CircleRadScale), color);
+                if (g.Using) {
+                    const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNDC * Style.AxisHandleScale, g.MVP);
+                    dl.AddLine(center, end, Color.AxesDark[i], Style.AxisHandleLineWidth);
+                    const auto circle_px = ScaleToPixels(Style.CircleRadScale);
+                    dl.AddCircleFilled(center, circle_px, Color.AxesDark[i]);
+                    dl.AddCircleFilled(end, circle_px, Color.StartGhost);
+                }
             }
         }
-        if (!g.Using || HasAnyOp(type, Scale)) {
-            const auto color = g.Using || type == ScaleXYZ ? Color.Selection : IM_COL32_WHITE;
-            if (op == Universal && (!g.Using || type == ScaleXYZ)) {
-                dl.AddCircle(center, Style.UniversalScaleCircleRad, color, 0, Style.UniversalScaleCircleWidth);
-            } else {
-                dl.AddCircleFilled(center, CircleRadPixels, color, 0);
-            }
-            if (g.Using) Label(Format::Scale(type, g.Scale), center);
+        if (g.Using && type == ScaleXYZ) {
+            const auto color = IM_COL32_WHITE;
+            dl.AddCircle(center, ScaleToPixels(g.Scale[0] * Style.InnerCircleRadScale), color, 0, Style.UniversalScaleCircleWidth);
+            Label(Format::Scale(type, g.Scale), center);
         }
     }
     if (HasAnyOp(op, Rotate)) {
@@ -481,7 +489,7 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
             {
                 const auto u = glm::normalize(g.MouseRayStart(IntersectPlane(g.MouseRayStart, g.InteractionPlane)) - center_ws);
                 const auto v = glm::cross(vec3{g.InteractionPlane}, u);
-                const float r = g.WorldToSizeNDC * (type == RotateScreen ? Style.RotationScreenCircleScale : Style.RotationAxesCircleScale);
+                const float r = g.WorldToSizeNDC * (type == RotateScreen ? (2 * Style.OuterCircleRadScale) : Style.RotationAxesCircleScale);
                 const auto u_screen = WorldToScreen(center_ws + u * r, view_proj) - center;
                 const auto v_screen = WorldToScreen(center_ws + v * r, view_proj) - center;
                 FastEllipse(std::span{CirclePositions}, center, u_screen, v_screen, g.RotationAngle >= 0);
@@ -506,17 +514,9 @@ void Render(const Model &model, Op op, Op type, const mat4 &view_proj, vec3 cam_
                 const auto u_screen = WorldToScreen(u_local * r, g.MVP) - center;
                 const auto v_screen = WorldToScreen(v_local * r, g.MVP) - center;
                 FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), center, u_screen, v_screen, true, 0.5f);
-                const auto color = (type == (Rotate | AxisOp(2 - axis))) ? Color.Selection : Color.Directions[2 - axis];
+                const auto color = (type == (Rotate | AxisOp(2 - axis))) ? Color.Selection : Color.Axes[2 - axis];
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
-            // Screen rotation circle
-            dl.AddCircle(
-                center,
-                0.5f * ScaleToPixels(Style.RotationScreenCircleScale),
-                (type == RotateScreen) ? Color.Selection : IM_COL32_WHITE,
-                FullCircleSegmentCount,
-                Style.RotationLineWidth * 1.5f
-            );
         }
     }
 }
