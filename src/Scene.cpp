@@ -1238,7 +1238,7 @@ void Scene::Interact() {
             Camera.AddYawPitch(wheel * 0.1f);
         }
     }
-    if (!IsMouseClicked(ImGuiMouseButton_Left) || ModelGizmo::CurrentOp() != ModelGizmo::Op::NoOp || OrientationGizmo::IsActive()) return;
+    if (!IsMouseClicked(ImGuiMouseButton_Left) || MGizmo.Show || OrientationGizmo::IsActive()) return;
 
     // Handle mouse selection.
     const auto mouse_world_ray = GetMouseWorldRay();
@@ -1362,7 +1362,7 @@ void Scene::RenderGizmo() {
         const auto active_entity = FindActiveEntity(R);
         if (auto model = R.get<Model>(active_entity).Transform;
             ModelGizmo::Draw(
-                ModelGizmo::Local, MGizmo.Op, pos, size, mouse_pos, mouse_ray, model, view, proj,
+                ModelGizmo::Mode::Local, MGizmo.Op, pos, size, mouse_pos, mouse_ray, model, view, proj,
                 MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt
             )) {
             // Decompose affine model matrix into pos, scale, and orientation.
@@ -1491,26 +1491,26 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (frozen) EndDisabled();
         if (model_changed) SetModel(active_entity, pos, rot, scale);
 
-        using namespace ModelGizmo;
+        using ModelGizmo::TransformType;
         const bool scale_enabled = !frozen;
-        if (!scale_enabled && MGizmo.Op == Op::Scale) MGizmo.Op = Op::Translate;
+        if (!scale_enabled && MGizmo.Op == TransformType::Scale) MGizmo.Op = TransformType::Translate;
 
         Checkbox("Gizmo", &MGizmo.Show);
         if (MGizmo.Show) {
-            if (const auto label = ToString(CurrentOp()); label != "") Text("Op: %s", label.data());
-            if (IsActive()) Text("Active");
+            if (const auto label = ModelGizmo::ToString(); label != "") Text("Op: %s", label.data());
+            if (ModelGizmo::IsActive()) Text("Active");
 
             auto &op = MGizmo.Op;
-            if (IsKeyPressed(ImGuiKey_T)) op = Op::Translate;
-            if (IsKeyPressed(ImGuiKey_R)) op = Op::Rotate;
-            if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = Op::Scale;
-            if (RadioButton("Translate (T)", op == Op::Translate)) op = Op::Translate;
-            if (RadioButton("Rotate (R)", op == Op::Rotate)) op = Op::Rotate;
+            if (IsKeyPressed(ImGuiKey_T)) op = TransformType::Translate;
+            if (IsKeyPressed(ImGuiKey_R)) op = TransformType::Rotate;
+            if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = TransformType::Scale;
+            if (RadioButton("Translate (T)", op == TransformType::Translate)) op = TransformType::Translate;
+            if (RadioButton("Rotate (R)", op == TransformType::Rotate)) op = TransformType::Rotate;
             if (!scale_enabled) BeginDisabled();
             const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
-            if (RadioButton(label.c_str(), op == Op::Scale)) op = Op::Scale;
+            if (RadioButton(label.c_str(), op == TransformType::Scale)) op = TransformType::Scale;
             if (!scale_enabled) EndDisabled();
-            if (RadioButton("Universal", op == Op::Universal)) op = Op::Universal;
+            if (RadioButton("Universal", op == TransformType::Universal)) op = TransformType::Universal;
             Spacing();
             Checkbox("Snap", &MGizmo.Snap);
             if (MGizmo.Snap) {
