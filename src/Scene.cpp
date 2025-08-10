@@ -1235,7 +1235,7 @@ void Scene::Interact() {
         if (io.KeyCtrl || io.KeySuper) {
             Camera.SetTargetDistance(std::max(Camera.Distance * (1 - wheel.y / 16.f), 0.01f));
         } else {
-            Camera.AddYawPitch(wheel * 0.1f);
+            Camera.SetTargetYawPitch(Camera.GetYawPitch() + wheel * 0.2f);
         }
     }
     if (!IsMouseClicked(ImGuiMouseButton_Left) || MGizmo.Show || OrientationGizmo::IsActive()) return;

@@ -27,6 +27,7 @@ struct Camera {
     mat4 GetView() const;
     mat4 GetProjection(float aspect_ratio) const;
     vec3 GetPosition() const { return Target + Distance * Forward(); }
+    vec2 GetYawPitch() const { return {Yaw, Pitch}; }
 
     vec3 Forward() const;
     mat3 Basis() const;
@@ -36,7 +37,6 @@ struct Camera {
     void SetTargetDistance(float);
     void SetTargetYawPitch(vec2);
     void SetTargetDirection(vec3);
-    void AddYawPitch(vec2);
 
     // Not currently used, since I need to figure out trackpad touch events.
     void SetYawPitchVelocity(vec2 vel) { YawPitchVelocity = vel; }

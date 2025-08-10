@@ -36,13 +36,15 @@ void Camera::SetTargetDistance(float distance) {
 }
 void Camera::SetTargetYawPitch(vec2 yaw_pitch) {
     StopMoving();
-    TargetYawPitch = yaw_pitch;
+    TargetYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
 }
-void Camera::AddYawPitch(vec2 yaw_pitch_delta) {
-    _SetYawPitch(vec2{Yaw, Pitch} + yaw_pitch_delta);
-    Changed = true;
-    StopMoving();
+
+namespace {
+constexpr float ShortestAngleDelta(float from, float to) {
+    const float d = to - from;
+    return std::atan2(std::sin(d), std::cos(d)); // in (-pi, pi]
 }
+} // namespace
 
 bool Camera::Tick() {
     if (Changed) {
@@ -66,13 +68,16 @@ bool Camera::Tick() {
         return true;
     }
     if (TargetYawPitch) {
-        const vec2 current{Yaw, Pitch};
-        const auto delta = *TargetYawPitch - current;
-        if (LengthSq(delta) < 0.0001) {
+        const auto current = GetYawPitch();
+        const vec2 delta{
+            ShortestAngleDelta(current.x, TargetYawPitch->x),
+            ShortestAngleDelta(current.y, TargetYawPitch->y)
+        };
+        if (LengthSq(delta) < 0.0001f) {
             _SetYawPitch(*TargetYawPitch);
             TargetYawPitch.reset();
         } else {
-            _SetYawPitch(current + glm::mix(vec2{0}, delta, TickSpeed));
+            _SetYawPitch(current + delta * TickSpeed); // minimal path step
         }
         return true;
     }

@@ -53,7 +53,7 @@ void Draw(vec2 pos, float size, Camera &camera) {
     const auto hover_circle_r = size * Scale.HoverCircleRadius;
     const auto center = pos + vec2{size, size} * 0.5f;
     Context.Hovered = glm::dot(mouse_pos - center, mouse_pos - center) <= hover_circle_r * hover_circle_r;
-    if (Context.Hovered) dl.AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
+    if (Context.Hovered || Context.DragEndPos) dl.AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
 
     // Project camera-relative axes to screen space.
     const mat3 transform = glm::transpose(camera.Basis());
@@ -115,7 +115,7 @@ void Draw(vec2 pos, float size, Camera &camera) {
         } else { // Dragging
             const auto drag_delta = mouse_pos - *Context.DragEndPos;
             Context.DragEndPos = mouse_pos;
-            camera.AddYawPitch(drag_delta * 0.01f);
+            camera.SetTargetYawPitch(camera.GetYawPitch() + drag_delta * 0.02f);
         }
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         if (!Context.DragEndPos && hovered_i) { // Click
