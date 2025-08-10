@@ -3,7 +3,6 @@
 #endif
 
 #include "ModelGizmo.h"
-
 #include "numeric/mat3.h"
 #include "numeric/ray.h"
 #include "numeric/vec4.h"
@@ -11,6 +10,8 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <glm/gtx/matrix_decompose.hpp>
+
+#include "AxisColors.h" // Must be after imgui.h
 
 #include <format>
 #include <optional>
@@ -32,7 +33,7 @@ struct TransformTypeAxis {
     TransformType Type; // Will not be Universal or NoOp
     TransformAxis Axis;
 
-    bool operator==(const TransformTypeAxis &other) const = default;
+    bool operator==(const TransformTypeAxis &) const = default;
 };
 } // namespace ModelGizmo
 
@@ -75,13 +76,13 @@ struct Style {
     float AxisHandleLineWidth{2}; // Pixels
     // Radius and length of the arrow at the end of translation axes
     float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
+    float PlaneSizeAxisScale{0.13}; // Translation plane quads
     float CircleRadScale{0.03}; // Radius of circle at the end of scale lines and the center of the translate/scale gizmo
     float InnerCircleRadScale{0.1}; // Radius of the inner selection circle at the center for translate/scale selection
     float OuterCircleRadScale{0.5}; // Outer circle is exactly the size of the gizmo
     float UniversalScaleCircleWidth{3}; // Pixels
     float RotationAxesCircleScale{AxisHandleScale}; // Rotation axes circles are smaller than the screen circle, equal to the the translation arrow base
     float RotationLineWidth{2}; // Base thickness of lines for rotation gizmo, in pixels
-    float PlaneCenterAxisScale{0.4}, PlaneSizeAxisScale{0.1};
 
     float AxisInvisibleRadScale{InnerCircleRadScale}; // Axes gradually fade into invisibility at this distance from center
     float AxisOpaqueRadScale{2 * InnerCircleRadScale}; // Axes are fully opaque at this distance from center
@@ -95,10 +96,6 @@ struct Color {
     ImU32 RotationBorderActive{IM_COL32(255, 128, 16, 255)};
     ImU32 RotationFillActive{IM_COL32(255, 128, 16, 128)};
     ImU32 Text{IM_COL32(255, 255, 255, 255)}, TextShadow{IM_COL32(0, 0, 0, 255)};
-
-    ImU32 Axes[3]{IM_COL32(255, 54, 83, 255), IM_COL32(138, 219, 0, 255), IM_COL32(44, 143, 255, 255)};
-    ImU32 AxesDark[3]{IM_COL32(154, 57, 71, 255), IM_COL32(98, 138, 34, 255), IM_COL32(52, 100, 154, 255)};
-    ImU32 Planes[3]{IM_COL32(255, 54, 83, 100), IM_COL32(138, 219, 0, 100), IM_COL32(44, 143, 255, 100)};
 };
 } // namespace state
 
@@ -377,8 +374,8 @@ std::optional<TransformTypeAxis> FindHoveredOp(const Model &model, TransformType
             const auto delta_world = (pos_plane - p_world) / g.WorldToSizeNdc;
             const float dx = glm::dot(delta_world, plane_x_world);
             const float dy = glm::dot(delta_world, plane_y_world);
-            const float PlaneQuadUVMin = Style.PlaneCenterAxisScale - Style.PlaneSizeAxisScale * 0.5f;
-            const float PlaneQuadUVMax = Style.PlaneCenterAxisScale + Style.PlaneSizeAxisScale * 0.5f;
+            const float PlaneQuadUVMin = 0.5f - Style.PlaneSizeAxisScale * 0.5f;
+            const float PlaneQuadUVMax = 0.5f + Style.PlaneSizeAxisScale * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) {
                 return TransformTypeAxis{Translate, TranslatePlanes[i]};
             }
@@ -424,11 +421,6 @@ constexpr float AxisAlphaForDistPxSq(float dist_px_sq) {
     return (sqrt(dist_px_sq) - min_dist) / (max_dist - min_dist);
 }
 
-constexpr ImColor WithAlpha(ImColor color, float alpha) {
-    color.Value.w = alpha;
-    return color;
-}
-
 void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 cam_origin) {
     auto &dl = *ImGui::GetWindowDrawList();
     const auto center = WorldToScreen(vec3{0}, g.MVP);
@@ -457,7 +449,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
                 const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - center));
-                const auto color = WithAlpha(is_type ? Color.Selection : Color.Axes[i], axis_alpha);
+                const auto color = colors::WithAlpha(is_type ? Color.Selection : colors::Axes[i], axis_alpha);
                 // Extend line a bit into the middle of the arrow, to avoid gaps between the the axis line and arrow base.
                 if (type != Universal) dl.AddLine(base, end, color, Style.AxisHandleLineWidth + arrow_len_ws * 0.5f);
 
@@ -489,12 +481,12 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
                 const auto screen_pos = [&](vec2 s) {
-                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + Style.PlaneCenterAxisScale;
+                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + 0.5f;
                     return WorldToScreen((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNdc, g.MVP);
                 };
                 const auto p1{screen_pos({-1, -1})}, p2{screen_pos({-1, 1})}, p3{screen_pos({1, 1})}, p4{screen_pos({1, -1})};
-                dl.AddQuad(p1, p2, p3, p4, Color.Axes[i], 1.f);
-                dl.AddQuadFilled(p1, p2, p3, p4, g.Using && g.Active->Axis == TranslatePlanes[i] ? Color.Selection : Color.Planes[i]);
+                dl.AddQuad(p1, p2, p3, p4, colors::Axes[i], 1.f);
+                dl.AddQuadFilled(p1, p2, p3, p4, g.Using && g.Active->Axis == TranslatePlanes[i] ? Color.Selection : colors::WithAlpha(colors::Axes[i], 0.5f));
             }
             if (g.Using && g.Active->Type == Translate) {
                 Label(Format::Translation(g.Active->Axis, center_ws - g.PosStart), center);
@@ -509,14 +501,14 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const float handle_scale = g.Using ? g.Scale[i] : 1.f;
                 const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale * handle_scale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - center));
-                const auto color = WithAlpha(is_type ? Color.Selection : Color.Axes[i], axis_alpha);
+                const auto color = colors::WithAlpha(is_type ? Color.Selection : colors::Axes[i], axis_alpha);
                 dl.AddLine(base, end, color, Style.AxisHandleLineWidth);
                 dl.AddCircleFilled(end, ScaleToPx(Style.CircleRadScale), color);
                 if (g.Using) {
                     const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
-                    dl.AddLine(center, end, Color.AxesDark[i], Style.AxisHandleLineWidth);
+                    dl.AddLine(center, end, colors::Axes[i + 3], Style.AxisHandleLineWidth);
                     const auto circle_px = ScaleToPx(Style.CircleRadScale);
-                    dl.AddCircleFilled(center, circle_px, Color.AxesDark[i]);
+                    dl.AddCircleFilled(center, circle_px, colors::Axes[i + 3]);
                     dl.AddCircleFilled(end, circle_px, Color.StartGhost);
                 }
             }
@@ -560,7 +552,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const auto u_screen = WorldToScreen(u_local * r, g.MVP) - center;
                 const auto v_screen = WorldToScreen(v_local * r, g.MVP) - center;
                 FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), center, u_screen, v_screen, true, 0.5f);
-                const auto color = g.Active == TransformTypeAxis{Rotate, AxisOp(2 - axis)} ? Color.Selection : Color.Axes[2 - axis];
+                const auto color = g.Active == TransformTypeAxis{Rotate, AxisOp(2 - axis)} ? Color.Selection : colors::Axes[2 - axis];
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
         }

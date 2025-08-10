@@ -3,14 +3,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
-constexpr bool IsClose(const vec3 &dir, const vec3 &up) { return glm::abs(glm::dot(dir, up)) > 0.999f; }
 constexpr float WrapYaw(float angle) { return glm::mod(angle, glm::two_pi<float>()); }
 constexpr float WrapPitch(float angle) { return glm::atan(glm::sin(angle), glm::cos(angle)); }
 constexpr float LengthSq(vec2 v) { return glm::dot(v, v); }
 } // namespace
 
-bool Camera::IsAligned(vec3 direction) const { return IsClose(Forward(), direction); }
-
+bool Camera::IsAligned(vec3 direction) const { return glm::dot(Forward(), glm::normalize(direction)) > 0.999f; }
 vec3 Camera::YAxis() const {
     const bool is_flipped = Pitch > glm::half_pi<float>() || Pitch < -glm::half_pi<float>();
     return {0, (is_flipped ? -1.f : 1.f), 0};

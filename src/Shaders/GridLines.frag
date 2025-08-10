@@ -16,8 +16,8 @@ vec4 Grid(vec3 pos_3d, float scale) {
     const float AxisWidth = 0.5;
     const float Gray = 0.4; // For the grid lines.
     const float ScaleFactor = 0.2;
-    const vec3 XAxis = vec3(0.17, 0.56, 1.0);
-    const vec3 ZAxis = vec3(1.0, 0.21, 0.32);
+    const vec3 XAxisColor = vec3(1.0, 0.2, 0.332);
+    const vec3 ZAxisColor = vec3(0.157, 0.565, 1.0);
 
     const vec2 coord = pos_3d.xz * scale * ScaleFactor;
     const vec2 derivative = fwidth(coord);
@@ -25,9 +25,9 @@ vec4 Grid(vec3 pos_3d, float scale) {
     const vec2 clipped_deriv = min(derivative, 1.0);
 
     const vec2 fades = exp(-pow(abs(pos_3d.xz) / (AxisWidth * clipped_deriv), vec2(5.0)));
-    const float xfade = fades.x;
-    const float zfade = fades.y;
-    const vec3 axis_color = mix(XAxis, ZAxis, step(xfade, zfade));
+    const float xfade = fades.y;
+    const float zfade = fades.x;
+    const vec3 axis_color = mix(XAxisColor, ZAxisColor, step(xfade, zfade));
 
     const float axis_alpha = max(xfade, zfade);
     const float grid_alpha = (1.0 - min(min(grid.x, grid.y), 1.0)) * 0.85;
