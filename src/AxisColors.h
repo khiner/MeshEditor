@@ -29,6 +29,11 @@ constexpr ImU32 WithAlpha(ImU32 color, float alpha) {
     return ImColor{rgba.x, rgba.y, rgba.z, alpha};
 }
 
+constexpr ImU32 MultAlpha(ImU32 color, float factor) {
+    const ImVec4 rgba{ImColor{color}};
+    return ImColor{rgba.x, rgba.y, rgba.z, rgba.w * factor};
+}
+
 constexpr ImU32 Blend(ImU32 color1, ImU32 color2, float factor) {
     const ImVec4 rgba1{ImColor{color1}};
     const ImVec4 rgba2{ImColor{color2}};

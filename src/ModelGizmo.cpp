@@ -73,28 +73,27 @@ struct Style {
     // `AxisHandle`s are the lines for translate/scale
     float TranslationArrowScale{0.18}, TranslationArrowRadScale{TranslationArrowScale * 0.3f};
     float AxisHandleScale{1.f - TranslationArrowScale}; // Tip is exacly at the gizmo size
-    float AxisHandleLineWidth{2}; // Pixels
+    float AxisHandleLineWidth{2};
     // Radius and length of the arrow at the end of translation axes
     float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
     float PlaneSizeAxisScale{0.13}; // Translation plane quads
     float CircleRadScale{0.03}; // Radius of circle at the end of scale lines and the center of the translate/scale gizmo
     float InnerCircleRadScale{0.1}; // Radius of the inner selection circle at the center for translate/scale selection
     float OuterCircleRadScale{0.5}; // Outer circle is exactly the size of the gizmo
-    float UniversalScaleCircleWidth{3}; // Pixels
+    float CircleLineWidth{2}; // Thickness of inner & outer circle
+    float UniversalScaleCircleWidth{3};
     float RotationAxesCircleScale{AxisHandleScale}; // Rotation axes circles are smaller than the screen circle, equal to the the translation arrow base
-    float RotationLineWidth{2}; // Base thickness of lines for rotation gizmo, in pixels
+    float RotationLineWidth{2.5}; // Thickness of rotation gizmo lines
 
     float AxisInvisibleRadScale{InnerCircleRadScale}; // Axes gradually fade into invisibility at this distance from center
     float AxisOpaqueRadScale{2 * InnerCircleRadScale}; // Axes are fully opaque at this distance from center
 };
 
 struct Color {
-    ImU32 Selection{IM_COL32(255, 128, 16, 138)};
     ImU32 TranslationLine{IM_COL32(170, 170, 170, 170)};
     ImU32 ScaleLine{IM_COL32(64, 64, 64, 255)};
     ImU32 StartGhost{IM_COL32(255, 128, 128, 128)};
-    ImU32 RotationBorderActive{IM_COL32(255, 128, 16, 255)};
-    ImU32 RotationFillActive{IM_COL32(255, 128, 16, 128)};
+    ImU32 RotationFillActive{IM_COL32(255, 255, 255, 64)};
     ImU32 Text{IM_COL32(255, 255, 255, 255)}, TextShadow{IM_COL32(0, 0, 0, 255)};
 };
 } // namespace state
@@ -421,22 +420,25 @@ constexpr float AxisAlphaForDistPxSq(float dist_px_sq) {
     return (sqrt(dist_px_sq) - min_dist) / (max_dist - min_dist);
 }
 
+constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
+    return selected ? color : colors::MultAlpha(color, 0.8f);
+}
+
 void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 cam_origin) {
     auto &dl = *ImGui::GetWindowDrawList();
     const auto center = WorldToScreen(vec3{0}, g.MVP);
     const auto center_ws = Pos(model.M);
     if ((!g.Using && type != Rotate) || (g.Active && g.Active->Type != Rotate && g.Active->Axis == Screen)) {
-        const auto color = g.Using ? Color.StartGhost : IM_COL32_WHITE;
-        dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), color);
+        const auto color = g.Using ? Color.StartGhost : SelectionColor(IM_COL32_WHITE, g.Active && g.Active->Axis == Screen);
+        dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), color, 0, Style.CircleLineWidth);
     }
     if (type != Translate && (!g.Using || g.Active == TransformTypeAxis{Rotate, Screen})) {
-        // Screen rotation circle
         dl.AddCircle(
             center,
             ScaleToPx(Style.OuterCircleRadScale),
-            g.Active == TransformTypeAxis{Rotate, Screen} ? Color.Selection : IM_COL32_WHITE,
+            SelectionColor(IM_COL32_WHITE, g.Active && g.Active->Axis == Screen),
             0,
-            Style.RotationLineWidth * 1.5f
+            Style.CircleLineWidth
         );
     }
     if (type == Translate || type == Universal) {
@@ -449,7 +451,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
                 const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - center));
-                const auto color = colors::WithAlpha(is_type ? Color.Selection : colors::Axes[i], axis_alpha);
+                const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
                 // Extend line a bit into the middle of the arrow, to avoid gaps between the the axis line and arrow base.
                 if (type != Universal) dl.AddLine(base, end, color, Style.AxisHandleLineWidth + arrow_len_ws * 0.5f);
 
@@ -485,8 +487,9 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                     return WorldToScreen((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNdc, g.MVP);
                 };
                 const auto p1{screen_pos({-1, -1})}, p2{screen_pos({-1, 1})}, p3{screen_pos({1, 1})}, p4{screen_pos({1, -1})};
-                dl.AddQuad(p1, p2, p3, p4, colors::Axes[i], 1.f);
-                dl.AddQuadFilled(p1, p2, p3, p4, g.Using && g.Active->Axis == TranslatePlanes[i] ? Color.Selection : colors::WithAlpha(colors::Axes[i], 0.5f));
+                const bool is_selected = g.Active && g.Active->Axis == TranslatePlanes[i];
+                dl.AddQuad(p1, p2, p3, p4, SelectionColor(colors::Axes[i], is_selected), 1.f);
+                dl.AddQuadFilled(p1, p2, p3, p4, SelectionColor(colors::WithAlpha(colors::Axes[i], 0.5f), is_selected));
             }
             if (g.Using && g.Active->Type == Translate) {
                 Label(Format::Translation(g.Active->Axis, center_ws - g.PosStart), center);
@@ -501,7 +504,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const float handle_scale = g.Using ? g.Scale[i] : 1.f;
                 const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale * handle_scale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - center));
-                const auto color = colors::WithAlpha(is_type ? Color.Selection : colors::Axes[i], axis_alpha);
+                const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
                 dl.AddLine(base, end, color, Style.AxisHandleLineWidth);
                 dl.AddCircleFilled(end, ScaleToPx(Style.CircleRadScale), color);
                 if (g.Using) {
@@ -532,12 +535,16 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const auto v_screen = WorldToScreen(center_ws + v * r, view_proj) - center;
                 FastEllipse(std::span{CirclePositions}, center, u_screen, v_screen, g.RotationAngle >= 0);
             }
-            dl.AddPolyline(CirclePositions, FullCircleSegmentCount, Color.Selection, false, Style.RotationLineWidth);
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
+            const auto angle_circle_pos = CirclePositions[angle_i + 1]; // save
             CirclePositions[angle_i + 1] = center;
             dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationFillActive);
-            dl.AddLine(center, CirclePositions[0], Color.RotationBorderActive, Style.RotationLineWidth / 2);
-            dl.AddLine(center, CirclePositions[angle_i], Color.RotationBorderActive, Style.RotationLineWidth);
+
+            CirclePositions[angle_i + 1] = angle_circle_pos; // restore
+            const auto color = g.Active->Axis == Screen ? IM_COL32_WHITE : colors::Axes[AxisIndex(g.Active->Axis)];
+            dl.AddPolyline(CirclePositions, FullCircleSegmentCount, color, false, Style.RotationLineWidth);
+            dl.AddLine(center, CirclePositions[0], color, Style.RotationLineWidth / 2);
+            dl.AddLine(center, CirclePositions[angle_i], color, Style.RotationLineWidth);
             Label(Format::Rotation(g.Active->Axis, g.RotationAngle), CirclePositions[1]);
         } else if (!g.Using) {
             // Half-circles facing the camera
@@ -552,7 +559,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const auto u_screen = WorldToScreen(u_local * r, g.MVP) - center;
                 const auto v_screen = WorldToScreen(v_local * r, g.MVP) - center;
                 FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), center, u_screen, v_screen, true, 0.5f);
-                const auto color = g.Active == TransformTypeAxis{Rotate, AxisOp(2 - axis)} ? Color.Selection : colors::Axes[2 - axis];
+                const auto color = SelectionColor(colors::Axes[2 - axis], g.Active == TransformTypeAxis{Rotate, AxisOp(2 - axis)});
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
         }

@@ -1497,8 +1497,14 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
         Checkbox("Gizmo", &MGizmo.Show);
         if (MGizmo.Show) {
-            if (const auto label = ModelGizmo::ToString(); label != "") Text("Op: %s", label.data());
-            if (ModelGizmo::IsActive()) Text("Active");
+            if (const auto label = ModelGizmo::ToString(); label != "") {
+                SameLine();
+                Text("Op: %s", label.data());
+            }
+            if (ModelGizmo::IsActive()) {
+                SameLine();
+                Text("Active");
+            }
 
             auto &op = MGizmo.Op;
             if (IsKeyPressed(ImGuiKey_T)) op = TransformType::Translate;
