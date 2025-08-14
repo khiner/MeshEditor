@@ -74,6 +74,7 @@ struct Style {
     // `AxisHandle`s are the lines for translate/scale
     float TranslationArrowScale{0.18}, TranslationArrowRadScale{TranslationArrowScale * 0.3f};
     float AxisHandleScale{1.f - TranslationArrowScale}; // Tip is exacly at the gizmo size
+    float UniversalAxisHandleScale{AxisHandleScale - TranslationArrowScale}; // For scale handles in Universal mode
     float AxisHandleLineWidth{2};
     // Radius and length of the arrow at the end of translation axes
     float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
@@ -339,11 +340,9 @@ std::optional<TransformTypeAxis> FindHoveredOp(const Model &model, TransformType
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
             const auto p = Pos(model.M);
-            const auto start = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * Style.AxisHandleScale * Style.InnerCircleRadScale, view_proj) - screen_pos;
-            const auto end = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * (Style.AxisHandleScale + Style.TranslationArrowScale), view_proj) - screen_pos;
-            if (type != Translate && ImLengthSqr(end - mouse_pos_rel) <= half_arrow_px * half_arrow_px) {
-                return TransformTypeAxis{Scale, AxisOp(i)};
-            }
+            const auto scale = type == Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
+            const auto start = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * scale * Style.InnerCircleRadScale, view_proj) - screen_pos;
+            const auto end = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * (scale + Style.TranslationArrowScale), view_proj) - screen_pos;
             if (ImLengthSqr(PointOnSegment(mouse_pos_rel, start, end) - mouse_pos_rel) < half_arrow_px * half_arrow_px) {
                 return TransformTypeAxis{type == Translate ? Translate : Scale, AxisOp(i)};
             }
@@ -457,7 +456,9 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
                 const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
                 // Extend line a bit into the middle of the arrow, to avoid gaps between the the axis line and arrow base.
-                if (type != Universal) dl.AddLine(base, end, color, Style.AxisHandleLineWidth + arrow_len_ws * 0.5f);
+                if (type != Universal) {
+                    dl.AddLine(base, end, color, Style.AxisHandleLineWidth + arrow_len_ws * 0.5f);
+                }
 
                 // Draw translation arrows as cone silhouettes:
 
@@ -580,8 +581,8 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
             const bool is_type = g.Active == TransformTypeAxis{Scale, AxisOp(i)};
             if (!g.Using || is_type) {
                 const auto base = g.Using ? p_px : WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
-                const float handle_scale = g.Using ? g.Scale[i] : 1.f;
-                const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale * handle_scale, g.MVP);
+                const float handle_scale = (g.Using ? g.Scale[i] : 1.f) * (type == Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale);
+                const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * handle_scale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
                 const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
                 dl.AddLine(base, end, color, Style.AxisHandleLineWidth);
@@ -591,7 +592,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const vec3 u_ws = glm::normalize(vec3{model.RT[(i + 1) % 3]});
                 const vec3 v_ws = glm::normalize(vec3{model.RT[(i + 2) % 3]});
                 // World-space end position of the line
-                const vec3 end_tip_ws = Pos(model.M) + axis_dir_ws * g.WorldToSizeNdc * Style.AxisHandleScale * handle_scale;
+                const vec3 end_tip_ws = Pos(model.M) + axis_dir_ws * g.WorldToSizeNdc * handle_scale;
                 if (auto poly_verts = CubeHandlePolyVerts(end_tip_ws, axis_dir_ws, u_ws, v_ws)) {
                     dl.AddConvexPolyFilled(poly_verts->data(), poly_verts->size(), color);
                 }
