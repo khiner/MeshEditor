@@ -135,6 +135,8 @@ constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
 constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
 
+constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
+
 // Assumes no scaling or shearing, only rotation and translation
 constexpr mat4 InverseRigid(const mat4 &m) {
     const auto r = glm::transpose(mat3{m});
@@ -173,13 +175,14 @@ constexpr float IntersectPlane(const ray &r, vec4 plane) {
 // Camera _right_ vector is used to calculate WorldToSizeNdc,
 // so screen _width_ is used to convert back to pixels.
 constexpr float ScaleToPx(float scale = 1.f) { return (g.ScreenRect.Max.x - g.ScreenRect.Min.x) * Style.SizeNdc * scale; }
-
-// Homogeneous clip space to NDC
-constexpr vec2 ToNdc(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
-constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
+constexpr ImVec2 NdcToPx(vec2 ndc) { return g.ScreenRect.Min + ImVec2{ndc.x, 1.f - ndc.y} * g.ScreenRect.GetSize(); }
+// Homogeneous clip space to NDC [0, 1]
+constexpr vec2 ClipToNdc(vec4 v) { return {fabsf(v.w) > FLT_EPSILON ? v / v.w : v}; }
+constexpr vec2 WorldToNdc(vec3 ws, const mat4 &view_proj) { return ClipToNdc(view_proj * vec4{ws, 1}) * 0.5f + 0.5f; }
+constexpr ImVec2 WorldToPx(vec3 ws, const mat4 &view_proj) { return NdcToPx(WorldToNdc(ws, view_proj)); }
 
 constexpr bool IsPlaneVisible(vec3 dir_x, vec3 dir_y) {
-    static constexpr auto ToScreenNdc = [](vec3 v) { return ToNdc(g.MVP * vec4{v, 1}); };
+    static constexpr auto ToScreenNdc = [](vec3 v) { return ClipToNdc(g.MVP * vec4{v, 1}); };
     static constexpr float ParallelogramAreaLimit{0.0025};
     const auto o = ToScreenNdc(vec3{0});
     const auto pa = ToScreenNdc(dir_x * g.WorldToSizeNdc) - o;
@@ -200,7 +203,7 @@ constexpr float Snap(float v, float snap) {
 constexpr vec3 Snap(vec3 v, vec3 snap) { return {Snap(v[0], snap[0]), Snap(v[1], snap[1]), Snap(v[2], snap[2])}; }
 
 namespace Format {
-static constexpr char AxisLabels[]{"XYZ"};
+constexpr char AxisLabels[]{"XYZ"};
 constexpr std::string Axis(uint32_t i, float v) { return i >= 0 && i < 3 ? std::format("{}: {:.3f}", AxisLabels[i], v) : ""; }
 constexpr std::string Axis(uint32_t i, vec3 v) { return Axis(i, v[i]); }
 constexpr std::string Translation(TransformAxis axis, vec3 v) {
@@ -291,18 +294,6 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, TransformTypeAxis o
     return res;
 }
 
-constexpr vec2 WorldToNdc(vec3 world, const mat4 &view_proj) {
-    return ToNdc(view_proj * vec4{world, 1}) * 0.5f + 0.5f; // [0,1]
-}
-constexpr ImVec2 NdcToScreen(vec2 ndc) {
-    // Flip y (ImGui’s origin is top-left), and scale to gizmo rect.
-    return g.ScreenRect.Min + ImVec2{ndc.x, 1.f - ndc.y} * g.ScreenRect.GetSize();
-}
-
-constexpr ImVec2 WorldToScreen(vec3 world, const mat4 &view_proj) {
-    return NdcToScreen(WorldToNdc(world, view_proj));
-}
-
 constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
     const auto vec = std::bit_cast<vec2>(s2 - s1);
     const auto v = glm::normalize(vec);
@@ -313,7 +304,7 @@ constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
 }
 
 std::optional<TransformTypeAxis> FindHoveredOp(const Model &model, TransformType type, ImVec2 mouse_pos, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
-    const auto center = WorldToScreen(vec3{0}, g.MVP);
+    const auto center = WorldToPx(vec3{0}, g.MVP);
     const auto mouse_r_sq = ImLengthSqr(mouse_pos - center);
     if (type == Rotate || type == Universal) {
         static constexpr float SelectDist = 8;
@@ -331,7 +322,7 @@ std::optional<TransformTypeAxis> FindHoveredOp(const Model &model, TransformType
             if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
 
             const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - p), 0};
-            const auto circle_pos = WorldToScreen(circle_pos_world * Style.RotationAxesCircleScale * g.WorldToSizeNdc, g.MVP);
+            const auto circle_pos = WorldToPx(circle_pos_world * Style.RotationAxesCircleScale * g.WorldToSizeNdc, g.MVP);
             if (ImLengthSqr(circle_pos - mouse_pos) < SelectDist * SelectDist) {
                 return TransformTypeAxis{Rotate, AxisOp(i)};
             }
@@ -348,8 +339,8 @@ std::optional<TransformTypeAxis> FindHoveredOp(const Model &model, TransformType
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
             const auto p = Pos(model.M);
-            const auto start = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNdc * Style.AxisHandleScale * Style.InnerCircleRadScale, view_proj) - screen_pos;
-            const auto end = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNdc * (Style.AxisHandleScale + Style.TranslationArrowScale), view_proj) - screen_pos;
+            const auto start = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * Style.AxisHandleScale * Style.InnerCircleRadScale, view_proj) - screen_pos;
+            const auto end = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * (Style.AxisHandleScale + Style.TranslationArrowScale), view_proj) - screen_pos;
             if (type != Translate && ImLengthSqr(end - mouse_pos_rel) <= half_arrow_px * half_arrow_px) {
                 return TransformTypeAxis{Scale, AxisOp(i)};
             }
@@ -360,7 +351,7 @@ std::optional<TransformTypeAxis> FindHoveredOp(const Model &model, TransformType
 
             if (type == Universal) {
                 const auto arrow_center_scale = Style.TranslationArrowUniversalPosScale + Style.TranslationArrowScale * 0.5f;
-                const auto translate_pos = WorldToScreen(vec4{p, 1} + dir * g.WorldToSizeNdc * arrow_center_scale, view_proj) - screen_pos;
+                const auto translate_pos = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * arrow_center_scale, view_proj) - screen_pos;
                 if (ImLengthSqr(translate_pos - mouse_pos_rel) < half_arrow_px * half_arrow_px) {
                     return TransformTypeAxis{Translate, AxisOp(i)};
                 }
@@ -429,12 +420,12 @@ constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
 
 void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 cam_origin) {
     auto &dl = *ImGui::GetWindowDrawList();
-    const auto p_px = WorldToScreen(vec3{0}, g.MVP);
+    const auto p_px = WorldToPx(vec3{0}, g.MVP);
     const auto p_ws = Pos(model.M);
     const auto p_start = Pos(g.RTStart);
     // Ghost circle
     if (g.Using && g.Active->Axis == Screen && (g.Active->Type == Translate || g.Active->Type == Scale)) {
-        const auto center = g.Using && g.Active->Type == Translate ? WorldToScreen(p_start, view_proj) : p_px;
+        const auto center = g.Using && g.Active->Type == Translate ? WorldToPx(p_start, view_proj) : p_px;
         dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), Color.StartGhost, 0, Style.CircleLineWidth);
     }
     // Inner circle
@@ -461,8 +452,8 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
         for (uint32_t i = 0; i < 3; ++i) {
             const bool is_type = g.Active == TransformTypeAxis{Translate, AxisOp(i)};
             if (!g.Using || is_type) {
-                const auto base = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
-                const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
+                const auto base = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
+                const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
                 const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
                 // Extend line a bit into the middle of the arrow, to avoid gaps between the the axis line and arrow base.
@@ -477,9 +468,9 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
 
                 const float scale = type == Universal ? Style.TranslationArrowUniversalPosScale : Style.AxisHandleScale;
                 const auto base_ws = p_ws + axis_dir_ws * (g.WorldToSizeNdc * scale);
-                const auto p_tip = WorldToScreen(base_ws + axis_dir_ws * arrow_len_ws, view_proj);
-                const auto p_b1 = WorldToScreen(base_ws + v_ws * arrow_rad_ws, view_proj);
-                const auto p_b2 = WorldToScreen(base_ws - v_ws * arrow_rad_ws, view_proj);
+                const auto p_tip = WorldToPx(base_ws + axis_dir_ws * arrow_len_ws, view_proj);
+                const auto p_b1 = WorldToPx(base_ws + v_ws * arrow_rad_ws, view_proj);
+                const auto p_b2 = WorldToPx(base_ws - v_ws * arrow_rad_ws, view_proj);
                 dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
 
                 // Ellipse at the base of the triangle.
@@ -487,7 +478,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 static ImVec2 ellipse_pts[EllipsePointCount];
 
                 const auto ellipse_base = (p_b1 + p_b2) * 0.5f;
-                const auto p_u = WorldToScreen(base_ws + u_ws * arrow_rad_ws, view_proj);
+                const auto p_u = WorldToPx(base_ws + u_ws * arrow_rad_ws, view_proj);
                 FastEllipse(std::span{ellipse_pts}, ellipse_base, p_u - ellipse_base, p_b1 - ellipse_base);
                 dl.AddConvexPolyFilled(ellipse_pts, EllipsePointCount, color);
             }
@@ -497,7 +488,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
 
                 const auto screen_pos = [&](vec2 s) {
                     const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + 0.5f;
-                    return WorldToScreen((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNdc, g.MVP);
+                    return WorldToPx((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNdc, g.MVP);
                 };
                 const auto p1{screen_pos({-1, -1})}, p2{screen_pos({-1, 1})}, p3{screen_pos({1, 1})}, p4{screen_pos({1, -1})};
                 const bool is_selected = g.Active && g.Active->Axis == TranslatePlanes[i];
@@ -573,7 +564,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
 
             // Project to pixels
             static ImVec2 hull[NumCorners];
-            for (uint8_t i = 0; i < n; ++i) hull[i] = WorldToScreen(P[loop_idx[i]], view_proj);
+            for (uint8_t i = 0; i < n; ++i) hull[i] = WorldToPx(P[loop_idx[i]], view_proj);
 
             // ImGui expects CW for outward AA
             float area2{0}; // Signed area * 2
@@ -588,9 +579,9 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
         for (uint32_t i = 0; i < 3; ++i) {
             const bool is_type = g.Active == TransformTypeAxis{Scale, AxisOp(i)};
             if (!g.Using || is_type) {
-                const auto base = g.Using ? p_px : WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
+                const auto base = g.Using ? p_px : WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
                 const float handle_scale = g.Using ? g.Scale[i] : 1.f;
-                const auto end = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale * handle_scale, g.MVP);
+                const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale * handle_scale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
                 const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
                 dl.AddLine(base, end, color, Style.AxisHandleLineWidth);
@@ -607,7 +598,7 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
 
                 if (g.Using) {
                     // Ghost
-                    const auto end0 = WorldToScreen(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
+                    const auto end0 = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
                     dl.AddLine(p_px, end0, colors::Axes[i + 3], Style.AxisHandleLineWidth);
                     const auto circle_px = ScaleToPx(Style.CircleRadScale);
                     dl.AddCircleFilled(p_px, circle_px, colors::Axes[i + 3]);
@@ -627,8 +618,8 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const auto u = glm::normalize(g.MouseRayStart(IntersectPlane(g.MouseRayStart, g.InteractionPlane)) - p_ws);
                 const auto v = glm::cross(vec3{g.InteractionPlane}, u);
                 const float r = g.WorldToSizeNdc * (g.Active->Axis == Screen ? (2 * Style.OuterCircleRadScale) : Style.RotationAxesCircleScale);
-                const auto u_screen = WorldToScreen(p_ws + u * r, view_proj) - p_px;
-                const auto v_screen = WorldToScreen(p_ws + v * r, view_proj) - p_px;
+                const auto u_screen = WorldToPx(p_ws + u * r, view_proj) - p_px;
+                const auto v_screen = WorldToPx(p_ws + v * r, view_proj) - p_px;
                 FastEllipse(std::span{CirclePositions}, p_px, u_screen, v_screen, g.RotationAngle >= 0);
             }
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
@@ -652,8 +643,8 @@ void Render(const Model &model, TransformType type, const mat4 &view_proj, vec3 
                 const vec4 axis_offset{-axis_start.y, axis_start.x, 0.f, 0.f};
                 const vec3 u_local{axis_start[axis], axis_start[(axis + 1) % 3], axis_start[(axis + 2) % 3]};
                 const vec3 v_local{axis_offset[axis], axis_offset[(axis + 1) % 3], axis_offset[(axis + 2) % 3]};
-                const auto u_screen = WorldToScreen(u_local * r, g.MVP) - p_px;
-                const auto v_screen = WorldToScreen(v_local * r, g.MVP) - p_px;
+                const auto u_screen = WorldToPx(u_local * r, g.MVP) - p_px;
+                const auto v_screen = WorldToPx(v_local * r, g.MVP) - p_px;
                 FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), p_px, u_screen, v_screen, true, 0.5f);
                 const auto color = SelectionColor(colors::Axes[2 - axis], g.Active == TransformTypeAxis{Rotate, AxisOp(2 - axis)});
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
@@ -680,7 +671,7 @@ bool Draw(Mode mode, TransformType type, vec2 pos, vec2 size, vec2 mouse_pos, ra
     const ray camera_ray{Pos(view_inv), Dir(view_inv)};
 
     // Compute scale from camera right vector projected onto screen at model position.
-    g.WorldToSizeNdc = Style.SizeNdc / glm::length(ToNdc(view_proj * vec4{Pos(model.RT) + vec3{Right(view_inv)}, 1}) - ToNdc(view_proj * vec4{Pos(model.RT), 1}));
+    g.WorldToSizeNdc = Style.SizeNdc / glm::length(ClipToNdc(view_proj * vec4{Pos(model.RT) + vec3{Right(view_inv)}, 1}) - ClipToNdc(view_proj * vec4{Pos(model.RT), 1}));
     const bool commit = g.Using && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
     if (commit) g.Using = false;
 
