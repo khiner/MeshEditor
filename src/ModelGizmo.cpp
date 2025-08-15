@@ -17,9 +17,8 @@
 #include <format>
 #include <optional>
 #include <span>
-#include <vector>
 
-namespace ModelGizmo {
+namespace {
 enum class InteractionAxis : uint8_t {
     AxisX = 1 << 0,
     AxisY = 1 << 1,
@@ -37,6 +36,8 @@ enum class TransformType : uint8_t {
     Scale,
 };
 
+using namespace ModelGizmo;
+
 TransformType ToTransformType(Type type) {
     switch (type) {
         case Type::Translate: return TransformType::Translate;
@@ -49,43 +50,40 @@ TransformType ToTransformType(Type type) {
     }
 }
 
+using enum InteractionAxis;
+
 // Specific hovered/active transform/axis.
 struct Interaction {
     TransformType Transform;
     InteractionAxis Axis;
-    // World-space plane where raycasts from the camera/mouse intersect.
-    // Used to convert 2D cursor motion into the gizmo's corresponding 3D translation, rotation, or scaling.
-    vec4 Plane{};
 
-    // Interactions don't have to have the same Plane to be considered equal.
     bool operator==(const Interaction &other) const {
         return other.Transform == Transform && other.Axis == Axis;
     }
 };
-} // namespace ModelGizmo
-
-namespace {
-using namespace ModelGizmo;
-using enum InteractionAxis;
 
 namespace state {
+// Context captured when mouse is pressed on a hovered transform.
+struct StartContext {
+    mat4 M; // Model matrix
+    vec4 PlaneWs; // Plane for the pressed transform
+    vec2 MousePx;
+    ray MouseRayWs;
+};
+
 struct Context {
     mat4 MVP;
-    mat4 MVPLocal; // Full MVP model, whereas MVP might only be translation in case of World space edition
-    mat4 MStart; // Initial model matrix at the start of an interaction
+
     ImRect ScreenRect{{0, 0}, {0, 0}};
 
     // World-space distance that projects to Style.SizeNdc, computed as:
     // Style.SizeNdc / (NDC-length of a world-space unit vector along the camera’s right direction, projected at the model’s origin)
     float WorldToSizeNdc;
 
-    float RotationAngle; // Relative to the start rotation
-    vec3 Scale; // Current scale of the gizmo
-    vec2 MousePxStart; // Mouse position in pixels at the start of the interaction
-    ray MouseRayStart; // Mouse ray at the start of the interaction
-
-    std::optional<Interaction> Interaction{}; // Hovered interaction, or active interaction if `Using` is true
-    bool Using{false};
+    std::optional<Interaction> Interaction; // If `Start` is present, active interaction. Otherwise, hovered interaction.
+    std::optional<StartContext> Start; // Captured at mouse press on hovered Interaction.
+    vec3 Scale; // Scale factor since start
+    float RotationAngle; // Relative to start rotation
 };
 
 // `Scale` members are relative to the gizmo size. To convert to screen-relative, multiply them by SizeNdc.
@@ -130,14 +128,14 @@ constexpr state::Color Color;
 } // namespace
 
 namespace ModelGizmo {
-bool IsUsing() { return g.Using; }
+bool IsUsing() { return g.Start.has_value(); }
 
 std::string_view ToString() {
     if (!g.Interaction) return "";
 
     using enum TransformType;
 
-    const auto [type, axis, _] = *g.Interaction;
+    const auto [type, axis] = *g.Interaction;
     if (type == Translate && axis == AxisX) return "TranslateX";
     if (type == Translate && axis == AxisY) return "TranslateY";
     if (type == Translate && axis == AxisZ) return "TranslateZ";
@@ -264,13 +262,16 @@ struct Model {
 mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interaction, vec2 mouse_pos, const ray &mouse_ray, std::optional<vec3> snap) {
     using enum TransformType;
 
+    assert(g.Start);
+
     const auto transform = interaction.Transform;
     const auto axis = interaction.Axis;
     const auto p = Pos(model.M);
-    const auto p_start_ws = Pos(g.MStart);
+    const auto p_start_ws = Pos(g.Start->M);
+    const auto &plane = g.Start->PlaneWs;
     if (transform == Translate) {
-        auto delta = mouse_ray(fabsf(IntersectPlane(mouse_ray, interaction.Plane))) -
-            (g.MouseRayStart(IntersectPlane(g.MouseRayStart, interaction.Plane)) - p_start_ws) - p;
+        auto delta = mouse_ray(fabsf(IntersectPlane(mouse_ray, plane))) -
+            (g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - p_start_ws) - p;
         // Single axis constraint
         if (axis == AxisX || axis == AxisY || axis == AxisZ) {
             const auto axis_i = AxisIndex(axis);
@@ -285,32 +286,33 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
     }
     if (transform == Scale) {
         if (axis == Screen) {
-            g.Scale = vec3{1 + (mouse_pos.x - g.MousePxStart.x) * 0.01f};
+            g.Scale = vec3{1 + (mouse_pos.x - g.Start->MousePx.x) * 0.01f};
         } else { // Single axis constraint
             const auto axis_i = AxisIndex(axis);
             const vec3 axis_value{model.RT[axis_i]};
-            const auto relative_origin = g.MouseRayStart(IntersectPlane(g.MouseRayStart, interaction.Plane)) - p_start_ws;
+            const auto relative_origin = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - p_start_ws;
             const auto p_ortho = Pos(model.RT);
             const auto base = relative_origin / g.WorldToSizeNdc - p_ortho;
-            const auto delta = axis_value * glm::dot(axis_value, mouse_ray(IntersectPlane(mouse_ray, interaction.Plane)) - relative_origin - p_ortho);
+            const auto delta = axis_value * glm::dot(axis_value, mouse_ray(IntersectPlane(mouse_ray, plane)) - relative_origin - p_ortho);
             g.Scale[axis_i] = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
         }
 
         if (snap) g.Scale = Snap(g.Scale, *snap);
         for (uint32_t i = 0; i < 3; ++i) g.Scale[i] = std::max(g.Scale[i], 0.001f);
 
-        const vec3 scale_start{glm::length(g.MStart[0]), glm::length(g.MStart[1]), glm::length(g.MStart[2])};
+        const auto &m_start = g.Start->M;
+        const vec3 scale_start{glm::length(m_start[0]), glm::length(m_start[1]), glm::length(m_start[2])};
         return model.RT * glm::scale(mat4{1}, g.Scale * scale_start);
     }
 
     // Rotation: Compute angle on plane relative to the rotation origin
-    const auto rotation_origin = glm::normalize(g.MouseRayStart(IntersectPlane(g.MouseRayStart, interaction.Plane)) - p_start_ws);
-    const auto perp = glm::cross(rotation_origin, vec3{interaction.Plane});
-    const auto pos_local = glm::normalize(mouse_ray(IntersectPlane(mouse_ray, interaction.Plane)) - p);
+    const auto rotation_origin = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - p_start_ws);
+    const auto perp = glm::cross(rotation_origin, vec3{plane});
+    const auto pos_local = glm::normalize(mouse_ray(IntersectPlane(mouse_ray, plane)) - p);
     float rotation_angle = acosf(glm::clamp(glm::dot(pos_local, rotation_origin), -1.f, 1.f)) * -glm::sign(glm::dot(pos_local, perp));
     if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
 
-    const vec3 rot_axis_local = glm::normalize(glm::mat3{model.Inv} * vec3{interaction.Plane}); // Assumes affine model
+    const vec3 rot_axis_local = glm::normalize(glm::mat3{model.Inv} * vec3{plane}); // Assumes affine model
     const mat4 rot_delta{glm::rotate(mat4{1}, rotation_angle - g.RotationAngle, rot_axis_local)};
     g.RotationAngle = rotation_angle;
 
@@ -334,7 +336,6 @@ constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
     return s1 + std::bit_cast<ImVec2>(v) * t;
 }
 
-// Returned interaction does not have `Plane` set. (That's done after the interaction is found.)
 std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type, ImVec2 mouse_pos, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
     using enum Type;
 
@@ -456,21 +457,20 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
     auto &dl = *ImGui::GetWindowDrawList();
     const auto p_px = WorldToPx(vec3{0}, g.MVP);
     const auto p_ws = Pos(model.M);
-    const auto p_start_ws = Pos(g.MStart);
     // Ghost circle
-    if (g.Using && g.Interaction->Axis == Screen && (g.Interaction->Transform == Translate || g.Interaction->Transform == Scale)) {
-        const auto center = g.Using && g.Interaction->Transform == Translate ? WorldToPx(p_start_ws, view_proj) : p_px;
+    if (g.Start && g.Interaction->Axis == Screen && (g.Interaction->Transform == Translate || g.Interaction->Transform == Scale)) {
+        const auto center = g.Interaction->Transform == Translate ? WorldToPx(Pos(g.Start->M), view_proj) : p_px;
         dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), Color.StartGhost, 0, Style.CircleLineWidth);
     }
     // Inner circle
-    if ((!g.Using && type != Type::Rotate) ||
-        (g.Using && (g.Interaction->Transform == Scale || (g.Interaction->Transform == Translate && g.Interaction->Axis == Screen)))) {
+    if ((!g.Start && type != Type::Rotate) ||
+        (g.Start && (g.Interaction->Transform == Scale || (g.Interaction->Transform == Translate && g.Interaction->Axis == Screen)))) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Axis == Screen);
-        const auto scale = g.Using && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
+        const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
         dl.AddCircle(p_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.CircleLineWidth);
     }
     // Outer circle
-    if (type != Type::Translate && (!g.Using || g.Interaction == Interaction{Rotate, Screen})) {
+    if (type != Type::Translate && (!g.Start || g.Interaction == Interaction{Rotate, Screen})) {
         dl.AddCircle(
             p_px,
             ScaleToPx(Style.OuterCircleRadScale),
@@ -486,7 +486,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
         const auto cam_dir_ws = glm::normalize(cam_origin - p_ws);
         for (uint32_t i = 0; i < 3; ++i) {
             const bool is_type = g.Interaction == Interaction{Translate, AxisOp(i)};
-            if (!g.Using || is_type) {
+            if (!g.Start || is_type) {
                 const auto base = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
                 const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
@@ -519,7 +519,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 FastEllipse(std::span{ellipse_pts}, ellipse_base, p_u - ellipse_base, p_b1 - ellipse_base);
                 dl.AddConvexPolyFilled(ellipse_pts, EllipsePointCount, color);
             }
-            if (!g.Using || g.Interaction->Axis == TranslatePlanes[i]) {
+            if (!g.Start || g.Interaction->Axis == TranslatePlanes[i]) {
                 const auto [dir_x, dir_y] = DirPlaneXY(i);
                 if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
@@ -532,8 +532,8 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 dl.AddQuad(p1, p2, p3, p4, SelectionColor(colors::Axes[i], is_selected), 1.f);
                 dl.AddQuadFilled(p1, p2, p3, p4, SelectionColor(colors::WithAlpha(colors::Axes[i], 0.5f), is_selected));
             }
-            if (g.Using && g.Interaction->Transform == Translate) {
-                Label(Format::Translation(g.Interaction->Axis, p_ws - p_start_ws), p_px);
+            if (g.Start && g.Interaction->Transform == Translate) {
+                Label(Format::Translation(g.Interaction->Axis, p_ws - Pos(g.Start->M)), p_px);
             }
         }
     }
@@ -615,9 +615,9 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
 
         for (uint32_t i = 0; i < 3; ++i) {
             const bool is_type = g.Interaction == Interaction{Scale, AxisOp(i)};
-            if (!g.Using || is_type) {
-                const auto base = g.Using ? p_px : WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
-                const float handle_scale = (g.Using ? g.Scale[i] : 1.f) * (type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale);
+            if (!g.Start || is_type) {
+                const auto base = g.Start ? p_px : WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
+                const float handle_scale = (g.Start ? g.Scale[i] : 1.f) * (type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale);
                 const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * handle_scale, g.MVP);
                 const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
                 const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
@@ -633,7 +633,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                     dl.AddConvexPolyFilled(poly_verts->data(), poly_verts->size(), color);
                 }
 
-                if (g.Using) {
+                if (g.Start) {
                     // Ghost
                     const auto end0 = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
                     dl.AddLine(p_px, end0, colors::Axes[i + 3], Style.AxisHandleLineWidth);
@@ -643,17 +643,17 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 }
             }
         }
-        if (g.Using && g.Interaction->Transform == Scale) {
+        if (g.Start && g.Interaction->Transform == Scale) {
             Label(Format::Scale(g.Interaction->Axis, g.Scale), p_px);
         }
     }
     if (type == Type::Rotate || type == Type::Universal) {
         static constexpr uint32_t HalfCircleSegmentCount{128}, FullCircleSegmentCount{HalfCircleSegmentCount * 2 + 1};
         static ImVec2 CirclePositions[FullCircleSegmentCount];
-        if (g.Using && g.Interaction->Transform == Rotate) {
+        if (g.Start && g.Interaction->Transform == Rotate) {
             {
-                const auto u = glm::normalize(g.MouseRayStart(IntersectPlane(g.MouseRayStart, g.Interaction->Plane)) - p_ws);
-                const auto v = glm::cross(vec3{g.Interaction->Plane}, u);
+                const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, g.Start->PlaneWs)) - p_ws);
+                const auto v = glm::cross(vec3{g.Start->PlaneWs}, u);
                 const float r = g.WorldToSizeNdc * (g.Interaction->Axis == Screen ? (2 * Style.OuterCircleRadScale) : Style.RotationAxesCircleScale);
                 const auto u_screen = WorldToPx(p_ws + u * r, view_proj) - p_px;
                 const auto v_screen = WorldToPx(p_ws + v * r, view_proj) - p_px;
@@ -670,7 +670,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             dl.AddLine(p_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
             dl.AddLine(p_px, CirclePositions[angle_i], color, Style.RotationLineWidth);
             Label(Format::Rotation(g.Interaction->Axis, g.RotationAngle), CirclePositions[1]);
-        } else if (!g.Using) {
+        } else if (!g.Start) {
             // Half-circles facing the camera
             const float r = g.WorldToSizeNdc * Style.RotationAxesCircleScale;
             const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(p_ws - cam_origin);
@@ -700,33 +700,25 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
     const Model model{m, mode};
     const mat4 view_proj = proj * view;
     g.MVP = view_proj * model.M;
-    g.MVPLocal = view_proj * model.RT;
     // Behind‐camera cull
-    if (!g.Using && g.MVP[3].z < 0.001f) return false;
+    if (!g.Start && g.MVP[3].z < 0.001f) return false;
 
     const auto view_inv = InverseRigid(view);
     const ray camera_ray{Pos(view_inv), Dir(view_inv)};
 
     // Compute scale from camera right vector projected onto screen at model position.
     g.WorldToSizeNdc = Style.SizeNdc / glm::length(ClipToNdc(view_proj * vec4{Pos(model.RT) + vec3{Right(view_inv)}, 1}) - ClipToNdc(view_proj * vec4{Pos(model.RT), 1}));
-    const bool commit = g.Using && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    if (commit) g.Using = false;
+    const bool commit = g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
-    if (g.Using) {
+    if (g.Start) {
         assert(g.Interaction);
         m = Transform(m, model, mode, *g.Interaction, mouse_px, mouse_ray_ws, snap);
+        if (commit) g.Start = {};
     } else {
         g.Interaction = std::nullopt;
         if (ImGui::IsWindowHovered()) {
             if (g.Interaction = FindHoveredInteraction(model, type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, view_proj);
                 g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                g.Using = true;
-                g.MStart = m;
-                g.MousePxStart = mouse_px;
-                g.MouseRayStart = mouse_ray_ws;
-                g.Scale = {1, 1, 1};
-                g.RotationAngle = 0;
-
                 const auto GetPlaneNormal = [&camera_ray, &model, mode](const Interaction &i) -> vec4 {
                     using enum TransformType;
                     if (i.Axis == Screen) return -vec4{camera_ray.d, 0};
@@ -740,12 +732,19 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
                     const auto v = glm::normalize(Pos(model.RT) - camera_ray.o);
                     return vec4{v - n * glm::dot(n, v), 0};
                 };
-                g.Interaction->Plane = BuildPlane(Pos(model.RT), GetPlaneNormal(*g.Interaction));
+                g.Start = state::StartContext{
+                    .M = m,
+                    .PlaneWs = BuildPlane(Pos(model.RT), GetPlaneNormal(*g.Interaction)),
+                    .MousePx = mouse_px,
+                    .MouseRayWs = mouse_ray_ws
+                };
+                g.Scale = {1, 1, 1};
+                g.RotationAngle = 0;
             }
         }
     }
 
     Render(model, type, view_proj, camera_ray.o);
-    return g.Using || commit;
+    return g.Start || commit;
 }
 } // namespace ModelGizmo
