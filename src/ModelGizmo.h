@@ -11,21 +11,20 @@
 #include <string_view>
 
 namespace ModelGizmo {
-enum class TransformType : uint8_t {
-    NoOp = 0,
+enum class Type : uint8_t {
     Translate,
     Rotate,
     Scale,
     Universal,
 };
 
-enum class Mode {
+enum class Mode : uint8_t {
     Local, // Align to object’s orientation
     World // Align to global axes (no rotation)
 };
 
-bool IsActive();
+bool IsUsing();
 std::string_view ToString();
 
-bool Draw(Mode, TransformType, vec2 pos, vec2 size, vec2 mouse_pos, ray mouse_ray, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap = std::nullopt);
+bool Draw(Mode, Type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap = std::nullopt);
 } // namespace ModelGizmo

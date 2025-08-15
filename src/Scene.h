@@ -265,7 +265,7 @@ private:
     mvk::UniqueBuffers CameraUBOBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteColorsBuffer;
 
     struct ModelGizmoState {
-        ModelGizmo::TransformType Op{ModelGizmo::TransformType::Translate};
+        ModelGizmo::Type Type{};
         bool Show{false};
         bool Snap; // Snap translate and scale gizmos.
         vec3 SnapValue{0.5f};

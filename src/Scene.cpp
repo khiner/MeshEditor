@@ -1004,7 +1004,7 @@ void Scene::RecordRenderCommandBuffer() {
     // Silhouette edge color (rendered ontop of meshes)
     if (render_silhouette) {
         const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
-        const uint32_t manipulating = ModelGizmo::IsActive();
+        const uint32_t manipulating = ModelGizmo::IsUsing();
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t), &manipulating);
         silhouette_edc.RenderQuad(cb);
     }
@@ -1223,7 +1223,7 @@ void Scene::Interact() {
         R.remove<ExcitedVertex>(active_entity);
         AccumulatedWrapMouseDelta = {0, 0};
     }
-    if (ModelGizmo::IsActive()) {
+    if (ModelGizmo::IsUsing()) {
         GImGui->MouseCursor = ImGuiMouseCursor_ResizeAll;
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
     }
@@ -1355,14 +1355,14 @@ void Scene::RenderGizmo() {
         const auto pos = window_pos + line_height;
         const auto mouse_pos = ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta;
         const auto mouse_pos_rel = (mouse_pos - pos) / size;
-        const auto pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
+        const auto mouse_pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
         const auto view = Camera.GetView();
         const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
-        const auto mouse_ray = ClipPosToWorldRay(glm::inverse(proj * view), pos_clip);
+        const auto mouse_ray = ClipPosToWorldRay(glm::inverse(proj * view), mouse_pos_clip);
         const auto active_entity = FindActiveEntity(R);
         if (auto model = R.get<Model>(active_entity).Transform;
             ModelGizmo::Draw(
-                ModelGizmo::Mode::Local, MGizmo.Op, pos, size, mouse_pos, mouse_ray, model, view, proj,
+                ModelGizmo::Mode::Local, MGizmo.Type, pos, size, mouse_pos, mouse_ray, model, view, proj,
                 MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt
             )) {
             // Decompose affine model matrix into pos, scale, and orientation.
@@ -1491,32 +1491,32 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (frozen) EndDisabled();
         if (model_changed) SetModel(active_entity, pos, rot, scale);
 
-        using ModelGizmo::TransformType;
+        using enum ModelGizmo::Type;
         const bool scale_enabled = !frozen;
-        if (!scale_enabled && MGizmo.Op == TransformType::Scale) MGizmo.Op = TransformType::Translate;
+        if (!scale_enabled && MGizmo.Type == Scale) MGizmo.Type = Translate;
 
         Checkbox("Gizmo", &MGizmo.Show);
         if (MGizmo.Show) {
+            if (ModelGizmo::IsUsing()) {
+                SameLine();
+                Text("Using");
+            }
             if (const auto label = ModelGizmo::ToString(); label != "") {
                 SameLine();
                 Text("Op: %s", label.data());
             }
-            if (ModelGizmo::IsActive()) {
-                SameLine();
-                Text("Active");
-            }
 
-            auto &op = MGizmo.Op;
-            if (IsKeyPressed(ImGuiKey_T)) op = TransformType::Translate;
-            if (IsKeyPressed(ImGuiKey_R)) op = TransformType::Rotate;
-            if (scale_enabled && IsKeyPressed(ImGuiKey_S)) op = TransformType::Scale;
-            if (RadioButton("Translate (T)", op == TransformType::Translate)) op = TransformType::Translate;
-            if (RadioButton("Rotate (R)", op == TransformType::Rotate)) op = TransformType::Rotate;
+            auto &type = MGizmo.Type;
+            if (IsKeyPressed(ImGuiKey_T)) type = Translate;
+            if (IsKeyPressed(ImGuiKey_R)) type = Rotate;
+            if (scale_enabled && IsKeyPressed(ImGuiKey_S)) type = Scale;
+            if (RadioButton("Translate (T)", type == Translate)) type = Translate;
+            if (RadioButton("Rotate (R)", type == Rotate)) type = Rotate;
             if (!scale_enabled) BeginDisabled();
             const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
-            if (RadioButton(label.c_str(), op == TransformType::Scale)) op = TransformType::Scale;
+            if (RadioButton(label.c_str(), type == Scale)) type = Scale;
             if (!scale_enabled) EndDisabled();
-            if (RadioButton("Universal", op == TransformType::Universal)) op = TransformType::Universal;
+            if (RadioButton("Universal", type == Universal)) type = Universal;
             Spacing();
             Checkbox("Snap", &MGizmo.Snap);
             if (MGizmo.Snap) {
