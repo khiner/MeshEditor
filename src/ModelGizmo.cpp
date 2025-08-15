@@ -69,6 +69,7 @@ struct StartContext {
     vec4 PlaneWs; // Plane for the pressed transform
     vec2 MousePx;
     ray MouseRayWs;
+    float WorldToSizeNdc;
 };
 
 struct Context {
@@ -116,7 +117,7 @@ struct Style {
 struct Color {
     ImU32 TranslationLine{IM_COL32(170, 170, 170, 170)};
     ImU32 ScaleLine{IM_COL32(64, 64, 64, 255)};
-    ImU32 StartGhost{IM_COL32(156, 156, 156, 200)};
+    ImU32 StartGhost{IM_COL32(160, 160, 160, 160)};
     ImU32 RotationFillActive{IM_COL32(255, 255, 255, 64)};
     ImU32 Text{IM_COL32(255, 255, 255, 255)}, TextShadow{IM_COL32(0, 0, 0, 255)};
 };
@@ -481,62 +482,59 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
     }
 
     if (type == Type::Translate || type == Type::Universal) {
-        const float arrow_len_ws = Style.TranslationArrowScale * g.WorldToSizeNdc;
-        const float arrow_rad_ws = Style.TranslationArrowRadScale * g.WorldToSizeNdc;
-        const auto cam_dir_ws = glm::normalize(cam_origin - p_ws);
+        // Circle + line + cone silhouette
+        const auto DrawTranslateHandle = [&model, &view_proj, &dl, &cam_origin](
+                                             bool is_active, bool ghost, uint32_t axis_i, float end_scale,
+                                             bool draw_center_circle, bool draw_line
+                                         ) {
+            const auto &m = ghost ? g.Start->M : model.M;
+            const auto o_ws = Pos(m);
+            const auto o_px = WorldToPx(o_ws, view_proj);
+            const auto w2s = ghost ? g.Start->WorldToSizeNdc : g.WorldToSizeNdc;
+            const auto axis_dir_ws = glm::normalize(vec3{m[axis_i]});
+            const auto arrow_base_ws = o_ws + axis_dir_ws * w2s * end_scale;
+            const auto arrow_base_px = WorldToPx(arrow_base_ws, view_proj);
+            const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(arrow_base_px - o_px));
+            const auto color = ghost ? Color.StartGhost : SelectionColor(colors::WithAlpha(colors::Axes[axis_i], axis_alpha), is_active);
+            if (draw_line) {
+                const float line_base_scale = g.Start ? Style.CircleRadScale : Style.InnerCircleRadScale;
+                const auto line_start_ws = o_ws + axis_dir_ws * w2s * line_base_scale;
+                dl.AddLine(WorldToPx(line_start_ws, view_proj), arrow_base_px, color, Style.AxisHandleLineWidth);
+            }
+            if (draw_center_circle) dl.AddCircleFilled(o_px, ScaleToPx(Style.CircleRadScale), color);
+
+            // Arrow cone silhouette (triangle + ellipse)
+
+            const auto u_ws = glm::normalize((cam_origin - arrow_base_ws) - glm::dot(cam_origin - arrow_base_ws, axis_dir_ws) * axis_dir_ws);
+            const auto v_ws = glm::cross(axis_dir_ws, u_ws);
+            const auto p_tip = WorldToPx(arrow_base_ws + axis_dir_ws * Style.TranslationArrowScale * w2s, view_proj);
+            const auto p_b1 = WorldToPx(arrow_base_ws + v_ws * Style.TranslationArrowRadScale * w2s, view_proj);
+            const auto p_b2 = WorldToPx(arrow_base_ws - v_ws * Style.TranslationArrowRadScale * w2s, view_proj);
+            dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
+
+            static constexpr uint32_t EllipsePointCount{16};
+            static ImVec2 EllipsePoints[EllipsePointCount];
+            const auto c = (p_b1 + p_b2) * 0.5f;
+            const auto p_u = WorldToPx(arrow_base_ws + u_ws * (Style.TranslationArrowRadScale * w2s), view_proj);
+            FastEllipse(EllipsePoints, c, p_u - c, p_b1 - c);
+            dl.AddConvexPolyFilled(EllipsePoints, EllipsePointCount, color);
+        };
+
+        const float end_scale = type == Type::Universal ? Style.TranslationArrowUniversalPosScale : Style.AxisHandleScale;
         for (uint32_t i = 0; i < 3; ++i) {
-            const bool is_type = g.Interaction == Interaction{Translate, AxisOp(i)};
-            if (!g.Start || is_type) {
-                const auto base = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
-                const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
-                const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
-                const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
-                // Extend line a bit into the middle of the arrow, to avoid gaps between the the axis line and arrow base.
-                if (type != Type::Universal) {
-                    dl.AddLine(base, end, color, Style.AxisHandleLineWidth + arrow_len_ws * 0.5f);
-                }
-
-                // Draw translation arrows as cone silhouettes:
-
-                // Billboard triangle facing the camera, with the middle of the triangle at the end of the axis line.
-                const auto axis_dir_ws = vec3{model.RT[i]};
-                const auto u_ws = glm::normalize(cam_dir_ws - glm::dot(cam_dir_ws, axis_dir_ws) * axis_dir_ws);
-                const auto v_ws = glm::cross(axis_dir_ws, u_ws);
-
-                const float scale = type == Type::Universal ? Style.TranslationArrowUniversalPosScale : Style.AxisHandleScale;
-                const auto base_ws = p_ws + axis_dir_ws * (g.WorldToSizeNdc * scale);
-                const auto p_tip = WorldToPx(base_ws + axis_dir_ws * arrow_len_ws, view_proj);
-                const auto p_b1 = WorldToPx(base_ws + v_ws * arrow_rad_ws, view_proj);
-                const auto p_b2 = WorldToPx(base_ws - v_ws * arrow_rad_ws, view_proj);
-                dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
-
-                // Ellipse at the base of the triangle.
-                static constexpr uint32_t EllipsePointCount{16};
-                static ImVec2 ellipse_pts[EllipsePointCount];
-
-                const auto ellipse_base = (p_b1 + p_b2) * 0.5f;
-                const auto p_u = WorldToPx(base_ws + u_ws * arrow_rad_ws, view_proj);
-                FastEllipse(std::span{ellipse_pts}, ellipse_base, p_u - ellipse_base, p_b1 - ellipse_base);
-                dl.AddConvexPolyFilled(ellipse_pts, EllipsePointCount, color);
+            const bool is_active = g.Interaction == Interaction{Translate, AxisOp(i)};
+            if (!g.Start || is_active) {
+                DrawTranslateHandle(is_active, false, i, end_scale, bool(g.Start), type != Type::Universal || g.Start);
             }
-            if (!g.Start || g.Interaction->Axis == TranslatePlanes[i]) {
-                const auto [dir_x, dir_y] = DirPlaneXY(i);
-                if (!IsPlaneVisible(dir_x, dir_y)) continue;
-
-                const auto screen_pos = [&](vec2 s) {
-                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + 0.5f;
-                    return WorldToPx((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNdc, g.MVP);
-                };
-                const auto p1{screen_pos({-1, -1})}, p2{screen_pos({-1, 1})}, p3{screen_pos({1, 1})}, p4{screen_pos({1, -1})};
-                const bool is_selected = g.Interaction && g.Interaction->Axis == TranslatePlanes[i];
-                dl.AddQuad(p1, p2, p3, p4, SelectionColor(colors::Axes[i], is_selected), 1.f);
-                dl.AddQuadFilled(p1, p2, p3, p4, SelectionColor(colors::WithAlpha(colors::Axes[i], 0.5f), is_selected));
-            }
-            if (g.Start && g.Interaction->Transform == Translate) {
-                Label(Format::Translation(g.Interaction->Axis, p_ws - Pos(g.Start->M)), p_px);
+            if (g.Start && is_active) {
+                DrawTranslateHandle(is_active, true, i, end_scale, true, true);
             }
         }
+        if (g.Start && g.Interaction->Transform == Translate) {
+            Label(Format::Translation(g.Interaction->Axis, p_ws - Pos(g.Start->M)), p_px);
+        }
     }
+
     if (type == Type::Scale || type == Type::Universal) {
         // Compute the polygon vertices for a cube silhouette, for scale handles
         const auto CubeHandlePolyVerts = [&view_proj, &cam_origin](vec3 end_ws, vec3 axis_dir_ws, vec3 u_axis_ws, vec3 v_axis_ws)
@@ -657,7 +655,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 const float r = g.WorldToSizeNdc * (g.Interaction->Axis == Screen ? (2 * Style.OuterCircleRadScale) : Style.RotationAxesCircleScale);
                 const auto u_screen = WorldToPx(p_ws + u * r, view_proj) - p_px;
                 const auto v_screen = WorldToPx(p_ws + v * r, view_proj) - p_px;
-                FastEllipse(std::span{CirclePositions}, p_px, u_screen, v_screen, g.RotationAngle >= 0);
+                FastEllipse(CirclePositions, p_px, u_screen, v_screen, g.RotationAngle >= 0);
             }
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
             const auto angle_circle_pos = CirclePositions[angle_i + 1]; // save
@@ -736,7 +734,8 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
                     .M = m,
                     .PlaneWs = BuildPlane(Pos(model.RT), GetPlaneNormal(*g.Interaction)),
                     .MousePx = mouse_px,
-                    .MouseRayWs = mouse_ray_ws
+                    .MouseRayWs = mouse_ray_ws,
+                    .WorldToSizeNdc = g.WorldToSizeNdc
                 };
                 g.Scale = {1, 1, 1};
                 g.RotationAngle = 0;
