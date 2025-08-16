@@ -673,47 +673,45 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
 
     const auto view_inv = InverseRigid(view);
     const ray camera_ray{Pos(view_inv), Dir(view_inv)};
-
     // Compute scale from camera right vector projected onto screen at model position.
     g.WorldToSizeNdc = Style.SizeNdc / glm::length(ClipToNdc(view_proj * vec4{Pos(model.RT) + vec3{Right(view_inv)}, 1}) - ClipToNdc(view_proj * vec4{Pos(model.RT), 1}));
-    const bool commit = g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    if (g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        g.Start = {};
+        g.Interaction = {};
+    }
 
     if (g.Start) {
         assert(g.Interaction);
         m = Transform(m, model, mode, *g.Interaction, mouse_px, mouse_ray_ws, snap);
-        if (commit) g.Start = {};
-    } else {
-        g.Interaction = std::nullopt;
-        if (ImGui::IsWindowHovered()) {
-            if (g.Interaction = FindHoveredInteraction(model, type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, view_proj);
-                g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                const auto GetPlaneNormal = [&camera_ray, &model, mode](const Interaction &i) -> vec4 {
-                    using enum TransformType;
-                    if (i.Axis == Screen) return -vec4{camera_ray.d, 0};
-                    if (auto plane_index = TranslatePlaneIndex(i.Axis)) return model.M[*plane_index];
+    } else if (ImGui::IsWindowHovered()) {
+        if (g.Interaction = FindHoveredInteraction(model, type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, view_proj);
+            g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            const auto GetPlaneNormal = [&camera_ray, &model, mode](const Interaction &i) -> vec4 {
+                using enum TransformType;
+                if (i.Axis == Screen) return -vec4{camera_ray.d, 0};
+                if (auto plane_index = TranslatePlaneIndex(i.Axis)) return model.M[*plane_index];
 
-                    const auto index = AxisIndex(i.Axis);
-                    if (i.Transform == Scale) return model.M[(index + 1) % 3];
-                    if (i.Transform == Rotate) return mode == Mode::Local ? model.M[index] : vec4{Axes[index], 0};
+                const auto index = AxisIndex(i.Axis);
+                if (i.Transform == Scale) return model.M[(index + 1) % 3];
+                if (i.Transform == Rotate) return mode == Mode::Local ? model.M[index] : vec4{Axes[index], 0};
 
-                    const auto n = vec3{model.M[index]};
-                    const auto v = glm::normalize(Pos(model.RT) - camera_ray.o);
-                    return vec4{v - n * glm::dot(n, v), 0};
-                };
-                g.Start = state::StartContext{
-                    .M = m,
-                    .PlaneWs = BuildPlane(Pos(model.RT), GetPlaneNormal(*g.Interaction)),
-                    .MousePx = mouse_px,
-                    .MouseRayWs = mouse_ray_ws,
-                    .WorldToSizeNdc = g.WorldToSizeNdc
-                };
-                g.Scale = {1, 1, 1};
-                g.RotationAngle = 0;
-            }
+                const auto n = vec3{model.M[index]};
+                const auto v = glm::normalize(Pos(model.RT) - camera_ray.o);
+                return vec4{v - n * glm::dot(n, v), 0};
+            };
+            g.Start = state::StartContext{
+                .M = m,
+                .PlaneWs = BuildPlane(Pos(model.RT), GetPlaneNormal(*g.Interaction)),
+                .MousePx = mouse_px,
+                .MouseRayWs = mouse_ray_ws,
+                .WorldToSizeNdc = g.WorldToSizeNdc
+            };
+            g.Scale = {1, 1, 1};
+            g.RotationAngle = 0;
         }
     }
 
     Render(model, type, view_proj, camera_ray.o);
-    return g.Start || commit;
+    return bool(g.Start);
 }
 } // namespace ModelGizmo
