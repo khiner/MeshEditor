@@ -465,7 +465,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
     }
     // Inner circle
     if ((!g.Start && type != Type::Rotate) ||
-        (g.Start && (g.Interaction->Transform == Scale || (g.Interaction->Transform == Translate && g.Interaction->Axis == Screen)))) {
+        (g.Start && ((g.Interaction->Transform == Translate || g.Interaction->Transform == Scale) && g.Interaction->Axis == Screen))) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Axis == Screen);
         const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
         dl.AddCircle(p_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.CircleLineWidth);
@@ -483,10 +483,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
 
     if (type == Type::Translate || type == Type::Universal) {
         // Circle + line + cone silhouette
-        const auto DrawTranslateHandle = [&model, &view_proj, &dl, &cam_origin](
-                                             bool is_active, bool ghost, uint32_t axis_i, float end_scale,
-                                             bool draw_center_circle, bool draw_line
-                                         ) {
+        const auto DrawTranslateHandle = [&](bool is_active, bool ghost, uint32_t axis_i, float end_scale, bool draw_center_circle, bool draw_line) {
             const auto &m = ghost ? g.Start->M : model.M;
             const auto o_ws = Pos(m);
             const auto o_px = WorldToPx(o_ws, view_proj);
@@ -525,9 +522,8 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             const bool is_active = g.Interaction == Interaction{Translate, AxisOp(i)};
             if (!g.Start || is_active) {
                 DrawTranslateHandle(is_active, false, i, end_scale, bool(g.Start), type != Type::Universal || g.Start);
-            }
-            if (g.Start && is_active) {
-                DrawTranslateHandle(is_active, true, i, end_scale, true, true);
+                // Start-ghost
+                if (g.Start) DrawTranslateHandle(is_active, true, i, end_scale, true, true);
             }
         }
         if (g.Start && g.Interaction->Transform == Translate) {
@@ -536,12 +532,33 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
     }
 
     if (type == Type::Scale || type == Type::Universal) {
-        // Compute the polygon vertices for a cube silhouette, for scale handles
-        const auto CubeHandlePolyVerts = [&view_proj, &cam_origin](vec3 end_ws, vec3 axis_dir_ws, vec3 u_axis_ws, vec3 v_axis_ws)
-            -> std::optional<std::span<const ImVec2>> {
-            const float half_ws = Style.CubeHalfExtentScale * g.WorldToSizeNdc;
-            const vec3 A = axis_dir_ws * half_ws, U = u_axis_ws * half_ws, V = v_axis_ws * half_ws;
-            const vec3 C = end_ws + A; // Inner (−A) face touches the endpoint
+        auto &dl = *ImGui::GetWindowDrawList();
+
+        // Draws the scale axis, line, and cube silhouette at its tip.
+        const auto DrawScaleHandle = [&](bool is_active, bool ghost, uint32_t axis_i, float handle_scale, bool draw_center_circle) {
+            // Choose state (current vs start snapshot)
+            const auto &m = ghost ? g.Start->M : model.M;
+            const auto w2s = ghost ? g.Start->WorldToSizeNdc : g.WorldToSizeNdc;
+            const auto o_ws = Pos(m);
+            const auto o_px = WorldToPx(o_ws, view_proj);
+            // Stable axis basis from the chosen matrix
+            const auto axis_dir_ws = glm::normalize(vec3{m[axis_i]});
+            const auto u_ws = glm::normalize(vec3{m[(axis_i + 1) % 3]});
+            const auto v_ws = glm::normalize(vec3{m[(axis_i + 2) % 3]});
+            // End tip and (optional) line start
+            const auto end_tip_ws = o_ws + axis_dir_ws * (w2s * handle_scale);
+            const auto end_px = WorldToPx(end_tip_ws, view_proj);
+            const auto color = ghost ? Color.StartGhost : SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistPxSq(ImLengthSqr(end_px - p_px))), is_active);
+            // Line
+            const float line_base_scale = g.Start ? Style.CircleRadScale : Style.InnerCircleRadScale;
+            const auto line_start_ws = o_ws + axis_dir_ws * w2s * line_base_scale;
+            dl.AddLine(WorldToPx(line_start_ws, view_proj), end_px, color, Style.AxisHandleLineWidth);
+
+            if (draw_center_circle) dl.AddCircleFilled(o_px, ScaleToPx(Style.CircleRadScale), color);
+
+            const float half_ws = Style.CubeHalfExtentScale * w2s;
+            const vec3 A = axis_dir_ws * half_ws, U = u_ws * half_ws, V = v_ws * half_ws;
+            const vec3 C = end_tip_ws + A; // inner (−A) face touches the endpoint
 
             static constexpr uint8_t NumCorners{8};
             vec3 P[NumCorners]; // (bits: x=U, y=V, z=A)
@@ -549,37 +566,34 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 P[i] = C + ((i & 1) ? U : -U) + ((i & 2) ? V : -V) + ((i & 4) ? A : -A);
             }
 
-            // Adjacency: each vertex has degree <= 3
+            // Build adjacency for the visible silhouette (single cycle)
             uint8_t deg[NumCorners]{0};
             uint8_t adj[NumCorners][3];
-            // Add an undirected edge between two vertices
             const auto link = [&adj, &deg](uint8_t a, uint8_t b) {
                 adj[a][deg[a]++] = b;
                 adj[b][deg[b]++] = a;
             };
 
-            // View direction from center
-            const auto view_dir = glm::normalize(cam_origin - C);
-            const bool sU = glm::dot(u_axis_ws, view_dir) < 0;
-            const bool sV = glm::dot(v_axis_ws, view_dir) < 0;
+            const vec3 view_dir = glm::normalize(cam_origin - C);
+            const bool sU = glm::dot(u_ws, view_dir) < 0;
+            const bool sV = glm::dot(v_ws, view_dir) < 0;
             const bool sA = glm::dot(axis_dir_ws, view_dir) < 0;
+
             for (uint8_t i = 0; i < NumCorners; ++i) {
                 const bool bU = i & 1, bV = i & 2, bA = i & 4;
-                int j = i ^ 1; // Along U (flip bit 0) → faces ±V, ±A
-                if (i < j && ((bV ^ bA) ^ (sV ^ sA))) link(i, j);
-                j = i ^ 2; // Along V (flip bit 1) → faces ±U, ±A
-                if (i < j && ((bU ^ bA) ^ (sU ^ sA))) link(i, j);
-                j = i ^ 4; // Along A (flip bit 2) → faces ±U, ±V
-                if (i < j && ((bU ^ bV) ^ (sU ^ sV))) link(i, j);
+                int j = i ^ 1;
+                if (i < j && ((bV ^ bA) ^ (sV ^ sA))) link(i, j); // along U
+                j = i ^ 2;
+                if (i < j && ((bU ^ bA) ^ (sU ^ sA))) link(i, j); // along V
+                j = i ^ 4;
+                if (i < j && ((bU ^ bV) ^ (sU ^ sV))) link(i, j); // along A
             }
 
-            // Find a start vertex with a non-zero degree
             const uint8_t start = std::ranges::find_if_not(deg, [](auto d) { return d == 0; }) - std::begin(deg);
-            if (start == NumCorners) return std::nullopt; // fully backfacing/degenerate
+            if (start == NumCorners) return; // fully backfacing/degenerate
 
-            // Walk the single cycle (<= 6 verts)
-            uint8_t loop_idx[NumCorners];
-            uint8_t n = 0; // Number of vertices in the loop
+            // Walk the polygon loop
+            uint8_t loop_idx[NumCorners], n = 0;
             uint8_t cur = start;
             std::optional<uint8_t> prev;
             do {
@@ -591,54 +605,32 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                         break;
                     }
                 }
-                if (!next) return std::nullopt;
+                if (!next) return; // shouldn't happen - safety
                 prev = cur;
                 cur = *next;
             } while (cur != start && n < NumCorners);
-            if (n < 3) return std::nullopt;
+            if (n < 3) return;
 
-            // Project to pixels
+            // Project to pixels and fill
             static ImVec2 hull[NumCorners];
             for (uint8_t i = 0; i < n; ++i) hull[i] = WorldToPx(P[loop_idx[i]], view_proj);
 
-            // ImGui expects CW for outward AA
-            float area2{0}; // Signed area * 2
-            for (uint8_t i = 0, j = n - 1; i < n; j = i++) {
-                area2 += hull[j].x * hull[i].y - hull[i].x * hull[j].y;
-            }
+            // Ensure CW winding for outward AA in ImGui
+            float area2{0};
+            for (uint8_t i = 0, j = n - 1; i < n; j = i++) area2 += hull[j].x * hull[i].y - hull[i].x * hull[j].y;
             if (area2 < 0) std::reverse(hull, hull + n);
 
-            return std::span{hull}.first(n);
+            dl.AddConvexPolyFilled(hull, n, color);
         };
 
+        const float base_scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
         for (uint32_t i = 0; i < 3; ++i) {
-            const bool is_type = g.Interaction == Interaction{Scale, AxisOp(i)};
-            if (!g.Start || is_type) {
-                const auto base = g.Start ? p_px : WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.InnerCircleRadScale, g.MVP);
-                const float handle_scale = (g.Start ? g.Scale[i] : 1.f) * (type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale);
-                const auto end = WorldToPx(Axes[i] * g.WorldToSizeNdc * handle_scale, g.MVP);
-                const auto axis_alpha = AxisAlphaForDistPxSq(ImLengthSqr(end - p_px));
-                const auto color = SelectionColor(colors::WithAlpha(colors::Axes[i], axis_alpha), is_type);
-                dl.AddLine(base, end, color, Style.AxisHandleLineWidth);
-
-                // Basis
-                const vec3 axis_dir_ws = glm::normalize(vec3{model.RT[i]});
-                const vec3 u_ws = glm::normalize(vec3{model.RT[(i + 1) % 3]});
-                const vec3 v_ws = glm::normalize(vec3{model.RT[(i + 2) % 3]});
-                // World-space end position of the line
-                const vec3 end_tip_ws = Pos(model.M) + axis_dir_ws * g.WorldToSizeNdc * handle_scale;
-                if (auto poly_verts = CubeHandlePolyVerts(end_tip_ws, axis_dir_ws, u_ws, v_ws)) {
-                    dl.AddConvexPolyFilled(poly_verts->data(), poly_verts->size(), color);
-                }
-
-                if (g.Start) {
-                    // Ghost
-                    const auto end0 = WorldToPx(Axes[i] * g.WorldToSizeNdc * Style.AxisHandleScale, g.MVP);
-                    dl.AddLine(p_px, end0, colors::Axes[i + 3], Style.AxisHandleLineWidth);
-                    const auto circle_px = ScaleToPx(Style.CircleRadScale);
-                    dl.AddCircleFilled(p_px, circle_px, colors::Axes[i + 3]);
-                    dl.AddCircleFilled(end0, circle_px, Color.StartGhost);
-                }
+            const bool is_active = g.Interaction == Interaction{Scale, AxisOp(i)};
+            if (!g.Start || is_active) {
+                const float handle_scale = base_scale * (g.Start ? g.Scale[i] : 1.0f);
+                DrawScaleHandle(is_active, false, i, handle_scale, bool(g.Start));
+                // Start-ghost
+                if (g.Start) DrawScaleHandle(is_active, true, i, base_scale, true);
             }
         }
         if (g.Start && g.Interaction->Transform == Scale) {
