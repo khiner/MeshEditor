@@ -160,6 +160,7 @@ namespace {
 constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
 constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
+constexpr vec3 GetScale(const mat4 &m) { return {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])}; }
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 
@@ -265,41 +266,41 @@ struct Model {
     const mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
 };
 
-mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interaction, vec2 mouse_pos, const ray &mouse_ray, std::optional<vec3> snap) {
+mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interaction, vec2 mouse_px, const ray &mouse_ray, std::optional<vec3> snap) {
     using enum TransformType;
 
     assert(g.Start);
 
     const auto transform = interaction.Transform;
     const auto axis = interaction.Axis;
-    const auto p = Pos(model.M);
-    const auto p_start_ws = Pos(g.Start->M);
+    const auto o_ws = Pos(model.M);
+    const auto o_start_ws = Pos(g.Start->M);
     const auto &plane = g.Start->PlaneWs;
     if (transform == Translate) {
         auto delta = mouse_ray(fabsf(IntersectPlane(mouse_ray, plane))) -
-            (g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - p_start_ws) - p;
+            (g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_start_ws) - o_ws;
         // Single axis constraint
         if (axis == AxisX || axis == AxisY || axis == AxisZ) {
             const auto axis_i = AxisIndex(axis);
             delta = model.M[axis_i] * glm::dot(model.M[axis_i], vec4{delta, 0});
         }
         if (snap) {
-            const vec4 d{p + delta - p_start_ws, 0};
+            const vec4 d{o_ws + delta - o_start_ws, 0};
             const vec3 delta_cumulative = mode == Mode::Local || axis == Screen ? m * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
-            delta = p_start_ws + delta_cumulative - p;
+            delta = o_start_ws + delta_cumulative - o_ws;
         }
         return glm::translate(mat4{1}, delta) * m;
     }
     if (transform == Scale) {
         if (axis == Screen) {
-            g.Scale = vec3{1 + (mouse_pos.x - g.Start->MousePx.x) * 0.01f};
+            const auto o_px = std::bit_cast<vec2>(WorldToPx(o_ws, g.MVP));
+            g.Scale = vec3{glm::distance(mouse_px, o_px) / glm::distance(g.Start->MousePx, o_px)};
         } else { // Single axis constraint
             const auto axis_i = AxisIndex(axis);
             const vec3 axis_value{model.RT[axis_i]};
-            const auto relative_origin = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - p_start_ws;
-            const auto p_ortho = Pos(model.RT);
-            const auto base = relative_origin / g.WorldToSizeNdc - p_ortho;
-            const auto delta = axis_value * glm::dot(axis_value, mouse_ray(IntersectPlane(mouse_ray, plane)) - relative_origin - p_ortho);
+            const auto relative_origin = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_start_ws;
+            const auto base = relative_origin / g.WorldToSizeNdc - o_ws;
+            const auto delta = axis_value * glm::dot(axis_value, mouse_ray(IntersectPlane(mouse_ray, plane)) - relative_origin - o_ws);
             g.Scale[axis_i] = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
         }
 
@@ -307,25 +308,20 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
         for (uint32_t i = 0; i < 3; ++i) g.Scale[i] = std::max(g.Scale[i], 0.001f);
 
         const auto &m_start = g.Start->M;
-        const vec3 scale_start{glm::length(m_start[0]), glm::length(m_start[1]), glm::length(m_start[2])};
-        return model.RT * glm::scale(mat4{1}, g.Scale * scale_start);
+        return model.RT * glm::scale(mat4{1}, g.Scale * GetScale(m_start));
     }
 
     // Rotation: Compute angle on plane relative to the rotation origin
-    const auto rotation_origin = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - p_start_ws);
+    const auto rotation_origin = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_start_ws);
     const auto perp = glm::cross(rotation_origin, vec3{plane});
-    const auto pos_local = glm::normalize(mouse_ray(IntersectPlane(mouse_ray, plane)) - p);
+    const auto pos_local = glm::normalize(mouse_ray(IntersectPlane(mouse_ray, plane)) - o_ws);
     float rotation_angle = acosf(glm::clamp(glm::dot(pos_local, rotation_origin), -1.f, 1.f)) * -glm::sign(glm::dot(pos_local, perp));
     if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
 
     const vec3 rot_axis_local = glm::normalize(glm::mat3{model.Inv} * vec3{plane}); // Assumes affine model
     const mat4 rot_delta{glm::rotate(mat4{1}, rotation_angle - g.RotationAngle, rot_axis_local)};
     g.RotationAngle = rotation_angle;
-
-    if (mode == Mode::Local) {
-        const vec3 model_scale{glm::length(m[0]), glm::length(m[1]), glm::length(m[2])};
-        return model.RT * rot_delta * glm::scale(mat4{1}, model_scale);
-    }
+    if (mode == Mode::Local) return model.RT * rot_delta * glm::scale(mat4{1}, GetScale(m));
 
     // Apply rotation, preserving translation
     auto res = rot_delta * mat4{mat3{m}};
@@ -342,11 +338,11 @@ constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
     return s1 + std::bit_cast<ImVec2>(v) * t;
 }
 
-std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type, ImVec2 mouse_pos, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
+std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type, ImVec2 mouse_px, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
     using enum Type;
 
     const auto center = WorldToPx(vec3{0}, g.MVP);
-    const auto mouse_r_sq = ImLengthSqr(mouse_pos - center);
+    const auto mouse_r_sq = ImLengthSqr(mouse_px - center);
     if (type == Rotate || type == Universal) {
         static constexpr float SelectDist = 8;
         const auto rotation_radius = ScaleToPx(Style.OuterCircleRadScale);
@@ -355,16 +351,16 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             return Interaction{ToTransformType(Rotate), Screen};
         }
 
-        const auto p = Pos(model.M);
-        const auto mv_pos = view * vec4{p, 1};
+        const auto o_ws = Pos(model.M);
+        const auto mv_pos = view * vec4{o_ws, 1};
         for (uint32_t i = 0; i < 3; ++i) {
-            const auto intersect_pos_world = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(p, model.M[i])));
+            const auto intersect_pos_world = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, model.M[i])));
             const auto intersect_pos = view * vec4{vec3{intersect_pos_world}, 1};
             if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
 
-            const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - p), 0};
+            const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - o_ws), 0};
             const auto circle_pos = WorldToPx(circle_pos_world * Style.RotationAxesCircleScale * g.WorldToSizeNdc, g.MVP);
-            if (ImLengthSqr(circle_pos - mouse_pos) < SelectDist * SelectDist) {
+            if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
                 return Interaction{ToTransformType(Rotate), AxisOp(i)};
             }
         }
@@ -375,23 +371,23 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             return Interaction{ToTransformType(Translate), Screen};
         }
 
+        const auto o_ws = Pos(model.M);
         const auto half_arrow_px = ScaleToPx(Style.TranslationArrowScale) * 0.5f;
-        const auto screen_pos = g.ScreenRect.Min, mouse_pos_rel{mouse_pos - screen_pos};
+        const auto screen_min_px = g.ScreenRect.Min, mouse_rel_px{mouse_px - screen_min_px};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
-            const auto p = Pos(model.M);
             const auto scale = type == Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
-            const auto start = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * scale * Style.InnerCircleRadScale, view_proj) - screen_pos;
-            const auto end = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * (scale + Style.TranslationArrowScale), view_proj) - screen_pos;
-            if (ImLengthSqr(PointOnSegment(mouse_pos_rel, start, end) - mouse_pos_rel) < half_arrow_px * half_arrow_px) {
+            const auto start = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * scale * Style.InnerCircleRadScale, view_proj) - screen_min_px;
+            const auto end = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * (scale + Style.TranslationArrowScale), view_proj) - screen_min_px;
+            if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < half_arrow_px * half_arrow_px) {
                 return Interaction{ToTransformType(type == Translate ? Translate : Scale), AxisOp(i)};
             }
             if (type == Scale) continue;
 
             if (type == Universal) {
                 const auto arrow_center_scale = Style.TranslationArrowUniversalPosScale + Style.TranslationArrowScale * 0.5f;
-                const auto translate_pos = WorldToPx(vec4{p, 1} + dir * g.WorldToSizeNdc * arrow_center_scale, view_proj) - screen_pos;
-                if (ImLengthSqr(translate_pos - mouse_pos_rel) < half_arrow_px * half_arrow_px) {
+                const auto translate_pos = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * arrow_center_scale, view_proj) - screen_min_px;
+                if (ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
                     return Interaction{ToTransformType(Translate), AxisOp(i)};
                 }
             }
@@ -450,7 +446,7 @@ constexpr float AxisAlphaForDistPxSq(float dist_px_sq) {
     const float max_dist = ScaleToPx(Style.AxisOpaqueRadScale);
     if (dist_px_sq >= max_dist * max_dist) return 1;
 
-    return (sqrt(dist_px_sq) - min_dist) / (max_dist - min_dist);
+    return (dist_px_sq - min_dist * min_dist) / (max_dist * max_dist - min_dist * min_dist);
 }
 
 constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
