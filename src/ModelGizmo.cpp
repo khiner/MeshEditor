@@ -186,6 +186,13 @@ constexpr std::optional<uint32_t> TranslatePlaneIndex(InteractionAxis plane) {
     if (plane == InteractionAxis::XY) return 2;
     return {};
 }
+constexpr std::optional<std::pair<InteractionAxis, InteractionAxis>> PlaneAxes(InteractionAxis plane) {
+    if (plane == InteractionAxis::YZ) return std::pair{AxisY, AxisZ};
+    if (plane == InteractionAxis::ZX) return std::pair{AxisZ, AxisX};
+    if (plane == InteractionAxis::XY) return std::pair{AxisX, AxisY};
+    return {};
+}
+
 constexpr std::pair<vec3, vec3> DirPlaneXY(uint32_t axis_i) { return {Axes[(axis_i + 1) % 3], Axes[(axis_i + 2) % 3]}; }
 
 // Assumes p_normal is normalized
@@ -236,15 +243,20 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) { // If Rotate, v[0] hol
     using enum TransformType;
     using enum InteractionAxis;
     switch (i.Transform) {
+        case Scale: // fallthrough
         case Translate: {
-            if (i.Axis == Screen) return std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-            if (i.Axis == YZ) return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-            if (i.Axis == ZX) return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
-            if (i.Axis == XY) return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
-            return AxisLabel(AxisIndex(i.Axis), v);
-        }
-        case Scale: {
-            return i.Axis == Screen ? std::format("XYZ: {:.3f}", v.x) : AxisLabel(AxisIndex(i.Axis), v);
+            switch (i.Axis) {
+                case Screen: return i.Transform == Scale ?
+                    std::format("XYZ: {:.3f}", v.x) :
+                    std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
+                case YZ: return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
+                case ZX: return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
+                case XY: return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
+                case AxisX:
+                case AxisY:
+                case AxisZ:
+                    return AxisLabel(AxisIndex(i.Axis), v);
+            }
         }
         case Rotate: {
             const auto rad = v[0];
@@ -264,7 +276,7 @@ struct Model {
     const mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
 };
 
-mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interaction, vec2 mouse_px, const ray &mouse_ray, std::optional<vec3> snap) {
+mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interaction, const ray &mouse_ray, std::optional<vec3> snap) {
     using enum TransformType;
 
     assert(g.Start);
@@ -273,9 +285,10 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
     const auto o_ws = Pos(model.M);
     const auto o_start_ws = Pos(g.Start->M);
     const auto &plane = g.Start->PlaneWs;
+    const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane));
+    const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane));
     if (transform == Translate) {
-        auto delta = mouse_ray(fabsf(IntersectPlane(mouse_ray, plane))) -
-            (g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_start_ws) - o_ws;
+        auto delta = (mouse_plane_intersect_ws - o_ws) - (mouse_plane_intersect_start_ws - o_start_ws);
         // Single axis constraint
         if (axis == AxisX || axis == AxisY || axis == AxisZ) {
             const auto axis_i = AxisIndex(axis);
@@ -290,19 +303,25 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
     }
     if (transform == Scale) {
         // All scaling is based on mouse distance from origin
-        const auto o_px = std::bit_cast<vec2>(WorldToPx(o_ws, g.MVP));
-        const auto scale_factor = glm::distance(mouse_px, o_px) / glm::distance(g.Start->MousePx, o_px);
-        if (axis == Screen) g.Scale = vec3{scale_factor};
-        else g.Scale[AxisIndex(axis)] = scale_factor;
+        const auto scale_factor = glm::distance(mouse_plane_intersect_ws, o_start_ws) / glm::distance(mouse_plane_intersect_start_ws, o_start_ws);
+        if (axis == Screen) {
+            g.Scale = vec3{scale_factor};
+        } else if (axis == AxisX || axis == AxisY || axis == AxisZ) {
+            g.Scale[AxisIndex(axis)] = scale_factor;
+        } else if (auto plane_axes = PlaneAxes(axis)) {
+            const auto [axis1, axis2] = *plane_axes;
+            g.Scale[AxisIndex(axis1)] = scale_factor;
+            g.Scale[AxisIndex(axis2)] = scale_factor;
+        }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
         return model.RT * glm::scale(mat4{1}, g.Scale * GetScale(g.Start->M));
     }
 
     // Rotation: Compute angle on plane relative to the rotation origin
-    const auto rotation_origin = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_start_ws);
+    const auto rotation_origin = glm::normalize(mouse_plane_intersect_start_ws - o_start_ws);
     const auto perp = glm::cross(rotation_origin, vec3{plane});
-    const auto pos_local = glm::normalize(mouse_ray(IntersectPlane(mouse_ray, plane)) - o_ws);
+    const auto pos_local = glm::normalize(mouse_plane_intersect_ws - o_ws);
     float rotation_angle = acosf(glm::clamp(glm::dot(pos_local, rotation_origin), -1.f, 1.f)) * -glm::sign(glm::dot(pos_local, perp));
     if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
 
@@ -370,7 +389,6 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < half_arrow_px * half_arrow_px) {
                 return Interaction{ToTransformType(type == Translate ? Translate : Scale), AxisOp(i)};
             }
-            if (type == Scale) continue;
 
             if (type == Universal) {
                 const auto arrow_center_scale = Style.TranslationArrowUniversalPosScale + Style.TranslationArrowScale * 0.5f;
@@ -383,17 +401,16 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             const auto [dir_x, dir_y] = DirPlaneXY(i);
             if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
-            const auto p_world = Pos(model.M);
-            const auto pos_plane = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(p_world, dir)));
+            const auto pos_plane = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, dir)));
             const auto plane_x_world = vec3{model.M * vec4{dir_x, 0}};
             const auto plane_y_world = vec3{model.M * vec4{dir_y, 0}};
-            const auto delta_world = (pos_plane - p_world) / g.WorldToSizeNdc;
+            const auto delta_world = (pos_plane - o_ws) / g.WorldToSizeNdc;
             const float dx = glm::dot(delta_world, plane_x_world);
             const float dy = glm::dot(delta_world, plane_y_world);
             const float PlaneQuadUVMin = 0.5f - Style.PlaneSizeAxisScale * 0.5f;
             const float PlaneQuadUVMax = 0.5f + Style.PlaneSizeAxisScale * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) {
-                return Interaction{ToTransformType(Translate), TranslatePlanes[i]};
+                return Interaction{ToTransformType(type == Scale ? Scale : Translate), TranslatePlanes[i]};
             }
         }
         if (type != Translate) {
@@ -593,6 +610,18 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 DrawAxisHandle(HandleType::Cube, scale_active, false, i, scale * (g.Start ? g.Scale[i] : 1.0f), bool(g.Start), true);
                 if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, scale, true, true);
             }
+            if (!g.Start || g.Interaction->Axis == TranslatePlanes[i]) {
+                const auto [dir_x, dir_y] = DirPlaneXY(i);
+                if (!IsPlaneVisible(dir_x, dir_y)) continue;
+                const auto screen_pos = [&](vec2 s) {
+                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + 0.5f;
+                    return WorldToPx((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNdc, g.MVP);
+                };
+                const auto p1{screen_pos({-1, -1})}, p2{screen_pos({-1, 1})}, p3{screen_pos({1, 1})}, p4{screen_pos({1, -1})};
+                const bool is_selected = g.Interaction && g.Interaction->Axis == TranslatePlanes[i];
+                dl.AddQuad(p1, p2, p3, p4, SelectionColor(colors::Axes[i], is_selected), 1.f);
+                dl.AddQuadFilled(p1, p2, p3, p4, SelectionColor(colors::WithAlpha(colors::Axes[i], 0.5f), is_selected));
+            }
         }
 
         if (g.Start) {
@@ -666,7 +695,7 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
 
     if (g.Start) {
         assert(g.Interaction);
-        m = Transform(m, model, mode, *g.Interaction, mouse_px, mouse_ray_ws, snap);
+        m = Transform(m, model, mode, *g.Interaction, mouse_ray_ws, snap);
     } else if (ImGui::IsWindowHovered()) {
         if (g.Interaction = FindHoveredInteraction(model, type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, view_proj);
             g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
