@@ -159,6 +159,8 @@ constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
 constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
 constexpr vec3 GetScale(const mat4 &m) { return {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])}; }
+// Get rotation & translation from a model matrix.
+constexpr mat4 GetRT(const mat4 &m) { return {glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]}; }
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 
@@ -192,7 +194,6 @@ constexpr std::optional<std::pair<InteractionAxis, InteractionAxis>> PlaneAxes(I
     if (plane == InteractionAxis::XY) return std::pair{AxisX, AxisY};
     return {};
 }
-
 constexpr std::pair<vec3, vec3> DirPlaneXY(uint32_t axis_i) { return {Axes[(axis_i + 1) % 3], Axes[(axis_i + 2) % 3]}; }
 
 // Assumes p_normal is normalized
@@ -268,11 +269,9 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) { // If Rotate, v[0] hol
 }
 
 struct Model {
-    Model(const mat4 &m, Mode mode)
-        : RT{glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]},
-          M{mode == Mode::Local ? RT : glm::translate(mat4{1}, Pos(RT))} {}
+    Model(const mat4 &m, Mode mode) : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(mat4{1}, Pos(RT))} {}
     const mat4 RT; // Model matrix rotation + translation
-    const mat4 M; // Gizmo model matrix (Local or World space).
+    const mat4 M; // Gizmo model matrix
     const mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
 };
 
@@ -462,11 +461,10 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
     using enum TransformType;
 
     auto &dl = *ImGui::GetWindowDrawList();
-    const auto p_px = WorldToPx(vec3{0}, g.MVP);
-    const auto p_ws = Pos(model.M);
+    const auto o_px = WorldToPx(vec3{0}, g.MVP);
     // Ghost circle
     if (g.Start && g.Interaction->Axis == Screen && (g.Interaction->Transform == Translate || g.Interaction->Transform == Scale)) {
-        const auto center = g.Interaction->Transform == Translate ? WorldToPx(Pos(g.Start->M), view_proj) : p_px;
+        const auto center = g.Interaction->Transform == Translate ? WorldToPx(Pos(g.Start->M), view_proj) : o_px;
         dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), Color.StartGhost, 0, Style.CircleLineWidth);
     }
     // Inner circle
@@ -474,12 +472,12 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
         (g.Start && ((g.Interaction->Transform == Translate || g.Interaction->Transform == Scale) && g.Interaction->Axis == Screen))) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Axis == Screen);
         const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
-        dl.AddCircle(p_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.CircleLineWidth);
+        dl.AddCircle(o_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.CircleLineWidth);
     }
     // Outer circle
     if (type != Type::Translate && (!g.Start || g.Interaction == Interaction{Rotate, Screen})) {
         dl.AddCircle(
-            p_px,
+            o_px,
             ScaleToPx(Style.OuterCircleRadScale),
             SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Axis == Screen),
             0,
@@ -488,9 +486,6 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
     }
 
     if (type == Type::Translate || type == Type::Scale || type == Type::Universal) {
-        const auto p_px = WorldToPx(vec3{0}, g.MVP);
-        const auto p_ws = Pos(model.M);
-
         enum class HandleType {
             Arrow, // Arrow cone silhouette (triangle + ellipse)
             Cube, // Cube silhouette
@@ -501,14 +496,14 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             const auto o_ws = Pos(m);
             const auto o_px = WorldToPx(o_ws, view_proj);
             const auto axis_dir_ws = glm::normalize(vec3{m[axis_i]});
-            const auto end_ws = o_ws + axis_dir_ws * w2s * handle_scale;
+            const auto end_ws = o_ws + w2s * axis_dir_ws * handle_scale;
             const auto end_px = WorldToPx(end_ws, view_proj);
             const auto color = ghost ? Color.StartGhost :
                 is_active            ? colors::Axes[axis_i] :
                                        SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistPxSq(ImLengthSqr(end_px - o_px))), false);
             if (draw_line) {
                 const float line_base_scale = g.Start ? Style.CircleRadScale : Style.InnerCircleRadScale;
-                dl.AddLine(WorldToPx(o_ws + axis_dir_ws * w2s * line_base_scale, view_proj), end_px, color, Style.AxisHandleLineWidth);
+                dl.AddLine(WorldToPx(o_ws + w2s * axis_dir_ws * line_base_scale, view_proj), end_px, color, Style.AxisHandleLineWidth);
             }
             if (draw_center_circle) dl.AddCircleFilled(o_px, ScaleToPx(Style.CircleRadScale), color);
 
@@ -552,7 +547,6 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 const bool sU = glm::dot(u_ws, view_dir) < 0;
                 const bool sV = glm::dot(v_ws, view_dir) < 0;
                 const bool sA = glm::dot(axis_dir_ws, view_dir) < 0;
-
                 for (uint8_t i = 0; i < NumCorners; ++i) {
                     const bool bU = i & 1, bV = i & 2, bA = i & 4;
                     int j = i ^ 1;
@@ -599,13 +593,13 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
 
         for (uint32_t i = 0; i < 3; ++i) {
             if (bool translate_active = g.Interaction == Interaction{TransformType::Translate, AxisOp(i)};
-                (type == Type::Translate || type == Type::Universal) && (!g.Start || translate_active)) {
+                type != Type::Scale && (!g.Start || translate_active)) {
                 const float scale = type == Type::Universal ? Style.TranslationArrowUniversalPosScale : Style.AxisHandleScale;
                 DrawAxisHandle(HandleType::Arrow, translate_active, false, i, scale, bool(g.Start), type != Type::Universal || g.Start);
                 if (g.Start) DrawAxisHandle(HandleType::Arrow, translate_active, true, i, scale, true, true);
             }
             if (bool scale_active = g.Interaction == Interaction{TransformType::Scale, AxisOp(i)};
-                (type == Type::Scale || type == Type::Universal) && (!g.Start || scale_active)) {
+                type != Type::Translate && (!g.Start || scale_active)) {
                 const float scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
                 DrawAxisHandle(HandleType::Cube, scale_active, false, i, scale * (g.Start ? g.Scale[i] : 1.0f), bool(g.Start), true);
                 if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, scale, true, true);
@@ -613,57 +607,70 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             if (!g.Start || g.Interaction->Axis == TranslatePlanes[i]) {
                 const auto [dir_x, dir_y] = DirPlaneXY(i);
                 if (!IsPlaneVisible(dir_x, dir_y)) continue;
-                const auto screen_pos = [&](vec2 s) {
-                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + 0.5f;
-                    return WorldToPx((dir_x * uv.x + dir_y * uv.y) * g.WorldToSizeNdc, g.MVP);
+
+                const auto screen_pos = [&](vec2 s, bool ghost) {
+                    const auto &m = ghost ? GetRT(g.Start->M) : model.RT;
+                    const auto w2s = ghost ? g.Start->WorldToSizeNdc : g.WorldToSizeNdc;
+                    const auto mult = g.Start && !ghost && type == Type::Scale ? g.Scale[AxisIndex(PlaneAxes(g.Interaction->Axis)->first)] : 1.f;
+                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + 0.5f * mult;
+                    return WorldToPx(w2s * (dir_x * uv.x + dir_y * uv.y), view_proj * m);
                 };
-                const auto p1{screen_pos({-1, -1})}, p2{screen_pos({-1, 1})}, p3{screen_pos({1, 1})}, p4{screen_pos({1, -1})};
+                const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
                 const bool is_selected = g.Interaction && g.Interaction->Axis == TranslatePlanes[i];
                 dl.AddQuad(p1, p2, p3, p4, SelectionColor(colors::Axes[i], is_selected), 1.f);
                 dl.AddQuadFilled(p1, p2, p3, p4, SelectionColor(colors::WithAlpha(colors::Axes[i], 0.5f), is_selected));
+                if (g.Start) {
+                    const auto p1{screen_pos({-1, -1}, true)}, p2{screen_pos({-1, 1}, true)}, p3{screen_pos({1, 1}, true)}, p4{screen_pos({1, -1}, true)};
+                    dl.AddQuad(p1, p2, p3, p4, colors::Lighten(Color.StartGhost, 0.5f), 1.f);
+                    dl.AddQuadFilled(p1, p2, p3, p4, Color.StartGhost);
+                }
             }
         }
 
         if (g.Start) {
-            Label(ValueLabel(*g.Interaction, g.Interaction->Transform == TransformType::Translate ? p_ws - Pos(g.Start->M) : g.Scale), p_px);
+            Label(
+                ValueLabel(*g.Interaction, g.Interaction->Transform == TransformType::Translate ? Pos(model.M) - Pos(g.Start->M) : g.Scale),
+                WorldToPx(vec3{0}, g.MVP)
+            );
         }
     }
     if (type == Type::Rotate || type == Type::Universal) {
+        const auto o_ws = Pos(model.M);
         static constexpr uint32_t HalfCircleSegmentCount{128}, FullCircleSegmentCount{HalfCircleSegmentCount * 2 + 1};
         static ImVec2 CirclePositions[FullCircleSegmentCount];
         if (g.Start && g.Interaction->Transform == Rotate) {
             {
-                const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, g.Start->PlaneWs)) - p_ws);
+                const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, g.Start->PlaneWs)) - o_ws);
                 const auto v = glm::cross(vec3{g.Start->PlaneWs}, u);
                 const float r = g.WorldToSizeNdc * (g.Interaction->Axis == Screen ? (2 * Style.OuterCircleRadScale) : Style.RotationAxesCircleScale);
-                const auto u_screen = WorldToPx(p_ws + u * r, view_proj) - p_px;
-                const auto v_screen = WorldToPx(p_ws + v * r, view_proj) - p_px;
-                FastEllipse(CirclePositions, p_px, u_screen, v_screen, g.RotationAngle >= 0);
+                const auto u_screen = WorldToPx(o_ws + u * r, view_proj) - o_px;
+                const auto v_screen = WorldToPx(o_ws + v * r, view_proj) - o_px;
+                FastEllipse(CirclePositions, o_px, u_screen, v_screen, g.RotationAngle >= 0);
             }
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
             const auto angle_circle_pos = CirclePositions[angle_i + 1]; // save
-            CirclePositions[angle_i + 1] = p_px;
+            CirclePositions[angle_i + 1] = o_px;
             dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationFillActive);
 
             CirclePositions[angle_i + 1] = angle_circle_pos; // restore
             const auto color = g.Interaction->Axis == Screen ? IM_COL32_WHITE : colors::Axes[AxisIndex(g.Interaction->Axis)];
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, color, false, Style.RotationLineWidth);
-            dl.AddLine(p_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
-            dl.AddLine(p_px, CirclePositions[angle_i], color, Style.RotationLineWidth);
+            dl.AddLine(o_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
+            dl.AddLine(o_px, CirclePositions[angle_i], color, Style.RotationLineWidth);
             Label(ValueLabel(*g.Interaction, vec3{g.RotationAngle}), CirclePositions[1]);
         } else if (!g.Start) {
             // Half-circles facing the camera
             const float r = g.WorldToSizeNdc * Style.RotationAxesCircleScale;
-            const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(p_ws - cam_origin);
+            const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(o_ws - cam_origin);
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
                 const vec4 axis_start{cosf(angle_start), sinf(angle_start), 0.f, 0.f};
                 const vec4 axis_offset{-axis_start.y, axis_start.x, 0.f, 0.f};
                 const vec3 u_local{axis_start[axis], axis_start[(axis + 1) % 3], axis_start[(axis + 2) % 3]};
                 const vec3 v_local{axis_offset[axis], axis_offset[(axis + 1) % 3], axis_offset[(axis + 2) % 3]};
-                const auto u_screen = WorldToPx(u_local * r, g.MVP) - p_px;
-                const auto v_screen = WorldToPx(v_local * r, g.MVP) - p_px;
-                FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), p_px, u_screen, v_screen, true, 0.5f);
+                const auto u_screen = WorldToPx(u_local * r, g.MVP) - o_px;
+                const auto v_screen = WorldToPx(v_local * r, g.MVP) - o_px;
+                FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), o_px, u_screen, v_screen, true, 0.5f);
                 const auto color = SelectionColor(colors::Axes[2 - axis], g.Interaction == Interaction{Rotate, AxisOp(2 - axis)});
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
