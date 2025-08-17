@@ -57,9 +57,7 @@ struct Interaction {
     TransformType Transform;
     InteractionAxis Axis;
 
-    bool operator==(const Interaction &other) const {
-        return other.Transform == Transform && other.Axis == Axis;
-    }
+    bool operator==(const Interaction &) const = default;
 };
 
 namespace state {
@@ -271,8 +269,7 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
 
     assert(g.Start);
 
-    const auto transform = interaction.Transform;
-    const auto axis = interaction.Axis;
+    const auto [transform, axis] = interaction;
     const auto o_ws = Pos(model.M);
     const auto o_start_ws = Pos(g.Start->M);
     const auto &plane = g.Start->PlaneWs;
@@ -292,23 +289,14 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
         return glm::translate(mat4{1}, delta) * m;
     }
     if (transform == Scale) {
-        if (axis == Screen) {
-            const auto o_px = std::bit_cast<vec2>(WorldToPx(o_ws, g.MVP));
-            g.Scale = vec3{glm::distance(mouse_px, o_px) / glm::distance(g.Start->MousePx, o_px)};
-        } else { // Single axis constraint
-            const auto axis_i = AxisIndex(axis);
-            const vec3 axis_value{model.RT[axis_i]};
-            const auto relative_origin = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane)) - o_start_ws;
-            const auto base = relative_origin / g.WorldToSizeNdc - o_ws;
-            const auto delta = axis_value * glm::dot(axis_value, mouse_ray(IntersectPlane(mouse_ray, plane)) - relative_origin - o_ws);
-            g.Scale[axis_i] = glm::dot(axis_value, base + delta) / glm::dot(axis_value, base);
-        }
+        // All scaling is based on mouse distance from origin
+        const auto o_px = std::bit_cast<vec2>(WorldToPx(o_ws, g.MVP));
+        const auto scale_factor = glm::distance(mouse_px, o_px) / glm::distance(g.Start->MousePx, o_px);
+        if (axis == Screen) g.Scale = vec3{scale_factor};
+        else g.Scale[AxisIndex(axis)] = scale_factor;
 
-        if (snap) g.Scale = Snap(g.Scale, *snap);
-        for (uint32_t i = 0; i < 3; ++i) g.Scale[i] = std::max(g.Scale[i], 0.001f);
-
-        const auto &m_start = g.Start->M;
-        return model.RT * glm::scale(mat4{1}, g.Scale * GetScale(m_start));
+        g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
+        return model.RT * glm::scale(mat4{1}, g.Scale * GetScale(g.Start->M));
     }
 
     // Rotation: Compute angle on plane relative to the rotation origin
