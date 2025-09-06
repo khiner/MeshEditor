@@ -457,7 +457,7 @@ constexpr float AxisAlphaForDistPxSq(float dist_px_sq) {
 }
 
 constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
-    return selected ? color : colors::MultAlpha(color, 0.8f);
+    return selected ? color : colors::MultAlpha(color, 0.85f);
 }
 
 void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origin) {
@@ -497,7 +497,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
 
     if (type != Type::Rotate) {
         enum class HandleType {
-            Arrow, // Arrow cone silhouette (triangle + ellipse)
+            Arrow, // Arrow cone silhouette (triangle + half-ellipse)
             Cube, // Cube silhouette
         };
         const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float handle_scale, bool draw_line) {
@@ -517,20 +517,41 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             }
 
             if (handle_type == HandleType::Arrow) {
+                // Build a single cone silhouette polygon: triangle + outer half of ellipse
+
+                // Endpoints/basis
                 const auto u_ws = glm::normalize((cam_origin - end_ws) - glm::dot(cam_origin - end_ws, axis_dir_ws) * axis_dir_ws);
                 const auto v_ws = glm::cross(axis_dir_ws, u_ws);
-
                 const auto p_tip = WorldToPx(end_ws + w2s * axis_dir_ws * Style.TranslationArrowScale, view_proj);
                 const auto p_b1 = WorldToPx(end_ws + w2s * v_ws * Style.TranslationArrowRadScale, view_proj);
                 const auto p_b2 = WorldToPx(end_ws - w2s * v_ws * Style.TranslationArrowRadScale, view_proj);
-                dl.AddTriangleFilled(p_tip, p_b1, p_b2, color);
-
-                static constexpr uint32_t EllipsePointCount{16};
-                static ImVec2 EllipsePoints[EllipsePointCount];
-                const auto c = (p_b1 + p_b2) * 0.5f;
                 const auto p_u = WorldToPx(end_ws + w2s * u_ws * Style.TranslationArrowRadScale, view_proj);
-                FastEllipse(EllipsePoints, c, p_u - c, p_b1 - c);
-                dl.AddConvexPolyFilled(EllipsePoints, EllipsePointCount, color);
+
+                // Ellipse frame
+                const auto c = (p_b1 + p_b2) * 0.5f;
+                const auto b = p_b2 - c; // base semi-axis vector (c -> p_b2)
+                const float b_len2 = ImLengthSqr(b);
+                if (b_len2 <= 1e-12f) return;
+
+                // Unit outward normal to the base (perp(b)), flipped to point away from tip
+                const float inv_b_len = 1.f / std::sqrt(b_len2);
+                auto n_hat = ImVec2{-b.y, b.x} * inv_b_len;
+                const auto tip_dir = p_tip - c;
+                if (tip_dir.x * n_hat.x + tip_dir.y * n_hat.y > 0) n_hat = -n_hat;
+
+                // Minor radius
+                const auto u = p_u - c;
+                const float r2 = ImLengthSqr(u);
+                if (r2 <= 1e-12f) return;
+
+                // Half-ellipse
+                static constexpr uint32_t n{16 + 1}; // ellipse + tip
+                ImVec2 poly[n];
+                poly[0] = p_tip;
+                FastEllipse(std::span<ImVec2>{poly}.subspan(1, n - 1), c, -b, n_hat * std::sqrt(r2), true, 0.5f);
+
+                // Winding already CW
+                dl.AddConvexPolyFilled(poly, n, color);
             } else if (handle_type == HandleType::Cube) {
                 const auto u_ws = glm::normalize(vec3{m[(axis_i + 1) % 3]});
                 const auto v_ws = glm::normalize(vec3{m[(axis_i + 2) % 3]});
@@ -591,7 +612,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 static ImVec2 hull[NumCorners];
                 for (uint8_t i = 0; i < n; ++i) hull[i] = WorldToPx(P[loop_idx[i]], view_proj);
 
-                // Ensure CW winding for outward AA in ImGui
+                // CW winding for outward AA in ImGui
                 float area2{0};
                 for (uint8_t i = 0, j = n - 1; i < n; j = i++) area2 += hull[j].x * hull[i].y - hull[i].x * hull[j].y;
                 if (area2 < 0) std::reverse(hull, hull + n);
