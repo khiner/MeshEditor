@@ -4,7 +4,6 @@
 
 #include "ModelGizmo.h"
 #include "numeric/mat3.h"
-#include "numeric/ray.h"
 #include "numeric/vec4.h"
 
 #include "imgui.h"
@@ -160,7 +159,7 @@ constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
 constexpr vec3 GetScale(const mat4 &m) { return {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])}; }
 // Get rotation & translation from a model matrix.
-constexpr mat4 GetRT(const mat4 &m) { return {glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]}; }
+mat4 GetRT(const mat4 &m) { return {glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]}; }
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 
@@ -171,27 +170,30 @@ constexpr mat4 InverseRigid(const mat4 &m) {
 }
 
 constexpr InteractionAxis AxisOp(uint32_t axis_i) { return InteractionAxis(uint32_t(AxisX) << axis_i); }
-constexpr uint32_t AxisIndex(InteractionAxis axis) {
-    if (axis == AxisX) return 0;
-    if (axis == AxisY) return 1;
-    if (axis == AxisZ) return 2;
-    assert(false);
-    return -1;
-}
 
 constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 constexpr InteractionAxis TranslatePlanes[]{InteractionAxis::YZ, InteractionAxis::ZX, InteractionAxis::XY}; // In axis order
 
 constexpr std::optional<uint32_t> TranslatePlaneIndex(InteractionAxis plane) {
-    if (plane == InteractionAxis::YZ) return 0;
-    if (plane == InteractionAxis::ZX) return 1;
-    if (plane == InteractionAxis::XY) return 2;
+    if (plane == YZ) return 0;
+    if (plane == ZX) return 1;
+    if (plane == XY) return 2;
     return {};
 }
+constexpr uint32_t AxisIndex(InteractionAxis axis) {
+    if (axis == AxisX) return 0;
+    if (axis == AxisY) return 1;
+    if (axis == AxisZ) return 2;
+    if (auto i = TranslatePlaneIndex(axis)) return *i;
+
+    assert(false);
+    return -1;
+}
+
 constexpr std::optional<std::pair<InteractionAxis, InteractionAxis>> PlaneAxes(InteractionAxis plane) {
-    if (plane == InteractionAxis::YZ) return std::pair{AxisY, AxisZ};
-    if (plane == InteractionAxis::ZX) return std::pair{AxisZ, AxisX};
-    if (plane == InteractionAxis::XY) return std::pair{AxisX, AxisY};
+    if (plane == YZ) return std::pair{AxisY, AxisZ};
+    if (plane == ZX) return std::pair{AxisZ, AxisX};
+    if (plane == XY) return std::pair{AxisX, AxisY};
     return {};
 }
 constexpr std::pair<vec3, vec3> DirPlaneXY(uint32_t axis_i) { return {Axes[(axis_i + 1) % 3], Axes[(axis_i + 2) % 3]}; }
@@ -269,7 +271,8 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) { // If Rotate, v[0] hol
 }
 
 struct Model {
-    Model(const mat4 &m, Mode mode) : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(mat4{1}, Pos(RT))} {}
+    Model(const mat4 &m, Mode mode)
+        : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(mat4{1.f}, Pos(RT))} {}
     const mat4 RT; // Model matrix rotation + translation
     const mat4 M; // Gizmo model matrix
     const mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
@@ -298,7 +301,7 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
             const vec3 delta_cumulative = mode == Mode::Local || axis == Screen ? m * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
             delta = o_start_ws + delta_cumulative - o_ws;
         }
-        return glm::translate(mat4{1}, delta) * m;
+        return glm::translate(mat4{1.f}, delta) * m;
     }
     if (transform == Scale) {
         // All scaling is based on mouse distance from origin
@@ -335,7 +338,7 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
     return res;
 }
 
-constexpr ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
+ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
     const auto vec = std::bit_cast<vec2>(s2 - s1);
     const auto v = glm::normalize(vec);
     const float t = glm::dot(v, std::bit_cast<vec2>(p - s1));
@@ -371,7 +374,7 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             }
         }
     }
-    if (type == Translate || type == Scale || type == Universal) {
+    if (type != Rotate) {
         const auto inner_circle_rad_px = ScaleToPx(Style.InnerCircleRadScale);
         if ((type == Translate || type == Universal) && mouse_r_sq <= inner_circle_rad_px * inner_circle_rad_px) {
             return Interaction{ToTransformType(Translate), Screen};
@@ -398,7 +401,7 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             }
 
             const auto [dir_x, dir_y] = DirPlaneXY(i);
-            if (!IsPlaneVisible(dir_x, dir_y)) continue;
+            if (type == Universal || !IsPlaneVisible(dir_x, dir_y)) continue;
 
             const auto pos_plane = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, dir)));
             const auto plane_x_world = vec3{model.M * vec4{dir_x, 0}};
@@ -462,14 +465,21 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
 
     auto &dl = *ImGui::GetWindowDrawList();
     const auto o_px = WorldToPx(vec3{0}, g.MVP);
-    // Ghost circle
-    if (g.Start && g.Interaction->Axis == Screen && (g.Interaction->Transform == Translate || g.Interaction->Transform == Scale)) {
+    // Center filled circle
+    if (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Axis != Screen) {
+        const auto axis_i = AxisIndex(g.Interaction->Axis);
+        const auto color = SelectionColor(colors::Axes[axis_i], true);
+        dl.AddCircleFilled(o_px, ScaleToPx(Style.CircleRadScale), color);
+        dl.AddCircleFilled(WorldToPx(Pos(g.Start->M), view_proj), ScaleToPx(Style.CircleRadScale), Color.StartGhost);
+    }
+    // Ghost inner circle
+    if (g.Start && g.Interaction->Axis == Screen && g.Interaction->Transform != Rotate) {
         const auto center = g.Interaction->Transform == Translate ? WorldToPx(Pos(g.Start->M), view_proj) : o_px;
         dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), Color.StartGhost, 0, Style.CircleLineWidth);
     }
     // Inner circle
     if ((!g.Start && type != Type::Rotate) ||
-        (g.Start && ((g.Interaction->Transform == Translate || g.Interaction->Transform == Scale) && g.Interaction->Axis == Screen))) {
+        (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Axis == Screen)) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Axis == Screen);
         const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
         dl.AddCircle(o_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.CircleLineWidth);
@@ -485,17 +495,17 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
         );
     }
 
-    if (type == Type::Translate || type == Type::Scale || type == Type::Universal) {
+    if (type != Type::Rotate) {
         enum class HandleType {
             Arrow, // Arrow cone silhouette (triangle + ellipse)
             Cube, // Cube silhouette
         };
-        const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float handle_scale, bool draw_center_circle, bool draw_line) {
+        const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float handle_scale, bool draw_line) {
             const auto &m = ghost ? g.Start->M : model.M;
-            const auto w2s = ghost ? g.Start->WorldToSizeNdc : g.WorldToSizeNdc;
             const auto o_ws = Pos(m);
-            const auto o_px = WorldToPx(o_ws, view_proj);
             const auto axis_dir_ws = glm::normalize(vec3{m[axis_i]});
+
+            const auto w2s = ghost ? g.Start->WorldToSizeNdc : g.WorldToSizeNdc;
             const auto end_ws = o_ws + w2s * axis_dir_ws * handle_scale;
             const auto end_px = WorldToPx(end_ws, view_proj);
             const auto color = ghost ? Color.StartGhost :
@@ -505,7 +515,6 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 const float line_base_scale = g.Start ? Style.CircleRadScale : Style.InnerCircleRadScale;
                 dl.AddLine(WorldToPx(o_ws + w2s * axis_dir_ws * line_base_scale, view_proj), end_px, color, Style.AxisHandleLineWidth);
             }
-            if (draw_center_circle) dl.AddCircleFilled(o_px, ScaleToPx(Style.CircleRadScale), color);
 
             if (handle_type == HandleType::Arrow) {
                 const auto u_ws = glm::normalize((cam_origin - end_ws) - glm::dot(cam_origin - end_ws, axis_dir_ws) * axis_dir_ws);
@@ -592,19 +601,19 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
         };
 
         for (uint32_t i = 0; i < 3; ++i) {
-            if (bool translate_active = g.Interaction == Interaction{TransformType::Translate, AxisOp(i)};
+            if (bool translate_active = g.Interaction == Interaction{Translate, AxisOp(i)};
                 type != Type::Scale && (!g.Start || translate_active)) {
                 const float scale = type == Type::Universal ? Style.TranslationArrowUniversalPosScale : Style.AxisHandleScale;
-                DrawAxisHandle(HandleType::Arrow, translate_active, false, i, scale, bool(g.Start), type != Type::Universal || g.Start);
-                if (g.Start) DrawAxisHandle(HandleType::Arrow, translate_active, true, i, scale, true, true);
+                DrawAxisHandle(HandleType::Arrow, translate_active, false, i, scale, type != Type::Universal || g.Start);
+                if (g.Start) DrawAxisHandle(HandleType::Arrow, translate_active, true, i, scale, true);
             }
-            if (bool scale_active = g.Interaction == Interaction{TransformType::Scale, AxisOp(i)};
+            if (bool scale_active = g.Interaction == Interaction{Scale, AxisOp(i)};
                 type != Type::Translate && (!g.Start || scale_active)) {
                 const float scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
-                DrawAxisHandle(HandleType::Cube, scale_active, false, i, scale * (g.Start ? g.Scale[i] : 1.0f), bool(g.Start), true);
-                if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, scale, true, true);
+                DrawAxisHandle(HandleType::Cube, scale_active, false, i, scale * (g.Start ? g.Scale[i] : 1.0f), true);
+                if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, scale, true);
             }
-            if (!g.Start || g.Interaction->Axis == TranslatePlanes[i]) {
+            if (type != Type::Universal && (!g.Start || g.Interaction->Axis == TranslatePlanes[i])) {
                 const auto [dir_x, dir_y] = DirPlaneXY(i);
                 if (!IsPlaneVisible(dir_x, dir_y)) continue;
 
@@ -629,7 +638,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
 
         if (g.Start) {
             Label(
-                ValueLabel(*g.Interaction, g.Interaction->Transform == TransformType::Translate ? Pos(model.M) - Pos(g.Start->M) : g.Scale),
+                ValueLabel(*g.Interaction, g.Interaction->Transform == Translate ? Pos(model.M) - Pos(g.Start->M) : g.Scale),
                 WorldToPx(vec3{0}, g.MVP)
             );
         }
