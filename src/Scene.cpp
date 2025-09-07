@@ -1224,7 +1224,8 @@ void Scene::Interact() {
         AccumulatedWrapMouseDelta = {0, 0};
     }
     if (ModelGizmo::IsUsing()) {
-        GImGui->MouseCursor = ImGuiMouseCursor_ResizeAll;
+        // ModelGizmo overrides this mouse cursor during some actions - this is a default.
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
     }
     if (!IsWindowHovered()) return;

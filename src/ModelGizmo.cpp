@@ -707,27 +707,71 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             }
         }
     }
-    // Dashed center->mouse guide line
+    // Dashed center->mouse guide line + double arrow cursor
     if (g.Start && g.Interaction->Transform != Translate) {
+        // Same as ImDrawList::AddLine but w/o half-px offset
+        static const auto AddLine = [](ImDrawList &dl, ImVec2 p1, ImVec2 p2, ImU32 col, float thickness) {
+            dl.PathLineTo(p1);
+            dl.PathLineTo(p2);
+            dl.PathStroke(col, 0, thickness);
+        };
+
         static const auto DrawDashedLine = [](ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color) {
             static constexpr float Thickness{1}, DashLen{4}, GapLen{3};
 
-            const ImVec2 d = b - a;
-            const float len = sqrtf(ImLengthSqr(d));
+            const auto dir = b - a;
+            const float len = sqrtf(ImLengthSqr(dir));
             if (len <= 1e-3f) return;
 
-            const ImVec2 dir = d / len;
+            const auto dir_unit = dir / len;
             float t{0};
             while (t < len) {
-                dl.AddLine(a + dir * t, a + dir * (t + std::min(DashLen, len - t)), color, Thickness);
+                AddLine(dl, a + dir_unit * t, a + dir_unit * (t + std::min(DashLen, len - t)), color, Thickness);
                 t += DashLen + GapLen;
             }
         };
 
-        static constexpr ImU32 LineColor = IM_COL32(240, 240, 240, 240), ShadowLineColor = IM_COL32(90, 90, 90, 200);
+        static constexpr auto LineColor{IM_COL32(255, 255, 255, 255)}, ShadowLineColor{IM_COL32(90, 90, 90, 200)};
         static constexpr ImVec2 ShadowOffset{1.5, 1.5};
         DrawDashedLine(dl, o_px + ShadowOffset, g.MousePx + ShadowOffset, ShadowLineColor);
         DrawDashedLine(dl, o_px, g.MousePx, LineColor);
+
+        static const auto DrawCursorArrow = [](ImDrawList &dl, ImVec2 base, ImVec2 dir, ImVec2 lat) {
+            static constexpr float CursorThickness{2}, ShaftLength{22}, HeadLength{7}, HeadWidth{5};
+
+            const auto head = base + dir * (ShaftLength * 0.5f - HeadLength);
+            const ImVec2 points[]{
+                // tip -> +head -> +base -> -base -> -head
+                base + dir * ShaftLength * 0.5f,
+                head + lat * HeadWidth,
+                base + lat * CursorThickness,
+                base - lat * CursorThickness,
+                head - lat * HeadWidth,
+            };
+
+            static constexpr auto FillColor{IM_COL32(255, 255, 255, 255)}, OutlineColor{IM_COL32(0, 0, 0, 255)};
+            dl.AddConvexPolyFilled(points, 5, FillColor);
+            dl.AddPolyline(points, 5, OutlineColor, true, 1.f);
+        };
+
+        // Two arrows pointing in opposite directions, either along or perpendicular to `line_dir`
+        static const auto DrawCursorDoubleArrow = [](ImDrawList &dl, ImVec2 center, ImVec2 line_dir, bool perpendicular = true) {
+            static constexpr float CenterGap{10};
+
+            const float len2 = ImLengthSqr(line_dir);
+            if (len2 <= 1e-6f) return;
+
+            const auto line_unit = line_dir / sqrtf(len2);
+            const ImVec2 perp_unit{-line_unit.y, line_unit.x};
+            const auto dir = perpendicular ? perp_unit : line_unit;
+            const auto lat = perpendicular ? line_unit : perp_unit;
+            const auto gap = dir * CenterGap * 0.5f;
+            DrawCursorArrow(dl, center + gap, dir, lat);
+            DrawCursorArrow(dl, center - gap, -dir, lat);
+        };
+
+        ImGui::SetMouseCursor(ImGuiMouseCursor_None); // Custom cursor
+        DrawCursorDoubleArrow(dl, g.MousePx, g.MousePx - o_px, g.Interaction->Transform == Rotate);
     }
 }
 } // namespace
