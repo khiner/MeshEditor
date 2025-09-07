@@ -73,6 +73,7 @@ struct Context {
     mat4 MVP;
 
     ImRect ScreenRect{{0, 0}, {0, 0}};
+    ImVec2 MousePx{0, 0};
 
     // World-space distance that projects to Style.SizeNdc, computed as:
     // Style.SizeNdc / (NDC-length of a world-space unit vector along the camera’s right direction, projected at the model’s origin)
@@ -706,12 +707,36 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             }
         }
     }
+    // Dashed center->mouse guide line
+    if (g.Start && g.Interaction->Transform != Translate) {
+        static const auto DrawDashedLine = [](ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color) {
+            static constexpr float Thickness{1}, DashLen{4}, GapLen{3};
+
+            const ImVec2 d = b - a;
+            const float len = sqrtf(ImLengthSqr(d));
+            if (len <= 1e-3f) return;
+
+            const ImVec2 dir = d / len;
+            float t{0};
+            while (t < len) {
+                dl.AddLine(a + dir * t, a + dir * (t + std::min(DashLen, len - t)), color, Thickness);
+                t += DashLen + GapLen;
+            }
+        };
+
+        static constexpr ImU32 LineColor = IM_COL32(240, 240, 240, 240), ShadowLineColor = IM_COL32(90, 90, 90, 200);
+        static constexpr ImVec2 ShadowOffset{1.5, 1.5};
+        DrawDashedLine(dl, o_px + ShadowOffset, g.MousePx + ShadowOffset, ShadowLineColor);
+        DrawDashedLine(dl, o_px, g.MousePx, LineColor);
+    }
 }
 } // namespace
 
 namespace ModelGizmo {
 bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
+    g.MousePx = std::bit_cast<ImVec2>(mouse_px);
+
     // Scale is always local or m will be skewed when applying world scale or rotated m
     if (type == Type::Scale || type == Type::Universal) mode = Mode::Local;
 
