@@ -1349,11 +1349,10 @@ bool Scene::Render() {
 }
 
 void Scene::RenderGizmo() {
-    const float line_height = GetTextLineHeightWithSpacing();
     const auto window_pos = ToGlm(GetWindowPos());
     if (MGizmo.Show && !R.storage<Active>().empty()) {
         const auto size = ToGlm(GetContentRegionAvail());
-        const auto pos = window_pos + line_height;
+        const auto pos = window_pos;
         const auto mouse_pos = ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta;
         const auto mouse_pos_rel = (mouse_pos - pos) / size;
         const auto mouse_pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
@@ -1374,7 +1373,7 @@ void Scene::RenderGizmo() {
         }
     }
     static constexpr float OGizmoSize{90};
-    const float padding = 2 * line_height;
+    const float padding = GetTextLineHeightWithSpacing();
     const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
     OrientationGizmo::Draw(pos, OGizmoSize, Camera);
     if (Camera.Tick()) UpdateTransformBuffers();
