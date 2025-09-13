@@ -96,7 +96,8 @@ struct Style {
     float TranslationArrowScale{0.18}, TranslationArrowRadScale{TranslationArrowScale * 0.3f};
     float AxisHandleScale{1.f - TranslationArrowScale}; // Tip is exacly at the gizmo size
     float UniversalAxisHandleScale{AxisHandleScale - TranslationArrowScale}; // For scale handles in Universal mode
-    float AxisHandleLineWidth{2};
+    float AxisLineWidth{2}; // Used for both handles and guide lines
+
     // Radius and length of the arrow at the end of translation axes
     float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
     float PlaneSizeAxisScale{0.13}; // Translation plane quads
@@ -461,10 +462,53 @@ constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
     return selected ? color : colors::MultAlpha(color, 0.85f);
 }
 
+// Clip ray `p + t*d` to rect `r` using Liang–Barsky algorithm.
+// Returns line endpoints, or empty if no rect intersection.
+std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const ImRect &r, ImVec2 p, ImVec2 d) {
+    static constexpr float eps = 1e-6f;
+    if (ImLengthSqr(d) <= eps) return {};
+
+    // Check if parallel and outside (shouldn't happen in practice for axis guide lines)
+    const auto pc = ImClamp(p, r.Min, r.Max);
+    if ((fabsf(d.x) < eps && pc.x != p.x) || (fabsf(d.y) < eps && pc.y != p.y)) return {};
+
+    const ImVec2 d_inv{1.f / d.x, 1.f / d.y};
+    const auto t0 = (r.Min - p) * d_inv;
+    const auto t1 = (r.Max - p) * d_inv;
+    const auto tmin = ImMin(t0, t1), tmax = ImMax(t0, t1);
+    float t_enter = std::max(tmin.x, tmin.y);
+    float t_exit = std::min(tmax.x, tmax.y);
+    if (t_enter > t_exit) return {}; // No intersection
+
+    return {{p + d * t_enter, p + d * t_exit}};
+}
+
 void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origin) {
     using enum TransformType;
 
     auto &dl = *ImGui::GetWindowDrawList();
+
+    // Full-screen axis guide lines during axis/plane interactions
+    if (g.Start && g.Interaction->Axis != InteractionAxis::Screen) {
+        const auto o_ws = Pos(g.Start->M);
+        const auto DrawAxisGuideLine = [&](InteractionAxis axis) {
+            const auto axis_i = AxisIndex(axis);
+            const auto axis_ws = vec3{g.Start->M[axis_i]};
+            const auto p0 = WorldToPx(o_ws, view_proj);
+            const auto p1 = WorldToPx(o_ws + axis_ws * g.Start->WorldToSizeNdc, view_proj);
+            if (const auto clipped = ClipRayToRect(g.ScreenRect, p0, p1 - p0)) {
+                dl.AddLine(clipped->first, clipped->second, colors::Lighten(colors::Axes[axis_i], 0.25f), Style.AxisLineWidth);
+            }
+        };
+
+        if (const auto plane_axes = PlaneAxes(g.Interaction->Axis)) {
+            DrawAxisGuideLine(plane_axes->first);
+            DrawAxisGuideLine(plane_axes->second);
+        } else {
+            DrawAxisGuideLine(g.Interaction->Axis);
+        }
+    }
+
     const auto o_px = WorldToPx(vec3{0}, g.MVP);
     // Center filled circle
     if (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Axis != Screen) {
@@ -514,7 +558,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                                        SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistPxSq(ImLengthSqr(end_px - o_px))), false);
             if (draw_line) {
                 const float line_base_scale = g.Start ? Style.CircleRadScale : Style.InnerCircleRadScale;
-                dl.AddLine(WorldToPx(o_ws + w2s * axis_dir_ws * line_base_scale, view_proj), end_px, color, Style.AxisHandleLineWidth);
+                dl.AddLine(WorldToPx(o_ws + w2s * axis_dir_ws * line_base_scale, view_proj), end_px, color, Style.AxisLineWidth);
             }
 
             if (handle_type == HandleType::Arrow) {
