@@ -22,10 +22,10 @@ enum class InteractionAxis : uint8_t {
     AxisX = 1 << 0,
     AxisY = 1 << 1,
     AxisZ = 1 << 2,
-    Screen,
     YZ,
     ZX,
     XY,
+    Screen,
 };
 
 // `TransformType` is a subset of (the externally visible) `Type` without `Universal`.
@@ -36,19 +36,6 @@ enum class TransformType : uint8_t {
 };
 
 using namespace ModelGizmo;
-
-TransformType ToTransformType(Type type) {
-    switch (type) {
-        case Type::Translate: return TransformType::Translate;
-        case Type::Rotate: return TransformType::Rotate;
-        case Type::Scale: return TransformType::Scale;
-        case Type::Universal: {
-            assert(false); // Universal type cannot be converted to a single TransformType
-            return TransformType::Scale;
-        }
-    }
-}
-
 using enum InteractionAxis;
 
 // Specific hovered/active transform/axis.
@@ -251,22 +238,21 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) { // If Rotate, v[0] hol
         case Scale: // fallthrough
         case Translate: {
             switch (i.Axis) {
-                case Screen: return i.Transform == Scale ?
-                    std::format("XYZ: {:.3f}", v.x) :
-                    std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-                case YZ: return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-                case ZX: return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
-                case XY: return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
                 case AxisX:
                 case AxisY:
                 case AxisZ:
                     return AxisLabel(AxisIndex(i.Axis), v);
+                case YZ: return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
+                case ZX: return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
+                case XY: return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
+                case Screen: return i.Transform == Scale ?
+                    std::format("XYZ: {:.3f}", v.x) :
+                    std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
             }
         }
         case Rotate: {
             const auto rad = v[0];
-            const auto deg_rad = std::format("{:.3f} deg {:.3f} rad", rad * 180 / M_PI, rad);
-            if (i.Axis == InteractionAxis::Screen) return std::format("Screen: {}", deg_rad);
+            if (i.Axis == InteractionAxis::Screen) return std::format("Screen: {:.3f} deg {:.3f} rad", rad * 180 / M_PI, rad);
             return AxisLabel(AxisIndex(i.Axis), rad);
         }
     }
@@ -308,14 +294,13 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
     if (transform == Scale) {
         // All scaling is based on mouse distance from origin
         const auto scale_factor = glm::distance(mouse_plane_intersect_ws, o_start_ws) / glm::distance(mouse_plane_intersect_start_ws, o_start_ws);
-        if (axis == Screen) {
-            g.Scale = vec3{scale_factor};
-        } else if (axis == AxisX || axis == AxisY || axis == AxisZ) {
+        if (axis == AxisX || axis == AxisY || axis == AxisZ) {
             g.Scale[AxisIndex(axis)] = scale_factor;
         } else if (auto plane_axes = PlaneAxes(axis)) {
-            const auto [axis1, axis2] = *plane_axes;
-            g.Scale[AxisIndex(axis1)] = scale_factor;
-            g.Scale[AxisIndex(axis2)] = scale_factor;
+            g.Scale[AxisIndex(plane_axes->first)] = scale_factor;
+            g.Scale[AxisIndex(plane_axes->second)] = scale_factor;
+        } else if (axis == Screen) {
+            g.Scale = vec3{scale_factor};
         }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
@@ -350,16 +335,14 @@ ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
 }
 
 std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type, ImVec2 mouse_px, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
-    using enum Type;
-
     const auto center = WorldToPx(vec3{0}, g.MVP);
     const auto mouse_r_sq = ImLengthSqr(mouse_px - center);
-    if (type == Rotate || type == Universal) {
+    if (type == Type::Rotate || type == Type::Universal) {
         static constexpr float SelectDist = 8;
         const auto rotation_radius = ScaleToPx(Style.OuterCircleRadScale);
         const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
         if (mouse_r_sq >= inner_rad * inner_rad && mouse_r_sq < outer_rad * outer_rad) {
-            return Interaction{ToTransformType(Rotate), Screen};
+            return Interaction{TransformType::Rotate, Screen};
         }
 
         const auto o_ws = Pos(model.M);
@@ -372,14 +355,14 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - o_ws), 0};
             const auto circle_pos = WorldToPx(circle_pos_world * Style.RotationAxesCircleScale * g.WorldToSizeNdc, g.MVP);
             if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
-                return Interaction{ToTransformType(Rotate), AxisOp(i)};
+                return Interaction{TransformType::Rotate, AxisOp(i)};
             }
         }
     }
-    if (type != Rotate) {
+    if (type != Type::Rotate) {
         const auto inner_circle_rad_px = ScaleToPx(Style.InnerCircleRadScale);
-        if ((type == Translate || type == Universal) && mouse_r_sq <= inner_circle_rad_px * inner_circle_rad_px) {
-            return Interaction{ToTransformType(Translate), Screen};
+        if ((type == Type::Translate || type == Type::Universal) && mouse_r_sq <= inner_circle_rad_px * inner_circle_rad_px) {
+            return Interaction{TransformType::Translate, Screen};
         }
 
         const auto o_ws = Pos(model.M);
@@ -387,23 +370,23 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
         const auto screen_min_px = g.ScreenRect.Min, mouse_rel_px{mouse_px - screen_min_px};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
-            const auto scale = type == Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
+            const auto scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
             const auto start = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * scale * Style.InnerCircleRadScale, view_proj) - screen_min_px;
             const auto end = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * (scale + Style.TranslationArrowScale), view_proj) - screen_min_px;
             if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < half_arrow_px * half_arrow_px) {
-                return Interaction{ToTransformType(type == Translate ? Translate : Scale), AxisOp(i)};
+                return Interaction{type == Type::Translate ? TransformType::Translate : TransformType::Scale, AxisOp(i)};
             }
 
-            if (type == Universal) {
+            if (type == Type::Universal) {
                 const auto arrow_center_scale = Style.TranslationArrowUniversalPosScale + Style.TranslationArrowScale * 0.5f;
                 const auto translate_pos = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * arrow_center_scale, view_proj) - screen_min_px;
                 if (ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
-                    return Interaction{ToTransformType(Translate), AxisOp(i)};
+                    return Interaction{TransformType::Translate, AxisOp(i)};
                 }
             }
 
             const auto [dir_x, dir_y] = DirPlaneXY(i);
-            if (type == Universal || !IsPlaneVisible(dir_x, dir_y)) continue;
+            if (type == Type::Universal || !IsPlaneVisible(dir_x, dir_y)) continue;
 
             const auto pos_plane = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, dir)));
             const auto plane_x_world = vec3{model.M * vec4{dir_x, 0}};
@@ -414,14 +397,14 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             const float PlaneQuadUVMin = 0.5f - Style.PlaneSizeAxisScale * 0.5f;
             const float PlaneQuadUVMax = 0.5f + Style.PlaneSizeAxisScale * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) {
-                return Interaction{ToTransformType(type == Scale ? Scale : Translate), TranslatePlanes[i]};
+                return Interaction{type == Type::Scale ? TransformType::Scale : TransformType::Translate, TranslatePlanes[i]};
             }
         }
-        if (type != Translate) {
+        if (type != Type::Translate) {
             const auto outer_circle_rad_px = ScaleToPx(Style.OuterCircleRadScale);
             if (mouse_r_sq >= inner_circle_rad_px * inner_circle_rad_px &&
                 mouse_r_sq < outer_circle_rad_px * outer_circle_rad_px) {
-                return Interaction{ToTransformType(Scale), Screen};
+                return Interaction{TransformType::Scale, Screen};
             }
         }
     }
