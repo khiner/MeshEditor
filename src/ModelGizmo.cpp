@@ -88,8 +88,8 @@ struct Style {
     // Radius and length of the arrow at the end of translation axes
     float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
     float PlaneSizeAxisScale{0.13}; // Translation plane quads
-    float CircleRadScale{0.03}; // Radius of circle at the end of scale lines and the center of the translate/scale gizmo
-    float CubeHalfExtentScale{1.45f * CircleRadScale}; // Half extent of scale cube handles
+    float CenterCircleRadScale{0.03}; // Radius of circle at the center of the translate/scale gizmo
+    float CubeHalfExtentScale{1.45f * CenterCircleRadScale}; // Half extent of scale cube handles
     float InnerCircleRadScale{0.1}; // Radius of the inner selection circle at the center for translate/scale selection
     float OuterCircleRadScale{0.5}; // Outer circle is exactly the size of the gizmo
     float CircleLineWidth{2}; // Thickness of inner & outer circle
@@ -335,51 +335,32 @@ ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
 }
 
 std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type, ImVec2 mouse_px, const ray &mouse_ray, const mat4 &view, const mat4 &view_proj) {
+    static constexpr float SelectDist{8};
+
     const auto center = WorldToPx(vec3{0}, g.MVP);
     const auto mouse_r_sq = ImLengthSqr(mouse_px - center);
-    if (type == Type::Rotate || type == Type::Universal) {
-        static constexpr float SelectDist = 8;
-        const auto rotation_radius = ScaleToPx(Style.OuterCircleRadScale);
-        const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
-        if (mouse_r_sq >= inner_rad * inner_rad && mouse_r_sq < outer_rad * outer_rad) {
-            return Interaction{TransformType::Rotate, Screen};
-        }
-
-        const auto o_ws = Pos(model.M);
-        const auto mv_pos = view * vec4{o_ws, 1};
-        for (uint32_t i = 0; i < 3; ++i) {
-            const auto intersect_pos_world = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, model.M[i])));
-            const auto intersect_pos = view * vec4{vec3{intersect_pos_world}, 1};
-            if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
-
-            const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - o_ws), 0};
-            const auto circle_pos = WorldToPx(circle_pos_world * Style.RotationAxesCircleScale * g.WorldToSizeNdc, g.MVP);
-            if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
-                return Interaction{TransformType::Rotate, AxisOp(i)};
-            }
-        }
+    const auto inner_circle_rad_px = ScaleToPx(Style.InnerCircleRadScale);
+    if ((type == Type::Translate || type == Type::Universal) && mouse_r_sq <= inner_circle_rad_px * inner_circle_rad_px) {
+        return Interaction{TransformType::Translate, Screen};
     }
-    if (type != Type::Rotate) {
-        const auto inner_circle_rad_px = ScaleToPx(Style.InnerCircleRadScale);
-        if ((type == Type::Translate || type == Type::Universal) && mouse_r_sq <= inner_circle_rad_px * inner_circle_rad_px) {
-            return Interaction{TransformType::Translate, Screen};
-        }
 
+    if (type != Type::Rotate) {
         const auto o_ws = Pos(model.M);
-        const auto half_arrow_px = ScaleToPx(Style.TranslationArrowScale) * 0.5f;
         const auto screen_min_px = g.ScreenRect.Min, mouse_rel_px{mouse_px - screen_min_px};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
-            const auto scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
-            const auto start = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * scale * Style.InnerCircleRadScale, view_proj) - screen_min_px;
-            const auto end = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * (scale + Style.TranslationArrowScale), view_proj) - screen_min_px;
-            if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < half_arrow_px * half_arrow_px) {
+            const auto dir_ndc = dir * g.WorldToSizeNdc;
+            const auto start = WorldToPx(vec4{o_ws, 1} + dir_ndc * Style.InnerCircleRadScale, view_proj) - screen_min_px;
+            const auto end_scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
+            const auto end = WorldToPx(vec4{o_ws, 1} + dir_ndc * end_scale, view_proj) - screen_min_px;
+            if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < SelectDist * SelectDist) {
                 return Interaction{type == Type::Translate ? TransformType::Translate : TransformType::Scale, AxisOp(i)};
             }
 
             if (type == Type::Universal) {
                 const auto arrow_center_scale = Style.TranslationArrowUniversalPosScale + Style.TranslationArrowScale * 0.5f;
-                const auto translate_pos = WorldToPx(vec4{o_ws, 1} + dir * g.WorldToSizeNdc * arrow_center_scale, view_proj) - screen_min_px;
+                const auto translate_pos = WorldToPx(vec4{o_ws, 1} + dir_ndc * arrow_center_scale, view_proj) - screen_min_px;
+                const auto half_arrow_px = ScaleToPx(Style.TranslationArrowScale) * 0.5f;
                 if (ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
                     return Interaction{TransformType::Translate, AxisOp(i)};
                 }
@@ -400,12 +381,33 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
                 return Interaction{type == Type::Scale ? TransformType::Scale : TransformType::Translate, TranslatePlanes[i]};
             }
         }
-        if (type != Type::Translate) {
-            const auto outer_circle_rad_px = ScaleToPx(Style.OuterCircleRadScale);
-            if (mouse_r_sq >= inner_circle_rad_px * inner_circle_rad_px &&
-                mouse_r_sq < outer_circle_rad_px * outer_circle_rad_px) {
-                return Interaction{TransformType::Scale, Screen};
+    }
+    if (type == Type::Rotate || type == Type::Universal) {
+        const auto rotation_radius = ScaleToPx(Style.OuterCircleRadScale);
+        const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
+        if (mouse_r_sq >= inner_rad * inner_rad && mouse_r_sq < outer_rad * outer_rad) {
+            return Interaction{TransformType::Rotate, Screen};
+        }
+
+        const auto o_ws = Pos(model.M);
+        const auto mv_pos = view * vec4{o_ws, 1};
+        for (uint32_t i = 0; i < 3; ++i) {
+            const auto intersect_pos_world = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, model.M[i])));
+            const auto intersect_pos = view * vec4{vec3{intersect_pos_world}, 1};
+            if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
+
+            const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - o_ws), 0};
+            const auto circle_pos = WorldToPx(circle_pos_world * Style.RotationAxesCircleScale * g.WorldToSizeNdc, g.MVP);
+            if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
+                return Interaction{TransformType::Rotate, AxisOp(i)};
             }
+        }
+    }
+    if (type == Type::Scale || type == Type::Universal) {
+        const auto outer_circle_rad_px = ScaleToPx(Style.OuterCircleRadScale);
+        if (mouse_r_sq >= inner_circle_rad_px * inner_circle_rad_px &&
+            mouse_r_sq < outer_circle_rad_px * outer_circle_rad_px) {
+            return Interaction{TransformType::Scale, Screen};
         }
     }
     return std::nullopt;
@@ -497,8 +499,8 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
     if (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Axis != Screen) {
         const auto axis_i = AxisIndex(g.Interaction->Axis);
         const auto color = SelectionColor(colors::Axes[axis_i], true);
-        dl.AddCircleFilled(o_px, ScaleToPx(Style.CircleRadScale), color);
-        dl.AddCircleFilled(WorldToPx(Pos(g.Start->M), view_proj), ScaleToPx(Style.CircleRadScale), Color.StartGhost);
+        dl.AddCircleFilled(o_px, ScaleToPx(Style.CenterCircleRadScale), color);
+        dl.AddCircleFilled(WorldToPx(Pos(g.Start->M), view_proj), ScaleToPx(Style.CenterCircleRadScale), Color.StartGhost);
     }
     // Ghost inner circle
     if (g.Start && g.Interaction->Axis == Screen && g.Interaction->Transform != Rotate) {
@@ -540,8 +542,8 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                 is_active            ? colors::Axes[axis_i] :
                                        SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistPxSq(ImLengthSqr(end_px - o_px))), false);
             if (draw_line) {
-                const float line_base_scale = g.Start ? Style.CircleRadScale : Style.InnerCircleRadScale;
-                dl.AddLine(WorldToPx(o_ws + w2s * axis_dir_ws * line_base_scale, view_proj), end_px, color, Style.AxisLineWidth);
+                const float line_begin_scale = g.Start ? Style.CenterCircleRadScale : Style.InnerCircleRadScale;
+                dl.AddLine(WorldToPx(o_ws + w2s * axis_dir_ws * line_begin_scale, view_proj), end_px, color, Style.AxisLineWidth);
             }
 
             if (handle_type == HandleType::Arrow) {
