@@ -47,7 +47,6 @@ namespace state {
 // Context captured when mouse is pressed on a hovered Interaction.
 struct StartContext {
     mat4 M; // Model matrix
-    vec4 PlaneWs; // World-space plane for the pressed Interaction
     vec2 MousePx;
     ray MouseRayWs;
     float WorldPerNdc; // World units per (signed) NDC at the gizmo origin (sampled along screen-x)
@@ -190,7 +189,6 @@ constexpr std::optional<std::pair<InteractionOp, InteractionOp>> PlaneAxes(Inter
 }
 constexpr std::pair<vec3, vec3> DirPlaneXY(uint32_t axis_i) { return {Axes[(axis_i + 1) % 3], Axes[(axis_i + 2) % 3]}; }
 
-// Assumes p_normal is normalized
 constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) { return {vec3{p_normal}, glm::dot(p_normal, vec4{p, 1})}; }
 
 constexpr float IntersectPlane(const ray &r, vec4 plane) {
@@ -269,13 +267,29 @@ using ModelGizmo::Mode;
 
 struct Model {
     Model(const mat4 &m, Mode mode)
-        : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(mat4{1.f}, Pos(RT))} {}
+        : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(mat4{1.f}, Pos(RT))}, Mode{mode} {}
     const mat4 RT; // Model matrix rotation + translation
     const mat4 M; // Gizmo model matrix
     const mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
+
+    Mode Mode;
 };
 
-mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interaction, const ray &mouse_ray, std::optional<vec3> snap) {
+vec4 GetPlaneNormal(const Interaction &i, const mat4 &m, Mode mode, const ray &camera_ray) {
+    using enum TransformType;
+    if (i.Op == Screen) return -vec4{camera_ray.d, 0};
+    if (auto plane_index = TranslatePlaneIndex(i.Op)) return m[*plane_index];
+
+    const auto index = AxisIndex(i.Op);
+    if (i.Transform == Scale) return m[(index + 1) % 3];
+    if (i.Transform == Rotate) return mode == Mode::Local ? m[index] : vec4{Axes[index], 0};
+
+    const auto n = vec3{m[index]};
+    const auto v = glm::normalize(Pos(m) - camera_ray.o);
+    return vec4{v - n * glm::dot(n, v), 0};
+};
+
+mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const ray &mouse_ray, std::optional<vec3> snap) {
     using enum TransformType;
 
     assert(g.Start);
@@ -283,19 +297,19 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
     const auto [transform, axis] = interaction;
     const auto o_ws = Pos(model.M);
     const auto o_start_ws = Pos(g.Start->M);
-    const auto &plane = g.Start->PlaneWs;
-    const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane));
-    const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane));
+    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, g.Start->M, model.Mode, g.Start->MouseRayWs));
+    const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane_start));
+    const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start));
     if (transform == Translate) {
         auto delta = (mouse_plane_intersect_ws - o_ws) - (mouse_plane_intersect_start_ws - o_start_ws);
         // Single axis constraint
         if (axis == AxisX || axis == AxisY || axis == AxisZ) {
-            const auto axis_i = AxisIndex(axis);
-            delta = model.M[axis_i] * glm::dot(model.M[axis_i], vec4{delta, 0});
+            const auto &plane = model.M[AxisIndex(axis)];
+            delta = plane * glm::dot(plane, vec4{delta, 0});
         }
         if (snap) {
             const vec4 d{o_ws + delta - o_start_ws, 0};
-            const vec3 delta_cumulative = mode == Mode::Local || axis == Screen ? m * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
+            const vec3 delta_cumulative = model.Mode == Mode::Local || axis == Screen ? m * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
             delta = o_start_ws + delta_cumulative - o_ws;
         }
         return glm::translate(mat4{1.f}, delta) * m;
@@ -318,15 +332,15 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
 
     // Rotation: Compute angle on plane relative to the rotation origin
     const auto rotation_origin = glm::normalize(mouse_plane_intersect_start_ws - o_start_ws);
-    const auto perp = glm::cross(rotation_origin, vec3{plane});
+    const auto perp = glm::cross(rotation_origin, vec3{plane_start});
     const auto pos_local = glm::normalize(mouse_plane_intersect_ws - o_ws);
     float rotation_angle = acosf(glm::clamp(glm::dot(pos_local, rotation_origin), -1.f, 1.f)) * -glm::sign(glm::dot(pos_local, perp));
     if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
 
-    const vec3 rot_axis_local = glm::normalize(glm::mat3{model.Inv} * vec3{plane}); // Assumes affine model
+    const vec3 rot_axis_local = glm::normalize(glm::mat3{model.Inv} * vec3{plane_start}); // Assumes affine model
     const mat4 rot_delta{glm::rotate(mat4{1}, rotation_angle - g.RotationAngle, rot_axis_local)};
     g.RotationAngle = rotation_angle;
-    if (mode == Mode::Local) return model.RT * rot_delta * glm::scale(mat4{1}, GetScale(m));
+    if (model.Mode == Mode::Local) return model.RT * rot_delta * glm::scale(mat4{1}, GetScale(m));
 
     // Apply rotation, preserving translation
     auto res = rot_delta * mat4{mat3{m}};
@@ -712,8 +726,10 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
         static ImVec2 CirclePositions[FullCircleSegmentCount];
         if (g.Start && g.Interaction->Transform == Rotate) {
             {
-                const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, g.Start->PlaneWs)) - o_ws);
-                const auto v = glm::cross(vec3{g.Start->PlaneWs}, u);
+                const auto o_start_ws = Pos(g.Start->M);
+                const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, g.Start->M, model.Mode, g.Start->MouseRayWs));
+                const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start)) - o_ws);
+                const auto v = glm::cross(vec3{plane_start}, u);
                 const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationAxesCircleSize);
                 const auto u_screen = WsToPx(o_ws + u * r, view_proj) - o_px;
                 const auto v_screen = WsToPx(o_ws + v * r, view_proj) - o_px;
@@ -844,26 +860,12 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
 
     if (g.Start) {
         assert(g.Interaction);
-        m = Transform(m, model, mode, *g.Interaction, mouse_ray_ws, snap);
+        m = Transform(m, model, *g.Interaction, mouse_ray_ws, snap);
     } else if (ImGui::IsWindowHovered()) {
         if (g.Interaction = FindHoveredInteraction(model, type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, view_proj);
             g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            const auto GetPlaneNormal = [&camera_ray, &model, mode](const Interaction &i) -> vec4 {
-                using enum TransformType;
-                if (i.Op == Screen) return -vec4{camera_ray.d, 0};
-                if (auto plane_index = TranslatePlaneIndex(i.Op)) return model.M[*plane_index];
-
-                const auto index = AxisIndex(i.Op);
-                if (i.Transform == Scale) return model.M[(index + 1) % 3];
-                if (i.Transform == Rotate) return mode == Mode::Local ? model.M[index] : vec4{Axes[index], 0};
-
-                const auto n = vec3{model.M[index]};
-                const auto v = glm::normalize(Pos(model.RT) - camera_ray.o);
-                return vec4{v - n * glm::dot(n, v), 0};
-            };
             g.Start = state::StartContext{
                 .M = m,
-                .PlaneWs = BuildPlane(Pos(model.RT), GetPlaneNormal(*g.Interaction)),
                 .MousePx = mouse_px,
                 .MouseRayWs = mouse_ray_ws,
                 .WorldPerNdc = g.WorldPerNdc
