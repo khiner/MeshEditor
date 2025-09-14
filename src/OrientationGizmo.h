@@ -12,9 +12,7 @@
 #include <string_view>
 
 namespace OrientationGizmo {
-
-static constexpr mat3 Basis{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-static constexpr vec3 Signed(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : -m[i - 3]; }
+inline constexpr vec3 Signed(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : -m[i - 3]; }
 
 namespace internal {
 struct Style {
@@ -72,7 +70,7 @@ void Draw(vec2 pos, float size, Camera &camera) {
         });
     }
 
-    const auto IsAligned = [&camera](auto i) { return camera.IsAligned(Signed(Basis, i)); };
+    const auto IsAligned = [&camera](auto i) { return camera.IsAligned(Signed(I3, i)); };
 
     // Draw back to front
     for (auto i : SortedAxisIndices) {
@@ -121,7 +119,7 @@ void Draw(vec2 pos, float size, Camera &camera) {
         if (!Context.DragEndPos && hovered_i) { // Click
             // If selecting the same axis, switch to the opposite axis.
             if (IsAligned(*hovered_i)) hovered_i = (*hovered_i + 3) % 6;
-            camera.SetTargetDirection(Signed(Basis, *hovered_i));
+            camera.SetTargetDirection(Signed(I3, *hovered_i));
         }
         Context.MouseDownPos = std::nullopt;
         Context.DragEndPos = std::nullopt;

@@ -179,7 +179,7 @@ vec3 ListenerPoint::GetPosition(vec3 world_up, bool mic_center) const {
         // 230 I believe is for the gantry (where the object is placed)
         230 + dist + (mic_center ? MicLengthMm / 2 : 0),
         -(MicBarLengthMm / 2) + (float(MicId) / (NumMics - 1)) * MicBarLengthMm,
-        // I beleive these offseta are to accurately reflect the mic positions attached to _one side_ of microphone array bar.
+        // I believe these offsets are to accurately reflect the mic positions attached to _one side_ of microphone array bar.
         // You can see the same offsets in https://samuelpclarke.com/realimpact/ and https://www.youtube.com/watch?v=OeZMeze-oIs
         ((45.f / 2.f) + 20.95f),
     };

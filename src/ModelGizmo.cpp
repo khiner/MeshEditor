@@ -162,8 +162,6 @@ constexpr InteractionOp AxisOp(uint32_t axis_i) {
     return AxisX;
 }
 
-constexpr mat3 Basis{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-
 constexpr InteractionOp TranslatePlanes[]{InteractionOp::YZ, InteractionOp::ZX, InteractionOp::XY}; // In axis order
 
 constexpr std::optional<uint32_t> TranslatePlaneIndex(InteractionOp plane) {
@@ -218,8 +216,8 @@ constexpr bool IsPlaneVisible(uint32_t axis_i) {
     static constexpr auto ToScreenNdc = [](vec3 v) { return CsToNdc(g.MVP * vec4{v, 1}); };
     static constexpr float ParallelogramAreaLimit{0.0025};
     const auto o = ToScreenNdc(vec3{0});
-    const auto pa = ToScreenNdc(Basis[ui] * g.WorldPerNdc) - o;
-    const auto pb = ToScreenNdc(Basis[vi] * g.WorldPerNdc) - o;
+    const auto pa = ToScreenNdc(I3[ui] * g.WorldPerNdc) - o;
+    const auto pb = ToScreenNdc(I3[vi] * g.WorldPerNdc) - o;
     return fabsf(pa.x * pb.y - pa.y * pb.x) > ParallelogramAreaLimit; // abs cross product
 }
 
@@ -270,7 +268,7 @@ using ModelGizmo::Mode;
 
 struct Model {
     Model(const mat4 &m, Mode mode)
-        : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(mat4{1.f}, Pos(RT))}, Mode{mode} {}
+        : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(I4, Pos(RT))}, Mode{mode} {}
     const mat4 RT; // Model matrix rotation + translation
     const mat4 M; // Gizmo model matrix
     const mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
@@ -285,7 +283,7 @@ vec4 GetPlaneNormal(const Interaction &interaction, const mat4 &m, Mode mode, co
 
     const auto i = AxisIndex(interaction.Op);
     if (interaction.Transform == Scale) return m[(i + 1) % 3];
-    if (interaction.Transform == Rotate) return mode == Mode::Local ? m[i] : vec4{Basis[i], 0};
+    if (interaction.Transform == Rotate) return mode == Mode::Local ? m[i] : vec4{I3[i], 0};
 
     const auto n = vec3{m[i]};
     const auto v = glm::normalize(Pos(m) - camera_ray.o);
@@ -315,7 +313,7 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
             const vec3 delta_cumulative = model.Mode == Mode::Local || axis == Screen ? m * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
             delta = o_start_ws + delta_cumulative - o_ws;
         }
-        return glm::translate(mat4{1.f}, delta) * m;
+        return glm::translate(I4, delta) * m;
     }
     if (transform == Scale) {
         // All scaling is based on mouse distance to origin
@@ -330,7 +328,7 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
         }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
-        return model.RT * glm::scale(mat4{1}, g.Scale * GetScale(g.Start->M));
+        return model.RT * glm::scale(I4, g.Scale * GetScale(g.Start->M));
     }
 
     // Rotation: Compute angle on plane relative to the rotation origin
@@ -341,9 +339,9 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
     if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
 
     const vec3 rot_axis_local = glm::normalize(glm::mat3{model.Inv} * vec3{plane_start}); // Assumes affine model
-    const mat4 rot_delta{glm::rotate(mat4{1}, rotation_angle - g.RotationAngle, rot_axis_local)};
+    const mat4 rot_delta{glm::rotate(I4, rotation_angle - g.RotationAngle, rot_axis_local)};
     g.RotationAngle = rotation_angle;
-    if (model.Mode == Mode::Local) return model.RT * rot_delta * glm::scale(mat4{1}, GetScale(m));
+    if (model.Mode == Mode::Local) return model.RT * rot_delta * glm::scale(I4, GetScale(m));
 
     // Apply rotation, preserving translation
     auto res = rot_delta * mat4{mat3{m}};
@@ -702,7 +700,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                     const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
                     const auto mult = g.Start && !ghost && type == Type::Scale ? g.Scale[AxisIndex(PlaneAxes(g.Interaction->Op)->first)] : 1.f;
                     const auto uv = s * Style.PlaneQuadSize * 0.5f + 0.5f * mult;
-                    return WsToPx(w2s * (Basis[ui] * uv.x + Basis[vi] * uv.y), view_proj * m);
+                    return WsToPx(w2s * (I3[ui] * uv.x + I3[vi] * uv.y), view_proj * m);
                 };
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
                 const bool is_selected = g.Interaction && g.Interaction->Op == TranslatePlanes[i];

@@ -98,7 +98,7 @@ void UpdateModel(entt::registry &r, entt::entity entity, vec3 position, quat rot
     if (!r.all_of<Frozen>(entity)) r.emplace_or_replace<Scale>(entity, scale);
     else scale = r.all_of<Scale>(entity) ? r.get<Scale>(entity).Value : vec3{1};
 
-    r.emplace_or_replace<Model>(entity, glm::translate({1}, position) * glm::mat4_cast(glm::normalize(rotation)) * glm::scale({1}, scale));
+    r.emplace_or_replace<Model>(entity, glm::translate(I4, position) * glm::mat4_cast(glm::normalize(rotation)) * glm::scale(I4, scale));
 }
 
 vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
