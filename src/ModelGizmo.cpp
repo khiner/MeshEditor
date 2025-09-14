@@ -162,7 +162,7 @@ constexpr InteractionOp AxisOp(uint32_t axis_i) {
     return AxisX;
 }
 
-constexpr vec3 Basis[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+constexpr mat3 Basis{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
 constexpr InteractionOp TranslatePlanes[]{InteractionOp::YZ, InteractionOp::ZX, InteractionOp::XY}; // In axis order
 
