@@ -69,28 +69,26 @@ struct Context {
     float RotationAngle; // Relative to start rotation
 };
 
-// `Scale` members are relative to the gizmo size. To convert to screen-relative, multiply them by SizeUv.
 struct Style {
     float SizeUv{0.08}; // Size of the gizmo as a ratio of screen width
+
+    // `Scale` members are relative to the gizmo size. To convert to screen-relative, multiply them by SizeUv.
 
     // `AxisHandle`s are the lines for translate/scale
     float TranslationArrowScale{0.18}, TranslationArrowRadScale{0.3f * TranslationArrowScale};
     float TranslationArrowPosScaleUniversal{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
     float AxisHandleScale{1.f - TranslationArrowScale}; // Tip is exactly at the gizmo size
     float UniversalAxisHandleScale{AxisHandleScale - TranslationArrowScale}; // For scale handles in Universal mode
-    float AxisLineWidth{2}; // Used for both handles and guide lines
-
     float PlaneQuadScale{0.12}; // Translation/scale plane quads
     float CenterCircleRadScale{0.06}; // Radius of circle at the center of the translate/scale gizmo
     float CubeHalfExtentScale{0.75f * CenterCircleRadScale}; // Half extent of scale cube handles
     float InnerCircleRadScale{0.18}; // Radius of the inner selection circle at the center for translate/scale selection
     float OuterCircleRadScale{1.0}; // Outer circle is exactly the size of the gizmo
-    float CircleLineWidth{2}; // Thickness of inner & outer circle
     float RotationAxesCircleScale{AxisHandleScale}; // Rotation axes circles are smaller than the screen circle, equal to the translation arrow base
-    float RotationLineWidth{2.5}; // Thickness of rotation gizmo lines
+    float AxisOpaqueRadScale{2 * InnerCircleRadScale}, AxisTransparentRadScale{InnerCircleRadScale}; // Axes fade from opaque to transparent between this range
 
-    float AxisInvisibleRadScale{InnerCircleRadScale}; // Axes gradually fade to invisibility at this distance from center
-    float AxisOpaqueRadScale{2 * InnerCircleRadScale}; // Axes are fully opaque at this distance from center
+    float LineWidth{2}; // Used for axis handle/guide and inner/outer circle lines
+    float RotationLineWidth{2.5}; // Thickness of rotation gizmo lines
 };
 
 struct Color {
@@ -449,7 +447,7 @@ void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clock
 }
 
 constexpr float AxisAlphaForDistPxSq(float dist_px_sq) {
-    const float min_dist = ScaleToPx(Style.AxisInvisibleRadScale);
+    const float min_dist = ScaleToPx(Style.AxisTransparentRadScale);
     if (dist_px_sq <= min_dist * min_dist) return 0;
 
     const float max_dist = ScaleToPx(Style.AxisOpaqueRadScale);
@@ -498,7 +496,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
             const auto p0 = WsToPx(o_ws, view_proj);
             const auto p1 = WsToPx(o_ws + axis_ws * g.WorldPerNdc, view_proj);
             if (const auto clipped = ClipRayToRect(g.ScreenRect, p0, p1 - p0)) {
-                dl.AddLine(clipped->first, clipped->second, colors::Lighten(colors::Axes[axis_i], 0.25f), Style.AxisLineWidth);
+                dl.AddLine(clipped->first, clipped->second, colors::Lighten(colors::Axes[axis_i], 0.25f), Style.LineWidth);
             }
         };
 
@@ -521,14 +519,14 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
     // Ghost inner circle
     if (g.Start && g.Interaction->Op == Screen && g.Interaction->Transform != Rotate) {
         const auto center = g.Interaction->Transform == Translate ? WsToPx(Pos(g.Start->M), view_proj) : o_px;
-        dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), Color.StartGhost, 0, Style.CircleLineWidth);
+        dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), Color.StartGhost, 0, Style.LineWidth);
     }
     // Inner circle
     if ((!g.Start && type != Type::Rotate) ||
         (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Op == Screen)) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen);
         const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
-        dl.AddCircle(o_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.CircleLineWidth);
+        dl.AddCircle(o_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.LineWidth);
     }
     // Outer circle
     if (type != Type::Translate && (!g.Start || g.Interaction == Interaction{Rotate, Screen})) {
@@ -537,7 +535,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
             ScaleToPx(Style.OuterCircleRadScale),
             SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen),
             0,
-            Style.CircleLineWidth
+            Style.LineWidth
         );
     }
 
@@ -559,7 +557,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                                        SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistPxSq(ImLengthSqr(end_px - o_px))), false);
             if (draw_line) {
                 const float line_begin_scale = g.Start ? Style.CenterCircleRadScale : Style.InnerCircleRadScale;
-                dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * line_begin_scale, view_proj), end_px, color, Style.AxisLineWidth);
+                dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * line_begin_scale, view_proj), end_px, color, Style.LineWidth);
             }
 
             if (handle_type == HandleType::Arrow) {
