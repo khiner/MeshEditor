@@ -300,7 +300,7 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
     const auto [transform, axis] = interaction;
     const auto o_ws = Pos(model.M);
     const auto o_start_ws = Pos(g.Start->M);
-    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, g.Start->M, model.Mode, g.Start->MouseRayWs));
+    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, GetRT(g.Start->M), model.Mode, g.Start->MouseRayWs));
     const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane_start));
     const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start));
     if (transform == Translate) {
@@ -730,7 +730,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
         if (g.Start && g.Interaction->Transform == Rotate) {
             {
                 const auto o_start_ws = Pos(g.Start->M);
-                const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, g.Start->M, model.Mode, g.Start->MouseRayWs));
+                const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, GetRT(g.Start->M), model.Mode, g.Start->MouseRayWs));
                 const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start)) - o_ws);
                 const auto v = glm::cross(vec3{plane_start}, u);
                 const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationAxesCircleSize);
