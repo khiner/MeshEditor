@@ -162,7 +162,8 @@ constexpr InteractionOp AxisOp(uint32_t axis_i) {
     return AxisX;
 }
 
-constexpr vec3 Axes[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+constexpr vec3 Basis[]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
 constexpr InteractionOp TranslatePlanes[]{InteractionOp::YZ, InteractionOp::ZX, InteractionOp::XY}; // In axis order
 
 constexpr std::optional<uint32_t> TranslatePlaneIndex(InteractionOp plane) {
@@ -187,7 +188,8 @@ constexpr std::optional<std::pair<InteractionOp, InteractionOp>> PlaneAxes(Inter
     if (plane == XY) return std::pair{AxisX, AxisY};
     return {};
 }
-constexpr std::pair<vec3, vec3> DirPlaneXY(uint32_t axis_i) { return {Axes[(axis_i + 1) % 3], Axes[(axis_i + 2) % 3]}; }
+
+constexpr std::pair<uint32_t, uint32_t> PerpendicularAxes(uint32_t axis_i) { return {(axis_i + 1) % 3, (axis_i + 2) % 3}; }
 
 constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) { return {vec3{p_normal}, glm::dot(p_normal, vec4{p, 1})}; }
 
@@ -211,12 +213,13 @@ constexpr ImVec2 WsToPx(vec3 ws, const mat4 &vp) { return UvToPx(WsToUv(ws, vp))
 // `size` is ratio of gizmo width
 constexpr float SizeToPx(float size = 1.f) { return (g.ScreenRect.Max.x - g.ScreenRect.Min.x) * Style.SizeUv * size; }
 
-constexpr bool IsPlaneVisible(vec3 dir_x, vec3 dir_y) {
+constexpr bool IsPlaneVisible(uint32_t axis_i) {
+    const auto [ui, vi] = PerpendicularAxes(axis_i);
     static constexpr auto ToScreenNdc = [](vec3 v) { return CsToNdc(g.MVP * vec4{v, 1}); };
     static constexpr float ParallelogramAreaLimit{0.0025};
     const auto o = ToScreenNdc(vec3{0});
-    const auto pa = ToScreenNdc(dir_x * g.WorldPerNdc) - o;
-    const auto pb = ToScreenNdc(dir_y * g.WorldPerNdc) - o;
+    const auto pa = ToScreenNdc(Basis[ui] * g.WorldPerNdc) - o;
+    const auto pb = ToScreenNdc(Basis[vi] * g.WorldPerNdc) - o;
     return fabsf(pa.x * pb.y - pa.y * pb.x) > ParallelogramAreaLimit; // abs cross product
 }
 
@@ -275,16 +278,16 @@ struct Model {
     Mode Mode;
 };
 
-vec4 GetPlaneNormal(const Interaction &i, const mat4 &m, Mode mode, const ray &camera_ray) {
+vec4 GetPlaneNormal(const Interaction &interaction, const mat4 &m, Mode mode, const ray &camera_ray) {
     using enum TransformType;
-    if (i.Op == Screen) return -vec4{camera_ray.d, 0};
-    if (auto plane_index = TranslatePlaneIndex(i.Op)) return m[*plane_index];
+    if (interaction.Op == Screen) return -vec4{camera_ray.d, 0};
+    if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return m[*plane_index];
 
-    const auto index = AxisIndex(i.Op);
-    if (i.Transform == Scale) return m[(index + 1) % 3];
-    if (i.Transform == Rotate) return mode == Mode::Local ? m[index] : vec4{Axes[index], 0};
+    const auto i = AxisIndex(interaction.Op);
+    if (interaction.Transform == Scale) return m[(i + 1) % 3];
+    if (interaction.Transform == Rotate) return mode == Mode::Local ? m[i] : vec4{Basis[i], 0};
 
-    const auto n = vec3{m[index]};
+    const auto n = vec3{m[i]};
     const auto v = glm::normalize(Pos(m) - camera_ray.o);
     return vec4{v - n * glm::dot(n, v), 0};
 };
@@ -373,7 +376,7 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
         const auto o_ws = Pos(model.M);
         const auto screen_min_px = g.ScreenRect.Min, mouse_rel_px{mouse_px - screen_min_px};
         for (uint32_t i = 0; i < 3; ++i) {
-            const auto dir = model.M * vec4{Axes[i], 0};
+            const auto dir = model.M[i];
             const auto dir_ndc = dir * g.WorldPerNdc;
             const auto start = WsToPx(vec4{o_ws, 1} + dir_ndc * Style.InnerCircleRadSize, view_proj) - screen_min_px;
             const auto end_size = type == Type::Universal ? Style.UniversalAxisHandleSize : Style.AxisHandleSize;
@@ -391,12 +394,12 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
                 }
             }
 
-            const auto [dir_x, dir_y] = DirPlaneXY(i);
-            if (type == Type::Universal || !IsPlaneVisible(dir_x, dir_y)) continue;
+            if (type == Type::Universal || !IsPlaneVisible(i)) continue;
 
             const auto pos_plane = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, dir)));
-            const auto plane_x_world = vec3{model.M * vec4{dir_x, 0}};
-            const auto plane_y_world = vec3{model.M * vec4{dir_y, 0}};
+            const auto [ui, vi] = PerpendicularAxes(i);
+            const auto plane_x_world = vec3{model.M[ui]};
+            const auto plane_y_world = vec3{model.M[vi]};
             const auto delta_world = (pos_plane - o_ws) / g.WorldPerNdc;
             const float dx = glm::dot(delta_world, plane_x_world);
             const float dy = glm::dot(delta_world, plane_y_world);
@@ -609,9 +612,9 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                 // Winding already CW
                 dl.AddConvexPolyFilled(poly, n, color);
             } else if (handle_type == HandleType::Cube) {
-                const auto u_ws = glm::normalize(vec3{m[(axis_i + 1) % 3]});
-                const auto v_ws = glm::normalize(vec3{m[(axis_i + 2) % 3]});
-
+                const auto [ui, vi] = PerpendicularAxes(axis_i);
+                const auto u_ws = glm::normalize(vec3{m[ui]});
+                const auto v_ws = glm::normalize(vec3{m[vi]});
                 const float half_ws = w2s * Style.CubeHalfExtentSize;
                 const vec3 A = axis_dir_ws * half_ws, U = u_ws * half_ws, V = v_ws * half_ws;
                 const vec3 C = end_ws + A; // inner (−A) face touches the endpoint
@@ -691,15 +694,15 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                 if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, size, true);
             }
             if (type != Type::Universal && (!g.Start || g.Interaction->Op == TranslatePlanes[i])) {
-                const auto [dir_x, dir_y] = DirPlaneXY(i);
-                if (!IsPlaneVisible(dir_x, dir_y)) continue;
+                const auto [ui, vi] = PerpendicularAxes(i);
+                if (!IsPlaneVisible(i)) continue;
 
                 const auto screen_pos = [&](vec2 s, bool ghost) {
                     const auto &m = ghost ? GetRT(g.Start->M) : model.RT;
                     const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
                     const auto mult = g.Start && !ghost && type == Type::Scale ? g.Scale[AxisIndex(PlaneAxes(g.Interaction->Op)->first)] : 1.f;
                     const auto uv = s * Style.PlaneQuadSize * 0.5f + 0.5f * mult;
-                    return WsToPx(w2s * (dir_x * uv.x + dir_y * uv.y), view_proj * m);
+                    return WsToPx(w2s * (Basis[ui] * uv.x + Basis[vi] * uv.y), view_proj * m);
                 };
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
                 const bool is_selected = g.Interaction && g.Interaction->Op == TranslatePlanes[i];
@@ -731,9 +734,9 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                 const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start)) - o_ws);
                 const auto v = glm::cross(vec3{plane_start}, u);
                 const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationAxesCircleSize);
-                const auto u_screen = WsToPx(o_ws + u * r, view_proj) - o_px;
-                const auto v_screen = WsToPx(o_ws + v * r, view_proj) - o_px;
-                FastEllipse(CirclePositions, o_px, u_screen, v_screen, g.RotationAngle >= 0);
+                const auto u_px = WsToPx(o_ws + u * r, view_proj) - o_px;
+                const auto v_px = WsToPx(o_ws + v * r, view_proj) - o_px;
+                FastEllipse(CirclePositions, o_px, u_px, v_px, g.RotationAngle >= 0);
             }
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
             const auto angle_circle_pos = CirclePositions[angle_i + 1]; // save
@@ -754,11 +757,12 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
                 const vec4 axis_start{cosf(angle_start), sinf(angle_start), 0.f, 0.f};
                 const vec4 axis_offset{-axis_start.y, axis_start.x, 0.f, 0.f};
-                const vec3 u_local{axis_start[axis], axis_start[(axis + 1) % 3], axis_start[(axis + 2) % 3]};
-                const vec3 v_local{axis_offset[axis], axis_offset[(axis + 1) % 3], axis_offset[(axis + 2) % 3]};
-                const auto u_screen = WsToPx(u_local * r, g.MVP) - o_px;
-                const auto v_screen = WsToPx(v_local * r, g.MVP) - o_px;
-                FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), o_px, u_screen, v_screen, true, 0.5f);
+                const auto [ui, vi] = PerpendicularAxes(axis);
+                const vec3 u_local{axis_start[axis], axis_start[ui], axis_start[vi]};
+                const vec3 v_local{axis_offset[axis], axis_offset[ui], axis_offset[vi]};
+                const auto u_px = WsToPx(u_local * r, g.MVP) - o_px;
+                const auto v_px = WsToPx(v_local * r, g.MVP) - o_px;
+                FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), o_px, u_px, v_px, true, 0.5f);
                 const auto color = SelectionColor(colors::Axes[2 - axis], g.Interaction == Interaction{Rotate, AxisOp(2 - axis)});
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
