@@ -74,24 +74,20 @@ struct Context {
 
 // `Scale` members are relative to the gizmo size. To convert to screen-relative, multiply them by SizeNdc.
 struct Style {
-    // Size of the gizmo in NDC coordinates, relative to the screen size.
-    // todo Actually, it's currently the size of an axis handle, but I want to change it to be the size of the whole gizmo,
-    // and make all other scales <= 1.
-    float SizeNdc{0.15};
+    float SizeNdc{0.08}; // Size of the gizmo in NDC coordinates, relative to the screen size
 
     // `AxisHandle`s are the lines for translate/scale
-    float TranslationArrowScale{0.18}, TranslationArrowRadScale{TranslationArrowScale * 0.3f};
+    float TranslationArrowScale{0.18}, TranslationArrowRadScale{0.3f * TranslationArrowScale};
+    float TranslationArrowPosScaleUniversal{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
     float AxisHandleScale{1.f - TranslationArrowScale}; // Tip is exacly at the gizmo size
     float UniversalAxisHandleScale{AxisHandleScale - TranslationArrowScale}; // For scale handles in Universal mode
     float AxisLineWidth{2}; // Used for both handles and guide lines
 
-    // Radius and length of the arrow at the end of translation axes
-    float TranslationArrowUniversalPosScale{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
-    float PlaneSizeAxisScale{0.13}; // Translation plane quads
-    float CenterCircleRadScale{0.03}; // Radius of circle at the center of the translate/scale gizmo
-    float CubeHalfExtentScale{1.45f * CenterCircleRadScale}; // Half extent of scale cube handles
-    float InnerCircleRadScale{0.1}; // Radius of the inner selection circle at the center for translate/scale selection
-    float OuterCircleRadScale{0.5}; // Outer circle is exactly the size of the gizmo
+    float PlaneQuadScale{0.12}; // Translation/scale plane quads
+    float CenterCircleRadScale{0.06}; // Radius of circle at the center of the translate/scale gizmo
+    float CubeHalfExtentScale{0.75f * CenterCircleRadScale}; // Half extent of scale cube handles
+    float InnerCircleRadScale{0.18}; // Radius of the inner selection circle at the center for translate/scale selection
+    float OuterCircleRadScale{1.0}; // Outer circle is exactly the size of the gizmo
     float CircleLineWidth{2}; // Thickness of inner & outer circle
     float RotationAxesCircleScale{AxisHandleScale}; // Rotation axes circles are smaller than the screen circle, equal to the the translation arrow base
     float RotationLineWidth{2.5}; // Thickness of rotation gizmo lines
@@ -358,7 +354,7 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             }
 
             if (type == Type::Universal) {
-                const auto arrow_center_scale = Style.TranslationArrowUniversalPosScale + Style.TranslationArrowScale * 0.5f;
+                const auto arrow_center_scale = Style.TranslationArrowPosScaleUniversal + Style.TranslationArrowScale * 0.5f;
                 const auto translate_pos = WorldToPx(vec4{o_ws, 1} + dir_ndc * arrow_center_scale, view_proj) - screen_min_px;
                 const auto half_arrow_px = ScaleToPx(Style.TranslationArrowScale) * 0.5f;
                 if (ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
@@ -375,8 +371,8 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, Type type,
             const auto delta_world = (pos_plane - o_ws) / g.WorldToSizeNdc;
             const float dx = glm::dot(delta_world, plane_x_world);
             const float dy = glm::dot(delta_world, plane_y_world);
-            const float PlaneQuadUVMin = 0.5f - Style.PlaneSizeAxisScale * 0.5f;
-            const float PlaneQuadUVMax = 0.5f + Style.PlaneSizeAxisScale * 0.5f;
+            const float PlaneQuadUVMin = 0.5f - Style.PlaneQuadScale * 0.5f;
+            const float PlaneQuadUVMax = 0.5f + Style.PlaneQuadScale * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) {
                 return Interaction{type == Type::Scale ? TransformType::Scale : TransformType::Translate, TranslatePlanes[i]};
             }
@@ -654,7 +650,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
         for (uint32_t i = 0; i < 3; ++i) {
             if (bool translate_active = g.Interaction == Interaction{Translate, AxisOp(i)};
                 type != Type::Scale && (!g.Start || translate_active)) {
-                const float scale = type == Type::Universal ? Style.TranslationArrowUniversalPosScale : Style.AxisHandleScale;
+                const float scale = type == Type::Universal ? Style.TranslationArrowPosScaleUniversal : Style.AxisHandleScale;
                 DrawAxisHandle(HandleType::Arrow, translate_active, false, i, scale, type != Type::Universal || g.Start);
                 if (g.Start) DrawAxisHandle(HandleType::Arrow, translate_active, true, i, scale, true);
             }
@@ -672,7 +668,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
                     const auto &m = ghost ? GetRT(g.Start->M) : model.RT;
                     const auto w2s = ghost ? g.Start->WorldToSizeNdc : g.WorldToSizeNdc;
                     const auto mult = g.Start && !ghost && type == Type::Scale ? g.Scale[AxisIndex(PlaneAxes(g.Interaction->Axis)->first)] : 1.f;
-                    const auto uv = s * Style.PlaneSizeAxisScale * 0.5f + 0.5f * mult;
+                    const auto uv = s * Style.PlaneQuadScale * 0.5f + 0.5f * mult;
                     return WorldToPx(w2s * (dir_x * uv.x + dir_y * uv.y), view_proj * m);
                 };
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
@@ -702,7 +698,7 @@ void Render(const Model &model, Type type, const mat4 &view_proj, vec3 cam_origi
             {
                 const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, g.Start->PlaneWs)) - o_ws);
                 const auto v = glm::cross(vec3{g.Start->PlaneWs}, u);
-                const float r = g.WorldToSizeNdc * (g.Interaction->Axis == Screen ? (2 * Style.OuterCircleRadScale) : Style.RotationAxesCircleScale);
+                const float r = g.WorldToSizeNdc * (g.Interaction->Axis == Screen ? Style.OuterCircleRadScale : Style.RotationAxesCircleScale);
                 const auto u_screen = WorldToPx(o_ws + u * r, view_proj) - o_px;
                 const auto v_screen = WorldToPx(o_ws + v * r, view_proj) - o_px;
                 FastEllipse(CirclePositions, o_px, u_screen, v_screen, g.RotationAngle >= 0);
@@ -822,7 +818,7 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
     const auto view_inv = InverseRigid(view);
     const ray camera_ray{Pos(view_inv), Dir(view_inv)};
     // Compute scale from camera right vector projected onto screen at model position.
-    g.WorldToSizeNdc = Style.SizeNdc / glm::length(ClipToNdc(view_proj * vec4{Pos(model.RT) + vec3{Right(view_inv)}, 1}) - ClipToNdc(view_proj * vec4{Pos(model.RT), 1}));
+    g.WorldToSizeNdc = 2 * Style.SizeNdc / glm::length(ClipToNdc(view_proj * vec4{Pos(model.RT) + vec3{Right(view_inv)}, 1}) - ClipToNdc(view_proj * vec4{Pos(model.RT), 1}));
     if (g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         g.Start = {};
         g.Interaction = {};
