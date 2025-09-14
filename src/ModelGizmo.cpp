@@ -44,10 +44,10 @@ struct Interaction {
 };
 
 namespace state {
-// Context captured when mouse is pressed on a hovered transform.
+// Context captured when mouse is pressed on a hovered Interaction.
 struct StartContext {
     mat4 M; // Model matrix
-    vec4 PlaneWs; // World-space plane for the pressed transform
+    vec4 PlaneWs; // World-space plane for the pressed Interaction
     vec2 MousePx;
     ray MouseRayWs;
     float WorldPerNdc; // World units per (signed) NDC at the gizmo origin (sampled along screen-x)
@@ -60,7 +60,7 @@ struct Context {
     ImVec2 MousePx{0, 0};
 
     // World units per (signed) NDC unit at the gizmo origin (sampled along screen-x).
-    // Use to convert a dimensionless NDC span to a world-space length at the gizmo origin.
+    // Use to convert a dimensionless NDC span to a world-space length (at the gizmo origin).
     float WorldPerNdc;
 
     std::optional<Interaction> Interaction; // If `Start` is present, active interaction. Otherwise, hovered interaction.
@@ -72,20 +72,20 @@ struct Context {
 struct Style {
     float SizeUv{0.08}; // Size of the gizmo as a ratio of screen width
 
-    // `Scale` members are relative to the gizmo size. To convert to screen-relative, multiply them by SizeUv.
+    // `Size` vars are relative to gizmo size. To convert to screen-relative, multiply by SizeUv.
 
     // `AxisHandle`s are the lines for translate/scale
-    float TranslationArrowScale{0.18}, TranslationArrowRadScale{0.3f * TranslationArrowScale};
-    float TranslationArrowPosScaleUniversal{1 + TranslationArrowScale}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
-    float AxisHandleScale{1.f - TranslationArrowScale}; // Tip is exactly at the gizmo size
-    float UniversalAxisHandleScale{AxisHandleScale - TranslationArrowScale}; // For scale handles in Universal mode
-    float PlaneQuadScale{0.12}; // Translation/scale plane quads
-    float CenterCircleRadScale{0.06}; // Radius of circle at the center of the translate/scale gizmo
-    float CubeHalfExtentScale{0.75f * CenterCircleRadScale}; // Half extent of scale cube handles
-    float InnerCircleRadScale{0.18}; // Radius of the inner selection circle at the center for translate/scale selection
-    float OuterCircleRadScale{1.0}; // Outer circle is exactly the size of the gizmo
-    float RotationAxesCircleScale{AxisHandleScale}; // Rotation axes circles are smaller than the screen circle, equal to the translation arrow base
-    float AxisOpaqueRadScale{2 * InnerCircleRadScale}, AxisTransparentRadScale{InnerCircleRadScale}; // Axes fade from opaque to transparent between this range
+    float TranslationArrowSize{0.18}, TranslationArrowRadSize{0.3f * TranslationArrowSize};
+    float TranslationArrowPosSizeUniversal{1 + TranslationArrowSize}; // Translation arrows in Universal mode are the only thing "outside" the gizmo
+    float AxisHandleSize{1.f - TranslationArrowSize}; // Tip is exactly at the gizmo size
+    float UniversalAxisHandleSize{AxisHandleSize - TranslationArrowSize}; // For scale handles in Universal mode
+    float PlaneQuadSize{0.12}; // Translate/scale plane quads
+    float CenterCircleRadSize{0.06}; // Radius of circle at the center of the translate/scale gizmo
+    float CubeHalfExtentSize{0.75f * CenterCircleRadSize}; // Half extent of scale cube handles
+    float InnerCircleRadSize{0.18}; // Radius of the inner selection circle at the center for translate/scale selection
+    float OuterCircleRadSize{1.0}; // Outer circle is exactly the size of the gizmo
+    float RotationAxesCircleSize{AxisHandleSize}; // Rotation axes circles are smaller than the screen circle, equal to the translation arrow base
+    float AxisOpaqueRadSize{2 * InnerCircleRadSize}, AxisTransparentRadSize{InnerCircleRadSize}; // Axes fade from opaque to transparent between this range
 
     float LineWidth{2}; // Used for axis handle/guide and inner/outer circle lines
     float RotationLineWidth{2.5}; // Thickness of rotation gizmo lines
@@ -210,10 +210,8 @@ constexpr vec4 WsToCs(vec3 ws, const mat4 &vp) { return vp * vec4{ws, 1}; }
 constexpr vec3 WsToNdc(vec3 ws, const mat4 &vp) { return CsToNdc(WsToCs(ws, vp)); }
 constexpr vec2 WsToUv(vec3 ws, const mat4 &vp) { return NdcToUv(WsToNdc(ws, vp)); }
 constexpr ImVec2 WsToPx(vec3 ws, const mat4 &vp) { return UvToPx(WsToUv(ws, vp)); }
-
-// Camera right vector is used to calculate WorldPerNdc, so screen width is used to convert back to pixels.
-// NOTE: despite the name, this returns a *pixel length* for a given *UV fraction* (Style.SizeUv).
-constexpr float ScaleToPx(float scale = 1.f) { return (g.ScreenRect.Max.x - g.ScreenRect.Min.x) * Style.SizeUv * scale; }
+// `size` is ratio of gizmo width
+constexpr float SizeToPx(float size = 1.f) { return (g.ScreenRect.Max.x - g.ScreenRect.Min.x) * Style.SizeUv * size; }
 
 constexpr bool IsPlaneVisible(vec3 dir_x, vec3 dir_y) {
     static constexpr auto ToScreenNdc = [](vec3 v) { return CsToNdc(g.MVP * vec4{v, 1}); };
@@ -304,14 +302,14 @@ mat4 Transform(const mat4 &m, const Model &model, Mode mode, Interaction interac
     }
     if (transform == Scale) {
         // All scaling is based on mouse distance to origin
-        const auto scale_factor = glm::distance(mouse_plane_intersect_ws, o_start_ws) / glm::distance(mouse_plane_intersect_start_ws, o_start_ws);
+        const auto scale = glm::distance(mouse_plane_intersect_ws, o_start_ws) / glm::distance(mouse_plane_intersect_start_ws, o_start_ws);
         if (axis == AxisX || axis == AxisY || axis == AxisZ) {
-            g.Scale[AxisIndex(axis)] = scale_factor;
+            g.Scale[AxisIndex(axis)] = scale;
         } else if (auto plane_axes = PlaneAxes(axis)) {
-            g.Scale[AxisIndex(plane_axes->first)] = scale_factor;
-            g.Scale[AxisIndex(plane_axes->second)] = scale_factor;
+            g.Scale[AxisIndex(plane_axes->first)] = scale;
+            g.Scale[AxisIndex(plane_axes->second)] = scale;
         } else if (axis == Screen) {
-            g.Scale = vec3{scale_factor};
+            g.Scale = vec3{scale};
         }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
@@ -352,7 +350,7 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
 
     const auto center = WsToPx(vec3{0}, g.MVP);
     const auto mouse_r_sq = ImLengthSqr(mouse_px - center);
-    const auto inner_circle_rad_px = ScaleToPx(Style.InnerCircleRadScale);
+    const auto inner_circle_rad_px = SizeToPx(Style.InnerCircleRadSize);
     if ((type == Type::Translate || type == Type::Universal) && mouse_r_sq <= inner_circle_rad_px * inner_circle_rad_px) {
         return Interaction{TransformType::Translate, Screen};
     }
@@ -363,17 +361,17 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
         for (uint32_t i = 0; i < 3; ++i) {
             const auto dir = model.M * vec4{Axes[i], 0};
             const auto dir_ndc = dir * g.WorldPerNdc;
-            const auto start = WsToPx(vec4{o_ws, 1} + dir_ndc * Style.InnerCircleRadScale, view_proj) - screen_min_px;
-            const auto end_scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
-            const auto end = WsToPx(vec4{o_ws, 1} + dir_ndc * end_scale, view_proj) - screen_min_px;
+            const auto start = WsToPx(vec4{o_ws, 1} + dir_ndc * Style.InnerCircleRadSize, view_proj) - screen_min_px;
+            const auto end_size = type == Type::Universal ? Style.UniversalAxisHandleSize : Style.AxisHandleSize;
+            const auto end = WsToPx(vec4{o_ws, 1} + dir_ndc * end_size, view_proj) - screen_min_px;
             if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < SelectDist * SelectDist) {
                 return Interaction{type == Type::Translate ? TransformType::Translate : TransformType::Scale, AxisOp(i)};
             }
 
             if (type == Type::Universal) {
-                const auto arrow_center_scale = Style.TranslationArrowPosScaleUniversal + Style.TranslationArrowScale * 0.5f;
-                const auto translate_pos = WsToPx(vec4{o_ws, 1} + dir_ndc * arrow_center_scale, view_proj) - screen_min_px;
-                const auto half_arrow_px = ScaleToPx(Style.TranslationArrowScale) * 0.5f;
+                const auto arrow_center_size = Style.TranslationArrowPosSizeUniversal + Style.TranslationArrowSize * 0.5f;
+                const auto translate_pos = WsToPx(vec4{o_ws, 1} + dir_ndc * arrow_center_size, view_proj) - screen_min_px;
+                const auto half_arrow_px = SizeToPx(Style.TranslationArrowSize) * 0.5f;
                 if (ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
                     return Interaction{TransformType::Translate, AxisOp(i)};
                 }
@@ -388,15 +386,15 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
             const auto delta_world = (pos_plane - o_ws) / g.WorldPerNdc;
             const float dx = glm::dot(delta_world, plane_x_world);
             const float dy = glm::dot(delta_world, plane_y_world);
-            const float PlaneQuadUVMin = 0.5f - Style.PlaneQuadScale * 0.5f;
-            const float PlaneQuadUVMax = 0.5f + Style.PlaneQuadScale * 0.5f;
+            const float PlaneQuadUVMin = 0.5f - Style.PlaneQuadSize * 0.5f;
+            const float PlaneQuadUVMax = 0.5f + Style.PlaneQuadSize * 0.5f;
             if (dx >= PlaneQuadUVMin && dx <= PlaneQuadUVMax && dy >= PlaneQuadUVMin && dy <= PlaneQuadUVMax) {
                 return Interaction{type == Type::Scale ? TransformType::Scale : TransformType::Translate, TranslatePlanes[i]};
             }
         }
     }
     if (type == Type::Rotate || type == Type::Universal) {
-        const auto rotation_radius = ScaleToPx(Style.OuterCircleRadScale);
+        const auto rotation_radius = SizeToPx(Style.OuterCircleRadSize);
         const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
         if (mouse_r_sq >= inner_rad * inner_rad && mouse_r_sq < outer_rad * outer_rad) {
             return Interaction{TransformType::Rotate, Screen};
@@ -410,14 +408,14 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
             if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
 
             const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - o_ws), 0};
-            const auto circle_pos = WsToPx(circle_pos_world * Style.RotationAxesCircleScale * g.WorldPerNdc, g.MVP);
+            const auto circle_pos = WsToPx(circle_pos_world * Style.RotationAxesCircleSize * g.WorldPerNdc, g.MVP);
             if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
                 return Interaction{TransformType::Rotate, AxisOp(i)};
             }
         }
     }
     if (type == Type::Scale || type == Type::Universal) {
-        const auto outer_circle_rad_px = ScaleToPx(Style.OuterCircleRadScale);
+        const auto outer_circle_rad_px = SizeToPx(Style.OuterCircleRadSize);
         if (mouse_r_sq >= inner_circle_rad_px * inner_circle_rad_px &&
             mouse_r_sq < outer_circle_rad_px * outer_circle_rad_px) {
             return Interaction{TransformType::Scale, Screen};
@@ -447,10 +445,10 @@ void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clock
 }
 
 constexpr float AxisAlphaForDistPxSq(float dist_px_sq) {
-    const float min_dist = ScaleToPx(Style.AxisTransparentRadScale);
+    const float min_dist = SizeToPx(Style.AxisTransparentRadSize);
     if (dist_px_sq <= min_dist * min_dist) return 0;
 
-    const float max_dist = ScaleToPx(Style.AxisOpaqueRadScale);
+    const float max_dist = SizeToPx(Style.AxisOpaqueRadSize);
     if (dist_px_sq >= max_dist * max_dist) return 1;
 
     return (dist_px_sq - min_dist * min_dist) / (max_dist * max_dist - min_dist * min_dist);
@@ -513,26 +511,26 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
     if (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Op != Screen) {
         const auto axis_i = AxisIndex(g.Interaction->Op);
         const auto color = SelectionColor(colors::Axes[axis_i], true);
-        dl.AddCircleFilled(o_px, ScaleToPx(Style.CenterCircleRadScale), color);
-        dl.AddCircleFilled(WsToPx(Pos(g.Start->M), view_proj), ScaleToPx(Style.CenterCircleRadScale), Color.StartGhost);
+        dl.AddCircleFilled(o_px, SizeToPx(Style.CenterCircleRadSize), color);
+        dl.AddCircleFilled(WsToPx(Pos(g.Start->M), view_proj), SizeToPx(Style.CenterCircleRadSize), Color.StartGhost);
     }
     // Ghost inner circle
     if (g.Start && g.Interaction->Op == Screen && g.Interaction->Transform != Rotate) {
         const auto center = g.Interaction->Transform == Translate ? WsToPx(Pos(g.Start->M), view_proj) : o_px;
-        dl.AddCircle(center, ScaleToPx(Style.InnerCircleRadScale), Color.StartGhost, 0, Style.LineWidth);
+        dl.AddCircle(center, SizeToPx(Style.InnerCircleRadSize), Color.StartGhost, 0, Style.LineWidth);
     }
     // Inner circle
     if ((!g.Start && type != Type::Rotate) ||
         (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Op == Screen)) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen);
         const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
-        dl.AddCircle(o_px, ScaleToPx(scale * Style.InnerCircleRadScale), color, 0, Style.LineWidth);
+        dl.AddCircle(o_px, SizeToPx(scale * Style.InnerCircleRadSize), color, 0, Style.LineWidth);
     }
     // Outer circle
     if (type != Type::Translate && (!g.Start || g.Interaction == Interaction{Rotate, Screen})) {
         dl.AddCircle(
             o_px,
-            ScaleToPx(Style.OuterCircleRadScale),
+            SizeToPx(Style.OuterCircleRadSize),
             SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen),
             0,
             Style.LineWidth
@@ -544,20 +542,20 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
             Arrow, // Arrow cone silhouette (triangle + half-ellipse)
             Cube, // Cube silhouette
         };
-        const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float handle_scale, bool draw_line) {
+        const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float size, bool draw_line) {
             const auto &m = ghost ? g.Start->M : model.M;
             const auto o_ws = Pos(m);
             const auto axis_dir_ws = glm::normalize(vec3{m[axis_i]});
 
             const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
-            const auto end_ws = o_ws + w2s * axis_dir_ws * handle_scale;
+            const auto end_ws = o_ws + w2s * axis_dir_ws * size;
             const auto end_px = WsToPx(end_ws, view_proj);
             const auto color = ghost ? Color.StartGhost :
                 is_active            ? colors::Axes[axis_i] :
                                        SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistPxSq(ImLengthSqr(end_px - o_px))), false);
             if (draw_line) {
-                const float line_begin_scale = g.Start ? Style.CenterCircleRadScale : Style.InnerCircleRadScale;
-                dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * line_begin_scale, view_proj), end_px, color, Style.LineWidth);
+                const float line_begin_size = g.Start ? Style.CenterCircleRadSize : Style.InnerCircleRadSize;
+                dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * line_begin_size, view_proj), end_px, color, Style.LineWidth);
             }
 
             if (handle_type == HandleType::Arrow) {
@@ -566,10 +564,10 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                 // Endpoints/basis
                 const auto u_ws = glm::normalize((cam_origin - end_ws) - glm::dot(cam_origin - end_ws, axis_dir_ws) * axis_dir_ws);
                 const auto v_ws = glm::cross(axis_dir_ws, u_ws);
-                const auto p_tip = WsToPx(end_ws + w2s * axis_dir_ws * Style.TranslationArrowScale, view_proj);
-                const auto p_b1 = WsToPx(end_ws + w2s * v_ws * Style.TranslationArrowRadScale, view_proj);
-                const auto p_b2 = WsToPx(end_ws - w2s * v_ws * Style.TranslationArrowRadScale, view_proj);
-                const auto p_u = WsToPx(end_ws + w2s * u_ws * Style.TranslationArrowRadScale, view_proj);
+                const auto p_tip = WsToPx(end_ws + w2s * axis_dir_ws * Style.TranslationArrowSize, view_proj);
+                const auto p_b1 = WsToPx(end_ws + w2s * v_ws * Style.TranslationArrowRadSize, view_proj);
+                const auto p_b2 = WsToPx(end_ws - w2s * v_ws * Style.TranslationArrowRadSize, view_proj);
+                const auto p_u = WsToPx(end_ws + w2s * u_ws * Style.TranslationArrowRadSize, view_proj);
 
                 // Ellipse frame
                 const auto c = (p_b1 + p_b2) * 0.5f;
@@ -600,7 +598,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                 const auto u_ws = glm::normalize(vec3{m[(axis_i + 1) % 3]});
                 const auto v_ws = glm::normalize(vec3{m[(axis_i + 2) % 3]});
 
-                const float half_ws = w2s * Style.CubeHalfExtentScale;
+                const float half_ws = w2s * Style.CubeHalfExtentSize;
                 const vec3 A = axis_dir_ws * half_ws, U = u_ws * half_ws, V = v_ws * half_ws;
                 const vec3 C = end_ws + A; // inner (−A) face touches the endpoint
 
@@ -666,17 +664,17 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
         };
 
         for (uint32_t i = 0; i < 3; ++i) {
-            if (bool translate_active = g.Interaction == Interaction{Translate, AxisOp(i)};
+            if (const bool translate_active = g.Interaction == Interaction{Translate, AxisOp(i)};
                 type != Type::Scale && (!g.Start || translate_active)) {
-                const float scale = type == Type::Universal ? Style.TranslationArrowPosScaleUniversal : Style.AxisHandleScale;
-                DrawAxisHandle(HandleType::Arrow, translate_active, false, i, scale, type != Type::Universal || g.Start);
-                if (g.Start) DrawAxisHandle(HandleType::Arrow, translate_active, true, i, scale, true);
+                const float size = type == Type::Universal ? Style.TranslationArrowPosSizeUniversal : Style.AxisHandleSize;
+                DrawAxisHandle(HandleType::Arrow, translate_active, false, i, size, type != Type::Universal || g.Start);
+                if (g.Start) DrawAxisHandle(HandleType::Arrow, translate_active, true, i, size, true);
             }
-            if (bool scale_active = g.Interaction == Interaction{Scale, AxisOp(i)};
+            if (const bool scale_active = g.Interaction == Interaction{Scale, AxisOp(i)};
                 type != Type::Translate && (!g.Start || scale_active)) {
-                const float scale = type == Type::Universal ? Style.UniversalAxisHandleScale : Style.AxisHandleScale;
-                DrawAxisHandle(HandleType::Cube, scale_active, false, i, scale * (g.Start ? g.Scale[i] : 1.0f), true);
-                if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, scale, true);
+                const float size = type == Type::Universal ? Style.UniversalAxisHandleSize : Style.AxisHandleSize;
+                DrawAxisHandle(HandleType::Cube, scale_active, false, i, size * (g.Start ? g.Scale[i] : 1.0f), true);
+                if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, size, true);
             }
             if (type != Type::Universal && (!g.Start || g.Interaction->Op == TranslatePlanes[i])) {
                 const auto [dir_x, dir_y] = DirPlaneXY(i);
@@ -686,7 +684,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
                     const auto &m = ghost ? GetRT(g.Start->M) : model.RT;
                     const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
                     const auto mult = g.Start && !ghost && type == Type::Scale ? g.Scale[AxisIndex(PlaneAxes(g.Interaction->Op)->first)] : 1.f;
-                    const auto uv = s * Style.PlaneQuadScale * 0.5f + 0.5f * mult;
+                    const auto uv = s * Style.PlaneQuadSize * 0.5f + 0.5f * mult;
                     return WsToPx(w2s * (dir_x * uv.x + dir_y * uv.y), view_proj * m);
                 };
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
@@ -716,7 +714,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
             {
                 const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, g.Start->PlaneWs)) - o_ws);
                 const auto v = glm::cross(vec3{g.Start->PlaneWs}, u);
-                const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadScale : Style.RotationAxesCircleScale);
+                const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationAxesCircleSize);
                 const auto u_screen = WsToPx(o_ws + u * r, view_proj) - o_px;
                 const auto v_screen = WsToPx(o_ws + v * r, view_proj) - o_px;
                 FastEllipse(CirclePositions, o_px, u_screen, v_screen, g.RotationAngle >= 0);
@@ -734,7 +732,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &view_proj, ve
             Label(ValueLabel(*g.Interaction, vec3{g.RotationAngle}), CirclePositions[1]);
         } else if (!g.Start) {
             // Half-circles facing the camera
-            const float r = g.WorldPerNdc * Style.RotationAxesCircleScale;
+            const float r = g.WorldPerNdc * Style.RotationAxesCircleSize;
             const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(o_ws - cam_origin);
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
