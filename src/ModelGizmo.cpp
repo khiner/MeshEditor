@@ -4,6 +4,7 @@
 
 #include "ModelGizmo.h"
 #include "numeric/mat3.h"
+#include "numeric/quat.h"
 #include "numeric/vec4.h"
 
 #include "imgui.h"
@@ -33,6 +34,7 @@ enum class InteractionOp : uint8_t {
     ZX,
     XY,
     Screen,
+    Trackball, // Rotate only
 };
 
 // Hovered/active transform/op.
@@ -49,6 +51,7 @@ struct StartContext {
     mat4 M; // Model matrix
     vec2 MousePx;
     ray MouseRayWs;
+    mat3 ViewInv;
     float WorldPerNdc; // World units per (signed) NDC at the gizmo origin (sampled along screen-x)
 };
 
@@ -64,8 +67,10 @@ struct Context {
 
     std::optional<Interaction> Interaction; // If `Start` is present, active interaction. Otherwise, hovered interaction.
     std::optional<StartContext> Start; // Captured at mouse press on hovered Interaction.
-    vec3 Scale; // Scale factor since start
-    float RotationAngle; // Relative to start rotation
+    // Transform diffs from start
+    vec3 Scale;
+    float RotationAngle;
+    vec2 RotationYawPitch;
 };
 
 struct Style {
@@ -229,7 +234,8 @@ constexpr std::string AxisLabel(uint32_t i, float v) { return i >= 0 && i < 3 ? 
 constexpr std::string AxisLabel(uint32_t i, vec3 v) { return AxisLabel(i, v[i]); }
 constexpr std::string AxisLabel(InteractionOp a, vec3 v) { return AxisLabel(AxisIndex(a), v); }
 
-constexpr std::string ValueLabel(Interaction i, vec3 v) { // If Rotate, v[0] holds rotation angle (rad)
+// If Rotate, v[0] holds rotation angle (rad), or v[0]/v[1] yaw/pitch (rad) for Trackball.
+constexpr std::string ValueLabel(Interaction i, vec3 v) {
     using enum TransformType;
     switch (i.Transform) {
         case Scale: // fallthrough
@@ -242,14 +248,19 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) { // If Rotate, v[0] hol
                 case YZ: return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
                 case ZX: return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
                 case XY: return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
+                case Trackball: // passthrough (shouldn't happen)
                 case Screen: return i.Transform == Scale ?
                     std::format("XYZ: {:.3f}", v.x) :
                     std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
             }
         }
         case Rotate: {
+            if (i.Op == InteractionOp::Trackball) {
+                const auto [yaw, pitch] = std::pair{v[0], v[1]};
+                return std::format("Trackball: {:.2f}°, {:.2f}°", yaw * 180 / M_PI, pitch * 180 / M_PI);
+            }
             const auto rad = v[0];
-            if (i.Op == InteractionOp::Screen) return std::format("Screen: {:.3f} deg {:.3f} rad", rad * 180 / M_PI, rad);
+            if (i.Op == InteractionOp::Screen) return std::format("Screen: {:.2f}°", rad * 180 / M_PI);
             return AxisLabel(AxisIndex(i.Op), rad);
         }
     }
@@ -269,7 +280,7 @@ struct Model {
 
 vec4 GetPlaneNormal(const Interaction &interaction, const mat4 &m, Mode mode, const ray &cam_ray) {
     using enum TransformType;
-    if (interaction.Op == Screen) return -vec4{cam_ray.d, 0};
+    if (interaction.Op == Screen || interaction.Op == Trackball) return -vec4{cam_ray.d, 0};
     if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return m[*plane_index];
 
     const auto i = AxisIndex(interaction.Op);
@@ -286,7 +297,7 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
 
     assert(g.Start);
 
-    const auto [transform, axis] = interaction;
+    const auto [transform, op] = interaction;
     const auto o_ws = Pos(model.M);
     const auto o_start_ws = Pos(g.Start->M);
     const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, GetRT(g.Start->M), model.Mode, g.Start->MouseRayWs));
@@ -294,14 +305,13 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
     const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start));
     if (transform == Translate) {
         auto delta = (mouse_plane_intersect_ws - o_ws) - (mouse_plane_intersect_start_ws - o_start_ws);
-        // Single axis constraint
-        if (axis == AxisX || axis == AxisY || axis == AxisZ) {
-            const auto &plane = model.M[AxisIndex(axis)];
+        if (op == AxisX || op == AxisY || op == AxisZ) {
+            const auto &plane = model.M[AxisIndex(op)];
             delta = plane * glm::dot(plane, vec4{delta, 0});
         }
         if (snap) {
             const vec4 d{o_ws + delta - o_start_ws, 0};
-            const vec3 delta_cumulative = model.Mode == Mode::Local || axis == Screen ? m * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
+            const vec3 delta_cumulative = model.Mode == Mode::Local || op == Screen ? m * vec4{Snap(model.Inv * d, *snap), 0} : Snap(d, *snap);
             delta = o_start_ws + delta_cumulative - o_ws;
         }
         return glm::translate(I4, delta) * m;
@@ -309,20 +319,36 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
     if (transform == Scale) {
         // All scaling is based on mouse distance to origin
         const auto scale = glm::distance(mouse_plane_intersect_ws, o_start_ws) / glm::distance(mouse_plane_intersect_start_ws, o_start_ws);
-        if (axis == AxisX || axis == AxisY || axis == AxisZ) {
-            g.Scale[AxisIndex(axis)] = scale;
-        } else if (auto plane_axes = PlaneAxes(axis)) {
+        if (op == AxisX || op == AxisY || op == AxisZ) {
+            g.Scale[AxisIndex(op)] = scale;
+        } else if (auto plane_axes = PlaneAxes(op)) {
             g.Scale[AxisIndex(plane_axes->first)] = scale;
             g.Scale[AxisIndex(plane_axes->second)] = scale;
-        } else if (axis == Screen) {
+        } else {
             g.Scale = vec3{scale};
         }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
         return model.RT * glm::scale(I4, g.Scale * GetScale(g.Start->M));
     }
+    // Rotation
+    if (op == Trackball) {
+        const auto &m = g.Start->M;
+        const auto delta_px = std::bit_cast<vec2>(g.MousePx) - g.Start->MousePx;
+        const auto delta = delta_px / SizeToPx(Style.RotationAxesCircleSize); // normalized drag in screen space
+        if (Length2(delta) < 1e-12f) return m;
 
-    // Rotation: Compute angle on plane relative to the rotation origin
+        const float angle = glm::length(delta);
+        const auto axis_ws = glm::normalize(g.Start->ViewInv * vec3{delta.y, delta.x, 0}); // (dx→yaw, dy→pitch)
+        const auto rot_delta = glm::mat4_cast(glm::angleAxis(angle, axis_ws));
+        g.RotationYawPitch = delta;
+        // Apply rotation, preserving translation
+        auto res = rot_delta * mat4{mat3{m}};
+        res[3] = vec4{Pos(m), 1};
+        return res;
+    }
+
+    // Compute angle on plane relative to the rotation origin
     const auto rotation_origin = glm::normalize(mouse_plane_intersect_start_ws - o_start_ws);
     const auto perp = glm::cross(rotation_origin, vec3{plane_start});
     const auto pos_local = glm::normalize(mouse_plane_intersect_ws - o_ws);
@@ -435,10 +461,14 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
                 return Interaction{TransformType::Rotate, AxisOp(i)};
             }
         }
+        if (const auto circle_rad_px = SizeToPx(Style.RotationAxesCircleSize);
+            mouse_r_sq < circle_rad_px * circle_rad_px) {
+            return Interaction{TransformType::Rotate, Trackball};
+        }
     }
-    if (type == Type::Scale || type == Type::Universal) {
-        const auto outer_circle_rad_px = SizeToPx(Style.OuterCircleRadSize);
-        if (mouse_r_sq >= inner_circle_rad_px * inner_circle_rad_px &&
+    if (type == Type::Scale) {
+        if (const auto outer_circle_rad_px = SizeToPx(Style.OuterCircleRadSize);
+            mouse_r_sq >= inner_circle_rad_px * inner_circle_rad_px &&
             mouse_r_sq < outer_circle_rad_px * outer_circle_rad_px) {
             return Interaction{TransformType::Scale, Screen};
         }
@@ -495,6 +525,13 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
     using ModelGizmo::Type;
     using enum TransformType;
 
+    const auto o_px = WsToPx(vec3{0}, g.MVP);
+
+    if (g.Start && g.Interaction->Op == InteractionOp::Trackball) {
+        Label(ValueLabel(*g.Interaction, vec3{g.RotationYawPitch, 0}), o_px);
+        return;
+    }
+
     auto &dl = *ImGui::GetWindowDrawList();
 
     // Full-screen axis guide lines during axis/plane interactions
@@ -518,7 +555,6 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         }
     }
 
-    const auto o_px = WsToPx(vec3{0}, g.MVP);
     // Center filled circle
     if (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Op != Screen) {
         const auto axis_i = AxisIndex(g.Interaction->Op);
@@ -712,10 +748,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         }
 
         if (g.Start) {
-            Label(
-                ValueLabel(*g.Interaction, g.Interaction->Transform == Translate ? Pos(model.M) - Pos(g.Start->M) : g.Scale),
-                WsToPx(vec3{0}, g.MVP)
-            );
+            Label(ValueLabel(*g.Interaction, g.Interaction->Transform == Translate ? Pos(model.M) - Pos(g.Start->M) : g.Scale), o_px);
         }
     }
     if (type == Type::Rotate || type == Type::Universal) {
@@ -867,10 +900,12 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
                 .M = m,
                 .MousePx = mouse_px,
                 .MouseRayWs = mouse_ray_ws,
-                .WorldPerNdc = g.WorldPerNdc
+                .ViewInv = mat3{view_inv},
+                .WorldPerNdc = g.WorldPerNdc,
             };
             g.Scale = {1, 1, 1};
             g.RotationAngle = 0;
+            g.RotationYawPitch = {0, 0};
         }
     }
 
