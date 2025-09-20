@@ -231,7 +231,7 @@ int main(int, char **) {
 
     // Create window with Vulkan graphics context.
     auto *window = SDL_CreateWindow(
-        "MeshEditor", 1280, 720,
+        "MeshEditor", 1280, 800,
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
     );
 

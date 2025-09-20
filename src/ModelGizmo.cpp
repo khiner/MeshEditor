@@ -88,7 +88,7 @@ struct Style {
     float CubeHalfExtentSize{0.75f * CenterCircleRadSize}; // Half extent of scale cube handles
     float InnerCircleRadSize{0.18}; // Radius of the inner selection circle at the center for translate/scale selection
     float OuterCircleRadSize{1.0}; // Outer circle is exactly the size of the gizmo
-    float RotationAxesCircleSize{AxisHandleSize}; // Rotation axes circles are smaller than the screen circle, equal to the translation arrow base
+    float RotationCircleSize{AxisHandleSize}; // Rotation axes and trackball circles
     // Axes/planes fade from opaque to transparent between these ranges
     float AxisOpaqueRadSize{2 * InnerCircleRadSize}, AxisTransparentRadSize{InnerCircleRadSize};
     float PlaneOpaqueAngleRad{0.4}, PlaneTransparentAngleRad{0.2}; // facing camera -> opaque; more edge-on -> transparent
@@ -101,7 +101,8 @@ struct Color {
     ImU32 TranslationLine{IM_COL32(170, 170, 170, 170)};
     ImU32 ScaleLine{IM_COL32(64, 64, 64, 255)};
     ImU32 StartGhost{IM_COL32(160, 160, 160, 160)};
-    ImU32 RotationFillActive{IM_COL32(255, 255, 255, 64)};
+    ImU32 RotationActiveFill{IM_COL32(255, 255, 255, 64)};
+    ImU32 RotationTrackballHoverFill{IM_COL32(255, 255, 255, 15)};
     ImU32 Text{IM_COL32(255, 255, 255, 255)}, TextShadow{IM_COL32(0, 0, 0, 255)};
 };
 } // namespace state
@@ -335,7 +336,7 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
     if (op == Trackball) {
         const auto &m = g.Start->M;
         const auto delta_px = std::bit_cast<vec2>(g.MousePx) - g.Start->MousePx;
-        const auto delta = delta_px / SizeToPx(Style.RotationAxesCircleSize); // normalized drag in screen space
+        const auto delta = delta_px / SizeToPx(Style.RotationCircleSize); // normalized drag in screen space
         if (Length2(delta) < 1e-12f) return m;
 
         const float angle = glm::length(delta);
@@ -456,12 +457,12 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
             if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
 
             const auto circle_pos_world = model.Inv * vec4{glm::normalize(intersect_pos_world - o_ws), 0};
-            const auto circle_pos = WsToPx(circle_pos_world * Style.RotationAxesCircleSize * g.WorldPerNdc, g.MVP);
+            const auto circle_pos = WsToPx(circle_pos_world * Style.RotationCircleSize * g.WorldPerNdc, g.MVP);
             if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
                 return Interaction{TransformType::Rotate, AxisOp(i)};
             }
         }
-        if (const auto circle_rad_px = SizeToPx(Style.RotationAxesCircleSize);
+        if (const auto circle_rad_px = SizeToPx(Style.RotationCircleSize);
             mouse_r_sq < circle_rad_px * circle_rad_px) {
             return Interaction{TransformType::Rotate, Trackball};
         }
@@ -497,7 +498,7 @@ void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clock
 }
 
 constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
-    return selected ? color : colors::MultAlpha(color, 0.85f);
+    return selected ? color : colors::MultAlpha(color, 0.8f);
 }
 
 // Clip ray `p + t*d` to rect `r` using Liang–Barsky algorithm.
@@ -761,7 +762,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
                 const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, GetRT(g.Start->M), model.Mode, g.Start->MouseRayWs));
                 const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start)) - o_ws);
                 const auto v = glm::cross(vec3{plane_start}, u);
-                const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationAxesCircleSize);
+                const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationCircleSize);
                 const auto u_px = WsToPx(o_ws + u * r, vp) - o_px;
                 const auto v_px = WsToPx(o_ws + v * r, vp) - o_px;
                 FastEllipse(CirclePositions, o_px, u_px, v_px, g.RotationAngle >= 0);
@@ -769,7 +770,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             const uint32_t angle_i = float(FullCircleSegmentCount - 1) * fabsf(g.RotationAngle) / (2 * M_PI);
             const auto angle_circle_pos = CirclePositions[angle_i + 1]; // save
             CirclePositions[angle_i + 1] = o_px;
-            dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationFillActive);
+            dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationActiveFill);
 
             CirclePositions[angle_i + 1] = angle_circle_pos; // restore
             const auto color = g.Interaction->Op == Screen ? IM_COL32_WHITE : colors::Axes[AxisIndex(g.Interaction->Op)];
@@ -779,7 +780,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             Label(ValueLabel(*g.Interaction, vec3{g.RotationAngle}), CirclePositions[1]);
         } else if (!g.Start) {
             // Half-circles facing the camera
-            const float r = g.WorldPerNdc * Style.RotationAxesCircleSize;
+            const float r = g.WorldPerNdc * Style.RotationCircleSize;
             const vec3 cam_to_model = mat3{model.Inv} * glm::normalize(o_ws - cam_ray.o);
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
@@ -793,6 +794,9 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
                 FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), o_px, u_px, v_px, true, 0.5f);
                 const auto color = SelectionColor(colors::Axes[2 - axis], g.Interaction == Interaction{Rotate, AxisOp(2 - axis)});
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
+            }
+            if (g.Interaction && g.Interaction->Op == Trackball) {
+                dl.AddCircleFilled(o_px, SizeToPx(Style.RotationCircleSize), Color.RotationTrackballHoverFill);
             }
         }
     }
