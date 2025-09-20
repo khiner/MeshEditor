@@ -90,7 +90,7 @@ struct Style {
     float OuterCircleRadSize{1.0}; // Outer circle is exactly the size of the gizmo
     float RotationCircleSize{AxisHandleSize}; // Rotation axes and trackball circles
     // Axes/planes fade from opaque to transparent between these ranges
-    float AxisOpaqueRadSize{2 * InnerCircleRadSize}, AxisTransparentRadSize{InnerCircleRadSize};
+    float AxisOpaqueRadSize{2.5f * InnerCircleRadSize}, AxisTransparentRadSize{InnerCircleRadSize};
     float PlaneOpaqueAngleRad{0.4}, PlaneTransparentAngleRad{0.2}; // facing camera -> opaque; more edge-on -> transparent
 
     float LineWidth{2}; // Used for axis handle/guide and inner/outer circle lines
@@ -100,7 +100,7 @@ struct Style {
 struct Color {
     ImU32 TranslationLine{IM_COL32(170, 170, 170, 170)};
     ImU32 ScaleLine{IM_COL32(64, 64, 64, 255)};
-    ImU32 StartGhost{IM_COL32(160, 160, 160, 160)};
+    ImU32 StartGhost{IM_COL32(150, 150, 150, 160)};
     ImU32 RotationActiveFill{IM_COL32(255, 255, 255, 64)};
     ImU32 RotationTrackballHoverFill{IM_COL32(255, 255, 255, 15)};
     ImU32 Text{IM_COL32(255, 255, 255, 255)}, TextShadow{IM_COL32(0, 0, 0, 255)};
@@ -600,10 +600,9 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             const auto end_ws = o_ws + w2s * axis_dir_ws * size;
             const auto end_px = WsToPx(end_ws, vp);
             const auto color = ghost ? Color.StartGhost :
-                is_active            ? colors::Axes[axis_i] :
-                                       SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px))), false);
+                                       SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px))), is_active);
             if (draw_line) {
-                const float line_begin_size = g.Start ? Style.CenterCircleRadSize : Style.InnerCircleRadSize;
+                const float line_begin_size = g.Start && is_active ? Style.CenterCircleRadSize : Style.InnerCircleRadSize;
                 dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * line_begin_size, vp), end_px, color, Style.LineWidth);
             }
 
@@ -713,11 +712,11 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         };
 
         for (uint32_t i = 0; i < 3; ++i) {
-            if (const bool translate_active = g.Interaction == Interaction{Translate, AxisOp(i)};
-                type != Type::Scale && (!g.Start || translate_active)) {
+            if (type != Type::Scale) { // Always draw translation handles in translate mode
+                const bool is_active = g.Interaction == Interaction{Translate, AxisOp(i)};
                 const float size = type == Type::Universal ? Style.TranslationArrowPosSizeUniversal : Style.AxisHandleSize;
-                DrawAxisHandle(HandleType::Arrow, translate_active, false, i, size, type != Type::Universal || g.Start);
-                if (g.Start) DrawAxisHandle(HandleType::Arrow, translate_active, true, i, size, true);
+                DrawAxisHandle(HandleType::Arrow, is_active, false, i, size, type != Type::Universal || g.Start);
+                if (g.Start && is_active) DrawAxisHandle(HandleType::Arrow, is_active, true, i, size, true);
             }
             if (const bool scale_active = g.Interaction == Interaction{Scale, AxisOp(i)};
                 type != Type::Translate && (!g.Start || scale_active)) {
