@@ -1361,10 +1361,7 @@ void Scene::RenderGizmo() {
         const auto mouse_ray = ClipPosToWorldRay(glm::inverse(proj * view), mouse_pos_clip);
         const auto active_entity = FindActiveEntity(R);
         if (auto model = R.get<Model>(active_entity).Transform;
-            ModelGizmo::Draw(
-                ModelGizmo::Mode::Local, MGizmo.Type, pos, size, mouse_pos, mouse_ray, model, view, proj,
-                MGizmo.Snap ? std::optional{MGizmo.SnapValue} : std::nullopt
-            )) {
+            ModelGizmo::Draw(MGizmo.Config, model, view, proj, pos, size, mouse_pos, mouse_ray)) {
             // Decompose affine model matrix into pos, scale, and orientation.
             const vec3 position = model[3];
             const vec3 scale{glm::length(model[0]), glm::length(model[1]), glm::length(model[2])};
@@ -1492,11 +1489,14 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (model_changed) SetModel(active_entity, pos, rot, scale);
 
         using enum ModelGizmo::Type;
+        auto &type = MGizmo.Config.Type;
         const bool scale_enabled = !frozen;
-        if (!scale_enabled && MGizmo.Type == Scale) MGizmo.Type = Translate;
+        if (!scale_enabled && type == Scale) type = Translate;
 
+        Spacing();
         Checkbox("Gizmo", &MGizmo.Show);
         if (MGizmo.Show) {
+            Indent();
             if (ModelGizmo::IsUsing()) {
                 SameLine();
                 Text("Using");
@@ -1505,8 +1505,16 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 SameLine();
                 Text("Op: %s", label.data());
             }
-
-            auto &type = MGizmo.Type;
+            {
+                using enum ModelGizmo::Mode;
+                auto &mode = MGizmo.Config.Mode;
+                AlignTextToFramePadding();
+                Text("Mode:");
+                SameLine();
+                if (RadioButton("Local", mode == Local)) mode = Local;
+                SameLine();
+                if (RadioButton("World", mode == World)) mode = World;
+            }
             if (IsKeyPressed(ImGuiKey_T)) type = Translate;
             if (IsKeyPressed(ImGuiKey_R)) type = Rotate;
             if (scale_enabled && IsKeyPressed(ImGuiKey_S)) type = Scale;
@@ -1518,13 +1526,15 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (!scale_enabled) EndDisabled();
             if (RadioButton("Universal", type == Universal)) type = Universal;
             Spacing();
-            Checkbox("Snap", &MGizmo.Snap);
-            if (MGizmo.Snap) {
+            Checkbox("Snap", &MGizmo.Config.Snap);
+            if (MGizmo.Config.Snap) {
                 SameLine();
                 // todo link/unlink snap values
-                DragFloat3("Snap", &MGizmo.SnapValue.x, 1.f, 0.01f, 100.f);
+                DragFloat3("Snap", &MGizmo.Config.SnapValue.x, 1.f, 0.01f, 100.f);
             }
+            Unindent();
         }
+        Spacing();
         if (TreeNode("Model transform")) {
             TextUnformatted("Transform");
             const auto &model = R.get<Model>(active_entity);

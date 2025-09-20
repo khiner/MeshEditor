@@ -23,8 +23,15 @@ enum class Mode : uint8_t {
     World // Align to global axes (no rotation)
 };
 
+struct Config {
+    Mode Mode{};
+    Type Type{};
+    bool Snap{false}; // Snap translate and scale
+    vec3 SnapValue{0.5f};
+};
+
 bool IsUsing();
 std::string_view ToString();
 
-bool Draw(Mode, Type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap = std::nullopt);
+bool Draw(Config, mat4 &m, const mat4 &view, const mat4 &proj, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws);
 } // namespace ModelGizmo

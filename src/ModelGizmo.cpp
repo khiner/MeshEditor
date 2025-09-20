@@ -45,10 +45,38 @@ struct Interaction {
     bool operator==(const Interaction &) const = default;
 };
 
+constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
+constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
+constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
+constexpr vec3 GetScale(const mat4 &m) { return {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])}; }
+// Get rotation & translation from a model matrix.
+mat4 GetRT(const mat4 &m) { return {glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]}; }
+
+constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
+
+// Assumes no scaling or shearing, only rotation and translation
+constexpr mat4 InverseRigid(const mat4 &m) {
+    const auto r = glm::transpose(mat3{m});
+    return {{r[0], 0}, {r[1], 0}, {r[2], 0}, {-r * vec3{m[3]}, 1}};
+}
+
+using ModelGizmo::Mode;
+
+struct Model {
+    Model(const mat4 &m, Mode mode)
+        : m{m}, RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(I4, Pos(RT))}, Mode{mode} {}
+    mat4 m; // Original model matrix (with scale)
+    mat4 RT; // Model matrix rotation + translation
+    mat4 M; // Gizmo model matrix
+    mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
+
+    Mode Mode;
+};
+
 namespace state {
 // Context captured when mouse is pressed on a hovered Interaction.
 struct StartContext {
-    mat4 M; // Model matrix
+    Model Model;
     vec2 MousePx;
     ray MouseRayWs;
     mat3 ViewInv;
@@ -59,7 +87,8 @@ struct Context {
     mat4 MVP;
 
     ImRect ScreenRect{{0, 0}, {0, 0}};
-    ImVec2 MousePx{0, 0};
+
+    vec2 MousePx{0, 0};
 
     // World units per (signed) NDC unit at the gizmo origin (sampled along screen-x).
     // Use to convert a dimensionless NDC span to a world-space length (at the gizmo origin).
@@ -145,21 +174,6 @@ std::string_view ToString() {
 namespace {
 
 using enum InteractionOp;
-
-constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
-constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
-constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
-constexpr vec3 GetScale(const mat4 &m) { return {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])}; }
-// Get rotation & translation from a model matrix.
-mat4 GetRT(const mat4 &m) { return {glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]}; }
-
-constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
-
-// Assumes no scaling or shearing, only rotation and translation
-constexpr mat4 InverseRigid(const mat4 &m) {
-    const auto r = glm::transpose(mat3{m});
-    return {{r[0], 0}, {r[1], 0}, {r[2], 0}, {-r * vec3{m[3]}, 1}};
-}
 
 constexpr InteractionOp AxisOp(uint32_t axis_i) {
     if (axis_i == 0) return AxisX;
@@ -267,41 +281,56 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) {
     }
 }
 
-using ModelGizmo::Mode;
-
-struct Model {
-    Model(const mat4 &m, Mode mode)
-        : RT{GetRT(m)}, M{mode == Mode::Local ? RT : glm::translate(I4, Pos(RT))}, Mode{mode} {}
-    const mat4 RT; // Model matrix rotation + translation
-    const mat4 M; // Gizmo model matrix
-    const mat4 Inv{InverseRigid(M)}; // Inverse of Gizmo model matrix
-
-    Mode Mode;
-};
-
-vec4 GetPlaneNormal(const Interaction &interaction, const mat4 &m, Mode mode, const ray &cam_ray) {
+vec4 GetPlaneNormal(const Interaction &interaction, const Model &model, const ray &cam_ray) {
     using enum TransformType;
     if (interaction.Op == Screen || interaction.Op == Trackball) return -vec4{cam_ray.d, 0};
-    if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return m[*plane_index];
+    if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return model.M[*plane_index];
 
     const auto i = AxisIndex(interaction.Op);
-    if (interaction.Transform == Scale) return m[(i + 1) % 3];
-    if (interaction.Transform == Rotate) return mode == Mode::Local ? m[i] : vec4{I3[i], 0};
+    if (interaction.Transform == Scale) return model.M[(i + 1) % 3];
+    if (interaction.Transform == Rotate) return model.Mode == Mode::Local ? model.M[i] : vec4{I3[i], 0};
 
-    const auto n = vec3{m[i]};
-    const auto v = glm::normalize(Pos(m) - cam_ray.o);
+    const auto n = vec3{model.M[i]};
+    const auto v = glm::normalize(Pos(model.M) - cam_ray.o);
     return vec4{v - n * glm::dot(n, v), 0};
 };
 
-mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const ray &mouse_ray, std::optional<vec3> snap) {
+mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, const ray &mouse_ray, std::optional<vec3> snap) {
     using enum TransformType;
 
     assert(g.Start);
 
+    const auto &m = model.m;
     const auto [transform, op] = interaction;
     const auto o_ws = Pos(model.M);
-    const auto o_start_ws = Pos(g.Start->M);
-    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, GetRT(g.Start->M), model.Mode, g.Start->MouseRayWs));
+    if (transform == Scale) {
+        // All scaling is based on mouse distance to origin
+        const auto o_px = std::bit_cast<vec2>(WsToPx(o_ws, vp));
+        const auto scale = glm::distance(g.MousePx, o_px) / glm::max(0.001f, glm::distance(g.Start->MousePx, o_px));
+        if (op == AxisX || op == AxisY || op == AxisZ) {
+            g.Scale[AxisIndex(op)] = scale;
+        } else if (auto plane_axes = PlaneAxes(op)) {
+            g.Scale[AxisIndex(plane_axes->first)] = scale;
+            g.Scale[AxisIndex(plane_axes->second)] = scale;
+        } else {
+            g.Scale = vec3{scale}; // uniform (Screen / XYZ)
+        }
+
+        g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
+        const vec3 scale_start = GetScale(g.Start->Model.m); // starting local scales
+        if (model.Mode == Mode::Local) return model.RT * glm::scale(I4, g.Scale * scale_start);
+
+        // World mode
+        vec3 k; // per-local-axis scale induced by world scaling
+        for (uint32_t i = 0; i < 3; ++i) {
+            // Length change of this axis under world diag scale
+            k[i] = glm::length(g.Scale * vec3{model.RT[i]});
+        }
+        return model.RT * glm::scale(I4, k * scale_start);
+    }
+
+    const auto o_start_ws = Pos(g.Start->Model.M);
+    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, g.Start->Model, g.Start->MouseRayWs));
     const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane_start));
     const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start));
     if (transform == Translate) {
@@ -317,25 +346,10 @@ mat4 Transform(const mat4 &m, const Model &model, Interaction interaction, const
         }
         return glm::translate(I4, delta) * m;
     }
-    if (transform == Scale) {
-        // All scaling is based on mouse distance to origin
-        const auto scale = glm::distance(mouse_plane_intersect_ws, o_start_ws) / glm::distance(mouse_plane_intersect_start_ws, o_start_ws);
-        if (op == AxisX || op == AxisY || op == AxisZ) {
-            g.Scale[AxisIndex(op)] = scale;
-        } else if (auto plane_axes = PlaneAxes(op)) {
-            g.Scale[AxisIndex(plane_axes->first)] = scale;
-            g.Scale[AxisIndex(plane_axes->second)] = scale;
-        } else {
-            g.Scale = vec3{scale};
-        }
-
-        g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
-        return model.RT * glm::scale(I4, g.Scale * GetScale(g.Start->M));
-    }
     // Rotation
     if (op == Trackball) {
-        const auto &m = g.Start->M;
-        const auto delta_px = std::bit_cast<vec2>(g.MousePx) - g.Start->MousePx;
+        const auto &m = g.Start->Model.m;
+        const auto delta_px = g.MousePx - g.Start->MousePx;
         const auto delta = delta_px / SizeToPx(Style.RotationCircleSize); // normalized drag in screen space
         if (Length2(delta) < 1e-12f) return m;
 
@@ -535,12 +549,13 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
 
     auto &dl = *ImGui::GetWindowDrawList();
 
+    const auto &start_M = g.Start->Model.M;
     // Full-screen axis guide lines during axis/plane interactions
     if (g.Start && g.Interaction->Op != InteractionOp::Screen) {
-        const auto o_ws = Pos(g.Start->M);
+        const auto o_ws = Pos(start_M);
         const auto DrawAxisGuideLine = [&](InteractionOp op) {
             const auto axis_i = AxisIndex(op);
-            const auto axis_ws = vec3{g.Start->M[axis_i]};
+            const auto axis_ws = vec3{start_M[axis_i]};
             const auto p0 = WsToPx(o_ws, vp);
             const auto p1 = WsToPx(o_ws + axis_ws * g.WorldPerNdc, vp);
             if (const auto clipped = ClipRayToRect(g.ScreenRect, p0, p1 - p0)) {
@@ -561,11 +576,11 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         const auto axis_i = AxisIndex(g.Interaction->Op);
         const auto color = SelectionColor(colors::Axes[axis_i], true);
         dl.AddCircleFilled(o_px, SizeToPx(Style.CenterCircleRadSize), color);
-        dl.AddCircleFilled(WsToPx(Pos(g.Start->M), vp), SizeToPx(Style.CenterCircleRadSize), Color.StartGhost);
+        dl.AddCircleFilled(WsToPx(Pos(start_M), vp), SizeToPx(Style.CenterCircleRadSize), Color.StartGhost);
     }
     // Ghost inner circle
     if (g.Start && g.Interaction->Op == Screen && g.Interaction->Transform != Rotate) {
-        const auto center = g.Interaction->Transform == Translate ? WsToPx(Pos(g.Start->M), vp) : o_px;
+        const auto center = g.Interaction->Transform == Translate ? WsToPx(Pos(start_M), vp) : o_px;
         dl.AddCircle(center, SizeToPx(Style.InnerCircleRadSize), Color.StartGhost, 0, Style.LineWidth);
     }
 
@@ -575,7 +590,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             Cube, // Cube silhouette
         };
         const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float size, bool draw_line) {
-            const auto &m = ghost ? g.Start->M : model.M;
+            const auto &m = ghost ? start_M : model.M; // position
             const auto o_ws = Pos(m);
             const auto axis_dir_ws = glm::normalize(vec3{m[axis_i]});
 
@@ -711,15 +726,15 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
                 const auto [ui, vi] = PerpendicularAxes(i);
 
                 const auto screen_pos = [&](vec2 s, bool ghost) {
-                    const auto &m = ghost ? GetRT(g.Start->M) : model.RT;
+                    const auto &basis = ghost ? start_M : model.M;
                     const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
                     const auto mult = g.Start && !ghost && type == Type::Scale ? g.Scale[AxisIndex(PlaneAxes(g.Interaction->Op)->first)] : 1.f;
                     const auto uv = s * Style.PlaneQuadSize * 0.5f + 0.5f * mult;
-                    return WsToPx(w2s * (I3[ui] * uv.x + I3[vi] * uv.y), vp * m);
+                    return WsToPx(w2s * (I3[ui] * uv.x + I3[vi] * uv.y), vp * basis);
                 };
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
                 const bool is_selected = g.Interaction && g.Interaction->Op == TranslatePlanes[i];
-                const auto plane_alpha = PlaneAlpha(i, model.RT, cam_ray);
+                const auto plane_alpha = PlaneAlpha(i, model.M, cam_ray);
                 dl.AddQuad(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(colors::Axes[i], is_selected), plane_alpha), 1.f);
                 dl.AddQuadFilled(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(colors::WithAlpha(colors::Axes[i], 0.5f), is_selected), plane_alpha));
                 if (g.Start) {
@@ -731,7 +746,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         }
 
         if (g.Start) {
-            Label(ValueLabel(*g.Interaction, g.Interaction->Transform == Translate ? Pos(model.M) - Pos(g.Start->M) : g.Scale), o_px);
+            Label(ValueLabel(*g.Interaction, g.Interaction->Transform == Translate ? Pos(model.M) - Pos(start_M) : g.Scale), o_px);
         }
     }
     if (type == Type::Rotate || type == Type::Universal) {
@@ -740,8 +755,8 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         static ImVec2 CirclePositions[FullCircleSegmentCount];
         if (g.Start && g.Interaction->Transform == Rotate) {
             {
-                const auto o_start_ws = Pos(g.Start->M);
-                const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, GetRT(g.Start->M), model.Mode, g.Start->MouseRayWs));
+                const auto o_start_ws = Pos(start_M);
+                const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, g.Start->Model, g.Start->MouseRayWs));
                 const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start)) - o_ws);
                 const auto v = glm::cross(vec3{plane_start}, u);
                 const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationCircleSize);
@@ -826,8 +841,8 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
 
         static constexpr auto LineColor{IM_COL32(255, 255, 255, 255)}, ShadowLineColor{IM_COL32(90, 90, 90, 200)};
         static constexpr ImVec2 ShadowOffset{1.5, 1.5};
-        DrawDashedLine(dl, o_px + ShadowOffset, g.MousePx + ShadowOffset, ShadowLineColor);
-        DrawDashedLine(dl, o_px, g.MousePx, LineColor);
+        DrawDashedLine(dl, o_px + ShadowOffset, std::bit_cast<ImVec2>(g.MousePx) + ShadowOffset, ShadowLineColor);
+        DrawDashedLine(dl, o_px, std::bit_cast<ImVec2>(g.MousePx), LineColor);
 
         static const auto DrawCursorArrow = [](ImDrawList &dl, ImVec2 base, ImVec2 dir, ImVec2 lat) {
             static constexpr float CursorThickness{2}, ShaftLength{22}, HeadLength{7}, HeadWidth{5};
@@ -864,20 +879,17 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         };
 
         ImGui::SetMouseCursor(ImGuiMouseCursor_None); // Custom cursor
-        DrawCursorDoubleArrow(dl, g.MousePx, g.MousePx - o_px, g.Interaction->Transform == Rotate);
+        DrawCursorDoubleArrow(dl, std::bit_cast<ImVec2>(g.MousePx), std::bit_cast<ImVec2>(g.MousePx) - o_px, g.Interaction->Transform == Rotate);
     }
 }
 } // namespace
 
 namespace ModelGizmo {
-bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws, mat4 &m, const mat4 &view, const mat4 &proj, std::optional<vec3> snap) {
+bool Draw(Config config, mat4 &m, const mat4 &view, const mat4 &proj, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
-    g.MousePx = std::bit_cast<ImVec2>(mouse_px);
+    g.MousePx = mouse_px;
 
-    // Scale is always local or m will be skewed when applying world scale or rotated m
-    if (type == Type::Scale || type == Type::Universal) mode = Mode::Local;
-
-    const Model model{m, mode};
+    const Model model{m, config.Mode};
     const mat4 vp = proj * view;
     g.MVP = vp * model.M;
     // Behind-camera cull
@@ -896,12 +908,12 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
 
     if (g.Start) {
         assert(g.Interaction);
-        m = Transform(m, model, *g.Interaction, mouse_ray_ws, snap);
+        m = Transform(model, vp, *g.Interaction, mouse_ray_ws, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
     } else if (ImGui::IsWindowHovered()) {
-        if (g.Interaction = FindHoveredInteraction(model, type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, vp, cam_ray);
+        if (g.Interaction = FindHoveredInteraction(model, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, vp, cam_ray);
             g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             g.Start = state::StartContext{
-                .M = m,
+                .Model = model,
                 .MousePx = mouse_px,
                 .MouseRayWs = mouse_ray_ws,
                 .ViewInv = mat3{view_inv},
@@ -913,7 +925,7 @@ bool Draw(Mode mode, Type type, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ra
         }
     }
 
-    Render(model, type, vp, cam_ray);
+    Render(model, config.Type, vp, cam_ray);
     return bool(g.Start);
 }
 } // namespace ModelGizmo
