@@ -568,23 +568,6 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         const auto center = g.Interaction->Transform == Translate ? WsToPx(Pos(g.Start->M), vp) : o_px;
         dl.AddCircle(center, SizeToPx(Style.InnerCircleRadSize), Color.StartGhost, 0, Style.LineWidth);
     }
-    // Inner circle
-    if ((!g.Start && type != Type::Rotate) ||
-        (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Op == Screen)) {
-        const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen);
-        const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
-        dl.AddCircle(o_px, SizeToPx(scale * Style.InnerCircleRadSize), color, 0, Style.LineWidth);
-    }
-    // Outer circle
-    if (type != Type::Translate && (!g.Start || g.Interaction == Interaction{Rotate, Screen})) {
-        dl.AddCircle(
-            o_px,
-            SizeToPx(Style.OuterCircleRadSize),
-            SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen),
-            0,
-            Style.LineWidth
-        );
-    }
 
     if (type != Type::Rotate) {
         enum class HandleType {
@@ -798,6 +781,24 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
                 dl.AddCircleFilled(o_px, SizeToPx(Style.RotationCircleSize), Color.RotationTrackballHoverFill);
             }
         }
+    }
+
+    // Inner circle
+    if ((!g.Start && type != Type::Rotate) ||
+        (g.Start && g.Interaction->Transform != Rotate && g.Interaction->Op == Screen)) {
+        const auto color = SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen);
+        const auto scale = g.Start && g.Interaction->Transform == Scale ? g.Scale[0] : 1.f;
+        dl.AddCircle(o_px, SizeToPx(scale * Style.InnerCircleRadSize), color, 0, Style.LineWidth);
+    }
+    // Outer circle
+    if (type != Type::Translate && (!g.Start || g.Interaction == Interaction{Rotate, Screen})) {
+        dl.AddCircle(
+            o_px,
+            SizeToPx(Style.OuterCircleRadSize),
+            SelectionColor(IM_COL32_WHITE, g.Interaction && g.Interaction->Op == Screen),
+            0,
+            Style.LineWidth
+        );
     }
     // Dashed center->mouse guide line + double arrow cursor
     if (g.Start && g.Interaction->Transform != Translate) {
