@@ -597,8 +597,8 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
             const auto end_ws = o_ws + w2s * axis_dir_ws * size;
             const auto end_px = WsToPx(end_ws, vp);
-            const auto color = ghost ? Color.StartGhost :
-                                       SelectionColor(colors::WithAlpha(colors::Axes[axis_i], AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px))), is_active);
+            const auto alpha_color = colors::WithAlpha(colors::Axes[axis_i], g.Start && is_active ? 1.f : AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px)));
+            const auto color = ghost ? Color.StartGhost : SelectionColor(alpha_color, is_active);
             if (draw_line) {
                 const float line_begin_size = g.Start && is_active ? Style.CenterCircleRadSize : Style.InnerCircleRadSize;
                 dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * line_begin_size, vp), end_px, color, Style.LineWidth);
