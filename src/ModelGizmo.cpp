@@ -589,7 +589,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             Arrow, // Arrow cone silhouette (triangle + half-ellipse)
             Cube, // Cube silhouette
         };
-        const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float size, bool draw_line) {
+        const auto DrawAxisHandle = [&](HandleType handle_type, bool is_active, bool ghost, uint32_t axis_i, float size, std::optional<float> line_begin_size) {
             const auto &m = ghost ? start_M : model.M; // position
             const auto o_ws = Pos(m);
             const auto axis_dir_ws = glm::normalize(vec3{m[axis_i]});
@@ -599,9 +599,8 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             const auto end_px = WsToPx(end_ws, vp);
             const auto alpha_color = colors::WithAlpha(colors::Axes[axis_i], g.Start && is_active ? 1.f : AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px)));
             const auto color = ghost ? Color.StartGhost : SelectionColor(alpha_color, is_active);
-            if (draw_line) {
-                const float line_begin_size = g.Start && is_active ? Style.CenterCircleRadSize : Style.InnerCircleRadSize;
-                dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * line_begin_size, vp), end_px, color, Style.LineWidth);
+            if (line_begin_size) {
+                dl.AddLine(WsToPx(o_ws + w2s * axis_dir_ws * *line_begin_size, vp), end_px, color, Style.LineWidth);
             }
 
             if (handle_type == HandleType::Arrow) {
@@ -710,17 +709,23 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         };
 
         for (uint32_t i = 0; i < 3; ++i) {
-            if (type != Type::Scale) { // Always draw translation handles in translate mode
+            if (const bool any_active = g.Interaction && g.Interaction->Transform == Translate;
+                type != Type::Scale && (!g.Start || any_active)) { // Draw all translation handles when any are active
                 const bool is_active = g.Interaction == Interaction{Translate, AxisOp(i)};
                 const float size = type == Type::Universal ? Style.TranslationArrowPosSizeUniversal : Style.AxisHandleSize;
-                DrawAxisHandle(HandleType::Arrow, is_active, false, i, size, type != Type::Universal || g.Start);
-                if (g.Start && is_active) DrawAxisHandle(HandleType::Arrow, is_active, true, i, size, true);
+                const auto line_begin_size = type != Type::Universal || g.Start ?
+                    std::optional<float>(g.Start && is_active ? Style.CenterCircleRadSize : type != Type::Universal ? Style.InnerCircleRadSize :
+                                                                                                                      Style.RotationCircleSize) :
+                    std::nullopt;
+                DrawAxisHandle(HandleType::Arrow, is_active, false, i, size, line_begin_size);
+                if (g.Start && is_active) DrawAxisHandle(HandleType::Arrow, is_active, true, i, size, line_begin_size);
             }
-            if (const bool scale_active = g.Interaction == Interaction{Scale, AxisOp(i)};
-                type != Type::Translate && (!g.Start || scale_active)) {
+            if (const bool is_active = g.Interaction == Interaction{Scale, AxisOp(i)};
+                type != Type::Translate && (!g.Start || is_active)) {
                 const float size = type == Type::Universal ? Style.UniversalAxisHandleSize : Style.AxisHandleSize;
-                DrawAxisHandle(HandleType::Cube, scale_active, false, i, size * (g.Start ? g.Scale[i] : 1.0f), true);
-                if (g.Start) DrawAxisHandle(HandleType::Cube, scale_active, true, i, size, true);
+                const float line_begin_size = g.Start && is_active ? Style.CenterCircleRadSize : Style.InnerCircleRadSize;
+                DrawAxisHandle(HandleType::Cube, is_active, false, i, size * (g.Start ? g.Scale[i] : 1.0f), line_begin_size);
+                if (g.Start) DrawAxisHandle(HandleType::Cube, is_active, true, i, size, line_begin_size);
             }
             if (type != Type::Universal && (!g.Start || g.Interaction->Op == TranslatePlanes[i])) {
                 const auto [ui, vi] = PerpendicularAxes(i);
