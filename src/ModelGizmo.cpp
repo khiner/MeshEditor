@@ -312,7 +312,7 @@ vec4 GetPlaneNormal(const Interaction &interaction, const Model &model, const ra
     return vec4{v - n * glm::dot(n, v), 0};
 };
 
-mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, const ray &mouse_ray, std::optional<vec3> snap) {
+mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, const ray &mouse_ray, const ray &cam_ray, std::optional<vec3> snap) {
     using enum TransformType;
 
     assert(g.Start);
@@ -344,7 +344,7 @@ mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, cons
     }
 
     const auto o_start_ws = g.Start->Model.P;
-    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, g.Start->Model, g.Start->MouseRayWs));
+    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, g.Start->Model, cam_ray));
     const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane_start));
     const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start));
     if (transform == Translate) {
@@ -781,7 +781,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         if (g.Start && g.Interaction->Transform == Rotate) {
             {
                 const auto o_start_ws = g.Start->Model.P;
-                const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, g.Start->Model, g.Start->MouseRayWs));
+                const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(*g.Interaction, g.Start->Model, cam_ray));
                 const auto u = glm::normalize(g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start)) - o_ws);
                 const auto v = glm::cross(vec3{plane_start}, u);
                 const float r = g.WorldPerNdc * (g.Interaction->Op == Screen ? Style.OuterCircleRadSize : Style.RotationCircleSize);
@@ -933,7 +933,7 @@ bool Draw(Config config, mat4 &m, const mat4 &view, const mat4 &proj, vec2 pos, 
 
     if (g.Start) {
         assert(g.Interaction);
-        m = Transform(model, vp, *g.Interaction, mouse_ray_ws, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
+        m = Transform(model, vp, *g.Interaction, mouse_ray_ws, cam_ray, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
     } else if (ImGui::IsWindowHovered()) {
         if (g.Interaction = FindHoveredInteraction(model, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, vp, cam_ray);
             g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
