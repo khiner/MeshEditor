@@ -48,16 +48,20 @@ struct Interaction {
 constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
 constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
 constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
-constexpr vec3 GetScale(const mat4 &m) { return {glm::length(m[0]), glm::length(m[1]), glm::length(m[2])}; }
-// Get rotation & translation from a model matrix.
-mat4 GetRT(const mat4 &m) { return {glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2]), m[3]}; }
-
-constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 
 // Assumes no scaling or shearing, only rotation and translation
 constexpr mat4 InverseRigid(const mat4 &m) {
     const auto r = glm::transpose(mat3{m});
     return {{r[0], 0}, {r[1], 0}, {r[2], 0}, {-r * vec3{m[3]}, 1}};
+}
+constexpr mat4 ComposeRTS(vec3 P, const quat &R, vec3 S) {
+    const auto r = glm::mat3_cast(R);
+    return {
+        {r[0] * S.x, 0.f},
+        {r[1] * S.y, 0.f},
+        {r[2] * S.z, 0.f},
+        {P, 1.f}
+    };
 }
 
 using ModelGizmo::Mode;
@@ -65,32 +69,19 @@ using ModelGizmo::Mode;
 struct Model {
     vec3 P; // Position
     vec3 S; // Scale
-    quat R; // Rotation
+    quat R; // Rotation (unit)
     Mode Mode; // Local/World
 
     Model(const mat4 &m, ModelGizmo::Mode mode)
-        : P{Pos(m)}, S{GetScale(m)}, R{glm::quat_cast(mat3{GetRT(m)})}, Mode{mode} {}
+        : P{Pos(m)}, S{glm::length(m[0]), glm::length(m[1]), glm::length(m[2])},
+          R{glm::quat_cast(mat3{glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2])})}, Mode{mode} {}
 
-    // Rotation-only matrix (no scale / translation)
-    mat3 Rm() const { return glm::mat3_cast(R); }
-    // Rotation+Translation (no scale)
-    mat4 RT() const {
-        mat4 rt = glm::mat4_cast(R);
-        rt[3] = vec4{P, 1};
-        return rt;
-    }
-    // Full model matrix (with scale)
-    mat4 Matrix() const { return RT() * glm::scale(I4, S); }
-    // Gizmo basis rotation
-    mat3 GizmoR() const { return Mode == Mode::Local ? Rm() : I3; }
-    mat3 GizmoRInv() const { return glm::transpose(GizmoR()); }
-    // Gizmo axes (world-space directions)
-    vec3 AxisDirWs(uint32_t i) const { return Mode == Mode::World ? I3[i] : glm::mat3_cast(R)[i]; }
-    // Convert a gizmo-local direction to world, optionally applying current scale
+    vec3 AxisDirWs(uint32_t i) const { return Mode == Mode::World ? I3[i] : R * I3[i]; }
     vec3 LocalDirToWorld(vec3 d_local, bool apply_scale = false) const {
-        const vec3 d = apply_scale ? d_local * S : d_local;
-        return Mode == Mode::World ? d : Rm() * d;
+        if (apply_scale) d_local *= S;
+        return Mode == Mode::World ? d_local : R * d_local;
     }
+    vec3 WorldDirToLocal(vec3 d_ws) const { return Mode == Mode::World ? d_ws : glm::conjugate(R) * d_ws; }
 };
 
 namespace state {
@@ -261,43 +252,6 @@ constexpr float Snap(float v, float snap) {
 }
 constexpr vec3 Snap(vec3 v, vec3 snap) { return {Snap(v[0], snap[0]), Snap(v[1], snap[1]), Snap(v[2], snap[2])}; }
 
-constexpr char AxisLabels[]{"XYZ"};
-constexpr std::string AxisLabel(uint32_t i, float v) { return i >= 0 && i < 3 ? std::format("{}: {:.3f}", AxisLabels[i], v) : ""; }
-constexpr std::string AxisLabel(uint32_t i, vec3 v) { return AxisLabel(i, v[i]); }
-constexpr std::string AxisLabel(InteractionOp a, vec3 v) { return AxisLabel(AxisIndex(a), v); }
-
-// If Rotate, v[0] holds rotation angle (rad), or v[0]/v[1] yaw/pitch (rad) for Trackball.
-constexpr std::string ValueLabel(Interaction i, vec3 v) {
-    using enum TransformType;
-    switch (i.Transform) {
-        case Scale: // fallthrough
-        case Translate: {
-            switch (i.Op) {
-                case AxisX:
-                case AxisY:
-                case AxisZ:
-                    return AxisLabel(AxisIndex(i.Op), v);
-                case YZ: return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-                case ZX: return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
-                case XY: return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
-                case Trackball: // passthrough (shouldn't happen)
-                case Screen: return i.Transform == Scale ?
-                    std::format("XYZ: {:.3f}", v.x) :
-                    std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-            }
-        }
-        case Rotate: {
-            if (i.Op == InteractionOp::Trackball) {
-                const auto [yaw, pitch] = std::pair{v[0], v[1]};
-                return std::format("Trackball: {:.2f}°, {:.2f}°", yaw * 180 / M_PI, pitch * 180 / M_PI);
-            }
-            const auto rad = v[0];
-            if (i.Op == InteractionOp::Screen) return std::format("Screen: {:.2f}°", rad * 180 / M_PI);
-            return AxisLabel(AxisIndex(i.Op), rad);
-        }
-    }
-}
-
 vec4 GetPlaneNormal(const Interaction &interaction, const Model &model, const ray &cam_ray) {
     using enum TransformType;
     if (interaction.Op == Screen || interaction.Op == Trackball) return -vec4{cam_ray.d, 0};
@@ -312,16 +266,15 @@ vec4 GetPlaneNormal(const Interaction &interaction, const Model &model, const ra
     return vec4{v - n * glm::dot(n, v), 0};
 };
 
+constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
+
 mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, const ray &mouse_ray, const ray &cam_ray, std::optional<vec3> snap) {
     using enum TransformType;
-
     assert(g.Start);
 
     const auto [transform, op] = interaction;
-    const auto o_ws = model.P;
     if (transform == Scale) {
-        // All scaling is based on mouse distance to origin
-        const auto o_px = std::bit_cast<vec2>(WsToPx(o_ws, vp));
+        const auto o_px = std::bit_cast<vec2>(WsToPx(model.P, vp));
         const auto scale = glm::distance(g.MousePx, o_px) / glm::max(0.001f, glm::distance(g.Start->MousePx, o_px));
         if (op == AxisX || op == AxisY || op == AxisZ) {
             g.Scale[AxisIndex(op)] = scale;
@@ -333,14 +286,12 @@ mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, cons
         }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
-        const vec3 scale_start = g.Start->Model.S; // starting local scales
-        if (model.Mode == Mode::Local) return model.RT() * glm::scale(I4, g.Scale * scale_start);
+        if (model.Mode == Mode::Local) return ComposeRTS(model.P, model.R, g.Scale * g.Start->Model.S);
 
-        // World mode: per-local-axis scale induced by world scale
-        vec3 k;
-        const mat3 R = model.Rm();
-        for (uint32_t i = 0; i < 3; ++i) k[i] = glm::length(g.Scale * vec3{R[i]});
-        return model.RT() * glm::scale(I4, k * scale_start);
+        // World mode: per-local-axis scale induced by a world diag scale
+        const auto Rm = glm::mat3_cast(model.R);
+        const auto k = glm::sqrt(glm::transpose(glm::matrixCompMult(Rm, Rm)) * (g.Scale * g.Scale));
+        return ComposeRTS(model.P, model.R, k * g.Start->Model.S);
     }
 
     const auto o_start_ws = g.Start->Model.P;
@@ -348,57 +299,49 @@ mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, cons
     const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane_start));
     const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start));
     if (transform == Translate) {
-        auto delta = (mouse_plane_intersect_ws - o_ws) - (mouse_plane_intersect_start_ws - o_start_ws);
+        auto delta = (mouse_plane_intersect_ws - model.P) - (mouse_plane_intersect_start_ws - o_start_ws);
         if (op == AxisX || op == AxisY || op == AxisZ) {
             const auto axis = model.AxisDirWs(AxisIndex(op));
             delta = axis * glm::dot(axis, delta);
         }
         if (snap) {
-            const vec3 d_ws = o_ws + delta - o_start_ws;
+            const auto d_ws = model.P + delta - o_start_ws;
             if (model.Mode == Mode::Local || op == Screen) {
-                // Snap in gizmo-local space, then map back with current R and S
-                const vec3 d_local = model.GizmoRInv() * d_ws;
-                delta = o_start_ws + model.LocalDirToWorld(Snap(d_local, *snap), true) - o_ws;
+                // Snap in gizmo-local, map back to world
+                delta = o_start_ws + model.LocalDirToWorld(Snap(model.WorldDirToLocal(d_ws), *snap), true) - model.P;
             } else {
                 delta = Snap(d_ws, *snap);
             }
         }
-        return glm::translate(I4, delta) * model.Matrix();
+        return ComposeRTS(model.P + delta, model.R, model.S);
     }
 
     // Rotation
     if (op == Trackball) {
-        const auto m_start = g.Start->Model.Matrix();
         const auto delta_px = g.MousePx - g.Start->MousePx;
-        const auto delta = delta_px / SizeToPx(Style.RotationCircleSize); // normalized drag in screen space
-        if (Length2(delta) < 1e-12f) return m_start;
+        const auto drag = delta_px / SizeToPx(Style.RotationCircleSize);
+        if (Length2(drag) < 1e-12f) return ComposeRTS(model.P, g.Start->Model.R, g.Start->Model.S);
 
-        const float angle = glm::length(delta);
-        const auto axis_ws = glm::normalize(g.Start->ViewInv * vec3{delta.y, delta.x, 0}); // (dx→yaw, dy→pitch)
-        const auto rot_delta = glm::mat4_cast(glm::angleAxis(angle, axis_ws));
-        g.RotationYawPitch = delta;
-        // Apply rotation, preserving translation
-        auto res = rot_delta * mat4{mat3{m_start}};
-        res[3] = vec4{o_ws, 1};
-        return res;
+        const float angle = glm::length(drag);
+        const auto axis_ws = glm::normalize(g.Start->ViewInv * vec3{drag.y, drag.x, 0}); // yaw/pitch axes
+        g.RotationYawPitch = drag;
+        return ComposeRTS(model.P, glm::angleAxis(angle, axis_ws) * g.Start->Model.R, g.Start->Model.S);
     }
 
-    // Axis/Screen rotation: compute angle on rotation plane
-    const auto rotation_origin = glm::normalize(mouse_plane_intersect_start_ws - o_start_ws);
-    const auto perp = glm::cross(rotation_origin, vec3{plane_start});
-    const auto pos_local = glm::normalize(mouse_plane_intersect_ws - o_ws);
-    float rotation_angle = acosf(glm::clamp(glm::dot(pos_local, rotation_origin), -1.f, 1.f)) * -glm::sign(glm::dot(pos_local, perp));
+    // Axis/Screen rotation on plane
+    const auto a0 = glm::normalize(mouse_plane_intersect_start_ws - o_start_ws);
+    const auto n_ws = vec3{plane_start};
+    const auto t_ws = glm::normalize(mouse_plane_intersect_ws - model.P);
+    const auto perp = glm::cross(a0, n_ws);
+    float rotation_angle =
+        acosf(glm::clamp(glm::dot(t_ws, a0), -1.f, 1.f)) * -glm::sign(glm::dot(t_ws, perp));
     if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
 
-    const vec3 rot_axis_local = glm::normalize(model.GizmoRInv() * vec3{plane_start});
-    const mat4 rot_delta{glm::rotate(I4, rotation_angle - g.RotationAngle, rot_axis_local)};
+    const float d_angle = rotation_angle - g.RotationAngle;
     g.RotationAngle = rotation_angle;
-    if (model.Mode == Mode::Local) return model.RT() * rot_delta * glm::scale(I4, model.S);
-
-    // Rotate around world axis, preserving translation
-    auto res = rot_delta * mat4{mat3{model.Matrix()}};
-    res[3] = vec4{o_ws, 1};
-    return res;
+    const auto axis_local = glm::normalize(model.WorldDirToLocal(n_ws));
+    const auto qd = glm::angleAxis(d_angle, axis_local);
+    return ComposeRTS(model.P, model.Mode == Mode::Local ? model.R * qd : qd * model.R, model.S);
 }
 
 ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
@@ -417,8 +360,8 @@ constexpr float AxisAlphaForDistSqPx(float dist_sq_px) {
 }
 
 float PlaneAlpha(uint32_t axis_i, const Model &model, const ray cam_ray) {
-    const vec3 n_ws = glm::normalize(model.AxisDirWs(axis_i));
-    const vec3 v_ws = glm::normalize(model.P - cam_ray.o);
+    const auto n_ws = glm::normalize(model.AxisDirWs(axis_i));
+    const auto v_ws = glm::normalize(model.P - cam_ray.o);
     const float c = fabsf(glm::dot(n_ws, v_ws)); // [0=edge-on, 1=face-on]
     const float opaque = sinf(Style.PlaneOpaqueAngleRad);
     const float transparent = sinf(Style.PlaneTransparentAngleRad);
@@ -442,7 +385,7 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
         const auto screen_min_px = g.ScreenRect.Min, mouse_rel_px{mouse_px - screen_min_px};
         for (uint32_t i = 0; i < 3; ++i) {
             const vec4 dir_ndc{model.AxisDirWs(i), 0};
-            const auto start = WsToPx(o_ws + vec3{dir_ndc} * (g.WorldPerNdc * Style.InnerCircleRadSize), vp) - screen_min_px;
+            const auto start = WsToPx(o_ws + vec3{dir_ndc} * g.WorldPerNdc * Style.InnerCircleRadSize, vp) - screen_min_px;
             const auto end_size = type == Type::Universal ? Style.UniversalAxisHandleSize : Style.AxisHandleSize;
             const auto end = WsToPx(o_ws + vec3{dir_ndc} * (g.WorldPerNdc * end_size), vp) - screen_min_px;
             if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < SelectDist * SelectDist) {
@@ -451,7 +394,7 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
 
             if (type == Type::Universal) {
                 const auto arrow_center_size = Style.TranslationArrowPosSizeUniversal + Style.TranslationArrowSize * 0.5f;
-                const auto translate_pos = WsToPx(o_ws + vec3{dir_ndc} * (g.WorldPerNdc * arrow_center_size), vp) - screen_min_px;
+                const auto translate_pos = WsToPx(o_ws + vec3{dir_ndc} * g.WorldPerNdc * arrow_center_size, vp) - screen_min_px;
                 const auto half_arrow_px = SizeToPx(Style.TranslationArrowSize) * 0.5f;
                 if (ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
                     return Interaction{TransformType::Translate, AxisOp(i)};
@@ -489,8 +432,8 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
             if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
 
             // Project intersection direction into gizmo-local and back to screen
-            const vec3 dir_local = glm::normalize(model.GizmoRInv() * (intersect_pos_world - o_ws));
-            const vec3 circle_ws = o_ws + model.LocalDirToWorld(dir_local * g.WorldPerNdc * Style.RotationCircleSize);
+            const auto dir_local = glm::normalize(model.WorldDirToLocal(intersect_pos_world - o_ws));
+            const auto circle_ws = o_ws + model.LocalDirToWorld(dir_local * g.WorldPerNdc * Style.RotationCircleSize);
             const auto circle_pos = WsToPx(circle_ws, vp);
             if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
                 return Interaction{TransformType::Rotate, AxisOp(i)};
@@ -509,6 +452,43 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
         }
     }
     return std::nullopt;
+}
+
+constexpr char AxisLabels[]{"XYZ"};
+constexpr std::string AxisLabel(uint32_t i, float v) { return i >= 0 && i < 3 ? std::format("{}: {:.3f}", AxisLabels[i], v) : ""; }
+constexpr std::string AxisLabel(uint32_t i, vec3 v) { return AxisLabel(i, v[i]); }
+constexpr std::string AxisLabel(InteractionOp a, vec3 v) { return AxisLabel(AxisIndex(a), v); }
+
+// If Rotate, v[0] holds rotation angle (rad), or v[0]/v[1] yaw/pitch (rad) for Trackball.
+constexpr std::string ValueLabel(Interaction i, vec3 v) {
+    using enum TransformType;
+    switch (i.Transform) {
+        case Scale: // fallthrough
+        case Translate: {
+            switch (i.Op) {
+                case AxisX:
+                case AxisY:
+                case AxisZ:
+                    return AxisLabel(AxisIndex(i.Op), v);
+                case YZ: return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
+                case ZX: return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
+                case XY: return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
+                case Trackball: // passthrough (shouldn't happen)
+                case Screen: return i.Transform == Scale ?
+                    std::format("XYZ: {:.3f}", v.x) :
+                    std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
+            }
+        }
+        case Rotate: {
+            if (i.Op == InteractionOp::Trackball) {
+                const auto [yaw, pitch] = std::pair{v[0], v[1]};
+                return std::format("Trackball: {:.2f}°, {:.2f}°", yaw * 180 / M_PI, pitch * 180 / M_PI);
+            }
+            const auto rad = v[0];
+            if (i.Op == InteractionOp::Screen) return std::format("Screen: {:.2f}°", rad * 180 / M_PI);
+            return AxisLabel(AxisIndex(i.Op), rad);
+        }
+    }
 }
 
 void Label(std::string_view label, ImVec2 pos) {
@@ -612,12 +592,12 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
             const auto axis_dir_ws = glm::normalize(m.AxisDirWs(axis_i));
 
             const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
-            const auto end_ws = o_ws + axis_dir_ws * (w2s * size);
+            const auto end_ws = o_ws + axis_dir_ws * w2s * size;
             const auto end_px = WsToPx(end_ws, vp);
             const auto alpha_color = colors::WithAlpha(colors::Axes[axis_i], g.Start && is_active ? 1.f : AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px)));
             const auto color = ghost ? Color.StartGhost : SelectionColor(alpha_color, is_active);
             if (line_begin_size) {
-                dl.AddLine(WsToPx(o_ws + axis_dir_ws * (w2s * *line_begin_size), vp), end_px, color, Style.LineWidth);
+                dl.AddLine(WsToPx(o_ws + axis_dir_ws * w2s * (*line_begin_size), vp), end_px, color, Style.LineWidth);
             }
 
             if (handle_type == HandleType::Arrow) {
@@ -660,8 +640,8 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
                 const auto u_ws = glm::normalize(m.AxisDirWs(ui));
                 const auto v_ws = glm::normalize(m.AxisDirWs(vi));
                 const float half_ws = w2s * Style.CubeHalfExtentSize;
-                const vec3 A = axis_dir_ws * half_ws, U = u_ws * half_ws, V = v_ws * half_ws;
-                const vec3 C = end_ws + A; // inner (−A) face touches the endpoint
+                const auto A = axis_dir_ws * half_ws, U = u_ws * half_ws, V = v_ws * half_ws;
+                const auto C = end_ws + A; // inner (−A) face touches the endpoint
 
                 static constexpr uint8_t NumCorners{8};
                 vec3 P[NumCorners]; // (bits: x=U, y=V, z=A)
@@ -676,7 +656,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
                     adj[b][deg[b]++] = a;
                 };
 
-                const vec3 view_dir = glm::normalize(cam_ray.o - C);
+                const auto view_dir = glm::normalize(cam_ray.o - C);
                 const bool sU = glm::dot(u_ws, view_dir) < 0;
                 const bool sV = glm::dot(v_ws, view_dir) < 0;
                 const bool sA = glm::dot(axis_dir_ws, view_dir) < 0;
@@ -751,8 +731,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
                     const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
                     const auto mult = g.Start && !ghost && type == Type::Scale ? g.Scale[AxisIndex(PlaneAxes(g.Interaction->Op)->first)] : 1.f;
                     const auto uv = s * Style.PlaneQuadSize * 0.5f + 0.5f * mult;
-                    const vec3 ws = m.P + (m.AxisDirWs(ui) * (w2s * uv.x) + m.AxisDirWs(vi) * (w2s * uv.y));
-                    return WsToPx(ws, vp);
+                    return WsToPx(m.P + m.AxisDirWs(ui) * w2s * uv.x + m.AxisDirWs(vi) * w2s * uv.y, vp);
                 };
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
                 const bool is_selected = g.Interaction && g.Interaction->Op == TranslatePlanes[i];
@@ -803,7 +782,7 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
         } else if (!g.Start) {
             // Half-circles facing the camera
             const float r = g.WorldPerNdc * Style.RotationCircleSize;
-            const vec3 cam_to_model = model.GizmoRInv() * glm::normalize(o_ws - cam_ray.o);
+            const auto cam_to_model = glm::normalize(model.WorldDirToLocal(o_ws - cam_ray.o));
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 const float angle_start = M_PI_2 + atan2f(cam_to_model[(4 - axis) % 3], cam_to_model[(3 - axis) % 3]);
                 const vec4 axis_start{cosf(angle_start), sinf(angle_start), 0.f, 0.f};
