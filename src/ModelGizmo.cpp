@@ -3,6 +3,7 @@
 #endif
 
 #include "ModelGizmo.h"
+#include "Camera.h"
 #include "numeric/vec4.h"
 
 #include "imgui.h"
@@ -43,17 +44,6 @@ struct Interaction {
     bool operator==(const Interaction &) const = default;
 };
 
-constexpr vec4 Right(const mat4 &m) { return {m[0]}; }
-constexpr vec4 Dir(const mat4 &m) { return {m[2]}; }
-constexpr vec3 Pos(const mat4 &m) { return {m[3]}; } // Assume affine matrix, with w = 1
-
-// Assumes no scaling or shearing, only rotation and translation
-constexpr mat4 InverseRigid(const mat4 &m) {
-    const auto r = glm::transpose(mat3{m});
-    return {{r[0], 0}, {r[1], 0}, {r[2], 0}, {-r * vec3{m[3]}, 1}};
-}
-
-using ModelGizmo::Mode;
 using ModelGizmo::Model;
 
 namespace state {
@@ -62,7 +52,7 @@ struct StartContext {
     Model Model;
     vec2 MousePx;
     ray MouseRayWs;
-    mat3 ViewInv;
+    mat3 CameraBasis; // Right, Up, -Forward
     float WorldPerNdc; // World units per (signed) NDC at the gizmo origin (sampled along screen-x)
 };
 
@@ -224,6 +214,8 @@ constexpr float Snap(float v, float snap) {
 }
 constexpr vec3 Snap(vec3 v, vec3 snap) { return {Snap(v[0], snap[0]), Snap(v[1], snap[1]), Snap(v[2], snap[2])}; }
 
+using ModelGizmo::Mode;
+
 vec4 GetPlaneNormal(const Interaction &interaction, const Model &model, const ray &cam_ray) {
     using enum TransformType;
     if (interaction.Op == Screen || interaction.Op == Trackball) return -vec4{cam_ray.d, 0};
@@ -303,7 +295,7 @@ void Transform(Model &model, const mat4 &vp, Interaction interaction, const ray 
         }
 
         const float angle = glm::length(drag);
-        const auto axis_ws = glm::normalize(g.Start->ViewInv * vec3{drag.y, drag.x, 0}); // yaw/pitch axes
+        const vec3 axis_ws = glm::normalize(drag.y * g.Start->CameraBasis[0] + drag.x * g.Start->CameraBasis[1]);
         g.RotationYawPitch = drag;
         model.R = glm::angleAxis(angle, axis_ws) * g.Start->Model.R;
         return;
@@ -349,7 +341,7 @@ float PlaneAlpha(uint32_t axis_i, const Model &model, const ray cam_ray) {
     return std::clamp((c - transparent) / (opaque - transparent), 0.f, 1.f);
 }
 
-std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo::Type type, ImVec2 mouse_px, const ray &mouse_ray, const mat4 &view, const mat4 &vp, const ray &cam_ray) {
+std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo::Type type, ImVec2 mouse_px, const ray &mouse_ray, const mat4 &vp, const ray &cam_ray) {
     using ModelGizmo::Type;
 
     static constexpr float SelectDist{8};
@@ -406,11 +398,9 @@ std::optional<Interaction> FindHoveredInteraction(const Model &model, ModelGizmo
         }
 
         const auto o_ws = model.P;
-        const auto mv_pos = view * vec4{o_ws, 1};
         for (uint32_t i = 0; i < 3; ++i) {
             const auto intersect_pos_world = mouse_ray(IntersectPlane(mouse_ray, BuildPlane(o_ws, vec4{model.AxisDirWs(i), 0})));
-            const auto intersect_pos = view * vec4{vec3{intersect_pos_world}, 1};
-            if (fabsf(mv_pos.z) - fabsf(intersect_pos.z) < -FLT_EPSILON) continue;
+            if (glm::dot(intersect_pos_world - o_ws, -cam_ray.d) > FLT_EPSILON) continue;
 
             // Project intersection direction into gizmo-local and back to screen
             const auto dir_local = glm::normalize(model.WorldDirToLocal(intersect_pos_world - o_ws));
@@ -869,38 +859,45 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
 }
 } // namespace
 
+#include <print>
+
 namespace ModelGizmo {
-bool Draw(Model &model, Config config, const mat4 &view, const mat4 &proj, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws) {
+bool Draw(Model &model, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
     g.MousePx = mouse_px;
 
-    const mat4 vp = proj * view;
     // Behind-camera cull
-    const auto origin_cs = vp * vec4{model.P, 1};
-    if (!g.Start && origin_cs.z < 0.001f) return false;
+    if (!g.Start && !camera.IsInFront(model.P)) {
+        std::println("ModelGizmo: model behind camera, not rendering");
+        return false;
+    }
 
-    const auto view_inv = InverseRigid(view);
-    const ray cam_ray{Pos(view_inv), Dir(view_inv)};
+    const auto vp = camera.Projection(size.x / size.y) * camera.View();
+    const auto cam_basis = camera.Basis();
+    const auto cam_ray = camera.Ray();
     // Compute world units per NDC at model position, sampling along camera-right projected to screen at the model origin.
     // 2xNDC spans screen width.
-    g.WorldPerNdc = 2 * Style.SizeUv /
-        glm::length(CsToNdc(vp * vec4{model.P + vec3{Right(view_inv)}, 1}) - CsToNdc(vp * vec4{model.P, 1}));
+    const vec3 cam_right_ws = cam_basis[0];
+    g.WorldPerNdc = 2 * Style.SizeUv / glm::length(CsToNdc(vp * vec4{model.P + cam_right_ws, 1}) - CsToNdc(vp * vec4{model.P, 1}));
     if (g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         g.Start = {};
         g.Interaction = {};
     }
 
+    const auto mouse_pos_rel = (mouse_px - pos) / size;
+    const auto mouse_pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
+    const auto mouse_ray_ws = camera.NdcToWorldRay(mouse_pos_clip, size.x / size.y);
     if (g.Start) {
         assert(g.Interaction);
         Transform(model, vp, *g.Interaction, mouse_ray_ws, cam_ray, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
     } else if (ImGui::IsWindowHovered()) {
-        if (g.Interaction = FindHoveredInteraction(model, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, vp, cam_ray);
+        if (g.Interaction = FindHoveredInteraction(model, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray);
             g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             g.Start = state::StartContext{
                 .Model = model,
                 .MousePx = mouse_px,
                 .MouseRayWs = mouse_ray_ws,
-                .ViewInv = mat3{view_inv},
+                .CameraBasis = cam_basis,
                 .WorldPerNdc = g.WorldPerNdc,
             };
             g.Scale = {1, 1, 1};

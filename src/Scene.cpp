@@ -1040,7 +1040,7 @@ void Scene::UpdateEdgeColors() {
 
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    const CameraUBO camera_ubo{Camera.GetView(), Camera.GetProjection(aspect_ratio), Camera.GetPosition()};
+    const CameraUBO camera_ubo{Camera.View(), Camera.Projection(aspect_ratio), Camera.Position()};
     CameraUBOBuffer.Update(as_bytes(camera_ubo));
 
     const ViewProjNearFar vpnf{camera_ubo.View, camera_ubo.Proj, Camera.NearClip, Camera.FarClip};
@@ -1190,11 +1190,12 @@ constexpr ray ClipPosToWorldRay(mat4 vp_inv, vec2 pos_clip) {
 }
 } // namespace
 
-// Returns a world space ray from the mouse into the scene.
+// World-space ray from the mouse into the scene.
 ray Scene::GetMouseWorldRay() const {
-    const vec2 mouse_pos = ToGlm((GetMousePos() - GetCursorScreenPos()) / GetContentRegionAvail());
+    const auto content_region = ToGlm(GetContentRegionAvail());
+    const vec2 mouse_pos = ToGlm(GetMousePos() - GetCursorScreenPos()) / content_region;
     const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}; // [-1,1]^2
-    return ClipPosToWorldRay(glm::inverse(Camera.GetProjection(float(Extent.width) / float(Extent.height)) * Camera.GetView()), mouse_pos_ndc);
+    return ClipPosToWorldRay(glm::inverse(Camera.Projection(content_region.x / content_region.y) * Camera.View()), mouse_pos_ndc);
 }
 
 void Scene::Interact() {
@@ -1236,7 +1237,7 @@ void Scene::Interact() {
         if (io.KeyCtrl || io.KeySuper) {
             Camera.SetTargetDistance(std::max(Camera.Distance * (1 - wheel.y / 16.f), 0.01f));
         } else {
-            Camera.SetTargetYawPitch(Camera.GetYawPitch() + wheel * 0.15f);
+            Camera.SetTargetYawPitch(Camera.YawPitch + wheel * 0.15f);
         }
     }
     if (!IsMouseClicked(ImGuiMouseButton_Left) || MGizmo.Show || OrientationGizmo::IsActive()) return;
@@ -1353,14 +1354,9 @@ void Scene::RenderGizmo() {
     if (MGizmo.Show && !R.storage<Active>().empty()) {
         const auto size = ToGlm(GetContentRegionAvail());
         const auto mouse_pos = ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta;
-        const auto mouse_pos_rel = (mouse_pos - window_pos) / size;
-        const auto mouse_pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
-        const auto view = Camera.GetView();
-        const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
-        const auto mouse_ray = ClipPosToWorldRay(glm::inverse(proj * view), mouse_pos_clip);
         const auto active_entity = FindActiveEntity(R);
         if (ModelGizmo::Model model{R.get<Position>(active_entity).Value, R.get<Rotation>(active_entity).Value, R.get<Scale>(active_entity).Value, MGizmo.Mode};
-            ModelGizmo::Draw(model, MGizmo.Config, view, proj, window_pos, size, mouse_pos, mouse_ray)) {
+            ModelGizmo::Draw(model, MGizmo.Config, Camera, window_pos, size, mouse_pos)) {
             SetModel(active_entity, model.P, model.R, model.S);
         }
     }
@@ -1699,7 +1695,11 @@ void Scene::RenderControls() {
             }
             // camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
             camera_changed |= SliderFloat3("Target", &Camera.Target.x, -10, 10);
-            camera_changed |= SliderFloat("Field of view (deg)", &Camera.FieldOfView, 1, 180);
+            float fov_deg = glm::degrees(Camera.FieldOfViewRad);
+            if (SliderFloat("Field of view (deg)", &fov_deg, 1, 180)) {
+                Camera.FieldOfViewRad = glm::radians(fov_deg);
+                camera_changed = true;
+            }
             camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
             camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
             if (camera_changed) {

@@ -140,7 +140,7 @@ struct MeshCreateInfo {
     bool Select{true}, Visible{true};
 };
 
-static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, 60, 0.01, 100}; }
+static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100}; }
 
 inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice pd) {
     const auto props = pd.getProperties();

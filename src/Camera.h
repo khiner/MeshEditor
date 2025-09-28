@@ -2,6 +2,7 @@
 
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
+#include "numeric/ray.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
@@ -9,30 +10,29 @@
 
 // This is specifically designed to be the view camera, not a free camera.
 struct Camera {
-    Camera(vec3 position, vec3 target, float field_of_view, float near_clip, float far_clip)
-        : Target(target), Distance(glm::length(position - target)), FieldOfView(field_of_view), NearClip(near_clip), FarClip(far_clip) {
+    Camera(vec3 position, vec3 target, float field_of_view_rad, float near_clip, float far_clip)
+        : Target(target), Distance(glm::length(position - target)), FieldOfViewRad(field_of_view_rad), NearClip(near_clip), FarClip(far_clip) {
         const auto direction = glm::normalize(position - target);
-        Yaw = atan2(direction.z, direction.x);
-        Pitch = asin(direction.y);
+        YawPitch = {atan2(direction.z, direction.x), asin(direction.y)};
     }
     ~Camera() = default;
 
     vec3 Target;
     float Distance;
-    float Yaw; // Range [0, 2π]
-    float Pitch; // Range [-π, π]. If in (wrapped) range [π/2, 3π/2], camera is flipped.
-    float FieldOfView;
+    vec2 YawPitch; // Ranges ([0, 2π], [-π, π]) If pitch is in (wrapped) range [π/2, 3π/2], camera is flipped
+    float FieldOfViewRad;
     float NearClip, FarClip;
 
-    mat4 GetView() const;
-    mat4 GetProjection(float aspect_ratio) const;
-    vec3 GetPosition() const { return Target + Distance * Forward(); }
-    vec2 GetYawPitch() const { return {Yaw, Pitch}; }
-
     vec3 Forward() const;
-    mat3 Basis() const;
+    mat3 Basis() const; // Right, Up, -Forward
+    ray Ray() const { return {Position(), Forward()}; }
+    mat4 View() const;
+    mat4 Projection(float aspect_ratio) const;
+    vec3 Position() const { return Target + Distance * Forward(); }
+    ray NdcToWorldRay(vec2 ndc, float aspect_ratio) const;
 
     bool IsAligned(vec3 direction) const;
+    bool IsInFront(vec3) const;
 
     void SetTargetDistance(float);
     void SetTargetYawPitch(vec2);

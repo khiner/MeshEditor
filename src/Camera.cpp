@@ -9,16 +9,24 @@ constexpr float LengthSq(vec2 v) { return glm::dot(v, v); }
 } // namespace
 
 bool Camera::IsAligned(vec3 direction) const { return glm::dot(Forward(), glm::normalize(direction)) > 0.999f; }
+bool Camera::IsInFront(vec3 p) const { return glm::dot(p - Position(), -Forward()) > NearClip; }
+
+ray Camera::NdcToWorldRay(vec2 ndc, float aspect_ratio) const {
+    const float t = std::tan(FieldOfViewRad * 0.5f);
+    // View-space direction with +Z along the camera view dir, rotated into world-space
+    return {Position(), Basis() * glm::normalize(vec3{ndc.x * aspect_ratio * t, ndc.y * t, 1.f})};
+}
+
 vec3 Camera::YAxis() const {
-    const bool is_flipped = Pitch > glm::half_pi<float>() || Pitch < -glm::half_pi<float>();
+    const bool is_flipped = YawPitch.y > glm::half_pi<float>() || YawPitch.y < -glm::half_pi<float>();
     return {0, (is_flipped ? -1.f : 1.f), 0};
 }
 
-mat4 Camera::GetView() const { return glm::lookAt(GetPosition(), Target, YAxis()); }
-mat4 Camera::GetProjection(float aspect_ratio) const {
-    return glm::perspective(glm::radians(FieldOfView), aspect_ratio, NearClip, FarClip);
+mat4 Camera::View() const { return glm::lookAt(Position(), Target, YAxis()); }
+mat4 Camera::Projection(float aspect_ratio) const {
+    return glm::perspective(FieldOfViewRad, aspect_ratio, NearClip, FarClip);
 }
-vec3 Camera::Forward() const { return {glm::cos(Yaw) * glm::cos(Pitch), glm::sin(Pitch), glm::sin(Yaw) * glm::cos(Pitch)}; }
+vec3 Camera::Forward() const { return {glm::cos(YawPitch.x) * glm::cos(YawPitch.y), glm::sin(YawPitch.y), glm::sin(YawPitch.x) * glm::cos(YawPitch.y)}; }
 mat3 Camera::Basis() const {
     const auto forward = Forward();
     const auto right = glm::normalize(glm::cross(YAxis(), forward));
@@ -50,7 +58,7 @@ bool Camera::Tick() {
         return true;
     }
     if (YawPitchVelocity != vec2{0}) {
-        _SetYawPitch(vec2{Yaw, Pitch} + YawPitchVelocity);
+        _SetYawPitch(YawPitch + YawPitchVelocity);
         YawPitchVelocity *= 0.9f;
         if (LengthSq(YawPitchVelocity) < 0.00001) YawPitchVelocity = {};
         return true;
@@ -66,16 +74,15 @@ bool Camera::Tick() {
         return true;
     }
     if (TargetYawPitch) {
-        const auto current = GetYawPitch();
         const vec2 delta{
-            ShortestAngleDelta(current.x, TargetYawPitch->x),
-            ShortestAngleDelta(current.y, TargetYawPitch->y)
+            ShortestAngleDelta(YawPitch.x, TargetYawPitch->x),
+            ShortestAngleDelta(YawPitch.y, TargetYawPitch->y)
         };
         if (LengthSq(delta) < 0.0001f) {
             _SetYawPitch(*TargetYawPitch);
             TargetYawPitch.reset();
         } else {
-            _SetYawPitch(current + delta * TickSpeed); // minimal path step
+            _SetYawPitch(YawPitch + delta * TickSpeed); // minimal path step
         }
         return true;
     }
@@ -88,7 +95,4 @@ void Camera::StopMoving() {
     YawPitchVelocity = {};
 }
 
-void Camera::_SetYawPitch(vec2 yaw_pitch) {
-    Yaw = WrapYaw(yaw_pitch.x);
-    Pitch = WrapPitch(yaw_pitch.y);
-}
+void Camera::_SetYawPitch(vec2 yaw_pitch) { YawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)}; }

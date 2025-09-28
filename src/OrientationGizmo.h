@@ -113,7 +113,7 @@ void Draw(vec2 pos, float size, Camera &camera) {
         } else { // Dragging
             const auto drag_delta = mouse_pos - *Context.DragEndPos;
             Context.DragEndPos = mouse_pos;
-            camera.SetTargetYawPitch(camera.GetYawPitch() + drag_delta * 0.02f);
+            camera.SetTargetYawPitch(camera.YawPitch + drag_delta * 0.02f);
         }
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         if (!Context.DragEndPos && hovered_i) { // Click
