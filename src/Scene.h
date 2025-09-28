@@ -267,6 +267,7 @@ private:
     struct ModelGizmoState {
         bool Show{false};
         ModelGizmo::Config Config;
+        ModelGizmo::Mode Mode;
     };
     ModelGizmoState MGizmo;
 

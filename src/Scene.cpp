@@ -1352,21 +1352,16 @@ void Scene::RenderGizmo() {
     const auto window_pos = ToGlm(GetWindowPos());
     if (MGizmo.Show && !R.storage<Active>().empty()) {
         const auto size = ToGlm(GetContentRegionAvail());
-        const auto pos = window_pos;
         const auto mouse_pos = ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta;
-        const auto mouse_pos_rel = (mouse_pos - pos) / size;
+        const auto mouse_pos_rel = (mouse_pos - window_pos) / size;
         const auto mouse_pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
         const auto view = Camera.GetView();
         const auto proj = Camera.GetProjection(float(Extent.width) / float(Extent.height));
         const auto mouse_ray = ClipPosToWorldRay(glm::inverse(proj * view), mouse_pos_clip);
         const auto active_entity = FindActiveEntity(R);
-        if (auto model = R.get<Model>(active_entity).Transform;
-            ModelGizmo::Draw(MGizmo.Config, model, view, proj, pos, size, mouse_pos, mouse_ray)) {
-            // Decompose affine model matrix into pos, scale, and orientation.
-            const vec3 position = model[3];
-            const vec3 scale{glm::length(model[0]), glm::length(model[1]), glm::length(model[2])};
-            const auto orientation = glm::quat_cast(mat3{vec3{model[0]} / scale.x, vec3{model[1]} / scale.y, vec3{model[2]} / scale.z});
-            SetModel(active_entity, position, orientation, scale);
+        if (ModelGizmo::Model model{R.get<Position>(active_entity).Value, R.get<Rotation>(active_entity).Value, R.get<Scale>(active_entity).Value, MGizmo.Mode};
+            ModelGizmo::Draw(model, MGizmo.Config, view, proj, window_pos, size, mouse_pos, mouse_ray)) {
+            SetModel(active_entity, model.P, model.R, model.S);
         }
     }
     static constexpr float OGizmoSize{90};
@@ -1475,8 +1470,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (Button("Add instance")) AddInstance(active_mesh_entity);
     if (CollapsingHeader("Transform")) {
         auto pos = R.get<Position>(active_entity).Value;
-        auto scale = R.get<Scale>(active_entity).Value;
         auto rot = R.get<Rotation>(active_entity).Value;
+        auto scale = R.get<Scale>(active_entity).Value;
         bool model_changed = false;
         model_changed |= DragFloat3("Position", &pos[0], 0.01f);
         model_changed |= DragFloat4("Rotation (quat WXYZ)", &rot[0], 0.01f);
@@ -1507,7 +1502,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
             {
                 using enum ModelGizmo::Mode;
-                auto &mode = MGizmo.Config.Mode;
+                auto &mode = MGizmo.Mode;
                 AlignTextToFramePadding();
                 Text("Mode:");
                 SameLine();

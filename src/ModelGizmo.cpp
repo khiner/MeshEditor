@@ -3,8 +3,6 @@
 #endif
 
 #include "ModelGizmo.h"
-#include "numeric/mat3.h"
-#include "numeric/quat.h"
 #include "numeric/vec4.h"
 
 #include "imgui.h"
@@ -54,35 +52,9 @@ constexpr mat4 InverseRigid(const mat4 &m) {
     const auto r = glm::transpose(mat3{m});
     return {{r[0], 0}, {r[1], 0}, {r[2], 0}, {-r * vec3{m[3]}, 1}};
 }
-constexpr mat4 ComposeRTS(vec3 P, const quat &R, vec3 S) {
-    const auto r = glm::mat3_cast(R);
-    return {
-        {r[0] * S.x, 0.f},
-        {r[1] * S.y, 0.f},
-        {r[2] * S.z, 0.f},
-        {P, 1.f}
-    };
-}
 
 using ModelGizmo::Mode;
-
-struct Model {
-    vec3 P; // Position
-    vec3 S; // Scale
-    quat R; // Rotation (unit)
-    Mode Mode; // Local/World
-
-    Model(const mat4 &m, ModelGizmo::Mode mode)
-        : P{Pos(m)}, S{glm::length(m[0]), glm::length(m[1]), glm::length(m[2])},
-          R{glm::quat_cast(mat3{glm::normalize(m[0]), glm::normalize(m[1]), glm::normalize(m[2])})}, Mode{mode} {}
-
-    vec3 AxisDirWs(uint32_t i) const { return Mode == Mode::World ? I3[i] : R * I3[i]; }
-    vec3 LocalDirToWorld(vec3 d_local, bool apply_scale = false) const {
-        if (apply_scale) d_local *= S;
-        return Mode == Mode::World ? d_local : R * d_local;
-    }
-    vec3 WorldDirToLocal(vec3 d_ws) const { return Mode == Mode::World ? d_ws : glm::conjugate(R) * d_ws; }
-};
+using ModelGizmo::Model;
 
 namespace state {
 // Context captured when mouse is pressed on a hovered Interaction.
@@ -268,7 +240,7 @@ vec4 GetPlaneNormal(const Interaction &interaction, const Model &model, const ra
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 
-mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, const ray &mouse_ray, const ray &cam_ray, std::optional<vec3> snap) {
+void Transform(Model &model, const mat4 &vp, Interaction interaction, const ray &mouse_ray, const ray &cam_ray, std::optional<vec3> snap) {
     using enum TransformType;
     assert(g.Start);
 
@@ -286,12 +258,16 @@ mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, cons
         }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
-        if (model.Mode == Mode::Local) return ComposeRTS(model.P, model.R, g.Scale * g.Start->Model.S);
+        if (model.Mode == Mode::Local) {
+            model.S = g.Scale * g.Start->Model.S;
+            return;
+        }
 
         // World mode: per-local-axis scale induced by a world diag scale
         const auto Rm = glm::mat3_cast(model.R);
         const auto k = glm::sqrt(glm::transpose(glm::matrixCompMult(Rm, Rm)) * (g.Scale * g.Scale));
-        return ComposeRTS(model.P, model.R, k * g.Start->Model.S);
+        model.S = k * g.Start->Model.S;
+        return;
     }
 
     const auto o_start_ws = g.Start->Model.P;
@@ -313,19 +289,24 @@ mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, cons
                 delta = Snap(d_ws, *snap);
             }
         }
-        return ComposeRTS(model.P + delta, model.R, model.S);
+        model.P += delta;
+        return;
     }
 
     // Rotation
     if (op == Trackball) {
         const auto delta_px = g.MousePx - g.Start->MousePx;
         const auto drag = delta_px / SizeToPx(Style.RotationCircleSize);
-        if (Length2(drag) < 1e-12f) return ComposeRTS(model.P, g.Start->Model.R, g.Start->Model.S);
+        if (Length2(drag) < 1e-12f) {
+            model.R = g.Start->Model.R;
+            return;
+        }
 
         const float angle = glm::length(drag);
         const auto axis_ws = glm::normalize(g.Start->ViewInv * vec3{drag.y, drag.x, 0}); // yaw/pitch axes
         g.RotationYawPitch = drag;
-        return ComposeRTS(model.P, glm::angleAxis(angle, axis_ws) * g.Start->Model.R, g.Start->Model.S);
+        model.R = glm::angleAxis(angle, axis_ws) * g.Start->Model.R;
+        return;
     }
 
     // Axis/Screen rotation on plane
@@ -341,7 +322,7 @@ mat4 Transform(const Model &model, const mat4 &vp, Interaction interaction, cons
     g.RotationAngle = rotation_angle;
     const auto axis_local = glm::normalize(model.WorldDirToLocal(n_ws));
     const auto qd = glm::angleAxis(d_angle, axis_local);
-    return ComposeRTS(model.P, model.Mode == Mode::Local ? model.R * qd : qd * model.R, model.S);
+    model.R = model.Mode == Mode::Local ? model.R * qd : qd * model.R;
 }
 
 ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
@@ -889,11 +870,10 @@ void Render(const Model &model, ModelGizmo::Type type, const mat4 &vp, const ray
 } // namespace
 
 namespace ModelGizmo {
-bool Draw(Config config, mat4 &m, const mat4 &view, const mat4 &proj, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws) {
+bool Draw(Model &model, Config config, const mat4 &view, const mat4 &proj, vec2 pos, vec2 size, vec2 mouse_px, ray mouse_ray_ws) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
     g.MousePx = mouse_px;
 
-    const Model model{m, config.Mode};
     const mat4 vp = proj * view;
     // Behind-camera cull
     const auto origin_cs = vp * vec4{model.P, 1};
@@ -912,7 +892,7 @@ bool Draw(Config config, mat4 &m, const mat4 &view, const mat4 &proj, vec2 pos, 
 
     if (g.Start) {
         assert(g.Interaction);
-        m = Transform(model, vp, *g.Interaction, mouse_ray_ws, cam_ray, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
+        Transform(model, vp, *g.Interaction, mouse_ray_ws, cam_ray, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
     } else if (ImGui::IsWindowHovered()) {
         if (g.Interaction = FindHoveredInteraction(model, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, view, vp, cam_ray);
             g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
