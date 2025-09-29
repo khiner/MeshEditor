@@ -6,6 +6,10 @@ namespace {
 constexpr float WrapYaw(float angle) { return glm::mod(angle, glm::two_pi<float>()); }
 constexpr float WrapPitch(float angle) { return glm::atan(glm::sin(angle), glm::cos(angle)); }
 constexpr float LengthSq(vec2 v) { return glm::dot(v, v); }
+constexpr float ShortestAngleDelta(float from, float to) {
+    const float d = to - from;
+    return std::atan2(std::sin(d), std::cos(d)); // in (-pi, pi]
+}
 } // namespace
 
 bool Camera::IsAligned(vec3 direction) const { return glm::dot(Forward(), glm::normalize(direction)) > 0.999f; }
@@ -44,13 +48,6 @@ void Camera::SetTargetYawPitch(vec2 yaw_pitch) {
     StopMoving();
     TargetYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
 }
-
-namespace {
-constexpr float ShortestAngleDelta(float from, float to) {
-    const float d = to - from;
-    return std::atan2(std::sin(d), std::cos(d)); // in (-pi, pi]
-}
-} // namespace
 
 bool Camera::Tick() {
     if (Changed) {

@@ -1133,8 +1133,8 @@ std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::reg
     return entities_by_distance;
 }
 
-entt::entity CycleIntersectedEntity(const entt::registry &r, entt::entity active_entity, const ray &mouse_world_ray) {
-    if (const auto entities_by_distance = IntersectedEntitiesByDistance(r, mouse_world_ray); !entities_by_distance.empty()) {
+entt::entity CycleIntersectedEntity(const entt::registry &r, entt::entity active_entity, const ray &mouse_ray_ws) {
+    if (const auto entities_by_distance = IntersectedEntitiesByDistance(r, mouse_ray_ws); !entities_by_distance.empty()) {
         // Cycle through hovered entities.
         auto it = find_if(entities_by_distance, [active_entity](const auto &entry) { return entry.second == active_entity; });
         if (it != entities_by_distance.end()) ++it;
@@ -1180,23 +1180,7 @@ void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
         TeleportMousePos(g.IO.MousePos + mouse_delta);
     }
 }
-
-constexpr ray ClipPosToWorldRay(mat4 vp_inv, vec2 pos_clip) {
-    auto near_point = vp_inv * vec4{pos_clip.x, pos_clip.y, 0, 1};
-    near_point /= near_point.w;
-    auto far_point = vp_inv * vec4{pos_clip.x, pos_clip.y, 1, 1};
-    far_point /= far_point.w;
-    return {near_point, glm::normalize(far_point - near_point)};
-}
 } // namespace
-
-// World-space ray from the mouse into the scene.
-ray Scene::GetMouseWorldRay() const {
-    const auto content_region = ToGlm(GetContentRegionAvail());
-    const vec2 mouse_pos = ToGlm(GetMousePos() - GetCursorScreenPos()) / content_region;
-    const vec2 mouse_pos_ndc{2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}; // [-1,1]^2
-    return ClipPosToWorldRay(glm::inverse(Camera.Projection(content_region.x / content_region.y) * Camera.View()), mouse_pos_ndc);
-}
 
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
@@ -1243,11 +1227,13 @@ void Scene::Interact() {
     if (!IsMouseClicked(ImGuiMouseButton_Left) || MGizmo.Show || OrientationGizmo::IsActive()) return;
 
     // Handle mouse selection.
-    const auto mouse_world_ray = GetMouseWorldRay();
+    const auto size = GetContentRegionAvail();
+    const auto mouse_pos = (GetMousePos() - GetCursorScreenPos()) / size;
+    const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
     if (SelectionMode == SelectionMode::Edit) {
         if (EditingElement.Element != MeshElement::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
             const auto &model = R.get<Model>(active_entity);
-            const auto mouse_ray = WorldToLocal(mouse_world_ray, model.InvTransform);
+            const auto mouse_ray = WorldToLocal(mouse_ray_ws, model.InvTransform);
             const auto &mesh = GetActiveMesh();
             {
                 const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
@@ -1257,7 +1243,7 @@ void Scene::Interact() {
             }
         }
     } else if (SelectionMode == SelectionMode::Object) {
-        const auto intersected = CycleIntersectedEntity(R, active_entity, mouse_world_ray);
+        const auto intersected = CycleIntersectedEntity(R, active_entity, mouse_ray_ws);
         if (intersected != entt::null && IsKeyDown(ImGuiMod_Shift)) {
             if (R.all_of<Active>(intersected)) {
                 R.remove<Active, Selected>(intersected);
@@ -1272,7 +1258,7 @@ void Scene::Interact() {
         }
     } else if (SelectionMode == SelectionMode::Excite) {
         // Excite the nearest entity if it's excitable.
-        if (const auto nearest = IntersectNearest(R, mouse_world_ray)) {
+        if (const auto nearest = IntersectNearest(R, mouse_ray_ws)) {
             if (const auto *excitable = R.try_get<Excitable>(nearest->Entity)) {
                 // Find the nearest excitable vertex.
                 std::optional<uint> nearest_excite_vertex;
