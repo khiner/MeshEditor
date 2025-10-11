@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Camera.h"
-#include "ModelGizmo.h"
 #include "Shader.h"
+#include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "Vulkan/UniqueBuffers.h"
 #include "mesh/MeshElement.h"
@@ -134,9 +134,7 @@ inline std::string to_string(SelectionMode mode) {
 
 struct MeshCreateInfo {
     std::string Name{};
-    vec3 Position{0};
-    quat Rotation{1, 0, 0, 0};
-    vec3 Scale{1};
+    Transform Transform{};
     bool Select{true}, Visible{true};
 };
 
@@ -184,7 +182,7 @@ struct Scene {
     void DestroyInstance(entt::entity);
     void DestroyEntity(entt::entity);
 
-    void SetModel(entt::entity, vec3 position, quat rotation, vec3 scale);
+    void SetModel(entt::entity, Transform);
 
     void SetVisible(entt::entity, bool);
 
@@ -264,12 +262,12 @@ private:
     std::array<vk::CommandBuffer, 2> CommandBuffers{*BufferContext.TransferCb, *RenderCommandBuffer};
     mvk::UniqueBuffers CameraUBOBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteColorsBuffer;
 
-    struct ModelGizmoState {
+    struct TransformGizmoState {
         bool Show{false};
-        ModelGizmo::Config Config;
-        ModelGizmo::Mode Mode;
+        TransformGizmo::Config Config;
+        TransformGizmo::Mode Mode;
     };
-    ModelGizmoState MGizmo;
+    TransformGizmoState MGizmo;
 
     bool ShowGrid{true};
     // Selected entity render settings

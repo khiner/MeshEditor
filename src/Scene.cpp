@@ -90,15 +90,17 @@ constexpr auto Float4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
 namespace {
-void UpdateModel(entt::registry &r, entt::entity entity, vec3 position, quat rotation, vec3 scale) {
-    r.emplace_or_replace<Position>(entity, position);
-    r.emplace_or_replace<Rotation>(entity, rotation);
+Transform GetTransform(const entt::registry &r, entt::entity entity) {
+    return {r.get<Position>(entity).Value, r.get<Rotation>(entity).Value, r.all_of<Scale>(entity) ? r.get<Scale>(entity).Value : vec3{1}};
+}
 
+void UpdateModel(entt::registry &r, entt::entity entity, const Transform &transform) {
+    r.emplace_or_replace<Position>(entity, transform.P);
+    r.emplace_or_replace<Rotation>(entity, transform.R);
     // Frozen entities can't have their scale changed.
-    if (!r.all_of<Frozen>(entity)) r.emplace_or_replace<Scale>(entity, scale);
-    else scale = r.all_of<Scale>(entity) ? r.get<Scale>(entity).Value : vec3{1};
+    if (!r.all_of<Frozen>(entity)) r.emplace_or_replace<Scale>(entity, transform.S);
 
-    r.emplace_or_replace<Model>(entity, glm::translate(I4, position) * glm::mat4_cast(glm::normalize(rotation)) * glm::scale(I4, scale));
+    r.emplace_or_replace<Model>(entity, glm::translate(I4, transform.P) * glm::mat4_cast(glm::normalize(transform.R)) * glm::scale(I4, transform.S));
 }
 
 vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
@@ -708,9 +710,11 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity entity) {
     excited_vertex.IndicatorEntity = AddMesh(
         std::move(vertex_indicator_mesh),
         {.Name = "Excite vertex indicator",
-         .Position = vertex_pos + 0.05f * scale_factor * normal,
-         .Rotation = glm::rotation(World.Up, normal),
-         .Scale = vec3{scale_factor},
+         .Transform = {
+             .P = vertex_pos + 0.05f * scale_factor * normal,
+             .R = glm::rotation(World.Up, normal),
+             .S = vec3{scale_factor},
+         },
          .Select = false}
     );
 }
@@ -756,7 +760,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto entity = R.create();
 
     auto node = R.emplace<SceneNode>(entity); // No parent or children.
-    UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
+    UpdateModel(R, entity, info.Transform);
     R.emplace<Name>(entity, CreateName(R, info.Name));
     R.emplace<ModelsBuffer>(entity, mvk::UniqueBuffers{BufferContext, sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer});
     SetVisible(entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
@@ -824,7 +828,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     R.emplace<SceneNode>(entity, parent);
     auto &parent_node = R.get<SceneNode>(parent);
     parent_node.Children.emplace_back(entity);
-    UpdateModel(R, entity, info.Position, info.Rotation, info.Scale);
+    UpdateModel(R, entity, info.Transform);
     R.emplace<Name>(entity, info.Name.empty() ? std::format("{}_instance_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
@@ -876,8 +880,8 @@ void Scene::SetEditingElement(MeshElementIndex element) {
     UpdateRenderBuffers(GetParentEntity(FindActiveEntity(R)));
 }
 
-void Scene::SetModel(entt::entity entity, vec3 position, quat rotation, vec3 scale) {
-    UpdateModel(R, entity, position, rotation, scale);
+void Scene::SetModel(entt::entity entity, Transform transform) {
+    UpdateModel(R, entity, transform);
     UpdateModelBuffer(entity);
     InvalidateCommandBuffer();
 }
@@ -1004,7 +1008,7 @@ void Scene::RecordRenderCommandBuffer() {
     // Silhouette edge color (rendered ontop of meshes)
     if (render_silhouette) {
         const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
-        const uint32_t manipulating = ModelGizmo::IsUsing();
+        const uint32_t manipulating = TransformGizmo::IsUsing();
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t), &manipulating);
         silhouette_edc.RenderQuad(cb);
     }
@@ -1208,8 +1212,8 @@ void Scene::Interact() {
         R.remove<ExcitedVertex>(active_entity);
         AccumulatedWrapMouseDelta = {0, 0};
     }
-    if (ModelGizmo::IsUsing()) {
-        // ModelGizmo overrides this mouse cursor during some actions - this is a default.
+    if (TransformGizmo::IsUsing()) {
+        // TransformGizmo overrides this mouse cursor during some actions - this is a default.
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
     }
@@ -1341,9 +1345,9 @@ void Scene::RenderGizmo() {
         const auto size = ToGlm(GetContentRegionAvail());
         const auto mouse_pos = ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta;
         const auto active_entity = FindActiveEntity(R);
-        if (ModelGizmo::Model model{R.get<Position>(active_entity).Value, R.get<Rotation>(active_entity).Value, R.get<Scale>(active_entity).Value, MGizmo.Mode};
-            ModelGizmo::Draw(model, MGizmo.Config, Camera, window_pos, size, mouse_pos)) {
-            SetModel(active_entity, model.P, model.R, model.S);
+        if (GizmoTransform transform{GetTransform(R, active_entity), MGizmo.Mode};
+            TransformGizmo::Draw(transform, MGizmo.Config, Camera, window_pos, size, mouse_pos)) {
+            SetModel(active_entity, transform);
         }
     }
     static constexpr float OGizmoSize{90};
@@ -1451,21 +1455,19 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (Button("Add instance")) AddInstance(active_mesh_entity);
     if (CollapsingHeader("Transform")) {
-        auto pos = R.get<Position>(active_entity).Value;
-        auto rot = R.get<Rotation>(active_entity).Value;
-        auto scale = R.get<Scale>(active_entity).Value;
+        auto transform = GetTransform(R, active_entity);
         bool model_changed = false;
-        model_changed |= DragFloat3("Position", &pos[0], 0.01f);
-        model_changed |= DragFloat4("Rotation (quat WXYZ)", &rot[0], 0.01f);
+        model_changed |= DragFloat3("Position", &transform.P[0], 0.01f);
+        model_changed |= DragFloat4("Rotation (quat WXYZ)", &transform.R[0], 0.01f);
 
         const bool frozen = R.all_of<Frozen>(active_entity);
         if (frozen) BeginDisabled();
         const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-        model_changed |= DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
+        model_changed |= DragFloat3(label.c_str(), &transform.S[0], 0.01f, 0.01f, 10);
         if (frozen) EndDisabled();
-        if (model_changed) SetModel(active_entity, pos, rot, scale);
+        if (model_changed) SetModel(active_entity, transform);
 
-        using enum ModelGizmo::Type;
+        using enum TransformGizmo::Type;
         auto &type = MGizmo.Config.Type;
         const bool scale_enabled = !frozen;
         if (!scale_enabled && type == Scale) type = Translate;
@@ -1474,16 +1476,16 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         Checkbox("Gizmo", &MGizmo.Show);
         if (MGizmo.Show) {
             Indent();
-            if (ModelGizmo::IsUsing()) {
+            if (TransformGizmo::IsUsing()) {
                 SameLine();
                 Text("Using");
             }
-            if (const auto label = ModelGizmo::ToString(); label != "") {
+            if (const auto label = TransformGizmo::ToString(); label != "") {
                 SameLine();
                 Text("Op: %s", label.data());
             }
             {
-                using enum ModelGizmo::Mode;
+                using enum TransformGizmo::Mode;
                 auto &mode = MGizmo.Mode;
                 AlignTextToFramePadding();
                 Text("Mode:");
@@ -1512,7 +1514,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             Unindent();
         }
         Spacing();
-        if (TreeNode("Model transform")) {
+        if (TreeNode("Transform matrix")) {
             TextUnformatted("Transform");
             const auto &model = R.get<Model>(active_entity);
             RenderMat4(model.Transform);
