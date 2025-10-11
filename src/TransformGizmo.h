@@ -1,16 +1,15 @@
 #pragma once
 
+#include "Transform.h"
 #include "numeric/mat3.h"
-#include "numeric/quat.h"
 #include "numeric/vec2.h"
-#include "numeric/vec3.h"
 
 #include <optional>
 #include <string_view>
 
 struct Camera;
 
-namespace ModelGizmo {
+namespace TransformGizmo {
 enum class Type : uint8_t {
     Translate,
     Rotate,
@@ -29,10 +28,7 @@ struct Config {
     bool Snap{false};
 };
 
-struct Model {
-    vec3 P; // Position
-    quat R; // Rotation
-    vec3 S; // Scale
+struct GizmoTransform : Transform {
     Mode Mode; // Local/World
 
     vec3 AxisDirWs(uint32_t i) const { return Mode == Mode::World ? I3[i] : R * I3[i]; }
@@ -46,5 +42,5 @@ struct Model {
 bool IsUsing();
 std::string_view ToString();
 
-bool Draw(Model &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px);
-} // namespace ModelGizmo
+bool Draw(GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px);
+} // namespace TransformGizmo

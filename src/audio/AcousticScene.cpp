@@ -96,7 +96,9 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         {
             .Name = *RealImpact::FindObjectName(directory),
             // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
-            .Rotation = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1}),
+            .Transform = {
+                .R = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1}),
+            },
         }
     );
 
@@ -125,8 +127,10 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
             listener_entity,
             {
                 .Name = std::format("RealImpact Listener: {}", listener_point.Index),
-                .Position = listener_point.GetPosition(scene.World.Up, true),
-                .Rotation = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.World.Up) * rot_z,
+                .Transform = {
+                    .P = listener_point.GetPosition(scene.World.Up, true),
+                    .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.World.Up) * rot_z,
+                },
                 .Select = false,
             }
         );
