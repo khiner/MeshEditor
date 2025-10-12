@@ -903,4 +903,6 @@ bool Draw(GizmoTransform &transform, Config config, const Camera &camera, vec2 p
     Render(transform, config.Type, vp, cam_ray);
     return bool(g.Start);
 }
+
+const Transform *GetStartTransform() { return g.Start ? &g.Start->Transform : nullptr;}
 } // namespace TransformGizmo

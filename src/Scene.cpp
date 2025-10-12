@@ -16,7 +16,7 @@
 #include <format>
 #include <ranges>
 
-using std::ranges::find, std::ranges::find_if, std::ranges::to;
+using std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;
 
 struct CameraUBO {
@@ -94,13 +94,13 @@ Transform GetTransform(const entt::registry &r, entt::entity entity) {
     return {r.get<Position>(entity).Value, r.get<Rotation>(entity).Value, r.all_of<Scale>(entity) ? r.get<Scale>(entity).Value : vec3{1}};
 }
 
-void UpdateModel(entt::registry &r, entt::entity entity, const Transform &transform) {
-    r.emplace_or_replace<Position>(entity, transform.P);
-    r.emplace_or_replace<Rotation>(entity, transform.R);
+void UpdateModel(entt::registry &r, entt::entity entity, const Transform &t) {
+    r.emplace_or_replace<Position>(entity, t.P);
+    r.emplace_or_replace<Rotation>(entity, t.R);
     // Frozen entities can't have their scale changed.
-    if (!r.all_of<Frozen>(entity)) r.emplace_or_replace<Scale>(entity, transform.S);
+    if (!r.all_of<Frozen>(entity)) r.emplace_or_replace<Scale>(entity, t.S);
 
-    r.emplace_or_replace<Model>(entity, glm::translate(I4, transform.P) * glm::mat4_cast(glm::normalize(transform.R)) * glm::scale(I4, transform.S));
+    r.emplace_or_replace<Model>(entity, glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S));
 }
 
 vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
@@ -1341,20 +1341,57 @@ bool Scene::Render() {
 
 void Scene::RenderGizmo() {
     const auto window_pos = ToGlm(GetWindowPos());
-    if (MGizmo.Show && !R.storage<Active>().empty()) {
-        const auto size = ToGlm(GetContentRegionAvail());
-        const auto mouse_pos = ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta;
-        const auto active_entity = FindActiveEntity(R);
-        if (GizmoTransform transform{GetTransform(R, active_entity), MGizmo.Mode};
-            TransformGizmo::Draw(transform, MGizmo.Config, Camera, window_pos, size, mouse_pos)) {
-            SetModel(active_entity, transform);
-        }
+    {
+        static constexpr float OGizmoSize{90};
+        const float padding = GetTextLineHeightWithSpacing();
+        const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
+        OrientationGizmo::Draw(pos, OGizmoSize, Camera);
+        if (Camera.Tick()) UpdateTransformBuffers();
     }
-    static constexpr float OGizmoSize{90};
-    const float padding = GetTextLineHeightWithSpacing();
-    const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-    OrientationGizmo::Draw(pos, OGizmoSize, Camera);
-    if (Camera.Tick()) UpdateTransformBuffers();
+    if (!MGizmo.Show) return;
+
+    const auto selected_view = R.view<Selected>();
+    if (selected_view.empty()) return;
+
+    // Transform all selected entities around their average position, using the active entity's rotation/scale.
+    // TODO: Could we clean this up by having TransformGizmo::Render return a delta instead of mutating the transform?
+
+    struct StartTransform {
+        Transform T;
+    };
+    const auto start_transform_view = R.view<const StartTransform>();
+
+    const auto active_entity = FindActiveEntity(R);
+    const auto active_transform = GetTransform(R, active_entity);
+    const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
+    GizmoTransform t{{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode};
+    if (TransformGizmo::Draw(t, MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta)) {
+        if (start_transform_view.empty()) {
+            for (const auto e : selected_view) R.emplace<StartTransform>(e, GetTransform(R, e));
+        }
+        // Compute delta transform from drag start
+        const auto &ts = *TransformGizmo::GetStartTransform();
+        const auto r = ts.R, rT = glm::conjugate(r);
+        const Transform dt{t.P - ts.P, r * (rT * t.R) * rT, t.S / ts.S};
+        for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
+            const auto &ts_e = ts_e_comp.T;
+            const bool frozen = R.all_of<Frozen>(e);
+            const auto offset = ts_e.P - ts.P;
+            SetModel(
+                e,
+                {
+                    .P = ts.P + dt.P + glm::rotate(dt.R, frozen ? offset : r * (rT * offset * dt.S)),
+                    .R = glm::normalize(dt.R * ts_e.R),
+                    .S = frozen ? ts_e.S : dt.S * ts_e.S,
+                }
+            );
+        }
+
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
+    } else {
+        R.clear<StartTransform>();
+    }
 }
 
 namespace {

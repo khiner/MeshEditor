@@ -47,4 +47,6 @@ bool IsUsing();
 std::string_view ToString();
 
 bool Draw(GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px);
+
+const Transform *GetStartTransform();
 } // namespace TransformGizmo
