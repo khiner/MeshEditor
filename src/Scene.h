@@ -202,7 +202,7 @@ struct Scene {
     // and it will be equal to the dimensions of `GetContentRegionAvail()` at the beginning of the call.
     // Returns true if the scene was updated, which can happen when the window size or background color changes.
     bool Render();
-    void RenderGizmo();
+    void RenderGizmos(); // Orientation/Transform gizmos
     void RenderControls();
     void RenderEntityControls(entt::entity);
 

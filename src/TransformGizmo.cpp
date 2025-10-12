@@ -841,7 +841,7 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
 } // namespace
 
 namespace TransformGizmo {
-std::optional<Transform> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px) {
+std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
     g.MousePx = mouse_px;
 
@@ -871,7 +871,7 @@ std::optional<Transform> Draw(const GizmoTransform &transform, Config config, co
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray));
         const auto dt = GetLocalTransformDelta(ts, *g.Interaction, vp, mouse_ray_ws, plane);
         Render(transform, dt, config.Type, vp, cam_ray);
-        return GetDeltaTransform(ts, dt, *g.Interaction, plane, cam_basis, config.Snap, config.SnapValue);
+        return Result{ts, GetDeltaTransform(ts, dt, *g.Interaction, plane, cam_basis, config.Snap, config.SnapValue)};
     }
 
     if (ImGui::IsWindowHovered()) {
@@ -888,6 +888,4 @@ std::optional<Transform> Draw(const GizmoTransform &transform, Config config, co
     Render(transform, {}, config.Type, vp, cam_ray);
     return {};
 }
-
-const Transform *GetStartTransform() { return g.Start ? &g.Start->Transform : nullptr; }
 } // namespace TransformGizmo

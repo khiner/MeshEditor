@@ -515,7 +515,7 @@ int main(int, char **) {
                     scene_texture->Render({float(scene_extent.width), float(scene_extent.height)});
                     SetCursorPos(cursor);
                 }
-                scene->RenderGizmo();
+                scene->RenderGizmos();
             }
             End();
             PopStyleVar();
