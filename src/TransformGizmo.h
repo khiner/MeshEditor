@@ -46,7 +46,8 @@ struct Config {
 bool IsUsing();
 std::string_view ToString();
 
-bool Draw(GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px);
+// Returns the delta transform to apply to the start transform, or nullopt if not interacting.
+std::optional<Transform> Draw(const GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px);
 
 const Transform *GetStartTransform();
 } // namespace TransformGizmo

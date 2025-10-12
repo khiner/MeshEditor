@@ -229,13 +229,12 @@ vec4 GetPlaneNormal(const Interaction &interaction, const GizmoTransform &transf
 
 constexpr float Length2(vec2 v) { return v.x * v.x + v.y * v.y; }
 
-void DoTransform(GizmoTransform &transform, const mat4 &vp, Interaction interaction, const ray &mouse_ray, const ray &cam_ray, std::optional<vec3> snap) {
-    using enum TransformType;
-    assert(g.Start);
-
+Transform GetTransformDelta(const mat4 &vp, Interaction interaction, const ray &mouse_ray, const ray &cam_ray, std::optional<vec3> snap) {
     const auto [type, op] = interaction;
-    if (type == Scale) {
-        const auto o_px = std::bit_cast<vec2>(WsToPx(transform.P, vp));
+    const auto &ts = g.Start->Transform;
+    const auto mode = ts.Mode;
+    if (type == TransformType::Scale) {
+        const auto o_px = std::bit_cast<vec2>(WsToPx(ts.P, vp));
         const auto scale = glm::distance(g.MousePx, o_px) / glm::max(0.001f, glm::distance(g.Start->MousePx, o_px));
         if (op == AxisX || op == AxisY || op == AxisZ) {
             g.Scale[AxisIndex(op)] = scale;
@@ -247,71 +246,48 @@ void DoTransform(GizmoTransform &transform, const mat4 &vp, Interaction interact
         }
 
         g.Scale = glm::max(snap ? Snap(g.Scale, *snap) : g.Scale, 0.001f);
-        if (transform.Mode == Mode::Local) {
-            transform.S = g.Scale * g.Start->Transform.S;
-            return;
-        }
+        if (mode == Mode::Local) return {.S = g.Scale};
 
         // World mode: per-local-axis scale induced by a world diag scale
-        const auto Rm = glm::mat3_cast(transform.R);
-        const auto k = glm::sqrt(glm::transpose(glm::matrixCompMult(Rm, Rm)) * (g.Scale * g.Scale));
-        transform.S = k * g.Start->Transform.S;
-        return;
+        const auto Rm = glm::mat3_cast(ts.R);
+        return {.S = glm::sqrt(glm::transpose(glm::matrixCompMult(Rm, Rm)) * (g.Scale * g.Scale))};
     }
 
-    const auto o_start_ws = g.Start->Transform.P;
-    const auto plane_start = BuildPlane(o_start_ws, GetPlaneNormal(interaction, g.Start->Transform, cam_ray));
+    const auto plane_start = BuildPlane(ts.P, GetPlaneNormal(interaction, ts, cam_ray));
     const auto mouse_plane_intersect_ws = mouse_ray(IntersectPlane(mouse_ray, plane_start));
     const auto mouse_plane_intersect_start_ws = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane_start));
-    if (type == Translate) {
-        auto delta = (mouse_plane_intersect_ws - transform.P) - (mouse_plane_intersect_start_ws - o_start_ws);
+    if (type == TransformType::Translate) {
+        auto delta = mouse_plane_intersect_ws - mouse_plane_intersect_start_ws;
         if (op == AxisX || op == AxisY || op == AxisZ) {
-            const auto axis = transform.AxisDirWs(AxisIndex(op));
+            const auto axis = ts.AxisDirWs(AxisIndex(op));
             delta = axis * glm::dot(axis, delta);
         }
         if (snap) {
-            const auto d_ws = transform.P + delta - o_start_ws;
-            if (transform.Mode == Mode::Local || op == Screen) {
-                // Snap in gizmo-local, map back to world
-                delta = o_start_ws + transform.LocalDirToWorld(Snap(transform.WorldDirToLocal(d_ws), *snap), true) - transform.P;
-            } else {
-                delta = Snap(d_ws, *snap);
-            }
+            delta = mode == Mode::Local || op == Screen ? ts.LocalDirToWorld(Snap(ts.WorldDirToLocal(delta), *snap), true) : Snap(delta, *snap);
         }
-        transform.P += delta;
-        return;
+        return {.P = delta};
     }
 
     // Rotation
     if (op == Trackball) {
         const auto delta_px = g.MousePx - g.Start->MousePx;
-        const auto drag = delta_px / SizeToPx(Style.RotationCircleSize);
-        if (Length2(drag) < 1e-12f) {
-            transform.R = g.Start->Transform.R;
-            return;
-        }
+        g.RotationYawPitch = delta_px / SizeToPx(Style.RotationCircleSize);
+        if (Length2(g.RotationYawPitch) < 1e-12f) return {};
 
-        const float angle = glm::length(drag);
-        const vec3 axis_ws = glm::normalize(drag.y * g.Start->CameraBasis[0] + drag.x * g.Start->CameraBasis[1]);
-        g.RotationYawPitch = drag;
-        transform.R = glm::angleAxis(angle, axis_ws) * g.Start->Transform.R;
-        return;
+        const float angle = glm::length(g.RotationYawPitch);
+        const vec3 axis_ws = glm::normalize(g.RotationYawPitch.y * g.Start->CameraBasis[0] + g.RotationYawPitch.x * g.Start->CameraBasis[1]);
+        return {.R = glm::angleAxis(angle, axis_ws)};
     }
 
     // Axis/Screen rotation on plane
-    const auto a0 = glm::normalize(mouse_plane_intersect_start_ws - o_start_ws);
+    const auto a0 = glm::normalize(mouse_plane_intersect_start_ws - ts.P);
     const auto n_ws = vec3{plane_start};
-    const auto t_ws = glm::normalize(mouse_plane_intersect_ws - transform.P);
+    const auto t_ws = glm::normalize(mouse_plane_intersect_ws - ts.P);
     const auto perp = glm::cross(a0, n_ws);
-    float rotation_angle =
+    g.RotationAngle =
         acosf(glm::clamp(glm::dot(t_ws, a0), -1.f, 1.f)) * -glm::sign(glm::dot(t_ws, perp));
-    if (snap) rotation_angle = Snap(rotation_angle, snap->x * M_PI / 180.f);
-
-    const float d_angle = rotation_angle - g.RotationAngle;
-    g.RotationAngle = rotation_angle;
-    const auto axis_local = glm::normalize(transform.WorldDirToLocal(n_ws));
-    const auto qd = glm::angleAxis(d_angle, axis_local);
-    transform.R = transform.Mode == Mode::Local ? transform.R * qd : qd * transform.R;
+    if (snap) g.RotationAngle = Snap(g.RotationAngle, snap->x * M_PI / 180.f);
+    return {.R = glm::angleAxis(g.RotationAngle, glm::normalize(mode == TransformGizmo::Mode::World ? ts.WorldDirToLocal(n_ws) : n_ws))};
 }
 
 ImVec2 PointOnSegment(ImVec2 p, ImVec2 s1, ImVec2 s2) {
@@ -857,13 +833,13 @@ void Render(const GizmoTransform &transform, TransformGizmo::Type type, const ma
 } // namespace
 
 namespace TransformGizmo {
-bool Draw(GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px) {
+std::optional<Transform> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
     g.MousePx = mouse_px;
 
     // Behind-camera cull
     if (!g.Start && !camera.IsInFront(transform.P)) {
-        return false;
+        return {};
     }
 
     const auto vp = camera.Projection(size.x / size.y) * camera.View();
@@ -883,8 +859,12 @@ bool Draw(GizmoTransform &transform, Config config, const Camera &camera, vec2 p
     const auto mouse_ray_ws = camera.NdcToWorldRay(mouse_pos_clip, size.x / size.y);
     if (g.Start) {
         assert(g.Interaction);
-        DoTransform(transform, vp, *g.Interaction, mouse_ray_ws, cam_ray, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
-    } else if (ImGui::IsWindowHovered()) {
+        auto dt = GetTransformDelta(vp, *g.Interaction, mouse_ray_ws, cam_ray, config.Snap ? std::optional{config.SnapValue} : std::nullopt);
+        Render(transform, config.Type, vp, cam_ray);
+        return dt;
+    }
+
+    if (ImGui::IsWindowHovered()) {
         if (g.Interaction = FindHoveredInteraction(transform, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray);
             g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             g.Start = state::StartContext{
@@ -899,10 +879,9 @@ bool Draw(GizmoTransform &transform, Config config, const Camera &camera, vec2 p
             g.RotationYawPitch = {0, 0};
         }
     }
-
     Render(transform, config.Type, vp, cam_ray);
-    return bool(g.Start);
+    return {};
 }
 
-const Transform *GetStartTransform() { return g.Start ? &g.Start->Transform : nullptr;}
+const Transform *GetStartTransform() { return g.Start ? &g.Start->Transform : nullptr; }
 } // namespace TransformGizmo

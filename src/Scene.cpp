@@ -1365,14 +1365,14 @@ void Scene::RenderGizmo() {
     const auto active_transform = GetTransform(R, active_entity);
     const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
     GizmoTransform t{{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode};
-    if (TransformGizmo::Draw(t, MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta)) {
+    if (auto delta = TransformGizmo::Draw(t, MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta)) {
+        const auto &dt = *delta;
         if (start_transform_view.empty()) {
             for (const auto e : selected_view) R.emplace<StartTransform>(e, GetTransform(R, e));
         }
         // Compute delta transform from drag start
         const auto &ts = *TransformGizmo::GetStartTransform();
         const auto r = ts.R, rT = glm::conjugate(r);
-        const Transform dt{t.P - ts.P, r * (rT * t.R) * rT, t.S / ts.S};
         for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
             const auto &ts_e = ts_e_comp.T;
             const bool frozen = R.all_of<Frozen>(e);
@@ -1380,7 +1380,7 @@ void Scene::RenderGizmo() {
             SetModel(
                 e,
                 {
-                    .P = ts.P + dt.P + glm::rotate(dt.R, frozen ? offset : r * (rT * offset * dt.S)),
+                    .P = dt.P + ts.P + glm::rotate(dt.R, frozen ? offset : r * (rT * offset * dt.S)),
                     .R = glm::normalize(dt.R * ts_e.R),
                     .S = frozen ? ts_e.S : dt.S * ts_e.S,
                 }
