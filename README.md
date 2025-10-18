@@ -106,7 +106,7 @@ Install GTK (for native file dialogs):
 $ sudo apt install build-essential libgtk-3-dev
 ```
 
-### Clone, clean, and build app
+### Clone, clean, and build
 
 ```shell
 $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
@@ -130,3 +130,18 @@ $ cmake --build build --config Release
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [ImPlot](https://github.com/epezent/implot): Plotting
 - [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, and parse for SVG link bounding boxes
+
+
+## Development
+
+### Updating submodules
+
+All submodules are in the `lib` directory.
+Currently, no submodules are forked.
+Here is my process for updating to the tip of all the submodule branches:
+
+```sh
+$ git submodule update --remote lib/{submodule}
+$ git add .
+$ git cm -m "Update {submodule} lib(s)"
+```
