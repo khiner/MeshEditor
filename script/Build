@@ -1,0 +1,14 @@
+#!/bin/bash
+
+set -e
+
+ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
+ProjectRootDir="$(dirname "${ScriptDir}")"
+
+build_type="Debug"
+[[ "$1" == "-r" || "$1" == "--release" ]] && build_type="Release"
+[[ -n "${1:-}" && "$build_type" == "Debug" ]] && { echo "Unknown option: $1" >&2; exit 1; }
+
+echo "Building in $build_type mode..."
+CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${ProjectRootDir}/build" -DCMAKE_BUILD_TYPE="$build_type"
+cmake --build "${ProjectRootDir}/build" --config "$build_type"

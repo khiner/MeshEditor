@@ -71,7 +71,7 @@ _The cylinders shown in the images represent recorded microphone positions, but 
 | Plastic Scoop | ![Mesh](paper/images/impacts/PlasticScoopMesh.png) | [Impact](audio_samples/PlasticScoopImpact.wav) | [Modal](audio_samples/PlasticScoopModal.wav) |
 | Small Swan Ceramic | ![Mesh](paper/images/impacts/SwanSmallCeramicMesh.png) | [Impact](audio_samples/SmallSwanCeramicImpact.wav) | [Modal](audio_samples/SmallSwanCeramicModal.wav) |
 
-## Build app
+## Build & run
 
 ### Install dependencies
 
@@ -106,13 +106,14 @@ Install GTK (for native file dialogs):
 $ sudo apt install build-essential libgtk-3-dev
 ```
 
-### Clone, clean, and build
+### Clone, clean, build, and run
 
 ```shell
 $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
-$ CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-$ cmake --build build --config Release
+$ ./script/Clean # optionally clean first
+$ ./script/Build [--release]
+$ cd build && ./MeshEditor
 ```
 
 ## Stack
@@ -134,7 +135,7 @@ $ cmake --build build --config Release
 
 ## Development
 
-### Updating submodules
+### Update submodules
 
 All submodules are in the `lib` directory.
 Currently, no submodules are forked.
@@ -143,5 +144,5 @@ Here is my process for updating to the tip of all the submodule branches:
 ```sh
 $ git submodule update --remote lib/{submodule}
 $ git add .
-$ git cm -m "Update {submodule} lib(s)"
+$ git cm -m "Update {submodule} ..."
 ```

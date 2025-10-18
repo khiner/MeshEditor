@@ -1,0 +1,6 @@
+#!/bin/bash
+
+ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
+ProjectRootDir="$(dirname "${ScriptDir}")"
+
+rm -rf "${ProjectRootDir}/build"
