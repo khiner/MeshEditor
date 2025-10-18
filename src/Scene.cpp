@@ -1494,9 +1494,14 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (Button("Add instance")) AddInstance(active_mesh_entity);
     if (CollapsingHeader("Transform")) {
         auto transform = GetTransform(R, active_entity);
-        bool model_changed = false;
-        model_changed |= DragFloat3("Position", &transform.P[0], 0.01f);
-        model_changed |= DragFloat4("Rotation (quat WXYZ)", &transform.R[0], 0.01f);
+        bool model_changed = DragFloat3("Position", &transform.P[0], 0.01f);
+        {
+            auto r = transform.R;
+            if (DragFloat4("Rotation (quat WXYZ)", &r[0], 0.01f)) {
+                transform.R = glm::normalize(r);
+                model_changed = true;
+            }
+        }
 
         const bool frozen = R.all_of<Frozen>(active_entity);
         if (frozen) BeginDisabled();
