@@ -1228,7 +1228,7 @@ void Scene::Interact() {
             Camera.SetTargetYawPitch(Camera.YawPitch + wheel * 0.15f);
         }
     }
-    if (!IsMouseClicked(ImGuiMouseButton_Left) || MGizmo.Show || OrientationGizmo::IsActive()) return;
+    if (!IsMouseReleased(ImGuiMouseButton_Left) || TransformGizmo::IsUsing() || OrientationGizmo::IsActive()) return;
 
     // Handle mouse selection.
     const auto size = GetContentRegionAvail();
@@ -1458,7 +1458,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         return;
     }
 
-    PushID(uint(active_entity));
+    PushID("EntityControls");
     Text("Active entity: %s", GetName(R, active_entity).c_str());
     Indent();
 
