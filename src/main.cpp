@@ -268,7 +268,7 @@ int main(int, char **) {
         VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 #endif
         wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(vc->PhysicalDevice, wd.Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
-        ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount);
+        ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount, 0);
     }
 
     // Setup ImGui context.
@@ -293,15 +293,18 @@ int main(int, char **) {
         .QueueFamily = vc->QueueFamily,
         .Queue = vc->Queue,
         .DescriptorPool = *vc->DescriptorPool,
-        .RenderPass = wd.RenderPass,
+        .DescriptorPoolSize = 0,
         .MinImageCount = MinImageCount,
         .ImageCount = wd.ImageCount,
-        .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
         .PipelineCache = *vc->PipelineCache,
-        .Subpass = 0,
-        .DescriptorPoolSize = 0,
+        .PipelineInfoMain = {
+            .RenderPass = wd.RenderPass,
+            .Subpass = 0,
+            .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+            .PipelineRenderingCreateInfo = {},
+            .SwapChainImageUsage = {},
+        },
         .UseDynamicRendering = false,
-        .PipelineRenderingCreateInfo = {},
         .Allocator = nullptr,
         .CheckVkResultFn = [](VkResult err) {
             if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
@@ -361,11 +364,11 @@ int main(int, char **) {
 
         // Resize swap chain?
         if (RebuildSwapchain) {
-            int width, height;
-            SDL_GetWindowSize(window, &width, &height);
-            if (width > 0 && height > 0) {
+            int w, h;
+            SDL_GetWindowSize(window, &w, &h);
+            if (w > 0 && h > 0) {
                 ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, width, height, MinImageCount);
+                ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount, 0);
                 wd.FrameIndex = 0;
                 RebuildSwapchain = false;
             }
