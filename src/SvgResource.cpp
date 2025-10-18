@@ -3,25 +3,9 @@
 #include "imgui.h"
 #include "lunasvg.h"
 
-namespace {
-// Find the deepest descendant element with the given attribute containing the given point.
-std::optional<lunasvg::Element> FindElementAtPoint(const lunasvg::Element &element, const std::string &attribute, ImVec2 point, float scale = 1.f) {
-    constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
-        return box.x * scale <= point.x && point.x <= (box.x + box.w) * scale &&
-            box.y * scale <= point.y && point.y <= (box.y + box.h) * scale;
-    };
+#include <cstdio> // sscanf
 
-    std::optional<lunasvg::Element> found;
-    if (contains(element.getBoundingBox(), point, scale) && element.hasAttribute(attribute)) {
-        found = element;
-    }
-    for (const auto &childNode : element.children()) {
-        if (auto descendent = FindElementAtPoint(childNode.toElement(), attribute, point, scale)) {
-            found = *descendent;
-        }
-    }
-    return found;
-}
+namespace {
 
 lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale = 1.f) {
     const int width = std::ceil(doc.width()) * scale;
@@ -32,14 +16,23 @@ lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale
     doc.render(bitmap, {scale, 0, 0, scale, 0, 0});
     return bitmap;
 }
+
+// Nearest ancestor (including self) that has href/xlink:href; empty if none.
+inline lunasvg::Element FindLinkAncestor(lunasvg::Element e) {
+    for (auto cur = e; cur; cur = cur.parentElement()) {
+        if (cur.hasAttribute("xlink:href")) return cur;
+    }
+    return {};
+}
+
 } // namespace
 
 struct SvgResource::Impl {
     Impl(vk::Device device, BitmapToImage render, fs::path path) {
         if ((Document = lunasvg::Document::loadFromFile(path))) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
-                const auto width = uint32_t(bitmap.width()), height = uint32_t(bitmap.height());
-                const auto size = width * height * 4; // 4 bytes per pixel
+                const uint32_t width = bitmap.width(), height = bitmap.height();
+                const uint32_t size = width * height * 4; // RGBA8
                 Image = std::make_unique<mvk::ImageResource>(render({reinterpret_cast<const std::byte *>(bitmap.data()), size}, width, height));
                 Texture = std::make_unique<mvk::ImGuiTexture>(device, *Image->View);
             }
@@ -49,23 +42,34 @@ struct SvgResource::Impl {
     // Returns the clicked link path.
     std::optional<fs::path> Render() {
         using namespace ImGui;
+        if (!Document) return {};
 
-        const auto doc = Document->documentElement();
-        const auto doc_box = doc.getBoundingBox();
-        const auto display_width = std::min(GetContentRegionAvail().x, doc_box.w * Scale);
-        Texture->Render({display_width, display_width * doc_box.h / doc_box.w});
-        if (IsItemHovered()) {
-            static constexpr std::string LinkAttribute = "xlink:href";
-            const auto display_scale = display_width / doc_box.w;
-            const auto offset = GetItemRectMin();
-            if (auto element = FindElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, display_scale)) {
-                const auto box = element->getBoundingBox();
-                GetWindowDrawList()->AddRect(
-                    offset + ImVec2{box.x, box.y} * display_scale,
-                    offset + ImVec2{box.x + box.w, box.y + box.h} * display_scale,
-                    IM_COL32(0, 255, 0, 255)
-                );
-                if (IsMouseClicked(ImGuiMouseButton_Left)) return element->getAttribute(LinkAttribute);
+        // Draw with document viewport aspect
+        const ImVec2 doc_size{Document->width(), Document->height()};
+        const auto disp_w = std::min(GetContentRegionAvail().x, doc_size.x * Scale);
+        Texture->Render({disp_w, disp_w * (doc_size.y / doc_size.x)});
+        if (!IsItemHovered()) return {};
+
+        const auto item_pos = GetItemRectMin();
+        const auto mouse_px = GetMousePos() - item_pos;
+        const auto vp_to_disp = disp_w / doc_size.x;
+        const auto vp_size = mouse_px / vp_to_disp;
+        if (const auto hit = Document->elementFromPoint(vp_size.x, vp_size.y)) {
+            if (const auto link = FindLinkAncestor(hit)) {
+                // Map bbox (viewBox/user) -> viewport -> display px
+                const auto viewBox = Document->documentElement().getAttribute("viewBox");
+                ImVec2 vb_pos, vb_size;
+                std::sscanf(viewBox.c_str(), "%f%f%f%f", &vb_pos.x, &vb_pos.y, &vb_size.x, &vb_size.y);
+
+                // Map bbox -> viewport
+                const float s = std::min(doc_size.x / vb_size.x, doc_size.y / vb_size.y);
+                const auto bb = link.getBoundingBox();
+                const auto bb_pos = ImVec2{bb.x, bb.y} * s * vp_to_disp, bb_size = ImVec2{bb.w, bb.h} * s * vp_to_disp;
+                const auto p0 = item_pos + bb_pos - vb_pos * s + (doc_size - vb_size * s) * 0.5f;
+                GetWindowDrawList()->AddRect(p0, p0 + bb_size, IM_COL32(0, 255, 0, 255));
+                if (IsMouseClicked(ImGuiMouseButton_Left)) {
+                    if (const auto href = link.getAttribute("xlink:href"); !href.empty()) return fs::path{href};
+                }
             }
         }
         return {};
@@ -76,7 +80,7 @@ struct SvgResource::Impl {
     std::unique_ptr<mvk::ImGuiTexture> Texture;
 
 private:
-    static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap.
+    static constexpr float Scale{1.5f};
 };
 
 SvgResource::SvgResource(vk::Device device, BitmapToImage render, fs::path path)
