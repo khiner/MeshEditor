@@ -182,8 +182,7 @@ struct Scene {
     void DestroyInstance(entt::entity);
     void DestroyEntity(entt::entity);
 
-    void SetModel(entt::entity, Transform);
-
+    void SetTransform(entt::entity, Transform);
     void SetVisible(entt::entity, bool);
 
     entt::entity GetParentEntity(entt::entity) const;
