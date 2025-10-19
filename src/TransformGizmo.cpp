@@ -857,9 +857,20 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
     // 2xNDC spans screen width.
     const vec3 cam_right_ws = cam_basis[0];
     g.WorldPerNdc = 2 * Style.SizeUv / glm::length(CsToNdc(vp * vec4{transform.P + cam_right_ws, 1}) - CsToNdc(vp * vec4{transform.P, 1}));
-    if (g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    if (g.Start && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        // Cancel - revert back to start transform
+        Render(transform, {}, config.Type, vp, cam_ray);
+        Result ret{g.Start->Transform, {}};
         g.Start = {};
         g.Interaction = {};
+        return ret;
+    }
+    if (g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        // Mouse up - end interaction
+        g.Start = {};
+        g.Interaction = {};
+        Render(transform, {}, config.Type, vp, cam_ray);
+        return {};
     }
 
     const auto mouse_pos_rel = (mouse_px - pos) / size;

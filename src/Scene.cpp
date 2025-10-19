@@ -1286,7 +1286,7 @@ void Scene::Interact() {
     }
     if (TransformGizmo::IsUsing()) {
         // TransformGizmo overrides this mouse cursor during some actions - this is a default.
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
     }
     if (!IsWindowHovered()) return;
@@ -1426,8 +1426,6 @@ void Scene::RenderGizmos() {
     if (selected_view.empty()) return;
 
     // Transform all selected entities around their average position, using the active entity's rotation/scale.
-    // TODO: Could we clean this up by having TransformGizmo::Render return a delta instead of mutating the transform?
-
     struct StartTransform {
         Transform T;
     };
@@ -1436,11 +1434,11 @@ void Scene::RenderGizmos() {
     const auto active_entity = FindActiveEntity(R);
     const auto active_transform = GetTransform(R, active_entity);
     const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
-    if (auto delta = TransformGizmo::Draw(
+    if (auto start_delta = TransformGizmo::Draw(
             {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
             MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta
         )) {
-        const auto &[ts, dt] = *delta;
+        const auto &[ts, td] = *start_delta;
         if (start_transform_view.empty()) {
             for (const auto e : selected_view) R.emplace<StartTransform>(e, GetTransform(R, e));
         }
@@ -1453,9 +1451,9 @@ void Scene::RenderGizmos() {
             SetTransform(
                 e,
                 {
-                    .P = dt.P + ts.P + glm::rotate(dt.R, frozen ? offset : r * (rT * offset * dt.S)),
-                    .R = glm::normalize(dt.R * ts_e.R),
-                    .S = frozen ? ts_e.S : dt.S * ts_e.S,
+                    .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
+                    .R = glm::normalize(td.R * ts_e.R),
+                    .S = frozen ? ts_e.S : td.S * ts_e.S,
                 }
             );
         }
