@@ -304,6 +304,7 @@ int main(int, char **) {
             .PipelineRenderingCreateInfo = {},
             .SwapChainImageUsage = {},
         },
+        .PipelineInfoForViewports = {},
         .UseDynamicRendering = false,
         .Allocator = nullptr,
         .CheckVkResultFn = [](VkResult err) {

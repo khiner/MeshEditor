@@ -16,9 +16,26 @@
 
 #include <format>
 #include <ranges>
+#include <variant>
 
 using std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;
+
+template<class... Ts> struct overloaded : Ts... {
+    using Ts::operator()...;
+};
+template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
+
+// No built-in way to default-construct a variant by runtime index.
+// Variants are the best, but they are the absolute worst to actually work with...
+template<typename V> V CreateVariantByIndex(size_t i) {
+    constexpr auto N = std::variant_size_v<V>;
+    assert(i < N);
+    return [&]<size_t... Is>(std::index_sequence<Is...>) -> V {
+        static constexpr V table[]{V{std::in_place_index<Is>}...};
+        return table[i]; // copy out
+    }(std::make_index_sequence<N>{});
+}
 
 struct CameraUBO {
     mat4 View{1}, Proj{1};
@@ -91,17 +108,60 @@ constexpr auto Float4 = vk::Format::eR32G32B32A32Sfloat;
 } // namespace Format
 
 namespace {
+// Mutually exclusive structs to track rotation representation.
+// Note: `Rotation` is still the source of truth transformation component. These are for slider values only.
+struct RotationQuat {
+    quat Value; // wxyz
+};
+struct RotationEuler {
+    vec3 Value; // xyz degrees
+};
+struct RotationAxisAngle {
+    vec4 Value; // axis (xyz), angle (degrees)
+};
+using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxisAngle>;
+
 Transform GetTransform(const entt::registry &r, entt::entity e) {
     return {r.get<Position>(e).Value, r.get<Rotation>(e).Value, r.all_of<Scale>(e) ? r.get<Scale>(e).Value : vec3{1}};
 }
 
+void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
+    r.emplace_or_replace<Rotation>(e, v);
+    if (!r.all_of<RotationUiVariant>(e)) {
+        r.emplace<RotationUiVariant>(e, RotationQuat{v});
+        return;
+    }
+
+    std::visit(
+        overloaded{
+            [&](RotationQuat &v_ui) { v_ui.Value = v; },
+            [&](RotationEuler &v_ui) {
+                float x, y, z;
+                glm::extractEulerAngleXYZ(glm::mat4_cast(v), x, y, z);
+                v_ui.Value = glm::degrees(vec3{x, y, z});
+            },
+            [&](RotationAxisAngle &v_ui) {
+                const auto q = glm::normalize(v);
+                v_ui.Value = {glm::axis(q), glm::degrees(glm::angle(q))};
+            },
+        },
+        r.get<RotationUiVariant>(e)
+    );
+}
+
+void UpdateModel(entt::registry &r, entt::entity e) {
+    const auto t = GetTransform(r, e);
+    r.emplace_or_replace<Model>(e, glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S));
+}
+
 void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
     r.emplace_or_replace<Position>(e, t.P);
-    r.emplace_or_replace<Rotation>(e, t.R);
+    // Avoid replacing rotation UI slider values if the value hasn't changed.
+    if (!r.all_of<Rotation>(e) || r.get<Rotation>(e).Value != t.R) SetRotation(r, e, t.R);
     // Frozen entities can't have their scale changed.
     if (!r.all_of<Frozen>(e)) r.emplace_or_replace<Scale>(e, t.S);
 
-    r.emplace_or_replace<Model>(e, glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S));
+    UpdateModel(r, e);
 }
 
 vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
@@ -1184,6 +1244,8 @@ void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
         TeleportMousePos(g.IO.MousePos + mouse_delta);
     }
 }
+
+bool IsSingleClicked(ImGuiMouseButton button) { return IsMouseReleased(button) && !IsMouseDragPastThreshold(button); }
 } // namespace
 
 void Scene::Interact() {
@@ -1228,7 +1290,7 @@ void Scene::Interact() {
             Camera.SetTargetYawPitch(Camera.YawPitch + wheel * 0.15f);
         }
     }
-    if (!IsMouseReleased(ImGuiMouseButton_Left) || TransformGizmo::IsUsing() || OrientationGizmo::IsActive()) return;
+    if (!IsSingleClicked(ImGuiMouseButton_Left) || TransformGizmo::IsUsing() || OrientationGizmo::IsActive()) return;
 
     // Handle mouse selection.
     const auto size = GetContentRegionAvail();
@@ -1493,22 +1555,58 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (Button("Add instance")) AddInstance(active_mesh_entity);
     if (CollapsingHeader("Transform")) {
-        auto transform = GetTransform(R, active_entity);
-        bool model_changed = DragFloat3("Position", &transform.P[0], 0.01f);
+        bool model_changed = DragFloat3("Position", &R.get<Position>(active_entity).Value[0], 0.01f);
+        // Rotation editor
         {
-            auto r = transform.R;
-            if (DragFloat4("Rotation (quat WXYZ)", &r[0], 0.01f)) {
-                transform.R = glm::normalize(r);
-                model_changed = true;
+            int mode_i = R.get<RotationUiVariant>(active_entity).index();
+            const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
+            if (ImGui::Combo("Rotation Mode", &mode_i, modes, IM_ARRAYSIZE(modes))) {
+                R.replace<RotationUiVariant>(active_entity, CreateVariantByIndex<RotationUiVariant>(mode_i));
+                SetRotation(R, active_entity, R.get<Rotation>(active_entity).Value);
             }
         }
+        model_changed |= std::visit(
+            overloaded{
+                [&](RotationQuat &v) {
+                    if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f)) {
+                        R.replace<Rotation>(active_entity, glm::normalize(v.Value));
+                        return true;
+                    }
+                    return false;
+                },
+                [&](RotationEuler &v) {
+                    if (DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f)) {
+                        const auto rads = glm::radians(v.Value);
+                        R.replace<Rotation>(active_entity, glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))));
+                        return true;
+                    }
+                    return false;
+                },
+                [&](RotationAxisAngle &v) {
+                    bool changed = DragFloat3("Rotation axis (XYZ)", &v.Value[0], 0.01f);
+                    changed |= DragFloat("Angle (deg)", &v.Value.w, 1.f);
+                    if (changed) {
+                        const auto axis = glm::normalize(vec3{v.Value});
+                        const auto angle = glm::radians(v.Value.w);
+                        R.replace<Rotation>(active_entity, glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}));
+                        return true;
+                    }
+                    return false;
+                },
+            },
+            R.get<RotationUiVariant>(active_entity)
+        );
 
         const bool frozen = R.all_of<Frozen>(active_entity);
         if (frozen) BeginDisabled();
         const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-        model_changed |= DragFloat3(label.c_str(), &transform.S[0], 0.01f, 0.01f, 10);
+        model_changed |= DragFloat3(label.c_str(), &R.get<Scale>(active_entity).Value[0], 0.01f, 0.01f, 10);
         if (frozen) EndDisabled();
-        if (model_changed) SetTransform(active_entity, transform);
+        if (model_changed) {
+            UpdateModel(R, active_entity);
+            UpdateModelBuffer(active_entity);
+            InvalidateCommandBuffer();
+        }
 
         using enum TransformGizmo::Type;
         auto &type = MGizmo.Config.Type;
