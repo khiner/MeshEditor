@@ -71,11 +71,12 @@ struct MeshBuffers {
 entt::entity Scene::GetParentEntity(entt::entity e) const { return ::GetParentEntity(R, e); }
 const Mesh &Scene::GetActiveMesh() const { return R.get<Mesh>(GetParentEntity(FindActiveEntity(R))); }
 
-void Scene::SetActive(entt::entity e) {
-    if (FindActiveEntity(R) == e) return;
+void Scene::Select(entt::entity e) {
+    if (e != entt::null && R.all_of<Selected>(e)) return;
 
-    R.clear<Active, Selected>();
+    R.clear<Selected>();
     if (e != entt::null) {
+        R.clear<Active>();
         R.emplace_or_replace<Active>(e);
         R.emplace_or_replace<Selected>(e);
     }
@@ -687,7 +688,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       CameraUBOBuffer(BufferContext, sizeof(CameraUBO), vk::BufferUsageFlagBits::eUniformBuffer),
       ViewProjNearFarBuffer(BufferContext, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer),
       LightsBuffer(BufferContext, as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer),
-      SilhouetteColorsBuffer(BufferContext, as_bytes(SilhouetteColors), vk::BufferUsageFlagBits::eUniformBuffer) {
+      SilhouetteColorsBuffer(BufferContext, as_bytes(Colors), vk::BufferUsageFlagBits::eUniformBuffer) {
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
@@ -783,7 +784,7 @@ void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
     DestroyEntity(r.get<ExcitedVertex>(e).IndicatorEntity);
 }
 
-vk::ImageView Scene::GetResolveImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
+vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
 
 void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<Visible>(entity);
@@ -838,8 +839,11 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
     R.emplace<Mesh>(e, std::move(mesh));
 
-    if (info.Select) SetActive(e);
+    if (info.Select) Select(e);
+    else if (R.view<Active>().empty()) R.emplace<Active>(e); // If this is the first mesh, set it active by default.
+
     InvalidateCommandBuffer();
+
     return e;
 }
 
@@ -893,7 +897,7 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
     SetVisible(e, info.Visible);
-    if (info.Select) SetActive(e);
+    if (info.Select) Select(e);
     InvalidateCommandBuffer();
 
     return e;
@@ -1322,7 +1326,7 @@ void Scene::Interact() {
         const auto intersected = CycleIntersectedEntity(R, active_entity, mouse_ray_ws);
         if (intersected != entt::null && IsKeyDown(ImGuiMod_Shift)) {
             if (R.all_of<Active>(intersected)) {
-                R.remove<Active, Selected>(intersected);
+                R.remove<Selected>(intersected);
             } else {
                 R.emplace_or_replace<Selected>(intersected);
                 R.clear<Active>();
@@ -1330,7 +1334,7 @@ void Scene::Interact() {
             }
             InvalidateCommandBuffer();
         } else {
-            SetActive(intersected);
+            Select(intersected);
         }
     } else if (SelectionMode == SelectionMode::Excite) {
         // Excite the nearest entity if it's excitable.
@@ -1374,7 +1378,7 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     d.updateDescriptorSets(ds, {});
 };
 
-bool Scene::Render() {
+bool Scene::RenderViewport() {
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty) return false;
@@ -1411,57 +1415,67 @@ bool Scene::Render() {
     return extent_changed;
 }
 
-void Scene::RenderGizmos() {
+void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
-    {
+    const auto selected_view = R.view<Selected>();
+    const auto active_entity = FindActiveEntity(R);
+    if (active_entity != entt::null) { // Active entity center-dot
+        const auto p_ws = R.get<Position>(active_entity).Value;
+        const auto size = ToGlm(GetContentRegionAvail());
+        const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
+        const auto p_cs = vp * vec4{p_ws, 1}; // World to clip space
+        const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
+        const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
+        const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
+        auto &dl = *GetWindowDrawList();
+        dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(Colors.Active)));
+        dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
+    }
+    if (MGizmo.Show && !selected_view.empty()) {
+        // Transform all selected entities around their average position, using the active entity's rotation/scale.
+        struct StartTransform {
+            Transform T;
+        };
+        const auto start_transform_view = R.view<const StartTransform>();
+
+        const auto active_transform = GetTransform(R, active_entity);
+        const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
+        if (auto start_delta = TransformGizmo::Draw(
+                {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
+                MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta
+            )) {
+            const auto &[ts, td] = *start_delta;
+            if (start_transform_view.empty()) {
+                for (const auto e : selected_view) R.emplace<StartTransform>(e, GetTransform(R, e));
+            }
+            // Compute delta transform from drag start
+            const auto r = ts.R, rT = glm::conjugate(r);
+            for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
+                const auto &ts_e = ts_e_comp.T;
+                const bool frozen = R.all_of<Frozen>(e);
+                const auto offset = ts_e.P - ts.P;
+                SetTransform(
+                    e,
+                    {
+                        .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
+                        .R = glm::normalize(td.R * ts_e.R),
+                        .S = frozen ? ts_e.S : td.S * ts_e.S,
+                    }
+                );
+            }
+
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
+        } else {
+            R.clear<StartTransform>();
+        }
+    }
+    { // Orientation gizmo
         static constexpr float OGizmoSize{90};
         const float padding = GetTextLineHeightWithSpacing();
         const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
         OrientationGizmo::Draw(pos, OGizmoSize, Camera);
         if (Camera.Tick()) UpdateTransformBuffers();
-    }
-    if (!MGizmo.Show) return;
-
-    const auto selected_view = R.view<Selected>();
-    if (selected_view.empty()) return;
-
-    // Transform all selected entities around their average position, using the active entity's rotation/scale.
-    struct StartTransform {
-        Transform T;
-    };
-    const auto start_transform_view = R.view<const StartTransform>();
-
-    const auto active_entity = FindActiveEntity(R);
-    const auto active_transform = GetTransform(R, active_entity);
-    const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
-    if (auto start_delta = TransformGizmo::Draw(
-            {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
-            MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta
-        )) {
-        const auto &[ts, td] = *start_delta;
-        if (start_transform_view.empty()) {
-            for (const auto e : selected_view) R.emplace<StartTransform>(e, GetTransform(R, e));
-        }
-        // Compute delta transform from drag start
-        const auto r = ts.R, rT = glm::conjugate(r);
-        for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
-            const auto &ts_e = ts_e_comp.T;
-            const bool frozen = R.all_of<Frozen>(e);
-            const auto offset = ts_e.P - ts.P;
-            SetTransform(
-                e,
-                {
-                    .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
-                    .R = glm::normalize(td.R * ts_e.R),
-                    .S = frozen ? ts_e.S : td.S * ts_e.S,
-                }
-            );
-        }
-
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-        WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
-    } else {
-        R.clear<StartTransform>();
     }
 }
 
@@ -1532,16 +1546,14 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     Text("Active entity: %s", GetName(R, active_entity).c_str());
     Indent();
 
-    entt::entity toggle_active = entt::null, toggle_selected = entt::null, delete_entity = entt::null;
+    entt::entity activate_entity = entt::null, delete_entity = entt::null, toggle_selected = entt::null;
     const auto &node = R.get<SceneNode>(active_entity);
-    if (Button("Deactivate")) toggle_active = active_entity;
-    SameLine();
     if (Button("Delete")) delete_entity = active_entity;
     if (auto parent_entity = node.Parent; parent_entity != entt::null) {
         AlignTextToFramePadding();
         Text("Parent: %s", GetName(R, parent_entity).c_str());
         SameLine();
-        if (Button("Activate")) toggle_active = parent_entity;
+        if (active_entity != parent_entity && Button("Activate")) activate_entity = parent_entity;
         SameLine();
         if (Button(R.all_of<Selected>(parent_entity) ? "Deselect" : "Select")) toggle_selected = parent_entity;
     }
@@ -1684,7 +1696,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     PopID();
 
     if (delete_entity != entt::null) DestroyEntity(delete_entity);
-    else if (toggle_active != entt::null) SetActive(R.all_of<Active>(toggle_active) ? entt::null : toggle_active);
+    else if (activate_entity != entt::null) Select(activate_entity);
     else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
 }
 
@@ -1787,11 +1799,11 @@ void Scene::RenderControls() {
                 if (ColorEdit3("Edge color", &edge_color.x)) UpdateEdgeColors();
             }
             {
-                SeparatorText("Silhouette");
-                bool color_changed = ColorEdit3("Active color", &SilhouetteColors.Active[0]);
-                color_changed |= ColorEdit3("Selected color", &SilhouetteColors.Selected[0]);
+                SeparatorText("Active/Selected");
+                bool color_changed = ColorEdit3("Active color", &Colors.Active[0]);
+                color_changed |= ColorEdit3("Selected color", &Colors.Selected[0]);
                 if (color_changed) {
-                    SilhouetteColorsBuffer.Update(as_bytes(SilhouetteColors));
+                    SilhouetteColorsBuffer.Update(as_bytes(Colors));
                     InvalidateCommandBuffer();
                 }
                 if (SliderUInt("Edge width", &SilhouetteEdgeWidth, 1, 4)) InvalidateCommandBuffer();
@@ -1873,7 +1885,7 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
         TableSetupColumn("Name");
         TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
         TableHeadersRow();
-        entt::entity toggle_active = entt::null, toggle_selected = entt::null;
+        entt::entity activate_entity = entt::null, toggle_selected = entt::null;
         for (const auto e : entities) {
             PushID(uint(e));
             TableNextColumn();
@@ -1883,18 +1895,12 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
             TableNextColumn();
             TextUnformatted(R.get<Name>(e).Value.c_str());
             TableNextColumn();
-            {
-                const bool is_active = R.all_of<Active>(e);
-                if (Button(is_active ? "Deactivate" : "Activate")) toggle_active = e;
-            }
+            if (!R.all_of<Active>(e) && Button("Activate")) activate_entity = e;
             SameLine();
-            {
-                const bool is_selected = R.all_of<Selected>(e);
-                if (Button(is_selected ? "Deselect" : "Select")) toggle_selected = e;
-            }
+            if (Button(R.all_of<Selected>(e) ? "Deselect" : "Select")) toggle_selected = e;
             PopID();
         }
-        if (toggle_active != entt::null) SetActive(R.all_of<Active>(toggle_active) ? entt::null : toggle_active);
+        if (activate_entity != entt::null) Select(activate_entity);
         else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
         EndTable();
     }

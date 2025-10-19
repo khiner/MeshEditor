@@ -218,7 +218,7 @@ void AcousticScene::RenderControls(Scene &scene) {
                 }
                 PopID();
             }
-            if (entity_to_select != entt::null) scene.SetActive(entity_to_select);
+            if (entity_to_select != entt::null) scene.Select(entity_to_select);
             if (entity_to_delete != entt::null) scene.DestroyEntity(entity_to_delete);
             EndTable();
         }
@@ -247,7 +247,7 @@ void AcousticScene::RenderControls(Scene &scene) {
                 if (Button("Delete")) entity_to_delete = e;
                 PopID();
             }
-            if (entity_to_select != entt::null) scene.SetActive(entity_to_select);
+            if (entity_to_select != entt::null) scene.Select(entity_to_select);
             if (entity_to_delete != entt::null) scene.DestroyEntity(entity_to_delete);
             EndTable();
         }
@@ -280,13 +280,13 @@ void AcousticScene::RenderControls(Scene &scene) {
     }
 
     if (sound_entity != active_entity && Button("Select sound object")) {
-        scene.SetActive(sound_entity);
+        scene.Select(sound_entity);
     }
 
     const auto *listener = R.try_get<SoundObjectListener>(sound_entity);
     if (listener && listener->Listener != active_entity) {
         if (Button("Select listener point")) {
-            scene.SetActive(listener->Listener);
+            scene.Select(listener->Listener);
         }
     }
 

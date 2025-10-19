@@ -186,24 +186,26 @@ struct Scene {
     void SetVisible(entt::entity, bool);
 
     entt::entity GetParentEntity(entt::entity) const;
-    void SetActive(entt::entity);
+    void Select(entt::entity);
     void ToggleSelected(entt::entity);
 
     vk::Extent2D GetExtent() const { return Extent; }
-    vk::ImageView GetResolveImageView() const;
+    vk::ImageView GetViewportImageView() const;
 
     // Handle mouse/keyboard interactions.
     void Interact();
     ray GetMouseWorldRay() const; // World space ray from the mouse into the scene.
 
-    // Renders to a texture sampler and image view that can be accessed with `GetTextureSampler()` and `GetResolveImageView()`.
+    // Renders to an image view that can be accessed with `GetViewportImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
     // and it will be equal to the dimensions of `GetContentRegionAvail()` at the beginning of the call.
     // Returns true if the scene was updated, which can happen when the window size or background color changes.
-    bool Render();
-    void RenderGizmos(); // Orientation/Transform gizmos
+    bool RenderViewport(); // The main scene viewport (not to be confused with ImGui viewports)
+    // The "overlay" is everything drawn ontop of the viewport with ImGui, independent of the main scene vulkan pipeline:
+    // - Orientation/Transform gizmos
+    // - Active object center-dot
+    void RenderOverlay();
     void RenderControls();
-    void RenderEntityControls(entt::entity);
 
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
@@ -247,12 +249,12 @@ private:
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.25, 0.25, 0.25, 1.f};
-    struct SilhouetteColors {
+    struct Colors {
         vec4 Active{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
         vec4 Selected{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
     };
 
-    SilhouetteColors SilhouetteColors;
+    Colors Colors;
     uint SilhouetteEdgeWidth{2};
 
     std::unique_ptr<ScenePipelines> Pipelines;
@@ -281,6 +283,7 @@ private:
 
     const Mesh &GetActiveMesh() const;
 
+    void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
 
     // VK buffer update methods

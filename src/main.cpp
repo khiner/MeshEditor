@@ -311,6 +311,8 @@ int main(int, char **) {
             if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
         },
         .MinAllocationSize = {},
+        .CustomShaderVertCreateInfo = {},
+        .CustomShaderFragCreateInfo = {},
     };
     ImGui_ImplVulkan_Init(&init_info);
 
@@ -350,7 +352,7 @@ int main(int, char **) {
     };
     audio_device.Start();
 
-    std::unique_ptr<mvk::ImGuiTexture> scene_texture;
+    std::unique_ptr<mvk::ImGuiTexture> scene_viewport_texture;
     WindowsState windows;
 
     // Main loop
@@ -508,18 +510,18 @@ int main(int, char **) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
                 scene->Interact();
-                if (scene->Render()) {
+                if (scene->RenderViewport()) {
                     // Extent changed. Update the scene texture.
-                    scene_texture.reset(); // Ensure destruction before creation.
-                    scene_texture = std::make_unique<mvk::ImGuiTexture>(*vc->Device, scene->GetResolveImageView(), vec2{0, 1}, vec2{1, 0});
+                    scene_viewport_texture.reset(); // Ensure destruction before creation.
+                    scene_viewport_texture = std::make_unique<mvk::ImGuiTexture>(*vc->Device, scene->GetViewportImageView(), vec2{0, 1}, vec2{1, 0});
                 }
-                if (scene_texture) {
+                if (scene_viewport_texture) {
                     const auto cursor = GetCursorPos();
                     const auto &scene_extent = scene->GetExtent();
-                    scene_texture->Render({float(scene_extent.width), float(scene_extent.height)});
+                    scene_viewport_texture->Render({float(scene_extent.width), float(scene_extent.height)});
                     SetCursorPos(cursor);
                 }
-                scene->RenderGizmos();
+                scene->RenderOverlay();
             }
             End();
             PopStyleVar();
@@ -547,7 +549,7 @@ int main(int, char **) {
     acoustic_scene.reset();
     NFD_Quit();
 
-    scene_texture.reset();
+    scene_viewport_texture.reset();
     scene.reset();
 
     ImGui_ImplVulkan_Shutdown();

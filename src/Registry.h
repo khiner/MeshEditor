@@ -13,6 +13,7 @@ struct Name {
 // Invariants:
 // * Zero or more entities can be Selected.
 // * The (single) most recently Selected entity is Active.
+// NOTE: An entity can be both Selected and Active, and can also be Active but not Selected.
 struct Selected {};
 struct Active {};
 

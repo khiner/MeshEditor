@@ -390,7 +390,7 @@ void FastEllipse(std::span<ImVec2> out, ImVec2 o, ImVec2 u, ImVec2 v, bool clock
 }
 
 constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
-    return selected ? color : colors::MultAlpha(color, 0.8f);
+    return selected ? color : colors::MultAlpha(color, 0.75f);
 }
 
 // Clip ray `p + t*d` to rect `r` using Liang–Barsky algorithm.
