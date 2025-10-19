@@ -31,6 +31,7 @@ struct GizmoTransform : Transform {
 
 namespace TransformGizmo {
 enum class Type : uint8_t {
+    None,
     Translate,
     Rotate,
     Scale,
@@ -38,8 +39,8 @@ enum class Type : uint8_t {
 };
 
 struct Config {
-    vec3 SnapValue{0.5};
     Type Type{};
+    vec3 SnapValue{0.5};
     bool Snap{false};
 };
 

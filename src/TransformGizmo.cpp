@@ -34,6 +34,7 @@ enum class InteractionOp : uint8_t {
     XY,
     Screen,
     Trackball, // Rotate only
+    Keypress, // Keypress-initiated screen translate
 };
 
 struct Interaction {
@@ -113,22 +114,24 @@ std::string_view ToString() {
 
     using enum TransformType;
 
-    const auto [type, axis] = *g.Interaction;
-    if (type == Translate && axis == AxisX) return "TranslateX";
-    if (type == Translate && axis == AxisY) return "TranslateY";
-    if (type == Translate && axis == AxisZ) return "TranslateZ";
-    if (type == Translate && axis == Screen) return "TranslateScreen";
-    if (type == Translate && axis == YZ) return "TranslateYZ";
-    if (type == Translate && axis == ZX) return "TranslateZX";
-    if (type == Translate && axis == XY) return "TranslateXY";
-    if (type == Rotate && axis == AxisX) return "RotateX";
-    if (type == Rotate && axis == AxisY) return "RotateY";
-    if (type == Rotate && axis == AxisZ) return "RotateZ";
-    if (type == Rotate && axis == Screen) return "RotateScreen";
-    if (type == Scale && axis == AxisX) return "ScaleX";
-    if (type == Scale && axis == AxisY) return "ScaleY";
-    if (type == Scale && axis == AxisZ) return "ScaleZ";
-    if (type == Scale && axis == Screen) return "ScaleXYZ";
+    const auto [type, op] = *g.Interaction;
+    if (type == Translate && op == AxisX) return "TranslateX";
+    if (type == Translate && op == AxisY) return "TranslateY";
+    if (type == Translate && op == AxisZ) return "TranslateZ";
+    if (type == Translate && op == Screen) return "TranslateScreen";
+    if (type == Translate && op == YZ) return "TranslateYZ";
+    if (type == Translate && op == ZX) return "TranslateZX";
+    if (type == Translate && op == XY) return "TranslateXY";
+    if (type == Translate && op == Keypress) return "TranslateKeypress";
+    if (type == Rotate && op == AxisX) return "RotateX";
+    if (type == Rotate && op == AxisY) return "RotateY";
+    if (type == Rotate && op == AxisZ) return "RotateZ";
+    if (type == Rotate && op == Screen) return "RotateScreen";
+    if (type == Rotate && op == Trackball) return "RotateTrackball";
+    if (type == Scale && op == AxisX) return "ScaleX";
+    if (type == Scale && op == AxisY) return "ScaleY";
+    if (type == Scale && op == AxisZ) return "ScaleZ";
+    if (type == Scale && op == Screen) return "ScaleXYZ";
     return "";
 }
 } // namespace TransformGizmo
@@ -210,7 +213,7 @@ using TransformGizmo::Mode;
 
 vec4 GetPlaneNormal(const Interaction &interaction, const GizmoTransform &transform, const ray &cam_ray) {
     using enum TransformType;
-    if (interaction.Op == Screen || interaction.Op == Trackball) return -vec4{cam_ray.d, 0};
+    if (interaction.Op == Screen || interaction.Op == Trackball || interaction.Op == Keypress) return -vec4{cam_ray.d, 0};
     if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return vec4{transform.AxisDirWs(*plane_index), 0};
 
     const auto i = AxisIndex(interaction.Op);
@@ -250,6 +253,7 @@ float PlaneAlpha(uint32_t axis_i, const GizmoTransform &transform, const ray cam
 
 std::optional<Interaction> FindHoveredInteraction(const GizmoTransform &transform, TransformGizmo::Type type, ImVec2 mouse_px, const ray &mouse_ray, const mat4 &vp, const ray &cam_ray) {
     using TransformGizmo::Type;
+    if (type == Type::None) return std::nullopt;
 
     static constexpr float SelectDist{8};
 
@@ -355,6 +359,8 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) {
                 case Screen: return i.Type == Scale ?
                     std::format("XYZ: {:.3f}", v.x) :
                     std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
+                case Keypress:
+                    return std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
             }
         }
         case Rotate: {
@@ -424,6 +430,7 @@ struct LocalTransformDelta {
 void Render(const GizmoTransform &transform, const LocalTransformDelta &dt, TransformGizmo::Type type, const mat4 &vp, const ray &cam_ray) {
     using TransformGizmo::Type;
     using enum TransformType;
+    if (type == Type::None || (g.Interaction && g.Interaction->Op == InteractionOp::Keypress)) return;
 
     const auto o_px = WsToPx(transform.P, vp);
 
@@ -850,6 +857,8 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
         return {};
     }
 
+    assert(!g.Start || g.Interaction);
+
     const auto vp = camera.Projection(size.x / size.y) * camera.View();
     const auto cam_basis = camera.Basis();
     const auto cam_ray = camera.Ray();
@@ -865,7 +874,7 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
         g.Interaction = {};
         return ret;
     }
-    if (g.Start && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    if (g.Start && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         // Mouse up - end interaction
         g.Start = {};
         g.Interaction = {};
@@ -877,7 +886,6 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
     const auto mouse_pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
     const auto mouse_ray_ws = camera.NdcToWorldRay(mouse_pos_clip, size.x / size.y);
     if (g.Start) {
-        assert(g.Interaction);
         const auto &ts = g.Start->Transform;
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray));
         const auto dt = GetLocalTransformDelta(ts, *g.Interaction, vp, mouse_ray_ws, plane);
@@ -886,8 +894,10 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
     }
 
     if (ImGui::IsWindowHovered()) {
-        if (g.Interaction = FindHoveredInteraction(transform, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray);
-            g.Interaction && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        g.Interaction = ImGui::IsKeyPressed(ImGuiKey_G) ?
+            std::optional<Interaction>({TransformType::Translate, InteractionOp::Keypress}) :
+            FindHoveredInteraction(transform, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray);
+        if (g.Interaction && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || g.Interaction->Op == InteractionOp::Keypress)) {
             g.Start = state::StartContext{
                 .Transform = transform,
                 .MousePx = mouse_px,

@@ -1282,12 +1282,13 @@ void Scene::Interact() {
     // Handle mouse input.
     if (!IsMouseDown(ImGuiMouseButton_Left)) {
         R.remove<ExcitedVertex>(active_entity);
-        AccumulatedWrapMouseDelta = {0, 0};
     }
     if (TransformGizmo::IsUsing()) {
         // TransformGizmo overrides this mouse cursor during some actions - this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
+    } else {
+        AccumulatedWrapMouseDelta = {0, 0};
     }
     if (!IsWindowHovered()) return;
 
@@ -1430,7 +1431,7 @@ void Scene::RenderOverlay() {
     }
 
     const auto selected_view = R.view<Selected>();
-    if (MGizmo.Show && !selected_view.empty()) {
+    if (!selected_view.empty()) {
         // Transform all selected entities around their average position, using the active entity's rotation/scale.
         struct StartTransform {
             Transform T;
@@ -1462,11 +1463,9 @@ void Scene::RenderOverlay() {
                     }
                 );
             }
-
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-            WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
-        } else {
+        } else if (!start_transform_view.empty()) {
             R.clear<StartTransform>();
+            InvalidateCommandBuffer(); // No longer manipulating - silhouette color changes.
         }
     }
     { // Orientation gizmo
@@ -1633,17 +1632,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (!scale_enabled && type == Scale) type = Translate;
 
         Spacing();
-        Checkbox("Gizmo", &MGizmo.Show);
-        if (MGizmo.Show) {
+        {
             Indent();
-            if (TransformGizmo::IsUsing()) {
-                SameLine();
-                Text("Using");
-            }
-            if (const auto label = TransformGizmo::ToString(); label != "") {
-                SameLine();
-                Text("Op: %s", label.data());
-            }
             {
                 using enum TransformGizmo::Mode;
                 auto &mode = MGizmo.Mode;
@@ -1657,6 +1647,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (IsKeyPressed(ImGuiKey_T)) type = Translate;
             if (IsKeyPressed(ImGuiKey_R)) type = Rotate;
             if (scale_enabled && IsKeyPressed(ImGuiKey_S)) type = Scale;
+
+            if (RadioButton("None", type == None)) type = None;
             if (RadioButton("Translate (T)", type == Translate)) type = Translate;
             if (RadioButton("Rotate (R)", type == Rotate)) type = Rotate;
             if (!scale_enabled) BeginDisabled();
@@ -1674,7 +1666,15 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             Unindent();
         }
         Spacing();
-        if (TreeNode("Transform matrix")) {
+        if (TreeNode("Debug")) {
+            if (const auto label = TransformGizmo::ToString(); label != "") {
+                Text("%s op: %s", TransformGizmo::IsUsing() ? "Active" : "Hovered", label.data());
+            } else {
+                TextUnformatted("Not hovering");
+            }
+            TreePop();
+        }
+        if (TreeNode("Model matrix")) {
             TextUnformatted("Transform");
             const auto &model = R.get<Model>(active_entity);
             RenderMat4(model.Transform);

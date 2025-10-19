@@ -264,7 +264,6 @@ private:
     mvk::UniqueBuffers CameraUBOBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteColorsBuffer;
 
     struct TransformGizmoState {
-        bool Show{false};
         TransformGizmo::Config Config;
         TransformGizmo::Mode Mode;
     };
