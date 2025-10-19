@@ -268,6 +268,7 @@ private:
         TransformGizmo::Mode Mode;
     };
     TransformGizmoState MGizmo;
+    bool StartTranslateScreenAction{false};
 
     bool ShowGrid{true};
     // Selected entity render settings

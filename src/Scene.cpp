@@ -897,7 +897,10 @@ entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
     SetVisible(e, info.Visible);
-    if (info.Select) Select(e);
+    if (info.Select) {
+        Select(e);
+        StartTranslateScreenAction = true;
+    }
     InvalidateCommandBuffer();
 
     return e;
@@ -1248,7 +1251,7 @@ void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
 bool IsSingleClicked(ImGuiMouseButton button) {
     static bool EscapePressed = false; // Escape cancels click
     if (IsMouseClicked(button)) EscapePressed = false;
-    if (IsKeyPressed(ImGuiKey_Escape)) EscapePressed = true;
+    if (IsKeyPressed(ImGuiKey_Escape, false)) EscapePressed = true;
     if (IsMouseReleased(button)) {
         const bool was_escape_pressed = EscapePressed;
         EscapePressed = false;
@@ -1270,11 +1273,11 @@ void Scene::Interact() {
             SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
         }
         if (SelectionMode == SelectionMode::Edit) {
-            if (IsKeyPressed(ImGuiKey_1)) SetEditingElement({MeshElement::Vertex, -1});
-            else if (IsKeyPressed(ImGuiKey_2)) SetEditingElement({MeshElement::Edge, -1});
-            else if (IsKeyPressed(ImGuiKey_3)) SetEditingElement({MeshElement::Face, -1});
+            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingElement({MeshElement::Vertex, -1});
+            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingElement({MeshElement::Edge, -1});
+            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingElement({MeshElement::Face, -1});
         }
-        if (active_entity != entt::null && (IsKeyPressed(ImGuiKey_Delete) || IsKeyPressed(ImGuiKey_Backspace))) {
+        if (active_entity != entt::null && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) {
             DestroyEntity(active_entity);
         }
     }
@@ -1291,6 +1294,7 @@ void Scene::Interact() {
         AccumulatedWrapMouseDelta = {0, 0};
     }
     if (!IsWindowHovered()) return;
+    if (ImGui::IsKeyPressed(ImGuiKey_G, false)) StartTranslateScreenAction = true;
 
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
@@ -1442,7 +1446,8 @@ void Scene::RenderOverlay() {
         const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
-                MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta
+                MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
+                StartTranslateScreenAction
             )) {
             const auto &[ts, td] = *start_delta;
             if (start_transform_view.empty()) {
@@ -1475,6 +1480,8 @@ void Scene::RenderOverlay() {
         OrientationGizmo::Draw(pos, OGizmoSize, Camera);
         if (Camera.Tick()) UpdateTransformBuffers();
     }
+
+    StartTranslateScreenAction = false;
 }
 
 namespace {
@@ -1644,9 +1651,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 SameLine();
                 if (RadioButton("World", mode == World)) mode = World;
             }
-            if (IsKeyPressed(ImGuiKey_T)) type = Translate;
-            if (IsKeyPressed(ImGuiKey_R)) type = Rotate;
-            if (scale_enabled && IsKeyPressed(ImGuiKey_S)) type = Scale;
+            if (IsKeyPressed(ImGuiKey_T, false)) type = Translate;
+            if (IsKeyPressed(ImGuiKey_R, false)) type = Rotate;
+            if (scale_enabled && IsKeyPressed(ImGuiKey_S, false)) type = Scale;
 
             if (RadioButton("None", type == None)) type = None;
             if (RadioButton("Translate (T)", type == Translate)) type = Translate;

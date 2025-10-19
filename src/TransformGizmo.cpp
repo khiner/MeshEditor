@@ -34,7 +34,7 @@ enum class InteractionOp : uint8_t {
     XY,
     Screen,
     Trackball, // Rotate only
-    Keypress, // Keypress-initiated screen translate
+    Action, // Action-initiated (currently only for translate)
 };
 
 struct Interaction {
@@ -122,7 +122,7 @@ std::string_view ToString() {
     if (type == Translate && op == YZ) return "TranslateYZ";
     if (type == Translate && op == ZX) return "TranslateZX";
     if (type == Translate && op == XY) return "TranslateXY";
-    if (type == Translate && op == Keypress) return "TranslateKeypress";
+    if (type == Translate && op == Action) return "TranslateAction";
     if (type == Rotate && op == AxisX) return "RotateX";
     if (type == Rotate && op == AxisY) return "RotateY";
     if (type == Rotate && op == AxisZ) return "RotateZ";
@@ -213,7 +213,7 @@ using TransformGizmo::Mode;
 
 vec4 GetPlaneNormal(const Interaction &interaction, const GizmoTransform &transform, const ray &cam_ray) {
     using enum TransformType;
-    if (interaction.Op == Screen || interaction.Op == Trackball || interaction.Op == Keypress) return -vec4{cam_ray.d, 0};
+    if (interaction.Op == Screen || interaction.Op == Trackball || interaction.Op == Action) return -vec4{cam_ray.d, 0};
     if (auto plane_index = TranslatePlaneIndex(interaction.Op)) return vec4{transform.AxisDirWs(*plane_index), 0};
 
     const auto i = AxisIndex(interaction.Op);
@@ -359,7 +359,7 @@ constexpr std::string ValueLabel(Interaction i, vec3 v) {
                 case Screen: return i.Type == Scale ?
                     std::format("XYZ: {:.3f}", v.x) :
                     std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-                case Keypress:
+                case Action:
                     return std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
             }
         }
@@ -430,7 +430,7 @@ struct LocalTransformDelta {
 void Render(const GizmoTransform &transform, const LocalTransformDelta &dt, TransformGizmo::Type type, const mat4 &vp, const ray &cam_ray) {
     using TransformGizmo::Type;
     using enum TransformType;
-    if (type == Type::None || (g.Interaction && g.Interaction->Op == InteractionOp::Keypress)) return;
+    if (type == Type::None || (g.Interaction && g.Interaction->Op == InteractionOp::Action)) return;
 
     const auto o_px = WsToPx(transform.P, vp);
 
@@ -848,7 +848,7 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
 } // namespace
 
 namespace TransformGizmo {
-std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px) {
+std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px, bool start_translate_screen_action) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
     g.MousePx = mouse_px;
 
@@ -893,18 +893,17 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
         return Result{ts, GetDeltaTransform(ts, dt, *g.Interaction, plane, cam_basis, config.Snap, config.SnapValue)};
     }
 
-    if (ImGui::IsWindowHovered()) {
-        g.Interaction = ImGui::IsKeyPressed(ImGuiKey_G) ?
-            std::optional<Interaction>({TransformType::Translate, InteractionOp::Keypress}) :
-            FindHoveredInteraction(transform, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray);
-        if (g.Interaction && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || g.Interaction->Op == InteractionOp::Keypress)) {
-            g.Start = state::StartContext{
-                .Transform = transform,
-                .MousePx = mouse_px,
-                .MouseRayWs = mouse_ray_ws,
-                .WorldPerNdc = g.WorldPerNdc,
-            };
-        }
+    g.Interaction = start_translate_screen_action ?
+        std::optional<Interaction>({TransformType::Translate, InteractionOp::Action}) :
+        ImGui::IsWindowHovered() ? FindHoveredInteraction(transform, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray) :
+                                   std::nullopt;
+    if (g.Interaction && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || g.Interaction->Op == InteractionOp::Action)) {
+        g.Start = state::StartContext{
+            .Transform = transform,
+            .MousePx = mouse_px,
+            .MouseRayWs = mouse_ray_ws,
+            .WorldPerNdc = g.WorldPerNdc,
+        };
     }
     Render(transform, {}, config.Type, vp, cam_ray);
     return {};

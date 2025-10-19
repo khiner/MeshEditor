@@ -51,5 +51,7 @@ struct Result {
     Transform Start; // Transform at interaction start
     Transform Delta; // Delta transform since interaction start
 };
-std::optional<Result> Draw(const GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px);
+
+// start_translate_screen_action: If true, starts (non-click-initiated screen-space translate interaction immediately.)
+std::optional<Result> Draw(const GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px, bool start_translate_screen_action = false);
 } // namespace TransformGizmo
