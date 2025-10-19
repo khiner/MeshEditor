@@ -1245,7 +1245,17 @@ void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
     }
 }
 
-bool IsSingleClicked(ImGuiMouseButton button) { return IsMouseReleased(button) && !IsMouseDragPastThreshold(button); }
+bool IsSingleClicked(ImGuiMouseButton button) {
+    static bool EscapePressed = false; // Escape cancels click
+    if (IsMouseClicked(button)) EscapePressed = false;
+    if (IsKeyPressed(ImGuiKey_Escape)) EscapePressed = true;
+    if (IsMouseReleased(button)) {
+        const bool was_escape_pressed = EscapePressed;
+        EscapePressed = false;
+        if (was_escape_pressed) return false;
+    }
+    return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
+}
 } // namespace
 
 void Scene::Interact() {
