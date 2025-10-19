@@ -77,8 +77,8 @@ void Scene::Select(entt::entity e) {
     R.clear<Selected>();
     if (e != entt::null) {
         R.clear<Active>();
-        R.emplace_or_replace<Active>(e);
-        R.emplace_or_replace<Selected>(e);
+        R.emplace<Active>(e);
+        R.emplace<Selected>(e);
     }
     InvalidateCommandBuffer();
 }
@@ -1190,9 +1190,7 @@ ray WorldToLocal(const ray &r, const mat4 &model_i_t) {
 
 std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const ray &world_ray) {
     std::multimap<float, entt::entity> entities_by_distance;
-    for (const auto &[e, model] : r.view<const Model>().each()) {
-        if (!r.all_of<Visible>(e)) continue;
-
+    for (const auto &[e, model] : r.view<const Model, const Visible>().each()) {
         const auto &mesh = r.get<const Mesh>(GetParentEntity(r, e));
         if (auto intersection = mesh.Intersect(WorldToLocal(world_ray, model.InvTransform))) {
             entities_by_distance.emplace(intersection->Distance, e);
@@ -1222,9 +1220,7 @@ struct EntityIntersection {
 std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, const ray &world_ray) {
     float nearest_distance = std::numeric_limits<float>::max();
     std::optional<EntityIntersection> nearest;
-    for (const auto &[e, model] : r.view<const Model>().each()) {
-        if (!r.all_of<Visible>(e)) continue;
-
+    for (const auto &[e, model] : r.view<const Model, const Visible>().each()) {
         const auto &mesh = r.get<const Mesh>(GetParentEntity(r, e));
         const auto local_ray = WorldToLocal(world_ray, model.InvTransform);
         if (auto intersection = mesh.Intersect(local_ray);
@@ -1325,14 +1321,14 @@ void Scene::Interact() {
     } else if (SelectionMode == SelectionMode::Object) {
         const auto intersected = CycleIntersectedEntity(R, active_entity, mouse_ray_ws);
         if (intersected != entt::null && IsKeyDown(ImGuiMod_Shift)) {
-            if (R.all_of<Active>(intersected)) {
-                R.remove<Selected>(intersected);
+            if (active_entity == intersected) {
+                ToggleSelected(intersected);
             } else {
-                R.emplace_or_replace<Selected>(intersected);
                 R.clear<Active>();
                 R.emplace<Active>(intersected);
+                R.emplace_or_replace<Selected>(intersected);
+                InvalidateCommandBuffer();
             }
-            InvalidateCommandBuffer();
         } else {
             Select(intersected);
         }
@@ -1417,20 +1413,23 @@ bool Scene::RenderViewport() {
 
 void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
-    const auto selected_view = R.view<Selected>();
-    const auto active_entity = FindActiveEntity(R);
-    if (active_entity != entt::null) { // Active entity center-dot
-        const auto p_ws = R.get<Position>(active_entity).Value;
+    if (!R.view<Active>().empty()) { // Draw center-dot for active/selected entities
         const auto size = ToGlm(GetContentRegionAvail());
         const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
-        const auto p_cs = vp * vec4{p_ws, 1}; // World to clip space
-        const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
-        const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
-        const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
-        auto &dl = *GetWindowDrawList();
-        dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(Colors.Active)));
-        dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
+        for (const auto [e, p] : R.view<const Position, const Visible>().each()) {
+            if (!R.any_of<Active, Selected>(e)) continue;
+
+            const auto p_cs = vp * vec4{p.Value, 1}; // World to clip space
+            const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
+            const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
+            const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
+            auto &dl = *GetWindowDrawList();
+            dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(R.all_of<Active>(e) ? Colors.Active : Colors.Selected)), 10);
+            dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
+        }
     }
+
+    const auto selected_view = R.view<Selected>();
     if (MGizmo.Show && !selected_view.empty()) {
         // Transform all selected entities around their average position, using the active entity's rotation/scale.
         struct StartTransform {
@@ -1438,7 +1437,7 @@ void Scene::RenderOverlay() {
         };
         const auto start_transform_view = R.view<const StartTransform>();
 
-        const auto active_transform = GetTransform(R, active_entity);
+        const auto active_transform = GetTransform(R, FindActiveEntity(R));
         const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
