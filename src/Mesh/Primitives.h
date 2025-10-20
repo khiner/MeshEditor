@@ -1,9 +1,10 @@
 #pragma once
 
-#include "Primitive.h"
+#include "PrimitiveType.h"
 #include "mesh/Mesh.h"
 #include "numeric/vec2.h"
 
+#include <array>
 #include <ranges>
 
 using std::ranges::iota_view;
@@ -218,39 +219,40 @@ inline Mesh Cone(float radius = 0.5, float height = 1, uint slices = 32) {
     return {std::move(vertices), std::move(indices)};
 }
 
-constexpr std::string to_string(Primitive primitive) {
-    switch (primitive) {
-        case Primitive::Rect: return "Rect";
-        case Primitive::Circle: return "Circle";
-        case Primitive::Cube: return "Cube";
-        case Primitive::IcoSphere: return "IcoSphere";
-        case Primitive::UVSphere: return "UVSphere";
-        case Primitive::Torus: return "Torus";
-        case Primitive::Cylinder: return "Cylinder";
-        case Primitive::Cone: return "Cone";
+constexpr std::string ToString(PrimitiveType type) {
+    using enum PrimitiveType;
+    switch (type) {
+        case Rect: return "Rect";
+        case Circle: return "Circle";
+        case Cube: return "Cube";
+        case IcoSphere: return "IcoSphere";
+        case UVSphere: return "UVSphere";
+        case Torus: return "Torus";
+        case Cylinder: return "Cylinder";
+        case Cone: return "Cone";
     }
 }
 
-inline Mesh CreateDefaultPrimitive(Primitive primitive) {
-    switch (primitive) {
-        case Primitive::Rect: return Rect();
-        case Primitive::Cube: return Cuboid();
-        case Primitive::IcoSphere: return IcoSphere();
-        case Primitive::Circle: return Circle();
-        case Primitive::UVSphere: return UVSphere();
-        case Primitive::Torus: return Torus();
-        case Primitive::Cylinder: return Cylinder();
-        case Primitive::Cone: return Cone();
+inline Mesh CreateDefaultPrimitive(PrimitiveType type) {
+    switch (type) {
+        case PrimitiveType::Rect: return Rect();
+        case PrimitiveType::Cube: return Cuboid();
+        case PrimitiveType::IcoSphere: return IcoSphere();
+        case PrimitiveType::Circle: return Circle();
+        case PrimitiveType::UVSphere: return UVSphere();
+        case PrimitiveType::Torus: return Torus();
+        case PrimitiveType::Cylinder: return Cylinder();
+        case PrimitiveType::Cone: return Cone();
     }
 }
 
-inline const std::vector<Primitive> AllPrimitives{
-    Primitive::Rect,
-    Primitive::Circle,
-    Primitive::Cube,
-    Primitive::IcoSphere,
-    Primitive::UVSphere,
-    Primitive::Torus,
-    Primitive::Cylinder,
-    Primitive::Cone,
+inline const std::array<PrimitiveType, 8> PrimitiveTypes{
+    PrimitiveType::Rect,
+    PrimitiveType::Circle,
+    PrimitiveType::Cube,
+    PrimitiveType::IcoSphere,
+    PrimitiveType::UVSphere,
+    PrimitiveType::Torus,
+    PrimitiveType::Cylinder,
+    PrimitiveType::Cone,
 };

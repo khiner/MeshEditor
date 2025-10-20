@@ -724,7 +724,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     Pipelines->CompileShaders();
 
-    AddPrimitive(Primitive::Cube, {.Select = true, .Visible = true});
+    { // Default scene content
+        const auto e = AddMesh(CreateDefaultPrimitive(PrimitiveType::Cube), {.Name = ToString(PrimitiveType::Cube)});
+        R.emplace<PrimitiveType>(e, PrimitiveType::Cube);
+    }
 }
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
@@ -832,11 +835,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         element_buffers.emplace(element, CreateRenderBuffers(mesh.CreateVertices(element), mesh.CreateIndices(element)));
     }
     R.emplace<MeshBuffers>(e, std::move(element_buffers), MeshElementBuffers{});
-
-    if (ShowBoundingBoxes) {
-        R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
-    }
-
+    if (ShowBoundingBoxes) R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
     R.emplace<Mesh>(e, std::move(mesh));
 
     if (info.Select) Select(e);
@@ -855,10 +854,35 @@ entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
     return e;
 }
 
-entt::entity Scene::AddPrimitive(Primitive primitive, MeshCreateInfo info) {
-    if (info.Name.empty()) info.Name = to_string(primitive);
-    const auto e = AddMesh(CreateDefaultPrimitive(primitive), std::move(info));
-    R.emplace<Primitive>(e, primitive);
+entt::entity Scene::Duplicate(entt::entity entity, std::optional<MeshCreateInfo> info) {
+    const auto parent = GetParentEntity(entity);
+    const auto e = AddMesh(
+        Mesh{R.get<const Mesh>(parent)},
+        info.value_or(MeshCreateInfo{
+            .Name = std::format("{}_copy", GetName(R, entity)),
+            .Transform = GetTransform(R, entity),
+            .Select = R.all_of<Selected>(entity),
+            .Visible = R.all_of<Visible>(entity),
+        })
+    );
+    if (auto primitive_type = R.try_get<PrimitiveType>(parent)) R.emplace<PrimitiveType>(e, *primitive_type);
+    return e;
+}
+
+entt::entity Scene::DuplicateLinked(entt::entity parent, std::optional<MeshCreateInfo> info) {
+    const auto e = R.create();
+    // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
+    R.emplace<SceneNode>(e, parent);
+    auto &parent_node = R.get<SceneNode>(parent);
+    parent_node.Children.emplace_back(e);
+    UpdateTransform(R, e, info ? info->Transform : GetTransform(R, parent));
+    R.emplace<Name>(e, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info->Name));
+    auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
+    model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
+    SetVisible(e, !info || info->Visible);
+    if (!info || info->Select) Select(e);
+    InvalidateCommandBuffer();
+
     return e;
 }
 
@@ -886,25 +910,6 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     R.replace<Mesh>(e, std::move(mesh));
 }
 
-entt::entity Scene::AddInstance(entt::entity parent, MeshCreateInfo info) {
-    const auto e = R.create();
-    // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
-    R.emplace<SceneNode>(e, parent);
-    auto &parent_node = R.get<SceneNode>(parent);
-    parent_node.Children.emplace_back(e);
-    UpdateTransform(R, e, info.Transform);
-    R.emplace<Name>(e, info.Name.empty() ? std::format("{}_instance_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info.Name));
-    auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
-    model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
-    SetVisible(e, info.Visible);
-    if (info.Select) {
-        Select(e);
-        StartTranslateScreenAction = true;
-    }
-    InvalidateCommandBuffer();
-
-    return e;
-}
 void Scene::DestroyInstance(entt::entity instance) {
     SetVisible(instance, false);
     std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).Parent).Children, instance);
@@ -1485,42 +1490,42 @@ void Scene::RenderOverlay() {
 }
 
 namespace {
-std::optional<Mesh> PrimitiveEditor(Primitive primitive, bool is_create = true) {
+std::optional<Mesh> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
     const char *create_label = is_create ? "Add" : "Update";
-    if (primitive == Primitive::Rect) {
+    if (type == PrimitiveType::Rect) {
         static vec2 size{1, 1};
         InputFloat2("Size", &size.x);
         if (Button(create_label)) return Rect(size / 2.f);
-    } else if (primitive == Primitive::Circle) {
+    } else if (type == PrimitiveType::Circle) {
         static float r = 0.5;
         InputFloat("Radius", &r);
         if (Button(create_label)) return Circle(r);
-    } else if (primitive == Primitive::Cube) {
+    } else if (type == PrimitiveType::Cube) {
         static vec3 size{1.0, 1.0, 1.0};
         InputFloat3("Size", &size.x);
         if (Button(create_label)) return Cuboid(size / 2.f);
-    } else if (primitive == Primitive::IcoSphere) {
+    } else if (type == PrimitiveType::IcoSphere) {
         static float r = 0.5;
         static int subdivisions = 3;
         InputFloat("Radius", &r);
         InputInt("Subdivisions", &subdivisions);
         if (Button(create_label)) return IcoSphere(r, uint(subdivisions));
-    } else if (primitive == Primitive::UVSphere) {
+    } else if (type == PrimitiveType::UVSphere) {
         static float r = 0.5;
         InputFloat("Radius", &r);
         if (Button(create_label)) return UVSphere(r);
-    } else if (primitive == Primitive::Torus) {
+    } else if (type == PrimitiveType::Torus) {
         static vec2 radii{0.5, 0.2};
         static glm::ivec2 n_segments = {32, 16};
         InputFloat2("Major/minor radius", &radii.x);
         InputInt2("Major/minor segments", &n_segments.x);
         if (Button(create_label)) return Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
-    } else if (primitive == Primitive::Cylinder) {
+    } else if (type == PrimitiveType::Cylinder) {
         static float r = 1, h = 1;
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
         if (Button(create_label)) return Cylinder(r, h);
-    } else if (primitive == Primitive::Cone) {
+    } else if (type == PrimitiveType::Cone) {
         static float r = 1, h = 1;
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
@@ -1578,14 +1583,22 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         SetVisible(active_entity, visible);
         InvalidateCommandBuffer();
     }
-    if (Button("Add instance")) AddInstance(active_mesh_entity);
+    if (Button("Duplicate")) {
+        Duplicate(active_entity);
+        StartTranslateScreenAction = true;
+    }
+    SameLine();
+    if (Button("Duplicate linked")) {
+        DuplicateLinked(active_mesh_entity);
+        StartTranslateScreenAction = true;
+    }
     if (CollapsingHeader("Transform")) {
         bool model_changed = DragFloat3("Position", &R.get<Position>(active_entity).Value[0], 0.01f);
         // Rotation editor
         {
             int mode_i = R.get<RotationUiVariant>(active_entity).index();
             const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
-            if (ImGui::Combo("Rotation Mode", &mode_i, modes, IM_ARRAYSIZE(modes))) {
+            if (ImGui::Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes))) {
                 R.replace<RotationUiVariant>(active_entity, CreateVariantByIndex<RotationUiVariant>(mode_i));
                 SetRotation(R, active_entity, R.get<Rotation>(active_entity).Value);
             }
@@ -1691,9 +1704,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             TreePop();
         }
     }
-    if (const auto *primitive = R.try_get<Primitive>(active_mesh_entity)) {
+    if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
         if (CollapsingHeader("Update primitive")) {
-            if (auto new_mesh = PrimitiveEditor(*primitive, false)) {
+            if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
                 ReplaceMesh(active_mesh_entity, std::move(*new_mesh));
                 InvalidateCommandBuffer();
             }
@@ -1745,14 +1758,15 @@ void Scene::RenderControls() {
 
             if (CollapsingHeader("Add primitive")) {
                 PushID("AddPrimitive");
-                static auto select_primitive = int(Primitive::Cube);
-                for (uint i = 0; i < AllPrimitives.size(); ++i) {
+                static auto selected_type_i = int(PrimitiveType::Cube);
+                for (uint i = 0; i < PrimitiveTypes.size(); ++i) {
                     if (i % 3 != 0) SameLine();
-                    const auto primitive = AllPrimitives[i];
-                    RadioButton(to_string(primitive).c_str(), &select_primitive, int(primitive));
+                    RadioButton(ToString(PrimitiveTypes[i]).c_str(), &selected_type_i, i);
                 }
-                if (auto mesh = PrimitiveEditor(Primitive(select_primitive), true)) {
-                    R.emplace<Primitive>(AddMesh(std::move(*mesh), {.Name = to_string(Primitive(select_primitive))}), Primitive(select_primitive));
+                const auto selected_type = PrimitiveType(selected_type_i);
+                if (auto mesh = PrimitiveEditor(selected_type, true)) {
+                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh), {.Name = ToString(selected_type)}), selected_type);
+                    StartTranslateScreenAction = true;
                 }
                 PopID();
             }

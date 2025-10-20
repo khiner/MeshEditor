@@ -6,7 +6,7 @@
 #include "Vulkan/Image.h"
 #include "Vulkan/UniqueBuffers.h"
 #include "mesh/MeshElement.h"
-#include "mesh/Primitive.h"
+#include "mesh/PrimitiveType.h"
 #include "mesh/Vertex.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
@@ -173,8 +173,8 @@ struct Scene {
     entt::entity AddMesh(Mesh &&, MeshCreateInfo = {});
     entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
 
-    entt::entity AddPrimitive(Primitive, MeshCreateInfo = {});
-    entt::entity AddInstance(entt::entity, MeshCreateInfo = {});
+    entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
+    entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();

@@ -123,9 +123,9 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     );
     for (const auto &listener_point : RealImpact::LoadListenerPoints(directory)) {
         static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
-        const auto listener_instance_entity = scene.AddInstance(
+        const auto listener_instance_entity = scene.DuplicateLinked(
             listener_entity,
-            {
+            MeshCreateInfo{
                 .Name = std::format("RealImpact Listener: {}", listener_point.Index),
                 .Transform = {
                     .P = listener_point.GetPosition(scene.World.Up, true),

@@ -1,6 +1,6 @@
 #pragma once
 
-enum class Primitive {
+enum class PrimitiveType : uint8_t {
     Rect,
     Circle,
     Cube,

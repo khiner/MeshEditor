@@ -32,6 +32,10 @@ Mesh::Mesh(Mesh &&other)
     : BoundingBox(other.BoundingBox), M(std::move(other.M)), Bvh(std::move(other.Bvh)), HighlightedElements(std::move(other.HighlightedElements)) {
     other.Bvh.reset();
 }
+Mesh::Mesh(const Mesh &other)
+    : BoundingBox(other.BoundingBox), M(other.M), HighlightedElements(other.HighlightedElements) {
+    Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
+}
 Mesh::~Mesh() {
     M.release_vertex_normals();
     M.release_face_normals();

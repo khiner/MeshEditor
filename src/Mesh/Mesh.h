@@ -92,11 +92,11 @@ struct Mesh {
     static constexpr float NormalIndicatorLengthScale{0.25};
 
     Mesh(Mesh &&);
+    Mesh(const Mesh &);
     Mesh(PolyMesh &&);
     Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor);
     ~Mesh();
 
-    Mesh(const Mesh &) = delete;
     const Mesh &operator=(Mesh &&);
 
     bool operator==(const Mesh &other) const { return &M == &other.M; }
