@@ -72,8 +72,6 @@ entt::entity Scene::GetParentEntity(entt::entity e) const { return ::GetParentEn
 const Mesh &Scene::GetActiveMesh() const { return R.get<Mesh>(GetParentEntity(FindActiveEntity(R))); }
 
 void Scene::Select(entt::entity e) {
-    if (e != entt::null && R.all_of<Selected>(e)) return;
-
     R.clear<Selected>();
     if (e != entt::null) {
         R.clear<Active>();
