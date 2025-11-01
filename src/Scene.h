@@ -281,6 +281,7 @@ private:
     };
     TransformGizmoState MGizmo;
     bool StartTranslateScreenAction{false};
+    bool TransformModePillsHovered{false};
 
     bool ShowGrid{true};
     // Selected entity render settings

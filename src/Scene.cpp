@@ -1353,7 +1353,7 @@ void Scene::Interact() {
             Camera.SetTargetYawPitch(Camera.YawPitch + wheel * 0.15f);
         }
     }
-    if (!IsSingleClicked(ImGuiMouseButton_Left) || TransformGizmo::IsUsing() || OrientationGizmo::IsActive()) return;
+    if (!IsSingleClicked(ImGuiMouseButton_Left) || TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
     // Handle mouse selection.
     const auto size = GetContentRegionAvail();
@@ -1466,6 +1466,60 @@ bool Scene::RenderViewport() {
 
 void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
+    { // Transform mode pill buttons (top-left overlay)
+        struct ButtonInfo {
+            const char *label;
+            TransformGizmo::Type button_type;
+            ImDrawFlags corners;
+            bool enabled;
+        };
+
+        using enum TransformGizmo::Type;
+        const auto v = R.view<Selected, Frozen>();
+        const bool scale_enabled = v.begin() == v.end();
+        const ButtonInfo buttons[]{
+            {"Move", Translate, ImDrawFlags_RoundCornersTop, true},
+            {"Rotate", Rotate, ImDrawFlags_RoundCornersNone, true},
+            {"Scale", Scale, ImDrawFlags_RoundCornersNone, scale_enabled},
+            {"Transform", Universal, ImDrawFlags_RoundCornersBottom, true},
+        };
+
+        auto &type = MGizmo.Config.Type;
+        if (!scale_enabled && type == Scale) type = Translate;
+
+        const float padding = GetTextLineHeightWithSpacing() / 2.f;
+        const auto start_pos = std::bit_cast<ImVec2>(window_pos) + GetWindowContentRegionMin() + ImVec2{padding, padding};
+        const auto button_size = ImVec2{80, GetFrameHeight()};
+        const auto saved_cursor_pos = GetCursorScreenPos();
+
+        auto &dl = *GetWindowDrawList();
+        TransformModePillsHovered = false;
+        for (uint i = 0; i < 4; ++i) {
+            const auto &[label, button_type, corners, enabled] = buttons[i];
+            SetCursorScreenPos({start_pos.x, start_pos.y + i * button_size.y});
+
+            if (!enabled) BeginDisabled();
+            const bool clicked = InvisibleButton(label, button_size);
+            if (!enabled) EndDisabled();
+
+            const bool hovered = IsItemHovered();
+            if (hovered) TransformModePillsHovered = true;
+            if (clicked) type = button_type;
+
+            // Draw button with custom corner rounding
+            const auto bg_color = GetColorU32(
+                !enabled                ? ImGuiCol_FrameBg :
+                    type == button_type ? ImGuiCol_ButtonActive :
+                    hovered             ? ImGuiCol_ButtonHovered :
+                                          ImGuiCol_Button
+            );
+            dl.AddRectFilled(GetItemRectMin(), GetItemRectMax(), bg_color, 8.f, corners);
+            const auto text_pos = GetItemRectMin() + (button_size - CalcTextSize(label)) * 0.5f;
+            dl.AddText(text_pos, GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled), label);
+        }
+        SetCursorScreenPos(saved_cursor_pos);
+    }
+
     if (!R.storage<Active>().empty()) { // Draw center-dot for active/selected entities
         const auto size = ToGlm(GetContentRegionAvail());
         const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
@@ -1677,37 +1731,16 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             UpdateModelBuffer(active_entity);
             InvalidateCommandBuffer();
         }
-
-        using enum TransformGizmo::Type;
-        auto &type = MGizmo.Config.Type;
-        const bool scale_enabled = !frozen;
-        if (!scale_enabled && type == Scale) type = Translate;
-
         Spacing();
         {
-            Indent();
-            {
-                using enum TransformGizmo::Mode;
-                auto &mode = MGizmo.Mode;
-                AlignTextToFramePadding();
-                Text("Mode:");
-                SameLine();
-                if (RadioButton("Local", mode == Local)) mode = Local;
-                SameLine();
-                if (RadioButton("World", mode == World)) mode = World;
-            }
-            if (IsKeyPressed(ImGuiKey_T, false)) type = Translate;
-            if (IsKeyPressed(ImGuiKey_R, false)) type = Rotate;
-            if (scale_enabled && IsKeyPressed(ImGuiKey_S, false)) type = Scale;
-
-            if (RadioButton("None", type == None)) type = None;
-            if (RadioButton("Translate (T)", type == Translate)) type = Translate;
-            if (RadioButton("Rotate (R)", type == Rotate)) type = Rotate;
-            if (!scale_enabled) BeginDisabled();
-            const auto label = std::format("Scale (S){}", !scale_enabled ? " (frozen)" : "");
-            if (RadioButton(label.c_str(), type == Scale)) type = Scale;
-            if (!scale_enabled) EndDisabled();
-            if (RadioButton("Universal", type == Universal)) type = Universal;
+            AlignTextToFramePadding();
+            Text("Mode:");
+            SameLine();
+            using enum TransformGizmo::Mode;
+            auto &mode = MGizmo.Mode;
+            if (RadioButton("Local", mode == Local)) mode = Local;
+            SameLine();
+            if (RadioButton("World", mode == World)) mode = World;
             Spacing();
             Checkbox("Snap", &MGizmo.Config.Snap);
             if (MGizmo.Config.Snap) {
@@ -1715,7 +1748,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 // todo link/unlink snap values
                 DragFloat3("Snap", &MGizmo.Config.SnapValue.x, 1.f, 0.01f, 100.f);
             }
-            Unindent();
         }
         Spacing();
         if (TreeNode("Debug")) {
