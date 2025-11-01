@@ -778,7 +778,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
              .R = glm::rotation(World.Up, normal),
              .S = vec3{scale_factor},
          },
-         .Select = false}
+         .Select = MeshCreateInfo::SelectBehavior::None}
     );
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
@@ -836,11 +836,19 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     if (ShowBoundingBoxes) R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
     R.emplace<Mesh>(e, std::move(mesh));
 
-    if (info.Select) Select(e);
-    else if (R.view<Active>().empty()) R.emplace<Active>(e); // If this is the first mesh, set it active by default.
+    switch (info.Select) {
+        case MeshCreateInfo::SelectBehavior::Exclusive:
+            Select(e);
+            break;
+        case MeshCreateInfo::SelectBehavior::Additive:
+            R.emplace<Selected>(e);
+            // Fallthrough
+        case MeshCreateInfo::SelectBehavior::None:
+            if (R.storage<Active>().empty()) R.emplace<Active>(e); // If this is the first mesh, set it active by default.
+            break;
+    }
 
     InvalidateCommandBuffer();
-
     return e;
 }
 
@@ -852,36 +860,71 @@ entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
     return e;
 }
 
-entt::entity Scene::Duplicate(entt::entity entity, std::optional<MeshCreateInfo> info) {
-    const auto parent = GetParentEntity(entity);
-    const auto e = AddMesh(
+entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info) {
+    const auto parent = GetParentEntity(e);
+    const auto e_new = AddMesh(
         Mesh{R.get<const Mesh>(parent)},
         info.value_or(MeshCreateInfo{
-            .Name = std::format("{}_copy", GetName(R, entity)),
-            .Transform = GetTransform(R, entity),
-            .Select = R.all_of<Selected>(entity),
-            .Visible = R.all_of<Visible>(entity),
+            .Name = std::format("{}_copy", GetName(R, e)),
+            .Transform = GetTransform(R, e),
+            .Select = R.all_of<Selected>(e) ? MeshCreateInfo::SelectBehavior::Additive : MeshCreateInfo::SelectBehavior::None,
+            .Visible = R.all_of<Visible>(e),
         })
     );
-    if (auto primitive_type = R.try_get<PrimitiveType>(parent)) R.emplace<PrimitiveType>(e, *primitive_type);
-    return e;
+    if (auto primitive_type = R.try_get<PrimitiveType>(parent)) R.emplace<PrimitiveType>(e_new, *primitive_type);
+    return e_new;
 }
 
-entt::entity Scene::DuplicateLinked(entt::entity parent, std::optional<MeshCreateInfo> info) {
-    const auto e = R.create();
-    // For now, we assume one-level deep hierarchy, so we don't allocate a models buffer for the instance.
-    R.emplace<SceneNode>(e, parent);
-    auto &parent_node = R.get<SceneNode>(parent);
-    parent_node.Children.emplace_back(e);
-    UpdateTransform(R, e, info ? info->Transform : GetTransform(R, parent));
-    R.emplace<Name>(e, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, parent), parent_node.Children.size()) : CreateName(R, info->Name));
+entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo> info) {
+    const auto parent = GetParentEntity(e);
+    const auto e_new = R.create();
+    // For now, we assume one-level deep hierarchy, so we don't allocate a models-buffer for the instance.
+    R.emplace<SceneNode>(e_new, parent);
+    auto &siblings = R.get<SceneNode>(parent).Children;
+    siblings.emplace_back(e_new);
+    UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
+    R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), siblings.size()) : CreateName(R, info->Name));
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
-    SetVisible(e, !info || info->Visible);
-    if (!info || info->Select) Select(e);
+    SetVisible(e_new, !info || info->Visible);
+    if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
+    else if (info->Select == MeshCreateInfo::SelectBehavior::Exclusive) Select(e_new);
     InvalidateCommandBuffer();
 
-    return e;
+    return e_new;
+}
+
+void Scene::Duplicate() {
+    std::vector<entt::entity> originally_selected;
+    for (const auto e : R.view<Selected>()) {
+        originally_selected.emplace_back(e);
+    }
+    for (const auto e : originally_selected) {
+        const auto new_e = Duplicate(e);
+        if (R.all_of<Active>(e)) {
+            R.remove<Active>(e);
+            R.emplace<Active>(new_e);
+        }
+        R.remove<Selected>(e);
+    }
+
+    StartTranslateScreenAction = true;
+}
+void Scene::DuplicateLinked() {
+    std::vector<entt::entity> originally_selected;
+    for (const auto e : R.view<Selected>()) {
+        originally_selected.emplace_back(e);
+    }
+    for (const auto e : originally_selected) {
+        const auto new_e = DuplicateLinked(e);
+        if (R.all_of<Active>(e)) {
+            R.remove<Active>(e);
+            R.emplace<Active>(new_e);
+        }
+        R.remove<Selected>(e);
+    }
+
+    StartTranslateScreenAction = true;
 }
 
 void Scene::ClearMeshes() {
@@ -1421,7 +1464,7 @@ bool Scene::RenderViewport() {
 
 void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
-    if (!R.view<Active>().empty()) { // Draw center-dot for active/selected entities
+    if (!R.storage<Active>().empty()) { // Draw center-dot for active/selected entities
         const auto size = ToGlm(GetContentRegionAvail());
         const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
         for (const auto [e, p] : R.view<const Position, const Visible>().each()) {
@@ -1437,8 +1480,7 @@ void Scene::RenderOverlay() {
         }
     }
 
-    const auto selected_view = R.view<Selected>();
-    if (!selected_view.empty()) {
+    if (const auto selected_view = R.view<Selected>(); !selected_view.empty()) {
         // Transform all selected entities around their average position, using the active entity's rotation/scale.
         struct StartTransform {
             Transform T;
@@ -1580,15 +1622,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (Checkbox("Visible", &visible)) {
         SetVisible(active_entity, visible);
         InvalidateCommandBuffer();
-    }
-    if (Button("Duplicate")) {
-        Duplicate(active_entity);
-        StartTranslateScreenAction = true;
-    }
-    SameLine();
-    if (Button("Duplicate linked")) {
-        DuplicateLinked(active_mesh_entity);
-        StartTranslateScreenAction = true;
     }
     if (CollapsingHeader("Transform")) {
         bool model_changed = DragFloat3("Position", &R.get<Position>(active_entity).Value[0], 0.01f);
@@ -1751,6 +1784,16 @@ void Scene::RenderControls() {
                     }
                 }
                 PopID();
+            }
+            if (!R.storage<Selected>().empty()) { // Selection actions
+                SeparatorText("Selection actions");
+                if (Button("Duplicate")) {
+                    Duplicate();
+                }
+                SameLine();
+                if (Button("Duplicate linked")) {
+                    DuplicateLinked();
+                }
             }
             RenderEntityControls(active_entity);
 

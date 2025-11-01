@@ -117,7 +117,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
         {
             .Name = std::format("RealImpact Listeners: {}", R.get<Name>(e).Value),
-            .Select = false,
+            .Select = MeshCreateInfo::SelectBehavior::None,
             .Visible = false,
         }
     );
@@ -131,7 +131,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
                     .P = listener_point.GetPosition(scene.World.Up, true),
                     .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.World.Up) * rot_z,
                 },
-                .Select = false,
+                .Select = MeshCreateInfo::SelectBehavior::None,
             }
         );
         R.emplace<SoundObjectListenerPoint>(listener_instance_entity, listener_point.Index);
@@ -745,7 +745,7 @@ void AcousticScene::Draw(entt::entity e) {
 
 ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, const ModalModelCreateInfo &info) const {
     // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
-    // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(active_entity).Transform;, .Select = false, .Visible = false});
+    // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<Model>(active_entity).Transform;, .Select = MeshCreateInfo::SelectBehavior::None, .Visible = false});
 
     // We rely on `PreserveSurface` behavior for excitable vertices;
     // Vertex indices on the surface mesh must match vertex indices on the tet mesh.

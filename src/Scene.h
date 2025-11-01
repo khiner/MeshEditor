@@ -135,7 +135,14 @@ inline std::string to_string(SelectionMode mode) {
 struct MeshCreateInfo {
     std::string Name{};
     Transform Transform{};
-    bool Select{true}, Visible{true};
+
+    enum class SelectBehavior {
+        Exclusive,
+        Additive,
+        None,
+    };
+    SelectBehavior Select{SelectBehavior::Exclusive};
+    bool Visible{true};
 };
 
 static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100}; }
@@ -175,6 +182,8 @@ struct Scene {
 
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
+    void Duplicate(); // All selected entities
+    void DuplicateLinked(); // All selected entities
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
