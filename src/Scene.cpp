@@ -1323,7 +1323,11 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingElement({MeshElement::Edge, -1});
             else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingElement({MeshElement::Face, -1});
         }
-        if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
+        if (!R.storage<Selected>().empty()) {
+            if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
+            else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
+            else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
+        }
     }
 
     // Handle mouse input.
