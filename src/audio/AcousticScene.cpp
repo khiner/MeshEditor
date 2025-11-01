@@ -219,7 +219,7 @@ void AcousticScene::RenderControls(Scene &scene) {
                 PopID();
             }
             if (entity_to_select != entt::null) scene.Select(entity_to_select);
-            if (entity_to_delete != entt::null) scene.DestroyEntity(entity_to_delete);
+            if (entity_to_delete != entt::null) scene.Destroy(entity_to_delete);
             EndTable();
         }
     }
@@ -248,7 +248,7 @@ void AcousticScene::RenderControls(Scene &scene) {
                 PopID();
             }
             if (entity_to_select != entt::null) scene.Select(entity_to_select);
-            if (entity_to_delete != entt::null) scene.DestroyEntity(entity_to_delete);
+            if (entity_to_delete != entt::null) scene.Destroy(entity_to_delete);
             EndTable();
         }
     }

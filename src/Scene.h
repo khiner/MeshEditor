@@ -182,14 +182,12 @@ struct Scene {
 
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
-    void Duplicate(); // All selected entities
-    void DuplicateLinked(); // All selected entities
 
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
 
     void DestroyInstance(entt::entity);
-    void DestroyEntity(entt::entity);
+    void Destroy(entt::entity);
 
     void SetTransform(entt::entity, Transform);
     void SetVisible(entt::entity, bool);
@@ -197,6 +195,11 @@ struct Scene {
     entt::entity GetParentEntity(entt::entity) const;
     void Select(entt::entity);
     void ToggleSelected(entt::entity);
+
+    // Actions on selected entities
+    void Duplicate();
+    void DuplicateLinked();
+    void Delete();
 
     vk::Extent2D GetExtent() const { return Extent; }
     vk::ImageView GetViewportImageView() const;

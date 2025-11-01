@@ -782,7 +782,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     );
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
-    DestroyEntity(r.get<ExcitedVertex>(e).IndicatorEntity);
+    Destroy(r.get<ExcitedVertex>(e).IndicatorEntity);
 }
 
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
@@ -894,12 +894,16 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
     return e_new;
 }
 
+void Scene::Delete() {
+    std::vector<entt::entity> entities;
+    for (const auto e : R.view<Selected>()) entities.emplace_back(e);
+    for (const auto e : entities) Destroy(e);
+}
+
 void Scene::Duplicate() {
-    std::vector<entt::entity> originally_selected;
-    for (const auto e : R.view<Selected>()) {
-        originally_selected.emplace_back(e);
-    }
-    for (const auto e : originally_selected) {
+    std::vector<entt::entity> entities;
+    for (const auto e : R.view<Selected>()) entities.emplace_back(e);
+    for (const auto e : entities) {
         const auto new_e = Duplicate(e);
         if (R.all_of<Active>(e)) {
             R.remove<Active>(e);
@@ -907,15 +911,12 @@ void Scene::Duplicate() {
         }
         R.remove<Selected>(e);
     }
-
     StartTranslateScreenAction = true;
 }
 void Scene::DuplicateLinked() {
-    std::vector<entt::entity> originally_selected;
-    for (const auto e : R.view<Selected>()) {
-        originally_selected.emplace_back(e);
-    }
-    for (const auto e : originally_selected) {
+    std::vector<entt::entity> entities;
+    for (const auto e : R.view<Selected>()) entities.emplace_back(e);
+    for (const auto e : entities) {
         const auto new_e = DuplicateLinked(e);
         if (R.all_of<Active>(e)) {
             R.remove<Active>(e);
@@ -923,14 +924,13 @@ void Scene::DuplicateLinked() {
         }
         R.remove<Selected>(e);
     }
-
     StartTranslateScreenAction = true;
 }
 
 void Scene::ClearMeshes() {
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Mesh>()) entities.emplace_back(e);
-    for (const auto e : entities) DestroyEntity(e);
+    for (const auto e : entities) Destroy(e);
     InvalidateCommandBuffer();
 }
 
@@ -958,7 +958,7 @@ void Scene::DestroyInstance(entt::entity instance) {
     InvalidateCommandBuffer();
 }
 
-void Scene::DestroyEntity(entt::entity e) {
+void Scene::Destroy(entt::entity e) {
     if (const auto parent_entity = GetParentEntity(e); parent_entity != e) return DestroyInstance(e);
 
     R.erase<ModelsBuffer>(e);
@@ -1323,9 +1323,7 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingElement({MeshElement::Edge, -1});
             else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingElement({MeshElement::Face, -1});
         }
-        if (active_entity != entt::null && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) {
-            DestroyEntity(active_entity);
-        }
+        if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
     }
 
     // Handle mouse input.
@@ -1596,9 +1594,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     Text("Active entity: %s", GetName(R, active_entity).c_str());
     Indent();
 
-    entt::entity activate_entity = entt::null, delete_entity = entt::null, toggle_selected = entt::null;
+    entt::entity activate_entity = entt::null, toggle_selected = entt::null;
     const auto &node = R.get<SceneNode>(active_entity);
-    if (Button("Delete")) delete_entity = active_entity;
     if (auto parent_entity = node.Parent; parent_entity != entt::null) {
         AlignTextToFramePadding();
         Text("Parent: %s", GetName(R, parent_entity).c_str());
@@ -1745,8 +1742,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     PopID();
 
-    if (delete_entity != entt::null) DestroyEntity(delete_entity);
-    else if (activate_entity != entt::null) Select(activate_entity);
+    if (activate_entity != entt::null) Select(activate_entity);
     else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
 }
 
@@ -1794,6 +1790,7 @@ void Scene::RenderControls() {
                 if (Button("Duplicate linked")) {
                     DuplicateLinked();
                 }
+                if (Button("Delete")) Delete();
             }
             RenderEntityControls(active_entity);
 
