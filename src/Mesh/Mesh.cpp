@@ -381,11 +381,11 @@ std::vector<uint> Mesh::CreateTriangulatedFaceIndices() const {
     std::vector<uint> indices;
     uint index = 0;
     for (const auto fh : M.faces()) {
-        const auto Valence = M.GetValence(fh);
-        for (uint i = 0; i < Valence - 2; ++i) {
+        const auto valence = M.GetValence(fh);
+        for (uint i = 0; i < valence - 2; ++i) {
             indices.insert(indices.end(), {index, index + i + 1, index + i + 2});
         }
-        index += Valence;
+        index += valence;
     }
     return indices;
 }

@@ -85,7 +85,7 @@ struct PolyMesh {
     // Halfedge navigation
     HH GetHalfedge(EH, uint i) const;
     HH GetOppositeHalfedge(HH) const;
-    EH GetEdge(HH hh) const { return Halfedges[*hh].Edge; }
+    EH GetEdge(HH hh) const { return HalfedgeToEdge[*hh]; }
     FH GetFace(HH hh) const { return Halfedges[*hh].Face; }
     VH GetFromVertex(HH) const;
     VH GetToVertex(HH hh) const { return Halfedges[*hh].Vertex; }
@@ -147,111 +147,92 @@ struct PolyMesh {
     };
     FaceRange faces() const { return {FaceCount()}; }
 
-    // Circulator-style ranges
-    struct FaceVertexIterator {
-        using difference_type = std::ptrdiff_t;
-        using value_type = VH;
-
+    struct CirculatorBase {
         const PolyMesh *Mesh{};
         HH CurrentHalfedge{};
         HH StartHalfedge{};
-        bool First{true};
 
-        FaceVertexIterator() = default;
-        FaceVertexIterator(const PolyMesh *m, HH current, HH start, bool first)
-            : Mesh(m), CurrentHalfedge(current), StartHalfedge(start), First(first) {}
+        CirculatorBase() = default;
+        CirculatorBase(const PolyMesh *m, HH current, HH start)
+            : Mesh(m), CurrentHalfedge(current), StartHalfedge(start) {}
 
-        VH operator*() const { return Mesh->GetToVertex(CurrentHalfedge); }
-        FaceVertexIterator &operator++();
-        FaceVertexIterator operator++(int) {
-            auto tmp = *this;
-            ++(*this);
+        auto &operator++(this auto &self) {
+            self.CurrentHalfedge = self.advance();
+            if (self.CurrentHalfedge == self.StartHalfedge) self.CurrentHalfedge = HH{};
+            return self;
+        }
+
+        auto operator++(this auto &self, int) {
+            auto tmp = self;
+            ++self;
             return tmp;
         }
-        bool operator==(const FaceVertexIterator &other) const {
-            return !First && !other.First && CurrentHalfedge == other.CurrentHalfedge;
+
+        bool operator==(this auto const &self, const auto &other) {
+            return self.CurrentHalfedge == other.CurrentHalfedge;
         }
 
-        bool IsValid() const { return First || CurrentHalfedge != StartHalfedge; }
+        bool operator!=(this auto const &self, const auto &other) {
+            return !(self == other);
+        }
+    };
+
+    struct FaceVertexIterator : CirculatorBase {
+        using difference_type = std::ptrdiff_t;
+        using value_type = VH;
+
+        using CirculatorBase::CirculatorBase;
+
+        VH operator*() const { return Mesh->GetToVertex(CurrentHalfedge); }
+        HH advance() const { return Mesh->Halfedges[*CurrentHalfedge].Next; }
+        bool IsValid() const { return CurrentHalfedge.IsValid(); }
     };
     struct FaceVertexRange {
         const PolyMesh *Mesh;
         HH StartHalfedge;
-        FaceVertexIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge, true}; }
-        FaceVertexIterator end() const { return {Mesh, StartHalfedge, StartHalfedge, false}; }
+        FaceVertexIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
+        FaceVertexIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
     FaceVertexRange fv_range(FH fh) const { return {this, Faces[*fh].Halfedge}; }
-    FaceVertexIterator cfv_iter(FH fh) const { return {this, Faces[*fh].Halfedge, Faces[*fh].Halfedge, true}; }
+    FaceVertexIterator cfv_iter(FH fh) const { return {this, Faces[*fh].Halfedge, Faces[*fh].Halfedge}; }
 
-    struct VertexOutgoingHalfedgeIterator {
+    struct VertexOutgoingHalfedgeIterator : CirculatorBase {
         using difference_type = std::ptrdiff_t;
         using value_type = HH;
 
-        const PolyMesh *Mesh{};
-        HH CurrentHalfedge{};
-        HH StartHalfedge{};
-        bool First{true};
-
-        VertexOutgoingHalfedgeIterator() = default;
-        VertexOutgoingHalfedgeIterator(const PolyMesh *m, HH current, HH start, bool first)
-            : Mesh(m), CurrentHalfedge(current), StartHalfedge(start), First(first) {}
+        using CirculatorBase::CirculatorBase;
 
         HH operator*() const { return CurrentHalfedge; }
-        VertexOutgoingHalfedgeIterator &operator++();
-        VertexOutgoingHalfedgeIterator operator++(int) {
-            auto tmp = *this;
-            ++(*this);
-            return tmp;
-        }
-        bool operator==(const VertexOutgoingHalfedgeIterator &other) const {
-            return !First && !other.First && CurrentHalfedge == other.CurrentHalfedge;
+        HH advance() const {
+            const auto opp = Mesh->Halfedges[*CurrentHalfedge].Opposite;
+            return opp.IsValid() ? Mesh->Halfedges[*opp].Next : HH{};
         }
     };
     struct VertexOutgoingHalfedgeRange {
         const PolyMesh *Mesh;
         HH StartHalfedge;
-        VertexOutgoingHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge, true}; }
-        VertexOutgoingHalfedgeIterator end() const { return {Mesh, StartHalfedge, StartHalfedge, false}; }
+        VertexOutgoingHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
+        VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
     VertexOutgoingHalfedgeRange voh_range(VH vh) const {
         return {this, vh.IsValid() && *vh < static_cast<int>(OutgoingHalfedges.size()) ? OutgoingHalfedges[*vh] : HH{}};
     }
 
-    struct FaceHalfedgeIterator {
+    struct FaceHalfedgeIterator : CirculatorBase {
         using iterator_category = std::input_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = HH;
-        using pointer = const HH *;
-        using reference = HH;
 
-        const PolyMesh *Mesh{};
-        HH CurrentHalfedge{};
-        HH StartHalfedge{};
-        bool First{true};
-
-        FaceHalfedgeIterator() = default;
-        FaceHalfedgeIterator(const PolyMesh *m, HH current, HH start, bool first)
-            : Mesh(m), CurrentHalfedge(current), StartHalfedge(start), First(first) {}
+        using CirculatorBase::CirculatorBase;
 
         HH operator*() const { return CurrentHalfedge; }
-        FaceHalfedgeIterator &operator++();
-        FaceHalfedgeIterator operator++(int) {
-            auto tmp = *this;
-            ++(*this);
-            return tmp;
-        }
-        bool operator==(const FaceHalfedgeIterator &other) const {
-            return !First && !other.First && CurrentHalfedge == other.CurrentHalfedge;
-        }
-        bool operator!=(const FaceHalfedgeIterator &other) const {
-            return First || CurrentHalfedge != other.CurrentHalfedge;
-        }
+        HH advance() const { return Mesh->Halfedges[*CurrentHalfedge].Next; }
     };
     struct FaceHalfedgeRange {
-        const PolyMesh *Mesh;
+        const PolyMesh *Mesh; // Always valid, never null
         HH StartHalfedge;
-        FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge, true}; }
-        FaceHalfedgeIterator end() const { return {Mesh, StartHalfedge, StartHalfedge, false}; }
+        FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
+        FaceHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
     FaceHalfedgeRange fh_range(FH fh) const { return {this, Faces[*fh].Halfedge}; }
 
@@ -260,7 +241,6 @@ private:
         VH Vertex; // To vertex
         HH Next; // Next halfedge in face
         HH Opposite; // Opposite halfedge
-        EH Edge; // Parent edge
         FH Face; // Left face (invalid for boundary halfedges)
     };
 
@@ -279,10 +259,12 @@ private:
     std::vector<vec3> Normals;
     std::vector<HH> OutgoingHalfedges;
     std::vector<Halfedge> Halfedges;
+    std::vector<EH> HalfedgeToEdge; // Separate mapping for better cache locality
     std::vector<Edge> Edges;
     std::vector<Face> Faces;
 
-    // Map to track halfedges by their vertex pairs for opposite finding
+    // Map to track halfedges by their vertex pairs for opposite finding during construction.
+    // Cleared by UpdateNormals() after mesh is built.
     std::unordered_map<uint64_t, HH> HalfedgeMap;
 
     void ComputeVertexNormals();

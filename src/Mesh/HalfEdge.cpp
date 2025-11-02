@@ -8,7 +8,9 @@
 #include "tinyply.h"
 
 #include <algorithm>
+#include <cassert>
 #include <fstream>
+#include <ranges>
 
 namespace he {
 
@@ -20,7 +22,7 @@ VH PolyMesh::AddVertex(const vec3 &p) {
 }
 
 FH PolyMesh::AddFace(const std::vector<VH> &vertices) {
-    if (vertices.size() < 3) return {}; // Invalid face
+    assert(vertices.size() >= 3);
 
     static auto MakeEdgeKey = [](int from, int to) { return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to); };
 
@@ -28,29 +30,22 @@ FH PolyMesh::AddFace(const std::vector<VH> &vertices) {
     const auto start_he_i = Halfedges.size();
     Faces.emplace_back(HH(start_he_i), vec3{0}, vec4{1, 1, 1, 1});
 
-    // Create halfedges for this face
+    // Create halfedges, find opposites, and create edges
     for (size_t i = 0; i < vertices.size(); ++i) {
         const auto to_v = vertices[i];
         const auto from_v = vertices[i == 0 ? vertices.size() - 1 : i - 1];
-        const HH hh(start_he_i + i);
         Halfedges.emplace_back(Halfedge{
             .Vertex = to_v,
             .Next = HH(start_he_i + (i + 1) % vertices.size()),
             .Opposite = {},
-            .Edge = {},
             .Face = FH(fi),
         });
 
+        const HH hh(start_he_i + i);
         if (!OutgoingHalfedges[*from_v].IsValid()) OutgoingHalfedges[*from_v] = hh;
         HalfedgeMap[MakeEdgeKey(*from_v, *to_v)] = hh;
-    }
 
-    // Find opposites and create edges
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        const HH hh(start_he_i + i);
-        const auto to_v = vertices[i];
-        const auto from_v = vertices[i == 0 ? vertices.size() - 1 : i - 1];
-        // Look for opposite halfedge in map
+        // Look for opposite halfedge (from previously added faces)
         if (const auto it = HalfedgeMap.find(MakeEdgeKey(*to_v, *from_v));
             it != HalfedgeMap.end()) {
             // Found existing opposite halfedge
@@ -58,11 +53,11 @@ FH PolyMesh::AddFace(const std::vector<VH> &vertices) {
             Halfedges[*hh].Opposite = opposite_hh;
             Halfedges[*opposite_hh].Opposite = hh;
             // They should share the same edge
-            Halfedges[*hh].Edge = Halfedges[*opposite_hh].Edge;
+            HalfedgeToEdge.emplace_back(HalfedgeToEdge[*opposite_hh]);
         } else {
             // Create new edge
             Edges.emplace_back(hh);
-            Halfedges[*hh].Edge = EH(Edges.size() - 1);
+            HalfedgeToEdge.emplace_back(EH(Edges.size() - 1));
         }
     }
 
@@ -70,82 +65,46 @@ FH PolyMesh::AddFace(const std::vector<VH> &vertices) {
 }
 
 HH PolyMesh::GetHalfedge(EH eh, uint i) const {
-    if (!eh.IsValid() || *eh >= static_cast<int>(Edges.size())) return {};
+    assert(eh.IsValid() && *eh < static_cast<int>(Edges.size()));
     const auto h0 = Edges[*eh].Halfedge;
     return i == 0 ? h0 : (i == 1 && h0.IsValid() ? Halfedges[*h0].Opposite : HH{});
 }
 
 HH PolyMesh::GetOppositeHalfedge(HH hh) const {
-    if (!hh.IsValid() || *hh >= static_cast<int>(Halfedges.size())) return {};
+    assert(hh.IsValid() && *hh < static_cast<int>(Halfedges.size()));
     return Halfedges[*hh].Opposite;
 }
 
 VH PolyMesh::GetFromVertex(HH hh) const {
-    if (!hh.IsValid() || *hh >= static_cast<int>(Halfedges.size())) return {};
-
+    assert(hh.IsValid() && *hh < static_cast<int>(Halfedges.size()));
     // From-vertex is the to-vertex of the opposite halfedge
     const auto opp = Halfedges[*hh].Opposite;
     return opp.IsValid() ? Halfedges[*opp].Vertex : VH{};
 }
 
 uint PolyMesh::GetValence(VH vh) const {
-    if (!vh.IsValid() || *vh >= static_cast<int>(Positions.size())) return 0;
-
-    const auto start = OutgoingHalfedges[*vh];
-    if (!start.IsValid()) return 0;
-
-    uint count{0};
-    auto current = start;
-    do {
-        count++;
-        // Move to next outgoing halfedge
-        const auto next_he = Halfedges[*current].Next;
-        if (!next_he.IsValid()) break;
-
-        const auto opp = Halfedges[*next_he].Opposite;
-        if (!opp.IsValid()) break;
-
-        current = opp;
-    } while (current != start && current.IsValid());
-
-    return count;
+    assert(vh.IsValid() && *vh < static_cast<int>(Positions.size()));
+    return std::ranges::distance(voh_range(vh));
 }
 
 uint PolyMesh::GetValence(FH fh) const {
-    if (!fh.IsValid() || *fh >= static_cast<int>(Faces.size())) return 0;
-
-    uint count{0};
-    const auto start = Faces[*fh].Halfedge;
-    auto current = start;
-    do {
-        count++;
-        current = Halfedges[*current].Next;
-    } while (current != start && current.IsValid());
-
-    return count;
+    assert(fh.IsValid() && *fh < static_cast<int>(Faces.size()));
+    return std::ranges::distance(fh_range(fh));
 }
 
 vec3 PolyMesh::CalcFaceCentroid(FH fh) const {
-    if (!fh.IsValid() || *fh >= static_cast<int>(Faces.size())) return vec3{0};
-
+    assert(fh.IsValid() && *fh < static_cast<int>(Faces.size()));
     vec3 centroid{0};
     uint count{0};
-    const auto start = Faces[*fh].Halfedge;
-    auto current = start;
-    do {
-        const auto vh = Halfedges[*current].Vertex;
+    for (auto vh : fv_range(fh)) {
         centroid += Positions[*vh];
         count++;
-        current = Halfedges[*current].Next;
-    } while (current != start && current.IsValid());
-
-    if (count > 0) centroid /= static_cast<float>(count);
-    return centroid;
+    }
+    return count > 0 ? centroid / static_cast<float>(count) : centroid;
 }
 
 float PolyMesh::CalcEdgeLength(HH hh) const {
-    if (!hh.IsValid() || *hh >= static_cast<int>(Halfedges.size())) return 0;
-
+    assert(hh.IsValid() && *hh < static_cast<int>(Halfedges.size()));
     const auto from_v = GetFromVertex(hh);
     const auto to_v = Halfedges[*hh].Vertex;
     if (!from_v.IsValid() || !to_v.IsValid()) return 0;
@@ -155,6 +114,9 @@ float PolyMesh::CalcEdgeLength(HH hh) const {
 void PolyMesh::UpdateNormals() {
     ComputeFaceNormals();
     ComputeVertexNormals();
+
+    // Free construction-time memory (only needed during AddFace calls)
+    HalfedgeMap = {};
 }
 
 void PolyMesh::ComputeFaceNormals() {
@@ -186,24 +148,6 @@ void PolyMesh::ComputeVertexNormals() {
 
     // Normalize
     for (auto &n : Normals) n = glm::normalize(n);
-}
-
-PolyMesh::FaceVertexIterator &PolyMesh::FaceVertexIterator::operator++() {
-    First = false;
-    CurrentHalfedge = Mesh->Halfedges[*CurrentHalfedge].Next;
-    return *this;
-}
-PolyMesh::VertexOutgoingHalfedgeIterator &PolyMesh::VertexOutgoingHalfedgeIterator::operator++() {
-    First = false;
-    // Move to next outgoing halfedge: next of opposite
-    const auto opp_he = Mesh->Halfedges[*CurrentHalfedge].Opposite;
-    CurrentHalfedge = opp_he.IsValid() ? Mesh->Halfedges[*opp_he].Next : HH{};
-    return *this;
-}
-PolyMesh::FaceHalfedgeIterator &PolyMesh::FaceHalfedgeIterator::operator++() {
-    First = false;
-    CurrentHalfedge = Mesh->Halfedges[*CurrentHalfedge].Next;
-    return *this;
 }
 
 namespace {
