@@ -195,9 +195,9 @@ PolyMesh::FaceVertexIterator &PolyMesh::FaceVertexIterator::operator++() {
 }
 PolyMesh::VertexOutgoingHalfedgeIterator &PolyMesh::VertexOutgoingHalfedgeIterator::operator++() {
     First = false;
-    // Move to next outgoing halfedge: opposite of next
-    const auto next_he = Mesh->Halfedges[*CurrentHalfedge].Next;
-    CurrentHalfedge = next_he.IsValid() ? Mesh->Halfedges[*next_he].Opposite : HH{};
+    // Move to next outgoing halfedge: next of opposite
+    const auto opp_he = Mesh->Halfedges[*CurrentHalfedge].Opposite;
+    CurrentHalfedge = opp_he.IsValid() ? Mesh->Halfedges[*opp_he].Next : HH{};
     return *this;
 }
 PolyMesh::FaceHalfedgeIterator &PolyMesh::FaceHalfedgeIterator::operator++() {

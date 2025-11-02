@@ -245,8 +245,9 @@ EH Mesh::FindNearestEdge(const ray &local_ray) const {
     float min_distance_sq = std::numeric_limits<float>::max();
     for (auto heh : M.fh_range(face)) {
         const auto eh = M.GetEdge(heh);
-        const auto p1 = M.GetPosition(M.GetFromVertex(M.GetHalfedge(eh, 0)));
-        const auto p2 = M.GetPosition(M.GetToVertex(M.GetHalfedge(eh, 0)));
+        const auto heh0 = M.GetHalfedge(eh, 0);
+        const auto p1 = M.GetPosition(M.GetFromVertex(heh0));
+        const auto p2 = M.GetPosition(M.GetToVertex(heh0));
         if (float distance_sq = SquaredDistanceToLineSegment(p1, p2, intersection_p);
             distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;
@@ -302,10 +303,10 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const Ele
         const auto normal = render_element == MeshElement::Vertex || render_element == MeshElement::Edge ? M.GetNormal(handle.VHs[0]) : M.GetNormal(FH(handle.Parent));
         for (const auto vh : handle.VHs) {
             const bool is_selected =
-                (selected == vh || selected == parent) ||
+                selected == vh || selected == parent ||
                 // Note: If we want to support `HighlightedElements` having `MeshElement::Edge` or `MeshElement::Face` elements (not just the selection `highlight`),
                 // we need to update the methods to accept sets of `ElementIndex` instead of just one.
-                (render_element == MeshElement::Vertex && (*vh == *selected || VertexBelongsToFace(parent, selected) || VertexBelongsToEdge(parent, selected))) ||
+                (render_element == MeshElement::Vertex && (VertexBelongsToFace(parent, selected) || VertexBelongsToEdge(parent, selected))) ||
                 (render_element == MeshElement::Edge && EdgeBelongsToFace(parent, selected)) ||
                 (render_element == MeshElement::Face && VertexBelongsToFaceEdge(vh, parent, selected));
             const bool is_highlighted =
