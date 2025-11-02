@@ -84,3 +84,7 @@ SvgResource::SvgResource(vk::Device device, BitmapToImage render, fs::path path)
 SvgResource::~SvgResource() = default;
 
 std::optional<fs::path> SvgResource::Render() { return Imp->Render(); }
+
+void SvgResource::RenderIcon(vec2 size) const {
+    if (Imp->Texture) Imp->Texture->Render(size);
+}

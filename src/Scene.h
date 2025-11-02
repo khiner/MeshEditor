@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Camera.h"
+#include "CreateSvgResource.h"
 #include "Shader.h"
+#include "SvgResource.h"
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "Vulkan/UniqueBuffers.h"
@@ -175,6 +177,8 @@ struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
 
+    void LoadIcons(vk::Device);
+
     World World{};
 
     entt::entity AddMesh(Mesh &&, MeshCreateInfo = {});
@@ -282,6 +286,11 @@ private:
     TransformGizmoState MGizmo;
     bool StartTranslateScreenAction{false};
     bool TransformModePillsHovered{false};
+
+    struct TransformIcons {
+        std::unique_ptr<SvgResource> Move, Rotate, Scale, Universal;
+    };
+    TransformIcons Icons;
 
     bool ShowGrid{true};
     // Selected entity render settings

@@ -730,6 +730,18 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
 
+void Scene::LoadIcons(vk::Device device) {
+    const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
+        return RenderBitmapToImage(data, width, height);
+    };
+
+    device.waitIdle();
+    Icons.Move = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/move.svg");
+    Icons.Rotate = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/rotate.svg");
+    Icons.Scale = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/scale.svg");
+    Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/transform.svg");
+}
+
 void Scene::OnCreateSelected(entt::registry &, entt::entity e) {
     UpdateEntitySelectionOverlays(e);
 }
@@ -1468,7 +1480,7 @@ void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
-            const char *label;
+            const SvgResource &icon;
             TransformGizmo::Type button_type;
             ImDrawFlags corners;
             bool enabled;
@@ -1478,10 +1490,10 @@ void Scene::RenderOverlay() {
         const auto v = R.view<Selected, Frozen>();
         const bool scale_enabled = v.begin() == v.end();
         const ButtonInfo buttons[]{
-            {"Move", Translate, ImDrawFlags_RoundCornersTop, true},
-            {"Rotate", Rotate, ImDrawFlags_RoundCornersNone, true},
-            {"Scale", Scale, ImDrawFlags_RoundCornersNone, scale_enabled},
-            {"Transform", Universal, ImDrawFlags_RoundCornersBottom, true},
+            {*Icons.Move, Translate, ImDrawFlags_RoundCornersTop, true},
+            {*Icons.Rotate, Rotate, ImDrawFlags_RoundCornersNone, true},
+            {*Icons.Scale, Scale, ImDrawFlags_RoundCornersNone, scale_enabled},
+            {*Icons.Universal, Universal, ImDrawFlags_RoundCornersBottom, true},
         };
 
         auto &type = MGizmo.Config.Type;
@@ -1489,24 +1501,26 @@ void Scene::RenderOverlay() {
 
         const float padding = GetTextLineHeightWithSpacing() / 2.f;
         const auto start_pos = std::bit_cast<ImVec2>(window_pos) + GetWindowContentRegionMin() + ImVec2{padding, padding};
-        const auto button_size = ImVec2{80, GetFrameHeight()};
+        const auto button_size = ImVec2{36, 36};
+        const float icon_dim = button_size.x * 0.8f;
+        const ImVec2 icon_size{icon_dim, icon_dim};
         const auto saved_cursor_pos = GetCursorScreenPos();
 
         auto &dl = *GetWindowDrawList();
         TransformModePillsHovered = false;
         for (uint i = 0; i < 4; ++i) {
-            const auto &[label, button_type, corners, enabled] = buttons[i];
+            const auto &[icon, button_type, corners, enabled] = buttons[i];
             SetCursorScreenPos({start_pos.x, start_pos.y + i * button_size.y});
 
             if (!enabled) BeginDisabled();
-            const bool clicked = InvisibleButton(label, button_size);
+            PushID(i);
+            const bool clicked = InvisibleButton("##icon", button_size);
+            PopID();
             if (!enabled) EndDisabled();
 
             const bool hovered = IsItemHovered();
             if (hovered) TransformModePillsHovered = true;
             if (clicked) type = button_type;
-
-            // Draw button with custom corner rounding
             const auto bg_color = GetColorU32(
                 !enabled                ? ImGuiCol_FrameBg :
                     type == button_type ? ImGuiCol_ButtonActive :
@@ -1514,8 +1528,8 @@ void Scene::RenderOverlay() {
                                           ImGuiCol_Button
             );
             dl.AddRectFilled(GetItemRectMin(), GetItemRectMax(), bg_color, 8.f, corners);
-            const auto text_pos = GetItemRectMin() + (button_size - CalcTextSize(label)) * 0.5f;
-            dl.AddText(text_pos, GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled), label);
+            SetCursorScreenPos(GetItemRectMin() + (button_size - icon_size) * 0.5f);
+            icon.RenderIcon(std::bit_cast<vec2>(icon_size));
         }
         SetCursorScreenPos(saved_cursor_pos);
     }

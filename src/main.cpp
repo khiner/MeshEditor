@@ -186,7 +186,8 @@ struct VulkanContext {
             // 3) Final scene texture sampler
             // 4) ImGui fonts
             // 5) SVG image texture
-            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 5},
+            // 6-9) SVG icons (move/rotate/scale/universal)
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 9},
             // All uniform buffer descriptors used across all shaders.
             {vk::DescriptorType::eUniformBuffer, 7},
         };
@@ -332,6 +333,9 @@ int main(int, char **) {
         r
     );
     auto device = *vc->Device;
+
+    // Load transform mode icons
+    scene->LoadIcons(device);
 
     const auto CreateSvg = [device, &scene](std::unique_ptr<SvgResource> &svg, fs::path path) {
         const auto RenderBitmap = [&scene](std::span<const std::byte> data, uint32_t width, uint32_t height) {

@@ -18,6 +18,9 @@ struct SvgResource {
     // Returns the clicked link path.
     std::optional<fs::path> Render();
 
+    // Render icon at given size (no interaction)
+    void RenderIcon(vec2 size) const;
+
     fs::path Path;
 
 private:
