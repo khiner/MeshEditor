@@ -66,6 +66,8 @@ include_directories(
     SYSTEM lib/faust/compiler/tlib
     SYSTEM lib/faust/compiler/boxes
     SYSTEM lib/spectra/include
+    SYSTEM lib/tinyobjloader
+    SYSTEM lib/tinyply/source
 
     SYSTEM PkgConfig::FFTW3F
     src
@@ -104,7 +106,7 @@ if(APPLE)
   target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
 endif()
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd OpenMeshCore faustlib tetgen PkgConfig::FFTW3F lunasvg)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} ${SPIRV_CROSS_CORE_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -114,7 +116,6 @@ endif()
 
 # Disable lib warnings
 # staticlib is faustlib (can't use alias target)
-set(disable_warning_targets staticlib OpenMeshCore)
 foreach(target IN LISTS disable_warning_targets)
     target_compile_options(${target} PRIVATE -w)
 endforeach()

@@ -89,7 +89,7 @@ inline Mesh IcoSphere(float radius = 0.5, uint recursion_level = 3) {
     for (uint r = 0; r < recursion_level; ++r) {
         std::vector<std::vector<uint>> new_indices;
         new_indices.reserve(indices.size() * 4);
-        for (auto &tri : indices) {
+        for (const auto &tri : indices) {
             const uint a = tri[0], b = tri[1], c = tri[2];
             const uint ab = AddMidVertex(a, b), bc = AddMidVertex(b, c), ca = AddMidVertex(c, a);
             new_indices.insert(new_indices.end(), {{a, ab, ca}, {b, bc, ab}, {c, ca, bc}, {ab, bc, ca}});
@@ -246,7 +246,7 @@ inline Mesh CreateDefaultPrimitive(PrimitiveType type) {
     }
 }
 
-inline const std::array<PrimitiveType, 8> PrimitiveTypes{
+constexpr std::array PrimitiveTypes{
     PrimitiveType::Rect,
     PrimitiveType::Circle,
     PrimitiveType::Cube,

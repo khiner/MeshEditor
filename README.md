@@ -14,7 +14,7 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
 General features:
 * Create/delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
-  - Load `.obj`, `.off`, `.ply`, `.stl` and `.om` mesh files (via [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh))
+  - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes or mesh elements (vertices, edges, or faces)
 * Flat/smooth/wireframe mesh rendering
 * Bounding Volume Hierarchy (BVH) ray intersection acceleration structure
@@ -120,7 +120,7 @@ $ cd build && ./MeshEditor
 
 - [Vulkan](https://www.vulkan.org/) + [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL): Graphics + immediate-mode UI/UX
 - [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
-- [OpenMesh](https://gitlab.vci.rwth-aachen.de:9000/OpenMesh/OpenMesh): Main polyhedral (half-edge) mesh data structure
+- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): Load `.obj` and `.ply` mesh files 
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
 - [fftw](https://www.fftw.org/) for computing spectrograms (visualized with ImPlot)

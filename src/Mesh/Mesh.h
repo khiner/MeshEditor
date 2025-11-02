@@ -1,12 +1,10 @@
 #pragma once
 
 #include "BBox.h"
+#include "HalfEdge.h"
 #include "Intersection.h"
 #include "MeshElement.h"
 #include "Vertex.h"
-
-#include <OpenMesh/Core/IO/MeshIO.hh>
-#include <OpenMesh/Core/Mesh/PolyMesh_ArrayKernelT.hh>
 
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
@@ -19,35 +17,14 @@ namespace fs = std::filesystem;
 struct BVH;
 struct ray;
 
-// Aliases for OpenMesh types to support `using namespace om;`.
-namespace om {
-using PolyMesh = OpenMesh::PolyMesh_ArrayKernelT<>;
-using VH = OpenMesh::VertexHandle;
-using FH = OpenMesh::FaceHandle;
-using EH = OpenMesh::EdgeHandle;
-using HH = OpenMesh::HalfedgeHandle;
-using Point = OpenMesh::Vec3f;
-}; // namespace om
-
-std::optional<om::PolyMesh> LoadPolyMesh(const fs::path &file_path);
-
-static constexpr vec3 ToGlm(OpenMesh::Vec3f v) { return std::bit_cast<vec3>(v); }
-static constexpr vec4 ToGlm(const OpenMesh::Vec3uc &c) {
-    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3f>(c);
-    return {cc[0], cc[1], cc[2], 1};
-}
-static constexpr om::Point ToOpenMesh(vec3 v) { return std::bit_cast<om::Point>(v); }
-static constexpr OpenMesh::Vec3uc ToOpenMesh(vec4 c) {
-    const auto cc = OpenMesh::color_cast<OpenMesh::Vec3uc>(OpenMesh::Vec3f{c.r, c.g, c.b});
-    return {cc[0], cc[1], cc[2]};
-}
+std::optional<he::PolyMesh> LoadPolyMesh(const fs::path &);
 
 struct RenderBuffers {
     std::vector<Vertex3D> Vertices;
     std::vector<uint> Indices;
 };
 
-// A `Mesh` is a wrapper around an `OpenMesh::PolyMesh`, privately available as `M`.
+// A `Mesh` is a wrapper around a `he::PolyMesh`, privately available as `M`.
 // Render modes:
 // - Faces: Vertices are duplicated for each face. Each vertex uses the face normal.
 // - Vertices: Vertices are not duplicated. Uses vertex normals.
@@ -55,14 +32,13 @@ struct RenderBuffers {
 struct Mesh {
     BBox BoundingBox;
 
-    using PolyMesh = om::PolyMesh;
-    using VH = om::VH;
-    using FH = om::FH;
-    using EH = om::EH;
-    using HH = om::HH;
-    using Point = om::Point;
+    using PolyMesh = he::PolyMesh;
+    using VH = he::VH;
+    using FH = he::FH;
+    using EH = he::EH;
+    using HH = he::HH;
 
-    // Adds OpenMesh handle comparison/conversion to `MeshElementIndex`.
+    // Adds half-edge handle comparison/conversion to `MeshElementIndex`.
     struct ElementIndex : MeshElementIndex {
         using MeshElementIndex::MeshElementIndex;
         ElementIndex(MeshElementIndex other) : MeshElementIndex(std::move(other)) {}
@@ -76,7 +52,7 @@ struct Mesh {
         bool operator==(EH eh) const { return Element == MeshElement::Edge && Index == eh.idx(); }
         bool operator==(FH fh) const { return Element == MeshElement::Face && Index == fh.idx(); }
 
-        // Implicit conversion to OpenMesh handles.
+        // Implicit conversion to half-edge handles.
         operator VH() const { return VH{Element == MeshElement::Vertex ? Index : -1}; }
         operator EH() const { return EH{Element == MeshElement::Edge ? Index : -1}; }
         operator FH() const { return FH{Element == MeshElement::Face ? Index : -1}; }
@@ -101,20 +77,17 @@ struct Mesh {
 
     bool operator==(const Mesh &other) const { return &M == &other.M; }
 
-    uint GetVertexCount() const { return M.n_vertices(); }
-    uint GetEdgeCount() const { return M.n_edges(); }
-    uint GetFaceCount() const { return M.n_faces(); }
+    uint GetVertexCount() const { return M.VertexCount(); }
+    uint GetEdgeCount() const { return M.EdgeCount(); }
+    uint GetFaceCount() const { return M.FaceCount(); }
     bool Empty() const { return GetVertexCount() == 0; }
-    bool IsTriangleSoup() const { return GetVertexCount() == 3 * GetFaceCount(); }
 
-    const float *GetPositionData() const { return (const float *)M.points(); }
+    vec3 GetPosition(VH vh) const { return M.GetPosition(vh); }
+    vec3 GetVertexNormal(VH vh) const { return M.GetNormal(vh); }
+    const float *GetPositionData() const { return M.GetPositionData(); }
 
-    Point GetPoint(VH vh) const { return M.point(vh); }
-    vec3 GetPosition(VH vh) const { return ToGlm(M.point(vh)); }
-    vec3 GetVertexNormal(VH vh) const { return ToGlm(M.normal(vh)); }
-
-    vec3 GetFaceCenter(FH fh) const { return ToGlm(M.calc_face_centroid(fh)); }
-    vec3 GetFaceNormal(FH fh) const { return ToGlm(M.normal(fh)); }
+    vec3 GetFaceCenter(FH fh) const { return M.CalcFaceCentroid(fh); }
+    vec3 GetFaceNormal(FH fh) const { return M.GetNormal(fh); }
 
     float CalcFaceArea(FH) const;
 
@@ -129,28 +102,18 @@ struct Mesh {
     std::vector<BBox> CreateFaceBoundingBoxes() const;
     RenderBuffers CreateBvhBuffers(vec4 color) const;
 
-    // Center of gravity
-    // void Center() {
-    //     auto points = OpenMesh::getPointsProperty(Mesh);
-    //     auto cog = Mesh.vertices().avg(points);
-    //     for (const auto &vh : Mesh.vertices()) {
-    //         const auto &point = Mesh.point(vh);
-    //         Mesh.set_point(vh, point - cog);
-    //     }
-    // }
-
     void HighlightVertex(VH vh) { HighlightedElements.emplace(MeshElement::Vertex, vh.idx()); }
     void ClearHighlights() { HighlightedElements.clear(); }
 
-    void SetFaceColor(FH fh, vec4 color) { M.set_color(fh, ToOpenMesh(color)); }
+    void SetFaceColor(FH fh, vec4 color) { M.SetColor(fh, color); }
     void SetFaceColor(vec4 color) {
         for (const auto &fh : M.faces()) SetFaceColor(fh, color);
     }
 
-    void AddFace(const std::vector<VH> &vertices, vec4 color = DefaultFaceColor) { SetFaceColor(M.add_face(vertices), color); }
+    void AddFace(const std::vector<VH> &vertices, vec4 color = DefaultFaceColor) { SetFaceColor(M.AddFace(vertices), color); }
 
     void SetFaces(const std::vector<vec3> &vertices, const std::vector<std::vector<uint>> &faces, vec4 color = DefaultFaceColor) {
-        for (const auto &v : vertices) M.add_vertex(ToOpenMesh(v));
+        for (const auto &v : vertices) M.AddVertex(v);
         for (const auto &face : faces) {
             std::vector<VH> face_vhs;
             face_vhs.reserve(face.size());
@@ -166,13 +129,13 @@ struct Mesh {
 
     std::optional<Intersection> Intersect(const ray &local_ray) const;
 
-    VH FindNearestVertex(Point) const;
+    VH FindNearestVertex(vec3) const;
     // Returns a handle to the vertex nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     VH FindNearestVertex(const ray &local_ray) const;
 
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     EH FindNearestEdge(const ray &world_ray) const;
-    FH FindNearestIntersectingFace(const ray &local_ray, Point *nearest_intersect_point_out = nullptr) const;
+    FH FindNearestIntersectingFace(const ray &local_ray, vec3 *nearest_intersect_point_out = nullptr) const;
 
     std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.
     std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.

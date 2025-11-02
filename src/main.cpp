@@ -400,7 +400,7 @@ int main(int, char **) {
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
                 if (MenuItem("Load mesh", nullptr)) {
-                    static const std::vector<nfdfilteritem_t> filters{{"Mesh object", "obj,off,ply,stl,om"}};
+                    static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
                         const auto path = fs::path(nfd_path);

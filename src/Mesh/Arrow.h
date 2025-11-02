@@ -4,6 +4,7 @@
 
 inline Mesh Arrow(float base_radius = 0.15, float tip_radius = 0.3, float base_length = 0.75, float tip_length = 0.25, uint slices = 32) {
     std::vector<vec3> vertices;
+    vertices.reserve(slices * 3 + 1);
     for (uint i = 0; i < slices; ++i) {
         const float __angle = 2.0f * float(i) / float(slices);
         const float x = __cospif(__angle), z = __sinpif(__angle);
@@ -14,6 +15,9 @@ inline Mesh Arrow(float base_radius = 0.15, float tip_radius = 0.3, float base_l
     vertices.emplace_back(0, 0, 0);
 
     std::vector<uint> base_bottom_face, base_top_face, tip_face;
+    base_bottom_face.reserve(slices);
+    base_top_face.reserve(slices);
+    tip_face.reserve(slices);
     for (uint i = 0; i < slices; ++i) {
         const uint offset = i * 3;
         tip_face.emplace_back(offset);
@@ -22,6 +26,7 @@ inline Mesh Arrow(float base_radius = 0.15, float tip_radius = 0.3, float base_l
     }
 
     std::vector<std::vector<uint>> faces;
+    faces.reserve(slices * 2 + 2);
     // Quads for the sides of the cylinder.
     for (uint i = 0; i < slices; ++i) {
         faces.push_back({

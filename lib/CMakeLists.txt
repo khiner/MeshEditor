@@ -1,8 +1,9 @@
 add_subdirectory(nativefiledialog-extended)
-add_subdirectory(OpenMesh)
 add_subdirectory(VulkanMemoryAllocator)
 add_subdirectory(tetgen)
 add_subdirectory(lunasvg)
+add_subdirectory(tinyobjloader)
+add_subdirectory(tinyply)
 
 #=================== faust ===================
 # See [the docs](https://faustdoc.grame.fr/manual/embedding/#using-libfaust-with-the-llvm-backend) for general help.

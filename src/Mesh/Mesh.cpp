@@ -6,25 +6,19 @@
 #include <algorithm>
 #include <ranges>
 
-using namespace om;
+using namespace he;
 
 using std::ranges::any_of;
 
 Mesh::Mesh(PolyMesh &&m) : M(std::move(m)) {
-    M.request_vertex_normals();
-    M.request_face_normals();
-    M.request_face_colors();
     SetFaceColor(DefaultFaceColor);
-    M.update_normals();
+    M.UpdateNormals();
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
 Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color) {
-    M.request_vertex_normals();
-    M.request_face_normals();
-    M.request_face_colors();
     SetFaces(std::move(vertices), std::move(faces), color);
-    M.update_normals();
+    M.UpdateNormals();
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
@@ -36,11 +30,7 @@ Mesh::Mesh(const Mesh &other)
     : BoundingBox(other.BoundingBox), M(other.M), HighlightedElements(other.HighlightedElements) {
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
-Mesh::~Mesh() {
-    M.release_vertex_normals();
-    M.release_face_normals();
-    M.release_face_colors();
-}
+Mesh::~Mesh() {}
 
 // todo this was here for entt, but something tells me it doesn't need this anymore
 const Mesh &Mesh::operator=(Mesh &&other) {
@@ -54,94 +44,88 @@ const Mesh &Mesh::operator=(Mesh &&other) {
 }
 
 namespace {
-constexpr float SquaredDistanceToLineSegment(const Point &v1, const Point &v2, const Point &p) noexcept {
-    const auto edge = v2 - v1;
-    const float t = glm::clamp((p - v1).dot(edge) / edge.dot(edge), 0.f, 1.f);
-    const auto closest_p = v1 + t * edge;
-    const auto diff = p - closest_p;
-    return diff.dot(diff);
+constexpr float SquaredDistanceToLineSegment(const vec3 &v1, const vec3 &v2, const vec3 &p) noexcept {
+    const vec3 edge = v2 - v1;
+    const float t = glm::clamp(glm::dot(p - v1, edge) / glm::dot(edge, edge), 0.f, 1.f);
+    const vec3 closest_p = v1 + t * edge;
+    const vec3 diff = p - closest_p;
+    return glm::dot(diff, diff);
 }
 
 // Moller-Trumbore ray-triangle intersection algorithm.
 // Returns true if the ray (starting at `o` and traveling along `d`) intersects the given triangle.
 // If ray intersects, returns the distance along the ray to the intersection point.
-constexpr std::optional<float> IntersectTriangle(Point o, Point d, Point p1, Point p2, Point p3) noexcept {
+constexpr std::optional<float> IntersectTriangle(vec3 o, vec3 d, vec3 p1, vec3 p2, vec3 p3) noexcept {
     static constexpr float eps = 1e-7f; // Floating point error tolerance.
 
-    const Point e1 = p2 - p1, e2 = p3 - p1;
-    const Point h = d % e2;
-    const float a = e1.dot(h); // Barycentric coordinate
+    const vec3 e1 = p2 - p1, e2 = p3 - p1;
+    const vec3 h = glm::cross(d, e2);
+    const float a = glm::dot(e1, h); // Barycentric coordinate
     if (a > -eps && a < eps) return {}; // Check if the ray is parallel to the triangle.
 
     // Check if the intersection point is inside the triangle (in barycentric coordinates).
-    const Point s = o - p1;
-    const float f = 1.f / a, u = f * s.dot(h);
+    const vec3 s = o - p1;
+    const float f = 1.f / a, u = f * glm::dot(s, h);
     if (u < 0.f || u > 1.f) return {};
 
-    const Point q = s % e1;
-    if (float v = f * d.dot(q); v < 0.f || u + v > 1.f) return {};
+    const vec3 q = glm::cross(s, e1);
+    if (float v = f * glm::dot(d, q); v < 0.f || u + v > 1.f) return {};
 
     // Calculate the intersection point's distance along the ray and verify it's ahead of the ray's origin.
-    if (float distance = f * e2.dot(q); distance > eps) return {distance};
+    if (float distance = f * glm::dot(e2, q); distance > eps) return {distance};
     return {};
 }
 
 constexpr std::optional<float> IntersectFace(const ray &ray, uint fi, const void *m) noexcept {
-    const Point o = ToOpenMesh(ray.o), d = ToOpenMesh(ray.d);
+    const vec3 o = ray.o, d = ray.d;
     const auto &pm = *reinterpret_cast<const PolyMesh *>(m);
     auto fv_it = pm.cfv_iter(FH(fi));
     const VH v0 = *fv_it++;
     VH v1 = *fv_it++, v2;
     for (; fv_it.is_valid(); ++fv_it) {
         v2 = *fv_it;
-        if (auto distance = IntersectTriangle(o, d, pm.point(v0), pm.point(v1), pm.point(v2))) return {distance};
+        if (auto distance = IntersectTriangle(o, d, pm.GetPosition(v0), pm.GetPosition(v1), pm.GetPosition(v2))) return {distance};
         v1 = v2;
     }
     return {};
 }
 
-struct VertexHash {
-    constexpr size_t operator()(const Point &p) const noexcept {
-        return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
-    }
-};
-
-// Used as an intermediate for creating render vertices (`Vertex3D`).
+// Used as an intermediate for creating render vertices
 struct VerticesHandle {
     Mesh::ElementIndex Parent; // A vertex can belong to itself, an edge, or a face.
     std::vector<Mesh::VH> VHs;
 };
 
-Mesh::PolyMesh DeduplicateVertices(const Mesh::PolyMesh &m) {
-    PolyMesh deduped;
+PolyMesh DeduplicateVertices(const PolyMesh &m) {
+    struct VertexHash {
+        constexpr size_t operator()(const vec3 &p) const noexcept {
+            return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
+        }
+    };
 
-    std::unordered_map<Point, VH, VertexHash> unique_vertices;
-    for (auto v_it = m.vertices_begin(); v_it != m.vertices_end(); ++v_it) {
-        const auto p = m.point(*v_it);
+    PolyMesh deduped;
+    std::unordered_map<vec3, VH, VertexHash> unique_vertices;
+    for (const auto vh : m.vertices()) {
+        const auto p = m.GetPosition(vh);
         if (auto [it, inserted] = unique_vertices.try_emplace(p, VH()); inserted) {
-            it->second = deduped.add_vertex(p);
+            it->second = deduped.AddVertex(p);
         }
     }
-    // Add faces.
     for (const auto &fh : m.faces()) {
         std::vector<VH> new_face;
-        new_face.reserve(m.valence(fh));
-        for (const auto &vh : m.fv_range(fh)) new_face.emplace_back(unique_vertices.at(m.point(vh)));
-        deduped.add_face(new_face);
+        new_face.reserve(m.GetValence(fh));
+        for (const auto &vh : m.fv_range(fh)) new_face.emplace_back(unique_vertices.at(m.GetPosition(vh)));
+        deduped.AddFace(new_face);
     }
     return deduped;
 }
 } // namespace
 
-std::optional<Mesh::PolyMesh> LoadPolyMesh(const fs::path &file_path) {
-    static Mesh::PolyMesh mesh;
-    OpenMesh::IO::Options read_options; // No options used yet.
-    if (!OpenMesh::IO::read_mesh(mesh, file_path.string(), read_options)) {
-        return {};
-    }
-    // if (IsTriangleSoup()) M = DeduplicateVertices();
+std::optional<PolyMesh> LoadPolyMesh(const fs::path &path) {
+    auto mesh = he::ReadMesh(path);
+    if (!mesh) return {};
     // Deduplicate even if not strictly triangle soup. Assumes this is a surface mesh.
-    return DeduplicateVertices(mesh);
+    return DeduplicateVertices(*mesh);
 }
 
 bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
@@ -149,29 +133,28 @@ bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
 }
 
 bool Mesh::VertexBelongsToEdge(VH vh, EH eh) const {
-    return vh.is_valid() && eh.is_valid() && any_of(M.voh_range(vh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
+    return vh.is_valid() && eh.is_valid() && any_of(M.voh_range(vh), [&](const auto &heh) { return M.GetEdge(heh) == eh; });
 }
 
 bool Mesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
     return fh.is_valid() && eh.is_valid() &&
         any_of(M.voh_range(vh), [&](const auto &heh) {
-               return M.edge_handle(heh) == eh && (M.face_handle(heh) == fh || M.face_handle(M.opposite_halfedge_handle(heh)) == fh);
+               return M.GetEdge(heh) == eh && (M.GetFace(heh) == fh || M.GetFace(M.GetOppositeHalfedge(heh)) == fh);
            });
 }
 
 bool Mesh::EdgeBelongsToFace(EH eh, FH fh) const {
-    return eh.is_valid() && fh.is_valid() && any_of(M.fh_range(fh), [&](const auto &heh) { return M.edge_handle(heh) == eh; });
+    return eh.is_valid() && fh.is_valid() && any_of(M.fh_range(fh), [&](const auto &heh) { return M.GetEdge(heh) == eh; });
 }
 
 float Mesh::CalcFaceArea(FH fh) const {
     float area{0};
     auto fv_it = M.cfv_iter(fh);
-    const Point p0 = M.point(*fv_it++);
-    Point p1 = M.point(*fv_it++), p2;
-    for (; fv_it.is_valid(); ++fv_it) {
-        p2 = M.point(*fv_it);
-        const auto cross_product = (p1 - p0) % (p2 - p0);
-        area += cross_product.norm() * 0.5;
+    const auto p0 = M.GetPosition(*fv_it++);
+    for (vec3 p1 = M.GetPosition(*fv_it++), p2; fv_it.is_valid(); ++fv_it) {
+        p2 = M.GetPosition(*fv_it);
+        const auto cross_product = glm::cross(p1 - p0, p2 - p0);
+        area += glm::length(cross_product) * 0.5f;
         p1 = p2;
     }
     return area;
@@ -179,7 +162,7 @@ float Mesh::CalcFaceArea(FH fh) const {
 
 std::vector<BBox> Mesh::CreateFaceBoundingBoxes() const {
     std::vector<BBox> boxes;
-    boxes.reserve(M.n_faces());
+    boxes.reserve(M.FaceCount());
     for (auto fh : M.faces()) {
         BBox box;
         for (auto vh : M.fv_range(fh)) {
@@ -210,9 +193,9 @@ RenderBuffers Mesh::CreateBvhBuffers(vec4 color) const {
     return {std::move(vertices), std::move(indices)};
 }
 
-FH Mesh::FindNearestIntersectingFace(const ray &ray, Point *nearest_intersect_point_out) const {
+FH Mesh::FindNearestIntersectingFace(const ray &ray, vec3 *nearest_intersect_point_out) const {
     if (auto intersection = Bvh->IntersectNearest(ray, IntersectFace, &M)) {
-        if (nearest_intersect_point_out) *nearest_intersect_point_out = ToOpenMesh(ray(intersection->Distance));
+        if (nearest_intersect_point_out) *nearest_intersect_point_out = ray(intersection->Distance);
         return FH(intersection->Index);
     }
     return FH{};
@@ -222,12 +205,12 @@ std::optional<Intersection> Mesh::Intersect(const ray &ray) const {
     return Bvh->IntersectNearest(ray, IntersectFace, &M);
 }
 
-VH Mesh::FindNearestVertex(Point p) const {
+VH Mesh::FindNearestVertex(vec3 p) const {
     VH closest_vertex;
     float min_distance_sq = std::numeric_limits<float>::max();
-    for (auto vh : M.vertices()) {
-        auto diff = M.point(vh) - p;
-        if (const float distance_sq = diff.dot(diff); distance_sq < min_distance_sq) {
+    for (const auto vh : M.vertices()) {
+        const vec3 diff = M.GetPosition(vh) - p;
+        if (const float distance_sq = glm::dot(diff, diff); distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;
             closest_vertex = vh;
         }
@@ -236,15 +219,15 @@ VH Mesh::FindNearestVertex(Point p) const {
 }
 
 VH Mesh::FindNearestVertex(const ray &local_ray) const {
-    Point intersection_point;
-    const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
+    vec3 intersection_p;
+    const auto face = FindNearestIntersectingFace(local_ray, &intersection_p);
     if (!face.is_valid()) return VH{};
 
     VH closest_vertex{};
     float min_distance_sq = std::numeric_limits<float>::max();
-    for (auto vh : M.fv_range(face)) {
-        const auto diff = M.point(vh) - intersection_point;
-        if (float distance_sq = diff.dot(diff); distance_sq < min_distance_sq) {
+    for (const auto vh : M.fv_range(face)) {
+        const vec3 diff = M.GetPosition(vh) - intersection_p;
+        if (float distance_sq = glm::dot(diff, diff); distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;
             closest_vertex = vh;
         }
@@ -254,17 +237,17 @@ VH Mesh::FindNearestVertex(const ray &local_ray) const {
 }
 
 EH Mesh::FindNearestEdge(const ray &local_ray) const {
-    Point intersection_point;
-    const auto face = FindNearestIntersectingFace(local_ray, &intersection_point);
+    vec3 intersection_p;
+    const auto face = FindNearestIntersectingFace(local_ray, &intersection_p);
     if (!face.is_valid()) return Mesh::EH{};
 
     Mesh::EH closest_edge;
     float min_distance_sq = std::numeric_limits<float>::max();
     for (auto heh : M.fh_range(face)) {
-        const auto eh = M.edge_handle(heh);
-        const auto p1 = M.point(M.from_vertex_handle(M.halfedge_handle(eh, 0)));
-        const auto p2 = M.point(M.to_vertex_handle(M.halfedge_handle(eh, 0)));
-        if (float distance_sq = SquaredDistanceToLineSegment(p1, p2, intersection_point);
+        const auto eh = M.GetEdge(heh);
+        const auto p1 = M.GetPosition(M.GetFromVertex(M.GetHalfedge(eh, 0)));
+        const auto p2 = M.GetPosition(M.GetToVertex(M.GetHalfedge(eh, 0)));
+        if (float distance_sq = SquaredDistanceToLineSegment(p1, p2, intersection_p);
             distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;
             closest_edge = eh;
@@ -285,7 +268,7 @@ std::vector<uint> Mesh::CreateIndices(MeshElement element) const {
 std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
     if (mode == MeshElement::None || mode == MeshElement::Edge) return {};
 
-    const uint n = mode == MeshElement::Face ? M.n_faces() : M.n_vertices();
+    const auto n = mode == MeshElement::Face ? M.FaceCount() : M.VertexCount();
     std::vector<uint> indices;
     indices.reserve(n * 2);
     for (uint i = 0; i < n; ++i) {
@@ -298,25 +281,25 @@ std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
 std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const ElementIndex &selected) const {
     std::vector<VerticesHandle> handles;
     if (render_element == MeshElement::Vertex) {
-        handles.reserve(M.n_vertices());
-        for (auto vh : M.vertices()) handles.emplace_back(vh, std::vector<VH>{vh});
+        handles.reserve(M.VertexCount());
+        for (const auto vh : M.vertices()) handles.emplace_back(vh, std::vector<VH>{vh});
     } else if (render_element == MeshElement::Edge) {
-        handles.reserve(M.n_edges() * 2);
-        for (auto eh : M.edges()) {
-            auto heh = M.halfedge_handle(eh, 0);
-            handles.emplace_back(eh, std::vector<VH>{M.from_vertex_handle(heh), M.to_vertex_handle(heh)});
+        handles.reserve(M.EdgeCount() * 2);
+        for (const auto eh : M.edges()) {
+            const auto heh = M.GetHalfedge(eh, 0);
+            handles.emplace_back(eh, std::vector<VH>{M.GetFromVertex(heh), M.GetToVertex(heh)});
         }
     } else if (render_element == MeshElement::Face) {
-        handles.reserve(M.n_faces() * 3); // Lower bound assuming all faces are triangles.
-        for (auto fh : M.faces()) {
-            for (auto vh : M.fv_range(fh)) handles.emplace_back(fh, std::vector<VH>{vh});
+        handles.reserve(M.FaceCount() * 3); // Lower bound assuming all faces are triangles.
+        for (const auto fh : M.faces()) {
+            for (const auto vh : M.fv_range(fh)) handles.emplace_back(fh, std::vector<VH>{vh});
         }
     }
 
     std::vector<Vertex3D> vertices;
     for (const auto &handle : handles) {
         const auto parent = handle.Parent;
-        const auto normal = ToGlm(render_element == MeshElement::Vertex || render_element == MeshElement::Edge ? M.normal(handle.VHs[0]) : M.normal(FH(handle.Parent)));
+        const auto normal = render_element == MeshElement::Vertex || render_element == MeshElement::Edge ? M.GetNormal(handle.VHs[0]) : M.GetNormal(FH(handle.Parent));
         for (const auto vh : handle.VHs) {
             const bool is_selected =
                 (selected == vh || selected == parent) ||
@@ -327,11 +310,11 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const Ele
                 (render_element == MeshElement::Face && VertexBelongsToFaceEdge(vh, parent, selected));
             const bool is_highlighted =
                 HighlightedElements.contains(vh) || HighlightedElements.contains(parent);
-            const vec4 color = is_selected            ? SelectedColor :
+            const auto color = is_selected            ? SelectedColor :
                 is_highlighted                        ? HighlightedColor :
                 render_element == MeshElement::Vertex ? VertexColor :
                 render_element == MeshElement::Edge   ? EdgeColor :
-                                                        ToGlm(M.color(FH(parent)));
+                                                        M.GetColor(FH(parent));
             vertices.emplace_back(GetPosition(vh), normal, color);
         }
     }
@@ -343,24 +326,24 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
     std::vector<Vertex3D> vertices;
     if (mode == MeshElement::Vertex) {
         // Line for each vertex normal, with length scaled by the average edge length.
-        vertices.reserve(M.n_vertices() * 2);
-        for (auto vh : M.vertices()) {
+        vertices.reserve(M.VertexCount() * 2);
+        for (const auto vh : M.vertices()) {
             const auto vn = GetVertexNormal(vh);
             const auto &voh_range = M.voh_range(vh);
             const float total_edge_length = std::reduce(voh_range.begin(), voh_range.end(), 0.f, [&](float total, const auto &heh) {
-                return total + M.calc_edge_length(heh);
+                return total + M.CalcEdgeLength(heh);
             });
-            const float avg_edge_length = total_edge_length / M.valence(vh);
-            const vec3 p = GetPosition(vh);
+            const float avg_edge_length = total_edge_length / M.GetValence(vh);
+            const auto p = GetPosition(vh);
             vertices.emplace_back(p, vn, VertexNormalIndicatorColor);
             vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn, VertexNormalIndicatorColor);
         }
     } else if (mode == MeshElement::Face) {
         // Line for each face normal, with length scaled by the face area.
-        vertices.reserve(M.n_faces() * 2);
-        for (auto fh : M.faces()) {
-            const vec3 fn = GetFaceNormal(fh);
-            const vec3 p = ToGlm(M.calc_face_centroid(fh));
+        vertices.reserve(M.FaceCount() * 2);
+        for (const auto fh : M.faces()) {
+            const auto fn = GetFaceNormal(fh);
+            const auto p = M.CalcFaceCentroid(fh);
             vertices.emplace_back(p, fn, FaceNormalIndicatorColor);
             vertices.emplace_back(p + NormalIndicatorLengthScale * std::sqrt(CalcFaceArea(fh)) * fn, fn, FaceNormalIndicatorColor);
         }
@@ -370,19 +353,19 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
 
 BBox Mesh::ComputeBbox() const {
     BBox bbox;
-    for (auto vh : M.vertices()) {
-        const auto v = ToGlm(M.point(vh));
-        bbox.Min = glm::min(bbox.Min, v);
-        bbox.Max = glm::max(bbox.Max, v);
+    for (const auto vh : M.vertices()) {
+        const auto p = M.GetPosition(vh);
+        bbox.Min = glm::min(bbox.Min, p);
+        bbox.Max = glm::max(bbox.Max, p);
     }
     return bbox;
 }
 
 std::vector<uint> Mesh::CreateTriangleIndices() const {
     std::vector<uint> indices;
-    for (auto fh : M.faces()) {
+    for (const auto fh : M.faces()) {
         auto fv_it = M.cfv_iter(fh);
-        const VH v0 = *fv_it++;
+        const auto v0 = *fv_it++;
         VH v1 = *fv_it++, v2;
         for (; fv_it.is_valid(); ++fv_it) {
             v2 = *fv_it;
@@ -396,20 +379,20 @@ std::vector<uint> Mesh::CreateTriangleIndices() const {
 std::vector<uint> Mesh::CreateTriangulatedFaceIndices() const {
     std::vector<uint> indices;
     uint index = 0;
-    for (auto fh : M.faces()) {
-        const auto valence = M.valence(fh);
-        for (uint i = 0; i < valence - 2; ++i) {
+    for (const auto fh : M.faces()) {
+        const auto Valence = M.GetValence(fh);
+        for (uint i = 0; i < Valence - 2; ++i) {
             indices.insert(indices.end(), {index, index + i + 1, index + i + 2});
         }
-        index += valence;
+        index += Valence;
     }
     return indices;
 }
 
 std::vector<uint> Mesh::CreateEdgeIndices() const {
     std::vector<uint> indices;
-    indices.reserve(M.n_edges() * 2);
-    for (uint ei = 0; ei < M.n_edges(); ++ei) {
+    indices.reserve(M.EdgeCount() * 2);
+    for (uint ei = 0; ei < M.EdgeCount(); ++ei) {
         indices.push_back(2 * ei);
         indices.push_back(2 * ei + 1);
     }
