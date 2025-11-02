@@ -120,17 +120,17 @@ $ cd build && ./MeshEditor
 
 - [Vulkan](https://www.vulkan.org/) + [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL): Graphics + immediate-mode UI/UX
 - [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
-- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): Load `.obj` and `.ply` mesh files 
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
+- [Faust](https://github.com/grame-cncm/faust): Functional audio programming language, used to render modal audio models to audio graphs
 - [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
-- [fftw](https://www.fftw.org/) for computing spectrograms (visualized with ImPlot)
-- [Faust](https://github.com/grame-cncm/faust): Functional audio programming language, used to render an object audio model to an audio graph
 - [tetgen](https://github.com/libigl/tetgen): Fast conversion of triangular 3D surface meshes into tetrahedral volume meshes
-- [Spectra](https://github.com/yixuan/spectra) for estimating eigenvalues/vectors
+- [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis
 - [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator): Efficient Vulkan memory allocation
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [ImPlot](https://github.com/epezent/implot): Plotting
-- [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, parse for SVG link bounding boxes, render SVG icons
+- [fftw](https://www.fftw.org/) for computing spectrograms (visualized with ImPlot)
+- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): Load `.obj` and `.ply` mesh files 
+- [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, parse SVG link bounding boxes, render SVG icons
 
 
 ## Development
