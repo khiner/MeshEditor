@@ -28,10 +28,10 @@ struct MeshElementIndex {
     MeshElement Element;
     int Index;
 
-    auto operator<=>(const MeshElementIndex &) const = default;
+    bool IsValid() const { return Index >= 0; }
 
-    bool is_valid() const { return Index >= 0; }
-    int idx() const { return Index; }
+    int operator*() const { return Index; }
+    bool operator==(const MeshElementIndex &) const = default;
 };
 
 struct MeshElementIndexHash {

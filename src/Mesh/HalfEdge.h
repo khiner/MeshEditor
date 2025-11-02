@@ -13,38 +13,37 @@ namespace he {
 struct VertexHandle {
     int Index{-1};
 
-    int idx() const { return Index; }
-    bool is_valid() const { return Index >= 0; }
-
+    int operator*() const { return Index; }
     bool operator==(const VertexHandle &) const = default;
+
+    bool IsValid() const { return Index >= 0; }
 };
 
 struct HalfedgeHandle {
     int Index{-1};
 
-    int idx() const { return Index; }
-    bool is_valid() const { return Index >= 0; }
-
+    int operator*() const { return Index; }
     bool operator==(const HalfedgeHandle &) const = default;
+
+    bool IsValid() const { return Index >= 0; }
 };
 
 struct EdgeHandle {
     int Index{-1};
 
-    int idx() const { return Index; }
-    bool is_valid() const { return Index >= 0; }
-
+    int operator*() const { return Index; }
     bool operator==(const EdgeHandle &) const = default;
+
+    bool IsValid() const { return Index >= 0; }
 };
 
 struct FaceHandle {
     int Index{-1};
 
-    int idx() const { return Index; }
-    bool is_valid() const { return Index >= 0; }
-
+    int operator*() const { return Index; }
     bool operator==(const FaceHandle &) const = default;
-    bool operator!=(const FaceHandle &) const = default;
+
+    bool IsValid() const { return Index >= 0; }
 };
 
 using VH = VertexHandle;
@@ -71,25 +70,25 @@ struct PolyMesh {
     FH AddFace(const std::vector<VH> &);
 
     // Position access
-    const vec3 &GetPosition(VH vh) const { return Positions[vh.idx()]; }
+    const vec3 &GetPosition(VH vh) const { return Positions[*vh]; }
     const float *GetPositionData() const { return &Positions[0][0]; }
 
     // Normal access
-    const vec3 &GetNormal(VH vh) const { return Normals[vh.idx()]; }
-    const vec3 &GetNormal(FH fh) const { return Faces[fh.idx()].Normal; }
+    const vec3 &GetNormal(VH vh) const { return Normals[*vh]; }
+    const vec3 &GetNormal(FH fh) const { return Faces[*fh].Normal; }
     void UpdateNormals();
 
     // Color access
-    vec4 GetColor(FH fh) const { return Faces[fh.idx()].Color; }
-    void SetColor(FH fh, const vec4 &color) { Faces[fh.idx()].Color = color; }
+    vec4 GetColor(FH fh) const { return Faces[*fh].Color; }
+    void SetColor(FH fh, const vec4 &color) { Faces[*fh].Color = color; }
 
     // Halfedge navigation
     HH GetHalfedge(EH, uint i) const;
     HH GetOppositeHalfedge(HH) const;
-    EH GetEdge(HH hh) const { return Halfedges[hh.idx()].Edge; }
-    FH GetFace(HH hh) const { return Halfedges[hh.idx()].Face; }
+    EH GetEdge(HH hh) const { return Halfedges[*hh].Edge; }
+    FH GetFace(HH hh) const { return Halfedges[*hh].Face; }
     VH GetFromVertex(HH) const;
-    VH GetToVertex(HH hh) const { return Halfedges[hh.idx()].Vertex; }
+    VH GetToVertex(HH hh) const { return Halfedges[*hh].Vertex; }
 
     // Valence
     uint GetValence(VH) const;
@@ -150,11 +149,8 @@ struct PolyMesh {
 
     // Circulator-style ranges
     struct FaceVertexIterator {
-        using iterator_category = std::input_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = VH;
-        using pointer = const VH *;
-        using reference = VH;
 
         const PolyMesh *Mesh{};
         HH CurrentHalfedge{};
@@ -175,10 +171,8 @@ struct PolyMesh {
         bool operator==(const FaceVertexIterator &other) const {
             return !First && !other.First && CurrentHalfedge == other.CurrentHalfedge;
         }
-        bool operator!=(const FaceVertexIterator &other) const {
-            return First || CurrentHalfedge != other.CurrentHalfedge;
-        }
-        bool is_valid() const { return First || CurrentHalfedge != StartHalfedge; }
+
+        bool IsValid() const { return First || CurrentHalfedge != StartHalfedge; }
     };
     struct FaceVertexRange {
         const PolyMesh *Mesh;
@@ -186,15 +180,12 @@ struct PolyMesh {
         FaceVertexIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge, true}; }
         FaceVertexIterator end() const { return {Mesh, StartHalfedge, StartHalfedge, false}; }
     };
-    FaceVertexRange fv_range(FH fh) const { return {this, Faces[fh.idx()].Halfedge}; }
-    FaceVertexIterator cfv_iter(FH fh) const { return {this, Faces[fh.idx()].Halfedge, Faces[fh.idx()].Halfedge, true}; }
+    FaceVertexRange fv_range(FH fh) const { return {this, Faces[*fh].Halfedge}; }
+    FaceVertexIterator cfv_iter(FH fh) const { return {this, Faces[*fh].Halfedge, Faces[*fh].Halfedge, true}; }
 
     struct VertexOutgoingHalfedgeIterator {
-        using iterator_category = std::input_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = HH;
-        using pointer = const HH *;
-        using reference = HH;
 
         const PolyMesh *Mesh{};
         HH CurrentHalfedge{};
@@ -215,9 +206,6 @@ struct PolyMesh {
         bool operator==(const VertexOutgoingHalfedgeIterator &other) const {
             return !First && !other.First && CurrentHalfedge == other.CurrentHalfedge;
         }
-        bool operator!=(const VertexOutgoingHalfedgeIterator &other) const {
-            return First || CurrentHalfedge != other.CurrentHalfedge;
-        }
     };
     struct VertexOutgoingHalfedgeRange {
         const PolyMesh *Mesh;
@@ -225,7 +213,9 @@ struct PolyMesh {
         VertexOutgoingHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge, true}; }
         VertexOutgoingHalfedgeIterator end() const { return {Mesh, StartHalfedge, StartHalfedge, false}; }
     };
-    VertexOutgoingHalfedgeRange voh_range(VH vh) const;
+    VertexOutgoingHalfedgeRange voh_range(VH vh) const {
+        return {this, vh.IsValid() && *vh < static_cast<int>(OutgoingHalfedges.size()) ? OutgoingHalfedges[*vh] : HH{}};
+    }
 
     struct FaceHalfedgeIterator {
         using iterator_category = std::input_iterator_tag;
@@ -263,7 +253,7 @@ struct PolyMesh {
         FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge, true}; }
         FaceHalfedgeIterator end() const { return {Mesh, StartHalfedge, StartHalfedge, false}; }
     };
-    FaceHalfedgeRange fh_range(FH fh) const { return {this, Faces[fh.idx()].Halfedge}; }
+    FaceHalfedgeRange fh_range(FH fh) const { return {this, Faces[*fh].Halfedge}; }
 
 private:
     struct Halfedge {

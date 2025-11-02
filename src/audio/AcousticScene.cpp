@@ -109,7 +109,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         // so we don't even load them. Instead, we look up by position here.
         const auto &mesh = R.get<Mesh>(e);
         for (uint i = 0; i < impact_positions.size(); ++i) {
-            vertex_indices[i] = uint(mesh.FindNearestVertex(impact_positions[i]).idx());
+            vertex_indices[i] = uint(*mesh.FindNearestVertex(impact_positions[i]));
         }
     }
 

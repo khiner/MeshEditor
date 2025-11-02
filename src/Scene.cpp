@@ -1827,11 +1827,11 @@ void Scene::RenderControls() {
                             SetEditingElement({element, -1});
                         }
                     }
-                    Text("Editing %s: %s", to_string(EditingElement.Element).c_str(), EditingElement.is_valid() ? std::to_string(EditingElement.idx()).c_str() : "None");
-                    if (EditingElement.Element == MeshElement::Vertex && EditingElement.is_valid() && active_entity != entt::null) {
+                    Text("Editing %s: %s", to_string(EditingElement.Element).c_str(), EditingElement.IsValid() ? std::to_string(*EditingElement).c_str() : "None");
+                    if (EditingElement.Element == MeshElement::Vertex && EditingElement.IsValid() && active_entity != entt::null) {
                         const auto &mesh = GetActiveMesh();
-                        const auto pos = mesh.GetPosition(Mesh::VH{EditingElement.idx()});
-                        Text("Vertex %d: (%.4f, %.4f, %.4f)", EditingElement.idx(), pos.x, pos.y, pos.z);
+                        const auto pos = mesh.GetPosition(Mesh::VH{*EditingElement});
+                        Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingElement, pos.x, pos.y, pos.z);
                     }
                 }
                 PopID();

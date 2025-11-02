@@ -42,15 +42,15 @@ struct Mesh {
     struct ElementIndex : MeshElementIndex {
         using MeshElementIndex::MeshElementIndex;
         ElementIndex(MeshElementIndex other) : MeshElementIndex(std::move(other)) {}
-        ElementIndex(VH vh) : MeshElementIndex(MeshElement::Vertex, vh.idx()) {}
-        ElementIndex(EH eh) : MeshElementIndex(MeshElement::Edge, eh.idx()) {}
-        ElementIndex(FH fh) : MeshElementIndex(MeshElement::Face, fh.idx()) {}
+        ElementIndex(VH vh) : MeshElementIndex(MeshElement::Vertex, *vh) {}
+        ElementIndex(EH eh) : MeshElementIndex(MeshElement::Edge, *eh) {}
+        ElementIndex(FH fh) : MeshElementIndex(MeshElement::Face, *fh) {}
 
         bool operator==(ElementIndex other) const { return Element == other.Element && Index == other.Index; }
 
-        bool operator==(VH vh) const { return Element == MeshElement::Vertex && Index == vh.idx(); }
-        bool operator==(EH eh) const { return Element == MeshElement::Edge && Index == eh.idx(); }
-        bool operator==(FH fh) const { return Element == MeshElement::Face && Index == fh.idx(); }
+        bool operator==(VH vh) const { return Element == MeshElement::Vertex && Index == *vh; }
+        bool operator==(EH eh) const { return Element == MeshElement::Edge && Index == *eh; }
+        bool operator==(FH fh) const { return Element == MeshElement::Face && Index == *fh; }
 
         // Implicit conversion to half-edge handles.
         operator VH() const { return VH{Element == MeshElement::Vertex ? Index : -1}; }
@@ -102,7 +102,7 @@ struct Mesh {
     std::vector<BBox> CreateFaceBoundingBoxes() const;
     RenderBuffers CreateBvhBuffers(vec4 color) const;
 
-    void HighlightVertex(VH vh) { HighlightedElements.emplace(MeshElement::Vertex, vh.idx()); }
+    void HighlightVertex(VH vh) { HighlightedElements.emplace(MeshElement::Vertex, *vh); }
     void ClearHighlights() { HighlightedElements.clear(); }
 
     void SetFaceColor(FH fh, vec4 color) { M.SetColor(fh, color); }
