@@ -19,7 +19,7 @@ General features:
 * Flat/smooth/wireframe mesh rendering
 * Bounding Volume Hierarchy (BVH) ray intersection acceleration structure
   - Used for mouse interactions - this is not a ray tracing renderer :)
-* Translate / rotate / (nonuniformly) scale meshes and instances with model gizmo (adapted from [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo)) and numeric inputs
+* Translate / rotate / (nonuniformly) scale meshes and instances with numeric inputs or a custom transform gizmo designed to look and behave just like Blender's
 * Simple camera + scene lighting model, roughly matching Blender visually
 * Edit camera with mouse wheel, numeric inputs, or with a custom orientation gizmo designed to look and behave just like Blender's
 * Edit lighting parameters
@@ -130,7 +130,7 @@ $ cd build && ./MeshEditor
 - [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator): Efficient Vulkan memory allocation
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [ImPlot](https://github.com/epezent/implot): Plotting
-- [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, and parse for SVG link bounding boxes
+- [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, parse for SVG link bounding boxes, render SVG icons
 
 
 ## Development

@@ -821,6 +821,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
             }
         }
     }
+    InvalidateCommandBuffer();
 }
 
 mvk::RenderBuffers Scene::CreateRenderBuffers(RenderBuffers &&buffers) {
@@ -1342,6 +1343,9 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_G, false)) StartScreenTransform = TransformGizmo::TransformType::Translate;
             else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
             else if (IsKeyPressed(ImGuiKey_S, false)) StartScreenTransform = TransformGizmo::TransformType::Scale;
+            else if (IsKeyPressed(ImGuiKey_H, false)) {
+                for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<Visible>(e));
+            }
         }
     }
 
@@ -1691,10 +1695,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     Text("Model buffer index: %s", GetModelBufferIndex(active_entity) ? std::to_string(*GetModelBufferIndex(active_entity)).c_str() : "None");
     Unindent();
     bool visible = R.all_of<Visible>(active_entity);
-    if (Checkbox("Visible", &visible)) {
-        SetVisible(active_entity, visible);
-        InvalidateCommandBuffer();
-    }
+    if (Checkbox("Visible", &visible)) SetVisible(active_entity, visible);
     if (CollapsingHeader("Transform")) {
         bool model_changed = DragFloat3("Position", &R.get<Position>(active_entity).Value[0], 0.01f);
         // Rotation editor
