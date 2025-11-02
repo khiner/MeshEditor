@@ -38,6 +38,13 @@ enum class Type : uint8_t {
     Universal,
 };
 
+// Subset `Type` without `Universal`. (need better names)
+enum class TransformType : uint8_t {
+    Translate,
+    Rotate,
+    Scale,
+};
+
 struct Config {
     Type Type{};
     vec3 SnapValue{0.5};
@@ -52,6 +59,6 @@ struct Result {
     Transform Delta; // Delta transform since interaction start
 };
 
-// start_translate_screen_action: If true, starts (non-click-initiated screen-space translate interaction immediately.)
-std::optional<Result> Draw(const GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px, bool start_translate_screen_action = false);
+// start_screen_transform: If present, starts (non-click-initiated screen-space transform interaction immediately.)
+std::optional<Result> Draw(const GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px, std::optional<TransformType> start_screen_transform = {});
 } // namespace TransformGizmo

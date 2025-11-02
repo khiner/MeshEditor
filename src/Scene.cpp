@@ -923,7 +923,7 @@ void Scene::Duplicate() {
         }
         R.remove<Selected>(e);
     }
-    StartTranslateScreenAction = true;
+    StartScreenTransform = TransformGizmo::TransformType::Translate;
 }
 void Scene::DuplicateLinked() {
     std::vector<entt::entity> entities;
@@ -936,7 +936,7 @@ void Scene::DuplicateLinked() {
         }
         R.remove<Selected>(e);
     }
-    StartTranslateScreenAction = true;
+    StartScreenTransform = TransformGizmo::TransformType::Translate;
 }
 
 void Scene::ClearMeshes() {
@@ -1339,6 +1339,9 @@ void Scene::Interact() {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
             else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
             else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
+            else if (IsKeyPressed(ImGuiKey_G, false)) StartScreenTransform = TransformGizmo::TransformType::Translate;
+            else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
+            else if (IsKeyPressed(ImGuiKey_S, false)) StartScreenTransform = TransformGizmo::TransformType::Scale;
         }
     }
 
@@ -1354,7 +1357,6 @@ void Scene::Interact() {
         AccumulatedWrapMouseDelta = {0, 0};
     }
     if (!IsWindowHovered()) return;
-    if (ImGui::IsKeyPressed(ImGuiKey_G, false)) StartTranslateScreenAction = true;
 
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
@@ -1563,7 +1565,7 @@ void Scene::RenderOverlay() {
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
                 MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
-                StartTranslateScreenAction
+                StartScreenTransform
             )) {
             const auto &[ts, td] = *start_delta;
             if (start_transform_view.empty()) {
@@ -1597,7 +1599,7 @@ void Scene::RenderOverlay() {
         if (Camera.Tick()) UpdateTransformBuffers();
     }
 
-    StartTranslateScreenAction = false;
+    StartScreenTransform = {};
 }
 
 namespace {
@@ -1855,7 +1857,7 @@ void Scene::RenderControls() {
                 const auto selected_type = PrimitiveType(selected_type_i);
                 if (auto mesh = PrimitiveEditor(selected_type, true)) {
                     R.emplace<PrimitiveType>(AddMesh(std::move(*mesh), {.Name = ToString(selected_type)}), selected_type);
-                    StartTranslateScreenAction = true;
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
                 PopID();
             }

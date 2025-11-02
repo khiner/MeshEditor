@@ -284,7 +284,7 @@ private:
         TransformGizmo::Mode Mode;
     };
     TransformGizmoState MGizmo;
-    bool StartTranslateScreenAction{false};
+    std::optional<TransformGizmo::TransformType> StartScreenTransform;
     bool TransformModePillsHovered{false};
 
     struct TransformIcons {

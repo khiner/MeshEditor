@@ -18,12 +18,8 @@
 #include <span>
 
 namespace {
-// Subset of (the externally visible) `Type` without `Universal`.
-enum class TransformType : uint8_t {
-    Translate,
-    Rotate,
-    Scale,
-};
+
+using TransformGizmo::TransformType;
 
 enum class InteractionOp : uint8_t {
     AxisX,
@@ -419,6 +415,77 @@ std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const ImRect &r, ImVec2 p
 
     return {{p + d * t_enter, p + d * t_exit}};
 }
+
+// Dashed center->mouse guide line + double arrow cursor
+void RenderMouseGuid(TransformGizmo::TransformType type, ImVec2 o_px) {
+    if (type == TransformGizmo::TransformType::Translate) return;
+
+    // Same as ImDrawList::AddLine but w/o half-px offset
+    static const auto AddLine = [](ImDrawList &dl, ImVec2 p1, ImVec2 p2, ImU32 col, float thickness) {
+        dl.PathLineTo(p1);
+        dl.PathLineTo(p2);
+        dl.PathStroke(col, 0, thickness);
+    };
+
+    static const auto DrawDashedLine = [](ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color) {
+        static constexpr float Thickness{1}, DashLen{4}, GapLen{3};
+
+        const auto dir = b - a;
+        const float len = sqrtf(ImLengthSqr(dir));
+        if (len <= 1e-3f) return;
+
+        const auto dir_unit = dir / len;
+        float t{0};
+        while (t < len) {
+            AddLine(dl, a + dir_unit * t, a + dir_unit * (t + std::min(DashLen, len - t)), color, Thickness);
+            t += DashLen + GapLen;
+        }
+    };
+
+    auto &dl = *ImGui::GetWindowDrawList();
+    static constexpr auto LineColor{IM_COL32(255, 255, 255, 255)}, ShadowLineColor{IM_COL32(90, 90, 90, 200)};
+    static constexpr ImVec2 ShadowOffset{1.5, 1.5};
+    DrawDashedLine(dl, o_px + ShadowOffset, std::bit_cast<ImVec2>(g.MousePx) + ShadowOffset, ShadowLineColor);
+    DrawDashedLine(dl, o_px, std::bit_cast<ImVec2>(g.MousePx), LineColor);
+
+    static const auto DrawCursorArrow = [](ImDrawList &dl, ImVec2 base, ImVec2 dir, ImVec2 lat) {
+        static constexpr float CursorThickness{2}, ShaftLength{22}, HeadLength{7}, HeadWidth{5};
+
+        const auto head = base + dir * (ShaftLength * 0.5f - HeadLength);
+        const ImVec2 points[]{
+            // tip -> +head -> +base -> -base -> -head
+            base + dir * ShaftLength * 0.5f,
+            head + lat * HeadWidth,
+            base + lat * CursorThickness,
+            base - lat * CursorThickness,
+            head - lat * HeadWidth,
+        };
+
+        static constexpr auto FillColor{IM_COL32(255, 255, 255, 255)}, OutlineColor{IM_COL32(0, 0, 0, 255)};
+        dl.AddConvexPolyFilled(points, 5, FillColor);
+        dl.AddPolyline(points, 5, OutlineColor, true, 1.f);
+    };
+
+    // Two arrows pointing in opposite directions, either along or perpendicular to `line_dir`
+    static const auto DrawCursorDoubleArrow = [](ImDrawList &dl, ImVec2 center, ImVec2 line_dir, bool perpendicular = true) {
+        static constexpr float CenterGap{10};
+
+        const float len2 = ImLengthSqr(line_dir);
+        if (len2 <= 1e-6f) return;
+
+        const auto line_unit = line_dir / sqrtf(len2);
+        const ImVec2 perp_unit{-line_unit.y, line_unit.x};
+        const auto dir = perpendicular ? perp_unit : line_unit;
+        const auto lat = perpendicular ? line_unit : perp_unit;
+        const auto gap = dir * CenterGap * 0.5f;
+        DrawCursorArrow(dl, center + gap, dir, lat);
+        DrawCursorArrow(dl, center - gap, -dir, lat);
+    };
+
+    ImGui::SetMouseCursor(ImGuiMouseCursor_None); // Custom cursor
+    DrawCursorDoubleArrow(dl, std::bit_cast<ImVec2>(g.MousePx), std::bit_cast<ImVec2>(g.MousePx) - o_px, type == TransformType::Rotate);
+}
+
 // Local, non-snapped delta from interaction start
 // The Transform delta is derived from this and the start Transform.
 struct LocalTransformDelta {
@@ -430,9 +497,13 @@ struct LocalTransformDelta {
 void Render(const GizmoTransform &transform, const LocalTransformDelta &dt, TransformGizmo::Type type, const mat4 &vp, const ray &cam_ray) {
     using TransformGizmo::Type;
     using enum TransformType;
-    if (type == Type::None || (g.Interaction && g.Interaction->Op == InteractionOp::Action)) return;
 
     const auto o_px = WsToPx(transform.P, vp);
+    if (g.Interaction && g.Interaction->Op == InteractionOp::Action) {
+        RenderMouseGuid(g.Interaction->Type, o_px);
+        return;
+    }
+    if (type == Type::None) return;
 
     if (g.Start && g.Interaction->Op == InteractionOp::Trackball) {
         Label(ValueLabel(*g.Interaction, vec3{dt.RotationYawPitch, 0}), o_px);
@@ -711,72 +782,7 @@ void Render(const GizmoTransform &transform, const LocalTransformDelta &dt, Tran
             Style.LineWidth
         );
     }
-    // Dashed center->mouse guide line + double arrow cursor
-    if (g.Start && g.Interaction->Type != Translate) {
-        // Same as ImDrawList::AddLine but w/o half-px offset
-        static const auto AddLine = [](ImDrawList &dl, ImVec2 p1, ImVec2 p2, ImU32 col, float thickness) {
-            dl.PathLineTo(p1);
-            dl.PathLineTo(p2);
-            dl.PathStroke(col, 0, thickness);
-        };
-
-        static const auto DrawDashedLine = [](ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color) {
-            static constexpr float Thickness{1}, DashLen{4}, GapLen{3};
-
-            const auto dir = b - a;
-            const float len = sqrtf(ImLengthSqr(dir));
-            if (len <= 1e-3f) return;
-
-            const auto dir_unit = dir / len;
-            float t{0};
-            while (t < len) {
-                AddLine(dl, a + dir_unit * t, a + dir_unit * (t + std::min(DashLen, len - t)), color, Thickness);
-                t += DashLen + GapLen;
-            }
-        };
-
-        static constexpr auto LineColor{IM_COL32(255, 255, 255, 255)}, ShadowLineColor{IM_COL32(90, 90, 90, 200)};
-        static constexpr ImVec2 ShadowOffset{1.5, 1.5};
-        DrawDashedLine(dl, o_px + ShadowOffset, std::bit_cast<ImVec2>(g.MousePx) + ShadowOffset, ShadowLineColor);
-        DrawDashedLine(dl, o_px, std::bit_cast<ImVec2>(g.MousePx), LineColor);
-
-        static const auto DrawCursorArrow = [](ImDrawList &dl, ImVec2 base, ImVec2 dir, ImVec2 lat) {
-            static constexpr float CursorThickness{2}, ShaftLength{22}, HeadLength{7}, HeadWidth{5};
-
-            const auto head = base + dir * (ShaftLength * 0.5f - HeadLength);
-            const ImVec2 points[]{
-                // tip -> +head -> +base -> -base -> -head
-                base + dir * ShaftLength * 0.5f,
-                head + lat * HeadWidth,
-                base + lat * CursorThickness,
-                base - lat * CursorThickness,
-                head - lat * HeadWidth,
-            };
-
-            static constexpr auto FillColor{IM_COL32(255, 255, 255, 255)}, OutlineColor{IM_COL32(0, 0, 0, 255)};
-            dl.AddConvexPolyFilled(points, 5, FillColor);
-            dl.AddPolyline(points, 5, OutlineColor, true, 1.f);
-        };
-
-        // Two arrows pointing in opposite directions, either along or perpendicular to `line_dir`
-        static const auto DrawCursorDoubleArrow = [](ImDrawList &dl, ImVec2 center, ImVec2 line_dir, bool perpendicular = true) {
-            static constexpr float CenterGap{10};
-
-            const float len2 = ImLengthSqr(line_dir);
-            if (len2 <= 1e-6f) return;
-
-            const auto line_unit = line_dir / sqrtf(len2);
-            const ImVec2 perp_unit{-line_unit.y, line_unit.x};
-            const auto dir = perpendicular ? perp_unit : line_unit;
-            const auto lat = perpendicular ? line_unit : perp_unit;
-            const auto gap = dir * CenterGap * 0.5f;
-            DrawCursorArrow(dl, center + gap, dir, lat);
-            DrawCursorArrow(dl, center - gap, -dir, lat);
-        };
-
-        ImGui::SetMouseCursor(ImGuiMouseCursor_None); // Custom cursor
-        DrawCursorDoubleArrow(dl, std::bit_cast<ImVec2>(g.MousePx), std::bit_cast<ImVec2>(g.MousePx) - o_px, g.Interaction->Type == Rotate);
-    }
+    if (g.Start) RenderMouseGuid(g.Interaction->Type, o_px);
 }
 
 LocalTransformDelta GetLocalTransformDelta(const Transform &ts, Interaction interaction, const mat4 &vp, const ray &mouse_ray, const vec4 &plane) {
@@ -848,7 +854,7 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
 } // namespace
 
 namespace TransformGizmo {
-std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px, bool start_translate_screen_action) {
+std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px, std::optional<TransformType> start_screen_transform) {
     g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
     g.MousePx = mouse_px;
 
@@ -893,8 +899,8 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
         return Result{ts, GetDeltaTransform(ts, dt, *g.Interaction, plane, cam_basis, config.Snap, config.SnapValue)};
     }
 
-    g.Interaction = start_translate_screen_action ?
-        std::optional<Interaction>({TransformType::Translate, InteractionOp::Action}) :
+    g.Interaction = start_screen_transform ?
+        std::optional<Interaction>({*start_screen_transform, InteractionOp::Action}) :
         ImGui::IsWindowHovered() ? FindHoveredInteraction(transform, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray) :
                                    std::nullopt;
     if (g.Interaction && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || g.Interaction->Op == InteractionOp::Action)) {
