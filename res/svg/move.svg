@@ -15,7 +15,7 @@
      id="defs4" />
   <sodipodi:namedview
      id="namedview4"
-     pagecolor="#ffffff"
+     pagecolor="#000000"
      bordercolor="#000000"
      borderopacity="0.25"
      inkscape:showpageshadow="2"
@@ -23,42 +23,74 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      showgrid="false"
-     inkscape:zoom="12.828125"
-     inkscape:cx="31.961023"
-     inkscape:cy="32"
+     inkscape:zoom="9.5844953"
+     inkscape:cx="14.71126"
+     inkscape:cy="48.359354"
      inkscape:window-width="1712"
      inkscape:window-height="1040"
-     inkscape:window-x="112"
+     inkscape:window-x="0"
      inkscape:window-y="39"
      inkscape:window-maximized="0"
      inkscape:current-layer="svg4" />
   <!-- background -->
   <!-- arrows -->
   <!-- center square -->
-  <g
-     id="g4">
-    <polygon
-       points="32,8 24,20 40,20"
-       fill="#e8e8e8"
-       id="polygon1" />
-    <polygon
-       points="32,56 24,44 40,44"
-       fill="#e8e8e8"
-       id="polygon2" />
-    <polygon
-       points="8,32 20,24 20,40"
-       fill="#e8e8e8"
-       id="polygon3" />
-    <polygon
-       points="56,32 44,24 44,40"
-       fill="#e8e8e8"
-       id="polygon4" />
-    <rect
-       x="29"
-       y="29"
-       width="6"
-       height="6"
-       fill="#e8e8e8"
-       id="rect4" />
-  </g>
+  <polygon
+     points="8,32 20,24 20,40 "
+     fill="#e8e8e8"
+     id="polygon3"
+     style="fill:#ffffff"
+     transform="matrix(1.0368761,0,0,1.0368761,-4.4147521,-1.1800352)" />
+  <rect
+     x="17.972548"
+     y="30.501722"
+     width="7.1970696"
+     height="2.9965539"
+     fill="#e8e8e8"
+     id="rect4"
+     style="fill:#ffffff;stroke-width:0.773991" />
+  <polygon
+     points="8,32 20,24 20,40 "
+     fill="#e8e8e8"
+     id="polygon4"
+     style="fill:#ffffff"
+     transform="matrix(-1.0368761,0,0,-1.0368761,68.414752,65.180035)" />
+  <polygon
+     points="20,40 8,32 20,24 "
+     fill="#e8e8e8"
+     id="polygon5"
+     style="fill:#ffffff"
+     transform="matrix(0,1.0368761,-1.0368761,0,65.277776,-5.0337295)" />
+  <polygon
+     points="8,32 20,24 20,40 "
+     fill="#e8e8e8"
+     id="polygon6"
+     style="fill:#ffffff"
+     transform="matrix(0,-1.0368761,1.0368761,0,-1.0822941,69.033727)" />
+  <rect
+     x="38.851231"
+     y="30.501722"
+     width="7.1970696"
+     height="2.9965539"
+     fill="#e8e8e8"
+     id="rect6"
+     style="fill:#ffffff;stroke-width:0.773991" />
+  <rect
+     x="17.369812"
+     y="-33.596016"
+     width="7.1970696"
+     height="2.9965539"
+     fill="#e8e8e8"
+     id="rect7"
+     style="fill:#ffffff;stroke-width:0.773991"
+     transform="rotate(90)" />
+  <rect
+     x="39.349243"
+     y="-33.596016"
+     width="7.1970696"
+     height="2.9965539"
+     fill="#e8e8e8"
+     id="rect8"
+     style="fill:#ffffff;stroke-width:0.773991"
+     transform="rotate(90)" />
 </svg>

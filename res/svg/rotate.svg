@@ -15,7 +15,7 @@
      id="defs4" />
   <sodipodi:namedview
      id="namedview4"
-     pagecolor="#ffffff"
+     pagecolor="#000000"
      bordercolor="#000000"
      borderopacity="0.25"
      inkscape:showpageshadow="2"
@@ -23,8 +23,8 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="6.1104668"
-     inkscape:cx="30.357746"
-     inkscape:cy="25.284484"
+     inkscape:cx="34.530913"
+     inkscape:cy="30.194093"
      inkscape:window-width="1448"
      inkscape:window-height="902"
      inkscape:window-x="0"
@@ -37,9 +37,9 @@
   <!-- left triangle (pointing down) -->
   <!-- right triangle (pointing up) -->
   <g
-     transform="matrix(0.12082563,1.1026183,-1.3810435,0.09646659,72.09519,-5.5314532)"
+     transform="matrix(0.15995939,1.3953994,-1.8283446,0.12208161,84.327261,-15.325533)"
      id="g2"
-     style="stroke-width:2.42186;stroke-dasharray:none">
+     style="stroke:#ffffff;stroke-width:2.60998;stroke-dasharray:none;stroke-opacity:1">
     <!-- circle arcs (two gaps at ~1:30–3:30 and ~7:30–9:30) -->
     <path
        d="m 35.990414,19.904604 c 12.066554,2.427232 17.589532,14.366476 5.945054,21.340585"
@@ -49,28 +49,30 @@
        stroke-linecap="round"
        id="path2"
        sodipodi:nodetypes="cc"
-       style="stroke-width:2.42186;stroke-dasharray:none" />
+       style="stroke:#ffffff;stroke-width:2.60998;stroke-dasharray:none;stroke-opacity:1" />
   </g>
   <polygon
      points="32,38 26,32 32,26 38,32 "
      fill="#bfbfbf"
      id="polygon2"
-     transform="matrix(1.3394311,0,0,1.321322,-10.819269,-10.276665)" />
+     transform="matrix(1.4786981,0,0,1.4587062,-15.655138,-14.694347)"
+     style="fill:#ffffff" />
   <polygon
      points="50,33 46,26 42,33 "
      fill="#e8e8e8"
      id="polygon4"
-     transform="matrix(1.577966,0,0,1.5566317,-23.022536,-17.948121)" />
+     transform="matrix(2.0847252,0,0,2.0565395,-41.440015,-34.012015)"
+     style="fill:#ffffff" />
   <polygon
      points="46,26 42,33 50,33 "
      fill="#e8e8e8"
      id="polygon5"
-     transform="matrix(-1.5585092,0,0,-1.537438,86.396859,81.44548)"
-     style="stroke-width:1.01231;stroke-dasharray:none" />
+     transform="matrix(-2.05902,0,0,-2.0311818,103.82745,97.301555)"
+     style="fill:#ffffff;stroke-width:1.01231;stroke-dasharray:none" />
   <g
-     transform="matrix(-0.12276802,-1.0823141,1.4032452,-0.0946902,-8.7614946,69.138761)"
+     transform="matrix(-0.16245466,-1.3825458,1.8568657,-0.12095707,-21.971661,79.278481)"
      id="g1"
-     style="stroke-width:2.42506;stroke-dasharray:none">
+     style="stroke:#ffffff;stroke-width:2.60187;stroke-dasharray:none;stroke-opacity:1">
     <!-- circle arcs (two gaps at ~1:30–3:30 and ~7:30–9:30) -->
     <path
        d="m 36.010346,19.928525 c 12.543764,2.466061 18.316511,14.519999 6.2449,21.439711"
@@ -80,6 +82,6 @@
        stroke-linecap="round"
        id="path1"
        sodipodi:nodetypes="cc"
-       style="stroke-width:2.42506;stroke-dasharray:none" />
+       style="stroke:#ffffff;stroke-width:2.60187;stroke-dasharray:none;stroke-opacity:1" />
   </g>
 </svg>

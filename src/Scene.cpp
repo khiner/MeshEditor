@@ -1501,15 +1501,16 @@ void Scene::RenderOverlay() {
 
         const float padding = GetTextLineHeightWithSpacing() / 2.f;
         const auto start_pos = std::bit_cast<ImVec2>(window_pos) + GetWindowContentRegionMin() + ImVec2{padding, padding};
-        const auto button_size = ImVec2{36, 36};
-        const float icon_dim = button_size.x * 0.8f;
-        const ImVec2 icon_size{icon_dim, icon_dim};
         const auto saved_cursor_pos = GetCursorScreenPos();
 
         auto &dl = *GetWindowDrawList();
         TransformModePillsHovered = false;
         for (uint i = 0; i < 4; ++i) {
             const auto &[icon, button_type, corners, enabled] = buttons[i];
+            static constexpr ImVec2 button_size{36, 30};
+            static constexpr ImVec2 padding{0.5f, 0.5f};
+            static constexpr float icon_dim{button_size.y * 0.75f};
+            static constexpr ImVec2 icon_size{icon_dim, icon_dim};
             SetCursorScreenPos({start_pos.x, start_pos.y + i * button_size.y});
 
             if (!enabled) BeginDisabled();
@@ -1527,7 +1528,7 @@ void Scene::RenderOverlay() {
                     hovered             ? ImGuiCol_ButtonHovered :
                                           ImGuiCol_Button
             );
-            dl.AddRectFilled(GetItemRectMin(), GetItemRectMax(), bg_color, 8.f, corners);
+            dl.AddRectFilled(GetItemRectMin() + padding, GetItemRectMax() - padding, bg_color, 8.f, corners);
             SetCursorScreenPos(GetItemRectMin() + (button_size - icon_size) * 0.5f);
             icon.RenderIcon(std::bit_cast<vec2>(icon_size));
         }
