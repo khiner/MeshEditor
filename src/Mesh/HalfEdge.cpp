@@ -14,31 +14,37 @@
 
 namespace he {
 
-VH PolyMesh::AddVertex(const vec3 &p) {
-    Positions.emplace_back(p);
-    Normals.emplace_back();
-    OutgoingHalfedges.emplace_back();
-    return VH(Positions.size() - 1);
-}
+PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces) {
+    // Reserve and initialize vertex data
+    Positions = std::move(vertices);
+    Normals.resize(Positions.size());
+    OutgoingHalfedges.resize(Positions.size());
 
-void PolyMesh::SetFaces(const std::vector<std::vector<VH>> &faces) {
+    std::vector<std::vector<VH>> vh_faces;
+    vh_faces.reserve(faces.size());
+    for (auto &face : faces) {
+        std::vector<VH> vh_face;
+        vh_face.reserve(face.size());
+        for (auto idx : face) vh_face.emplace_back(idx);
+        vh_faces.emplace_back(std::move(vh_face));
+    }
+
     static auto MakeEdgeKey = [](int from, int to) { return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to); };
-
     std::unordered_map<uint64_t, HH> halfedge_map;
-    for (const auto &vertices : faces) {
-        assert(vertices.size() >= 3);
+    for (const auto &f_vertices : vh_faces) {
+        assert(f_vertices.size() >= 3);
 
         const auto fi = Faces.size();
         const auto start_he_i = Halfedges.size();
         Faces.emplace_back(HH(start_he_i), vec3{0}, vec4{1, 1, 1, 1});
 
         // Create halfedges, find opposites, and create edges
-        for (size_t i = 0; i < vertices.size(); ++i) {
-            const auto to_v = vertices[i];
-            const auto from_v = vertices[i == 0 ? vertices.size() - 1 : i - 1];
+        for (size_t i = 0; i < f_vertices.size(); ++i) {
+            const auto to_v = f_vertices[i];
+            const auto from_v = f_vertices[i == 0 ? f_vertices.size() - 1 : i - 1];
             Halfedges.emplace_back(Halfedge{
                 .Vertex = to_v,
-                .Next = HH(start_he_i + (i + 1) % vertices.size()),
+                .Next = HH(start_he_i + (i + 1) % f_vertices.size()),
                 .Opposite = {},
                 .Face = FH(fi),
             });
@@ -59,7 +65,7 @@ void PolyMesh::SetFaces(const std::vector<std::vector<VH>> &faces) {
             } else {
                 // Create new edge
                 Edges.emplace_back(hh);
-                HalfedgeToEdge.emplace_back(EH(Edges.size() - 1));
+                HalfedgeToEdge.emplace_back(Edges.size() - 1);
             }
         }
     }
@@ -155,31 +161,30 @@ std::optional<he::PolyMesh> read_obj(const std::filesystem::path &path) {
         return {};
     }
 
-    he::PolyMesh mesh;
-    // Add all vertices
-    std::vector<he::VH> verts;
-    verts.reserve(attrib.vertices.size() / 3);
+    // Build vertices
+    std::vector<vec3> vertices;
+    vertices.reserve(attrib.vertices.size() / 3);
     for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
-        verts.emplace_back(mesh.AddVertex({attrib.vertices[i], attrib.vertices[i + 1], attrib.vertices[i + 2]}));
+        vertices.emplace_back(attrib.vertices[i], attrib.vertices[i + 1], attrib.vertices[i + 2]);
     }
-    // Add all faces from all shapes
-    std::vector<std::vector<he::VH>> faces;
+
+    // Build faces from all shapes
+    std::vector<std::vector<uint>> faces;
     for (const auto &shape : shapes) {
         size_t vi = 0;
         for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f) {
             const auto fv = shape.mesh.num_face_vertices[f];
-            std::vector<he::VH> face_verts;
+            std::vector<uint> face_verts;
             face_verts.reserve(fv);
             for (size_t vi_f = 0; vi_f < fv; ++vi_f) {
-                face_verts.emplace_back(verts[shape.mesh.indices[vi + vi_f].vertex_index]);
+                face_verts.emplace_back(shape.mesh.indices[vi + vi_f].vertex_index);
             }
             faces.emplace_back(std::move(face_verts));
             vi += fv;
         }
     }
-    mesh.SetFaces(faces);
 
-    return mesh;
+    return he::PolyMesh(std::move(vertices), std::move(faces));
 }
 
 std::optional<he::PolyMesh> read_ply(const std::filesystem::path &path) {
@@ -208,45 +213,42 @@ std::optional<he::PolyMesh> read_ply(const std::filesystem::path &path) {
         }
         ply_file.read(file);
 
-        he::PolyMesh mesh;
-
-        // Add vertices
-        std::vector<he::VH> verts;
-        verts.reserve(vertices->count);
+        // Build vertices
+        std::vector<vec3> vertex_list;
+        vertex_list.reserve(vertices->count);
         auto AddVertices = [&](const auto *data) {
             for (size_t i = 0; i < vertices->count; ++i) {
-                verts.emplace_back(mesh.AddVertex({data[i * 3], data[i * 3 + 1], data[i * 3 + 2]}));
+                vertex_list.emplace_back(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]);
             }
         };
         if (vertices->t == tinyply::Type::FLOAT32) AddVertices(reinterpret_cast<const float *>(vertices->buffer.get()));
         else if (vertices->t == tinyply::Type::FLOAT64) AddVertices(reinterpret_cast<const double *>(vertices->buffer.get()));
         else return {};
 
-        // Add faces (tinyply stores list properties as: count, index0, index1, ...)
+        // Build faces (tinyply stores list properties as: count, index0, index1, ...)
         const auto *face_data = reinterpret_cast<const uint8_t *>(faces->buffer.get());
         const auto idx_size = faces->t == tinyply::Type::UINT32 || faces->t == tinyply::Type::INT32 ? 4 :
             faces->t == tinyply::Type::UINT16 || faces->t == tinyply::Type::INT16                   ? 2 :
                                                                                                       1;
 
         size_t offset = 0;
-        std::vector<std::vector<he::VH>> face_list;
+        std::vector<std::vector<uint>> face_list;
         face_list.reserve(faces->count);
         for (size_t f = 0; f < faces->count; ++f) {
             const auto face_size = face_data[offset++];
-            std::vector<he::VH> face_verts;
+            std::vector<uint> face_verts;
             face_verts.reserve(face_size);
             for (uint8_t v = 0; v < face_size; ++v) {
                 const uint32_t vi = idx_size == 4 ? *reinterpret_cast<const uint32_t *>(&face_data[offset]) :
                     idx_size == 2                 ? *reinterpret_cast<const uint16_t *>(&face_data[offset]) :
                                                     face_data[offset];
                 offset += idx_size;
-                face_verts.emplace_back(verts[vi]);
+                face_verts.emplace_back(vi);
             }
             face_list.emplace_back(std::move(face_verts));
         }
-        mesh.SetFaces(face_list);
 
-        return mesh;
+        return he::PolyMesh(std::move(vertex_list), std::move(face_list));
     } catch (...) {
         return {};
     }

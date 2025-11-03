@@ -15,8 +15,9 @@ Mesh::Mesh(PolyMesh &&m) : M(std::move(m)) {
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
-Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color) {
-    SetFaces(std::move(vertices), std::move(faces), color);
+Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color)
+    : M(std::move(vertices), std::move(faces)) {
+    if (color != DefaultFaceColor) SetFaceColor(color);
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
@@ -101,24 +102,25 @@ PolyMesh DeduplicateVertices(const PolyMesh &m) {
         }
     };
 
-    PolyMesh deduped;
-    std::unordered_map<vec3, VH, VertexHash> unique_vertices;
+    std::vector<vec3> vertices;
+    std::unordered_map<vec3, uint, VertexHash> unique_vertices;
     for (const auto vh : m.vertices()) {
         const auto p = m.GetPosition(vh);
-        if (auto [it, inserted] = unique_vertices.try_emplace(p, VH()); inserted) {
-            it->second = deduped.AddVertex(p);
+        if (auto [it, inserted] = unique_vertices.try_emplace(p, vertices.size()); inserted) {
+            vertices.emplace_back(p);
         }
     }
-    std::vector<std::vector<VH>> faces;
+
+    std::vector<std::vector<uint>> faces;
     faces.reserve(m.FaceCount());
     for (const auto &fh : m.faces()) {
-        std::vector<VH> new_face;
+        std::vector<uint> new_face;
         new_face.reserve(m.GetValence(fh));
         for (const auto &vh : m.fv_range(fh)) new_face.emplace_back(unique_vertices.at(m.GetPosition(vh)));
         faces.emplace_back(std::move(new_face));
     }
-    deduped.SetFaces(faces);
-    return deduped;
+
+    return PolyMesh(std::move(vertices), std::move(faces));
 }
 } // namespace
 

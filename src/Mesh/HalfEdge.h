@@ -53,21 +53,13 @@ using FH = FaceHandle;
 
 // Core half-edge mesh structure
 struct PolyMesh {
-    PolyMesh() = default;
-    PolyMesh(const PolyMesh &) = default;
-    PolyMesh(PolyMesh &&) = default;
-    PolyMesh &operator=(const PolyMesh &) = default;
-    PolyMesh &operator=(PolyMesh &&) = default;
+    PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
 
     // Element counts
     uint VertexCount() const { return static_cast<uint>(Positions.size()); }
     uint EdgeCount() const { return static_cast<uint>(Edges.size()); }
     uint FaceCount() const { return static_cast<uint>(Faces.size()); }
     uint HalfEdgeCount() const { return static_cast<uint>(Halfedges.size()); }
-
-    // Add elements
-    VH AddVertex(const vec3 &);
-    void SetFaces(const std::vector<std::vector<VH>> &);
 
     // Position access
     const vec3 &GetPosition(VH vh) const { return Positions[*vh]; }
