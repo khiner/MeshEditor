@@ -81,7 +81,7 @@ constexpr std::optional<float> IntersectFace(const ray &ray, uint fi, const void
     auto fv_it = pm.cfv_iter(FH(fi));
     const VH v0 = *fv_it++;
     VH v1 = *fv_it++, v2;
-    for (; fv_it.IsValid(); ++fv_it) {
+    for (; fv_it; ++fv_it) {
         v2 = *fv_it;
         if (auto distance = IntersectTriangle(o, d, pm.GetPosition(v0), pm.GetPosition(v1), pm.GetPosition(v2))) return {distance};
         v1 = v2;
@@ -132,29 +132,28 @@ std::optional<PolyMesh> LoadPolyMesh(const fs::path &path) {
 }
 
 bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
-    return vh.IsValid() && fh.IsValid() && any_of(M.fv_range(fh), [&](const auto &vh_o) { return vh_o == vh; });
+    return vh && fh && any_of(M.fv_range(fh), [&](const auto &vh_o) { return vh_o == vh; });
 }
 
 bool Mesh::VertexBelongsToEdge(VH vh, EH eh) const {
-    return vh.IsValid() && eh.IsValid() && any_of(M.voh_range(vh), [&](const auto &heh) { return M.GetEdge(heh) == eh; });
+    return vh && eh && any_of(M.voh_range(vh), [&](const auto &heh) { return M.GetEdge(heh) == eh; });
 }
 
 bool Mesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
-    return fh.IsValid() && eh.IsValid() &&
-        any_of(M.voh_range(vh), [&](const auto &heh) {
+    return fh && eh && any_of(M.voh_range(vh), [&](const auto &heh) {
                return M.GetEdge(heh) == eh && (M.GetFace(heh) == fh || M.GetFace(M.GetOppositeHalfedge(heh)) == fh);
            });
 }
 
 bool Mesh::EdgeBelongsToFace(EH eh, FH fh) const {
-    return eh.IsValid() && fh.IsValid() && any_of(M.fh_range(fh), [&](const auto &heh) { return M.GetEdge(heh) == eh; });
+    return eh && fh && any_of(M.fh_range(fh), [&](const auto &heh) { return M.GetEdge(heh) == eh; });
 }
 
 float Mesh::CalcFaceArea(FH fh) const {
     float area{0};
     auto fv_it = M.cfv_iter(fh);
     const auto p0 = M.GetPosition(*fv_it++);
-    for (vec3 p1 = M.GetPosition(*fv_it++), p2; fv_it.IsValid(); ++fv_it) {
+    for (vec3 p1 = M.GetPosition(*fv_it++), p2; fv_it; ++fv_it) {
         p2 = M.GetPosition(*fv_it);
         const auto cross_product = glm::cross(p1 - p0, p2 - p0);
         area += glm::length(cross_product) * 0.5f;
@@ -224,7 +223,7 @@ VH Mesh::FindNearestVertex(vec3 p) const {
 VH Mesh::FindNearestVertex(const ray &local_ray) const {
     vec3 intersection_p;
     const auto face = FindNearestIntersectingFace(local_ray, &intersection_p);
-    if (!face.IsValid()) return VH{};
+    if (!face) return {};
 
     VH closest_vertex{};
     float min_distance_sq = std::numeric_limits<float>::max();
@@ -242,7 +241,7 @@ VH Mesh::FindNearestVertex(const ray &local_ray) const {
 EH Mesh::FindNearestEdge(const ray &local_ray) const {
     vec3 intersection_p;
     const auto face = FindNearestIntersectingFace(local_ray, &intersection_p);
-    if (!face.IsValid()) return Mesh::EH{};
+    if (!face) return {};
 
     Mesh::EH closest_edge;
     float min_distance_sq = std::numeric_limits<float>::max();
@@ -371,7 +370,7 @@ std::vector<uint> Mesh::CreateTriangleIndices() const {
         auto fv_it = M.cfv_iter(fh);
         const auto v0 = *fv_it++;
         VH v1 = *fv_it++, v2;
-        for (; fv_it.IsValid(); ++fv_it) {
+        for (; fv_it; ++fv_it) {
             v2 = *fv_it;
             indices.insert(indices.end(), {uint(*v0), uint(*v1), uint(*v2)});
             v1 = v2;

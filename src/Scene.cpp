@@ -1033,7 +1033,7 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         const bool is_active = GetParentEntity(FindActiveEntity(R)) == e;
         const Mesh::ElementIndex selected_element{
             is_active && SelectionMode == SelectionMode::Edit       ? EditingElement :
-                is_active && SelectionMode == SelectionMode::Excite ? MeshElementIndex{MeshElement::Vertex, int(R.get<Excitable>(e).SelectedVertex())} :
+                is_active && SelectionMode == SelectionMode::Excite ? MeshElementIndex{MeshElement::Vertex, R.get<Excitable>(e).SelectedVertex()} :
                                                                       MeshElementIndex{}
         };
         for (auto element : AllElements) { // todo only update buffers for viewed elements.
@@ -1333,9 +1333,9 @@ void Scene::Interact() {
             SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
         }
         if (SelectionMode == SelectionMode::Edit) {
-            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingElement({MeshElement::Vertex, -1});
-            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingElement({MeshElement::Edge, -1});
-            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingElement({MeshElement::Face, -1});
+            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingElement({MeshElement::Vertex});
+            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingElement({MeshElement::Edge});
+            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingElement({MeshElement::Face});
         }
         if (!R.storage<Selected>().empty()) {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
@@ -1824,11 +1824,11 @@ void Scene::RenderControls() {
                         auto name = Capitalize(to_string(element));
                         SameLine();
                         if (RadioButton(name.c_str(), &element_selection_mode, int(element))) {
-                            SetEditingElement({element, -1});
+                            SetEditingElement({element});
                         }
                     }
-                    Text("Editing %s: %s", to_string(EditingElement.Element).c_str(), EditingElement.IsValid() ? std::to_string(*EditingElement).c_str() : "None");
-                    if (EditingElement.Element == MeshElement::Vertex && EditingElement.IsValid() && active_entity != entt::null) {
+                    Text("Editing %s: %s", to_string(EditingElement.Element).c_str(), EditingElement ? std::to_string(*EditingElement).c_str() : "None");
+                    if (EditingElement.Element == MeshElement::Vertex && EditingElement && active_entity != entt::null) {
                         const auto &mesh = GetActiveMesh();
                         const auto pos = mesh.GetPosition(Mesh::VH{*EditingElement});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingElement, pos.x, pos.y, pos.z);

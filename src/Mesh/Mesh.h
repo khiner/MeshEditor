@@ -1,10 +1,10 @@
 #pragma once
 
 #include "BBox.h"
-#include "HalfEdge.h"
 #include "Intersection.h"
 #include "MeshElement.h"
 #include "Vertex.h"
+#include "halfedge/PolyMesh.h"
 
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
@@ -53,9 +53,9 @@ struct Mesh {
         bool operator==(FH fh) const { return Element == MeshElement::Face && Index == *fh; }
 
         // Implicit conversion to half-edge handles.
-        operator VH() const { return VH{Element == MeshElement::Vertex ? Index : -1}; }
-        operator EH() const { return EH{Element == MeshElement::Edge ? Index : -1}; }
-        operator FH() const { return FH{Element == MeshElement::Face ? Index : -1}; }
+        operator VH() const { return VH{Element == MeshElement::Vertex ? Index : he::null}; }
+        operator EH() const { return EH{Element == MeshElement::Edge ? Index : he::null}; }
+        operator FH() const { return FH{Element == MeshElement::Face ? Index : he::null}; }
     };
 
     inline static constexpr vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};

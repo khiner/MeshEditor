@@ -260,7 +260,7 @@ private:
 
     std::set<SelectionMode> SelectionModes{SelectionMode::Object, SelectionMode::Edit};
     SelectionMode SelectionMode{SelectionMode::Object};
-    MeshElementIndex EditingElement{MeshElement::Face, -1};
+    MeshElementIndex EditingElement{MeshElement::Face};
     vec2 AccumulatedWrapMouseDelta{0, 0};
 
     vk::Extent2D Extent;

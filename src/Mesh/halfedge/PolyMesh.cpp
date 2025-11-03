@@ -1,4 +1,4 @@
-#include "HalfEdge.h"
+#include "PolyMesh.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
@@ -25,11 +25,11 @@ PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> 
     for (auto &face : faces) {
         std::vector<VH> vh_face;
         vh_face.reserve(face.size());
-        for (auto idx : face) vh_face.emplace_back(idx);
+        for (const auto idx : face) vh_face.emplace_back(idx);
         vh_faces.emplace_back(std::move(vh_face));
     }
 
-    static auto MakeEdgeKey = [](int from, int to) { return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to); };
+    static auto MakeEdgeKey = [](uint from, uint to) { return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to); };
     std::unordered_map<uint64_t, HH> halfedge_map;
     for (const auto &f_vertices : vh_faces) {
         assert(f_vertices.size() >= 3);
@@ -50,7 +50,7 @@ PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> 
             });
 
             const HH hh(start_he_i + i);
-            if (!OutgoingHalfedges[*from_v].IsValid()) OutgoingHalfedges[*from_v] = hh;
+            if (!OutgoingHalfedges[*from_v]) OutgoingHalfedges[*from_v] = hh;
             halfedge_map.emplace(MakeEdgeKey(*from_v, *to_v), hh);
 
             // Look for opposite halfedge (from previously added faces)
@@ -74,35 +74,35 @@ PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> 
 }
 
 HH PolyMesh::GetHalfedge(EH eh, uint i) const {
-    assert(eh.IsValid() && *eh < static_cast<int>(Edges.size()));
+    assert(eh && *eh < Edges.size());
     const auto h0 = Edges[*eh];
-    return i == 0 ? h0 : (i == 1 && h0.IsValid() ? Halfedges[*h0].Opposite : HH{});
+    return i == 0 ? h0 : (i == 1 && h0 ? Halfedges[*h0].Opposite : HH{});
 }
 
 HH PolyMesh::GetOppositeHalfedge(HH hh) const {
-    assert(hh.IsValid() && *hh < static_cast<int>(Halfedges.size()));
+    assert(hh && *hh < Halfedges.size());
     return Halfedges[*hh].Opposite;
 }
 
 VH PolyMesh::GetFromVertex(HH hh) const {
-    assert(hh.IsValid() && *hh < static_cast<int>(Halfedges.size()));
+    assert(hh && *hh < Halfedges.size());
     // From-vertex is the to-vertex of the opposite halfedge
     const auto opp = Halfedges[*hh].Opposite;
-    return opp.IsValid() ? Halfedges[*opp].Vertex : VH{};
+    return opp ? Halfedges[*opp].Vertex : VH{};
 }
 
 uint PolyMesh::GetValence(VH vh) const {
-    assert(vh.IsValid() && *vh < static_cast<int>(Positions.size()));
+    assert(vh && *vh < Positions.size());
     return std::ranges::distance(voh_range(vh));
 }
 
 uint PolyMesh::GetValence(FH fh) const {
-    assert(fh.IsValid() && *fh < static_cast<int>(Faces.size()));
+    assert(fh && *fh < Faces.size());
     return std::ranges::distance(fh_range(fh));
 }
 
 vec3 PolyMesh::CalcFaceCentroid(FH fh) const {
-    assert(fh.IsValid() && *fh < static_cast<int>(Faces.size()));
+    assert(fh && *fh < Faces.size());
     vec3 centroid{0};
     uint count{0};
     for (auto vh : fv_range(fh)) {
@@ -113,10 +113,10 @@ vec3 PolyMesh::CalcFaceCentroid(FH fh) const {
 }
 
 float PolyMesh::CalcEdgeLength(HH hh) const {
-    assert(hh.IsValid() && *hh < static_cast<int>(Halfedges.size()));
+    assert(hh && *hh < Halfedges.size());
     const auto from_v = GetFromVertex(hh);
     const auto to_v = Halfedges[*hh].Vertex;
-    if (!from_v.IsValid() || !to_v.IsValid()) return 0;
+    if (!from_v || !to_v) return 0;
     return glm::length(Positions[*to_v] - Positions[*from_v]);
 }
 
@@ -144,7 +144,7 @@ void PolyMesh::ComputeVertexNormals() {
             const auto vh = Halfedges[*current].Vertex;
             Normals[*vh] += face_normal;
             current = Halfedges[*current].Next;
-        } while (current != start && current.IsValid());
+        } while (current != start && current);
     }
 
     // Normalize
@@ -239,9 +239,9 @@ std::optional<he::PolyMesh> read_ply(const std::filesystem::path &path) {
             std::vector<uint> face_verts;
             face_verts.reserve(face_size);
             for (uint8_t v = 0; v < face_size; ++v) {
-                const uint32_t vi = idx_size == 4 ? *reinterpret_cast<const uint32_t *>(&face_data[offset]) :
-                    idx_size == 2                 ? *reinterpret_cast<const uint16_t *>(&face_data[offset]) :
-                                                    face_data[offset];
+                const uint vi = idx_size == 4 ? *reinterpret_cast<const uint *>(&face_data[offset]) :
+                    idx_size == 2             ? *reinterpret_cast<const uint16_t *>(&face_data[offset]) :
+                                                face_data[offset];
                 offset += idx_size;
                 face_verts.emplace_back(vi);
             }

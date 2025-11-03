@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mesh/halfedge/Handle.h"
+
 #include <string>
 #include <vector>
 
@@ -22,20 +24,18 @@ constexpr std::string to_string(MeshElement element) {
 }
 
 struct MeshElementIndex {
-    MeshElementIndex() : Element(MeshElement::None), Index(-1) {}
-    MeshElementIndex(MeshElement element, int index) : Element(element), Index(index) {}
+    MeshElementIndex(MeshElement element = MeshElement::None, uint index = he::null) : Element(element), Index(index) {}
 
     MeshElement Element;
-    int Index;
+    uint Index;
 
-    bool IsValid() const { return Index >= 0; }
-
-    int operator*() const { return Index; }
+    uint operator*() const { return Index; }
     bool operator==(const MeshElementIndex &) const = default;
+    operator bool() const { return Index != he::null; }
 };
 
 struct MeshElementIndexHash {
     size_t operator()(const MeshElementIndex &mei) const {
-        return std::hash<int>{}(static_cast<int>(mei.Element)) ^ (std::hash<int>{}(mei.Index) << 1);
+        return std::hash<uint>{}(static_cast<uint>(mei.Element)) ^ (std::hash<uint>{}(mei.Index) << 1);
     }
 };

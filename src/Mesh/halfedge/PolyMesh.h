@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Handle.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
@@ -9,48 +10,6 @@
 #include <vector>
 
 namespace he {
-
-struct VertexHandle {
-    int Index{-1};
-
-    int operator*() const { return Index; }
-    bool operator==(const VertexHandle &) const = default;
-
-    bool IsValid() const { return Index >= 0; }
-};
-
-struct HalfedgeHandle {
-    int Index{-1};
-
-    int operator*() const { return Index; }
-    bool operator==(const HalfedgeHandle &) const = default;
-
-    bool IsValid() const { return Index >= 0; }
-};
-
-struct EdgeHandle {
-    int Index{-1};
-
-    int operator*() const { return Index; }
-    bool operator==(const EdgeHandle &) const = default;
-
-    bool IsValid() const { return Index >= 0; }
-};
-
-struct FaceHandle {
-    int Index{-1};
-
-    int operator*() const { return Index; }
-    bool operator==(const FaceHandle &) const = default;
-
-    bool IsValid() const { return Index >= 0; }
-};
-
-using VH = VertexHandle;
-using HH = HalfedgeHandle;
-using EH = EdgeHandle;
-using FH = FaceHandle;
-
 // Core half-edge mesh structure
 struct PolyMesh {
     PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
@@ -91,7 +50,7 @@ struct PolyMesh {
 
     // Iterators - simple range-based for loop support
     struct VertexIterator {
-        int Index;
+        uint Index;
         VH operator*() const { return VH(Index); }
         VertexIterator &operator++() {
             ++Index;
@@ -102,12 +61,12 @@ struct PolyMesh {
     struct VertexRange {
         uint Count;
         VertexIterator begin() const { return {0}; }
-        VertexIterator end() const { return {static_cast<int>(Count)}; }
+        VertexIterator end() const { return {Count}; }
     };
     VertexRange vertices() const { return {VertexCount()}; }
 
     struct EdgeIterator {
-        int Index;
+        uint Index;
         EH operator*() const { return EH(Index); }
         EdgeIterator &operator++() {
             ++Index;
@@ -118,12 +77,12 @@ struct PolyMesh {
     struct EdgeRange {
         uint Count;
         EdgeIterator begin() const { return {0}; }
-        EdgeIterator end() const { return {static_cast<int>(Count)}; }
+        EdgeIterator end() const { return {Count}; }
     };
     EdgeRange edges() const { return {EdgeCount()}; }
 
     struct FaceIterator {
-        int Index;
+        uint Index;
         FH operator*() const { return FH(Index); }
         FaceIterator &operator++() {
             ++Index;
@@ -134,7 +93,7 @@ struct PolyMesh {
     struct FaceRange {
         uint Count;
         FaceIterator begin() const { return {0}; }
-        FaceIterator end() const { return {static_cast<int>(Count)}; }
+        FaceIterator end() const { return {Count}; }
     };
     FaceRange faces() const { return {FaceCount()}; }
 
@@ -176,7 +135,7 @@ struct PolyMesh {
 
         VH operator*() const { return Mesh->GetToVertex(CurrentHalfedge); }
         HH advance() const { return Mesh->Halfedges[*CurrentHalfedge].Next; }
-        bool IsValid() const { return CurrentHalfedge.IsValid(); }
+        operator bool() const { return CurrentHalfedge; }
     };
     struct FaceVertexRange {
         const PolyMesh *Mesh;
@@ -196,7 +155,7 @@ struct PolyMesh {
         HH operator*() const { return CurrentHalfedge; }
         HH advance() const {
             const auto opp = Mesh->Halfedges[*CurrentHalfedge].Opposite;
-            return opp.IsValid() ? Mesh->Halfedges[*opp].Next : HH{};
+            return opp ? Mesh->Halfedges[*opp].Next : HH{};
         }
     };
     struct VertexOutgoingHalfedgeRange {
@@ -206,7 +165,7 @@ struct PolyMesh {
         VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
     VertexOutgoingHalfedgeRange voh_range(VH vh) const {
-        return {this, vh.IsValid() && *vh < static_cast<int>(OutgoingHalfedges.size()) ? OutgoingHalfedges[*vh] : HH{}};
+        return {this, vh && *vh < OutgoingHalfedges.size() ? OutgoingHalfedges[*vh] : HH{}};
     }
 
     struct FaceHalfedgeIterator : CirculatorBase {
