@@ -67,7 +67,7 @@ struct PolyMesh {
 
     // Add elements
     VH AddVertex(const vec3 &);
-    FH AddFace(const std::vector<VH> &);
+    void SetFaces(const std::vector<std::vector<VH>> &);
 
     // Position access
     const vec3 &GetPosition(VH vh) const { return Positions[*vh]; }
@@ -76,7 +76,6 @@ struct PolyMesh {
     // Normal access
     const vec3 &GetNormal(VH vh) const { return Normals[*vh]; }
     const vec3 &GetNormal(FH fh) const { return Faces[*fh].Normal; }
-    void UpdateNormals();
 
     // Color access
     vec4 GetColor(FH fh) const { return Faces[*fh].Color; }
@@ -244,10 +243,6 @@ private:
         FH Face; // Left face (invalid for boundary halfedges)
     };
 
-    struct Edge {
-        HH Halfedge; // One of the two halfedges (index 0)
-    };
-
     struct Face {
         HH Halfedge; // One of the boundary halfedges
         vec3 Normal{0};
@@ -260,12 +255,8 @@ private:
     std::vector<HH> OutgoingHalfedges;
     std::vector<Halfedge> Halfedges;
     std::vector<EH> HalfedgeToEdge; // Separate mapping for better cache locality
-    std::vector<Edge> Edges;
+    std::vector<HH> Edges; // Maps edge index to one of its halfedges (index 0)
     std::vector<Face> Faces;
-
-    // Map to track halfedges by their vertex pairs for opposite finding during construction.
-    // Cleared by UpdateNormals() after mesh is built.
-    std::unordered_map<uint64_t, HH> HalfedgeMap;
 
     void ComputeVertexNormals();
     void ComputeFaceNormals();

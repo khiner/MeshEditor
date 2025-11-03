@@ -16,57 +16,60 @@ namespace he {
 
 VH PolyMesh::AddVertex(const vec3 &p) {
     Positions.emplace_back(p);
-    Normals.emplace_back(vec3{0});
-    OutgoingHalfedges.emplace_back(HH{});
+    Normals.emplace_back();
+    OutgoingHalfedges.emplace_back();
     return VH(Positions.size() - 1);
 }
 
-FH PolyMesh::AddFace(const std::vector<VH> &vertices) {
-    assert(vertices.size() >= 3);
-
+void PolyMesh::SetFaces(const std::vector<std::vector<VH>> &faces) {
     static auto MakeEdgeKey = [](int from, int to) { return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to); };
 
-    const auto fi = Faces.size();
-    const auto start_he_i = Halfedges.size();
-    Faces.emplace_back(HH(start_he_i), vec3{0}, vec4{1, 1, 1, 1});
+    std::unordered_map<uint64_t, HH> halfedge_map;
+    for (const auto &vertices : faces) {
+        assert(vertices.size() >= 3);
 
-    // Create halfedges, find opposites, and create edges
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        const auto to_v = vertices[i];
-        const auto from_v = vertices[i == 0 ? vertices.size() - 1 : i - 1];
-        Halfedges.emplace_back(Halfedge{
-            .Vertex = to_v,
-            .Next = HH(start_he_i + (i + 1) % vertices.size()),
-            .Opposite = {},
-            .Face = FH(fi),
-        });
+        const auto fi = Faces.size();
+        const auto start_he_i = Halfedges.size();
+        Faces.emplace_back(HH(start_he_i), vec3{0}, vec4{1, 1, 1, 1});
 
-        const HH hh(start_he_i + i);
-        if (!OutgoingHalfedges[*from_v].IsValid()) OutgoingHalfedges[*from_v] = hh;
-        HalfedgeMap[MakeEdgeKey(*from_v, *to_v)] = hh;
+        // Create halfedges, find opposites, and create edges
+        for (size_t i = 0; i < vertices.size(); ++i) {
+            const auto to_v = vertices[i];
+            const auto from_v = vertices[i == 0 ? vertices.size() - 1 : i - 1];
+            Halfedges.emplace_back(Halfedge{
+                .Vertex = to_v,
+                .Next = HH(start_he_i + (i + 1) % vertices.size()),
+                .Opposite = {},
+                .Face = FH(fi),
+            });
 
-        // Look for opposite halfedge (from previously added faces)
-        if (const auto it = HalfedgeMap.find(MakeEdgeKey(*to_v, *from_v));
-            it != HalfedgeMap.end()) {
-            // Found existing opposite halfedge
-            const auto opposite_hh = it->second;
-            Halfedges[*hh].Opposite = opposite_hh;
-            Halfedges[*opposite_hh].Opposite = hh;
-            // They should share the same edge
-            HalfedgeToEdge.emplace_back(HalfedgeToEdge[*opposite_hh]);
-        } else {
-            // Create new edge
-            Edges.emplace_back(hh);
-            HalfedgeToEdge.emplace_back(EH(Edges.size() - 1));
+            const HH hh(start_he_i + i);
+            if (!OutgoingHalfedges[*from_v].IsValid()) OutgoingHalfedges[*from_v] = hh;
+            halfedge_map.emplace(MakeEdgeKey(*from_v, *to_v), hh);
+
+            // Look for opposite halfedge (from previously added faces)
+            if (const auto it = halfedge_map.find(MakeEdgeKey(*to_v, *from_v));
+                it != halfedge_map.end()) {
+                // Found existing opposite halfedge
+                const auto opposite_hh = it->second;
+                Halfedges[*hh].Opposite = opposite_hh;
+                Halfedges[*opposite_hh].Opposite = hh;
+                // They should share the same edge
+                HalfedgeToEdge.emplace_back(HalfedgeToEdge[*opposite_hh]);
+            } else {
+                // Create new edge
+                Edges.emplace_back(hh);
+                HalfedgeToEdge.emplace_back(EH(Edges.size() - 1));
+            }
         }
     }
-
-    return FH(fi);
+    ComputeFaceNormals();
+    ComputeVertexNormals();
 }
 
 HH PolyMesh::GetHalfedge(EH eh, uint i) const {
     assert(eh.IsValid() && *eh < static_cast<int>(Edges.size()));
-    const auto h0 = Edges[*eh].Halfedge;
+    const auto h0 = Edges[*eh];
     return i == 0 ? h0 : (i == 1 && h0.IsValid() ? Halfedges[*h0].Opposite : HH{});
 }
 
@@ -109,14 +112,6 @@ float PolyMesh::CalcEdgeLength(HH hh) const {
     const auto to_v = Halfedges[*hh].Vertex;
     if (!from_v.IsValid() || !to_v.IsValid()) return 0;
     return glm::length(Positions[*to_v] - Positions[*from_v]);
-}
-
-void PolyMesh::UpdateNormals() {
-    ComputeFaceNormals();
-    ComputeVertexNormals();
-
-    // Free construction-time memory (only needed during AddFace calls)
-    HalfedgeMap = {};
 }
 
 void PolyMesh::ComputeFaceNormals() {
@@ -168,6 +163,7 @@ std::optional<he::PolyMesh> read_obj(const std::filesystem::path &path) {
         verts.emplace_back(mesh.AddVertex({attrib.vertices[i], attrib.vertices[i + 1], attrib.vertices[i + 2]}));
     }
     // Add all faces from all shapes
+    std::vector<std::vector<he::VH>> faces;
     for (const auto &shape : shapes) {
         size_t vi = 0;
         for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f) {
@@ -177,10 +173,11 @@ std::optional<he::PolyMesh> read_obj(const std::filesystem::path &path) {
             for (size_t vi_f = 0; vi_f < fv; ++vi_f) {
                 face_verts.emplace_back(verts[shape.mesh.indices[vi + vi_f].vertex_index]);
             }
-            mesh.AddFace(face_verts);
+            faces.emplace_back(std::move(face_verts));
             vi += fv;
         }
     }
+    mesh.SetFaces(faces);
 
     return mesh;
 }
@@ -232,6 +229,8 @@ std::optional<he::PolyMesh> read_ply(const std::filesystem::path &path) {
                                                                                                       1;
 
         size_t offset = 0;
+        std::vector<std::vector<he::VH>> face_list;
+        face_list.reserve(faces->count);
         for (size_t f = 0; f < faces->count; ++f) {
             const auto face_size = face_data[offset++];
             std::vector<he::VH> face_verts;
@@ -243,8 +242,9 @@ std::optional<he::PolyMesh> read_ply(const std::filesystem::path &path) {
                 offset += idx_size;
                 face_verts.emplace_back(verts[vi]);
             }
-            mesh.AddFace(face_verts);
+            face_list.emplace_back(std::move(face_verts));
         }
+        mesh.SetFaces(face_list);
 
         return mesh;
     } catch (...) {

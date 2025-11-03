@@ -110,15 +110,19 @@ struct Mesh {
         for (const auto &fh : M.faces()) SetFaceColor(fh, color);
     }
 
-    void AddFace(const std::vector<VH> &vertices, vec4 color = DefaultFaceColor) { SetFaceColor(M.AddFace(vertices), color); }
-
     void SetFaces(const std::vector<vec3> &vertices, const std::vector<std::vector<uint>> &faces, vec4 color = DefaultFaceColor) {
         for (const auto &v : vertices) M.AddVertex(v);
+        std::vector<std::vector<VH>> face_vhs_list;
+        face_vhs_list.reserve(faces.size());
         for (const auto &face : faces) {
             std::vector<VH> face_vhs;
             face_vhs.reserve(face.size());
-            for (auto vi : face) face_vhs.push_back(VH(vi));
-            AddFace(std::move(face_vhs), color);
+            for (auto vi : face) face_vhs.emplace_back(vi);
+            face_vhs_list.emplace_back(std::move(face_vhs));
+        }
+        M.SetFaces(face_vhs_list);
+        if (color != DefaultFaceColor) {
+            for (const auto &fh : M.faces()) SetFaceColor(fh, color);
         }
     }
 

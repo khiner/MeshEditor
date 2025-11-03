@@ -12,13 +12,11 @@ using std::ranges::any_of;
 
 Mesh::Mesh(PolyMesh &&m) : M(std::move(m)) {
     SetFaceColor(DefaultFaceColor);
-    M.UpdateNormals();
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
 Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color) {
     SetFaces(std::move(vertices), std::move(faces), color);
-    M.UpdateNormals();
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
@@ -111,12 +109,15 @@ PolyMesh DeduplicateVertices(const PolyMesh &m) {
             it->second = deduped.AddVertex(p);
         }
     }
+    std::vector<std::vector<VH>> faces;
+    faces.reserve(m.FaceCount());
     for (const auto &fh : m.faces()) {
         std::vector<VH> new_face;
         new_face.reserve(m.GetValence(fh));
         for (const auto &vh : m.fv_range(fh)) new_face.emplace_back(unique_vertices.at(m.GetPosition(vh)));
-        deduped.AddFace(new_face);
+        faces.emplace_back(std::move(new_face));
     }
+    deduped.SetFaces(faces);
     return deduped;
 }
 } // namespace
