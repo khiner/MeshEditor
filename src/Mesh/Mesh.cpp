@@ -22,11 +22,11 @@ Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces,
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
 Mesh::Mesh(Mesh &&other)
-    : BoundingBox(other.BoundingBox), M(std::move(other.M)), Bvh(std::move(other.Bvh)), HighlightedElements(std::move(other.HighlightedElements)) {
+    : BoundingBox(other.BoundingBox), M(std::move(other.M)), Bvh(std::move(other.Bvh)), HighlightedHandles(std::move(other.HighlightedHandles)) {
     other.Bvh.reset();
 }
 Mesh::Mesh(const Mesh &other)
-    : BoundingBox(other.BoundingBox), M(other.M), HighlightedElements(other.HighlightedElements) {
+    : BoundingBox(other.BoundingBox), M(other.M), HighlightedHandles(other.HighlightedHandles) {
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
 Mesh::~Mesh() {}
@@ -37,7 +37,7 @@ const Mesh &Mesh::operator=(Mesh &&other) {
         BoundingBox = std::move(other.BoundingBox);
         M = std::move(other.M);
         Bvh = std::move(other.Bvh);
-        HighlightedElements = std::move(other.HighlightedElements);
+        HighlightedHandles = std::move(other.HighlightedHandles);
     }
     return *this;
 }
@@ -91,7 +91,7 @@ constexpr std::optional<float> IntersectFace(const ray &ray, uint fi, const void
 
 // Used as an intermediate for creating render vertices
 struct VerticesHandle {
-    Mesh::ElementIndex Parent; // A vertex can belong to itself, an edge, or a face.
+    he::AnyHandle Parent; // A vertex can belong to itself, an edge, or a face.
     std::vector<Mesh::VH> VHs;
 };
 
@@ -260,18 +260,18 @@ EH Mesh::FindNearestEdge(const ray &local_ray) const {
     return closest_edge;
 }
 
-std::vector<uint> Mesh::CreateIndices(MeshElement element) const {
+std::vector<uint> Mesh::CreateIndices(he::Element element) const {
     switch (element) {
-        case MeshElement::Vertex: return CreateTriangleIndices();
-        case MeshElement::Edge: return CreateEdgeIndices();
-        case MeshElement::Face: return CreateTriangulatedFaceIndices();
-        case MeshElement::None: return {};
+        case he::Element::Vertex: return CreateTriangleIndices();
+        case he::Element::Edge: return CreateEdgeIndices();
+        case he::Element::Face: return CreateTriangulatedFaceIndices();
+        case he::Element::None: return {};
     }
 }
-std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
-    if (mode == MeshElement::None || mode == MeshElement::Edge) return {};
+std::vector<uint> Mesh::CreateNormalIndices(he::Element element) const {
+    if (element == he::Element::None || element == he::Element::Edge) return {};
 
-    const auto n = mode == MeshElement::Face ? M.FaceCount() : M.VertexCount();
+    const auto n = element == he::Element::Face ? M.FaceCount() : M.VertexCount();
     std::vector<uint> indices;
     indices.reserve(n * 2);
     for (uint i = 0; i < n; ++i) {
@@ -281,18 +281,18 @@ std::vector<uint> Mesh::CreateNormalIndices(MeshElement mode) const {
     return indices;
 }
 
-std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const ElementIndex &selected) const {
+std::vector<Vertex3D> Mesh::CreateVertices(he::Element render_element, const he::AnyHandle &selected) const {
     std::vector<VerticesHandle> handles;
-    if (render_element == MeshElement::Vertex) {
+    if (render_element == he::Element::Vertex) {
         handles.reserve(M.VertexCount());
         for (const auto vh : M.vertices()) handles.emplace_back(vh, std::vector<VH>{vh});
-    } else if (render_element == MeshElement::Edge) {
+    } else if (render_element == he::Element::Edge) {
         handles.reserve(M.EdgeCount() * 2);
         for (const auto eh : M.edges()) {
             const auto heh = M.GetHalfedge(eh, 0);
             handles.emplace_back(eh, std::vector<VH>{M.GetFromVertex(heh), M.GetToVertex(heh)});
         }
-    } else if (render_element == MeshElement::Face) {
+    } else if (render_element == he::Element::Face) {
         handles.reserve(M.FaceCount() * 3); // Lower bound assuming all faces are triangles.
         for (const auto fh : M.faces()) {
             for (const auto vh : M.fv_range(fh)) handles.emplace_back(fh, std::vector<VH>{vh});
@@ -302,22 +302,22 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const Ele
     std::vector<Vertex3D> vertices;
     for (const auto &handle : handles) {
         const auto parent = handle.Parent;
-        const auto normal = render_element == MeshElement::Vertex || render_element == MeshElement::Edge ? M.GetNormal(handle.VHs[0]) : M.GetNormal(FH(handle.Parent));
+        const auto normal = render_element == he::Element::Vertex || render_element == he::Element::Edge ? M.GetNormal(handle.VHs[0]) : M.GetNormal(FH(handle.Parent));
         for (const auto vh : handle.VHs) {
             const bool is_selected =
                 selected == vh || selected == parent ||
-                // Note: If we want to support `HighlightedElements` having `MeshElement::Edge` or `MeshElement::Face` elements (not just the selection `highlight`),
-                // we need to update the methods to accept sets of `ElementIndex` instead of just one.
-                (render_element == MeshElement::Vertex && (VertexBelongsToFace(parent, selected) || VertexBelongsToEdge(parent, selected))) ||
-                (render_element == MeshElement::Edge && EdgeBelongsToFace(parent, selected)) ||
-                (render_element == MeshElement::Face && VertexBelongsToFaceEdge(vh, parent, selected));
+                // Note: If we want to support `HighlightedHandles` having handle types (not just the selection `highlight`),
+                // we need to update the methods to accept sets of `AnyHandle` instead of just one.
+                (render_element == he::Element::Vertex && (VertexBelongsToFace(parent, selected) || VertexBelongsToEdge(parent, selected))) ||
+                (render_element == he::Element::Edge && EdgeBelongsToFace(parent, selected)) ||
+                (render_element == he::Element::Face && VertexBelongsToFaceEdge(vh, parent, selected));
             const bool is_highlighted =
-                HighlightedElements.contains(vh) || HighlightedElements.contains(parent);
-            const auto color = is_selected            ? SelectedColor :
-                is_highlighted                        ? HighlightedColor :
-                render_element == MeshElement::Vertex ? VertexColor :
-                render_element == MeshElement::Edge   ? EdgeColor :
-                                                        M.GetColor(FH(parent));
+                HighlightedHandles.contains(vh) || HighlightedHandles.contains(parent);
+            const auto color = is_selected         ? SelectedColor :
+                is_highlighted                     ? HighlightedColor :
+                render_element == he::Element::Vertex ? VertexColor :
+                render_element == he::Element::Edge   ? EdgeColor :
+                                                     M.GetColor(FH(parent));
             vertices.emplace_back(GetPosition(vh), normal, color);
         }
     }
@@ -325,9 +325,9 @@ std::vector<Vertex3D> Mesh::CreateVertices(MeshElement render_element, const Ele
     return vertices;
 }
 
-std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
+std::vector<Vertex3D> Mesh::CreateNormalVertices(he::Element element) const {
     std::vector<Vertex3D> vertices;
-    if (mode == MeshElement::Vertex) {
+    if (element == he::Element::Vertex) {
         // Line for each vertex normal, with length scaled by the average edge length.
         vertices.reserve(M.VertexCount() * 2);
         for (const auto vh : M.vertices()) {
@@ -341,7 +341,7 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(MeshElement mode) const {
             vertices.emplace_back(p, vn, VertexNormalIndicatorColor);
             vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn, VertexNormalIndicatorColor);
         }
-    } else if (mode == MeshElement::Face) {
+    } else if (element == he::Element::Face) {
         // Line for each face normal, with length scaled by the face area.
         vertices.reserve(M.FaceCount() * 2);
         for (const auto fh : M.faces()) {

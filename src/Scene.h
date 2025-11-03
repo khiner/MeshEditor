@@ -7,9 +7,9 @@
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "Vulkan/UniqueBuffers.h"
-#include "mesh/MeshElement.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Vertex.h"
+#include "mesh/halfedge/Handle.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
@@ -260,7 +260,7 @@ private:
 
     std::set<SelectionMode> SelectionModes{SelectionMode::Object, SelectionMode::Edit};
     SelectionMode SelectionMode{SelectionMode::Object};
-    MeshElementIndex EditingElement{MeshElement::Face};
+    he::AnyHandle EditingHandle{he::Element::Face};
     vec2 AccumulatedWrapMouseDelta{0, 0};
 
     vk::Extent2D Extent;
@@ -295,13 +295,13 @@ private:
     bool ShowGrid{true};
     // Selected entity render settings
     bool ShowBoundingBoxes{false}, ShowBvhBoxes{false};
-    static inline const std::vector NormalElements{MeshElement::Vertex, MeshElement::Face};
-    std::unordered_set<MeshElement> ShownNormalElements{};
+    static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
+    std::unordered_set<he::Element> ShownNormalElements{};
 
     bool CommandBufferDirty{false};
 
     void SetSelectionMode(::SelectionMode);
-    void SetEditingElement(MeshElementIndex);
+    void SetEditingHandle(he::AnyHandle);
 
     const Mesh &GetActiveMesh() const;
 

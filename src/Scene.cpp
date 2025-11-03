@@ -59,14 +59,14 @@ struct BoundingBoxesBuffers {
 struct BvhBoxesBuffers {
     mvk::RenderBuffers Buffers;
 };
-using MeshElementBuffers = std::unordered_map<MeshElement, mvk::RenderBuffers>;
+using RenderBuffersByElement = std::unordered_map<he::Element, mvk::RenderBuffers>;
 struct MeshBuffers {
-    MeshBuffers(MeshElementBuffers &&mesh, MeshElementBuffers &&normal_indicators)
+    MeshBuffers(RenderBuffersByElement &&mesh, RenderBuffersByElement &&normal_indicators)
         : Mesh{std::move(mesh)}, NormalIndicators{std::move(normal_indicators)} {}
     MeshBuffers(const MeshBuffers &) = delete;
     MeshBuffers &operator=(const MeshBuffers &) = delete;
 
-    MeshElementBuffers Mesh, NormalIndicators;
+    RenderBuffersByElement Mesh, NormalIndicators;
 };
 
 entt::entity Scene::GetParentEntity(entt::entity e) const { return ::GetParentEntity(R, e); }
@@ -842,11 +842,11 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     SetVisible(e, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(e, false);
 
-    MeshElementBuffers element_buffers{};
-    for (auto element : AllElements) { // todo only create buffers for viewed elements.
-        element_buffers.emplace(element, CreateRenderBuffers(mesh.CreateVertices(element), mesh.CreateIndices(element)));
+    RenderBuffersByElement buffers_by_element{};
+    for (const auto element : he::Elements) { // todo only create buffers for viewed elements.
+        buffers_by_element.emplace(element, CreateRenderBuffers(mesh.CreateVertices(element), mesh.CreateIndices(element)));
     }
-    R.emplace<MeshBuffers>(e, std::move(element_buffers), MeshElementBuffers{});
+    R.emplace<MeshBuffers>(e, std::move(buffers_by_element), RenderBuffersByElement{});
     if (ShowBoundingBoxes) R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(mesh.BoundingBox, EdgeColor), BBox::EdgeIndices));
     R.emplace<Mesh>(e, std::move(mesh));
 
@@ -1000,10 +1000,10 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
         UpdateHighlightedVertices(e, *excitable);
     }
 }
-void Scene::SetEditingElement(MeshElementIndex element) {
+void Scene::SetEditingHandle(he::AnyHandle handle) {
     if (R.storage<Active>().empty()) return;
 
-    EditingElement = element;
+    EditingHandle = handle;
     UpdateRenderBuffers(GetParentEntity(FindActiveEntity(R)));
 }
 
@@ -1031,27 +1031,16 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
         auto &mesh_buffers = R.get<MeshBuffers>(e);
         const bool is_active = GetParentEntity(FindActiveEntity(R)) == e;
-        const Mesh::ElementIndex selected_element{
-            is_active && SelectionMode == SelectionMode::Edit       ? EditingElement :
-                is_active && SelectionMode == SelectionMode::Excite ? MeshElementIndex{MeshElement::Vertex, R.get<Excitable>(e).SelectedVertex()} :
-                                                                      MeshElementIndex{}
+        const he::AnyHandle selected{
+            is_active && SelectionMode == SelectionMode::Edit       ? EditingHandle :
+                is_active && SelectionMode == SelectionMode::Excite ? he::AnyHandle{he::Element::Vertex, R.get<Excitable>(e).SelectedVertex()} :
+                                                                      he::AnyHandle{}
         };
-        for (auto element : AllElements) { // todo only update buffers for viewed elements.
-            mesh_buffers.Mesh.at(element).Vertices.Update(mesh->CreateVertices(element, selected_element));
+        for (const auto element : he::Elements) { // todo only update buffers for viewed elements.
+            mesh_buffers.Mesh.at(element).Vertices.Update(mesh->CreateVertices(element, selected));
         }
         InvalidateCommandBuffer();
     };
-}
-
-std::vector<std::pair<SPT, MeshElement>> GetPipelineElements(RenderMode render_mode, ColorMode color_mode) {
-    const SPT fill_pipeline = color_mode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-    switch (render_mode) {
-        case RenderMode::Vertices: return {{fill_pipeline, MeshElement::Vertex}};
-        case RenderMode::Edges: return {{SPT::Line, MeshElement::Edge}};
-        case RenderMode::Faces: return {{fill_pipeline, MeshElement::Face}};
-        case RenderMode::FacesAndEdges: return {{fill_pipeline, MeshElement::Face}, {SPT::Line, MeshElement::Edge}};
-        case RenderMode::None: return {};
-    }
 }
 
 void Scene::RecordRenderCommandBuffer() {
@@ -1094,7 +1083,7 @@ void Scene::RecordRenderCommandBuffer() {
             for (const auto selected_entity : R.view<Selected>()) {
                 const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
                 const auto mesh_entity = GetParentEntity(selected_entity);
-                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(MeshElement::Vertex);
+                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(he::Element::Vertex);
                 const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
                 Bind(cb, shader_pipeline, render_buffers, models);
                 const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
@@ -1125,10 +1114,21 @@ void Scene::RecordRenderCommandBuffer() {
     // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
     if (render_silhouette) main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth).RenderQuad(cb);
 
-    // Meshes
-    for (const auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-        for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
-            main.Renderer.Render(cb, pipeline, mesh_buffers.Mesh.at(element), models.Buffer);
+    { // Meshes
+        static auto GetPipelineElements = [](auto RenderMode, auto ColorMode) -> std::vector<std::pair<SPT, he::Element>> {
+            const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+            switch (RenderMode) {
+                case RenderMode::Vertices: return {{fill_pipeline, he::Element::Vertex}};
+                case RenderMode::Edges: return {{SPT::Line, he::Element::Edge}};
+                case RenderMode::Faces: return {{fill_pipeline, he::Element::Face}};
+                case RenderMode::FacesAndEdges: return {{fill_pipeline, he::Element::Face}, {SPT::Line, he::Element::Edge}};
+                case RenderMode::None: return {};
+            }
+        };
+        for (const auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
+                main.Renderer.Render(cb, pipeline, mesh_buffers.Mesh.at(element), models.Buffer);
+            }
         }
     }
 
@@ -1333,9 +1333,9 @@ void Scene::Interact() {
             SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
         }
         if (SelectionMode == SelectionMode::Edit) {
-            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingElement({MeshElement::Vertex});
-            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingElement({MeshElement::Edge});
-            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingElement({MeshElement::Face});
+            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingHandle({he::Element::Vertex});
+            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingHandle({he::Element::Edge});
+            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingHandle({he::Element::Face});
         }
         if (!R.storage<Selected>().empty()) {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
@@ -1379,15 +1379,15 @@ void Scene::Interact() {
     const auto mouse_pos = (GetMousePos() - GetCursorScreenPos()) / size;
     const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
     if (SelectionMode == SelectionMode::Edit) {
-        if (EditingElement.Element != MeshElement::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
+        if (EditingHandle.Element != he::Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
             const auto &model = R.get<Model>(active_entity);
             const auto mouse_ray = WorldToLocal(mouse_ray_ws, model.InvTransform);
             const auto &mesh = GetActiveMesh();
             {
                 const auto nearest_vertex = mesh.FindNearestVertex(mouse_ray);
-                if (EditingElement.Element == MeshElement::Vertex) SetEditingElement(Mesh::ElementIndex{nearest_vertex});
-                else if (EditingElement.Element == MeshElement::Edge) SetEditingElement(Mesh::ElementIndex{mesh.FindNearestEdge(mouse_ray)});
-                else if (EditingElement.Element == MeshElement::Face) SetEditingElement(Mesh::ElementIndex{mesh.FindNearestIntersectingFace(mouse_ray)});
+                if (EditingHandle.Element == he::Element::Vertex) SetEditingHandle(he::AnyHandle{nearest_vertex});
+                else if (EditingHandle.Element == he::Element::Edge) SetEditingHandle(he::AnyHandle{mesh.FindNearestEdge(mouse_ray)});
+                else if (EditingHandle.Element == he::Element::Face) SetEditingHandle(he::AnyHandle{mesh.FindNearestIntersectingFace(mouse_ray)});
             }
         }
     } else if (SelectionMode == SelectionMode::Object) {
@@ -1503,8 +1503,8 @@ void Scene::RenderOverlay() {
             {*Icons.Universal, Universal, ImDrawFlags_RoundCornersBottom, true},
         };
 
-        auto &type = MGizmo.Config.Type;
-        if (!scale_enabled && type == Scale) type = Translate;
+        auto &element = MGizmo.Config.Type;
+        if (!scale_enabled && element == Scale) element = Translate;
 
         const float padding = GetTextLineHeightWithSpacing() / 2.f;
         const auto start_pos = std::bit_cast<ImVec2>(window_pos) + GetWindowContentRegionMin() + ImVec2{padding, padding};
@@ -1528,12 +1528,12 @@ void Scene::RenderOverlay() {
 
             const bool hovered = IsItemHovered();
             if (hovered) TransformModePillsHovered = true;
-            if (clicked) type = button_type;
+            if (clicked) element = button_type;
             const auto bg_color = GetColorU32(
-                !enabled                ? ImGuiCol_FrameBg :
-                    type == button_type ? ImGuiCol_ButtonActive :
-                    hovered             ? ImGuiCol_ButtonHovered :
-                                          ImGuiCol_Button
+                !enabled                   ? ImGuiCol_FrameBg :
+                    element == button_type ? ImGuiCol_ButtonActive :
+                    hovered                ? ImGuiCol_ButtonHovered :
+                                             ImGuiCol_Button
             );
             dl.AddRectFilled(GetItemRectMin() + padding, GetItemRectMax() - padding, bg_color, 8.f, corners);
             SetCursorScreenPos(GetItemRectMin() + (button_size - icon_size) * 0.5f);
@@ -1819,19 +1819,19 @@ void Scene::RenderControls() {
                 if (SelectionMode == SelectionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    auto element_selection_mode = int(EditingElement.Element);
-                    for (const auto element : AllElements) {
-                        auto name = Capitalize(to_string(element));
+                    auto type_selection_mode = int(EditingHandle.Element);
+                    for (const auto element : he::Elements) {
+                        auto name = Capitalize(he::to_string(element));
                         SameLine();
-                        if (RadioButton(name.c_str(), &element_selection_mode, int(element))) {
-                            SetEditingElement({element});
+                        if (RadioButton(name.c_str(), &type_selection_mode, int(element))) {
+                            SetEditingHandle({element});
                         }
                     }
-                    Text("Editing %s: %s", to_string(EditingElement.Element).c_str(), EditingElement ? std::to_string(*EditingElement).c_str() : "None");
-                    if (EditingElement.Element == MeshElement::Vertex && EditingElement && active_entity != entt::null) {
+                    Text("Editing %s: %s", he::to_string(EditingHandle.Element).c_str(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
+                    if (EditingHandle.Element == he::Element::Vertex && EditingHandle && active_entity != entt::null) {
                         const auto &mesh = GetActiveMesh();
-                        const auto pos = mesh.GetPosition(Mesh::VH{*EditingElement});
-                        Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingElement, pos.x, pos.y, pos.z);
+                        const auto pos = mesh.GetPosition(Mesh::VH{*EditingHandle});
+                        Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingHandle, pos.x, pos.y, pos.z);
                     }
                 }
                 PopID();
@@ -1928,10 +1928,10 @@ void Scene::RenderControls() {
                 bool changed = false;
                 for (const auto element : NormalElements) {
                     SameLine();
-                    bool show_normal_element = ShownNormalElements.contains(element);
-                    auto element_name = Capitalize(to_string(element));
-                    if (Checkbox(element_name.c_str(), &show_normal_element)) {
-                        if (show_normal_element) ShownNormalElements.insert(element);
+                    bool show = ShownNormalElements.contains(element);
+                    const auto type_name = Capitalize(to_string(element));
+                    if (Checkbox(type_name.c_str(), &show)) {
+                        if (show) ShownNormalElements.insert(element);
                         else ShownNormalElements.erase(element);
                         changed = true;
                     }

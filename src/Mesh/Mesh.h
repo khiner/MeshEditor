@@ -2,7 +2,6 @@
 
 #include "BBox.h"
 #include "Intersection.h"
-#include "MeshElement.h"
 #include "Vertex.h"
 #include "halfedge/PolyMesh.h"
 
@@ -37,26 +36,8 @@ struct Mesh {
     using FH = he::FH;
     using EH = he::EH;
     using HH = he::HH;
-
-    // Adds half-edge handle comparison/conversion to `MeshElementIndex`.
-    struct ElementIndex : MeshElementIndex {
-        using MeshElementIndex::MeshElementIndex;
-        ElementIndex(MeshElementIndex other) : MeshElementIndex(std::move(other)) {}
-        ElementIndex(VH vh) : MeshElementIndex(MeshElement::Vertex, *vh) {}
-        ElementIndex(EH eh) : MeshElementIndex(MeshElement::Edge, *eh) {}
-        ElementIndex(FH fh) : MeshElementIndex(MeshElement::Face, *fh) {}
-
-        bool operator==(ElementIndex other) const { return Element == other.Element && Index == other.Index; }
-
-        bool operator==(VH vh) const { return Element == MeshElement::Vertex && Index == *vh; }
-        bool operator==(EH eh) const { return Element == MeshElement::Edge && Index == *eh; }
-        bool operator==(FH fh) const { return Element == MeshElement::Face && Index == *fh; }
-
-        // Implicit conversion to half-edge handles.
-        operator VH() const { return VH{Element == MeshElement::Vertex ? Index : he::null}; }
-        operator EH() const { return EH{Element == MeshElement::Edge ? Index : he::null}; }
-        operator FH() const { return FH{Element == MeshElement::Face ? Index : he::null}; }
-    };
+    using AnyHandle = he::AnyHandle;
+    using AnyHandleHash = he::AnyHandleHash;
 
     inline static constexpr vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
     inline static vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
@@ -91,19 +72,19 @@ struct Mesh {
 
     float CalcFaceArea(FH) const;
 
-    std::vector<Vertex3D> CreateVertices(MeshElement, const ElementIndex &select = {}) const;
-    std::vector<uint> CreateIndices(MeshElement) const;
+    std::vector<Vertex3D> CreateVertices(he::Element, const he::AnyHandle &select = {}) const;
+    std::vector<uint> CreateIndices(he::Element) const;
 
-    std::vector<Vertex3D> CreateNormalVertices(MeshElement) const;
-    std::vector<uint> CreateNormalIndices(MeshElement) const;
+    std::vector<Vertex3D> CreateNormalVertices(he::Element) const;
+    std::vector<uint> CreateNormalIndices(he::Element) const;
 
     BBox ComputeBbox() const; // This is public, but use `BoundingBox` instead.
 
     std::vector<BBox> CreateFaceBoundingBoxes() const;
     RenderBuffers CreateBvhBuffers(vec4 color) const;
 
-    void HighlightVertex(VH vh) { HighlightedElements.emplace(MeshElement::Vertex, *vh); }
-    void ClearHighlights() { HighlightedElements.clear(); }
+    void HighlightVertex(VH vh) { HighlightedHandles.emplace(vh); }
+    void ClearHighlights() { HighlightedHandles.clear(); }
 
     void SetFaceColor(FH fh, vec4 color) { M.SetColor(fh, color); }
     void SetFaceColor(vec4 color) {
@@ -133,5 +114,5 @@ private:
     PolyMesh M;
     std::unique_ptr<BVH> Bvh;
     // In addition to selected elements.
-    std::unordered_set<ElementIndex, MeshElementIndexHash> HighlightedElements;
+    std::unordered_set<AnyHandle, AnyHandleHash> HighlightedHandles;
 };

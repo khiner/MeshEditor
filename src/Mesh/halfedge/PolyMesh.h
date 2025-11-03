@@ -14,21 +14,17 @@ namespace he {
 struct PolyMesh {
     PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
 
-    // Element counts
     uint VertexCount() const { return static_cast<uint>(Positions.size()); }
     uint EdgeCount() const { return static_cast<uint>(Edges.size()); }
     uint FaceCount() const { return static_cast<uint>(Faces.size()); }
     uint HalfEdgeCount() const { return static_cast<uint>(Halfedges.size()); }
 
-    // Position access
     const vec3 &GetPosition(VH vh) const { return Positions[*vh]; }
     const float *GetPositionData() const { return &Positions[0][0]; }
 
-    // Normal access
     const vec3 &GetNormal(VH vh) const { return Normals[*vh]; }
     const vec3 &GetNormal(FH fh) const { return Faces[*fh].Normal; }
 
-    // Color access
     vec4 GetColor(FH fh) const { return Faces[*fh].Color; }
     void SetColor(FH fh, const vec4 &color) { Faces[*fh].Color = color; }
 
@@ -48,7 +44,7 @@ struct PolyMesh {
     vec3 CalcFaceCentroid(FH) const;
     float CalcEdgeLength(HH) const;
 
-    // Iterators - simple range-based for loop support
+    // Iterators
     struct VertexIterator {
         uint Index;
         VH operator*() const { return VH(Index); }
