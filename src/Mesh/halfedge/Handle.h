@@ -19,7 +19,7 @@ enum class Element {
 
 constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};
 
-constexpr std::string to_string(Element element) {
+constexpr std::string_view label(Element element) {
     switch (element) {
         case Element::Vertex: return "vertex";
         case Element::Edge: return "edge";

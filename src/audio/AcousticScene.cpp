@@ -653,8 +653,7 @@ void AcousticScene::Draw(entt::entity e) {
             Checkbox("Copy excitable vertices", &info.CopyExcitable);
         }
         if (!excitable || !info.CopyExcitable) {
-            const auto &mesh = R.get<Mesh>(e);
-            const uint num_vertices = mesh.GetVertexCount();
+            const uint num_vertices = R.get<Mesh>(e).VertexCount();
             info.NumExcitableVertices = std::min(info.NumExcitableVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
             SliderScalar("Num excitable vertices", ImGuiDataType_U32, &info.NumExcitableVertices, &min_vertices, &max_vertices);
@@ -751,9 +750,9 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, const Mod
     // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
     // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
-    const auto &mesh = R.get<const Mesh>(e);
+    const auto &polymesh = R.get<const Mesh>(e).GetPolyMesh();
     // Use impact model vertices or linearly distribute the vertices across the tet mesh.
-    const auto num_vertices = mesh.GetVertexCount();
+    const auto num_vertices = polymesh.VertexCount();
     const auto excitable = info.CopyExcitable && R.all_of<Excitable>(e) ?
         R.get<const Excitable>(e) :
         Excitable{
@@ -763,7 +762,7 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, const Mod
 
     while (!DspGenerator) {}
     DspGenerator->SetMessage("Generating tetrahedral mesh...");
-    const auto tets = GenerateTets(mesh, R.get<Scale>(e).Value, {.PreserveSurface = true, .Quality = info.QualityTets});
+    const auto tets = GenerateTets(polymesh, R.get<Scale>(e).Value, {.PreserveSurface = true, .Quality = info.QualityTets});
 
     DspGenerator->SetMessage("Generating modal model...");
     const auto *sample_object = R.try_get<const SampleSoundObject>(e);

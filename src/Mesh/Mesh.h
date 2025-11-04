@@ -16,8 +16,6 @@ namespace fs = std::filesystem;
 struct BVH;
 struct ray;
 
-std::optional<he::PolyMesh> LoadPolyMesh(const fs::path &);
-
 struct RenderBuffers {
     std::vector<Vertex3D> Vertices;
     std::vector<uint> Indices;
@@ -57,11 +55,12 @@ struct Mesh {
     const Mesh &operator=(Mesh &&);
 
     bool operator==(const Mesh &other) const { return &M == &other.M; }
+    const PolyMesh &GetPolyMesh() const { return M; }
 
-    uint GetVertexCount() const { return M.VertexCount(); }
-    uint GetEdgeCount() const { return M.EdgeCount(); }
-    uint GetFaceCount() const { return M.FaceCount(); }
-    bool Empty() const { return GetVertexCount() == 0; }
+    uint VertexCount() const { return M.VertexCount(); }
+    uint EdgeCount() const { return M.EdgeCount(); }
+    uint FaceCount() const { return M.FaceCount(); }
+    bool Empty() const { return VertexCount() == 0; }
 
     vec3 GetPosition(VH vh) const { return M.GetPosition(vh); }
     vec3 GetVertexNormal(VH vh) const { return M.GetNormal(vh); }
@@ -69,8 +68,6 @@ struct Mesh {
 
     vec3 GetFaceCenter(FH fh) const { return M.CalcFaceCentroid(fh); }
     vec3 GetFaceNormal(FH fh) const { return M.GetNormal(fh); }
-
-    float CalcFaceArea(FH) const;
 
     std::vector<Vertex3D> CreateVertices(he::Element, const he::AnyHandle &select = {}) const;
     std::vector<uint> CreateIndices(he::Element) const;
@@ -91,11 +88,6 @@ struct Mesh {
         for (const auto &fh : M.faces()) SetFaceColor(fh, color);
     }
 
-    bool VertexBelongsToFace(VH, FH) const;
-    bool VertexBelongsToEdge(VH, EH) const;
-    bool VertexBelongsToFaceEdge(VH, FH, EH) const;
-    bool EdgeBelongsToFace(EH, FH) const;
-
     std::optional<Intersection> Intersect(const ray &local_ray) const;
 
     VH FindNearestVertex(vec3) const;
@@ -105,10 +97,6 @@ struct Mesh {
     // Returns a handle to the edge nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     EH FindNearestEdge(const ray &world_ray) const;
     FH FindNearestIntersectingFace(const ray &local_ray, vec3 *nearest_intersect_point_out = nullptr) const;
-
-    std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices.
-    std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face.
-    std::vector<uint> CreateEdgeIndices() const;
 
 private:
     PolyMesh M;

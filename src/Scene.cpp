@@ -772,7 +772,7 @@ void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
 void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     auto &excited_vertex = r.get<ExcitedVertex>(e);
     // Orient the camera towards the excited vertex.
-    const auto vh = Mesh::VH(excited_vertex.Vertex);
+    const auto vh = he::VH(excited_vertex.Vertex);
     const auto &mesh = r.get<Mesh>(e);
     const auto &transform = r.get<Model>(e).Transform;
     const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
@@ -867,7 +867,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 }
 
 entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
-    auto polymesh = LoadPolyMesh(path);
+    auto polymesh = he::PolyMesh::Load(path);
     if (!polymesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
     const auto e = AddMesh({std::move(*polymesh)}, std::move(info));
     R.emplace<Path>(e, path);
@@ -1191,7 +1191,7 @@ void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable
         mesh->ClearHighlights();
         if (SelectionMode == SelectionMode::Excite) {
             for (const auto vertex : excitable.ExcitableVertices) {
-                mesh->HighlightVertex(Mesh::VH(vertex));
+                mesh->HighlightVertex(he::VH(vertex));
             }
         }
         UpdateRenderBuffers(e);
@@ -1414,7 +1414,7 @@ void Scene::Interact() {
                 const auto &mesh = R.get<Mesh>(GetParentEntity(nearest->Entity));
                 const auto p = nearest->Position;
                 for (uint excite_vertex : excitable->ExcitableVertices) {
-                    const auto diff = p - mesh.GetPosition(Mesh::VH(excite_vertex));
+                    const auto diff = p - mesh.GetPosition(he::VH(excite_vertex));
                     if (float dist_sq = glm::dot(diff, diff); dist_sq < min_dist_sq) {
                         min_dist_sq = dist_sq;
                         nearest_excite_vertex = excite_vertex;
@@ -1691,7 +1691,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     const auto active_mesh_entity = GetParentEntity(active_entity);
     const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
     TextUnformatted(
-        std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.GetVertexCount(), active_mesh.GetEdgeCount(), active_mesh.GetFaceCount()).c_str()
+        std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
     );
     Text("Model buffer index: %s", GetModelBufferIndex(active_entity) ? std::to_string(*GetModelBufferIndex(active_entity)).c_str() : "None");
     Unindent();
@@ -1821,16 +1821,16 @@ void Scene::RenderControls() {
                     TextUnformatted("Edit mode:");
                     auto type_selection_mode = int(EditingHandle.Element);
                     for (const auto element : he::Elements) {
-                        auto name = Capitalize(he::to_string(element));
+                        auto name = Capitalize(he::label(element));
                         SameLine();
                         if (RadioButton(name.c_str(), &type_selection_mode, int(element))) {
                             SetEditingHandle({element});
                         }
                     }
-                    Text("Editing %s: %s", he::to_string(EditingHandle.Element).c_str(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
+                    Text("Editing %s: %s", he::label(EditingHandle.Element).data(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
                     if (EditingHandle.Element == he::Element::Vertex && EditingHandle && active_entity != entt::null) {
                         const auto &mesh = GetActiveMesh();
-                        const auto pos = mesh.GetPosition(Mesh::VH{*EditingHandle});
+                        const auto pos = mesh.GetPosition(he::VH{*EditingHandle});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingHandle, pos.x, pos.y, pos.z);
                     }
                 }
@@ -1929,7 +1929,7 @@ void Scene::RenderControls() {
                 for (const auto element : NormalElements) {
                     SameLine();
                     bool show = ShownNormalElements.contains(element);
-                    const auto type_name = Capitalize(to_string(element));
+                    const auto type_name = Capitalize(he::label(element));
                     if (Checkbox(type_name.c_str(), &show)) {
                         if (show) ShownNormalElements.insert(element);
                         else ShownNormalElements.erase(element);

@@ -1,16 +1,16 @@
 #include "Tets.h"
-#include "mesh/Mesh.h"
+#include "mesh/halfedge/PolyMesh.h"
 
 #include "tetgen.h"
 
 #include <format>
 
-std::unique_ptr<tetgenio> GenerateTets(const Mesh &mesh, vec3 scale, TetGenOptions options) {
+std::unique_ptr<tetgenio> GenerateTets(const he::PolyMesh &mesh, vec3 scale, TetGenOptions options) {
     static constexpr int TriVerts = 3;
     tetgenio in;
     const float *vertices = mesh.GetPositionData();
-    const auto triangle_indices = mesh.CreateTriangleIndices();
-    in.numberofpoints = mesh.GetVertexCount();
+    const auto triangle_indices = mesh.CreateIndices(he::Element::Vertex);
+    in.numberofpoints = mesh.VertexCount();
     in.pointlist = new REAL[in.numberofpoints * TriVerts];
     for (uint i = 0; i < uint(in.numberofpoints); ++i) {
         in.pointlist[i * TriVerts] = vertices[i * TriVerts] * scale.x;

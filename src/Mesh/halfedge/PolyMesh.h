@@ -14,6 +14,9 @@ namespace he {
 struct PolyMesh {
     PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
 
+    // obj/ply
+    static std::optional<PolyMesh> Load(const std::filesystem::path &);
+
     uint VertexCount() const { return static_cast<uint>(Positions.size()); }
     uint EdgeCount() const { return static_cast<uint>(Edges.size()); }
     uint FaceCount() const { return static_cast<uint>(Faces.size()); }
@@ -43,6 +46,19 @@ struct PolyMesh {
     // Geometric queries
     vec3 CalcFaceCentroid(FH) const;
     float CalcEdgeLength(HH) const;
+    float CalcFaceArea(FH) const;
+    VH FindNearestVertex(vec3) const;
+
+    // Topological queries
+    bool VertexBelongsToFace(VH, FH) const;
+    bool VertexBelongsToEdge(VH, EH) const;
+    bool VertexBelongsToFaceEdge(VH, FH, EH) const;
+    bool EdgeBelongsToFace(EH, FH) const;
+
+    // Vertex: Triangulated face indices
+    // Face: Triangle fan for each face
+    // Edge: Edge line segment indices
+    std::vector<uint> CreateIndices(he::Element) const;
 
     // Iterators
     struct VertexIterator {
@@ -213,8 +229,11 @@ private:
 
     void ComputeVertexNormals();
     void ComputeFaceNormals();
-};
 
-// obj/ply
-std::optional<PolyMesh> ReadMesh(const std::filesystem::path &);
+    std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices
+    std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face
+    std::vector<uint> CreateEdgeIndices() const; // Edge line segment indices
+
+    PolyMesh WithDeduplicatedVertices() const;
+};
 } // namespace he

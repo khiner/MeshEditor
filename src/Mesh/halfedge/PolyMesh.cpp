@@ -14,6 +14,8 @@
 
 namespace he {
 
+using std::ranges::any_of;
+
 namespace {
 constexpr uint64_t MakeEdgeKey(uint from, uint to) {
     return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
@@ -142,8 +144,129 @@ void PolyMesh::ComputeVertexNormals() {
     for (auto &n : Normals) n = glm::normalize(n);
 }
 
+float PolyMesh::CalcFaceArea(FH fh) const {
+    assert(fh && *fh < FaceCount());
+    float area{0};
+    auto fv_it = cfv_iter(fh);
+    const auto p0 = Positions[**fv_it++];
+    for (vec3 p1 = Positions[**fv_it++], p2; fv_it; ++fv_it) {
+        p2 = Positions[**fv_it];
+        const auto cross_product = glm::cross(p1 - p0, p2 - p0);
+        area += glm::length(cross_product) * 0.5f;
+        p1 = p2;
+    }
+    return area;
+}
+
+VH PolyMesh::FindNearestVertex(vec3 p) const {
+    VH closest_vertex;
+    float min_distance_sq = std::numeric_limits<float>::max();
+    for (const auto vh : vertices()) {
+        const vec3 diff = Positions[*vh] - p;
+        if (const float distance_sq = glm::dot(diff, diff); distance_sq < min_distance_sq) {
+            min_distance_sq = distance_sq;
+            closest_vertex = vh;
+        }
+    }
+    return closest_vertex;
+}
+
+bool PolyMesh::VertexBelongsToFace(VH vh, FH fh) const {
+    return vh && fh && any_of(fv_range(fh), [vh](const auto &fv) { return fv == vh; });
+}
+
+bool PolyMesh::VertexBelongsToEdge(VH vh, EH eh) const {
+    return vh && eh && any_of(voh_range(vh), [&](const auto &heh) { return GetEdge(heh) == eh; });
+}
+
+bool PolyMesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
+    return fh && eh && any_of(voh_range(vh), [&](const auto &heh) {
+               return GetEdge(heh) == eh && (GetFace(heh) == fh || GetFace(GetOppositeHalfedge(heh)) == fh);
+           });
+}
+
+bool PolyMesh::EdgeBelongsToFace(EH eh, FH fh) const {
+    return eh && fh && any_of(fh_range(fh), [&](const auto &heh) { return GetEdge(heh) == eh; });
+}
+
+std::vector<uint> PolyMesh::CreateIndices(Element element) const {
+    switch (element) {
+        case Element::Vertex: return CreateTriangleIndices();
+        case Element::Edge: return CreateEdgeIndices();
+        case Element::Face: return CreateTriangulatedFaceIndices();
+        case Element::None: return {};
+    }
+}
+
+std::vector<uint> PolyMesh::CreateTriangleIndices() const {
+    std::vector<uint> indices;
+    for (const auto fh : faces()) {
+        auto fv_it = cfv_iter(fh);
+        const auto v0 = *fv_it++;
+        VH v1 = *fv_it++, v2;
+        for (; fv_it; ++fv_it) {
+            v2 = *fv_it;
+            indices.insert(indices.end(), {*v0, *v1, *v2});
+            v1 = v2;
+        }
+    }
+    return indices;
+}
+
+std::vector<uint> PolyMesh::CreateTriangulatedFaceIndices() const {
+    std::vector<uint> indices;
+    uint index = 0;
+    for (const auto fh : faces()) {
+        const auto valence = GetValence(fh);
+        for (uint i = 0; i < valence - 2; ++i) {
+            indices.insert(indices.end(), {index, index + i + 1, index + i + 2});
+        }
+        index += valence;
+    }
+    return indices;
+}
+
+std::vector<uint> PolyMesh::CreateEdgeIndices() const {
+    std::vector<uint> indices;
+    indices.reserve(EdgeCount() * 2);
+    for (uint ei = 0; ei < EdgeCount(); ++ei) {
+        indices.emplace_back(2 * ei);
+        indices.emplace_back(2 * ei + 1);
+    }
+    return indices;
+}
+
+PolyMesh PolyMesh::WithDeduplicatedVertices() const {
+    struct VertexHash {
+        constexpr size_t operator()(const vec3 &p) const noexcept {
+            return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
+        }
+    };
+
+    std::vector<vec3> vertices;
+    vertices.reserve(VertexCount());
+    std::unordered_map<vec3, uint, VertexHash> index_by_vertex;
+    for (const auto vh : this->vertices()) {
+        const auto p = GetPosition(vh);
+        if (auto [it, inserted] = index_by_vertex.try_emplace(p, vertices.size()); inserted) {
+            vertices.emplace_back(p);
+        }
+    }
+
+    std::vector<std::vector<uint>> faces;
+    faces.reserve(FaceCount());
+    for (const auto &fh : this->faces()) {
+        std::vector<uint> new_face;
+        new_face.reserve(GetValence(fh));
+        for (const auto &vh : fv_range(fh)) new_face.emplace_back(index_by_vertex.at(GetPosition(vh)));
+        faces.emplace_back(std::move(new_face));
+    }
+
+    return {std::move(vertices), std::move(faces)};
+}
+
 namespace {
-std::optional<he::PolyMesh> read_obj(const std::filesystem::path &path) {
+std::optional<PolyMesh> ReadObj(const std::filesystem::path &path) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -175,10 +298,10 @@ std::optional<he::PolyMesh> read_obj(const std::filesystem::path &path) {
         }
     }
 
-    return he::PolyMesh(std::move(vertices), std::move(faces));
+    return PolyMesh(std::move(vertices), std::move(faces));
 }
 
-std::optional<he::PolyMesh> read_ply(const std::filesystem::path &path) {
+std::optional<PolyMesh> ReadPly(const std::filesystem::path &path) {
     try {
         std::ifstream file(path, std::ios::binary);
         if (!file) return {};
@@ -239,17 +362,19 @@ std::optional<he::PolyMesh> read_ply(const std::filesystem::path &path) {
             face_list.emplace_back(std::move(face_verts));
         }
 
-        return he::PolyMesh(std::move(vertex_list), std::move(face_list));
+        return PolyMesh(std::move(vertex_list), std::move(face_list));
     } catch (...) {
         return {};
     }
 }
 } // namespace
 
-std::optional<PolyMesh> ReadMesh(const std::filesystem::path &path) {
+std::optional<PolyMesh> PolyMesh::Load(const std::filesystem::path &path) {
     const auto ext = path.extension().string();
-    if (ext == ".ply" || ext == ".PLY") return read_ply(path);
-    return read_obj(path); // Try obj as default
+    // Try obj as default, even if it's not .obj
+    auto polymesh = ext == ".ply" || ext == ".PLY" ? ReadPly(path) : ReadObj(path);
+    if (!polymesh) return {};
+    // Deduplicate even if not strictly triangle soup. Assumes this is a surface mesh.
+    return polymesh->WithDeduplicatedVertices();
 }
-
 } // namespace he
