@@ -3,7 +3,6 @@
 #include "FaustParams.h"
 #include "SvgResource.h"
 #include "Worker.h"
-#include "mesh/Mesh.h"
 
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"

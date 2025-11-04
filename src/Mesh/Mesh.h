@@ -49,7 +49,6 @@ struct Mesh {
     Mesh(Mesh &&);
     Mesh(const Mesh &);
     Mesh(PolyMesh &&);
-    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color = DefaultFaceColor);
     ~Mesh();
 
     const Mesh &operator=(Mesh &&);
@@ -75,18 +74,14 @@ struct Mesh {
     std::vector<Vertex3D> CreateNormalVertices(he::Element) const;
     std::vector<uint> CreateNormalIndices(he::Element) const;
 
-    BBox ComputeBbox() const; // This is public, but use `BoundingBox` instead.
-
     std::vector<BBox> CreateFaceBoundingBoxes() const;
     RenderBuffers CreateBvhBuffers(vec4 color) const;
 
     void HighlightVertex(VH vh) { HighlightedHandles.emplace(vh); }
     void ClearHighlights() { HighlightedHandles.clear(); }
 
-    void SetFaceColor(FH fh, vec4 color) { M.SetColor(fh, color); }
-    void SetFaceColor(vec4 color) {
-        for (const auto &fh : M.faces()) SetFaceColor(fh, color);
-    }
+    void SetColor(FH fh, vec4 color) { M.SetColor(fh, color); }
+    void SetColor(vec4 color) { M.SetColor(color); }
 
     std::optional<Intersection> Intersect(const ray &local_ray) const;
 
@@ -99,6 +94,8 @@ struct Mesh {
     FH FindNearestIntersectingFace(const ray &local_ray, vec3 *nearest_intersect_point_out = nullptr) const;
 
 private:
+    BBox ComputeBbox() const;
+
     PolyMesh M;
     std::unique_ptr<BVH> Bvh;
     // In addition to selected elements.

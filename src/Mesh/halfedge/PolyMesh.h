@@ -17,10 +17,10 @@ struct PolyMesh {
     // obj/ply
     static std::optional<PolyMesh> Load(const std::filesystem::path &);
 
-    uint VertexCount() const { return static_cast<uint>(Positions.size()); }
-    uint EdgeCount() const { return static_cast<uint>(Edges.size()); }
-    uint FaceCount() const { return static_cast<uint>(Faces.size()); }
-    uint HalfEdgeCount() const { return static_cast<uint>(Halfedges.size()); }
+    uint VertexCount() const { return Positions.size(); }
+    uint EdgeCount() const { return Edges.size(); }
+    uint FaceCount() const { return Faces.size(); }
+    uint HalfEdgeCount() const { return Halfedges.size(); }
 
     const vec3 &GetPosition(VH vh) const { return Positions[*vh]; }
     const float *GetPositionData() const { return &Positions[0][0]; }
@@ -30,6 +30,9 @@ struct PolyMesh {
 
     vec4 GetColor(FH fh) const { return Faces[*fh].Color; }
     void SetColor(FH fh, const vec4 &color) { Faces[*fh].Color = color; }
+    void SetColor(vec4 color) {
+        for (const auto &fh : faces()) SetColor(fh, color);
+    }
 
     // Halfedge navigation
     HH GetHalfedge(EH, uint i) const;
@@ -63,12 +66,12 @@ struct PolyMesh {
     // Iterators
     struct VertexIterator {
         uint Index;
-        VH operator*() const { return VH(Index); }
+        VH operator*() const { return {Index}; }
         VertexIterator &operator++() {
             ++Index;
             return *this;
         }
-        bool operator!=(const VertexIterator &other) const { return Index != other.Index; }
+        bool operator==(const VertexIterator &) const = default;
     };
     struct VertexRange {
         uint Count;
@@ -79,12 +82,12 @@ struct PolyMesh {
 
     struct EdgeIterator {
         uint Index;
-        EH operator*() const { return EH(Index); }
+        EH operator*() const { return {Index}; }
         EdgeIterator &operator++() {
             ++Index;
             return *this;
         }
-        bool operator!=(const EdgeIterator &other) const { return Index != other.Index; }
+        bool operator==(const EdgeIterator &) const = default;
     };
     struct EdgeRange {
         uint Count;
@@ -95,12 +98,12 @@ struct PolyMesh {
 
     struct FaceIterator {
         uint Index;
-        FH operator*() const { return FH(Index); }
+        FH operator*() const { return {Index}; }
         FaceIterator &operator++() {
             ++Index;
             return *this;
         }
-        bool operator!=(const FaceIterator &other) const { return Index != other.Index; }
+        bool operator==(const FaceIterator &) const = default;
     };
     struct FaceRange {
         uint Count;
@@ -130,13 +133,7 @@ struct PolyMesh {
             return tmp;
         }
 
-        bool operator==(this auto const &self, const auto &other) {
-            return self.CurrentHalfedge == other.CurrentHalfedge;
-        }
-
-        bool operator!=(this auto const &self, const auto &other) {
-            return !(self == other);
-        }
+        bool operator==(this auto const &self, const auto &other) { return self.CurrentHalfedge == other.CurrentHalfedge; }
     };
 
     struct FaceVertexIterator : CirculatorBase {

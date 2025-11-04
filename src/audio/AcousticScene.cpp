@@ -107,9 +107,9 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         auto impact_positions = RealImpact::LoadPositions(directory);
         // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
         // so we don't even load them. Instead, we look up by position here.
-        const auto &mesh = R.get<Mesh>(e);
+        const auto &polymesh = R.get<Mesh>(e).GetPolyMesh();
         for (uint i = 0; i < impact_positions.size(); ++i) {
-            vertex_indices[i] = uint(*mesh.FindNearestVertex(impact_positions[i]));
+            vertex_indices[i] = uint(*polymesh.FindNearestVertex(impact_positions[i]));
         }
     }
 

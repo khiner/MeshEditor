@@ -6,6 +6,7 @@
 #include "Registry.h"
 #include "Scale.h"
 #include "mesh/Arrow.h"
+#include "mesh/Mesh.h"
 #include "mesh/Primitives.h"
 #include "numeric/mat3.h"
 
@@ -782,7 +783,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     const vec3 normal{transform * vec4{mesh.GetVertexNormal(vh), 0}};
     const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
     auto vertex_indicator_mesh = Arrow();
-    vertex_indicator_mesh.SetFaceColor({1, 0, 0, 1});
+    vertex_indicator_mesh.SetColor({1, 0, 0, 1});
     excited_vertex.IndicatorEntity = AddMesh(
         std::move(vertex_indicator_mesh),
         {.Name = "Excite vertex indicator",
@@ -948,7 +949,8 @@ void Scene::ClearMeshes() {
     InvalidateCommandBuffer();
 }
 
-void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
+void Scene::ReplaceMesh(entt::entity e, he::PolyMesh &&polymesh) {
+    auto mesh = Mesh{std::move(polymesh)};
     auto &mesh_buffers = R.get<MeshBuffers>(e);
     for (auto &[element, buffers] : mesh_buffers.Mesh) {
         buffers.Vertices.Update(mesh.CreateVertices(element));
@@ -992,7 +994,7 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
     SelectionMode = mode;
     for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
         const bool highlight_faces = SelectionMode == SelectionMode::Excite && R.try_get<Excitable>(entity);
-        mesh.SetFaceColor(highlight_faces ? Mesh::HighlightedFaceColor : Mesh::DefaultFaceColor);
+        mesh.SetColor(highlight_faces ? Mesh::HighlightedFaceColor : Mesh::DefaultFaceColor);
         UpdateRenderBuffers(entity);
     }
     const auto e = FindActiveEntity(R);
@@ -1608,7 +1610,7 @@ void Scene::RenderOverlay() {
 }
 
 namespace {
-std::optional<Mesh> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
+std::optional<he::PolyMesh> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
     const char *create_label = is_create ? "Add" : "Update";
     if (type == PrimitiveType::Rect) {
         static vec2 size{1, 1};
@@ -1789,8 +1791,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
         if (CollapsingHeader("Update primitive")) {
-            if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
-                ReplaceMesh(active_mesh_entity, std::move(*new_mesh));
+            if (auto new_polymesh = PrimitiveEditor(*primitive_type, false)) {
+                ReplaceMesh(active_mesh_entity, std::move(*new_polymesh));
                 InvalidateCommandBuffer();
             }
         }

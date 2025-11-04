@@ -43,7 +43,7 @@ PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> 
             Halfedges.emplace_back(Halfedge{
                 .Vertex = VH(to_v),
                 .Next = HH(start_he_i + (i + 1) % face.size()),
-                .Opposite = {},
+                .Opposite = HH{},
                 .Face = FH(fi),
             });
 
@@ -298,12 +298,12 @@ std::optional<PolyMesh> ReadObj(const std::filesystem::path &path) {
         }
     }
 
-    return PolyMesh(std::move(vertices), std::move(faces));
+    return PolyMesh{std::move(vertices), std::move(faces)};
 }
 
 std::optional<PolyMesh> ReadPly(const std::filesystem::path &path) {
     try {
-        std::ifstream file(path, std::ios::binary);
+        std::ifstream file{path, std::ios::binary};
         if (!file) return {};
 
         tinyply::PlyFile ply_file;
@@ -362,7 +362,7 @@ std::optional<PolyMesh> ReadPly(const std::filesystem::path &path) {
             face_list.emplace_back(std::move(face_verts));
         }
 
-        return PolyMesh(std::move(vertex_list), std::move(face_list));
+        return PolyMesh{std::move(vertex_list), std::move(face_list)};
     } catch (...) {
         return {};
     }

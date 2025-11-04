@@ -9,13 +9,7 @@
 using namespace he;
 
 Mesh::Mesh(PolyMesh &&m) : M(std::move(m)) {
-    SetFaceColor(DefaultFaceColor);
-    BoundingBox = ComputeBbox();
-    Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
-}
-Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces, vec4 color)
-    : M(std::move(vertices), std::move(faces)) {
-    if (color != DefaultFaceColor) SetFaceColor(color);
+    SetColor(DefaultFaceColor);
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }
@@ -89,8 +83,8 @@ constexpr std::optional<float> IntersectFace(const ray &ray, uint fi, const void
 
 // Used as an intermediate for creating render vertices
 struct VerticesHandle {
-    he::AnyHandle Parent; // A vertex can belong to itself, an edge, or a face.
-    std::vector<he::VH> VHs;
+    AnyHandle Parent; // A vertex can belong to itself, an edge, or a face.
+    std::vector<VH> VHs;
 };
 } // namespace
 
@@ -181,12 +175,12 @@ EH Mesh::FindNearestEdge(const ray &local_ray) const {
     return closest_edge;
 }
 
-std::vector<uint> Mesh::CreateIndices(he::Element element) const { return M.CreateIndices(element); }
+std::vector<uint> Mesh::CreateIndices(Element element) const { return M.CreateIndices(element); }
 
-std::vector<uint> Mesh::CreateNormalIndices(he::Element element) const {
-    if (element == he::Element::None || element == he::Element::Edge) return {};
+std::vector<uint> Mesh::CreateNormalIndices(Element element) const {
+    if (element == Element::None || element == Element::Edge) return {};
 
-    const auto n = element == he::Element::Face ? M.FaceCount() : M.VertexCount();
+    const auto n = element == Element::Face ? M.FaceCount() : M.VertexCount();
     std::vector<uint> indices;
     indices.reserve(n * 2);
     for (uint i = 0; i < n; ++i) {
@@ -196,18 +190,18 @@ std::vector<uint> Mesh::CreateNormalIndices(he::Element element) const {
     return indices;
 }
 
-std::vector<Vertex3D> Mesh::CreateVertices(he::Element render_element, const he::AnyHandle &selected) const {
+std::vector<Vertex3D> Mesh::CreateVertices(Element render_element, const AnyHandle &selected) const {
     std::vector<VerticesHandle> handles;
-    if (render_element == he::Element::Vertex) {
+    if (render_element == Element::Vertex) {
         handles.reserve(M.VertexCount());
         for (const auto vh : M.vertices()) handles.emplace_back(vh, std::vector<VH>{vh});
-    } else if (render_element == he::Element::Edge) {
+    } else if (render_element == Element::Edge) {
         handles.reserve(M.EdgeCount() * 2);
         for (const auto eh : M.edges()) {
             const auto heh = M.GetHalfedge(eh, 0);
             handles.emplace_back(eh, std::vector<VH>{M.GetFromVertex(heh), M.GetToVertex(heh)});
         }
-    } else if (render_element == he::Element::Face) {
+    } else if (render_element == Element::Face) {
         handles.reserve(M.FaceCount() * 3); // Lower bound assuming all faces are triangles.
         for (const auto fh : M.faces()) {
             for (const auto vh : M.fv_range(fh)) handles.emplace_back(fh, std::vector<VH>{vh});
@@ -217,22 +211,22 @@ std::vector<Vertex3D> Mesh::CreateVertices(he::Element render_element, const he:
     std::vector<Vertex3D> vertices;
     for (const auto &handle : handles) {
         const auto parent = handle.Parent;
-        const auto normal = render_element == he::Element::Vertex || render_element == he::Element::Edge ? M.GetNormal(handle.VHs[0]) : M.GetNormal(FH(handle.Parent));
+        const auto normal = render_element == Element::Vertex || render_element == Element::Edge ? M.GetNormal(handle.VHs[0]) : M.GetNormal(FH(handle.Parent));
         for (const auto vh : handle.VHs) {
             const bool is_selected =
                 selected == vh || selected == parent ||
                 // Note: If we want to support `HighlightedHandles` having handle types (not just the selection `highlight`),
                 // we need to update the methods to accept sets of `AnyHandle` instead of just one.
-                (render_element == he::Element::Vertex && (M.VertexBelongsToFace(parent, selected) || M.VertexBelongsToEdge(parent, selected))) ||
-                (render_element == he::Element::Edge && M.EdgeBelongsToFace(parent, selected)) ||
-                (render_element == he::Element::Face && M.VertexBelongsToFaceEdge(vh, parent, selected));
+                (render_element == Element::Vertex && (M.VertexBelongsToFace(parent, selected) || M.VertexBelongsToEdge(parent, selected))) ||
+                (render_element == Element::Edge && M.EdgeBelongsToFace(parent, selected)) ||
+                (render_element == Element::Face && M.VertexBelongsToFaceEdge(vh, parent, selected));
             const bool is_highlighted =
                 HighlightedHandles.contains(vh) || HighlightedHandles.contains(parent);
-            const auto color = is_selected            ? SelectedColor :
-                is_highlighted                        ? HighlightedColor :
-                render_element == he::Element::Vertex ? VertexColor :
-                render_element == he::Element::Edge   ? EdgeColor :
-                                                        M.GetColor(FH(parent));
+            const auto color = is_selected        ? SelectedColor :
+                is_highlighted                    ? HighlightedColor :
+                render_element == Element::Vertex ? VertexColor :
+                render_element == Element::Edge   ? EdgeColor :
+                                                    M.GetColor(FH(parent));
             vertices.emplace_back(GetPosition(vh), normal, color);
         }
     }
@@ -240,9 +234,9 @@ std::vector<Vertex3D> Mesh::CreateVertices(he::Element render_element, const he:
     return vertices;
 }
 
-std::vector<Vertex3D> Mesh::CreateNormalVertices(he::Element element) const {
+std::vector<Vertex3D> Mesh::CreateNormalVertices(Element element) const {
     std::vector<Vertex3D> vertices;
-    if (element == he::Element::Vertex) {
+    if (element == Element::Vertex) {
         // Line for each vertex normal, with length scaled by the average edge length.
         vertices.reserve(M.VertexCount() * 2);
         for (const auto vh : M.vertices()) {
@@ -256,7 +250,7 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(he::Element element) const {
             vertices.emplace_back(p, vn, VertexNormalIndicatorColor);
             vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn, VertexNormalIndicatorColor);
         }
-    } else if (element == he::Element::Face) {
+    } else if (element == Element::Face) {
         // Line for each face normal, with length scaled by the face area.
         vertices.reserve(M.FaceCount() * 2);
         for (const auto fh : M.faces()) {

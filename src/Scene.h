@@ -39,6 +39,10 @@ struct Path {
     fs::path Value;
 };
 
+namespace he {
+struct PolyMesh;
+} // namespace he
+
 struct Mesh;
 struct Excitable;
 struct RenderBuffers; // Mesh render buffers
@@ -187,7 +191,7 @@ struct Scene {
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
 
-    void ReplaceMesh(entt::entity, Mesh &&);
+    void ReplaceMesh(entt::entity, he::PolyMesh &&);
     void ClearMeshes();
 
     void DestroyInstance(entt::entity);
