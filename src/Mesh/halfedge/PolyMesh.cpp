@@ -14,47 +14,43 @@
 
 namespace he {
 
+namespace {
+constexpr uint64_t MakeEdgeKey(uint from, uint to) {
+    return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
+}
+} // namespace
+
 PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces) {
     // Reserve and initialize vertex data
     Positions = std::move(vertices);
     Normals.resize(Positions.size());
     OutgoingHalfedges.resize(Positions.size());
 
-    std::vector<std::vector<VH>> vh_faces;
-    vh_faces.reserve(faces.size());
-    for (auto &face : faces) {
-        std::vector<VH> vh_face;
-        vh_face.reserve(face.size());
-        for (const auto idx : face) vh_face.emplace_back(idx);
-        vh_faces.emplace_back(std::move(vh_face));
-    }
-
-    static auto MakeEdgeKey = [](uint from, uint to) { return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to); };
     std::unordered_map<uint64_t, HH> halfedge_map;
-    for (const auto &f_vertices : vh_faces) {
-        assert(f_vertices.size() >= 3);
+    for (const auto &face : faces) {
+        assert(face.size() >= 3);
 
         const auto fi = Faces.size();
         const auto start_he_i = Halfedges.size();
         Faces.emplace_back(HH(start_he_i), vec3{0}, vec4{1, 1, 1, 1});
 
         // Create halfedges, find opposites, and create edges
-        for (size_t i = 0; i < f_vertices.size(); ++i) {
-            const auto to_v = f_vertices[i];
-            const auto from_v = f_vertices[i == 0 ? f_vertices.size() - 1 : i - 1];
+        for (size_t i = 0; i < face.size(); ++i) {
+            const auto to_v = face[i];
+            const auto from_v = face[i == 0 ? face.size() - 1 : i - 1];
             Halfedges.emplace_back(Halfedge{
-                .Vertex = to_v,
-                .Next = HH(start_he_i + (i + 1) % f_vertices.size()),
+                .Vertex = VH(to_v),
+                .Next = HH(start_he_i + (i + 1) % face.size()),
                 .Opposite = {},
                 .Face = FH(fi),
             });
 
             const HH hh(start_he_i + i);
-            if (!OutgoingHalfedges[*from_v]) OutgoingHalfedges[*from_v] = hh;
-            halfedge_map.emplace(MakeEdgeKey(*from_v, *to_v), hh);
+            if (!OutgoingHalfedges[from_v]) OutgoingHalfedges[from_v] = hh;
+            halfedge_map.emplace(MakeEdgeKey(from_v, to_v), hh);
 
             // Look for opposite halfedge (from previously added faces)
-            if (const auto it = halfedge_map.find(MakeEdgeKey(*to_v, *from_v));
+            if (const auto it = halfedge_map.find(MakeEdgeKey(to_v, from_v));
                 it != halfedge_map.end()) {
                 // Found existing opposite halfedge
                 const auto opposite_hh = it->second;
@@ -122,11 +118,10 @@ float PolyMesh::CalcEdgeLength(HH hh) const {
 
 void PolyMesh::ComputeFaceNormals() {
     for (uint fi = 0; fi < FaceCount(); ++fi) {
-        const auto start = Faces[fi].Halfedge;
-        const auto h0 = start, h1 = Halfedges[*h0].Next, h2 = Halfedges[*h1].Next;
-        const auto p0 = Positions[*Halfedges[*h0].Vertex];
-        const auto p1 = Positions[*Halfedges[*h1].Vertex];
-        const auto p2 = Positions[*Halfedges[*h2].Vertex];
+        auto it = cfv_iter(FH(fi));
+        const auto p0 = Positions[**it];
+        const auto p1 = Positions[**(++it)];
+        const auto p2 = Positions[**(++it)];
         Faces[fi].Normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
     }
 }
@@ -138,13 +133,9 @@ void PolyMesh::ComputeVertexNormals() {
     // Accumulate face normals to vertices
     for (uint fi = 0; fi < FaceCount(); ++fi) {
         const auto &face_normal = Faces[fi].Normal;
-        const auto start = Faces[fi].Halfedge;
-        auto current = start;
-        do {
-            const auto vh = Halfedges[*current].Vertex;
+        for (const auto vh : fv_range(FH(fi))) {
             Normals[*vh] += face_normal;
-            current = Halfedges[*current].Next;
-        } while (current != start && current);
+        }
     }
 
     // Normalize

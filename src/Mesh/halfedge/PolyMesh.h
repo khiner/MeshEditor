@@ -139,7 +139,13 @@ struct PolyMesh {
         FaceVertexIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
         FaceVertexIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
+    // Iterate the vertices of a face.
+    // Use for range-based for loops:
+    //   for (auto vh : fv_range(fh)) { ... }
     FaceVertexRange fv_range(FH fh) const { return {this, Faces[*fh].Halfedge}; }
+    // Iterator positioned at the first vertex of a face.
+    // Use for manual iterator control with pre-increment:
+    //   auto it = cfv_iter(fh); auto v0 = **it; auto v1 = **(++it);
     FaceVertexIterator cfv_iter(FH fh) const { return {this, Faces[*fh].Halfedge, Faces[*fh].Halfedge}; }
 
     struct VertexOutgoingHalfedgeIterator : CirculatorBase {

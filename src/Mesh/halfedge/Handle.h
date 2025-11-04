@@ -48,9 +48,9 @@ struct Handle {
 
     constexpr Element GetElement() const {
         if constexpr (std::is_same_v<Tag, tag::Vertex>) return Element::Vertex;
-        else if constexpr (std::is_same_v<Tag, tag::Edge>) return Element::Edge;
-        else if constexpr (std::is_same_v<Tag, tag::Face>) return Element::Face;
-        else return Element::None;
+        if constexpr (std::is_same_v<Tag, tag::Edge>) return Element::Edge;
+        if constexpr (std::is_same_v<Tag, tag::Face>) return Element::Face;
+        return Element::None;
     }
 };
 
