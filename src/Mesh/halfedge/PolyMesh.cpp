@@ -12,10 +12,9 @@
 #include <fstream>
 #include <ranges>
 
+using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
+
 namespace he {
-
-using std::ranges::any_of;
-
 namespace {
 constexpr uint64_t MakeEdgeKey(uint from, uint to) {
     return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
@@ -69,38 +68,25 @@ PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> 
     }
     ComputeFaceNormals();
     ComputeVertexNormals();
-}
-
-HH PolyMesh::GetHalfedge(EH eh, uint i) const {
-    assert(eh && *eh < Edges.size());
-    const auto h0 = Edges[*eh];
-    return i == 0 ? h0 : (i == 1 && h0 ? Halfedges[*h0].Opposite : HH{});
-}
-
-HH PolyMesh::GetOppositeHalfedge(HH hh) const {
-    assert(hh && *hh < Halfedges.size());
-    return Halfedges[*hh].Opposite;
+    SetColor(DefaultFaceColor);
 }
 
 VH PolyMesh::GetFromVertex(HH hh) const {
-    assert(hh && *hh < Halfedges.size());
-    // From-vertex is the to-vertex of the opposite halfedge
+    assert(*hh < Halfedges.size());
     const auto opp = Halfedges[*hh].Opposite;
-    return opp ? Halfedges[*opp].Vertex : VH{};
+    if (opp) return Halfedges[*opp].Vertex;
+
+    // For boundary halfedges, find the previous halfedge in the face loop
+    const auto range = FaceHalfedgeRange{this, Halfedges[*hh].Next};
+    auto it = find_if(range, [&](HH h) { return Halfedges[*h].Next == hh; });
+    return it != range.end() ? Halfedges[**it].Vertex : VH{};
 }
 
-uint PolyMesh::GetValence(VH vh) const {
-    assert(vh && *vh < Positions.size());
-    return std::ranges::distance(voh_range(vh));
-}
-
-uint PolyMesh::GetValence(FH fh) const {
-    assert(fh && *fh < Faces.size());
-    return std::ranges::distance(fh_range(fh));
-}
+uint PolyMesh::GetValence(VH vh) const { return distance(voh_range(vh)); }
+uint PolyMesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
 
 vec3 PolyMesh::CalcFaceCentroid(FH fh) const {
-    assert(fh && *fh < Faces.size());
+    assert(*fh < Faces.size());
     vec3 centroid{0};
     uint count{0};
     for (auto vh : fv_range(fh)) {
@@ -111,7 +97,7 @@ vec3 PolyMesh::CalcFaceCentroid(FH fh) const {
 }
 
 float PolyMesh::CalcEdgeLength(HH hh) const {
-    assert(hh && *hh < Halfedges.size());
+    assert(*hh < Halfedges.size());
     const auto from_v = GetFromVertex(hh);
     const auto to_v = Halfedges[*hh].Vertex;
     if (!from_v || !to_v) return 0;
@@ -145,7 +131,7 @@ void PolyMesh::ComputeVertexNormals() {
 }
 
 float PolyMesh::CalcFaceArea(FH fh) const {
-    assert(fh && *fh < FaceCount());
+    assert(*fh < FaceCount());
     float area{0};
     auto fv_it = cfv_iter(fh);
     const auto p0 = Positions[**fv_it++];

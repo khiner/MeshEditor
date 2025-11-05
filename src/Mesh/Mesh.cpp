@@ -9,7 +9,6 @@
 using namespace he;
 
 Mesh::Mesh(PolyMesh &&m) : M(std::move(m)) {
-    SetColor(DefaultFaceColor);
     BoundingBox = ComputeBbox();
     Bvh = std::make_unique<BVH>(CreateFaceBoundingBoxes());
 }

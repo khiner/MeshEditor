@@ -37,7 +37,6 @@ struct Mesh {
     using AnyHandle = he::AnyHandle;
     using AnyHandleHash = he::AnyHandleHash;
 
-    inline static constexpr vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
     inline static vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
     inline static vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select
     inline static vec4 HighlightedColor{0, 0.647, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Bevel

@@ -994,7 +994,7 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
     SelectionMode = mode;
     for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
         const bool highlight_faces = SelectionMode == SelectionMode::Excite && R.try_get<Excitable>(entity);
-        mesh.SetColor(highlight_faces ? Mesh::HighlightedFaceColor : Mesh::DefaultFaceColor);
+        mesh.SetColor(highlight_faces ? Mesh::HighlightedFaceColor : he::PolyMesh::DefaultFaceColor);
         UpdateRenderBuffers(entity);
     }
     const auto e = FindActiveEntity(R);

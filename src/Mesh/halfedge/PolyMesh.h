@@ -12,6 +12,8 @@
 namespace he {
 // Core half-edge mesh structure
 struct PolyMesh {
+    static constexpr vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
+
     PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
 
     // obj/ply
@@ -35,8 +37,11 @@ struct PolyMesh {
     }
 
     // Halfedge navigation
-    HH GetHalfedge(EH, uint i) const;
-    HH GetOppositeHalfedge(HH) const;
+    HH GetHalfedge(EH eh, uint i) const {
+        const auto h0 = Edges[*eh];
+        return i == 0 ? h0 : (i == 1 && h0 ? Halfedges[*h0].Opposite : HH{});
+    }
+    HH GetOppositeHalfedge(HH hh) const { return Halfedges[*hh].Opposite; }
     EH GetEdge(HH hh) const { return HalfedgeToEdge[*hh]; }
     FH GetFace(HH hh) const { return Halfedges[*hh].Face; }
     VH GetFromVertex(HH) const;

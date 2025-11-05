@@ -19,14 +19,13 @@ inline he::PolyMesh Arrow(float base_radius = 0.15, float tip_radius = 0.3, floa
     base_top_face.reserve(slices);
     tip_face.reserve(slices);
     for (uint i = 0; i < slices; ++i) {
-        const uint offset = i * 3;
-        tip_face.emplace_back(offset);
-        base_bottom_face.emplace_back(offset + 1);
-        base_top_face.emplace_back(offset + 2);
+        tip_face.emplace_back(i * 3);
+        base_bottom_face.emplace_back(i * 3 + 1);
+        base_top_face.emplace_back(i * 3 + 2);
     }
 
     std::vector<std::vector<uint>> faces;
-    faces.reserve(slices * 2 + 2);
+    faces.reserve(slices * 2 + 3); // slices quads/triangles + 3 n-gon caps
     // Quads for the sides of the cylinder.
     for (uint i = 0; i < slices; ++i) {
         faces.push_back({
@@ -37,10 +36,11 @@ inline he::PolyMesh Arrow(float base_radius = 0.15, float tip_radius = 0.3, floa
         });
     }
 
-    // N-gons for the top cap of the cylinder and the base cap of the cone.
+    // N-gons for the caps
     std::reverse(base_top_face.begin(), base_top_face.end()); // For CCW order
     std::reverse(tip_face.begin(), tip_face.end()); // For CCW order
     faces.emplace_back(base_top_face);
+    faces.emplace_back(base_bottom_face);
     faces.emplace_back(tip_face);
 
     // Triangles for the tip cone.
