@@ -5,7 +5,7 @@
 #include <limits>
 #include <string>
 
-namespace he {
+namespace he { // half-edge
 using uint = uint32_t;
 
 constexpr uint null{std::numeric_limits<uint>::max()};
@@ -14,7 +14,7 @@ enum class Element {
     None,
     Vertex, // Vertices are not duplicated. Each vertex uses the vertex normal.
     Edge, // Vertices are duplicated. Each vertex uses the vertex normal.
-    Face, // Vertices are duplicated for each face. Each vertex uses the face normal.
+    Face, // Vertices are duplicated. Each vertex uses the face normal.
 };
 
 constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};
@@ -37,7 +37,6 @@ struct Face {};
 struct Halfedge {};
 } // namespace tag
 
-// Generic handle template
 template<typename Tag>
 struct Handle {
     uint Index{null};

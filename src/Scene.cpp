@@ -24,6 +24,8 @@
 using std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;
 
+using namespace he;
+
 template<class... Ts> struct overloaded : Ts... {
     using Ts::operator()...;
 };
@@ -61,7 +63,7 @@ struct BoundingBoxesBuffers {
 struct BvhBoxesBuffers {
     mvk::RenderBuffers Buffers;
 };
-using RenderBuffersByElement = std::unordered_map<he::Element, mvk::RenderBuffers>;
+using RenderBuffersByElement = std::unordered_map<Element, mvk::RenderBuffers>;
 struct MeshBuffers {
     MeshBuffers(RenderBuffersByElement &&mesh, RenderBuffersByElement &&normal_indicators)
         : Mesh{std::move(mesh)}, NormalIndicators{std::move(normal_indicators)} {}
@@ -73,7 +75,7 @@ struct MeshBuffers {
 
 // Component: Handles highlighted for rendering (in addition to selected elements)
 struct MeshHighlightedHandles {
-    std::unordered_set<he::AnyHandle, he::AnyHandleHash> Handles;
+    std::unordered_set<AnyHandle, AnyHandleHash> Handles;
 };
 
 entt::entity Scene::GetParentEntity(entt::entity e) const { return ::GetParentEntity(R, e); }
@@ -778,15 +780,15 @@ void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
 void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     auto &excited_vertex = r.get<ExcitedVertex>(e);
     // Orient the camera towards the excited vertex.
-    const auto vh = he::VH(excited_vertex.Vertex);
-    const auto &polymesh = r.get<he::PolyMesh>(e);
+    const auto vh = VH(excited_vertex.Vertex);
+    const auto &mesh = r.get<Mesh>(e);
     const auto &bbox = r.get<BBox>(e);
     const auto &transform = r.get<Model>(e).Transform;
-    const vec3 vertex_pos{transform * vec4{polymesh.GetPosition(vh), 1}};
+    const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
 
     // Create vertex indicator arrow pointing at the excited vertex.
-    const vec3 normal{transform * vec4{polymesh.GetNormal(vh), 0}};
+    const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
     const float scale_factor = 0.1f * bbox.DiagonalLength();
     auto vertex_indicator_mesh = Arrow();
     vertex_indicator_mesh.SetColor({1, 0, 0, 1});
@@ -832,7 +834,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     InvalidateCommandBuffer();
 }
 
-entt::entity Scene::AddMesh(he::PolyMesh &&polymesh, MeshCreateInfo info) {
+entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto e = R.create();
 
     auto node = R.emplace<SceneNode>(e); // No parent or children.
@@ -843,17 +845,17 @@ entt::entity Scene::AddMesh(he::PolyMesh &&polymesh, MeshCreateInfo info) {
     if (!info.Visible) SetVisible(e, false);
 
     // Create mesh components
-    const auto bbox = MeshRender::ComputeBoundingBox(polymesh);
+    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
     R.emplace<BBox>(e, bbox);
-    auto bvh = BVH(MeshRender::CreateFaceBoundingBoxes(polymesh));
+    auto bvh = BVH(MeshRender::CreateFaceBoundingBoxes(mesh));
     R.emplace<BVH>(e, std::move(bvh));
-    R.emplace<he::PolyMesh>(e, std::move(polymesh));
+    R.emplace<Mesh>(e, std::move(mesh));
     R.emplace<MeshHighlightedHandles>(e);
 
     // Create render buffers
-    const auto &pm = R.get<he::PolyMesh>(e);
+    const auto &pm = R.get<Mesh>(e);
     RenderBuffersByElement buffers_by_element{};
-    for (const auto element : he::Elements) { // todo only create buffers for viewed elements.
+    for (const auto element : Elements) { // todo only create buffers for viewed elements.
         buffers_by_element.emplace(element, CreateRenderBuffers(MeshRender::CreateVertices(pm, element), MeshRender::CreateIndices(pm, element)));
     }
     R.emplace<MeshBuffers>(e, std::move(buffers_by_element), RenderBuffersByElement{});
@@ -878,9 +880,9 @@ entt::entity Scene::AddMesh(he::PolyMesh &&polymesh, MeshCreateInfo info) {
 }
 
 entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
-    auto polymesh = he::PolyMesh::Load(path);
-    if (!polymesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
-    const auto e = AddMesh(std::move(*polymesh), std::move(info));
+    auto mesh = Mesh::Load(path);
+    if (!mesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
+    const auto e = AddMesh(std::move(*mesh), std::move(info));
     R.emplace<Path>(e, path);
     return e;
 }
@@ -888,7 +890,7 @@ entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info) {
     const auto parent = GetParentEntity(e);
     const auto e_new = AddMesh(
-        he::PolyMesh{R.get<const he::PolyMesh>(parent)},
+        Mesh{R.get<const Mesh>(parent)},
         info.value_or(MeshCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
             .Transform = GetTransform(R, e),
@@ -954,19 +956,19 @@ void Scene::DuplicateLinked() {
 
 void Scene::ClearMeshes() {
     std::vector<entt::entity> entities;
-    for (const auto e : R.view<he::PolyMesh>()) entities.emplace_back(e);
+    for (const auto e : R.view<Mesh>()) entities.emplace_back(e);
     for (const auto e : entities) Destroy(e);
     InvalidateCommandBuffer();
 }
 
-void Scene::ReplaceMesh(entt::entity e, he::PolyMesh &&polymesh) {
+void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     // Update components
-    const auto bbox = MeshRender::ComputeBoundingBox(polymesh);
+    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
     R.replace<BBox>(e, bbox);
-    R.replace<BVH>(e, BVH(MeshRender::CreateFaceBoundingBoxes(polymesh)));
-    R.replace<he::PolyMesh>(e, std::move(polymesh));
+    R.replace<BVH>(e, BVH(MeshRender::CreateFaceBoundingBoxes(mesh)));
+    R.replace<Mesh>(e, std::move(mesh));
 
-    const auto &pm = R.get<he::PolyMesh>(e);
+    const auto &pm = R.get<Mesh>(e);
     auto &mesh_buffers = R.get<MeshBuffers>(e);
     for (auto &[element, buffers] : mesh_buffers.Mesh) {
         buffers.Vertices.Update(MeshRender::CreateVertices(pm, element));
@@ -1007,9 +1009,9 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
     if (SelectionMode == mode) return;
 
     SelectionMode = mode;
-    for (const auto &[entity, polymesh] : R.view<he::PolyMesh>().each()) {
+    for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
         const bool highlight_faces = SelectionMode == SelectionMode::Excite && R.try_get<Excitable>(entity);
-        polymesh.SetColor(highlight_faces ? MeshRender::HighlightedFaceColor : he::PolyMesh::DefaultFaceColor);
+        mesh.SetColor(highlight_faces ? MeshRender::HighlightedFaceColor : Mesh::DefaultFaceColor);
         UpdateRenderBuffers(entity);
     }
     const auto e = FindActiveEntity(R);
@@ -1017,7 +1019,7 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
         UpdateHighlightedVertices(e, *excitable);
     }
 }
-void Scene::SetEditingHandle(he::AnyHandle handle) {
+void Scene::SetEditingHandle(AnyHandle handle) {
     if (R.storage<Active>().empty()) return;
 
     EditingHandle = handle;
@@ -1045,17 +1047,17 @@ std::optional<uint> Scene::GetModelBufferIndex(entt::entity e) {
 }
 
 void Scene::UpdateRenderBuffers(entt::entity e) {
-    if (const auto *polymesh = R.try_get<he::PolyMesh>(e)) {
+    if (const auto *mesh = R.try_get<Mesh>(e)) {
         auto &mesh_buffers = R.get<MeshBuffers>(e);
         const bool is_active = GetParentEntity(FindActiveEntity(R)) == e;
-        const he::AnyHandle selected{
+        const AnyHandle selected{
             is_active && SelectionMode == SelectionMode::Edit       ? EditingHandle :
-                is_active && SelectionMode == SelectionMode::Excite ? he::AnyHandle{he::Element::Vertex, R.get<Excitable>(e).SelectedVertex()} :
-                                                                      he::AnyHandle{}
+                is_active && SelectionMode == SelectionMode::Excite ? AnyHandle{Element::Vertex, R.get<Excitable>(e).SelectedVertex()} :
+                                                                      AnyHandle{}
         };
         const auto &highlighted = R.get<MeshHighlightedHandles>(e).Handles;
-        for (const auto element : he::Elements) { // todo only update buffers for viewed elements.
-            mesh_buffers.Mesh.at(element).Vertices.Update(MeshRender::CreateVertices(*polymesh, element, selected, highlighted));
+        for (const auto element : Elements) { // todo only update buffers for viewed elements.
+            mesh_buffers.Mesh.at(element).Vertices.Update(MeshRender::CreateVertices(*mesh, element, selected, highlighted));
         }
         InvalidateCommandBuffer();
     };
@@ -1101,7 +1103,7 @@ void Scene::RecordRenderCommandBuffer() {
             for (const auto selected_entity : R.view<Selected>()) {
                 const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
                 const auto mesh_entity = GetParentEntity(selected_entity);
-                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(he::Element::Vertex);
+                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(Element::Vertex);
                 const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
                 Bind(cb, shader_pipeline, render_buffers, models);
                 const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
@@ -1133,13 +1135,13 @@ void Scene::RecordRenderCommandBuffer() {
     if (render_silhouette) main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth).RenderQuad(cb);
 
     { // Meshes
-        static auto GetPipelineElements = [](auto RenderMode, auto ColorMode) -> std::vector<std::pair<SPT, he::Element>> {
+        static auto GetPipelineElements = [](auto RenderMode, auto ColorMode) -> std::vector<std::pair<SPT, Element>> {
             const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
             switch (RenderMode) {
-                case RenderMode::Vertices: return {{fill_pipeline, he::Element::Vertex}};
-                case RenderMode::Edges: return {{SPT::Line, he::Element::Edge}};
-                case RenderMode::Faces: return {{fill_pipeline, he::Element::Face}};
-                case RenderMode::FacesAndEdges: return {{fill_pipeline, he::Element::Face}, {SPT::Line, he::Element::Edge}};
+                case RenderMode::Vertices: return {{fill_pipeline, Element::Vertex}};
+                case RenderMode::Edges: return {{SPT::Line, Element::Edge}};
+                case RenderMode::Faces: return {{fill_pipeline, Element::Face}};
+                case RenderMode::FacesAndEdges: return {{fill_pipeline, Element::Face}, {SPT::Line, Element::Edge}};
                 case RenderMode::None: return {};
             }
         };
@@ -1184,7 +1186,7 @@ void Scene::InvalidateCommandBuffer() {
 
 void Scene::UpdateEdgeColors() {
     MeshRender::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-    for (const auto e : R.view<he::PolyMesh>()) UpdateRenderBuffers(e);
+    for (const auto e : R.view<Mesh>()) UpdateRenderBuffers(e);
 }
 
 void Scene::UpdateTransformBuffers() {
@@ -1209,7 +1211,7 @@ void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable
         highlighted->Handles.clear();
         if (SelectionMode == SelectionMode::Excite) {
             for (const auto vertex : excitable.ExcitableVertices) {
-                highlighted->Handles.emplace(he::VH(vertex));
+                highlighted->Handles.emplace(VH(vertex));
             }
         }
         UpdateRenderBuffers(e);
@@ -1219,11 +1221,11 @@ void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable
 // todo selection overlays for _only selected instances_ (currently all instances of selected meshes)
 void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     const auto e = GetParentEntity(instance_entity);
-    const auto &polymesh = R.get<const he::PolyMesh>(e);
+    const auto &mesh = R.get<const Mesh>(e);
     auto &mesh_buffers = R.get<MeshBuffers>(e);
     for (const auto element : NormalElements) {
         if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
-            mesh_buffers.NormalIndicators.emplace(element, CreateRenderBuffers(MeshRender::CreateNormalVertices(polymesh, element), MeshRender::CreateNormalIndices(polymesh, element)));
+            mesh_buffers.NormalIndicators.emplace(element, CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element)));
         } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
             mesh_buffers.NormalIndicators.erase(element);
         }
@@ -1277,8 +1279,8 @@ std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::reg
     for (const auto &[e, model] : r.view<const Model, const Visible>().each()) {
         const auto parent = GetParentEntity(r, e);
         const auto &bvh = r.get<const BVH>(parent);
-        const auto &polymesh = r.get<const he::PolyMesh>(parent);
-        if (auto intersection = MeshIntersection::Intersect(bvh, polymesh, WorldToLocal(world_ray, model.InvTransform))) {
+        const auto &mesh = r.get<const Mesh>(parent);
+        if (auto intersection = MeshIntersection::Intersect(bvh, mesh, WorldToLocal(world_ray, model.InvTransform))) {
             entities_by_distance.emplace(intersection->Distance, e);
         }
     }
@@ -1309,9 +1311,9 @@ std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, cons
     for (const auto &[e, model] : r.view<const Model, const Visible>().each()) {
         const auto parent = GetParentEntity(r, e);
         const auto &bvh = r.get<const BVH>(parent);
-        const auto &polymesh = r.get<const he::PolyMesh>(parent);
+        const auto &mesh = r.get<const Mesh>(parent);
         const auto local_ray = WorldToLocal(world_ray, model.InvTransform);
-        if (auto intersection = MeshIntersection::Intersect(bvh, polymesh, local_ray);
+        if (auto intersection = MeshIntersection::Intersect(bvh, mesh, local_ray);
             intersection && intersection->Distance < nearest_distance) {
             nearest_distance = intersection->Distance;
             nearest = {e, *intersection, local_ray(nearest_distance)};
@@ -1358,9 +1360,9 @@ void Scene::Interact() {
             SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
         }
         if (SelectionMode == SelectionMode::Edit) {
-            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingHandle({he::Element::Vertex});
-            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingHandle({he::Element::Edge});
-            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingHandle({he::Element::Face});
+            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingHandle({Element::Vertex});
+            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingHandle({Element::Edge});
+            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingHandle({Element::Face});
         }
         if (!R.storage<Selected>().empty()) {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
@@ -1404,17 +1406,17 @@ void Scene::Interact() {
     const auto mouse_pos = (GetMousePos() - GetCursorScreenPos()) / size;
     const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
     if (SelectionMode == SelectionMode::Edit) {
-        if (EditingHandle.Element != he::Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
+        if (EditingHandle.Element != Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
             const auto &model = R.get<Model>(active_entity);
             const auto mouse_ray = WorldToLocal(mouse_ray_ws, model.InvTransform);
             const auto parent = GetParentEntity(active_entity);
             const auto &bvh = R.get<BVH>(parent);
-            const auto &polymesh = R.get<he::PolyMesh>(parent);
+            const auto &mesh = R.get<Mesh>(parent);
             {
-                const auto nearest_vertex = MeshIntersection::FindNearestVertex(bvh, polymesh, mouse_ray);
-                if (EditingHandle.Element == he::Element::Vertex) SetEditingHandle(he::AnyHandle{nearest_vertex});
-                else if (EditingHandle.Element == he::Element::Edge) SetEditingHandle(he::AnyHandle{MeshIntersection::FindNearestEdge(bvh, polymesh, mouse_ray)});
-                else if (EditingHandle.Element == he::Element::Face) SetEditingHandle(he::AnyHandle{MeshIntersection::FindNearestIntersectingFace(bvh, polymesh, mouse_ray)});
+                const auto nearest_vertex = MeshIntersection::FindNearestVertex(bvh, mesh, mouse_ray);
+                if (EditingHandle.Element == Element::Vertex) SetEditingHandle(AnyHandle{nearest_vertex});
+                else if (EditingHandle.Element == Element::Edge) SetEditingHandle(AnyHandle{MeshIntersection::FindNearestEdge(bvh, mesh, mouse_ray)});
+                else if (EditingHandle.Element == Element::Face) SetEditingHandle(AnyHandle{MeshIntersection::FindNearestIntersectingFace(bvh, mesh, mouse_ray)});
             }
         }
     } else if (SelectionMode == SelectionMode::Object) {
@@ -1438,10 +1440,10 @@ void Scene::Interact() {
                 // Find the nearest excitable vertex.
                 std::optional<uint> nearest_excite_vertex;
                 float min_dist_sq = std::numeric_limits<float>::max();
-                const auto &polymesh = R.get<he::PolyMesh>(GetParentEntity(nearest->Entity));
+                const auto &mesh = R.get<Mesh>(GetParentEntity(nearest->Entity));
                 const auto p = nearest->Position;
                 for (uint excite_vertex : excitable->ExcitableVertices) {
-                    const auto diff = p - polymesh.GetPosition(he::VH(excite_vertex));
+                    const auto diff = p - mesh.GetPosition(VH(excite_vertex));
                     if (float dist_sq = glm::dot(diff, diff); dist_sq < min_dist_sq) {
                         min_dist_sq = dist_sq;
                         nearest_excite_vertex = excite_vertex;
@@ -1635,7 +1637,7 @@ void Scene::RenderOverlay() {
 }
 
 namespace {
-std::optional<he::PolyMesh> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
+std::optional<Mesh> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
     const char *create_label = is_create ? "Add" : "Update";
     if (type == PrimitiveType::Rect) {
         static vec2 size{1, 1};
@@ -1716,9 +1718,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
 
     const auto active_mesh_entity = GetParentEntity(active_entity);
-    const auto &active_polymesh = R.get<const he::PolyMesh>(active_mesh_entity);
+    const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
     TextUnformatted(
-        std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_polymesh.VertexCount(), active_polymesh.EdgeCount(), active_polymesh.FaceCount()).c_str()
+        std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
     );
     Text("Model buffer index: %s", GetModelBufferIndex(active_entity) ? std::to_string(*GetModelBufferIndex(active_entity)).c_str() : "None");
     Unindent();
@@ -1816,8 +1818,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
         if (CollapsingHeader("Update primitive")) {
-            if (auto new_polymesh = PrimitiveEditor(*primitive_type, false)) {
-                ReplaceMesh(active_mesh_entity, std::move(*new_polymesh));
+            if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
+                ReplaceMesh(active_mesh_entity, std::move(*new_mesh));
                 InvalidateCommandBuffer();
             }
         }
@@ -1847,17 +1849,17 @@ void Scene::RenderControls() {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
                     auto type_selection_mode = int(EditingHandle.Element);
-                    for (const auto element : he::Elements) {
-                        auto name = Capitalize(he::label(element));
+                    for (const auto element : Elements) {
+                        auto name = Capitalize(label(element));
                         SameLine();
                         if (RadioButton(name.c_str(), &type_selection_mode, int(element))) {
                             SetEditingHandle({element});
                         }
                     }
-                    Text("Editing %s: %s", he::label(EditingHandle.Element).data(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
-                    if (EditingHandle.Element == he::Element::Vertex && EditingHandle && active_entity != entt::null) {
-                        const auto &polymesh = R.get<he::PolyMesh>(GetParentEntity(FindActiveEntity(R)));
-                        const auto pos = polymesh.GetPosition(he::VH{*EditingHandle});
+                    Text("Editing %s: %s", label(EditingHandle.Element).data(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
+                    if (EditingHandle.Element == Element::Vertex && EditingHandle && active_entity != entt::null) {
+                        const auto &mesh = R.get<Mesh>(GetParentEntity(FindActiveEntity(R)));
+                        const auto pos = mesh.GetPosition(VH{*EditingHandle});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingHandle, pos.x, pos.y, pos.z);
                     }
                 }
@@ -1956,7 +1958,7 @@ void Scene::RenderControls() {
                 for (const auto element : NormalElements) {
                     SameLine();
                     bool show = ShownNormalElements.contains(element);
-                    const auto type_name = Capitalize(he::label(element));
+                    const auto type_name = Capitalize(label(element));
                     if (Checkbox(type_name.c_str(), &show)) {
                         if (show) ShownNormalElements.insert(element);
                         else ShownNormalElements.erase(element);

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "mesh/halfedge/PolyMesh.h"
+#include "mesh/Mesh.h"
 
-inline he::PolyMesh Arrow(float base_radius = 0.15, float tip_radius = 0.3, float base_length = 0.75, float tip_length = 0.25, uint slices = 32) {
+inline Mesh Arrow(float base_radius = 0.15, float tip_radius = 0.3, float base_length = 0.75, float tip_length = 0.25, uint slices = 32) {
     std::vector<vec3> vertices;
     vertices.reserve(slices * 3 + 1);
     for (uint i = 0; i < slices; ++i) {

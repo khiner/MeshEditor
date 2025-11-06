@@ -42,7 +42,7 @@ constexpr std::optional<float> IntersectTriangle(vec3 o, vec3 d, vec3 p1, vec3 p
 
 constexpr std::optional<float> IntersectFace(const ray &ray, uint fi, const void *m) noexcept {
     const auto o = ray.o, d = ray.d;
-    const auto &pm = *reinterpret_cast<const PolyMesh *>(m);
+    const auto &pm = *reinterpret_cast<const Mesh *>(m);
     auto fv_it = pm.cfv_iter(FH(fi));
     const auto v0 = *fv_it++;
     VH v1 = *fv_it++, v2;
@@ -55,27 +55,27 @@ constexpr std::optional<float> IntersectFace(const ray &ray, uint fi, const void
 }
 } // namespace
 
-FH FindNearestIntersectingFace(const BVH &bvh, const PolyMesh &polymesh, const ray &ray, vec3 *nearest_intersect_point_out) {
-    if (auto intersection = bvh.IntersectNearest(ray, IntersectFace, &polymesh)) {
+FH FindNearestIntersectingFace(const BVH &bvh, const Mesh &mesh, const ray &ray, vec3 *nearest_intersect_point_out) {
+    if (auto intersection = bvh.IntersectNearest(ray, IntersectFace, &mesh)) {
         if (nearest_intersect_point_out) *nearest_intersect_point_out = ray(intersection->Distance);
         return {intersection->Index};
     }
     return {};
 }
 
-std::optional<Intersection> Intersect(const BVH &bvh, const PolyMesh &polymesh, const ray &ray) {
-    return bvh.IntersectNearest(ray, IntersectFace, &polymesh);
+std::optional<Intersection> Intersect(const BVH &bvh, const Mesh &mesh, const ray &ray) {
+    return bvh.IntersectNearest(ray, IntersectFace, &mesh);
 }
 
-VH FindNearestVertex(const BVH &bvh, const PolyMesh &polymesh, const ray &local_ray) {
+VH FindNearestVertex(const BVH &bvh, const Mesh &mesh, const ray &local_ray) {
     vec3 intersection_p;
-    const auto face = FindNearestIntersectingFace(bvh, polymesh, local_ray, &intersection_p);
+    const auto face = FindNearestIntersectingFace(bvh, mesh, local_ray, &intersection_p);
     if (!face) return {};
 
     VH closest_vertex{};
     float min_distance_sq = std::numeric_limits<float>::max();
-    for (const auto vh : polymesh.fv_range(face)) {
-        const auto diff = polymesh.GetPosition(vh) - intersection_p;
+    for (const auto vh : mesh.fv_range(face)) {
+        const auto diff = mesh.GetPosition(vh) - intersection_p;
         if (float distance_sq = glm::dot(diff, diff); distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;
             closest_vertex = vh;
@@ -85,18 +85,18 @@ VH FindNearestVertex(const BVH &bvh, const PolyMesh &polymesh, const ray &local_
     return closest_vertex;
 }
 
-EH FindNearestEdge(const BVH &bvh, const PolyMesh &polymesh, const ray &local_ray) {
+EH FindNearestEdge(const BVH &bvh, const Mesh &mesh, const ray &local_ray) {
     vec3 intersection_p;
-    const auto face = FindNearestIntersectingFace(bvh, polymesh, local_ray, &intersection_p);
+    const auto face = FindNearestIntersectingFace(bvh, mesh, local_ray, &intersection_p);
     if (!face) return {};
 
     EH closest_edge;
     float min_distance_sq = std::numeric_limits<float>::max();
-    for (auto heh : polymesh.fh_range(face)) {
-        const auto eh = polymesh.GetEdge(heh);
-        const auto heh0 = polymesh.GetHalfedge(eh, 0);
-        const auto p1 = polymesh.GetPosition(polymesh.GetFromVertex(heh0));
-        const auto p2 = polymesh.GetPosition(polymesh.GetToVertex(heh0));
+    for (auto heh : mesh.fh_range(face)) {
+        const auto eh = mesh.GetEdge(heh);
+        const auto heh0 = mesh.GetHalfedge(eh, 0);
+        const auto p1 = mesh.GetPosition(mesh.GetFromVertex(heh0));
+        const auto p2 = mesh.GetPosition(mesh.GetToVertex(heh0));
         if (float distance_sq = SquaredDistanceToLineSegment(p1, p2, intersection_p);
             distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;

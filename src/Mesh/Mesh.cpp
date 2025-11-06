@@ -1,4 +1,4 @@
-#include "PolyMesh.h"
+#include "Mesh.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
@@ -14,14 +14,13 @@
 
 using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
 
-namespace he {
 namespace {
 constexpr uint64_t MakeEdgeKey(uint from, uint to) {
     return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
 }
 } // namespace
 
-PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces) {
+Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces) {
     // Reserve and initialize vertex data
     Positions = std::move(vertices);
     Normals.resize(Positions.size());
@@ -71,7 +70,7 @@ PolyMesh::PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> 
     SetColor(DefaultFaceColor);
 }
 
-VH PolyMesh::GetFromVertex(HH hh) const {
+he::VH Mesh::GetFromVertex(HH hh) const {
     assert(*hh < Halfedges.size());
     const auto opp = Halfedges[*hh].Opposite;
     if (opp) return Halfedges[*opp].Vertex;
@@ -82,10 +81,10 @@ VH PolyMesh::GetFromVertex(HH hh) const {
     return it != range.end() ? Halfedges[**it].Vertex : VH{};
 }
 
-uint PolyMesh::GetValence(VH vh) const { return distance(voh_range(vh)); }
-uint PolyMesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
+uint Mesh::GetValence(VH vh) const { return distance(voh_range(vh)); }
+uint Mesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
 
-vec3 PolyMesh::CalcFaceCentroid(FH fh) const {
+vec3 Mesh::CalcFaceCentroid(FH fh) const {
     assert(*fh < Faces.size());
     vec3 centroid{0};
     uint count{0};
@@ -96,7 +95,7 @@ vec3 PolyMesh::CalcFaceCentroid(FH fh) const {
     return count > 0 ? centroid / static_cast<float>(count) : centroid;
 }
 
-float PolyMesh::CalcEdgeLength(HH hh) const {
+float Mesh::CalcEdgeLength(HH hh) const {
     assert(*hh < Halfedges.size());
     const auto from_v = GetFromVertex(hh);
     const auto to_v = Halfedges[*hh].Vertex;
@@ -104,7 +103,7 @@ float PolyMesh::CalcEdgeLength(HH hh) const {
     return glm::length(Positions[*to_v] - Positions[*from_v]);
 }
 
-void PolyMesh::ComputeFaceNormals() {
+void Mesh::ComputeFaceNormals() {
     for (uint fi = 0; fi < FaceCount(); ++fi) {
         auto it = cfv_iter(FH(fi));
         const auto p0 = Positions[**it];
@@ -114,7 +113,7 @@ void PolyMesh::ComputeFaceNormals() {
     }
 }
 
-void PolyMesh::ComputeVertexNormals() {
+void Mesh::ComputeVertexNormals() {
     // Reset all vertex normals
     for (auto &n : Normals) n = vec3{0};
 
@@ -130,7 +129,7 @@ void PolyMesh::ComputeVertexNormals() {
     for (auto &n : Normals) n = glm::normalize(n);
 }
 
-float PolyMesh::CalcFaceArea(FH fh) const {
+float Mesh::CalcFaceArea(FH fh) const {
     assert(*fh < FaceCount());
     float area{0};
     auto fv_it = cfv_iter(fh);
@@ -144,7 +143,7 @@ float PolyMesh::CalcFaceArea(FH fh) const {
     return area;
 }
 
-VH PolyMesh::FindNearestVertex(vec3 p) const {
+he::VH Mesh::FindNearestVertex(vec3 p) const {
     VH closest_vertex;
     float min_distance_sq = std::numeric_limits<float>::max();
     for (const auto vh : vertices()) {
@@ -157,25 +156,25 @@ VH PolyMesh::FindNearestVertex(vec3 p) const {
     return closest_vertex;
 }
 
-bool PolyMesh::VertexBelongsToFace(VH vh, FH fh) const {
+bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
     return vh && fh && any_of(fv_range(fh), [vh](const auto &fv) { return fv == vh; });
 }
 
-bool PolyMesh::VertexBelongsToEdge(VH vh, EH eh) const {
+bool Mesh::VertexBelongsToEdge(VH vh, EH eh) const {
     return vh && eh && any_of(voh_range(vh), [&](const auto &heh) { return GetEdge(heh) == eh; });
 }
 
-bool PolyMesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
+bool Mesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
     return fh && eh && any_of(voh_range(vh), [&](const auto &heh) {
                return GetEdge(heh) == eh && (GetFace(heh) == fh || GetFace(GetOppositeHalfedge(heh)) == fh);
            });
 }
 
-bool PolyMesh::EdgeBelongsToFace(EH eh, FH fh) const {
+bool Mesh::EdgeBelongsToFace(EH eh, FH fh) const {
     return eh && fh && any_of(fh_range(fh), [&](const auto &heh) { return GetEdge(heh) == eh; });
 }
 
-std::vector<uint> PolyMesh::CreateTriangleIndices() const {
+std::vector<uint> Mesh::CreateTriangleIndices() const {
     std::vector<uint> indices;
     for (const auto fh : faces()) {
         auto fv_it = cfv_iter(fh);
@@ -190,7 +189,7 @@ std::vector<uint> PolyMesh::CreateTriangleIndices() const {
     return indices;
 }
 
-std::vector<uint> PolyMesh::CreateTriangulatedFaceIndices() const {
+std::vector<uint> Mesh::CreateTriangulatedFaceIndices() const {
     std::vector<uint> indices;
     uint index = 0;
     for (const auto fh : faces()) {
@@ -203,7 +202,7 @@ std::vector<uint> PolyMesh::CreateTriangulatedFaceIndices() const {
     return indices;
 }
 
-std::vector<uint> PolyMesh::CreateEdgeIndices() const {
+std::vector<uint> Mesh::CreateEdgeIndices() const {
     std::vector<uint> indices;
     indices.reserve(EdgeCount() * 2);
     for (uint ei = 0; ei < EdgeCount(); ++ei) {
@@ -213,7 +212,7 @@ std::vector<uint> PolyMesh::CreateEdgeIndices() const {
     return indices;
 }
 
-PolyMesh PolyMesh::WithDeduplicatedVertices() const {
+Mesh Mesh::WithDeduplicatedVertices() const {
     struct VertexHash {
         constexpr size_t operator()(const vec3 &p) const noexcept {
             return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
@@ -243,7 +242,7 @@ PolyMesh PolyMesh::WithDeduplicatedVertices() const {
 }
 
 namespace {
-std::optional<PolyMesh> ReadObj(const std::filesystem::path &path) {
+std::optional<Mesh> ReadObj(const std::filesystem::path &path) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -275,10 +274,10 @@ std::optional<PolyMesh> ReadObj(const std::filesystem::path &path) {
         }
     }
 
-    return PolyMesh{std::move(vertices), std::move(faces)};
+    return Mesh{std::move(vertices), std::move(faces)};
 }
 
-std::optional<PolyMesh> ReadPly(const std::filesystem::path &path) {
+std::optional<Mesh> ReadPly(const std::filesystem::path &path) {
     try {
         std::ifstream file{path, std::ios::binary};
         if (!file) return {};
@@ -339,19 +338,18 @@ std::optional<PolyMesh> ReadPly(const std::filesystem::path &path) {
             face_list.emplace_back(std::move(face_verts));
         }
 
-        return PolyMesh{std::move(vertex_list), std::move(face_list)};
+        return Mesh{std::move(vertex_list), std::move(face_list)};
     } catch (...) {
         return {};
     }
 }
 } // namespace
 
-std::optional<PolyMesh> PolyMesh::Load(const std::filesystem::path &path) {
+std::optional<Mesh> Mesh::Load(const std::filesystem::path &path) {
     const auto ext = path.extension().string();
     // Try obj as default, even if it's not .obj
-    auto polymesh = ext == ".ply" || ext == ".PLY" ? ReadPly(path) : ReadObj(path);
-    if (!polymesh) return {};
+    auto mesh = ext == ".ply" || ext == ".PLY" ? ReadPly(path) : ReadObj(path);
+    if (!mesh) return {};
     // Deduplicate even if not strictly triangle soup. Assumes this is a surface mesh.
-    return polymesh->WithDeduplicatedVertices();
+    return mesh->WithDeduplicatedVertices();
 }
-} // namespace he

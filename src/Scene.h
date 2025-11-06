@@ -7,9 +7,9 @@
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "Vulkan/UniqueBuffers.h"
+#include "mesh/Handle.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Vertex.h"
-#include "mesh/halfedge/Handle.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
@@ -38,12 +38,6 @@ struct RenderBuffers {
 struct Path {
     fs::path Value;
 };
-
-namespace he {
-struct PolyMesh;
-} // namespace he
-
-struct Excitable;
 
 struct Position {
     vec3 Value;
@@ -175,6 +169,9 @@ struct SceneVulkanResources {
     vk::DescriptorPool DescriptorPool;
 };
 
+struct Mesh;
+struct Excitable;
+
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
@@ -183,13 +180,13 @@ struct Scene {
 
     World World{};
 
-    entt::entity AddMesh(he::PolyMesh &&, MeshCreateInfo = {});
+    entt::entity AddMesh(Mesh &&, MeshCreateInfo = {});
     entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
 
-    void ReplaceMesh(entt::entity, he::PolyMesh &&);
+    void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
 
     void DestroyInstance(entt::entity);

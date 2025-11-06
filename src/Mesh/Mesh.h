@@ -9,15 +9,19 @@
 #include <unordered_map>
 #include <vector>
 
-namespace he {
-// Core half-edge mesh structure
-struct PolyMesh {
+// Half-edge polymesh data structure
+struct Mesh {
+    using VH = he::VH;
+    using HH = he::HH;
+    using EH = he::EH;
+    using FH = he::FH;
+
     static constexpr vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
 
-    PolyMesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
+    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
 
     // obj/ply
-    static std::optional<PolyMesh> Load(const std::filesystem::path &);
+    static std::optional<Mesh> Load(const std::filesystem::path &);
 
     uint VertexCount() const { return Positions.size(); }
     uint EdgeCount() const { return Edges.size(); }
@@ -118,13 +122,13 @@ struct PolyMesh {
     FaceRange faces() const { return {FaceCount()}; }
 
     struct CirculatorBase {
-        const PolyMesh *Mesh{};
+        const Mesh *M{};
         HH CurrentHalfedge{};
         HH StartHalfedge{};
 
         CirculatorBase() = default;
-        CirculatorBase(const PolyMesh *m, HH current, HH start)
-            : Mesh(m), CurrentHalfedge(current), StartHalfedge(start) {}
+        CirculatorBase(const Mesh *m, HH current, HH start)
+            : M(m), CurrentHalfedge(current), StartHalfedge(start) {}
 
         auto &operator++(this auto &self) {
             self.CurrentHalfedge = self.advance();
@@ -147,12 +151,12 @@ struct PolyMesh {
 
         using CirculatorBase::CirculatorBase;
 
-        VH operator*() const { return Mesh->GetToVertex(CurrentHalfedge); }
-        HH advance() const { return Mesh->Halfedges[*CurrentHalfedge].Next; }
+        VH operator*() const { return M->GetToVertex(CurrentHalfedge); }
+        HH advance() const { return M->Halfedges[*CurrentHalfedge].Next; }
         operator bool() const { return CurrentHalfedge; }
     };
     struct FaceVertexRange {
-        const PolyMesh *Mesh;
+        const Mesh *Mesh;
         HH StartHalfedge;
         FaceVertexIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
         FaceVertexIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
@@ -174,12 +178,12 @@ struct PolyMesh {
 
         HH operator*() const { return CurrentHalfedge; }
         HH advance() const {
-            const auto opp = Mesh->Halfedges[*CurrentHalfedge].Opposite;
-            return opp ? Mesh->Halfedges[*opp].Next : HH{};
+            const auto opp = M->Halfedges[*CurrentHalfedge].Opposite;
+            return opp ? M->Halfedges[*opp].Next : HH{};
         }
     };
     struct VertexOutgoingHalfedgeRange {
-        const PolyMesh *Mesh;
+        const Mesh *Mesh;
         HH StartHalfedge;
         VertexOutgoingHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
         VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
@@ -196,10 +200,10 @@ struct PolyMesh {
         using CirculatorBase::CirculatorBase;
 
         HH operator*() const { return CurrentHalfedge; }
-        HH advance() const { return Mesh->Halfedges[*CurrentHalfedge].Next; }
+        HH advance() const { return M->Halfedges[*CurrentHalfedge].Next; }
     };
     struct FaceHalfedgeRange {
-        const PolyMesh *Mesh; // Always valid, never null
+        const Mesh *Mesh; // Always valid, never null
         HH StartHalfedge;
         FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
         FaceHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
@@ -232,6 +236,5 @@ private:
     void ComputeVertexNormals();
     void ComputeFaceNormals();
 
-    PolyMesh WithDeduplicatedVertices() const;
+    Mesh WithDeduplicatedVertices() const;
 };
-} // namespace he

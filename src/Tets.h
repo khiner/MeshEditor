@@ -4,9 +4,7 @@
 
 #include "numeric/vec3.h"
 
-namespace he {
-struct PolyMesh;
-}
+struct Mesh;
 
 // See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
 struct TetGenOptions {
@@ -19,4 +17,4 @@ struct TetGenOptions {
 
 class tetgenio;
 
-std::unique_ptr<tetgenio> GenerateTets(const he::PolyMesh &, vec3 scale, TetGenOptions);
+std::unique_ptr<tetgenio> GenerateTets(const Mesh &, vec3 scale, TetGenOptions);

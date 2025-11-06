@@ -2,8 +2,8 @@
 
 #include "BBox.h"
 #include "BVH.h"
+#include "Mesh.h"
 #include "Vertex.h"
-#include "halfedge/PolyMesh.h"
 #include "numeric/vec4.h"
 
 #include <unordered_set>
@@ -29,19 +29,19 @@ constexpr float NormalIndicatorLengthScale{0.25};
 // Face: Triangle fan for each face
 // Edge: Edge line segment indices
 std::vector<Vertex3D> CreateVertices(
-    const he::PolyMesh &polymesh,
+    const Mesh &mesh,
     he::Element render_element,
     const he::AnyHandle &selected = {},
     const std::unordered_set<he::AnyHandle, he::AnyHandleHash> &highlighted = {}
 );
-std::vector<uint> CreateIndices(const he::PolyMesh &polymesh, he::Element element);
+std::vector<uint> CreateIndices(const Mesh &mesh, he::Element element);
 
-std::vector<Vertex3D> CreateNormalVertices(const he::PolyMesh &polymesh, he::Element element);
-std::vector<uint> CreateNormalIndices(const he::PolyMesh &polymesh, he::Element element);
+std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, he::Element element);
+std::vector<uint> CreateNormalIndices(const Mesh &mesh, he::Element element);
 
-std::vector<BBox> CreateFaceBoundingBoxes(const he::PolyMesh &polymesh);
+std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &mesh);
 RenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color);
 
-BBox ComputeBoundingBox(const he::PolyMesh &polymesh);
+BBox ComputeBoundingBox(const Mesh &mesh);
 
 } // namespace MeshRender

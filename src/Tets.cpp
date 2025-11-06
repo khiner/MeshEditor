@@ -1,11 +1,11 @@
 #include "Tets.h"
-#include "mesh/halfedge/PolyMesh.h"
+#include "mesh/Mesh.h"
 
 #include "tetgen.h"
 
 #include <format>
 
-std::unique_ptr<tetgenio> GenerateTets(const he::PolyMesh &mesh, vec3 scale, TetGenOptions options) {
+std::unique_ptr<tetgenio> GenerateTets(const Mesh &mesh, vec3 scale, TetGenOptions options) {
     static constexpr int TriVerts = 3;
     tetgenio in;
     const float *vertices = mesh.GetPositionData();
