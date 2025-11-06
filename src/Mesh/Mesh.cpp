@@ -93,7 +93,7 @@ std::vector<BBox> Mesh::CreateFaceBoundingBoxes() const {
     for (auto fh : M.faces()) {
         BBox box;
         for (auto vh : M.fv_range(fh)) {
-            const auto p = GetPosition(vh);
+            const auto p = M.GetPosition(vh);
             box.Min = glm::min(box.Min, p);
             box.Max = glm::max(box.Max, p);
         }
@@ -131,8 +131,6 @@ FH Mesh::FindNearestIntersectingFace(const ray &ray, vec3 *nearest_intersect_poi
 std::optional<Intersection> Mesh::Intersect(const ray &ray) const {
     return Bvh->IntersectNearest(ray, IntersectFace, &M);
 }
-
-VH Mesh::FindNearestVertex(vec3 p) const { return M.FindNearestVertex(p); }
 
 VH Mesh::FindNearestVertex(const ray &local_ray) const {
     vec3 intersection_p;
@@ -226,7 +224,7 @@ std::vector<Vertex3D> Mesh::CreateVertices(Element render_element, const AnyHand
                 render_element == Element::Vertex ? VertexColor :
                 render_element == Element::Edge   ? EdgeColor :
                                                     M.GetColor(FH(parent));
-            vertices.emplace_back(GetPosition(vh), normal, color);
+            vertices.emplace_back(M.GetPosition(vh), normal, color);
         }
     }
 
@@ -239,13 +237,13 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(Element element) const {
         // Line for each vertex normal, with length scaled by the average edge length.
         vertices.reserve(M.VertexCount() * 2);
         for (const auto vh : M.vertices()) {
-            const auto vn = GetVertexNormal(vh);
+            const auto vn = M.GetNormal(vh);
             const auto &voh_range = M.voh_range(vh);
             const float total_edge_length = std::reduce(voh_range.begin(), voh_range.end(), 0.f, [&](float total, const auto &heh) {
                 return total + M.CalcEdgeLength(heh);
             });
             const float avg_edge_length = total_edge_length / M.GetValence(vh);
-            const auto p = GetPosition(vh);
+            const auto p = M.GetPosition(vh);
             vertices.emplace_back(p, vn, VertexNormalIndicatorColor);
             vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn, VertexNormalIndicatorColor);
         }
@@ -253,7 +251,7 @@ std::vector<Vertex3D> Mesh::CreateNormalVertices(Element element) const {
         // Line for each face normal, with length scaled by the face area.
         vertices.reserve(M.FaceCount() * 2);
         for (const auto fh : M.faces()) {
-            const auto fn = GetFaceNormal(fh);
+            const auto fn = M.GetNormal(fh);
             const auto p = M.CalcFaceCentroid(fh);
             vertices.emplace_back(p, fn, FaceNormalIndicatorColor);
             vertices.emplace_back(p + NormalIndicatorLengthScale * std::sqrt(M.CalcFaceArea(fh)) * fn, fn, FaceNormalIndicatorColor);

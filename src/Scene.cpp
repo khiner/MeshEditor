@@ -775,12 +775,13 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     // Orient the camera towards the excited vertex.
     const auto vh = he::VH(excited_vertex.Vertex);
     const auto &mesh = r.get<Mesh>(e);
+    const auto &polymesh = mesh.GetPolyMesh();
     const auto &transform = r.get<Model>(e).Transform;
-    const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
+    const vec3 vertex_pos{transform * vec4{polymesh.GetPosition(vh), 1}};
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
 
     // Create vertex indicator arrow pointing at the excited vertex.
-    const vec3 normal{transform * vec4{mesh.GetVertexNormal(vh), 0}};
+    const vec3 normal{transform * vec4{polymesh.GetNormal(vh), 0}};
     const float scale_factor = 0.1f * mesh.BoundingBox.DiagonalLength();
     auto vertex_indicator_mesh = Arrow();
     vertex_indicator_mesh.SetColor({1, 0, 0, 1});
@@ -994,7 +995,7 @@ void Scene::SetSelectionMode(::SelectionMode mode) {
     SelectionMode = mode;
     for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
         const bool highlight_faces = SelectionMode == SelectionMode::Excite && R.try_get<Excitable>(entity);
-        mesh.SetColor(highlight_faces ? Mesh::HighlightedFaceColor : he::PolyMesh::DefaultFaceColor);
+        mesh.GetPolyMesh().SetColor(highlight_faces ? Mesh::HighlightedFaceColor : he::PolyMesh::DefaultFaceColor);
         UpdateRenderBuffers(entity);
     }
     const auto e = FindActiveEntity(R);
@@ -1413,7 +1414,7 @@ void Scene::Interact() {
                 // Find the nearest excitable vertex.
                 std::optional<uint> nearest_excite_vertex;
                 float min_dist_sq = std::numeric_limits<float>::max();
-                const auto &mesh = R.get<Mesh>(GetParentEntity(nearest->Entity));
+                const auto &mesh = R.get<Mesh>(GetParentEntity(nearest->Entity)).GetPolyMesh();
                 const auto p = nearest->Position;
                 for (uint excite_vertex : excitable->ExcitableVertices) {
                     const auto diff = p - mesh.GetPosition(he::VH(excite_vertex));
@@ -1691,7 +1692,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
 
     const auto active_mesh_entity = GetParentEntity(active_entity);
-    const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
+    const auto &active_mesh = R.get<const Mesh>(active_mesh_entity).GetPolyMesh();
     TextUnformatted(
         std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
     );
@@ -1832,7 +1833,7 @@ void Scene::RenderControls() {
                     Text("Editing %s: %s", he::label(EditingHandle.Element).data(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
                     if (EditingHandle.Element == he::Element::Vertex && EditingHandle && active_entity != entt::null) {
                         const auto &mesh = GetActiveMesh();
-                        const auto pos = mesh.GetPosition(he::VH{*EditingHandle});
+                        const auto pos = mesh.GetPolyMesh().GetPosition(he::VH{*EditingHandle});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingHandle, pos.x, pos.y, pos.z);
                     }
                 }

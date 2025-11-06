@@ -653,7 +653,7 @@ void AcousticScene::Draw(entt::entity e) {
             Checkbox("Copy excitable vertices", &info.CopyExcitable);
         }
         if (!excitable || !info.CopyExcitable) {
-            const uint num_vertices = R.get<Mesh>(e).VertexCount();
+            const uint num_vertices = R.get<Mesh>(e).GetPolyMesh().VertexCount();
             info.NumExcitableVertices = std::min(info.NumExcitableVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
             SliderScalar("Num excitable vertices", ImGuiDataType_U32, &info.NumExcitableVertices, &min_vertices, &max_vertices);

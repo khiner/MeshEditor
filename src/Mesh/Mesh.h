@@ -52,20 +52,8 @@ struct Mesh {
 
     const Mesh &operator=(Mesh &&);
 
-    bool operator==(const Mesh &other) const { return &M == &other.M; }
     const PolyMesh &GetPolyMesh() const { return M; }
-
-    uint VertexCount() const { return M.VertexCount(); }
-    uint EdgeCount() const { return M.EdgeCount(); }
-    uint FaceCount() const { return M.FaceCount(); }
-    bool Empty() const { return VertexCount() == 0; }
-
-    vec3 GetPosition(VH vh) const { return M.GetPosition(vh); }
-    vec3 GetVertexNormal(VH vh) const { return M.GetNormal(vh); }
-    const float *GetPositionData() const { return M.GetPositionData(); }
-
-    vec3 GetFaceCenter(FH fh) const { return M.CalcFaceCentroid(fh); }
-    vec3 GetFaceNormal(FH fh) const { return M.GetNormal(fh); }
+    PolyMesh &GetPolyMesh() { return M; }
 
     std::vector<Vertex3D> CreateVertices(he::Element, const he::AnyHandle &select = {}) const;
     std::vector<uint> CreateIndices(he::Element) const;
@@ -79,12 +67,8 @@ struct Mesh {
     void HighlightVertex(VH vh) { HighlightedHandles.emplace(vh); }
     void ClearHighlights() { HighlightedHandles.clear(); }
 
-    void SetColor(FH fh, vec4 color) { M.SetColor(fh, color); }
-    void SetColor(vec4 color) { M.SetColor(color); }
-
     std::optional<Intersection> Intersect(const ray &local_ray) const;
 
-    VH FindNearestVertex(vec3) const;
     // Returns a handle to the vertex nearest to the intersection point on the first intersecting face, or an invalid handle if no face intersects.
     VH FindNearestVertex(const ray &local_ray) const;
 

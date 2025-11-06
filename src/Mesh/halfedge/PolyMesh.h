@@ -48,6 +48,7 @@ struct PolyMesh {
     VH GetToVertex(HH hh) const { return Halfedges[*hh].Vertex; }
 
     // Valence
+    bool Empty() const { return VertexCount() == 0; }
     uint GetValence(VH) const;
     uint GetValence(FH) const;
 
