@@ -175,15 +175,6 @@ bool PolyMesh::EdgeBelongsToFace(EH eh, FH fh) const {
     return eh && fh && any_of(fh_range(fh), [&](const auto &heh) { return GetEdge(heh) == eh; });
 }
 
-std::vector<uint> PolyMesh::CreateIndices(Element element) const {
-    switch (element) {
-        case Element::Vertex: return CreateTriangleIndices();
-        case Element::Edge: return CreateEdgeIndices();
-        case Element::Face: return CreateTriangulatedFaceIndices();
-        case Element::None: return {};
-    }
-}
-
 std::vector<uint> PolyMesh::CreateTriangleIndices() const {
     std::vector<uint> indices;
     for (const auto fh : faces()) {

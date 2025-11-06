@@ -10,8 +10,8 @@
 #include "Tets.h"
 #include "Widgets.h" // imgui
 #include "Worker.h"
-#include "mesh/Mesh.h"
 #include "mesh/Primitives.h"
+#include "mesh/halfedge/PolyMesh.h"
 
 #include "implot.h"
 #include "mesh2faust.h"
@@ -107,7 +107,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         auto impact_positions = RealImpact::LoadPositions(directory);
         // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
         // so we don't even load them. Instead, we look up by position here.
-        const auto &polymesh = R.get<Mesh>(e).GetPolyMesh();
+        const auto &polymesh = R.get<he::PolyMesh>(e);
         for (uint i = 0; i < impact_positions.size(); ++i) {
             vertex_indices[i] = uint(*polymesh.FindNearestVertex(impact_positions[i]));
         }
@@ -653,7 +653,7 @@ void AcousticScene::Draw(entt::entity e) {
             Checkbox("Copy excitable vertices", &info.CopyExcitable);
         }
         if (!excitable || !info.CopyExcitable) {
-            const uint num_vertices = R.get<Mesh>(e).GetPolyMesh().VertexCount();
+            const uint num_vertices = R.get<he::PolyMesh>(e).VertexCount();
             info.NumExcitableVertices = std::min(info.NumExcitableVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
             SliderScalar("Num excitable vertices", ImGuiDataType_U32, &info.NumExcitableVertices, &min_vertices, &max_vertices);
@@ -750,7 +750,7 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, const Mod
     // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
     // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
-    const auto &polymesh = R.get<const Mesh>(e).GetPolyMesh();
+    const auto &polymesh = R.get<const he::PolyMesh>(e);
     // Use impact model vertices or linearly distribute the vertices across the tet mesh.
     const auto num_vertices = polymesh.VertexCount();
     const auto excitable = info.CopyExcitable && R.all_of<Excitable>(e) ?

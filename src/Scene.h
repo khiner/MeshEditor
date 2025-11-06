@@ -43,9 +43,7 @@ namespace he {
 struct PolyMesh;
 } // namespace he
 
-struct Mesh;
 struct Excitable;
-struct RenderBuffers; // Mesh render buffers
 
 struct Position {
     vec3 Value;
@@ -185,7 +183,7 @@ struct Scene {
 
     World World{};
 
-    entt::entity AddMesh(Mesh &&, MeshCreateInfo = {});
+    entt::entity AddMesh(he::PolyMesh &&, MeshCreateInfo = {});
     entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
@@ -307,8 +305,6 @@ private:
     void SetSelectionMode(::SelectionMode);
     void SetEditingHandle(he::AnyHandle);
 
-    const Mesh &GetActiveMesh() const;
-
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
 
@@ -326,7 +322,6 @@ private:
             mvk::UniqueBuffers(BufferContext, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
         };
     }
-    mvk::RenderBuffers CreateRenderBuffers(RenderBuffers &&);
 
     template<size_t N>
     mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) const {

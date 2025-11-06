@@ -9,7 +9,7 @@ std::unique_ptr<tetgenio> GenerateTets(const he::PolyMesh &mesh, vec3 scale, Tet
     static constexpr int TriVerts = 3;
     tetgenio in;
     const float *vertices = mesh.GetPositionData();
-    const auto triangle_indices = mesh.CreateIndices(he::Element::Vertex);
+    const auto triangle_indices = mesh.CreateTriangleIndices();
     in.numberofpoints = mesh.VertexCount();
     in.pointlist = new REAL[in.numberofpoints * TriVerts];
     for (uint i = 0; i < uint(in.numberofpoints); ++i) {

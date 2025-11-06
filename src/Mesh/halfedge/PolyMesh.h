@@ -64,10 +64,9 @@ struct PolyMesh {
     bool VertexBelongsToFaceEdge(VH, FH, EH) const;
     bool EdgeBelongsToFace(EH, FH) const;
 
-    // Vertex: Triangulated face indices
-    // Face: Triangle fan for each face
-    // Edge: Edge line segment indices
-    std::vector<uint> CreateIndices(he::Element) const;
+    std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices
+    std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face
+    std::vector<uint> CreateEdgeIndices() const; // Edge line segment indices
 
     // Iterators
     struct VertexIterator {
@@ -232,10 +231,6 @@ private:
 
     void ComputeVertexNormals();
     void ComputeFaceNormals();
-
-    std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices
-    std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face
-    std::vector<uint> CreateEdgeIndices() const; // Edge line segment indices
 
     PolyMesh WithDeduplicatedVertices() const;
 };
