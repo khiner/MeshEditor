@@ -23,28 +23,6 @@ enum IO {
 constexpr IO IO_All[] = {IO_In, IO_Out};
 constexpr uint IO_Count = 2;
 
-// Copied from `miniaudio.c::g_maStandardSampleRatePriorities`.
-const std::vector<uint> PrioritizedSampleRates{
-    ma_standard_sample_rate_48000,
-    ma_standard_sample_rate_44100,
-
-    ma_standard_sample_rate_32000,
-    ma_standard_sample_rate_24000,
-    ma_standard_sample_rate_22050,
-
-    ma_standard_sample_rate_88200,
-    ma_standard_sample_rate_96000,
-    ma_standard_sample_rate_176400,
-    ma_standard_sample_rate_192000,
-
-    ma_standard_sample_rate_16000,
-    ma_standard_sample_rate_11025,
-    ma_standard_sample_rate_8000,
-
-    ma_standard_sample_rate_352800,
-    ma_standard_sample_rate_384000,
-};
-
 ma_context AudioContext;
 ma_device Device;
 

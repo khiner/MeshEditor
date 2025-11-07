@@ -2,8 +2,8 @@
 
 #include "AcousticMaterialProperties.h"
 
+#include <array>
 #include <string>
-#include <vector>
 
 struct AcousticMaterial {
     std::string Name;
@@ -36,6 +36,6 @@ constexpr AcousticMaterial
     Polycarbonate{"Polycarbonate", {1190, 2.4E9, 0.37, 0.5, 4E-7}},
     Steel{"Steel", {7850, 2.0E11, 0.29, 5, 3E-8}};
 
-const std::vector<AcousticMaterial> All{Ceramic, Glass, Wood, Plastic, Iron, Polycarbonate, Steel};
+constexpr std::array All{Ceramic, Glass, Wood, Plastic, Iron, Polycarbonate, Steel};
 } // namespace acoustic
 } // namespace materials
