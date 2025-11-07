@@ -814,20 +814,22 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
     const auto parent = GetParentEntity(entity);
-    auto &node = R.get<SceneNode>(entity);
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     if (visible) {
-        node.ModelBufferIndex = model_buffer.UsedSize / sizeof(Model);
+        auto &render_instance = R.emplace_or_replace<RenderInstance>(entity);
+        render_instance.BufferIndex = model_buffer.UsedSize / sizeof(Model);
         model_buffer.Insert(as_bytes(R.get<Model>(entity)), model_buffer.UsedSize);
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
-        const uint old_model_index = node.ModelBufferIndex;
+        const uint old_model_index = R.get<RenderInstance>(entity).BufferIndex;
         model_buffer.Erase(old_model_index * sizeof(Model), sizeof(Model));
         auto &parent_node = R.get<SceneNode>(parent);
         for (auto child : parent_node.Children) {
-            if (auto &child_node = R.get<SceneNode>(child); child_node.ModelBufferIndex > old_model_index) {
-                --child_node.ModelBufferIndex;
+            if (auto *child_render_instance = R.try_get<RenderInstance>(child)) {
+                if (child_render_instance->BufferIndex > old_model_index) {
+                    --child_render_instance->BufferIndex;
+                }
             }
         }
     }
@@ -1043,7 +1045,7 @@ void Scene::WaitFor(vk::Fence fence) const {
 // Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
 std::optional<uint> Scene::GetModelBufferIndex(entt::entity e) {
     if (e == entt::null || !R.all_of<Visible>(e)) return std::nullopt;
-    return R.get<SceneNode>(e).ModelBufferIndex;
+    return R.get<RenderInstance>(e).BufferIndex;
 }
 
 void Scene::UpdateRenderBuffers(entt::entity e) {

@@ -20,10 +20,13 @@ struct Active {};
 struct Visible {}; // Visible in the scene
 struct Frozen {}; // Disable entity transform changes
 
+struct RenderInstance {
+    uint32_t BufferIndex{0}; // slot in GPU model instance buffer
+};
+
 struct SceneNode {
     entt::entity Parent{entt::null};
     std::vector<entt::entity> Children{};
-    uint32_t ModelBufferIndex{0}; // Index in the contiguous model buffer.
 };
 
 std::string IdString(entt::entity);
