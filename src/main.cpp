@@ -321,7 +321,7 @@ int main(int, char **) {
 
     NFD_Init();
     entt::registry r;
-    std::unique_ptr<Scene> scene = std::make_unique<Scene>(
+    auto scene = std::make_unique<Scene>(
         SceneVulkanResources{
             *vc->Instance,
             vc->PhysicalDevice,

@@ -303,7 +303,7 @@ private:
     void SetEditingHandle(he::AnyHandle);
 
     void RenderEntityControls(entt::entity);
-    void RenderEntitiesTable(std::string name, const std::vector<entt::entity> &);
+    void RenderEntitiesTable(std::string name, entt::entity parent);
 
     // VK buffer update methods
     void UpdateTransformBuffers();

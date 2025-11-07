@@ -21,7 +21,7 @@
 #include <ranges>
 #include <variant>
 
-using std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
+using std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;
 
 using namespace he;
@@ -824,8 +824,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         R.remove<Visible>(entity);
         const uint old_model_index = R.get<RenderInstance>(entity).BufferIndex;
         model_buffer.Erase(old_model_index * sizeof(Model), sizeof(Model));
-        auto &parent_node = R.get<SceneNode>(parent);
-        for (auto child : parent_node.Children) {
+        for (auto child : Children(&R, parent)) {
             if (auto *child_render_instance = R.try_get<RenderInstance>(child)) {
                 if (child_render_instance->BufferIndex > old_model_index) {
                     --child_render_instance->BufferIndex;
@@ -839,7 +838,6 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto e = R.create();
 
-    auto node = R.emplace<SceneNode>(e); // No parent or children.
     UpdateTransform(R, e, info.Transform);
     R.emplace<Name>(e, CreateName(R, info.Name));
     R.emplace<ModelsBuffer>(e, mvk::UniqueBuffers{BufferContext, sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer});
@@ -849,8 +847,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     // Create mesh components
     const auto bbox = MeshRender::ComputeBoundingBox(mesh);
     R.emplace<BBox>(e, bbox);
-    auto bvh = BVH(MeshRender::CreateFaceBoundingBoxes(mesh));
-    R.emplace<BVH>(e, std::move(bvh));
+    R.emplace<BVH>(e, MeshRender::CreateFaceBoundingBoxes(mesh));
     R.emplace<Mesh>(e, std::move(mesh));
     R.emplace<MeshHighlightedHandles>(e);
 
@@ -865,6 +862,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
     }
 
+    R.emplace<SceneNode>(e); // No parent or children.
     switch (info.Select) {
         case MeshCreateInfo::SelectBehavior::Exclusive:
             Select(e);
@@ -909,10 +907,21 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
     const auto e_new = R.create();
     // For now, we assume one-level deep hierarchy, so we don't allocate a models-buffer for the instance.
     R.emplace<SceneNode>(e_new, parent);
-    auto &siblings = R.get<SceneNode>(parent).Children;
-    siblings.emplace_back(e_new);
+
+    // Link the new entity into the parent's children list
+    auto &parent_node = R.get<SceneNode>(parent);
+    if (parent_node.FirstChild == entt::null) {
+        parent_node.FirstChild = e_new;
+    } else {
+        // Walk to the last sibling
+        auto last_sibling = parent_node.FirstChild;
+        for (const auto child : Children(&R, parent)) last_sibling = child;
+        R.get<SceneNode>(last_sibling).NextSibling = e_new;
+    }
+
     UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
-    R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), siblings.size()) : CreateName(R, info->Name));
+    const uint sibling_count = distance(Children(&R, parent)) + 1;
+    R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), sibling_count) : CreateName(R, info->Name));
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
     SetVisible(e_new, !info || info->Visible);
@@ -988,7 +997,23 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 
 void Scene::DestroyInstance(entt::entity instance) {
     SetVisible(instance, false);
-    std::erase(R.get<SceneNode>(R.get<SceneNode>(instance).Parent).Children, instance);
+
+    // Unlink from parent's children list
+    const auto parent = R.get<SceneNode>(instance).Parent;
+    auto &parent_node = R.get<SceneNode>(parent);
+    if (parent_node.FirstChild == instance) {
+        parent_node.FirstChild = R.get<SceneNode>(instance).NextSibling;
+    } else {
+        // Find the previous sibling
+        const auto children = Children(&R, parent);
+        const auto prev = find_if(children, [&](entt::entity child) {
+            return R.get<SceneNode>(child).NextSibling == instance;
+        });
+        if (prev != children.end()) {
+            R.get<SceneNode>(*prev).NextSibling = R.get<SceneNode>(instance).NextSibling;
+        }
+    }
+
     R.destroy(instance);
     InvalidateCommandBuffer();
 }
@@ -1001,8 +1026,12 @@ void Scene::Destroy(entt::entity e) {
     R.remove<BoundingBoxesBuffers>(e);
     R.remove<BvhBoxesBuffers>(e);
 
-    const auto &node = R.get<SceneNode>(e);
-    for (const auto child : node.Children) R.destroy(child);
+    // Destroy all children. Save next sibling before destroying each child since destruction invalidates the iterator.
+    for (auto child = R.get<SceneNode>(e).FirstChild; child != entt::null;) {
+        const auto next_sibling = R.get<SceneNode>(child).NextSibling;
+        R.destroy(child);
+        child = next_sibling;
+    }
     R.destroy(e);
     InvalidateCommandBuffer();
 }
@@ -1715,8 +1744,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         SameLine();
         if (Button(R.all_of<Selected>(parent_entity) ? "Deselect" : "Select")) toggle_selected = parent_entity;
     }
-    if (!node.Children.empty() && CollapsingHeader("Children")) {
-        RenderEntitiesTable("Children", node.Children);
+    if (node.FirstChild != entt::null && CollapsingHeader("Children")) {
+        RenderEntitiesTable("Children", active_entity);
     }
 
     const auto active_mesh_entity = GetParentEntity(active_entity);
@@ -1896,11 +1925,7 @@ void Scene::RenderControls() {
             }
 
             if (CollapsingHeader("All objects")) {
-                std::vector<entt::entity> table_entities;
-                for (const auto &[entity, node] : R.view<const SceneNode>().each()) {
-                    if (node.Parent == entt::null) table_entities.emplace_back(entity);
-                }
-                RenderEntitiesTable("All objects", table_entities);
+                RenderEntitiesTable("All objects", entt::null);
             }
             EndTabItem();
         }
@@ -2022,7 +2047,7 @@ void Scene::RenderControls() {
     }
 }
 
-void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity> &entities) {
+void Scene::RenderEntitiesTable(std::string name, entt::entity parent) {
     if (MeshEditor::BeginTable(name.c_str(), 3)) {
         static const float CharWidth = CalcTextSize("A").x;
         TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
@@ -2030,7 +2055,8 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
         TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
         TableHeadersRow();
         entt::entity activate_entity = entt::null, toggle_selected = entt::null;
-        for (const auto e : entities) {
+
+        auto render_entity = [&](entt::entity e) {
             PushID(uint(e));
             TableNextColumn();
             AlignTextToFramePadding();
@@ -2043,7 +2069,16 @@ void Scene::RenderEntitiesTable(std::string name, const std::vector<entt::entity
             SameLine();
             if (Button(R.all_of<Selected>(e) ? "Deselect" : "Select")) toggle_selected = e;
             PopID();
+        };
+
+        if (parent == entt::null) { // Iterate root entities
+            for (const auto &[entity, node] : R.view<const SceneNode>().each()) {
+                if (node.Parent == entt::null) render_entity(entity);
+            }
+        } else { // Iterate children
+            for (const auto child : Children(&R, parent)) render_entity(child);
         }
+
         if (activate_entity != entt::null) Select(activate_entity);
         else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
         EndTable();

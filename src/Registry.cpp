@@ -6,6 +6,19 @@
 #include <format>
 #include <ranges>
 
+ChildrenIterator &ChildrenIterator::operator++() {
+    if (Current != entt::null) {
+        if (const auto *node = R->try_get<SceneNode>(Current)) Current = node->NextSibling;
+        else Current = entt::null;
+    }
+    return *this;
+}
+ChildrenIterator ChildrenIterator::operator++(int) {
+    auto tmp = *this;
+    ++*this;
+    return tmp;
+}
+
 std::string IdString(entt::entity e) { return std::format("0x{:08x}", uint32_t(e)); }
 std::string GetName(const entt::registry &r, entt::entity e) {
     if (e == entt::null) return "null";

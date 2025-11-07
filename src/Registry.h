@@ -4,7 +4,6 @@
 
 #include <string>
 #include <string_view>
-#include <vector>
 
 struct Name {
     std::string Value;
@@ -26,7 +25,33 @@ struct RenderInstance {
 
 struct SceneNode {
     entt::entity Parent{entt::null};
-    std::vector<entt::entity> Children{};
+    entt::entity FirstChild{entt::null};
+    entt::entity NextSibling{entt::null};
+};
+
+template<typename Entity = uint32_t>
+class registry;
+
+// Iterator for traversing children of a SceneNode
+struct ChildrenIterator {
+    using difference_type = std::ptrdiff_t;
+    using value_type = entt::entity;
+
+    const entt::registry *R;
+    entt::entity Current;
+
+    entt::entity operator*() const { return Current; }
+    ChildrenIterator &operator++();
+    ChildrenIterator operator++(int);
+    bool operator==(const ChildrenIterator &) const = default;
+};
+
+struct Children {
+    const entt::registry *R;
+    entt::entity FirstChild;
+
+    ChildrenIterator begin() const { return {R, FirstChild}; }
+    ChildrenIterator end() const { return {R, entt::null}; }
 };
 
 std::string IdString(entt::entity);
