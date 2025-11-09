@@ -39,11 +39,8 @@ struct Path {
     fs::path Value;
 };
 
-struct Position {
-    vec3 Value;
-};
-struct Rotation {
-    quat Value;
+struct World {
+    const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
 };
 
 // Stores world-space transform matrix for an entity
@@ -63,10 +60,6 @@ struct Lights {
     // A: Intensity of the directional light.
     vec4 DirectionalColorAndIntensity;
     vec3 Direction;
-};
-
-struct World {
-    const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
 };
 
 enum class ShaderPipelineType {

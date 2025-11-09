@@ -1,7 +1,7 @@
 #include "FaustGenerator.h"
 
+#include "Entity.h"
 #include "ModalSoundObject.h"
-#include "Registry.h"
 
 #include <entt/entity/registry.hpp>
 

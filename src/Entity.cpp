@@ -1,23 +1,10 @@
-#include "Registry.h"
+#include "Entity.h"
 
 #include <entt/entity/registry.hpp>
 
 #include <cstdint>
 #include <format>
 #include <ranges>
-
-ChildrenIterator &ChildrenIterator::operator++() {
-    if (Current != entt::null) {
-        if (const auto *node = R->try_get<SceneNode>(Current)) Current = node->NextSibling;
-        else Current = entt::null;
-    }
-    return *this;
-}
-ChildrenIterator ChildrenIterator::operator++(int) {
-    auto tmp = *this;
-    ++*this;
-    return tmp;
-}
 
 std::string IdString(entt::entity e) { return std::format("0x{:08x}", uint32_t(e)); }
 std::string GetName(const entt::registry &r, entt::entity e) {
@@ -45,13 +32,4 @@ entt::entity FindActiveEntity(const entt::registry &registry) {
     auto all_active = registry.view<Active>();
     assert(all_active.size() <= 1);
     return all_active.empty() ? entt::null : *all_active.begin();
-}
-
-entt::entity GetParentEntity(const entt::registry &r, entt::entity e) {
-    if (e == entt::null) return entt::null;
-
-    if (const auto *node = r.try_get<SceneNode>(e)) {
-        return node->Parent == entt::null ? e : GetParentEntity(r, node->Parent);
-    }
-    return e;
 }

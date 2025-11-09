@@ -1,10 +1,10 @@
 #include "Scene.h"
 #include "Widgets.h" // imgui
 
+#include "Entity.h"
 #include "Excitable.h"
 #include "OrientationGizmo.h"
-#include "Registry.h"
-#include "Scale.h"
+#include "SceneTree.h"
 #include "mesh/Arrow.h"
 #include "mesh/MeshIntersection.h"
 #include "mesh/MeshRender.h"
@@ -50,6 +50,11 @@ struct CameraUBO {
 struct ViewProjNearFar {
     mat4 View{1}, Projection{1};
     float Near, Far;
+};
+
+struct Visible {}; // Visible in the scene
+struct RenderInstance {
+    uint32_t BufferIndex{0}; // slot in GPU model instance buffer
 };
 
 // Stored on parent entities.
