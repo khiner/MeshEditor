@@ -24,11 +24,14 @@ struct ChildrenIterator {
 
 struct Children {
     const entt::registry *R;
-    entt::entity FirstChild;
+    entt::entity ParentEntity;
 
-    ChildrenIterator begin() const { return {R, FirstChild}; }
+    ChildrenIterator begin() const;
     ChildrenIterator end() const { return {R, entt::null}; }
 };
 
 entt::entity GetRootEntity(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity); // If no parent, returns the provided entity.
+
+void SetParent(entt::registry &, entt::entity child, entt::entity parent);
+void ClearParent(entt::registry &, entt::entity child);

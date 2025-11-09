@@ -84,8 +84,6 @@ struct MeshHighlightedHandles {
     std::unordered_set<AnyHandle, AnyHandleHash> Handles;
 };
 
-entt::entity Scene::GetParentEntity(entt::entity e) const { return ::GetParentEntity(R, e); }
-
 void Scene::Select(entt::entity e) {
     R.clear<Selected>();
     if (e != entt::null) {
@@ -1004,33 +1002,22 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     }
 }
 
-void Scene::DestroyInstance(entt::entity instance) {
-    SetVisible(instance, false);
-    R.destroy(instance);
-    InvalidateCommandBuffer();
-}
-
 void Scene::Destroy(entt::entity e) {
-    // If this is a mesh instance (not a mesh entity), destroy it as an instance
-    if (R.all_of<MeshInstance>(e)) return DestroyInstance(e);
+    if (R.all_of<MeshInstance>(e)) SetVisible(e, false);
 
-    if (R.all_of<SceneNode>(e)) { // todo remove this check when parenting is implemented and all entities have SceneNode
-        // Destroy all children. Save next sibling before destroying each child since destruction invalidates the iterator.
-        for (auto child = R.get<SceneNode>(e).FirstChild; child != entt::null;) {
-            const auto next_sibling = R.get<SceneNode>(child).NextSibling;
-            Destroy(child);
-            child = next_sibling;
-        }
-    }
-    std::vector<entt::entity> instances_to_destroy;
+    ClearParent(R, e);
+    // Destroy all children.
+    std::vector<entt::entity> children;
+    for (auto child : Children{&R, e}) children.emplace_back(child);
+    for (const auto child : children) Destroy(child);
+    // Destroy all instances
+    std::vector<entt::entity> instances;
     for (const auto [instance_entity, mi] : R.view<MeshInstance>().each()) {
-        if (mi.MeshEntity == e) instances_to_destroy.emplace_back(instance_entity);
+        if (mi.MeshEntity == e) instances.emplace_back(instance_entity);
     }
-    for (const auto instance_entity : instances_to_destroy) {
-        DestroyInstance(instance_entity);
-    }
+    for (const auto instance : instances) Destroy(instance);
 
-    R.destroy(e);
+    if (R.valid(e)) R.destroy(e);
     InvalidateCommandBuffer();
 }
 
@@ -1402,6 +1389,16 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_S, false)) StartScreenTransform = TransformGizmo::TransformType::Scale;
             else if (IsKeyPressed(ImGuiKey_H, false)) {
                 for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<Visible>(e));
+            } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
+                // Ctrl+P: Set active entity as parent of all other selected entities
+                if (active_entity != entt::null) {
+                    for (const auto e : R.view<Selected>()) {
+                        if (e != active_entity) SetParent(R, e, active_entity);
+                    }
+                }
+            } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
+                // Alt+P: Clear parent from all selected entities
+                for (const auto e : R.view<Selected>()) ClearParent(R, e);
             }
         }
     }
@@ -2122,7 +2119,7 @@ void Scene::RenderEntitiesTable(std::string name, entt::entity parent) {
                 if (node.Parent == entt::null) render_entity(entity);
             }
         } else { // Iterate children
-            for (const auto child : Children(&R, parent)) render_entity(child);
+            for (const auto child : Children{&R, parent}) render_entity(child);
         }
 
         if (activate_entity != entt::null) Select(activate_entity);

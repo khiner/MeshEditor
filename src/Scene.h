@@ -181,13 +181,11 @@ struct Scene {
     void ReplaceMesh(entt::entity, Mesh &&);
     void ClearMeshes();
 
-    void DestroyInstance(entt::entity);
     void Destroy(entt::entity);
 
     void SetTransform(entt::entity, Transform);
     void SetVisible(entt::entity, bool);
 
-    entt::entity GetParentEntity(entt::entity) const;
     void Select(entt::entity);
     void ToggleSelected(entt::entity);
 
