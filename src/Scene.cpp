@@ -3,6 +3,7 @@
 
 #include "Entity.h"
 #include "Excitable.h"
+#include "MeshInstance.h"
 #include "OrientationGizmo.h"
 #include "SceneTree.h"
 #include "mesh/Arrow.h"
@@ -818,8 +819,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<Visible>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
-    const auto parent = GetParentEntity(entity);
-    auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
+    const auto mesh_entity = GetMeshEntity(R, entity);
+    auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
     if (visible) {
         auto &render_instance = R.emplace_or_replace<RenderInstance>(entity);
         render_instance.BufferIndex = model_buffer.UsedSize / sizeof(WorldMatrix);
@@ -829,10 +830,17 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         R.remove<Visible>(entity);
         const uint old_model_index = R.get<RenderInstance>(entity).BufferIndex;
         model_buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
-        for (auto child : Children(&R, parent)) {
-            if (auto *child_render_instance = R.try_get<RenderInstance>(child)) {
-                if (child_render_instance->BufferIndex > old_model_index) {
-                    --child_render_instance->BufferIndex;
+        // Update buffer indices for all instances of this mesh that have higher indices
+        for (const auto [other_entity, mesh_instance, render_instance] : R.view<MeshInstance, RenderInstance>().each()) {
+            if (mesh_instance.MeshEntity == mesh_entity && render_instance.BufferIndex > old_model_index) {
+                --render_instance.BufferIndex;
+            }
+        }
+        // Also check if the mesh entity itself is visible (it might not have MeshInstance)
+        if (mesh_entity != entity) {
+            if (auto *mesh_render_instance = R.try_get<RenderInstance>(mesh_entity)) {
+                if (mesh_render_instance->BufferIndex > old_model_index) {
+                    --mesh_render_instance->BufferIndex;
                 }
             }
         }
@@ -867,7 +875,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
     }
 
-    R.emplace<SceneNode>(e); // No parent or children.
+    // Note: SceneNode not added here. It's only needed when entity is part of scene graph (future parenting feature).
     switch (info.Select) {
         case MeshCreateInfo::SelectBehavior::Exclusive:
             Select(e);
@@ -893,9 +901,9 @@ entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
 }
 
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info) {
-    const auto parent = GetParentEntity(e);
+    const auto mesh_entity = GetMeshEntity(R, e);
     const auto e_new = AddMesh(
-        Mesh{R.get<const Mesh>(parent)},
+        Mesh{R.get<const Mesh>(mesh_entity)},
         info.value_or(MeshCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
             .Transform = GetTransform(R, e),
@@ -903,31 +911,27 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info
             .Visible = R.all_of<Visible>(e),
         })
     );
-    if (auto primitive_type = R.try_get<PrimitiveType>(parent)) R.emplace<PrimitiveType>(e_new, *primitive_type);
+    if (auto primitive_type = R.try_get<PrimitiveType>(mesh_entity)) R.emplace<PrimitiveType>(e_new, *primitive_type);
     return e_new;
 }
 
 entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo> info) {
-    const auto parent = GetParentEntity(e);
+    const auto mesh_entity = GetMeshEntity(R, e);
     const auto e_new = R.create();
-    // For now, we assume one-level deep hierarchy, so we don't allocate a models-buffer for the instance.
-    R.emplace<SceneNode>(e_new, parent);
 
-    // Link the new entity into the parent's children list
-    auto &parent_node = R.get<SceneNode>(parent);
-    if (parent_node.FirstChild == entt::null) {
-        parent_node.FirstChild = e_new;
-    } else {
-        // Walk to the last sibling
-        auto last_sibling = parent_node.FirstChild;
-        for (const auto child : Children(&R, parent)) last_sibling = child;
-        R.get<SceneNode>(last_sibling).NextSibling = e_new;
-    }
+    // Create a mesh instance pointing to the mesh entity
+    R.emplace<MeshInstance>(e_new, mesh_entity);
 
     UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
-    const uint sibling_count = distance(Children(&R, parent)) + 1;
-    R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), sibling_count) : CreateName(R, info->Name));
-    auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
+
+    // Count existing instances for naming
+    uint instance_count = 1; // The mesh entity itself
+    for (const auto [_, mesh_instance] : R.view<MeshInstance>().each()) {
+        if (mesh_instance.MeshEntity == mesh_entity) ++instance_count;
+    }
+
+    R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
+    auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
     model_buffer.Reserve(model_buffer.UsedSize + sizeof(WorldMatrix));
     SetVisible(e_new, !info || info->Visible);
     if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
@@ -1002,41 +1006,30 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 
 void Scene::DestroyInstance(entt::entity instance) {
     SetVisible(instance, false);
-
-    // Unlink from parent's children list
-    const auto parent = R.get<SceneNode>(instance).Parent;
-    auto &parent_node = R.get<SceneNode>(parent);
-    if (parent_node.FirstChild == instance) {
-        parent_node.FirstChild = R.get<SceneNode>(instance).NextSibling;
-    } else {
-        // Find the previous sibling
-        const auto children = Children(&R, parent);
-        const auto prev = find_if(children, [&](entt::entity child) {
-            return R.get<SceneNode>(child).NextSibling == instance;
-        });
-        if (prev != children.end()) {
-            R.get<SceneNode>(*prev).NextSibling = R.get<SceneNode>(instance).NextSibling;
-        }
-    }
-
     R.destroy(instance);
     InvalidateCommandBuffer();
 }
 
 void Scene::Destroy(entt::entity e) {
-    if (const auto parent_entity = GetParentEntity(e); parent_entity != e) return DestroyInstance(e);
+    // If this is a mesh instance (not a mesh entity), destroy it as an instance
+    if (R.all_of<MeshInstance>(e)) return DestroyInstance(e);
 
-    R.erase<ModelsBuffer>(e);
-    R.erase<MeshBuffers>(e);
-    R.remove<BoundingBoxesBuffers>(e);
-    R.remove<BvhBoxesBuffers>(e);
-
-    // Destroy all children. Save next sibling before destroying each child since destruction invalidates the iterator.
-    for (auto child = R.get<SceneNode>(e).FirstChild; child != entt::null;) {
-        const auto next_sibling = R.get<SceneNode>(child).NextSibling;
-        R.destroy(child);
-        child = next_sibling;
+    if (R.all_of<SceneNode>(e)) { // todo remove this check when parenting is implemented and all entities have SceneNode
+        // Destroy all children. Save next sibling before destroying each child since destruction invalidates the iterator.
+        for (auto child = R.get<SceneNode>(e).FirstChild; child != entt::null;) {
+            const auto next_sibling = R.get<SceneNode>(child).NextSibling;
+            Destroy(child);
+            child = next_sibling;
+        }
     }
+    std::vector<entt::entity> instances_to_destroy;
+    for (const auto [instance_entity, mi] : R.view<MeshInstance>().each()) {
+        if (mi.MeshEntity == e) instances_to_destroy.emplace_back(instance_entity);
+    }
+    for (const auto instance_entity : instances_to_destroy) {
+        DestroyInstance(instance_entity);
+    }
+
     R.destroy(e);
     InvalidateCommandBuffer();
 }
@@ -1059,7 +1052,7 @@ void Scene::SetEditingHandle(AnyHandle handle) {
     if (R.storage<Active>().empty()) return;
 
     EditingHandle = handle;
-    UpdateRenderBuffers(GetParentEntity(FindActiveEntity(R)));
+    UpdateRenderBuffers(GetMeshEntity(R, FindActiveEntity(R)));
 }
 
 void Scene::SetTransform(entt::entity e, Transform transform) {
@@ -1085,7 +1078,7 @@ std::optional<uint> Scene::GetModelBufferIndex(entt::entity e) {
 void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
         auto &mesh_buffers = R.get<MeshBuffers>(e);
-        const bool is_active = GetParentEntity(FindActiveEntity(R)) == e;
+        const bool is_active = GetMeshEntity(R, FindActiveEntity(R)) == e;
         const AnyHandle selected{
             is_active && SelectionMode == SelectionMode::Edit       ? EditingHandle :
                 is_active && SelectionMode == SelectionMode::Excite ? AnyHandle{Element::Vertex, R.get<Excitable>(e).SelectedVertex()} :
@@ -1138,7 +1131,7 @@ void Scene::RecordRenderCommandBuffer() {
             uint32_t selected_id = 2; // 2+
             for (const auto selected_entity : R.view<Selected>()) {
                 const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
-                const auto mesh_entity = GetParentEntity(selected_entity);
+                const auto mesh_entity = GetMeshEntity(R, selected_entity);
                 const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(Element::Vertex);
                 const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
                 Bind(cb, shader_pipeline, render_buffers, models);
@@ -1238,7 +1231,7 @@ void Scene::UpdateTransformBuffers() {
 void Scene::UpdateModelBuffer(entt::entity e) {
     if (const auto buffer_index = GetModelBufferIndex(e)) {
         const auto &world_matrix = R.get<WorldMatrix>(e);
-        R.get<ModelsBuffer>(GetParentEntity(e)).Buffer.Update(as_bytes(world_matrix), *buffer_index * sizeof(WorldMatrix));
+        R.get<ModelsBuffer>(GetMeshEntity(R, e)).Buffer.Update(as_bytes(world_matrix), *buffer_index * sizeof(WorldMatrix));
     }
 }
 
@@ -1256,9 +1249,9 @@ void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable
 
 // todo selection overlays for _only selected instances_ (currently all instances of selected meshes)
 void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
-    const auto e = GetParentEntity(instance_entity);
-    const auto &mesh = R.get<const Mesh>(e);
-    auto &mesh_buffers = R.get<MeshBuffers>(e);
+    const auto mesh_entity = GetMeshEntity(R, instance_entity);
+    const auto &mesh = R.get<const Mesh>(mesh_entity);
+    auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
     for (const auto element : NormalElements) {
         if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
             mesh_buffers.NormalIndicators.emplace(element, CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element)));
@@ -1266,26 +1259,26 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
             mesh_buffers.NormalIndicators.erase(element);
         }
     }
-    if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(e)) {
-        const auto &bbox = R.get<BBox>(e);
-        R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
-    } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(e)) {
-        R.remove<BoundingBoxesBuffers>(e);
+    if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
+        const auto &bbox = R.get<BBox>(mesh_entity);
+        R.emplace<BoundingBoxesBuffers>(mesh_entity, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
+    } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
+        R.remove<BoundingBoxesBuffers>(mesh_entity);
     }
-    if (ShowBvhBoxes && !R.all_of<BvhBoxesBuffers>(e)) {
-        const auto &bvh = R.get<BVH>(e);
+    if (ShowBvhBoxes && !R.all_of<BvhBoxesBuffers>(mesh_entity)) {
+        const auto &bvh = R.get<BVH>(mesh_entity);
         auto bvh_buffers = MeshRender::CreateBvhBuffers(bvh, EdgeColor);
-        R.emplace<BvhBoxesBuffers>(e, CreateRenderBuffers(std::move(bvh_buffers.Vertices), std::move(bvh_buffers.Indices)));
-    } else if (!ShowBvhBoxes && R.all_of<BvhBoxesBuffers>(e)) {
-        R.remove<BvhBoxesBuffers>(e);
+        R.emplace<BvhBoxesBuffers>(mesh_entity, CreateRenderBuffers(std::move(bvh_buffers.Vertices), std::move(bvh_buffers.Indices)));
+    } else if (!ShowBvhBoxes && R.all_of<BvhBoxesBuffers>(mesh_entity)) {
+        R.remove<BvhBoxesBuffers>(mesh_entity);
     }
 }
 
 void Scene::RemoveEntitySelectionOverlays(entt::entity instance_entity) {
-    const auto e = GetParentEntity(instance_entity);
-    if (auto *buffers = R.try_get<MeshBuffers>(e)) buffers->NormalIndicators.clear();
-    R.remove<BoundingBoxesBuffers>(e);
-    R.remove<BvhBoxesBuffers>(e);
+    const auto mesh_entity = GetMeshEntity(R, instance_entity);
+    if (auto *buffers = R.try_get<MeshBuffers>(mesh_entity)) buffers->NormalIndicators.clear();
+    R.remove<BoundingBoxesBuffers>(mesh_entity);
+    R.remove<BvhBoxesBuffers>(mesh_entity);
 }
 
 using namespace ImGui;
@@ -1313,9 +1306,9 @@ ray WorldToLocal(const ray &r, const mat4 &model_i_t) {
 std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const ray &world_ray) {
     std::multimap<float, entt::entity> entities_by_distance;
     for (const auto &[e, world_matrix] : r.view<const WorldMatrix, const Visible>().each()) {
-        const auto parent = GetParentEntity(r, e);
-        const auto &bvh = r.get<const BVH>(parent);
-        const auto &mesh = r.get<const Mesh>(parent);
+        const auto mesh_entity = GetMeshEntity(r, e);
+        const auto &bvh = r.get<const BVH>(mesh_entity);
+        const auto &mesh = r.get<const Mesh>(mesh_entity);
         if (auto intersection = MeshIntersection::Intersect(bvh, mesh, WorldToLocal(world_ray, world_matrix.MInv))) {
             entities_by_distance.emplace(intersection->Distance, e);
         }
@@ -1345,9 +1338,9 @@ std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, cons
     float nearest_distance = std::numeric_limits<float>::max();
     std::optional<EntityIntersection> nearest;
     for (const auto &[e, world_matrix] : r.view<const WorldMatrix, const Visible>().each()) {
-        const auto parent = GetParentEntity(r, e);
-        const auto &bvh = r.get<const BVH>(parent);
-        const auto &mesh = r.get<const Mesh>(parent);
+        const auto mesh_entity = GetMeshEntity(r, e);
+        const auto &bvh = r.get<const BVH>(mesh_entity);
+        const auto &mesh = r.get<const Mesh>(mesh_entity);
         const auto local_ray = WorldToLocal(world_ray, world_matrix.MInv);
         if (auto intersection = MeshIntersection::Intersect(bvh, mesh, local_ray);
             intersection && intersection->Distance < nearest_distance) {
@@ -1445,9 +1438,9 @@ void Scene::Interact() {
         if (EditingHandle.Element != Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
             const auto &world_matrix = R.get<WorldMatrix>(active_entity);
             const auto mouse_ray = WorldToLocal(mouse_ray_ws, world_matrix.MInv);
-            const auto parent = GetParentEntity(active_entity);
-            const auto &bvh = R.get<BVH>(parent);
-            const auto &mesh = R.get<Mesh>(parent);
+            const auto mesh_entity = GetMeshEntity(R, active_entity);
+            const auto &bvh = R.get<BVH>(mesh_entity);
+            const auto &mesh = R.get<Mesh>(mesh_entity);
             {
                 const auto nearest_vertex = MeshIntersection::FindNearestVertex(bvh, mesh, mouse_ray);
                 if (EditingHandle.Element == Element::Vertex) SetEditingHandle(AnyHandle{nearest_vertex});
@@ -1476,7 +1469,7 @@ void Scene::Interact() {
                 // Find the nearest excitable vertex.
                 std::optional<uint> nearest_excite_vertex;
                 float min_dist_sq = std::numeric_limits<float>::max();
-                const auto &mesh = R.get<Mesh>(GetParentEntity(nearest->Entity));
+                const auto &mesh = R.get<Mesh>(GetMeshEntity(R, nearest->Entity));
                 const auto p = nearest->Position;
                 for (uint excite_vertex : excitable->ExcitableVertices) {
                     const auto diff = p - mesh.GetPosition(VH(excite_vertex));
@@ -1740,20 +1733,68 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     Indent();
 
     entt::entity activate_entity = entt::null, toggle_selected = entt::null;
-    const auto &node = R.get<SceneNode>(active_entity);
-    if (auto parent_entity = node.Parent; parent_entity != entt::null) {
-        AlignTextToFramePadding();
-        Text("Parent: %s", GetName(R, parent_entity).c_str());
-        SameLine();
-        if (active_entity != parent_entity && Button("Activate")) activate_entity = parent_entity;
-        SameLine();
-        if (Button(R.all_of<Selected>(parent_entity) ? "Deselect" : "Select")) toggle_selected = parent_entity;
-    }
-    if (node.FirstChild != entt::null && CollapsingHeader("Children")) {
-        RenderEntitiesTable("Children", active_entity);
+
+    // Scene graph hierarchy (for debugging/future Ctrl+P parenting feature)
+    if (const auto *node = R.try_get<SceneNode>(active_entity)) {
+        if (auto parent_entity = node->Parent; parent_entity != entt::null) {
+            AlignTextToFramePadding();
+            Text("Parent: %s", GetName(R, parent_entity).c_str());
+            SameLine();
+            if (active_entity != parent_entity && Button("Activate##Parent")) activate_entity = parent_entity;
+            SameLine();
+            if (Button(R.all_of<Selected>(parent_entity) ? "Deselect##Parent" : "Select##Parent")) toggle_selected = parent_entity;
+        }
+        if (node->FirstChild != entt::null && CollapsingHeader("Children")) {
+            RenderEntitiesTable("Children", active_entity);
+        }
     }
 
-    const auto active_mesh_entity = GetParentEntity(active_entity);
+    // Mesh instancing info
+    if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
+        AlignTextToFramePadding();
+        Text("MeshInstance.MeshEntity: %s", GetName(R, mesh_instance->MeshEntity).c_str());
+        SameLine();
+        if (Button("Activate##MeshEntity")) activate_entity = mesh_instance->MeshEntity;
+    }
+
+    // Show instances of this mesh (if this is a mesh entity)
+    if (R.all_of<Mesh>(active_entity)) {
+        uint instance_count = 0;
+        for (const auto [_, mi] : R.view<MeshInstance>().each()) {
+            if (mi.MeshEntity == active_entity) ++instance_count;
+        }
+        if (instance_count > 0) {
+            Text("Mesh Instances: %u", instance_count);
+            if (CollapsingHeader("View Instances")) {
+                if (MeshEditor::BeginTable("Instances", 3)) {
+                    static const float CharWidth = CalcTextSize("A").x;
+                    TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
+                    TableSetupColumn("Name");
+                    TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
+                    TableHeadersRow();
+                    for (const auto [instance_entity, mi] : R.view<MeshInstance>().each()) {
+                        if (mi.MeshEntity == active_entity) {
+                            PushID(uint(instance_entity));
+                            TableNextColumn();
+                            AlignTextToFramePadding();
+                            if (R.all_of<Active>(instance_entity)) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
+                            TextUnformatted(IdString(instance_entity).c_str());
+                            TableNextColumn();
+                            TextUnformatted(R.get<Name>(instance_entity).Value.c_str());
+                            TableNextColumn();
+                            if (!R.all_of<Active>(instance_entity) && Button("Activate")) activate_entity = instance_entity;
+                            SameLine();
+                            if (Button(R.all_of<Selected>(instance_entity) ? "Deselect" : "Select")) toggle_selected = instance_entity;
+                            PopID();
+                        }
+                    }
+                    EndTable();
+                }
+            }
+        }
+    }
+
+    const auto active_mesh_entity = GetMeshEntity(R, active_entity);
     const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
     TextUnformatted(
         std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
@@ -1894,7 +1935,7 @@ void Scene::RenderControls() {
                     }
                     Text("Editing %s: %s", label(EditingHandle.Element).data(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
                     if (EditingHandle.Element == Element::Vertex && EditingHandle && active_entity != entt::null) {
-                        const auto &mesh = R.get<Mesh>(GetParentEntity(FindActiveEntity(R)));
+                        const auto &mesh = R.get<Mesh>(GetMeshEntity(R, FindActiveEntity(R)));
                         const auto pos = mesh.GetPosition(VH{*EditingHandle});
                         Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingHandle, pos.x, pos.y, pos.z);
                     }

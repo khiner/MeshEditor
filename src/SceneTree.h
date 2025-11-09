@@ -30,4 +30,5 @@ struct Children {
     ChildrenIterator end() const { return {R, entt::null}; }
 };
 
+entt::entity GetRootEntity(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity); // If no parent, returns the provided entity.

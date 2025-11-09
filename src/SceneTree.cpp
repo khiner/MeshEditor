@@ -21,7 +21,15 @@ entt::entity GetParentEntity(const entt::registry &r, entt::entity e) {
     if (e == entt::null) return entt::null;
 
     if (const auto *node = r.try_get<SceneNode>(e)) {
-        return node->Parent == entt::null ? e : GetParentEntity(r, node->Parent);
+        return node->Parent == entt::null ? e : node->Parent;
     }
     return e;
+}
+
+entt::entity GetRootEntity(const entt::registry &r, entt::entity e) {
+    while (true) {
+        const auto parent = GetParentEntity(r, e);
+        if (parent == e) return e;
+        e = parent;
+    }
 }
