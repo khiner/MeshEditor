@@ -57,3 +57,7 @@ std::string CreateName(const entt::registry &, std::string_view prefix = "Entity
 
 entt::entity FindActiveEntity(const entt::registry &); // If no active entity, returns entt::null.
 entt::entity GetParentEntity(const entt::registry &, entt::entity); // If no parent, returns the provided entity.
+
+// Hierarchy manipulation helpers
+void LinkChild(entt::registry &, entt::entity parent, entt::entity child);
+void UnlinkChild(entt::registry &, entt::entity child);

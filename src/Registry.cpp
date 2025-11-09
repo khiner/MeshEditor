@@ -55,3 +55,41 @@ entt::entity GetParentEntity(const entt::registry &r, entt::entity e) {
     }
     return e;
 }
+
+void LinkChild(entt::registry &r, entt::entity parent, entt::entity child) {
+    auto &child_node = r.get_or_emplace<SceneNode>(child);
+    child_node.Parent = parent;
+    child_node.NextSibling = entt::null;
+
+    auto &parent_node = r.get_or_emplace<SceneNode>(parent);
+    if (parent_node.FirstChild == entt::null) {
+        parent_node.FirstChild = child;
+    } else {
+        // Find last sibling and append
+        auto last_sibling = parent_node.FirstChild;
+        for (const auto sibling : Children{&r, parent}) last_sibling = sibling;
+        r.get<SceneNode>(last_sibling).NextSibling = child;
+    }
+}
+
+void UnlinkChild(entt::registry &r, entt::entity child) {
+    auto *child_node = r.try_get<SceneNode>(child);
+    if (!child_node || child_node->Parent == entt::null) return;
+
+    auto &parent_node = r.get<SceneNode>(child_node->Parent);
+    if (parent_node.FirstChild == child) {
+        parent_node.FirstChild = child_node->NextSibling;
+    } else {
+        // Find previous sibling
+        for (auto sibling : Children{&r, child_node->Parent}) {
+            auto &sibling_node = r.get<SceneNode>(sibling);
+            if (sibling_node.NextSibling == child) {
+                sibling_node.NextSibling = child_node->NextSibling;
+                break;
+            }
+        }
+    }
+
+    child_node->Parent = entt::null;
+    child_node->NextSibling = entt::null;
+}

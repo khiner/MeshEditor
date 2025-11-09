@@ -4,14 +4,13 @@
 #include "CreateSvgResource.h"
 #include "Shader.h"
 #include "SvgResource.h"
+#include "Transform.h"
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "Vulkan/UniqueBuffers.h"
 #include "mesh/Handle.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Vertex.h"
-#include "numeric/quat.h"
-#include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
 #include <entt/entity/fwd.hpp>
@@ -39,17 +38,9 @@ struct Path {
     fs::path Value;
 };
 
-struct Position {
-    vec3 Value;
-};
-struct Rotation {
-    quat Value;
-};
-
 // Stores world-space transform matrix for an entity
 struct WorldMatrix {
-    WorldMatrix(mat4 m)
-        : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
+    WorldMatrix(mat4 m) : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
 
     mat4 M; // World-space matrix
     mat4 MInv; // Transpose of inverse
@@ -193,6 +184,8 @@ struct Scene {
 
     void SetTransform(entt::entity, Transform);
     void SetVisible(entt::entity, bool);
+    void SetParent(entt::entity child, entt::entity parent);
+    void ClearParent(entt::entity child, bool keep_transform = true);
 
     entt::entity GetParentEntity(entt::entity) const;
     void Select(entt::entity);
@@ -307,6 +300,7 @@ private:
     // VK buffer update methods
     void UpdateTransformBuffers();
     void UpdateModelBuffer(entt::entity);
+    void UpdateModelBufferRecursive(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);

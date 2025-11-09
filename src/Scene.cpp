@@ -2,6 +2,7 @@
 #include "Widgets.h" // imgui
 
 #include "Excitable.h"
+#include "MatrixUtils.h"
 #include "OrientationGizmo.h"
 #include "Registry.h"
 #include "Scale.h"
@@ -129,10 +130,6 @@ struct RotationAxisAngle {
 };
 using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxisAngle>;
 
-Transform GetTransform(const entt::registry &r, entt::entity e) {
-    return {r.get<Position>(e).Value, r.get<Rotation>(e).Value, r.all_of<Scale>(e) ? r.get<Scale>(e).Value : vec3{1}};
-}
-
 void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     r.emplace_or_replace<Rotation>(e, v);
     if (!r.all_of<RotationUiVariant>(e)) {
@@ -158,8 +155,18 @@ void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
 }
 
 void UpdateModel(entt::registry &r, entt::entity e) {
-    const auto t = GetTransform(r, e);
-    r.emplace_or_replace<WorldMatrix>(e, glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S));
+    r.emplace_or_replace<WorldMatrix>(e, ComputeWorldMatrix(r, e));
+}
+
+void UpdateModelRecursive(entt::registry &r, entt::entity e) {
+    UpdateModel(r, e);
+
+    // Update all children
+    if (const auto *node = r.try_get<SceneNode>(e)) {
+        for (auto child : Children{&r, node->FirstChild}) {
+            UpdateModelRecursive(r, child);
+        }
+    }
 }
 
 void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
@@ -169,7 +176,7 @@ void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
     // Frozen entities can't have their scale changed.
     if (!r.all_of<Frozen>(e)) r.emplace_or_replace<Scale>(e, t.S);
 
-    UpdateModel(r, e);
+    UpdateModelRecursive(r, e);
 }
 
 vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
@@ -1059,7 +1066,63 @@ void Scene::SetEditingHandle(AnyHandle handle) {
 
 void Scene::SetTransform(entt::entity e, Transform transform) {
     UpdateTransform(R, e, transform);
-    UpdateModelBuffer(e);
+    UpdateModelBufferRecursive(e);
+    InvalidateCommandBuffer();
+}
+
+void Scene::SetParent(entt::entity child, entt::entity parent) {
+    // Cycle prevention: check if parent is a descendant of child
+    for (auto ancestor = parent; ancestor != entt::null;) {
+        if (ancestor == child) return; // Can't parent to descendant!
+        if (const auto *node = R.try_get<SceneNode>(ancestor)) {
+            ancestor = node->Parent;
+        } else {
+            break;
+        }
+    }
+
+    // Get current world matrices
+    const auto *child_world = R.try_get<WorldMatrix>(child);
+    const auto *parent_world = R.try_get<WorldMatrix>(parent);
+    if (!child_world || !parent_world) return;
+
+    // Compute ParentInverse: the offset that preserves child's world position
+    // Formula: W_child = W_parent × ParentInverse × L_child
+    // We want: current W_child = current W_parent × ParentInverse × current L_child
+    // Solving: ParentInverse = W_parent^-1 × W_child × L_child^-1
+    const auto local = ToLocalMatrix(GetTransform(R, child));
+    const auto parent_inv = glm::inverse(parent_world->M) * child_world->M * glm::inverse(local);
+    R.emplace_or_replace<ParentInverse>(child, parent_inv);
+
+    // Unlink from old parent if exists, then link to new parent
+    UnlinkChild(R, child);
+    LinkChild(R, parent, child);
+
+    // Update transforms (should maintain world position!)
+    UpdateModelRecursive(R, child);
+    UpdateModelBufferRecursive(child);
+    InvalidateCommandBuffer();
+}
+
+void Scene::ClearParent(entt::entity child, bool keep_transform) {
+    const auto *child_node = R.try_get<SceneNode>(child);
+    if (!child_node || child_node->Parent == entt::null) return;
+
+    if (keep_transform) {
+        // Bake current world transform into local transform
+        if (const auto *world = R.try_get<WorldMatrix>(child)) {
+            vec3 scale, pos, skew;
+            quat rot;
+            vec4 perspective;
+            glm::decompose(world->M, scale, rot, pos, skew, perspective);
+            SetTransform(child, {pos, rot, scale});
+        }
+    }
+
+    R.remove<ParentInverse>(child);
+    UnlinkChild(R, child);
+
+    UpdateModelRecursive(R, child);
     InvalidateCommandBuffer();
 }
 
@@ -1237,6 +1300,17 @@ void Scene::UpdateModelBuffer(entt::entity e) {
     }
 }
 
+void Scene::UpdateModelBufferRecursive(entt::entity e) {
+    UpdateModelBuffer(e);
+
+    // Update all children
+    if (const auto *node = R.try_get<SceneNode>(e)) {
+        for (auto child : Children{&R, node->FirstChild}) {
+            UpdateModelBufferRecursive(child);
+        }
+    }
+}
+
 void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable) {
     if (auto *highlighted = R.try_get<MeshHighlightedHandles>(e)) {
         highlighted->Handles.clear();
@@ -1399,7 +1473,20 @@ void Scene::Interact() {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
             else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
             else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
-            else if (IsKeyPressed(ImGuiKey_G, false)) StartScreenTransform = TransformGizmo::TransformType::Translate;
+            else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
+                // Parent selected entities to active entity (Blender-style)
+                const auto active = FindActiveEntity(R);
+                if (active != entt::null) {
+                    for (const auto child : R.view<Selected>()) {
+                        if (child != active) SetParent(child, active);
+                    }
+                }
+            } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
+                // Clear parent for selected entities
+                for (const auto e : R.view<Selected>()) {
+                    ClearParent(e, true);
+                }
+            } else if (IsKeyPressed(ImGuiKey_G, false)) StartScreenTransform = TransformGizmo::TransformType::Translate;
             else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
             else if (IsKeyPressed(ImGuiKey_S, false)) StartScreenTransform = TransformGizmo::TransformType::Scale;
             else if (IsKeyPressed(ImGuiKey_H, false)) {
@@ -1806,8 +1893,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         model_changed |= DragFloat3(label.c_str(), &R.get<Scale>(active_entity).Value[0], 0.01f, 0.01f, 10);
         if (frozen) EndDisabled();
         if (model_changed) {
-            UpdateModel(R, active_entity);
-            UpdateModelBuffer(active_entity);
+            UpdateModelRecursive(R, active_entity);
+            UpdateModelBufferRecursive(active_entity);
             InvalidateCommandBuffer();
         }
         Spacing();
