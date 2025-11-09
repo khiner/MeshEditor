@@ -29,9 +29,6 @@ struct SceneNode {
     entt::entity NextSibling{entt::null};
 };
 
-template<typename Entity = uint32_t>
-class registry;
-
 // Iterator for traversing children of a SceneNode
 struct ChildrenIterator {
     using difference_type = std::ptrdiff_t;

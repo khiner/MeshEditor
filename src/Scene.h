@@ -46,14 +46,13 @@ struct Rotation {
     quat Value;
 };
 
-struct Model {
-    Model(mat4 transform)
-        : Transform{std::move(transform)}, InvTransform{glm::transpose(glm::inverse(Transform))} {}
+// Stores world-space transform matrix for an entity
+struct WorldMatrix {
+    WorldMatrix(mat4 m)
+        : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
 
-    mat4 Transform;
-    // `InvTransform` is the _transpose_ of the inverse of `Transform`.
-    // Since this rarely changes, we precompute it and send it to the shader.
-    mat4 InvTransform;
+    mat4 M; // World-space matrix
+    mat4 MInv; // Transpose of inverse
 };
 
 struct Lights {

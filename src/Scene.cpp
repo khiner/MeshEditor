@@ -53,7 +53,7 @@ struct ViewProjNearFar {
 };
 
 // Stored on parent entities.
-// Holds the `Model` of the parent entity at position 0, and children at 1+.
+// Holds the `WorldMatrix` of the parent entity at position 0, and children at 1+.
 struct ModelsBuffer {
     mvk::UniqueBuffers Buffer;
 };
@@ -159,7 +159,7 @@ void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
 
 void UpdateModel(entt::registry &r, entt::entity e) {
     const auto t = GetTransform(r, e);
-    r.emplace_or_replace<Model>(e, glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S));
+    r.emplace_or_replace<WorldMatrix>(e, glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S));
 }
 
 void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
@@ -181,12 +181,12 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
         {0, 0, Format::Float3, offsetof(Vertex3D, Position)},
         {1, 0, Format::Float3, offsetof(Vertex3D, Normal)},
         {2, 0, Format::Float4, offsetof(Vertex3D, Color)},
-        // Model mat4, one vec4 per row
+        // World matrix M (mat4), one vec4 per row
         {3, 1, Format::Float4, 0},
         {4, 1, Format::Float4, sizeof(vec4)},
         {5, 1, Format::Float4, 2 * sizeof(vec4)},
         {6, 1, Format::Float4, 3 * sizeof(vec4)},
-        // Inverse model mat4, one vec4 per row
+        // World matrix MInv (mat4), one vec4 per row
         {7, 1, Format::Float4, 4 * sizeof(vec4)},
         {8, 1, Format::Float4, 5 * sizeof(vec4)},
         {9, 1, Format::Float4, 6 * sizeof(vec4)},
@@ -212,7 +212,7 @@ void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const mvk
 void DrawIndexed(vk::CommandBuffer cb, const mvk::UniqueBuffers &indices, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) {
     const uint index_count = indices.UsedSize / sizeof(uint);
     const uint first_instance = model_index.value_or(0);
-    const uint instance_count = model_index.has_value() ? 1 : models.UsedSize / sizeof(Model);
+    const uint instance_count = model_index.has_value() ? 1 : models.UsedSize / sizeof(WorldMatrix);
     cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
 }
 
@@ -783,7 +783,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     const auto vh = VH(excited_vertex.Vertex);
     const auto &mesh = r.get<Mesh>(e);
     const auto &bbox = r.get<BBox>(e);
-    const auto &transform = r.get<Model>(e).Transform;
+    const auto &transform = r.get<WorldMatrix>(e).M;
     const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
 
@@ -817,13 +817,13 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
     if (visible) {
         auto &render_instance = R.emplace_or_replace<RenderInstance>(entity);
-        render_instance.BufferIndex = model_buffer.UsedSize / sizeof(Model);
-        model_buffer.Insert(as_bytes(R.get<Model>(entity)), model_buffer.UsedSize);
+        render_instance.BufferIndex = model_buffer.UsedSize / sizeof(WorldMatrix);
+        model_buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), model_buffer.UsedSize);
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
         const uint old_model_index = R.get<RenderInstance>(entity).BufferIndex;
-        model_buffer.Erase(old_model_index * sizeof(Model), sizeof(Model));
+        model_buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
         for (auto child : Children(&R, parent)) {
             if (auto *child_render_instance = R.try_get<RenderInstance>(child)) {
                 if (child_render_instance->BufferIndex > old_model_index) {
@@ -840,7 +840,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
     UpdateTransform(R, e, info.Transform);
     R.emplace<Name>(e, CreateName(R, info.Name));
-    R.emplace<ModelsBuffer>(e, mvk::UniqueBuffers{BufferContext, sizeof(Model), vk::BufferUsageFlagBits::eVertexBuffer});
+    R.emplace<ModelsBuffer>(e, mvk::UniqueBuffers{BufferContext, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
     SetVisible(e, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(e, false);
 
@@ -923,7 +923,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
     const uint sibling_count = distance(Children(&R, parent)) + 1;
     R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), sibling_count) : CreateName(R, info->Name));
     auto &model_buffer = R.get<ModelsBuffer>(parent).Buffer;
-    model_buffer.Reserve(model_buffer.UsedSize + sizeof(Model));
+    model_buffer.Reserve(model_buffer.UsedSize + sizeof(WorldMatrix));
     SetVisible(e_new, !info || info->Visible);
     if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
     else if (info->Select == MeshCreateInfo::SelectBehavior::Exclusive) Select(e_new);
@@ -1232,8 +1232,8 @@ void Scene::UpdateTransformBuffers() {
 
 void Scene::UpdateModelBuffer(entt::entity e) {
     if (const auto buffer_index = GetModelBufferIndex(e)) {
-        const auto &model = R.get<Model>(e);
-        R.get<ModelsBuffer>(GetParentEntity(e)).Buffer.Update(as_bytes(model), *buffer_index * sizeof(Model));
+        const auto &world_matrix = R.get<WorldMatrix>(e);
+        R.get<ModelsBuffer>(GetParentEntity(e)).Buffer.Update(as_bytes(world_matrix), *buffer_index * sizeof(WorldMatrix));
     }
 }
 
@@ -1307,11 +1307,11 @@ ray WorldToLocal(const ray &r, const mat4 &model_i_t) {
 
 std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const ray &world_ray) {
     std::multimap<float, entt::entity> entities_by_distance;
-    for (const auto &[e, model] : r.view<const Model, const Visible>().each()) {
+    for (const auto &[e, world_matrix] : r.view<const WorldMatrix, const Visible>().each()) {
         const auto parent = GetParentEntity(r, e);
         const auto &bvh = r.get<const BVH>(parent);
         const auto &mesh = r.get<const Mesh>(parent);
-        if (auto intersection = MeshIntersection::Intersect(bvh, mesh, WorldToLocal(world_ray, model.InvTransform))) {
+        if (auto intersection = MeshIntersection::Intersect(bvh, mesh, WorldToLocal(world_ray, world_matrix.MInv))) {
             entities_by_distance.emplace(intersection->Distance, e);
         }
     }
@@ -1339,11 +1339,11 @@ struct EntityIntersection {
 std::optional<EntityIntersection> IntersectNearest(const entt::registry &r, const ray &world_ray) {
     float nearest_distance = std::numeric_limits<float>::max();
     std::optional<EntityIntersection> nearest;
-    for (const auto &[e, model] : r.view<const Model, const Visible>().each()) {
+    for (const auto &[e, world_matrix] : r.view<const WorldMatrix, const Visible>().each()) {
         const auto parent = GetParentEntity(r, e);
         const auto &bvh = r.get<const BVH>(parent);
         const auto &mesh = r.get<const Mesh>(parent);
-        const auto local_ray = WorldToLocal(world_ray, model.InvTransform);
+        const auto local_ray = WorldToLocal(world_ray, world_matrix.MInv);
         if (auto intersection = MeshIntersection::Intersect(bvh, mesh, local_ray);
             intersection && intersection->Distance < nearest_distance) {
             nearest_distance = intersection->Distance;
@@ -1438,8 +1438,8 @@ void Scene::Interact() {
     const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
     if (SelectionMode == SelectionMode::Edit) {
         if (EditingHandle.Element != Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
-            const auto &model = R.get<Model>(active_entity);
-            const auto mouse_ray = WorldToLocal(mouse_ray_ws, model.InvTransform);
+            const auto &world_matrix = R.get<WorldMatrix>(active_entity);
+            const auto mouse_ray = WorldToLocal(mouse_ray_ws, world_matrix.MInv);
             const auto parent = GetParentEntity(active_entity);
             const auto &bvh = R.get<BVH>(parent);
             const auto &mesh = R.get<Mesh>(parent);
@@ -1837,13 +1837,13 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
             TreePop();
         }
-        if (TreeNode("Model matrix")) {
-            TextUnformatted("Transform");
-            const auto &model = R.get<Model>(active_entity);
-            RenderMat4(model.Transform);
+        if (TreeNode("World matrix")) {
+            TextUnformatted("M");
+            const auto &world_matrix = R.get<WorldMatrix>(active_entity);
+            RenderMat4(world_matrix.M);
             Spacing();
-            TextUnformatted("Inverse transform");
-            RenderMat4(model.InvTransform);
+            TextUnformatted("MInv");
+            RenderMat4(world_matrix.MInv);
             TreePop();
         }
     }
