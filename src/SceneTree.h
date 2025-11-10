@@ -1,11 +1,28 @@
 #pragma once
 
+#include "numeric/mat4.h"
+
 #include <entt/entity/entity.hpp>
 
 struct SceneNode {
     entt::entity Parent{entt::null};
     entt::entity FirstChild{entt::null};
     entt::entity NextSibling{entt::null};
+};
+
+struct WorldMatrix {
+    WorldMatrix(mat4 m)
+        : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
+
+    mat4 M; // World-space matrix
+    mat4 MInv; // Transpose of inverse
+};
+
+// Inverse of parent's world matrix at the moment of parenting.
+// Used to compute world matrices that follow parent transforms.
+// WorldMatrix = ParentWorldMatrix * ParentInverse * LocalMatrix
+struct ParentInverse {
+    mat4 M{I4};
 };
 
 // Iterator for traversing children of a SceneNode

@@ -43,22 +43,19 @@ entt::entity GetRootEntity(const entt::registry &r, entt::entity e) {
 void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
     if (child == entt::null || parent == entt::null || child == parent) return;
 
-    // Ensure both entities have SceneNode components
     if (!r.all_of<SceneNode>(child)) r.emplace<SceneNode>(child);
     if (!r.all_of<SceneNode>(parent)) r.emplace<SceneNode>(parent);
 
-    // Remove from current parent if any
     ClearParent(r, child);
 
-    // Set new parent
     auto &child_node = r.get<SceneNode>(child);
     auto &parent_node = r.get<SceneNode>(parent);
-
     child_node.Parent = parent;
-
     // Add to parent's children list (at the beginning for simplicity)
     child_node.NextSibling = parent_node.FirstChild;
     parent_node.FirstChild = child;
+
+    r.emplace_or_replace<ParentInverse>(child, glm::inverse(r.get<WorldMatrix>(parent).M));
 }
 
 void ClearParent(entt::registry &r, entt::entity child) {
@@ -68,22 +65,21 @@ void ClearParent(entt::registry &r, entt::entity child) {
     const auto parent = child_node.Parent;
     if (parent == entt::null) return;
 
-    // Remove from parent's children list
-    auto &parent_node = r.get<SceneNode>(parent);
-    if (parent_node.FirstChild == child) {
+    if (auto &parent_node = r.get<SceneNode>(parent);
+        parent_node.FirstChild == child) {
         parent_node.FirstChild = child_node.NextSibling;
     } else {
-        // Find the previous sibling
-        for (auto sibling : Children(&r, parent)) {
-            auto &sibling_node = r.get<SceneNode>(sibling);
-            if (sibling_node.NextSibling == child) {
+        for (const auto sibling : Children(&r, parent)) {
+            if (auto &sibling_node = r.get<SceneNode>(sibling);
+                sibling_node.NextSibling == child) {
                 sibling_node.NextSibling = child_node.NextSibling;
                 break;
             }
         }
     }
 
-    // Clear child's parent and sibling references
     child_node.Parent = entt::null;
     child_node.NextSibling = entt::null;
+
+    r.remove<ParentInverse>(child);
 }

@@ -43,15 +43,6 @@ struct World {
     const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
 };
 
-// Stores world-space transform matrix for an entity
-struct WorldMatrix {
-    WorldMatrix(mat4 m)
-        : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
-
-    mat4 M; // World-space matrix
-    mat4 MInv; // Transpose of inverse
-};
-
 struct Lights {
     // RGB: Color of the light emitting from the view position.
     // A: Ambient intensity. (Using a single vec4 for 16-byte alignment.)
@@ -298,6 +289,7 @@ private:
     // VK buffer update methods
     void UpdateTransformBuffers();
     void UpdateModelBuffer(entt::entity);
+    void UpdateModelBufferRecursive(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);

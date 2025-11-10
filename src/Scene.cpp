@@ -161,9 +161,23 @@ void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     );
 }
 
+void UpdateModel(entt::registry &r, entt::entity e);
+
+void UpdateModelRecursive(entt::registry &r, entt::entity e) {
+    UpdateModel(r, e);
+    for (const auto child : Children{&r, e}) UpdateModelRecursive(r, child);
+}
+
 void UpdateModel(entt::registry &r, entt::entity e) {
     const auto t = GetTransform(r, e);
-    r.emplace_or_replace<WorldMatrix>(e, glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S));
+    const auto m_local = glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
+    const auto *node = r.try_get<SceneNode>(e);
+    r.emplace_or_replace<WorldMatrix>(
+        e,
+        node && node->Parent != entt::null ?
+            r.get<WorldMatrix>(node->Parent).M * r.get<ParentInverse>(e).M * m_local :
+            m_local
+    );
 }
 
 void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
@@ -173,7 +187,7 @@ void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
     // Frozen entities can't have their scale changed.
     if (!r.all_of<Frozen>(e)) r.emplace_or_replace<Scale>(e, t.S);
 
-    UpdateModel(r, e);
+    UpdateModelRecursive(r, e);
 }
 
 vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
@@ -1044,7 +1058,7 @@ void Scene::SetEditingHandle(AnyHandle handle) {
 
 void Scene::SetTransform(entt::entity e, Transform transform) {
     UpdateTransform(R, e, transform);
-    UpdateModelBuffer(e);
+    UpdateModelBufferRecursive(e);
     InvalidateCommandBuffer();
 }
 
@@ -1222,6 +1236,11 @@ void Scene::UpdateModelBuffer(entt::entity e) {
     }
 }
 
+void Scene::UpdateModelBufferRecursive(entt::entity e) {
+    UpdateModelBuffer(e);
+    for (auto child : Children{&R, e}) UpdateModelBufferRecursive(child);
+}
+
 void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable) {
     if (auto *highlighted = R.try_get<MeshHighlightedHandles>(e)) {
         highlighted->Handles.clear();
@@ -1390,14 +1409,12 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_H, false)) {
                 for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<Visible>(e));
             } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
-                // Ctrl+P: Set active entity as parent of all other selected entities
                 if (active_entity != entt::null) {
                     for (const auto e : R.view<Selected>()) {
                         if (e != active_entity) SetParent(R, e, active_entity);
                     }
                 }
             } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
-                // Alt+P: Clear parent from all selected entities
                 for (const auto e : R.view<Selected>()) ClearParent(R, e);
             }
         }
