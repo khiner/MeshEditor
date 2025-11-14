@@ -861,47 +861,51 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 }
 
 entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
-    const auto e = R.create();
+    const auto mesh_entity = R.create();
+    { // Mesh data
+        const auto bbox = MeshRender::ComputeBoundingBox(mesh);
+        R.emplace<BBox>(mesh_entity, bbox);
+        R.emplace<BVH>(mesh_entity, MeshRender::CreateFaceBoundingBoxes(mesh));
+        RenderBuffersByElement buffers_by_element{};
+        for (const auto element : Elements) { // todo only create buffers for viewed elements.
+            buffers_by_element.emplace(element, CreateRenderBuffers(MeshRender::CreateVertices(mesh, element), MeshRender::CreateIndices(mesh, element)));
+        }
+        R.emplace<Mesh>(mesh_entity, std::move(mesh));
 
-    UpdateTransform(R, e, info.Transform);
-    R.emplace<Name>(e, CreateName(R, info.Name));
-    R.emplace<ModelsBuffer>(e, mvk::UniqueBuffers{BufferContext, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
-    SetVisible(e, true); // Always set visibility to true first, since this sets up the model buffer/indices.
-    if (!info.Visible) SetVisible(e, false);
+        R.emplace<MeshHighlightedHandles>(mesh_entity);
+        R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{BufferContext, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
 
-    // Create mesh components
-    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
-    R.emplace<BBox>(e, bbox);
-    R.emplace<BVH>(e, MeshRender::CreateFaceBoundingBoxes(mesh));
-    R.emplace<Mesh>(e, std::move(mesh));
-    R.emplace<MeshHighlightedHandles>(e);
-
-    // Create render buffers
-    const auto &pm = R.get<Mesh>(e);
-    RenderBuffersByElement buffers_by_element{};
-    for (const auto element : Elements) { // todo only create buffers for viewed elements.
-        buffers_by_element.emplace(element, CreateRenderBuffers(MeshRender::CreateVertices(pm, element), MeshRender::CreateIndices(pm, element)));
-    }
-    R.emplace<MeshBuffers>(e, std::move(buffers_by_element), RenderBuffersByElement{});
-    if (ShowBoundingBoxes) {
-        R.emplace<BoundingBoxesBuffers>(e, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
+        R.emplace<MeshBuffers>(mesh_entity, std::move(buffers_by_element), RenderBuffersByElement{});
+        if (ShowBoundingBoxes) {
+            R.emplace<BoundingBoxesBuffers>(mesh_entity, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
+        }
     }
 
-    // Note: SceneNode not added here. It's only needed when entity is part of scene graph (future parenting feature).
+    const auto instance_entity = R.create();
+    R.emplace<MeshInstance>(instance_entity, mesh_entity);
+    UpdateTransform(R, instance_entity, info.Transform);
+    R.emplace<Name>(instance_entity, CreateName(R, info.Name));
+
+    auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
+    model_buffer.Reserve(model_buffer.UsedSize + sizeof(WorldMatrix));
+    SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
+    if (!info.Visible) SetVisible(instance_entity, false);
+
     switch (info.Select) {
         case MeshCreateInfo::SelectBehavior::Exclusive:
-            Select(e);
+            Select(instance_entity);
             break;
         case MeshCreateInfo::SelectBehavior::Additive:
-            R.emplace<Selected>(e);
+            R.emplace<Selected>(instance_entity);
             // Fallthrough
         case MeshCreateInfo::SelectBehavior::None:
-            if (R.storage<Active>().empty()) R.emplace<Active>(e); // If this is the first mesh, set it active by default.
+            // If this is the first mesh, set it active by default.
+            if (R.storage<Active>().empty()) R.emplace<Active>(instance_entity);
             break;
     }
 
     InvalidateCommandBuffer();
-    return e;
+    return instance_entity;
 }
 
 entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
@@ -936,8 +940,8 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
 
     UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
 
-    // Count existing instances for naming
-    uint instance_count = 1; // The mesh entity itself
+    // Count current instances for naming (start at 1 to include the source instance)
+    uint instance_count = 1;
     for (const auto [_, mesh_instance] : R.view<MeshInstance>().each()) {
         if (mesh_instance.MeshEntity == mesh_entity) ++instance_count;
     }
@@ -988,7 +992,7 @@ void Scene::DuplicateLinked() {
 
 void Scene::ClearMeshes() {
     std::vector<entt::entity> entities;
-    for (const auto e : R.view<Mesh>()) entities.emplace_back(e);
+    for (const auto e : R.view<MeshInstance>()) entities.emplace_back(e);
     for (const auto e : entities) Destroy(e);
     InvalidateCommandBuffer();
 }
@@ -997,7 +1001,7 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     // Update components
     const auto bbox = MeshRender::ComputeBoundingBox(mesh);
     R.replace<BBox>(e, bbox);
-    R.replace<BVH>(e, BVH(MeshRender::CreateFaceBoundingBoxes(mesh)));
+    R.replace<BVH>(e, BVH{MeshRender::CreateFaceBoundingBoxes(mesh)});
     R.replace<Mesh>(e, std::move(mesh));
 
     const auto &pm = R.get<Mesh>(e);
@@ -1017,21 +1021,34 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 }
 
 void Scene::Destroy(entt::entity e) {
-    if (R.all_of<MeshInstance>(e)) SetVisible(e, false);
-
     ClearParent(R, e);
-    // Destroy all children.
-    std::vector<entt::entity> children;
-    for (auto child : Children{&R, e}) children.emplace_back(child);
-    for (const auto child : children) Destroy(child);
-    // Destroy all instances
-    std::vector<entt::entity> instances;
-    for (const auto [instance_entity, mi] : R.view<MeshInstance>().each()) {
-        if (mi.MeshEntity == e) instances.emplace_back(instance_entity);
+    { // Destroy all children
+        std::vector<entt::entity> children;
+        for (auto child : Children{&R, e}) children.emplace_back(child);
+        for (const auto child : children) Destroy(child);
     }
-    for (const auto instance : instances) Destroy(instance);
+
+    // Track mesh entity if this is an instance
+    entt::entity mesh_entity = entt::null;
+    if (R.all_of<MeshInstance>(e)) {
+        mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+        SetVisible(e, false);
+    }
 
     if (R.valid(e)) R.destroy(e);
+
+    // If this was the last instance, destroy the mesh
+    if (R.valid(mesh_entity)) {
+        bool has_instances = false;
+        for (const auto [_, mi] : R.view<MeshInstance>().each()) {
+            if (mi.MeshEntity == mesh_entity) {
+                has_instances = true;
+                break;
+            }
+        }
+        if (!has_instances) R.destroy(mesh_entity);
+    }
+
     InvalidateCommandBuffer();
 }
 
