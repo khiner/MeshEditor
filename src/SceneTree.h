@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Transform.h"
-#include "numeric/mat4.h"
+#include "WorldMatrix.h"
 
 #include <entt_fwd.h>
 
@@ -11,14 +11,7 @@ struct SceneNode {
     entt::entity NextSibling{null_entity};
 };
 
-struct WorldMatrix {
-    WorldMatrix(mat4 m) : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
-
-    mat4 M; // World-space matrix
-    mat4 MInv; // Transpose of inverse
-};
-
-void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &); // actually defined in Scene.cpp
+void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &); // actually defined in mesh/MeshRender.cpp
 
 // Inverse of parent's world matrix at the moment of parenting.
 // Used to compute world matrices that follow parent transforms.
@@ -26,8 +19,6 @@ void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &); // 
 struct ParentInverse {
     mat4 M{I4};
 };
-
-struct Visible {};
 
 // Iterator for traversing children of a SceneNode
 struct ChildrenIterator {
@@ -60,12 +51,3 @@ Transform GetTransform(const entt::registry &, entt::entity);
 
 // Recursively update world matrices of entity and its children based on current transforms
 void UpdateWorldMatrix(entt::registry &, entt::entity);
-
-// Component for entities that render a mesh via instancing.
-// References an entity with Mesh+MeshBuffers+ModelsBuffer components.
-struct MeshInstance {
-    entt::entity MeshEntity{null_entity};
-};
-
-// If this is a MeshInstance, return its MeshEntity. Otherwise, returns the entity itself.
-entt::entity GetMeshEntity(const entt::registry &, entt::entity);

@@ -1,6 +1,9 @@
 #include "MeshRender.h"
 
 #include "BVH.h"
+#include "WorldMatrix.h"
+
+#include <entt/entity/registry.hpp>
 
 using namespace he;
 
@@ -157,3 +160,15 @@ BBox ComputeBoundingBox(const Mesh &mesh) {
 }
 
 } // namespace MeshRender
+
+// Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
+std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
+    if (e == entt::null || !r.all_of<Visible>(e)) return std::nullopt;
+    return r.get<RenderInstance>(e).BufferIndex;
+}
+
+void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldMatrix &m) {
+    if (const auto i = GetModelBufferIndex(r, e)) {
+        r.get<ModelsBuffer>(r.get<MeshInstance>(e).MeshEntity).Buffer.Update(as_bytes(m), *i * sizeof(WorldMatrix));
+    }
+}

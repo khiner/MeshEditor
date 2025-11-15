@@ -128,6 +128,7 @@ struct Scene {
 
     void SetVisible(entt::entity, bool);
 
+    entt::entity GetActiveMeshEntity() const;
     void Select(entt::entity);
     void ToggleSelected(entt::entity);
 
@@ -238,7 +239,6 @@ private:
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);
-    void RemoveEntitySelectionOverlays(entt::entity);
 
     void WaitFor(vk::Fence) const;
 };

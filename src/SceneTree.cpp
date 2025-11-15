@@ -96,8 +96,3 @@ void ClearParent(entt::registry &r, entt::entity child) {
     r.remove<ParentInverse>(child);
     UpdateWorldMatrix(r, child);
 }
-
-entt::entity GetMeshEntity(const entt::registry &r, entt::entity entity) {
-    if (const auto *mesh_instance = r.try_get<MeshInstance>(entity)) return mesh_instance->MeshEntity;
-    return entity;
-}

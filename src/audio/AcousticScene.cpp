@@ -5,7 +5,6 @@
 #include "FaustGenerator.h"
 #include "RealImpact.h"
 #include "Scene.h"
-#include "SceneTree.h"
 #include "Tets.h"
 #include "Widgets.h" // imgui
 #include "Worker.h"
@@ -188,9 +187,9 @@ using namespace ImGui;
 
 void AcousticScene::RenderControls(Scene &scene) {
     static const float CharWidth = CalcTextSize("A").x;
-
     // todo straighten out acoustic models for instances
-    const auto active_entity = GetMeshEntity(R, FindActiveEntity(R));
+
+    const auto active_entity = scene.GetActiveMeshEntity();
     if (!R.storage<SoundObjectModel>().empty() && CollapsingHeader("Sound objects")) {
         if (MeshEditor::BeginTable("Sound objects", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);

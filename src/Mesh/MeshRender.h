@@ -1,15 +1,20 @@
 #pragma once
 
+#include "../Vulkan/UniqueBuffers.h"
 #include "BBox.h"
-#include "BVH.h"
 #include "Mesh.h"
+#include "mesh/Handle.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
+#include <entt_fwd.h>
+
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 struct BVH;
+struct WorldMatrix;
 
 // Submitted to shaders
 struct Vertex3D {
@@ -23,8 +28,55 @@ struct MeshRenderBuffers {
     std::vector<uint> Indices;
 };
 
-namespace MeshRender {
+struct Visible {};
 
+struct RenderInstance {
+    uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
+};
+
+// Stored on mesh entities.
+// Holds the `WorldMatrix` of all instances of the mesh.
+struct ModelsBuffer {
+    mvk::UniqueBuffers Buffer;
+};
+
+// Component for entities that render a mesh via instancing.
+// References an entity with Mesh+MeshBuffers+ModelsBuffer components.
+struct MeshInstance {
+    entt::entity MeshEntity{null_entity};
+};
+
+struct RenderBuffers {
+    RenderBuffers(mvk::UniqueBuffers &&vertices, mvk::UniqueBuffers &&indices)
+        : Vertices(std::move(vertices)), Indices(std::move(indices)) {}
+    RenderBuffers(RenderBuffers &&) = default;
+    RenderBuffers(const RenderBuffers &) = delete;
+    RenderBuffers &operator=(const RenderBuffers &) = delete;
+
+    mvk::UniqueBuffers Vertices, Indices;
+};
+
+struct BoundingBoxesBuffers {
+    RenderBuffers Buffers;
+};
+struct BvhBoxesBuffers {
+    RenderBuffers Buffers;
+};
+using RenderBuffersByElement = std::unordered_map<he::Element, RenderBuffers>;
+struct MeshBuffers {
+    MeshBuffers(RenderBuffersByElement &&mesh, RenderBuffersByElement &&normal_indicators)
+        : Mesh{std::move(mesh)}, NormalIndicators{std::move(normal_indicators)} {}
+    MeshBuffers(const MeshBuffers &) = delete;
+    MeshBuffers &operator=(const MeshBuffers &) = delete;
+
+    RenderBuffersByElement Mesh, NormalIndicators;
+};
+
+// Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
+std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity);
+void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
+
+namespace MeshRender {
 // Rendering colors
 inline vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
 inline vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select
