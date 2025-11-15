@@ -12,8 +12,7 @@ struct SceneNode {
 };
 
 struct WorldMatrix {
-    WorldMatrix(mat4 m)
-        : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
+    WorldMatrix(mat4 m) : M{std::move(m)}, MInv{glm::transpose(glm::inverse(M))} {}
 
     mat4 M; // World-space matrix
     mat4 MInv; // Transpose of inverse
@@ -52,7 +51,6 @@ struct Children {
     ChildrenIterator end() const { return {R, null_entity}; }
 };
 
-entt::entity GetRootEntity(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity); // If no parent, returns the provided entity.
 
 void SetParent(entt::registry &, entt::entity child, entt::entity parent);
@@ -62,3 +60,12 @@ Transform GetTransform(const entt::registry &, entt::entity);
 
 // Recursively update world matrices of entity and its children based on current transforms
 void UpdateWorldMatrix(entt::registry &, entt::entity);
+
+// Component for entities that render a mesh via instancing.
+// References an entity with Mesh+MeshBuffers+ModelsBuffer components.
+struct MeshInstance {
+    entt::entity MeshEntity{null_entity};
+};
+
+// If this is a MeshInstance, return its MeshEntity. Otherwise, returns the entity itself.
+entt::entity GetMeshEntity(const entt::registry &, entt::entity);

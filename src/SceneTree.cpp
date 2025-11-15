@@ -7,7 +7,7 @@ mat4 ToMatrix(Transform &&t) {
     return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
 }
 
-// How much the child's parent has transformed since parenting
+// How much the child's parent has transformed since parenting, or identity if no parent.
 mat4 GetParentDelta(entt::registry &r, entt::entity child) {
     const auto *node = r.try_get<SceneNode>(child);
     if (!node || node->Parent == entt::null) return I4;
@@ -53,14 +53,6 @@ entt::entity GetParentEntity(const entt::registry &r, entt::entity e) {
     return e;
 }
 
-entt::entity GetRootEntity(const entt::registry &r, entt::entity e) {
-    while (true) {
-        const auto parent = GetParentEntity(r, e);
-        if (parent == e) return e;
-        e = parent;
-    }
-}
-
 void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
     if (child == entt::null || parent == entt::null || child == parent) return;
 
@@ -101,7 +93,11 @@ void ClearParent(entt::registry &r, entt::entity child) {
 
     child_node.Parent = entt::null;
     child_node.NextSibling = entt::null;
-
     r.remove<ParentInverse>(child);
     UpdateWorldMatrix(r, child);
+}
+
+entt::entity GetMeshEntity(const entt::registry &r, entt::entity entity) {
+    if (const auto *mesh_instance = r.try_get<MeshInstance>(entity)) return mesh_instance->MeshEntity;
+    return entity;
 }

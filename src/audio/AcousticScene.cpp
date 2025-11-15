@@ -3,7 +3,6 @@
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "FaustGenerator.h"
-#include "MeshInstance.h"
 #include "RealImpact.h"
 #include "Scene.h"
 #include "SceneTree.h"

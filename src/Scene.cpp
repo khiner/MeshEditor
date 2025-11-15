@@ -3,7 +3,6 @@
 
 #include "Entity.h"
 #include "Excitable.h"
-#include "MeshInstance.h"
 #include "OrientationGizmo.h"
 #include "SceneTree.h"
 #include "mesh/Arrow.h"
