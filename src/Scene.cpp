@@ -1680,14 +1680,25 @@ void Scene::RenderOverlay() {
     }
 
     if (const auto selected_view = R.view<Selected>(); !selected_view.empty()) {
-        // Transform all selected entities around their average position, using the active entity's rotation/scale.
+        // Transform all root selected entities (whose parent is not also selected) around their average position,
+        // using the active entity's rotation/scale.
+        // Non-root selected entities already follow their parent's transform.
         struct StartTransform {
             Transform T;
         };
         const auto start_transform_view = R.view<const StartTransform>();
 
+        const auto is_parent_selected = [&](entt::entity e) {
+            if (const auto *node = R.try_get<SceneNode>(e)) {
+                return node->Parent != entt::null && R.all_of<Selected>(node->Parent);
+            }
+            return false;
+        };
+        auto root_selected = selected_view | std::views::filter([&](auto e) { return !is_parent_selected(e); });
+        const auto root_count = std::ranges::distance(root_selected);
+
         const auto active_transform = GetTransform(R, FindActiveEntity(R));
-        const auto p = fold_left(selected_view | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(selected_view.size());
+        const auto p = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
                 MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
@@ -1695,7 +1706,7 @@ void Scene::RenderOverlay() {
             )) {
             const auto &[ts, td] = *start_delta;
             if (start_transform_view.empty()) {
-                for (const auto e : selected_view) R.emplace<StartTransform>(e, GetTransform(R, e));
+                for (const auto e : root_selected) R.emplace<StartTransform>(e, GetTransform(R, e));
             }
             // Compute delta transform from drag start
             const auto r = ts.R, rT = glm::conjugate(r);
