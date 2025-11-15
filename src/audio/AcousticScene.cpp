@@ -284,17 +284,13 @@ void AcousticScene::RenderControls(Scene &scene) {
     if (sound_entity != active_entity && Button("Select sound object")) {
         scene.Select(sound_entity);
     }
-
-    const auto *listener = R.try_get<SoundObjectListener>(sound_entity);
-    if (listener && listener->Listener != active_entity) {
-        if (Button("Select listener point")) {
+    {
+        const auto *listener = R.try_get<SoundObjectListener>(sound_entity);
+        if (listener && listener->Listener != active_entity && Button("Select listener point")) {
             scene.Select(listener->Listener);
         }
-    }
-
-    if (const auto *listener_point = R.try_get<SoundObjectListenerPoint>(active_entity);
-        listener_point && (!listener || active_entity != listener->Listener)) {
-        if (Button("Set listener point")) {
+        const auto *listener_point = R.try_get<SoundObjectListenerPoint>(active_entity);
+        if (listener_point && (!listener || listener->Listener != active_entity) && Button("Set listener point")) {
             SetImpactFrames(sound_entity, to<std::vector>(RealImpact::LoadSamples(R.get<Path>(sound_entity).Value.parent_path(), listener_point->Index)));
             R.emplace_or_replace<SoundObjectListener>(sound_entity, active_entity);
         }

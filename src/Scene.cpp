@@ -203,13 +203,6 @@ void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const mvk
     cb.bindVertexBuffers(1, {*models.DeviceBuffer}, models_buffer_offsets);
 }
 
-void DrawIndexed(vk::CommandBuffer cb, const mvk::UniqueBuffers &indices, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) {
-    const uint index_count = indices.UsedSize / sizeof(uint);
-    const uint first_instance = model_index.value_or(0);
-    const uint instance_count = model_index.has_value() ? 1 : models.UsedSize / sizeof(WorldMatrix);
-    cb.drawIndexed(index_count, instance_count, 0, 0, first_instance);
-}
-
 vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 
 constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -222,7 +215,9 @@ void PipelineRenderer::CompileShaders() {
 
 void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::RenderBuffers &render_buffers, const mvk::UniqueBuffers &models, std::optional<uint> model_index) const {
     Bind(cb, ShaderPipelines.at(spt), render_buffers, models);
-    DrawIndexed(cb, render_buffers.Indices, models, model_index);
+    const auto first_instance = model_index.value_or(0);
+    const auto instance_count = model_index.has_value() ? 1 : models.UsedSize / sizeof(WorldMatrix);
+    cb.drawIndexed(render_buffers.Indices.UsedSize / sizeof(uint), instance_count, 0, 0, first_instance);
 }
 
 mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
@@ -1134,7 +1129,7 @@ void Scene::RecordRenderCommandBuffer() {
                 Bind(cb, shader_pipeline, render_buffers, models);
                 const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
                 cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_id), &object_id);
-                DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(R, selected_entity));
+                cb.drawIndexed(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0, *GetModelBufferIndex(R, selected_entity));
             }
             cb.endRenderPass();
         }
@@ -1748,60 +1743,18 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
     }
 
-    // Mesh instancing info
     if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
-        AlignTextToFramePadding();
-        Text("MeshInstance.MeshEntity: %s", GetName(R, mesh_instance->MeshEntity).c_str());
-        SameLine();
-        if (Button("Activate##MeshEntity")) activate_entity = mesh_instance->MeshEntity;
+        Text("Mesh entity: %s", GetName(R, mesh_instance->MeshEntity).c_str());
     }
-
-    // Show instances of this mesh (if this is a mesh entity)
-    if (R.all_of<Mesh>(active_entity)) {
-        uint instance_count = 0;
-        for (const auto [_, mi] : R.view<MeshInstance>().each()) {
-            if (mi.MeshEntity == active_entity) ++instance_count;
-        }
-        if (instance_count > 0) {
-            Text("Mesh Instances: %u", instance_count);
-            if (CollapsingHeader("View Instances")) {
-                if (MeshEditor::BeginTable("Instances", 3)) {
-                    static const float CharWidth = CalcTextSize("A").x;
-                    TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
-                    TableSetupColumn("Name");
-                    TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
-                    TableHeadersRow();
-                    for (const auto [instance_entity, mi] : R.view<MeshInstance>().each()) {
-                        if (mi.MeshEntity == active_entity) {
-                            PushID(uint(instance_entity));
-                            TableNextColumn();
-                            AlignTextToFramePadding();
-                            if (R.all_of<Active>(instance_entity)) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
-                            TextUnformatted(IdString(instance_entity).c_str());
-                            TableNextColumn();
-                            TextUnformatted(R.get<Name>(instance_entity).Value.c_str());
-                            TableNextColumn();
-                            if (!R.all_of<Active>(instance_entity) && Button("Activate")) activate_entity = instance_entity;
-                            SameLine();
-                            if (Button(R.all_of<Selected>(instance_entity) ? "Deselect" : "Select")) toggle_selected = instance_entity;
-                            PopID();
-                        }
-                    }
-                    EndTable();
-                }
-            }
-        }
+    {
+        const auto model_buffer_index = GetModelBufferIndex(R, active_entity);
+        Text("Model buffer index: %s", model_buffer_index ? std::to_string(*model_buffer_index).c_str() : "None");
     }
-
     const auto active_mesh_entity = GetMeshEntity(R, active_entity);
     const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
     TextUnformatted(
         std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
     );
-    {
-        const auto model_buffer_index = GetModelBufferIndex(R, active_entity);
-        Text("Model buffer index: %s", model_buffer_index ? std::to_string(*model_buffer_index).c_str() : "None");
-    }
     Unindent();
     bool visible = R.all_of<Visible>(active_entity);
     if (Checkbox("Visible", &visible)) SetVisible(active_entity, visible);
