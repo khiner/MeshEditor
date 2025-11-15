@@ -1,8 +1,11 @@
 #pragma once
 
+#include "Transform.h"
 #include "numeric/mat4.h"
 
 #include <entt/entity/entity.hpp>
+
+#include <optional>
 
 struct SceneNode {
     entt::entity Parent{entt::null};
@@ -18,12 +21,16 @@ struct WorldMatrix {
     mat4 MInv; // Transpose of inverse
 };
 
+void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &); // actually defined in Scene.cpp
+
 // Inverse of parent's world matrix at the moment of parenting.
 // Used to compute world matrices that follow parent transforms.
 // WorldMatrix = ParentWorldMatrix * ParentInverse * LocalMatrix
 struct ParentInverse {
     mat4 M{I4};
 };
+
+struct Visible {};
 
 // Iterator for traversing children of a SceneNode
 struct ChildrenIterator {
@@ -52,3 +59,8 @@ entt::entity GetParentEntity(const entt::registry &, entt::entity); // If no par
 
 void SetParent(entt::registry &, entt::entity child, entt::entity parent);
 void ClearParent(entt::registry &, entt::entity child);
+
+Transform GetTransform(const entt::registry &, entt::entity);
+
+// Recursively update world matrices of entity and its children based on current transforms
+void UpdateWorldMatrix(entt::registry &, entt::entity);

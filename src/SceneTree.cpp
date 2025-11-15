@@ -4,6 +4,29 @@
 
 #include <ranges>
 
+namespace {
+mat4 ToMatrix(Transform &&t) {
+    return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
+}
+
+// How much the child's parent has transformed since parenting
+mat4 GetParentDelta(entt::registry &r, entt::entity child) {
+    const auto *node = r.try_get<SceneNode>(child);
+    if (!node || node->Parent == entt::null) return I4;
+    return r.get<WorldMatrix>(node->Parent).M * r.get<ParentInverse>(child).M;
+}
+} // namespace
+
+Transform GetTransform(const entt::registry &r, entt::entity e) {
+    return {r.get<Position>(e).Value, r.get<Rotation>(e).Value, r.all_of<Scale>(e) ? r.get<Scale>(e).Value : vec3{1}};
+}
+
+void UpdateWorldMatrix(entt::registry &r, entt::entity e) {
+    const auto &world_matrix = r.emplace_or_replace<WorldMatrix>(e, GetParentDelta(r, e) * ToMatrix(GetTransform(r, e)));
+    UpdateModelBuffer(r, e, world_matrix);
+    for (const auto child : Children{&r, e}) UpdateWorldMatrix(r, child);
+}
+
 ChildrenIterator &ChildrenIterator::operator++() {
     if (Current != entt::null) {
         if (const auto *node = R->try_get<SceneNode>(Current)) Current = node->NextSibling;
@@ -82,4 +105,5 @@ void ClearParent(entt::registry &r, entt::entity child) {
     child_node.NextSibling = entt::null;
 
     r.remove<ParentInverse>(child);
+    UpdateWorldMatrix(r, child);
 }

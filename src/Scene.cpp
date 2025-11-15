@@ -53,9 +53,8 @@ struct ViewProjNearFar {
     float Near, Far;
 };
 
-struct Visible {}; // Visible in the scene
 struct RenderInstance {
-    uint32_t BufferIndex{0}; // slot in GPU model instance buffer
+    uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
 };
 
 // Stored on parent entities.
@@ -133,10 +132,6 @@ struct RotationAxisAngle {
 };
 using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxisAngle>;
 
-Transform GetTransform(const entt::registry &r, entt::entity e) {
-    return {r.get<Position>(e).Value, r.get<Rotation>(e).Value, r.all_of<Scale>(e) ? r.get<Scale>(e).Value : vec3{1}};
-}
-
 void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     r.emplace_or_replace<Rotation>(e, v);
     if (!r.all_of<RotationUiVariant>(e)) {
@@ -161,25 +156,6 @@ void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     );
 }
 
-void UpdateModel(entt::registry &r, entt::entity e);
-
-void UpdateModelRecursive(entt::registry &r, entt::entity e) {
-    UpdateModel(r, e);
-    for (const auto child : Children{&r, e}) UpdateModelRecursive(r, child);
-}
-
-void UpdateModel(entt::registry &r, entt::entity e) {
-    const auto t = GetTransform(r, e);
-    const auto m_local = glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
-    const auto *node = r.try_get<SceneNode>(e);
-    r.emplace_or_replace<WorldMatrix>(
-        e,
-        node && node->Parent != entt::null ?
-            r.get<WorldMatrix>(node->Parent).M * r.get<ParentInverse>(e).M * m_local :
-            m_local
-    );
-}
-
 void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
     r.emplace_or_replace<Position>(e, t.P);
     // Avoid replacing rotation UI slider values if the value hasn't changed.
@@ -187,7 +163,7 @@ void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
     // Frozen entities can't have their scale changed.
     if (!r.all_of<Frozen>(e)) r.emplace_or_replace<Scale>(e, t.S);
 
-    UpdateModelRecursive(r, e);
+    UpdateWorldMatrix(r, e);
 }
 
 vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
@@ -934,26 +910,25 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info
 entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo> info) {
     const auto mesh_entity = GetMeshEntity(R, e);
     const auto e_new = R.create();
-
-    // Create a mesh instance pointing to the mesh entity
-    R.emplace<MeshInstance>(e_new, mesh_entity);
-
-    UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
-
-    // Count current instances for naming (start at 1 to include the source instance)
-    uint instance_count = 1;
-    for (const auto [_, mesh_instance] : R.view<MeshInstance>().each()) {
-        if (mesh_instance.MeshEntity == mesh_entity) ++instance_count;
+    {
+        uint instance_count = 0; // Count instances for naming (first duplicated instance is _1, etc.)
+        for (const auto [_, mesh_instance] : R.view<MeshInstance>().each()) {
+            if (mesh_instance.MeshEntity == mesh_entity) ++instance_count;
+        }
+        R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
     }
-
-    R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
-    auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
-    model_buffer.Reserve(model_buffer.UsedSize + sizeof(WorldMatrix));
+    R.emplace<MeshInstance>(e_new, mesh_entity);
+    {
+        auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
+        model_buffer.Reserve(model_buffer.UsedSize + sizeof(WorldMatrix));
+    }
+    UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
+
     if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
     else if (info->Select == MeshCreateInfo::SelectBehavior::Exclusive) Select(e_new);
-    InvalidateCommandBuffer();
 
+    InvalidateCommandBuffer();
     return e_new;
 }
 
@@ -1021,11 +996,11 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 }
 
 void Scene::Destroy(entt::entity e) {
-    ClearParent(R, e);
-    { // Destroy all children
+    { // Clear relationships
+        ClearParent(R, e);
         std::vector<entt::entity> children;
         for (auto child : Children{&R, e}) children.emplace_back(child);
-        for (const auto child : children) Destroy(child);
+        for (const auto child : children) ClearParent(R, child);
     }
 
     // Track mesh entity if this is an instance
@@ -1073,24 +1048,11 @@ void Scene::SetEditingHandle(AnyHandle handle) {
     UpdateRenderBuffers(GetMeshEntity(R, FindActiveEntity(R)));
 }
 
-void Scene::SetTransform(entt::entity e, Transform transform) {
-    UpdateTransform(R, e, transform);
-    UpdateModelBufferRecursive(e);
-    InvalidateCommandBuffer();
-}
-
 void Scene::WaitFor(vk::Fence fence) const {
     if (auto wait_result = Vk.Device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
     }
     Vk.Device.resetFences(fence);
-}
-
-// Get the model VK buffer index.
-// Returns `std::nullopt` if the entity is not visible (and thus does not have a rendered model).
-std::optional<uint> Scene::GetModelBufferIndex(entt::entity e) {
-    if (e == entt::null || !R.all_of<Visible>(e)) return std::nullopt;
-    return R.get<RenderInstance>(e).BufferIndex;
 }
 
 void Scene::UpdateRenderBuffers(entt::entity e) {
@@ -1108,6 +1070,24 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         }
         InvalidateCommandBuffer();
     };
+}
+
+namespace {
+// Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
+std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
+    if (e == entt::null || !r.all_of<Visible>(e)) return std::nullopt;
+    return r.get<RenderInstance>(e).BufferIndex;
+}
+
+void SetTransform(entt::registry &r, entt::entity e, Transform &&t) {
+    UpdateTransform(r, e, std::move(t));
+}
+} // namespace
+
+void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldMatrix &m) {
+    if (const auto i = GetModelBufferIndex(r, e)) {
+        r.get<ModelsBuffer>(GetMeshEntity(r, e)).Buffer.Update(as_bytes(m), *i * sizeof(WorldMatrix));
+    }
 }
 
 void Scene::RecordRenderCommandBuffer() {
@@ -1134,8 +1114,7 @@ void Scene::RecordRenderCommandBuffer() {
     );
 
     const auto active_entity = FindActiveEntity(R);
-    const auto active_model_buffer_index = GetModelBufferIndex(active_entity);
-    const bool render_silhouette = active_model_buffer_index && SelectionMode == SelectionMode::Object;
+    const bool render_silhouette = GetModelBufferIndex(R, active_entity) && SelectionMode == SelectionMode::Object;
     if (render_silhouette) {
         // Render all selected mesh instances into a depth/object ID texture.
         const auto &silhouette = Pipelines->Silhouette;
@@ -1155,7 +1134,7 @@ void Scene::RecordRenderCommandBuffer() {
                 Bind(cb, shader_pipeline, render_buffers, models);
                 const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
                 cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_id), &object_id);
-                DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(selected_entity));
+                DrawIndexed(cb, render_buffers.Indices, models, *GetModelBufferIndex(R, selected_entity));
             }
             cb.endRenderPass();
         }
@@ -1244,18 +1223,6 @@ void Scene::UpdateTransformBuffers() {
     const ViewProjNearFar vpnf{camera_ubo.View, camera_ubo.Proj, Camera.NearClip, Camera.FarClip};
     ViewProjNearFarBuffer.Update(as_bytes(vpnf));
     InvalidateCommandBuffer();
-}
-
-void Scene::UpdateModelBuffer(entt::entity e) {
-    if (const auto buffer_index = GetModelBufferIndex(e)) {
-        const auto &world_matrix = R.get<WorldMatrix>(e);
-        R.get<ModelsBuffer>(GetMeshEntity(R, e)).Buffer.Update(as_bytes(world_matrix), *buffer_index * sizeof(WorldMatrix));
-    }
-}
-
-void Scene::UpdateModelBufferRecursive(entt::entity e) {
-    UpdateModelBuffer(e);
-    for (auto child : Children{&R, e}) UpdateModelBufferRecursive(child);
 }
 
 void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable) {
@@ -1672,7 +1639,7 @@ void Scene::RenderOverlay() {
                 const bool frozen = R.all_of<Frozen>(e);
                 const auto offset = ts_e.P - ts.P;
                 SetTransform(
-                    e,
+                    R, e,
                     {
                         .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
                         .R = glm::normalize(td.R * ts_e.R),
@@ -1680,6 +1647,7 @@ void Scene::RenderOverlay() {
                     }
                 );
             }
+            InvalidateCommandBuffer();
         } else if (!start_transform_view.empty()) {
             R.clear<StartTransform>();
             InvalidateCommandBuffer(); // No longer manipulating - silhouette color changes.
@@ -1830,7 +1798,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     TextUnformatted(
         std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
     );
-    Text("Model buffer index: %s", GetModelBufferIndex(active_entity) ? std::to_string(*GetModelBufferIndex(active_entity)).c_str() : "None");
+    {
+        const auto model_buffer_index = GetModelBufferIndex(R, active_entity);
+        Text("Model buffer index: %s", model_buffer_index ? std::to_string(*model_buffer_index).c_str() : "None");
+    }
     Unindent();
     bool visible = R.all_of<Visible>(active_entity);
     if (Checkbox("Visible", &visible)) SetVisible(active_entity, visible);
@@ -1883,8 +1854,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         model_changed |= DragFloat3(label.c_str(), &R.get<Scale>(active_entity).Value[0], 0.01f, 0.01f, 10);
         if (frozen) EndDisabled();
         if (model_changed) {
-            UpdateModel(R, active_entity);
-            UpdateModelBuffer(active_entity);
+            UpdateWorldMatrix(R, active_entity);
             InvalidateCommandBuffer();
         }
         Spacing();

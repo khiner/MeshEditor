@@ -174,7 +174,6 @@ struct Scene {
 
     void Destroy(entt::entity);
 
-    void SetTransform(entt::entity, Transform);
     void SetVisible(entt::entity, bool);
 
     void Select(entt::entity);
@@ -205,7 +204,6 @@ struct Scene {
 
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
-    std::optional<uint> GetModelBufferIndex(entt::entity);
     void UpdateRenderBuffers(entt::entity);
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
@@ -288,8 +286,6 @@ private:
 
     // VK buffer update methods
     void UpdateTransformBuffers();
-    void UpdateModelBuffer(entt::entity);
-    void UpdateModelBufferRecursive(entt::entity);
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);
