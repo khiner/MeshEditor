@@ -5,11 +5,13 @@
 #include "Excitable.h"
 #include "OrientationGizmo.h"
 #include "SceneTree.h"
+#include "Shader.h"
+#include "SvgResource.h"
+#include "Vulkan/UniqueBuffers.h"
 #include "mesh/Arrow.h"
 #include "mesh/MeshIntersection.h"
 #include "mesh/MeshRender.h"
 #include "mesh/Primitives.h"
-#include "numeric/mat3.h"
 
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/euler_angles.hpp>
@@ -19,6 +21,7 @@
 #include <format>
 #include <map>
 #include <ranges>
+#include <unordered_map>
 #include <variant>
 
 using std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
@@ -61,13 +64,24 @@ struct RenderInstance {
 struct ModelsBuffer {
     mvk::UniqueBuffers Buffer;
 };
+
+struct RenderBuffers {
+    RenderBuffers(mvk::UniqueBuffers &&vertices, mvk::UniqueBuffers &&indices)
+        : Vertices(std::move(vertices)), Indices(std::move(indices)) {}
+    RenderBuffers(RenderBuffers &&) = default;
+    RenderBuffers(const RenderBuffers &) = delete;
+    RenderBuffers &operator=(const RenderBuffers &) = delete;
+
+    mvk::UniqueBuffers Vertices, Indices;
+};
+
 struct BoundingBoxesBuffers {
-    mvk::RenderBuffers Buffers;
+    RenderBuffers Buffers;
 };
 struct BvhBoxesBuffers {
-    mvk::RenderBuffers Buffers;
+    RenderBuffers Buffers;
 };
-using RenderBuffersByElement = std::unordered_map<Element, mvk::RenderBuffers>;
+using RenderBuffersByElement = std::unordered_map<Element, RenderBuffers>;
 struct MeshBuffers {
     MeshBuffers(RenderBuffersByElement &&mesh, RenderBuffersByElement &&normal_indicators)
         : Mesh{std::move(mesh)}, NormalIndicators{std::move(normal_indicators)} {}
@@ -75,6 +89,37 @@ struct MeshBuffers {
     MeshBuffers &operator=(const MeshBuffers &) = delete;
 
     RenderBuffersByElement Mesh, NormalIndicators;
+};
+
+enum class ShaderPipelineType {
+    Fill,
+    Line,
+    Grid,
+    SilhouetteDepthObject,
+    SilhouetteEdgeDepthObject,
+    SilhouetteEdgeDepth,
+    SilhouetteEdgeColor,
+    DebugNormals,
+};
+using SPT = ShaderPipelineType;
+
+struct ShaderBindingDescriptor {
+    SPT PipelineType;
+    std::string_view BindingName;
+    const vk::DescriptorBufferInfo *BufferInfo{nullptr};
+    const vk::DescriptorImageInfo *ImageInfo{nullptr};
+};
+struct PipelineRenderer {
+    vk::UniqueRenderPass RenderPass;
+    std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
+
+    void CompileShaders();
+
+    std::vector<vk::WriteDescriptorSet> GetDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
+
+    // If `model_index` is set, only the model at that index is rendered.
+    // Otherwise, all models are rendered.
+    void Render(vk::CommandBuffer, SPT, const RenderBuffers &, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) const;
 };
 
 // Component: Handles highlighted for rendering (in addition to selected elements)
@@ -191,12 +236,12 @@ vk::PipelineVertexInputStateCreateInfo CreateVertexInputState() {
 // todo: consider updating `drawIndexed` to use a different strategy:
 //   -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
 //      vkCmdDrawIndexedIndirectCount & put the offsets in a UBO indexed with gl_DrawId.
-void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const mvk::RenderBuffers &render_buffers, const mvk::UniqueBuffers &models) {
+void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline, const RenderBuffers &render_buffers, const mvk::UniqueBuffers &models) {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, *shader_pipeline.DescriptorSet, {});
 
     // Bind buffers
-    static constexpr vk::DeviceSize vertex_buffer_offsets[] = {0}, models_buffer_offsets[] = {0};
+    static constexpr vk::DeviceSize vertex_buffer_offsets[]{0}, models_buffer_offsets[]{0};
     cb.bindVertexBuffers(0, {*render_buffers.Vertices.DeviceBuffer}, vertex_buffer_offsets);
     cb.bindIndexBuffer(*render_buffers.Indices.DeviceBuffer, 0, vk::IndexType::eUint32);
     cb.bindVertexBuffers(1, {*models.DeviceBuffer}, models_buffer_offsets);
@@ -208,11 +253,39 @@ constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBit
 constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 } // namespace
 
+struct SceneUniqueBuffers {
+    SceneUniqueBuffers(
+        vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandPool command_pool,
+        std::span<const std::byte> lights, std::span<const std::byte> colors
+    ) : Ctx{pd, d, instance, command_pool},
+        CameraUBO{Ctx, sizeof(CameraUBO), vk::BufferUsageFlagBits::eUniformBuffer},
+        ViewProjNearFar{Ctx, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer},
+        Lights{Ctx, lights, vk::BufferUsageFlagBits::eUniformBuffer},
+        SilhouetteColors{Ctx, colors, vk::BufferUsageFlagBits::eUniformBuffer} {};
+
+    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
+        return {
+            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer},
+            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer}
+        };
+    }
+    template<size_t N>
+    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) const {
+        return {
+            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer},
+            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer}
+        };
+    }
+
+    mvk::BufferContext Ctx;
+    mvk::UniqueBuffers CameraUBO, ViewProjNearFar, Lights, SilhouetteColors;
+};
+
 void PipelineRenderer::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
 }
 
-void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const mvk::RenderBuffers &render_buffers, const mvk::UniqueBuffers &models, std::optional<uint> model_index) const {
+void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const RenderBuffers &render_buffers, const mvk::UniqueBuffers &models, std::optional<uint> model_index) const {
     Bind(cb, ShaderPipelines.at(spt), render_buffers, models);
     const auto first_instance = model_index.value_or(0);
     const auto instance_count = model_index.has_value() ? 1 : models.UsedSize / sizeof(WorldMatrix);
@@ -235,10 +308,10 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
     );
 
-    const auto cb = *BufferContext.TransferCb;
+    const auto cb = *UniqueBuffers->Ctx.TransferCb;
     {
         // Write the bitmap into a temporary staging buffer.
-        mvk::UniqueBuffer staging_buffer(*BufferContext.Allocator, as_bytes(data), mvk::MemoryUsage::CpuOnly);
+        mvk::UniqueBuffer staging_buffer{*UniqueBuffers->Ctx.Allocator, as_bytes(data), mvk::MemoryUsage::CpuOnly};
 
         // Transition the image layout to be ready for data transfer.
         cb.pipelineBarrier(
@@ -294,7 +367,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         WaitFor(*TransferFence);
     } // staging buffer is destroyed here
 
-    BufferContext.Reclaimer.Reclaim();
+    UniqueBuffers->Ctx.Reclaimer.Reclaim();
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     return image;
@@ -672,18 +745,14 @@ struct ScenePipelines {
 };
 
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
-    : Vk(vc),
-      R(r),
-      CommandPool(Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})),
-      RenderCommandBuffer(std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())),
-      RenderFence(Vk.Device.createFenceUnique({})),
-      TransferFence(Vk.Device.createFenceUnique({})),
-      Pipelines(std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)),
-      BufferContext(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool),
-      CameraUBOBuffer(BufferContext, sizeof(CameraUBO), vk::BufferUsageFlagBits::eUniformBuffer),
-      ViewProjNearFarBuffer(BufferContext, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer),
-      LightsBuffer(BufferContext, as_bytes(Lights), vk::BufferUsageFlagBits::eUniformBuffer),
-      SilhouetteColorsBuffer(BufferContext, as_bytes(Colors), vk::BufferUsageFlagBits::eUniformBuffer) {
+    : Vk{vc},
+      R{r},
+      CommandPool{Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})},
+      RenderCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
+      RenderFence{Vk.Device.createFenceUnique({})},
+      TransferFence{Vk.Device.createFenceUnique({})},
+      Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)},
+      UniqueBuffers{std::make_unique<SceneUniqueBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool, as_bytes(Lights), as_bytes(Colors))} {
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
@@ -698,10 +767,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     UpdateEdgeColors();
     UpdateTransformBuffers();
 
-    const auto transform_buffer = CameraUBOBuffer.GetDescriptor();
-    const auto lights_buffer = LightsBuffer.GetDescriptor();
-    const auto view_proj_near_far_buffer = ViewProjNearFarBuffer.GetDescriptor();
-    const auto silhouette_display_buffer = SilhouetteColorsBuffer.GetDescriptor();
+    const auto transform_buffer = UniqueBuffers->CameraUBO.GetDescriptor();
+    const auto lights_buffer = UniqueBuffers->Lights.GetDescriptor();
+    const auto view_proj_near_far_buffer = UniqueBuffers->ViewProjNearFar.GetDescriptor();
+    const auto silhouette_display_buffer = UniqueBuffers->SilhouetteColors.GetDescriptor();
     auto descriptors = Pipelines->Main.Renderer.GetDescriptors({
         {SPT::Fill, "CameraUBO", &transform_buffer},
         {SPT::Fill, "LightsUBO", &lights_buffer},
@@ -838,16 +907,15 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<BVH>(mesh_entity, MeshRender::CreateFaceBoundingBoxes(mesh));
         RenderBuffersByElement buffers_by_element{};
         for (const auto element : Elements) { // todo only create buffers for viewed elements.
-            buffers_by_element.emplace(element, CreateRenderBuffers(MeshRender::CreateVertices(mesh, element), MeshRender::CreateIndices(mesh, element)));
+            buffers_by_element.emplace(element, UniqueBuffers->CreateRenderBuffers(MeshRender::CreateVertices(mesh, element), MeshRender::CreateIndices(mesh, element)));
         }
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
 
         R.emplace<MeshHighlightedHandles>(mesh_entity);
-        R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{BufferContext, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
-
+        R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
         R.emplace<MeshBuffers>(mesh_entity, std::move(buffers_by_element), RenderBuffersByElement{});
         if (ShowBoundingBoxes) {
-            R.emplace<BoundingBoxesBuffers>(mesh_entity, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
+            R.emplace<BoundingBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
         }
     }
 
@@ -1066,6 +1134,8 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
     };
 }
 
+std::string Scene::DebugBufferHeapUsage() const { return UniqueBuffers->Ctx.Allocator.DebugHeapUsage(); }
+
 namespace {
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
@@ -1212,10 +1282,10 @@ void Scene::UpdateEdgeColors() {
 void Scene::UpdateTransformBuffers() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     const CameraUBO camera_ubo{Camera.View(), Camera.Projection(aspect_ratio), Camera.Position()};
-    CameraUBOBuffer.Update(as_bytes(camera_ubo));
+    UniqueBuffers->CameraUBO.Update(as_bytes(camera_ubo));
 
     const ViewProjNearFar vpnf{camera_ubo.View, camera_ubo.Proj, Camera.NearClip, Camera.FarClip};
-    ViewProjNearFarBuffer.Update(as_bytes(vpnf));
+    UniqueBuffers->ViewProjNearFar.Update(as_bytes(vpnf));
     InvalidateCommandBuffer();
 }
 
@@ -1238,21 +1308,21 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
     for (const auto element : NormalElements) {
         if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
-            mesh_buffers.NormalIndicators.emplace(element, CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element)));
+            mesh_buffers.NormalIndicators.emplace(element, UniqueBuffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element)));
         } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
             mesh_buffers.NormalIndicators.erase(element);
         }
     }
     if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         const auto &bbox = R.get<BBox>(mesh_entity);
-        R.emplace<BoundingBoxesBuffers>(mesh_entity, CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
+        R.emplace<BoundingBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         R.remove<BoundingBoxesBuffers>(mesh_entity);
     }
     if (ShowBvhBoxes && !R.all_of<BvhBoxesBuffers>(mesh_entity)) {
         const auto &bvh = R.get<BVH>(mesh_entity);
         auto bvh_buffers = MeshRender::CreateBvhBuffers(bvh, EdgeColor);
-        R.emplace<BvhBoxesBuffers>(mesh_entity, CreateRenderBuffers(std::move(bvh_buffers.Vertices), std::move(bvh_buffers.Indices)));
+        R.emplace<BvhBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(std::move(bvh_buffers.Vertices), std::move(bvh_buffers.Indices)));
     } else if (!ShowBvhBoxes && R.all_of<BvhBoxesBuffers>(mesh_entity)) {
         R.remove<BvhBoxesBuffers>(mesh_entity);
     }
@@ -1282,9 +1352,9 @@ constexpr std::string Capitalize(std::string_view str) {
 
 // We already cache the transpose of the inverse transform for all models,
 // so save some compute by using that.
-ray WorldToLocal(const ray &r, const mat4 &model_i_t) {
-    const auto model_i = glm::transpose(model_i_t);
-    return {{model_i * vec4{r.o, 1}}, glm::normalize(vec3{model_i * vec4{r.d, 0}})};
+ray WorldToLocal(const ray &r, const mat4 &world_inv_transp) {
+    const auto world_inv = glm::transpose(world_inv_transp);
+    return {{world_inv * vec4{r.o, 1}}, glm::normalize(vec3{world_inv * vec4{r.d, 0}})};
 }
 
 std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const ray &world_ray) {
@@ -1503,7 +1573,7 @@ bool Scene::RenderViewport() {
 
     CommandBufferDirty = false;
 
-    const auto transfer_cb = *BufferContext.TransferCb;
+    const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
     vk::SubmitInfo submit;
     if (extent_changed) {
         Extent = ToExtent(content_region);
@@ -1518,6 +1588,7 @@ bool Scene::RenderViewport() {
         RecordRenderCommandBuffer();
         submit.setCommandBuffers(*RenderCommandBuffer);
     } else {
+        std::array<vk::CommandBuffer, 2> CommandBuffers{*UniqueBuffers->Ctx.TransferCb, *RenderCommandBuffer};
         transfer_cb.end();
         RecordRenderCommandBuffer();
         submit.setCommandBuffers(CommandBuffers);
@@ -1527,7 +1598,7 @@ bool Scene::RenderViewport() {
     // The caller may use the resolve image and sampler immediately after `Scene::Render` returns.
     // Returning `true` indicates that the resolve image/sampler have been recreated.
     WaitFor(*RenderFence);
-    BufferContext.Reclaimer.Reclaim();
+    UniqueBuffers->Ctx.Reclaimer.Reclaim();
     transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     return extent_changed;
@@ -1971,7 +2042,7 @@ void Scene::RenderControls() {
                 bool color_changed = ColorEdit3("Active color", &Colors.Active[0]);
                 color_changed |= ColorEdit3("Selected color", &Colors.Selected[0]);
                 if (color_changed) {
-                    SilhouetteColorsBuffer.Update(as_bytes(Colors));
+                    UniqueBuffers->SilhouetteColors.Update(as_bytes(Colors));
                     InvalidateCommandBuffer();
                 }
                 if (SliderUInt("Edge width", &SilhouetteEdgeWidth, 1, 4)) InvalidateCommandBuffer();
@@ -2037,7 +2108,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                LightsBuffer.Update(as_bytes(Lights));
+                UniqueBuffers->Lights.Update(as_bytes(Lights));
                 InvalidateCommandBuffer();
             }
             EndTabItem();

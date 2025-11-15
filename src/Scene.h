@@ -1,39 +1,20 @@
 #pragma once
 
 #include "Camera.h"
-#include "CreateSvgResource.h"
-#include "Shader.h"
-#include "SvgResource.h"
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
-#include "Vulkan/UniqueBuffers.h"
 #include "mesh/Handle.h"
-#include "mesh/PrimitiveType.h"
-#include "mesh/Vertex.h"
-#include "numeric/quat.h"
-#include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
 #include "entt_fwd.h"
 
+#include <filesystem>
 #include <memory>
 #include <set>
-#include <unordered_map>
 #include <unordered_set>
 
 using uint = uint32_t;
-
-namespace mvk {
-struct RenderBuffers {
-    RenderBuffers(UniqueBuffers &&vertices, UniqueBuffers &&indices)
-        : Vertices(std::move(vertices)), Indices(std::move(indices)) {}
-    RenderBuffers(RenderBuffers &&) = default;
-    RenderBuffers(const RenderBuffers &) = delete;
-    RenderBuffers &operator=(const RenderBuffers &) = delete;
-
-    UniqueBuffers Vertices, Indices;
-};
-} // namespace mvk
+namespace fs = std::filesystem;
 
 struct Path {
     fs::path Value;
@@ -51,37 +32,6 @@ struct Lights {
     // A: Intensity of the directional light.
     vec4 DirectionalColorAndIntensity;
     vec3 Direction;
-};
-
-enum class ShaderPipelineType {
-    Fill,
-    Line,
-    Grid,
-    SilhouetteDepthObject,
-    SilhouetteEdgeDepthObject,
-    SilhouetteEdgeDepth,
-    SilhouetteEdgeColor,
-    DebugNormals,
-};
-using SPT = ShaderPipelineType;
-
-struct ShaderBindingDescriptor {
-    SPT PipelineType;
-    std::string_view BindingName;
-    const vk::DescriptorBufferInfo *BufferInfo{nullptr};
-    const vk::DescriptorImageInfo *ImageInfo{nullptr};
-};
-struct PipelineRenderer {
-    vk::UniqueRenderPass RenderPass;
-    std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
-
-    void CompileShaders();
-
-    std::vector<vk::WriteDescriptorSet> GetDescriptors(std::vector<ShaderBindingDescriptor> &&) const;
-
-    // If `model_index` is set, only the model at that index is rendered.
-    // Otherwise, all models are rendered.
-    void Render(vk::CommandBuffer, SPT, const mvk::RenderBuffers &, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) const;
 };
 
 enum class SelectionMode {
@@ -141,7 +91,9 @@ inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice
     return vk::SampleCountFlagBits::e1;
 }
 
+struct SvgResource;
 struct ScenePipelines;
+struct SceneUniqueBuffers;
 
 struct SceneVulkanResources {
     vk::Instance Instance;
@@ -218,7 +170,7 @@ struct Scene {
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
-    std::string DebugBufferHeapUsage() const { return BufferContext.Allocator.DebugHeapUsage(); }
+    std::string DebugBufferHeapUsage() const;
 
 private:
     SceneVulkanResources Vk;
@@ -252,10 +204,7 @@ private:
     uint SilhouetteEdgeWidth{2};
 
     std::unique_ptr<ScenePipelines> Pipelines;
-
-    mvk::BufferContext BufferContext;
-    std::array<vk::CommandBuffer, 2> CommandBuffers{*BufferContext.TransferCb, *RenderCommandBuffer};
-    mvk::UniqueBuffers CameraUBOBuffer, ViewProjNearFarBuffer, LightsBuffer, SilhouetteColorsBuffer;
+    std::unique_ptr<SceneUniqueBuffers> UniqueBuffers;
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;
@@ -290,21 +239,6 @@ private:
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);
     void RemoveEntitySelectionOverlays(entt::entity);
-
-    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
-        return {
-            mvk::UniqueBuffers(BufferContext, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            mvk::UniqueBuffers(BufferContext, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
-        };
-    }
-
-    template<size_t N>
-    mvk::RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) const {
-        return {
-            mvk::UniqueBuffers(BufferContext, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer),
-            mvk::UniqueBuffers(BufferContext, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer)
-        };
-    }
 
     void WaitFor(vk::Fence) const;
 };

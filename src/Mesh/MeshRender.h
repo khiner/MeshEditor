@@ -3,13 +3,22 @@
 #include "BBox.h"
 #include "BVH.h"
 #include "Mesh.h"
-#include "Vertex.h"
+#include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
 #include <unordered_set>
 #include <vector>
 
-struct RenderBuffers {
+struct BVH;
+
+// Submitted to shaders
+struct Vertex3D {
+    vec3 Position;
+    vec3 Normal;
+    vec4 Color;
+};
+
+struct MeshRenderBuffers {
     std::vector<Vertex3D> Vertices;
     std::vector<uint> Indices;
 };
@@ -40,7 +49,7 @@ std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, he::Element element
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, he::Element element);
 
 std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &mesh);
-RenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color);
+MeshRenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color);
 
 BBox ComputeBoundingBox(const Mesh &mesh);
 

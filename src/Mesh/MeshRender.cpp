@@ -2,9 +2,6 @@
 
 #include "BVH.h"
 
-#include <algorithm>
-#include <ranges>
-
 using namespace he;
 
 namespace MeshRender {
@@ -24,7 +21,7 @@ std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &mesh) {
     return boxes;
 }
 
-RenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color) {
+MeshRenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color) {
     std::vector<BBox> boxes = bvh.CreateInternalBoxes();
     std::vector<Vertex3D> vertices;
     vertices.reserve(boxes.size() * 8);

@@ -1,7 +1,5 @@
 #include "Shader.h"
 #include "File.h"
-#include "mesh/Vertex.h"
-#include "numeric/mat4.h"
 
 #include <shaderc/shaderc.hpp>
 #include <spirv_cross/spirv_cross.hpp>
