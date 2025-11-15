@@ -5,7 +5,7 @@
 #include "CreateSvgResource.h"
 #include "ModalSoundObject.h"
 
-#include <entt/entity/fwd.hpp>
+#include "entt_fwd.h"
 
 #include <filesystem>
 #include <memory>

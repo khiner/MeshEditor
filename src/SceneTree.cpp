@@ -2,8 +2,6 @@
 
 #include <entt/entity/registry.hpp>
 
-#include <ranges>
-
 namespace {
 mat4 ToMatrix(Transform &&t) {
     return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);

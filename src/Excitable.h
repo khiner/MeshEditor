@@ -1,8 +1,7 @@
 #pragma once
 
-#include <entt/entity/entity.hpp>
+#include <entt_fwd.h>
 
-#include <cstdint>
 #include <ranges>
 #include <vector>
 

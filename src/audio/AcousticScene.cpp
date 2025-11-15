@@ -1,6 +1,5 @@
 #include "AcousticScene.h"
 #include "Entity.h"
-#include "Excitable.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "FaustGenerator.h"

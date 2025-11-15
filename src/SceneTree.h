@@ -3,14 +3,12 @@
 #include "Transform.h"
 #include "numeric/mat4.h"
 
-#include <entt/entity/entity.hpp>
-
-#include <optional>
+#include <entt_fwd.h>
 
 struct SceneNode {
-    entt::entity Parent{entt::null};
-    entt::entity FirstChild{entt::null};
-    entt::entity NextSibling{entt::null};
+    entt::entity Parent{null_entity};
+    entt::entity FirstChild{null_entity};
+    entt::entity NextSibling{null_entity};
 };
 
 struct WorldMatrix {
@@ -51,7 +49,7 @@ struct Children {
     entt::entity ParentEntity;
 
     ChildrenIterator begin() const;
-    ChildrenIterator end() const { return {R, entt::null}; }
+    ChildrenIterator end() const { return {R, null_entity}; }
 };
 
 entt::entity GetRootEntity(const entt::registry &, entt::entity);

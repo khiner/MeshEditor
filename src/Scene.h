@@ -14,7 +14,7 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include <entt/entity/fwd.hpp>
+#include "entt_fwd.h"
 
 #include <memory>
 #include <set>
