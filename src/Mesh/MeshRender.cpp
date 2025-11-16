@@ -40,13 +40,12 @@ MeshRenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color) {
     return {std::move(vertices), std::move(indices)};
 }
 
-std::vector<uint> CreateIndices(const Mesh &mesh, Element element) {
-    switch (element) {
-        case Element::Vertex: return mesh.CreateTriangleIndices();
-        case Element::Edge: return mesh.CreateEdgeIndices();
-        case Element::Face: return mesh.CreateTriangulatedFaceIndices();
-        case Element::None: return {};
-    }
+std::vector<uint> CreateFaceIndices(const Mesh &mesh) {
+    return mesh.CreateTriangulatedFaceIndices();
+}
+
+std::vector<uint> CreateEdgeIndices(const Mesh &mesh) {
+    return mesh.CreateEdgeIndices();
 }
 
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
@@ -70,49 +69,53 @@ struct VerticesHandle {
 };
 } // namespace
 
-std::vector<Vertex3D> CreateVertices(
+std::vector<Vertex3D> CreateFaceVertices(
     const Mesh &mesh,
-    Element render_element,
+    bool smooth_shading,
     const AnyHandle &selected,
     const std::unordered_set<AnyHandle, AnyHandleHash> &highlighted
 ) {
-    std::vector<VerticesHandle> handles;
-    if (render_element == Element::Vertex) {
-        handles.reserve(mesh.VertexCount());
-        for (const auto vh : mesh.vertices()) handles.emplace_back(vh, std::vector<VH>{vh});
-    } else if (render_element == Element::Edge) {
-        handles.reserve(mesh.EdgeCount() * 2);
-        for (const auto eh : mesh.edges()) {
-            const auto heh = mesh.GetHalfedge(eh, 0);
-            handles.emplace_back(eh, std::vector<VH>{mesh.GetFromVertex(heh), mesh.GetToVertex(heh)});
-        }
-    } else if (render_element == Element::Face) {
-        handles.reserve(mesh.FaceCount() * 3); // Lower bound assuming all faces are triangles.
-        for (const auto fh : mesh.faces()) {
-            for (const auto vh : mesh.fv_range(fh)) handles.emplace_back(fh, std::vector<VH>{vh});
+    std::vector<Vertex3D> vertices;
+    vertices.reserve(mesh.FaceCount() * 3); // Lower bound assuming all faces are triangles
+
+    for (const auto fh : mesh.faces()) {
+        const auto face_normal = mesh.GetNormal(fh);
+        for (const auto vh : mesh.fv_range(fh)) {
+            const auto normal = smooth_shading ? mesh.GetNormal(vh) : face_normal;
+            const bool is_selected = selected == fh;
+            const bool is_highlighted = highlighted.contains(fh);
+            const auto color = is_selected    ? SelectedColor :
+                is_highlighted                ? HighlightedColor :
+                                                mesh.GetColor(fh);
+            vertices.emplace_back(mesh.GetPosition(vh), normal, color);
         }
     }
 
+    return vertices;
+}
+
+std::vector<Vertex3D> CreateEdgeVertices(
+    const Mesh &mesh,
+    const AnyHandle &selected,
+    const std::unordered_set<AnyHandle, AnyHandleHash> &highlighted
+) {
     std::vector<Vertex3D> vertices;
-    for (const auto &handle : handles) {
-        const auto parent = handle.Parent;
-        const auto normal = render_element == Element::Vertex || render_element == Element::Edge ?
-            mesh.GetNormal(handle.VHs[0]) :
-            mesh.GetNormal(FH(handle.Parent));
-        for (const auto vh : handle.VHs) {
+    vertices.reserve(mesh.EdgeCount() * 2);
+
+    for (const auto eh : mesh.edges()) {
+        const auto heh = mesh.GetHalfedge(eh, 0);
+        const auto v_from = mesh.GetFromVertex(heh);
+        const auto v_to = mesh.GetToVertex(heh);
+
+        for (const auto vh : {v_from, v_to}) {
+            const auto normal = mesh.GetNormal(vh);
             const bool is_selected =
-                selected == vh || selected == parent ||
-                // Note: If we want to support `highlighted` having handle types (not just the selection `highlight`),
-                // we need to update the methods to accept sets of `AnyHandle` instead of just one.
-                (render_element == Element::Vertex && (mesh.VertexBelongsToFace(parent, selected) || mesh.VertexBelongsToEdge(parent, selected))) ||
-                (render_element == Element::Edge && mesh.EdgeBelongsToFace(parent, selected)) ||
-                (render_element == Element::Face && mesh.VertexBelongsToFaceEdge(vh, parent, selected));
-            const bool is_highlighted = highlighted.contains(vh) || highlighted.contains(parent);
-            const auto color = is_selected        ? SelectedColor :
-                is_highlighted                    ? HighlightedColor :
-                render_element == Element::Vertex ? VertexColor :
-                render_element == Element::Edge   ? EdgeColor :
-                                                    mesh.GetColor(FH(parent));
+                selected == vh || selected == eh ||
+                mesh.EdgeBelongsToFace(eh, selected);
+            const bool is_highlighted = highlighted.contains(vh) || highlighted.contains(eh);
+            const auto color = is_selected    ? SelectedColor :
+                is_highlighted                ? HighlightedColor :
+                                                EdgeColor;
             vertices.emplace_back(mesh.GetPosition(vh), normal, color);
         }
     }

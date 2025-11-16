@@ -62,14 +62,14 @@ struct BoundingBoxesBuffers {
 struct BvhBoxesBuffers {
     RenderBuffers Buffers;
 };
-using RenderBuffersByElement = std::unordered_map<he::Element, RenderBuffers>;
 struct MeshBuffers {
-    MeshBuffers(RenderBuffersByElement &&mesh, RenderBuffersByElement &&normal_indicators)
-        : Mesh{std::move(mesh)}, NormalIndicators{std::move(normal_indicators)} {}
+    MeshBuffers(RenderBuffers &&faces, RenderBuffers &&edges)
+        : Faces{std::move(faces)}, Edges{std::move(edges)} {}
     MeshBuffers(const MeshBuffers &) = delete;
     MeshBuffers &operator=(const MeshBuffers &) = delete;
 
-    RenderBuffersByElement Mesh, NormalIndicators;
+    RenderBuffers Faces, Edges;
+    std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
@@ -86,16 +86,20 @@ inline vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Pref
 inline vec4 HighlightedFaceColor{0.790, 0.930, 1, 1}; // Custom
 constexpr float NormalIndicatorLengthScale{0.25};
 
-// Vertex: Triangulated face indices
-// Face: Triangle fan for each face
-// Edge: Edge line segment indices
-std::vector<Vertex3D> CreateVertices(
+// Create vertices for faces (with optional smooth/flat shading) or edges
+std::vector<Vertex3D> CreateFaceVertices(
     const Mesh &mesh,
-    he::Element render_element,
+    bool smooth_shading,
     const he::AnyHandle &selected = {},
     const std::unordered_set<he::AnyHandle, he::AnyHandleHash> &highlighted = {}
 );
-std::vector<uint> CreateIndices(const Mesh &mesh, he::Element element);
+std::vector<Vertex3D> CreateEdgeVertices(
+    const Mesh &mesh,
+    const he::AnyHandle &selected = {},
+    const std::unordered_set<he::AnyHandle, he::AnyHandleHash> &highlighted = {}
+);
+std::vector<uint> CreateFaceIndices(const Mesh &mesh);
+std::vector<uint> CreateEdgeIndices(const Mesh &mesh);
 
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, he::Element element);
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, he::Element element);

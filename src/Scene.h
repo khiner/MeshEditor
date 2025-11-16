@@ -43,12 +43,9 @@ enum class InteractionMode {
     Excite,
 };
 
-enum class RenderMode {
-    None,
-    FacesAndEdges,
-    Faces,
-    Edges,
-    Vertices,
+enum class ViewportShadingMode {
+    Wireframe,
+    Solid,
 };
 
 enum class ColorMode {
@@ -188,7 +185,8 @@ private:
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
 
-    RenderMode RenderMode{RenderMode::FacesAndEdges};
+    ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
+    bool SmoothShading{false};  // true = vertex normals (smooth), false = face normals (flat)
     ColorMode ColorMode{ColorMode::Mesh};
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};

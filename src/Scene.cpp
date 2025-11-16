@@ -890,15 +890,20 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         const auto bbox = MeshRender::ComputeBoundingBox(mesh);
         R.emplace<BBox>(mesh_entity, bbox);
         R.emplace<BVH>(mesh_entity, MeshRender::CreateFaceBoundingBoxes(mesh));
-        RenderBuffersByElement buffers_by_element{};
-        for (const auto element : Elements) { // todo only create buffers for viewed elements.
-            buffers_by_element.emplace(element, UniqueBuffers->CreateRenderBuffers(MeshRender::CreateVertices(mesh, element), MeshRender::CreateIndices(mesh, element)));
-        }
-        R.emplace<Mesh>(mesh_entity, std::move(mesh));
 
+        auto face_buffers = UniqueBuffers->CreateRenderBuffers(
+            MeshRender::CreateFaceVertices(mesh, SmoothShading),
+            MeshRender::CreateFaceIndices(mesh)
+        );
+        auto edge_buffers = UniqueBuffers->CreateRenderBuffers(
+            MeshRender::CreateEdgeVertices(mesh),
+            MeshRender::CreateEdgeIndices(mesh)
+        );
+
+        R.emplace<Mesh>(mesh_entity, std::move(mesh));
         R.emplace<MeshHighlightedHandles>(mesh_entity);
         R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
-        R.emplace<MeshBuffers>(mesh_entity, std::move(buffers_by_element), RenderBuffersByElement{});
+        R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers));
         if (ShowBoundingBoxes) {
             R.emplace<BoundingBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
         }
@@ -1028,10 +1033,11 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 
     const auto &pm = R.get<Mesh>(e);
     auto &mesh_buffers = R.get<MeshBuffers>(e);
-    for (auto &[element, buffers] : mesh_buffers.Mesh) {
-        buffers.Vertices.Update(MeshRender::CreateVertices(pm, element));
-        buffers.Indices.Update(MeshRender::CreateIndices(pm, element));
-    }
+    mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
+    mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
+    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
+    mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
+
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
         buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
         buffers.Indices.Update(MeshRender::CreateNormalIndices(pm, element));
@@ -1114,9 +1120,8 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
                                                                     AnyHandle{}
         };
         const auto &highlighted = R.get<MeshHighlightedHandles>(e).Handles;
-        for (const auto element : Elements) { // todo only update buffers for viewed elements.
-            mesh_buffers.Mesh.at(element).Vertices.Update(MeshRender::CreateVertices(*mesh, element, selected, highlighted));
-        }
+        mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(*mesh, SmoothShading, selected, highlighted));
+        mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(*mesh, selected, highlighted));
         InvalidateCommandBuffer();
     };
 }
@@ -1168,7 +1173,7 @@ void Scene::RecordRenderCommandBuffer() {
             for (const auto selected_entity : R.view<Selected>()) {
                 const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
                 const auto mesh_entity = R.get<MeshInstance>(selected_entity).MeshEntity;
-                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Mesh.at(Element::Vertex);
+                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
                 const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
                 Bind(cb, shader_pipeline, render_buffers, models);
                 const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
@@ -1200,19 +1205,18 @@ void Scene::RecordRenderCommandBuffer() {
     if (render_silhouette) main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth).RenderQuad(cb);
 
     { // Meshes
-        static auto GetPipelineElements = [](auto RenderMode, auto ColorMode) -> std::vector<std::pair<SPT, Element>> {
-            const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-            switch (RenderMode) {
-                case RenderMode::Vertices: return {{fill_pipeline, Element::Vertex}};
-                case RenderMode::Edges: return {{SPT::Line, Element::Edge}};
-                case RenderMode::Faces: return {{fill_pipeline, Element::Face}};
-                case RenderMode::FacesAndEdges: return {{fill_pipeline, Element::Face}, {SPT::Line, Element::Edge}};
-                case RenderMode::None: return {};
+        const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+        const auto active_entity = FindActiveEntity(R);
+        const auto active_mesh_entity = active_entity != entt::null ? GetMeshEntity(active_entity) : entt::null;
+
+        for (const auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            const bool is_active_mesh = entity == active_mesh_entity;
+            const bool show_wireframe_overlay = InteractionMode == InteractionMode::Edit && is_active_mesh;
+            if (ViewportShading == ViewportShadingMode::Solid) {
+                main.Renderer.Render(cb, fill_pipeline, mesh_buffers.Faces, models.Buffer);
             }
-        };
-        for (const auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-            for (const auto [pipeline, element] : GetPipelineElements(RenderMode, ColorMode)) {
-                main.Renderer.Render(cb, pipeline, mesh_buffers.Mesh.at(element), models.Buffer);
+            if (ViewportShading == ViewportShadingMode::Wireframe || show_wireframe_overlay) {
+                main.Renderer.Render(cb, SPT::Line, mesh_buffers.Edges, models.Buffer);
             }
         }
     }
@@ -1250,7 +1254,7 @@ void Scene::InvalidateCommandBuffer() {
 }
 
 void Scene::UpdateEdgeColors() {
-    MeshRender::EdgeColor = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
+    MeshRender::EdgeColor = ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
     for (const auto e : R.view<Mesh>()) UpdateRenderBuffers(e);
 }
 
@@ -2073,35 +2077,32 @@ void Scene::RenderControls() {
                 Pipelines->CompileShaders();
                 InvalidateCommandBuffer();
             }
-            SeparatorText("Render mode");
-            PushID("RenderMode");
-            auto render_mode = int(RenderMode);
-            bool render_mode_changed = RadioButton("Vertices", &render_mode, int(RenderMode::Vertices));
+            SeparatorText("Viewport shading");
+            PushID("ViewportShading");
+            auto viewport_shading = int(ViewportShading);
+            bool viewport_shading_changed = RadioButton("Solid", &viewport_shading, int(ViewportShadingMode::Solid));
             SameLine();
-            render_mode_changed |= RadioButton("Edges", &render_mode, int(RenderMode::Edges));
-            SameLine();
-            render_mode_changed |= RadioButton("Faces", &render_mode, int(RenderMode::Faces));
-            SameLine();
-            render_mode_changed |= RadioButton("Faces and edges", &render_mode, int(RenderMode::FacesAndEdges));
+            viewport_shading_changed |= RadioButton("Wireframe", &viewport_shading, int(ViewportShadingMode::Wireframe));
             PopID();
+
+            bool smooth_shading_changed = Checkbox("Smooth shading", &SmoothShading);
 
             auto color_mode = int(ColorMode);
             bool color_mode_changed = false;
-            if (RenderMode != RenderMode::Edges) {
+            if (ViewportShading == ViewportShadingMode::Solid) {
                 SeparatorText("Fill color mode");
                 PushID("ColorMode");
                 color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
                 color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
                 PopID();
             }
-            if (render_mode_changed || color_mode_changed) {
-                RenderMode = ::RenderMode(render_mode);
+            if (viewport_shading_changed || color_mode_changed || smooth_shading_changed) {
+                ViewportShading = ::ViewportShadingMode(viewport_shading);
                 ColorMode = ::ColorMode(color_mode);
-                UpdateEdgeColors(); // Different modes use different edge colors for better visibility.
+                UpdateEdgeColors();
             }
-            if (RenderMode == RenderMode::FacesAndEdges || RenderMode == RenderMode::Edges) {
-                auto &edge_color = RenderMode == RenderMode::FacesAndEdges ? MeshEdgeColor : EdgeColor;
-                if (ColorEdit3("Edge color", &edge_color.x)) UpdateEdgeColors();
+            if (ViewportShading == ViewportShadingMode::Wireframe) {
+                if (ColorEdit3("Edge color", &EdgeColor.x)) UpdateEdgeColors();
             }
             {
                 SeparatorText("Active/Selected");
