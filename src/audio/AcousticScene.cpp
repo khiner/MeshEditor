@@ -748,7 +748,6 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, entt::ent
     // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
     // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
 
-
     const auto &mesh = R.get<const Mesh>(mesh_entity);
     // Use impact model vertices or linearly distribute the vertices across the tet mesh.
     const auto num_vertices = mesh.VertexCount();

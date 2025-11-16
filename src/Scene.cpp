@@ -780,6 +780,7 @@ void Scene::LoadIcons(vk::Device device) {
 
     device.waitIdle();
     Icons.Select = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/select.svg");
+    Icons.SelectBox = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/select_box.svg");
     Icons.Move = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/move.svg");
     Icons.Rotate = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/rotate.svg");
     Icons.Scale = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/scale.svg");
@@ -1457,7 +1458,49 @@ void Scene::Interact() {
             Camera.SetTargetYawPitch(Camera.YawPitch + wheel * 0.15f);
         }
     }
-    if (!IsSingleClicked(ImGuiMouseButton_Left) || TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
+
+    if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
+
+    // todo box selection for edit mode (select vertices/edges/faces within box)
+    if (SelectionMode == SelectionMode::Box && InteractionMode == InteractionMode::Object) {
+        const auto mouse_pos = ToGlm(GetMousePos());
+        if (IsMouseClicked(ImGuiMouseButton_Left)) {
+            BoxSelectStart = mouse_pos;
+            BoxSelectEnd = mouse_pos;
+        } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
+            // Select (only) meshes whose centers are within the box.
+            // Only start selection if mouse moved past drag threshold.
+            // todo: overlap geometry, not just centers
+            BoxSelectEnd = mouse_pos;
+            static constexpr float drag_threshold{2};
+            if (glm::distance(*BoxSelectStart, *BoxSelectEnd) > drag_threshold) {
+                const auto size = ToGlm(GetContentRegionAvail());
+                const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
+                const auto window_pos = ToGlm(GetCursorScreenPos());
+                const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd);
+                const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd);
+                R.clear<Selected>();
+                for (const auto [e, p] : R.view<const Position, const Visible>().each()) {
+                    const auto p_cs = vp * vec4{p.Value, 1};
+                    if (fabsf(p_cs.w) <= FLT_EPSILON) continue;
+                    const auto p_ndc = vec3{p_cs} / p_cs.w;
+                    const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f;
+                    const auto p_px = window_pos + p_uv * size;
+                    if (p_px.x >= box_min.x && p_px.x <= box_max.x &&
+                        p_px.y >= box_min.y && p_px.y <= box_max.y) {
+                        R.emplace<Selected>(e);
+                    }
+                }
+                InvalidateCommandBuffer();
+            }
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
+            BoxSelectStart.reset();
+            BoxSelectEnd.reset();
+        }
+        if (BoxSelectStart.has_value()) return;
+    }
+
+    if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
 
     // Handle mouse selection.
     const auto size = GetContentRegionAvail();
@@ -1583,7 +1626,8 @@ void Scene::RenderOverlay() {
         const auto v = R.view<Selected, Frozen>();
         const bool scale_enabled = v.begin() == v.end();
         const ButtonInfo buttons[]{
-            {*Icons.Select, None, ImDrawFlags_RoundCornersAll, true},
+            {*Icons.Select, None, ImDrawFlags_RoundCornersTop, true},
+            {*Icons.SelectBox, None, ImDrawFlags_RoundCornersBottom, true},
             {*Icons.Move, Translate, ImDrawFlags_RoundCornersTop, true},
             {*Icons.Rotate, Rotate, ImDrawFlags_RoundCornersNone, true},
             {*Icons.Scale, Scale, ImDrawFlags_RoundCornersNone, scale_enabled},
@@ -1600,13 +1644,13 @@ void Scene::RenderOverlay() {
         auto &dl = *GetWindowDrawList();
         TransformModePillsHovered = false;
         static constexpr ImVec2 button_size{36, 30};
-        static constexpr float gap{4}; // Gap between select button and transform buttons
-        for (uint i = 0; i < 5; ++i) {
+        static constexpr float gap{4}; // Gap between select buttons and transform buttons
+        for (uint i = 0; i < 6; ++i) {
             const auto &[icon, button_type, corners, enabled] = buttons[i];
             static constexpr ImVec2 padding{0.5f, 0.5f};
             static constexpr float icon_dim{button_size.y * 0.75f};
             static constexpr ImVec2 icon_size{icon_dim, icon_dim};
-            const float y_offset = i == 0 ? 0 : button_size.y + gap + (i - 1) * button_size.y;
+            const float y_offset = i < 2 ? i * button_size.y : 2 * button_size.y + gap + (i - 2) * button_size.y;
             SetCursorScreenPos({start_pos.x, start_pos.y + y_offset});
 
             if (!enabled) BeginDisabled();
@@ -1617,12 +1661,27 @@ void Scene::RenderOverlay() {
 
             const bool hovered = IsItemHovered();
             if (hovered) TransformModePillsHovered = true;
-            if (clicked) element = button_type;
+
+            if (clicked) {
+                if (i == 0) {
+                    SelectionMode = SelectionMode::Click;
+                    element = None;
+                } else if (i == 1) {
+                    SelectionMode = SelectionMode::Box;
+                    element = None;
+                } else { // Transform buttons
+                    element = button_type;
+                }
+            }
+
+            const bool is_active = i < 2 ?
+                (element == None && ((i == 0 && SelectionMode == SelectionMode::Click) || (i == 1 && SelectionMode == SelectionMode::Box))) :
+                element == button_type;
             const auto bg_color = GetColorU32(
-                !enabled                   ? ImGuiCol_FrameBg :
-                    element == button_type ? ImGuiCol_ButtonActive :
-                    hovered                ? ImGuiCol_ButtonHovered :
-                                             ImGuiCol_Button
+                !enabled      ? ImGuiCol_FrameBg :
+                    is_active ? ImGuiCol_ButtonActive :
+                    hovered   ? ImGuiCol_ButtonHovered :
+                                ImGuiCol_Button
             );
             dl.AddRectFilled(GetItemRectMin() + padding, GetItemRectMax() - padding, bg_color, 8.f, corners);
             SetCursorScreenPos(GetItemRectMin() + (button_size - icon_size) * 0.5f);
@@ -1703,6 +1762,34 @@ void Scene::RenderOverlay() {
         const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
         OrientationGizmo::Draw(pos, OGizmoSize, Camera);
         if (Camera.Tick()) UpdateTransformBuffers();
+    }
+
+    if (BoxSelectStart.has_value() && BoxSelectEnd.has_value()) {
+        auto &dl = *GetWindowDrawList();
+        const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd);
+        const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd);
+        dl.AddRectFilled(std::bit_cast<ImVec2>(box_min), std::bit_cast<ImVec2>(box_max), IM_COL32(255, 255, 255, 30));
+
+        // Dashed outline
+        static constexpr auto outline_color{IM_COL32(255, 255, 255, 200)};
+        static constexpr float dash_size{4};
+        static constexpr float gap_size{4};
+        // Top
+        for (float x = box_min.x; x < box_max.x; x += dash_size + gap_size) {
+            dl.AddLine({x, box_min.y}, {glm::min(x + dash_size, box_max.x), box_min.y}, outline_color, 1.0f);
+        }
+        // Bottom
+        for (float x = box_min.x; x < box_max.x; x += dash_size + gap_size) {
+            dl.AddLine({x, box_max.y}, {glm::min(x + dash_size, box_max.x), box_max.y}, outline_color, 1.0f);
+        }
+        // Left
+        for (float y = box_min.y; y < box_max.y; y += dash_size + gap_size) {
+            dl.AddLine({box_min.x, y}, {box_min.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.0f);
+        }
+        // Right
+        for (float y = box_min.y; y < box_max.y; y += dash_size + gap_size) {
+            dl.AddLine({box_max.x, y}, {box_max.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.0f);
+        }
     }
 
     StartScreenTransform = {};

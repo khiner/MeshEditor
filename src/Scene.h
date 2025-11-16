@@ -4,6 +4,7 @@
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "mesh/Handle.h"
+#include "numeric/vec2.h"
 #include "numeric/vec4.h"
 
 #include "entt_fwd.h"
@@ -208,6 +209,11 @@ private:
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneUniqueBuffers> UniqueBuffers;
 
+    enum class SelectionMode { Click,
+                               Box };
+    SelectionMode SelectionMode{SelectionMode::Click};
+    std::optional<vec2> BoxSelectStart, BoxSelectEnd;
+
     struct TransformGizmoState {
         TransformGizmo::Config Config;
         TransformGizmo::Mode Mode;
@@ -217,7 +223,7 @@ private:
     bool TransformModePillsHovered{false};
 
     struct TransformIcons {
-        std::unique_ptr<SvgResource> Select, Move, Rotate, Scale, Universal;
+        std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
     };
     TransformIcons Icons;
 
