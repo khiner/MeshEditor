@@ -217,7 +217,7 @@ private:
     bool TransformModePillsHovered{false};
 
     struct TransformIcons {
-        std::unique_ptr<SvgResource> Move, Rotate, Scale, Universal;
+        std::unique_ptr<SvgResource> Select, Move, Rotate, Scale, Universal;
     };
     TransformIcons Icons;
 

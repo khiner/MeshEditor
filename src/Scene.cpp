@@ -779,6 +779,7 @@ void Scene::LoadIcons(vk::Device device) {
     };
 
     device.waitIdle();
+    Icons.Select = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/select.svg");
     Icons.Move = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/move.svg");
     Icons.Rotate = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/rotate.svg");
     Icons.Scale = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/scale.svg");
@@ -1582,6 +1583,7 @@ void Scene::RenderOverlay() {
         const auto v = R.view<Selected, Frozen>();
         const bool scale_enabled = v.begin() == v.end();
         const ButtonInfo buttons[]{
+            {*Icons.Select, None, ImDrawFlags_RoundCornersAll, true},
             {*Icons.Move, Translate, ImDrawFlags_RoundCornersTop, true},
             {*Icons.Rotate, Rotate, ImDrawFlags_RoundCornersNone, true},
             {*Icons.Scale, Scale, ImDrawFlags_RoundCornersNone, scale_enabled},
@@ -1597,13 +1599,15 @@ void Scene::RenderOverlay() {
 
         auto &dl = *GetWindowDrawList();
         TransformModePillsHovered = false;
-        for (uint i = 0; i < 4; ++i) {
+        static constexpr ImVec2 button_size{36, 30};
+        static constexpr float gap{4}; // Gap between select button and transform buttons
+        for (uint i = 0; i < 5; ++i) {
             const auto &[icon, button_type, corners, enabled] = buttons[i];
-            static constexpr ImVec2 button_size{36, 30};
             static constexpr ImVec2 padding{0.5f, 0.5f};
             static constexpr float icon_dim{button_size.y * 0.75f};
             static constexpr ImVec2 icon_size{icon_dim, icon_dim};
-            SetCursorScreenPos({start_pos.x, start_pos.y + i * button_size.y});
+            const float y_offset = i == 0 ? 0 : button_size.y + gap + (i - 1) * button_size.y;
+            SetCursorScreenPos({start_pos.x, start_pos.y + y_offset});
 
             if (!enabled) BeginDisabled();
             PushID(i);
