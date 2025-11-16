@@ -5,6 +5,7 @@
 #include <spirv_cross/spirv_cross.hpp>
 
 #include <format>
+#include <print>
 #include <ranges>
 
 using std::views::transform, std::ranges::to;
@@ -38,10 +39,13 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
             }();
             const auto type = resource.TypePath.Type;
             const auto shader_text = File::Read(ShadersDir / resource.TypePath.Path);
-            const auto kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader : shaderc_glsl_fragment_shader;
+            const auto kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader :
+                type == ShaderType::eFragment             ? shaderc_glsl_fragment_shader :
+                                                            shaderc_glsl_compute_shader;
             const auto comp_result = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
             if (comp_result.GetCompilationStatus() != shaderc_compilation_status_success) {
                 // todo type to string
+                std::println("Shader compilation error in {} shader:\n{}", int(type), comp_result.GetErrorMessage());
                 throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), comp_result.GetErrorMessage()));
             }
             std::vector<uint> spirv_words{comp_result.cbegin(), comp_result.cend()};
@@ -61,6 +65,17 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
                     LayoutBindings.insert(pos, {binding, vk::DescriptorType::eUniformBuffer, 1, type, nullptr});
                 } else {
                     LayoutBindings[binding].stageFlags |= type; // This binding is used in multiple stages.
+                }
+            }
+
+            for (const auto &resource : resource.Resources->storage_buffers) {
+                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+                if (!BindingByName.contains(resource.name)) {
+                    BindingByName.emplace(resource.name, binding);
+                    const auto pos = std::lower_bound(LayoutBindings.begin(), LayoutBindings.end(), binding, [](const auto &b, uint i) { return b.binding < i; });
+                    LayoutBindings.insert(pos, {binding, vk::DescriptorType::eStorageBuffer, 1, type, nullptr});
+                } else {
+                    LayoutBindings[binding].stageFlags |= type;
                 }
             }
 

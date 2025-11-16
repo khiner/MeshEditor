@@ -17,6 +17,11 @@
 using uint = uint32_t;
 namespace fs = std::filesystem;
 
+namespace mvk {
+struct UniqueBuffers;
+struct UniqueBuffer;
+}
+
 struct Path {
     fs::path Value;
 };
@@ -209,6 +214,27 @@ private:
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneUniqueBuffers> UniqueBuffers;
 
+    struct BoxSelectionParams {
+        glm::mat4 ViewProj;
+        glm::vec2 BoxMin;
+        glm::vec2 BoxMax;
+        uint32_t ElementType;      // 0=Vertex, 1=Edge, 2=Face
+        uint32_t ElementCount;
+        uint32_t InstanceCount;
+        float DepthTolerance;
+        uint32_t EnableDepthTest;  // 0=disabled, 1=enabled
+    };
+
+    struct BoxSelectionBuffers {
+        std::unique_ptr<mvk::UniqueBuffers> Params;
+        std::unique_ptr<mvk::UniqueBuffers> Results;
+        std::unique_ptr<mvk::UniqueBuffer> ResultsReadback;  // CPU-readable staging buffer
+        std::unique_ptr<mvk::UniqueBuffers> InstanceToEntity;
+    };
+
+    std::unique_ptr<struct ComputePipeline> BoxSelectPipeline;
+    BoxSelectionBuffers SelectionBuffers;
+
     enum class SelectionMode { Click,
                                Box };
     SelectionMode SelectionMode{SelectionMode::Click};
@@ -246,6 +272,12 @@ private:
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);
+
+    // GPU box selection methods
+    void InitializeBoxSelection();
+    void BoxSelectGPU(const glm::vec2 &box_min, const glm::vec2 &box_max);
+    void DispatchBoxSelect(entt::entity mesh_entity, he::Element element, const glm::vec2 &box_min, const glm::vec2 &box_max);
+    std::vector<std::pair<entt::entity, uint32_t>> ReadSelectionResults();
 
     void WaitFor(vk::Fence) const;
 };

@@ -190,6 +190,8 @@ struct VulkanContext {
             vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 9},
             // All uniform buffer descriptors used across all shaders.
             {vk::DescriptorType::eUniformBuffer, 7},
+            // Storage buffers for compute shaders (box selection uses 5)
+            {vk::DescriptorType::eStorageBuffer, 10},
         };
         const uint max_sets = std::accumulate(
             pool_sizes.begin(), pool_sizes.end(), 0u,

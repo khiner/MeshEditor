@@ -1,0 +1,159 @@
+#version 450
+
+// ===== UNIFORMS =====
+layout(set = 0, binding = 0) uniform SelectionParams {
+    mat4 ViewProj;
+    vec2 BoxMin;
+    vec2 BoxMax;
+    uint ElementType;      // 1=Vertex, 2=Edge, 3=Face (matches Element enum)
+    uint ElementCount;
+    uint InstanceCount;
+    float DepthTolerance;
+    uint EnableDepthTest;  // 0=disabled, 1=enabled
+} uParams;
+
+// ===== VERTEX DATA =====
+struct Vertex3D {
+    vec3 Position;
+    vec3 Normal;
+    vec4 Color;
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer VertexBuffer {
+    Vertex3D Vertices[];
+};
+
+// ===== INDICES (for edges/faces) =====
+layout(set = 0, binding = 2, std430) readonly buffer IndexBuffer {
+    uint MeshIndices[];
+};
+
+// ===== INSTANCE TRANSFORMS =====
+layout(set = 0, binding = 3, std430) readonly buffer ModelBuffer {
+    mat4 Models[];
+};
+
+// ===== DEPTH TEXTURE (commented out until occlusion is implemented) =====
+// layout(set = 0, binding = 4) uniform sampler2D uDepthTexture;
+
+// ===== INSTANCE TO ENTITY MAPPING (done CPU-side, not needed in shader) =====
+// layout(set = 0, binding = 4, std430) readonly buffer InstanceToEntityBuffer {
+//     uint EntityIDs[];
+// };
+
+// ===== RESULTS =====
+layout(set = 0, binding = 4, std430) buffer ResultBuffer {
+    uint Count;              // Atomic counter
+    uint SelectedIndices[];  // Selected indices (packed as: instanceIdx << 24 | elementIdx)
+};
+
+// ===== WORKGROUP SIZE =====
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// ===== HELPER FUNCTIONS =====
+vec4 worldToClip(vec3 worldPos) {
+    return uParams.ViewProj * vec4(worldPos, 1.0);
+}
+
+vec3 clipToNDC(vec4 clipPos) {
+    return clipPos.xyz / clipPos.w;
+}
+
+vec2 ndcToScreen(vec3 ndc) {
+    // NDC [-1, 1] → Screen [0, 1]
+    return ndc.xy * 0.5 + 0.5;
+}
+
+bool isInsideBox(vec2 screenPos) {
+    return screenPos.x >= uParams.BoxMin.x && screenPos.x <= uParams.BoxMax.x &&
+           screenPos.y >= uParams.BoxMin.y && screenPos.y <= uParams.BoxMax.y;
+}
+
+bool isOccluded(vec2 screenPos, float elementDepth) {
+    // Depth testing disabled for now
+    // float sceneDepth = texture(uDepthTexture, screenPos).r;
+    // return elementDepth > sceneDepth + uParams.DepthTolerance;
+    return false;
+}
+
+bool testPoint(vec3 worldPos) {
+    vec4 clip = worldToClip(worldPos);
+
+    // Behind camera
+    if (clip.w <= 0.0) return false;
+
+    vec3 ndc = clipToNDC(clip);
+    vec2 screen = ndcToScreen(ndc);
+
+    // Outside box
+    if (!isInsideBox(screen)) return false;
+
+    // Occluded (only if depth testing is enabled)
+    if (uParams.EnableDepthTest != 0 && isOccluded(screen, ndc.z)) return false;
+
+    return true;
+}
+
+void recordSelection(uint instanceIdx, uint elementIdx) {
+    // Pack instance and element into single uint
+    // Upper 8 bits = instance, lower 24 bits = element
+    uint packed = (instanceIdx << 24) | (elementIdx & 0x00FFFFFF);
+
+    uint idx = atomicAdd(Count, 1);
+    if (idx < uParams.ElementCount * uParams.InstanceCount) {
+        SelectedIndices[idx] = packed;
+    }
+}
+
+// ===== MAIN COMPUTE SHADER =====
+void main() {
+    uint elementIdx = gl_GlobalInvocationID.x;
+    if (elementIdx >= uParams.ElementCount) return;
+
+    // Test this element against all instances
+    for (uint instanceIdx = 0; instanceIdx < uParams.InstanceCount; instanceIdx++) {
+        mat4 model = Models[instanceIdx];
+        bool selected = false;
+
+        if (uParams.ElementType == 1) {  // VERTEX
+            vec3 localPos = Vertices[elementIdx].Position;
+            vec3 worldPos = (model * vec4(localPos, 1.0)).xyz;
+
+            selected = testPoint(worldPos);
+        }
+        else if (uParams.ElementType == 2) {  // EDGE
+            uint i0 = MeshIndices[elementIdx * 2 + 0];
+            uint i1 = MeshIndices[elementIdx * 2 + 1];
+            vec3 p0 = (model * vec4(Vertices[i0].Position, 1.0)).xyz;
+            vec3 p1 = (model * vec4(Vertices[i1].Position, 1.0)).xyz;
+
+            // Sample edge at multiple points
+            const int samples = 5;
+            for (int i = 0; i < samples && !selected; i++) {
+                float t = float(i) / float(samples - 1);
+                vec3 pos = mix(p0, p1, t);
+                if (testPoint(pos)) {
+                    selected = true;
+                }
+            }
+        }
+        else if (uParams.ElementType == 3) {  // FACE
+            uint i0 = MeshIndices[elementIdx * 3 + 0];
+            uint i1 = MeshIndices[elementIdx * 3 + 1];
+            uint i2 = MeshIndices[elementIdx * 3 + 2];
+            vec3 p0 = (model * vec4(Vertices[i0].Position, 1.0)).xyz;
+            vec3 p1 = (model * vec4(Vertices[i1].Position, 1.0)).xyz;
+            vec3 p2 = (model * vec4(Vertices[i2].Position, 1.0)).xyz;
+
+            // Test triangle center + vertices
+            vec3 center = (p0 + p1 + p2) / 3.0;
+            if (testPoint(center) || testPoint(p0) || testPoint(p1) || testPoint(p2)) {
+                selected = true;
+            }
+        }
+
+        if (selected) {
+            recordSelection(instanceIdx, elementIdx);
+        }
+    }
+}

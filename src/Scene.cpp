@@ -2,6 +2,7 @@
 #include "Widgets.h" // imgui
 
 #include "BVH.h"
+#include "ComputePipeline.h"
 #include "Entity.h"
 #include "Excitable.h"
 #include "OrientationGizmo.h"
@@ -242,15 +243,15 @@ struct SceneUniqueBuffers {
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
         return {
-            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer},
-            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer}
+            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer},
+            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eStorageBuffer}
         };
     }
     template<size_t N>
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) const {
         return {
-            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer},
-            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer}
+            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer},
+            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eStorageBuffer}
         };
     }
 
@@ -764,6 +765,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     Vk.Device.updateDescriptorSets(descriptors, {});
 
     Pipelines->CompileShaders();
+    InitializeBoxSelection();
 
     { // Default scene content
         const auto e = AddMesh(CreateDefaultPrimitive(PrimitiveType::Cube), {.Name = ToString(PrimitiveType::Cube)});
@@ -772,6 +774,47 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 }
 
 Scene::~Scene() {}; // Using unique handles, so no need to manually destroy anything.
+
+void Scene::InitializeBoxSelection() {
+    // Create compute pipeline
+    BoxSelectPipeline = std::make_unique<ComputePipeline>(
+        Vk.Device,
+        Vk.DescriptorPool,
+        Shaders{{
+            {vk::ShaderStageFlagBits::eCompute, "BoxSelect.comp"}
+        }}
+    );
+
+    // Create parameter buffer
+    SelectionBuffers.Params = std::make_unique<mvk::UniqueBuffers>(
+        UniqueBuffers->Ctx,
+        sizeof(BoxSelectionParams),
+        vk::BufferUsageFlagBits::eUniformBuffer
+    );
+
+    // Create result buffer (size for 1M elements max)
+    const size_t max_results = 1024 * 1024;
+    const auto result_size = (1 + max_results) * sizeof(uint32_t);
+    SelectionBuffers.Results = std::make_unique<mvk::UniqueBuffers>(
+        UniqueBuffers->Ctx,
+        result_size,
+        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc
+    );
+
+    // Create CPU-readable staging buffer for readback
+    SelectionBuffers.ResultsReadback = std::make_unique<mvk::UniqueBuffer>(
+        *UniqueBuffers->Ctx.Allocator,
+        result_size,
+        mvk::MemoryUsage::GpuToCpu,
+        vk::BufferUsageFlagBits::eTransferDst
+    );
+
+    SelectionBuffers.InstanceToEntity = std::make_unique<mvk::UniqueBuffers>(
+        UniqueBuffers->Ctx,
+        1024 * sizeof(uint32_t), // Max 1024 instances
+        vk::BufferUsageFlagBits::eStorageBuffer
+    );
+}
 
 void Scene::LoadIcons(vk::Device device) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
@@ -897,7 +940,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
 
         R.emplace<MeshHighlightedHandles>(mesh_entity);
-        R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
+        R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer});
         R.emplace<MeshBuffers>(mesh_entity, std::move(buffers_by_element), RenderBuffersByElement{});
         if (ShowBoundingBoxes) {
             R.emplace<BoundingBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
@@ -1461,37 +1504,28 @@ void Scene::Interact() {
 
     if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
-    // todo box selection for edit mode (select vertices/edges/faces within box)
-    if (SelectionMode == SelectionMode::Box && InteractionMode == InteractionMode::Object) {
+    // Box selection (GPU-accelerated, geometry-aware)
+    if (SelectionMode == SelectionMode::Box) {
         const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = mouse_pos;
             BoxSelectEnd = mouse_pos;
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
-            // Select (only) meshes whose centers are within the box.
-            // Only start selection if mouse moved past drag threshold.
-            // todo: overlap geometry, not just centers
+            // Only start selection if mouse moved past drag threshold
             BoxSelectEnd = mouse_pos;
             static constexpr float drag_threshold{2};
             if (glm::distance(*BoxSelectStart, *BoxSelectEnd) > drag_threshold) {
-                const auto size = ToGlm(GetContentRegionAvail());
-                const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
                 const auto window_pos = ToGlm(GetCursorScreenPos());
-                const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd);
-                const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd);
+                const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd) - window_pos;
+                const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd) - window_pos;
+                const auto size = ToGlm(GetContentRegionAvail());
+
+                // Convert to normalized [0,1] coordinates
+                const auto box_min_norm = box_min / size;
+                const auto box_max_norm = box_max / size;
+
                 R.clear<Selected>();
-                for (const auto [e, p] : R.view<const Position, const Visible>().each()) {
-                    const auto p_cs = vp * vec4{p.Value, 1};
-                    if (fabsf(p_cs.w) <= FLT_EPSILON) continue;
-                    const auto p_ndc = vec3{p_cs} / p_cs.w;
-                    const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f;
-                    const auto p_px = window_pos + p_uv * size;
-                    if (p_px.x >= box_min.x && p_px.x <= box_max.x &&
-                        p_px.y >= box_min.y && p_px.y <= box_max.y) {
-                        R.emplace<Selected>(e);
-                    }
-                }
-                InvalidateCommandBuffer();
+                BoxSelectGPU(box_min_norm, box_max_norm);
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
             BoxSelectStart.reset();

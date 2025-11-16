@@ -21,9 +21,10 @@ struct UniqueBuffer::Impl {
         aci.usage = ToVmaMemoryUsage(memory_usage);
         // All staging and device buffers act as transfer sources, since buffer updates include a device->device copy.
         vk::BufferCreateInfo bci{{}, size, usage | vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive};
-        if (memory_usage == mvk::MemoryUsage::CpuOnly || memory_usage == mvk::MemoryUsage::CpuToGpu) {
+        if (memory_usage == mvk::MemoryUsage::CpuOnly || memory_usage == mvk::MemoryUsage::CpuToGpu || memory_usage == mvk::MemoryUsage::GpuToCpu) {
             aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        } else {
+        }
+        if (memory_usage == mvk::MemoryUsage::GpuOnly || memory_usage == mvk::MemoryUsage::GpuToCpu) {
             bci.usage |= vk::BufferUsageFlagBits::eTransferDst;
         }
         if (vmaCreateBuffer(Vma, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Handle), &Allocation, &Info) != VK_SUCCESS) {
