@@ -44,7 +44,7 @@ struct AcousticScene {
     void Process(AudioBuffer) const;
 
 private:
-    void Draw(entt::entity);
+    void Draw(entt::entity, entt::entity mesh_entity);
 
     void SetVertex(entt::entity, uint);
     void SetVertexForce(entt::entity, float);
@@ -56,7 +56,7 @@ private:
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
-    ModalSoundObject CreateModalSoundObject(entt::entity, const ModalModelCreateInfo &) const;
+    ModalSoundObject CreateModalSoundObject(entt::entity, entt::entity mesh_entity, const ModalModelCreateInfo &) const;
 
     entt::registry &R;
     CreateSvgResource CreateSvg;

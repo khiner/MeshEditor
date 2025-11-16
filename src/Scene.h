@@ -128,6 +128,7 @@ struct Scene {
 
     void SetVisible(entt::entity, bool);
 
+    entt::entity GetMeshEntity(entt::entity) const;
     entt::entity GetActiveMeshEntity() const;
     void Select(entt::entity);
     void ToggleSelected(entt::entity);

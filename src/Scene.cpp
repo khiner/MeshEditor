@@ -91,11 +91,15 @@ struct MeshHighlightedHandles {
     std::unordered_set<AnyHandle, AnyHandleHash> Handles;
 };
 
+entt::entity Scene::GetMeshEntity(entt::entity e) const {
+    if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) {
+        return mesh_instance->MeshEntity;
+    }
+    return entt::null;
+}
 entt::entity Scene::GetActiveMeshEntity() const {
     if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) {
-        if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
-            return mesh_instance->MeshEntity;
-        }
+        return GetMeshEntity(active_entity);
     }
     return entt::null;
 }
@@ -796,10 +800,10 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
 void Scene::OnCreateExcitable(entt::registry &r, entt::entity e) {
     SelectionModes.insert(SelectionMode::Excite);
     SetSelectionMode(SelectionMode::Excite);
-    UpdateHighlightedVertices(e, r.get<Excitable>(e));
+    UpdateHighlightedVertices(r.get<MeshInstance>(e).MeshEntity, r.get<Excitable>(e));
 }
 void Scene::OnUpdateExcitable(entt::registry &r, entt::entity e) {
-    UpdateHighlightedVertices(e, r.get<Excitable>(e));
+    UpdateHighlightedVertices(r.get<MeshInstance>(e).MeshEntity, r.get<Excitable>(e));
 }
 void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
     // The last excitable entity is being destroyed.
@@ -813,11 +817,12 @@ void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
 }
 
 void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
+    const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     auto &excited_vertex = r.get<ExcitedVertex>(e);
     // Orient the camera towards the excited vertex.
     const auto vh = VH(excited_vertex.Vertex);
-    const auto &mesh = r.get<Mesh>(e);
-    const auto &bbox = r.get<BBox>(e);
+    const auto &mesh = r.get<Mesh>(mesh_entity);
+    const auto &bbox = r.get<BBox>(mesh_entity);
     const auto &transform = r.get<WorldMatrix>(e).M;
     const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
@@ -1098,11 +1103,13 @@ void Scene::WaitFor(vk::Fence fence) const {
 void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
         auto &mesh_buffers = R.get<MeshBuffers>(e);
-        const bool is_active = GetActiveMeshEntity() == e;
+        const auto active_entity = FindActiveEntity(R);
+        const bool is_active = active_entity != entt::null && R.get<MeshInstance>(active_entity).MeshEntity == e;
         const AnyHandle selected{
-            is_active && SelectionMode == SelectionMode::Edit       ? EditingHandle :
-                is_active && SelectionMode == SelectionMode::Excite ? AnyHandle{Element::Vertex, R.get<Excitable>(e).SelectedVertex()} :
-                                                                      AnyHandle{}
+            is_active && SelectionMode == SelectionMode::Edit ? EditingHandle :
+                is_active && SelectionMode == SelectionMode::Excite && R.all_of<Excitable>(active_entity) ?
+                                                                AnyHandle{Element::Vertex, R.get<Excitable>(active_entity).SelectedVertex()} :
+                                                                AnyHandle{}
         };
         const auto &highlighted = R.get<MeshHighlightedHandles>(e).Handles;
         for (const auto element : Elements) { // todo only update buffers for viewed elements.
