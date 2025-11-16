@@ -34,7 +34,7 @@ struct Lights {
     vec3 Direction;
 };
 
-enum class SelectionMode {
+enum class InteractionMode {
     Object, // Select objects
     Edit, // Select individual mesh elements (vertices, edges, faces)
     // Available when any `Excitable` objects are present.
@@ -55,11 +55,11 @@ enum class ColorMode {
     Normals,
 };
 
-inline std::string to_string(SelectionMode mode) {
+inline std::string to_string(InteractionMode mode) {
     switch (mode) {
-        case SelectionMode::Object: return "Object";
-        case SelectionMode::Edit: return "Edit";
-        case SelectionMode::Excite: return "Excite";
+        case InteractionMode::Object: return "Object";
+        case InteractionMode::Edit: return "Edit";
+        case InteractionMode::Excite: return "Excite";
     }
 }
 
@@ -190,8 +190,8 @@ private:
     RenderMode RenderMode{RenderMode::FacesAndEdges};
     ColorMode ColorMode{ColorMode::Mesh};
 
-    std::set<SelectionMode> SelectionModes{SelectionMode::Object, SelectionMode::Edit};
-    SelectionMode SelectionMode{SelectionMode::Object};
+    std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
+    InteractionMode InteractionMode{InteractionMode::Object};
     he::AnyHandle EditingHandle{he::Element::Face};
     vec2 AccumulatedWrapMouseDelta{0, 0};
 
@@ -229,7 +229,7 @@ private:
 
     bool CommandBufferDirty{false};
 
-    void SetSelectionMode(::SelectionMode);
+    void SetInteractionMode(::InteractionMode);
     void SetEditingHandle(he::AnyHandle);
 
     void RenderEntityControls(entt::entity);

@@ -799,8 +799,8 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
 }
 
 void Scene::OnCreateExcitable(entt::registry &r, entt::entity e) {
-    SelectionModes.insert(SelectionMode::Excite);
-    SetSelectionMode(SelectionMode::Excite);
+    InteractionModes.insert(InteractionMode::Excite);
+    SetInteractionMode(InteractionMode::Excite);
     UpdateHighlightedVertices(r.get<MeshInstance>(e).MeshEntity, r.get<Excitable>(e));
 }
 void Scene::OnUpdateExcitable(entt::registry &r, entt::entity e) {
@@ -809,8 +809,8 @@ void Scene::OnUpdateExcitable(entt::registry &r, entt::entity e) {
 void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
     // The last excitable entity is being destroyed.
     if (r.storage<Excitable>().size() == 1) {
-        if (SelectionMode == SelectionMode::Excite) SetSelectionMode(*SelectionModes.begin());
-        SelectionModes.erase(SelectionMode::Excite);
+        if (InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+        InteractionModes.erase(InteractionMode::Excite);
     }
 
     static constexpr Excitable EmptyExcitable{};
@@ -1073,12 +1073,12 @@ void Scene::Destroy(entt::entity e) {
     InvalidateCommandBuffer();
 }
 
-void Scene::SetSelectionMode(::SelectionMode mode) {
-    if (SelectionMode == mode) return;
+void Scene::SetInteractionMode(::InteractionMode mode) {
+    if (InteractionMode == mode) return;
 
-    SelectionMode = mode;
+    InteractionMode = mode;
     for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
-        const bool highlight_faces = SelectionMode == SelectionMode::Excite && R.try_get<Excitable>(entity);
+        const bool highlight_faces = InteractionMode == InteractionMode::Excite && R.try_get<Excitable>(entity);
         mesh.SetColor(highlight_faces ? MeshRender::HighlightedFaceColor : Mesh::DefaultFaceColor);
         UpdateRenderBuffers(entity);
     }
@@ -1107,10 +1107,10 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         const auto active_entity = FindActiveEntity(R);
         const bool is_active = active_entity != entt::null && R.get<MeshInstance>(active_entity).MeshEntity == e;
         const AnyHandle selected{
-            is_active && SelectionMode == SelectionMode::Edit ? EditingHandle :
-                is_active && SelectionMode == SelectionMode::Excite && R.all_of<Excitable>(active_entity) ?
-                                                                AnyHandle{Element::Vertex, R.get<Excitable>(active_entity).SelectedVertex()} :
-                                                                AnyHandle{}
+            is_active && InteractionMode == InteractionMode::Edit ? EditingHandle :
+                is_active && InteractionMode == InteractionMode::Excite && R.all_of<Excitable>(active_entity) ?
+                                                                    AnyHandle{Element::Vertex, R.get<Excitable>(active_entity).SelectedVertex()} :
+                                                                    AnyHandle{}
         };
         const auto &highlighted = R.get<MeshHighlightedHandles>(e).Handles;
         for (const auto element : Elements) { // todo only update buffers for viewed elements.
@@ -1152,7 +1152,7 @@ void Scene::RecordRenderCommandBuffer() {
     );
 
     const auto active_entity = FindActiveEntity(R);
-    const bool render_silhouette = GetModelBufferIndex(R, active_entity) && SelectionMode == SelectionMode::Object;
+    const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
     if (render_silhouette) {
         // Render all selected mesh instances into a depth/object ID texture.
         const auto &silhouette = Pipelines->Silhouette;
@@ -1266,7 +1266,7 @@ void Scene::UpdateTransformBuffers() {
 void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable) {
     if (auto *highlighted = R.try_get<MeshHighlightedHandles>(e)) {
         highlighted->Handles.clear();
-        if (SelectionMode == SelectionMode::Excite) {
+        if (InteractionMode == InteractionMode::Excite) {
             for (const auto vertex : excitable.ExcitableVertices) {
                 highlighted->Handles.emplace(VH(vertex));
             }
@@ -1405,11 +1405,11 @@ void Scene::Interact() {
     // Handle keyboard input.
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Tab)) {
-            // Cycle to the next selection mode, wrapping around to the first.
-            auto it = find(SelectionModes, SelectionMode);
-            SetSelectionMode(++it != SelectionModes.end() ? *it : *SelectionModes.begin());
+            // Cycle to the next interaction mode, wrapping around to the first.
+            auto it = find(InteractionModes, InteractionMode);
+            SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
         }
-        if (SelectionMode == SelectionMode::Edit) {
+        if (InteractionMode == InteractionMode::Edit) {
             if (IsKeyPressed(ImGuiKey_1, false)) SetEditingHandle({Element::Vertex});
             else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingHandle({Element::Edge});
             else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingHandle({Element::Face});
@@ -1463,7 +1463,7 @@ void Scene::Interact() {
     const auto size = GetContentRegionAvail();
     const auto mouse_pos = (GetMousePos() - GetCursorScreenPos()) / size;
     const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
-    if (SelectionMode == SelectionMode::Edit) {
+    if (InteractionMode == InteractionMode::Edit) {
         if (EditingHandle.Element != Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
             const auto &world_matrix = R.get<WorldMatrix>(active_entity);
             const auto mouse_ray = WorldToLocal(mouse_ray_ws, world_matrix.MInv);
@@ -1475,7 +1475,7 @@ void Scene::Interact() {
             else if (EditingHandle.Element == Element::Edge) SetEditingHandle(AnyHandle{MeshIntersection::FindNearestEdge(bvh, mesh, mouse_ray)});
             else if (EditingHandle.Element == Element::Face) SetEditingHandle(AnyHandle{MeshIntersection::FindNearestIntersectingFace(bvh, mesh, mouse_ray)});
         }
-    } else if (SelectionMode == SelectionMode::Object) {
+    } else if (InteractionMode == InteractionMode::Object) {
         const auto intersected = CycleIntersectedEntity(R, active_entity, mouse_ray_ws);
         if (intersected != entt::null && IsKeyDown(ImGuiMod_Shift)) {
             if (active_entity == intersected) {
@@ -1489,7 +1489,7 @@ void Scene::Interact() {
         } else {
             Select(intersected);
         }
-    } else if (SelectionMode == SelectionMode::Excite) {
+    } else if (InteractionMode == InteractionMode::Excite) {
         // Excite the nearest entity if it's excitable.
         if (const auto nearest = IntersectNearest(R, mouse_ray_ws)) {
             if (const auto *excitable = R.try_get<Excitable>(nearest->Entity)) {
@@ -1914,24 +1914,24 @@ void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
-                PushID("SelectionMode");
+                PushID("InteractionMode");
                 AlignTextToFramePadding();
-                TextUnformatted("Selection mode:");
-                int selection_mode = int(SelectionMode);
-                bool selection_mode_changed = false;
-                for (const auto mode : SelectionModes) {
+                TextUnformatted("Interaction mode:");
+                int interaction_mode = int(InteractionMode);
+                bool interaction_mode_changed = false;
+                for (const auto mode : InteractionModes) {
                     SameLine();
-                    selection_mode_changed |= RadioButton(to_string(mode).c_str(), &selection_mode, int(mode));
+                    interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode, int(mode));
                 }
-                if (selection_mode_changed) SetSelectionMode(::SelectionMode(selection_mode));
-                if (SelectionMode == SelectionMode::Edit) {
+                if (interaction_mode_changed) SetInteractionMode(::InteractionMode(interaction_mode));
+                if (InteractionMode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    auto type_selection_mode = int(EditingHandle.Element);
+                    auto type_interaction_mode = int(EditingHandle.Element);
                     for (const auto element : Elements) {
                         auto name = Capitalize(label(element));
                         SameLine();
-                        if (RadioButton(name.c_str(), &type_selection_mode, int(element))) {
+                        if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) {
                             SetEditingHandle({element});
                         }
                     }
