@@ -16,7 +16,7 @@ struct Mesh {
     using EH = he::EH;
     using FH = he::FH;
 
-    static constexpr vec4 DefaultFaceColor{0.7, 0.7, 0.7, 1};
+    static constexpr vec4 DefaultMeshColor{0.7, 0.7, 0.7, 1};
 
     Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
 
@@ -34,11 +34,8 @@ struct Mesh {
     const vec3 &GetNormal(VH vh) const { return Normals[*vh]; }
     const vec3 &GetNormal(FH fh) const { return Faces[*fh].Normal; }
 
-    vec4 GetColor(FH fh) const { return Faces[*fh].Color; }
-    void SetColor(FH fh, const vec4 &color) { Faces[*fh].Color = color; }
-    void SetColor(vec4 color) {
-        for (const auto &fh : faces()) SetColor(fh, color);
-    }
+    vec4 GetColor() const { return Color; }
+    void SetColor(vec4 color) { Color = color; }
 
     // Halfedge navigation
     HH GetHalfedge(EH eh, uint i) const {
@@ -221,7 +218,6 @@ private:
     struct Face {
         HH Halfedge; // One of the boundary halfedges
         vec3 Normal{0};
-        vec4 Color{1, 1, 1, 1};
     };
 
     // Vertex data
@@ -232,6 +228,8 @@ private:
     std::vector<EH> HalfedgeToEdge; // Separate mapping for better cache locality
     std::vector<HH> Edges; // Maps edge index to one of its halfedges (index 0)
     std::vector<Face> Faces;
+
+    vec4 Color{DefaultMeshColor};
 
     void ComputeVertexNormals();
     void ComputeFaceNormals();

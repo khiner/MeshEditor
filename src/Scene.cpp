@@ -1086,7 +1086,7 @@ void Scene::SetInteractionMode(::InteractionMode mode) {
     InteractionMode = mode;
     for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
         const bool highlight_faces = InteractionMode == InteractionMode::Excite && R.try_get<Excitable>(entity);
-        mesh.SetColor(highlight_faces ? MeshRender::HighlightedFaceColor : Mesh::DefaultFaceColor);
+        mesh.SetColor(highlight_faces ? MeshRender::HighlightedFaceColor : Mesh::DefaultMeshColor);
         UpdateRenderBuffers(entity);
     }
     const auto e = FindActiveEntity(R);

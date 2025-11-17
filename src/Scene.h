@@ -186,7 +186,7 @@ private:
     vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
 
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
-    bool SmoothShading{false};  // true = vertex normals (smooth), false = face normals (flat)
+    bool SmoothShading{false}; // true = vertex normals (smooth), false = face normals (flat)
     ColorMode ColorMode{ColorMode::Mesh};
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};

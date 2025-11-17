@@ -78,15 +78,16 @@ std::vector<Vertex3D> CreateFaceVertices(
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.FaceCount() * 3); // Lower bound assuming all faces are triangles
 
+    const auto mesh_color = mesh.GetColor();
     for (const auto fh : mesh.faces()) {
         const auto face_normal = mesh.GetNormal(fh);
         for (const auto vh : mesh.fv_range(fh)) {
             const auto normal = smooth_shading ? mesh.GetNormal(vh) : face_normal;
             const bool is_selected = selected == fh;
             const bool is_highlighted = highlighted.contains(fh);
-            const auto color = is_selected    ? SelectedColor :
-                is_highlighted                ? HighlightedColor :
-                                                mesh.GetColor(fh);
+            const auto color = is_selected ? SelectedColor :
+                is_highlighted             ? HighlightedColor :
+                                             mesh_color;
             vertices.emplace_back(mesh.GetPosition(vh), normal, color);
         }
     }
@@ -113,9 +114,9 @@ std::vector<Vertex3D> CreateEdgeVertices(
                 selected == vh || selected == eh ||
                 mesh.EdgeBelongsToFace(eh, selected);
             const bool is_highlighted = highlighted.contains(vh) || highlighted.contains(eh);
-            const auto color = is_selected    ? SelectedColor :
-                is_highlighted                ? HighlightedColor :
-                                                EdgeColor;
+            const auto color = is_selected ? SelectedColor :
+                is_highlighted             ? HighlightedColor :
+                                             EdgeColor;
             vertices.emplace_back(mesh.GetPosition(vh), normal, color);
         }
     }

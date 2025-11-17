@@ -32,7 +32,7 @@ Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces)
 
         const auto fi = Faces.size();
         const auto start_he_i = Halfedges.size();
-        Faces.emplace_back(HH(start_he_i), vec3{0}, vec4{1, 1, 1, 1});
+        Faces.emplace_back(HH(start_he_i), vec3{0});
 
         // Create halfedges, find opposites, and create edges
         for (size_t i = 0; i < face.size(); ++i) {
@@ -67,7 +67,7 @@ Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces)
     }
     ComputeFaceNormals();
     ComputeVertexNormals();
-    SetColor(DefaultFaceColor);
+    SetColor(DefaultMeshColor);
 }
 
 he::VH Mesh::GetFromVertex(HH hh) const {
