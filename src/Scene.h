@@ -191,7 +191,7 @@ private:
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
     InteractionMode InteractionMode{InteractionMode::Object};
-    he::AnyHandle EditingHandle{he::Element::Face};
+    he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
 
     vk::Extent2D Extent;
@@ -234,7 +234,8 @@ private:
     bool CommandBufferDirty{false};
 
     void SetInteractionMode(::InteractionMode);
-    void SetEditingHandle(he::AnyHandle);
+    void SetEditMode(he::Element mode);
+    void SelectElement(entt::entity mesh_entity, he::AnyHandle element);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

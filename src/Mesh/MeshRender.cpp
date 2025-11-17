@@ -5,6 +5,10 @@
 
 #include <entt/entity/registry.hpp>
 
+#include <ranges>
+
+using std::ranges::all_of;
+
 using namespace he;
 
 namespace MeshRender {
@@ -72,23 +76,22 @@ struct VerticesHandle {
 std::vector<Vertex3D> CreateFaceVertices(
     const Mesh &mesh,
     bool smooth_shading,
-    const AnyHandle &selected,
-    const std::unordered_set<AnyHandle, AnyHandleHash> &highlighted
+    const std::unordered_set<VH> &selected_vertices,
+    const std::unordered_set<VH> &highlighted_vertices
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.FaceCount() * 3); // Lower bound assuming all faces are triangles
 
     const auto mesh_color = mesh.GetColor();
     for (const auto fh : mesh.faces()) {
-        const auto face_normal = mesh.GetNormal(fh);
+        const auto fv_range = mesh.fv_range(fh);
+        const bool is_selected = all_of(fv_range, [&](auto vh) { return selected_vertices.contains(vh); });
+        const bool is_highlighted = all_of(fv_range, [&](auto vh) { return highlighted_vertices.contains(vh); });
         for (const auto vh : mesh.fv_range(fh)) {
-            const auto normal = smooth_shading ? mesh.GetNormal(vh) : face_normal;
-            const bool is_selected = selected == fh;
-            const bool is_highlighted = highlighted.contains(fh);
             const auto color = is_selected ? SelectedColor :
                 is_highlighted             ? HighlightedColor :
                                              mesh_color;
-            vertices.emplace_back(mesh.GetPosition(vh), normal, color);
+            vertices.emplace_back(mesh.GetPosition(vh), smooth_shading ? mesh.GetNormal(vh) : mesh.GetNormal(fh), color);
         }
     }
 
@@ -97,27 +100,29 @@ std::vector<Vertex3D> CreateFaceVertices(
 
 std::vector<Vertex3D> CreateEdgeVertices(
     const Mesh &mesh,
-    const AnyHandle &selected,
-    const std::unordered_set<AnyHandle, AnyHandleHash> &highlighted
+    Element edit_mode,
+    const std::unordered_set<VH> &selected_vertices,
+    const std::unordered_set<VH> &highlighted_vertices
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.EdgeCount() * 2);
 
+    const bool vertex_mode = edit_mode == Element::Vertex;
     for (const auto eh : mesh.edges()) {
         const auto heh = mesh.GetHalfedge(eh, 0);
         const auto v_from = mesh.GetFromVertex(heh);
         const auto v_to = mesh.GetToVertex(heh);
-
         for (const auto vh : {v_from, v_to}) {
-            const auto normal = mesh.GetNormal(vh);
-            const bool is_selected =
-                selected == vh || selected == eh ||
-                mesh.EdgeBelongsToFace(eh, selected);
-            const bool is_highlighted = highlighted.contains(vh) || highlighted.contains(eh);
+            const bool is_selected = vertex_mode ?
+                selected_vertices.contains(vh) :
+                selected_vertices.contains(v_from) && selected_vertices.contains(v_to);
+            const bool is_highlighted = vertex_mode ?
+                highlighted_vertices.contains(vh) :
+                highlighted_vertices.contains(v_from) && highlighted_vertices.contains(v_to);
             const auto color = is_selected ? SelectedColor :
                 is_highlighted             ? HighlightedColor :
                                              EdgeColor;
-            vertices.emplace_back(mesh.GetPosition(vh), normal, color);
+            vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), color);
         }
     }
 

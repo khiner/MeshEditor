@@ -86,9 +86,13 @@ struct PipelineRenderer {
     void Render(vk::CommandBuffer, SPT, const RenderBuffers &, const mvk::UniqueBuffers &models, std::optional<uint> model_index = std::nullopt) const;
 };
 
-// Component: Handles highlighted for rendering (in addition to selected elements)
-struct MeshHighlightedHandles {
-    std::unordered_set<AnyHandle, AnyHandleHash> Handles;
+struct MeshSelectedVertices {
+    std::unordered_set<VH> Vertices;
+};
+
+// Component: Vertices highlighted for rendering (in addition to selected elements)
+struct MeshHighlightedVertices {
+    std::unordered_set<VH> Vertices;
 };
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
@@ -896,12 +900,13 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             MeshRender::CreateFaceIndices(mesh)
         );
         auto edge_buffers = UniqueBuffers->CreateRenderBuffers(
-            MeshRender::CreateEdgeVertices(mesh),
+            MeshRender::CreateEdgeVertices(mesh, Element::Vertex),
             MeshRender::CreateEdgeIndices(mesh)
         );
 
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
-        R.emplace<MeshHighlightedHandles>(mesh_entity);
+        R.emplace<MeshSelectedVertices>(mesh_entity);
+        R.emplace<MeshHighlightedVertices>(mesh_entity);
         R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers));
         if (ShowBoundingBoxes) {
@@ -1035,7 +1040,7 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     auto &mesh_buffers = R.get<MeshBuffers>(e);
     mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
     mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
-    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
+    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm, Element::Vertex));
     mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
 
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
@@ -1094,11 +1099,24 @@ void Scene::SetInteractionMode(::InteractionMode mode) {
         UpdateHighlightedVertices(e, *excitable);
     }
 }
-void Scene::SetEditingHandle(AnyHandle handle) {
-    if (R.storage<Active>().empty()) return;
+void Scene::SetEditMode(Element mode) {
+    EditMode = mode;
+}
 
-    EditingHandle = handle;
-    UpdateRenderBuffers(GetActiveMeshEntity());
+void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element) {
+    const auto &mesh = R.get<Mesh>(mesh_entity);
+    auto &selected = R.get<MeshSelectedVertices>(mesh_entity);
+    selected.Vertices.clear();
+    if (element.Element == Element::Vertex && element) {
+        selected.Vertices.emplace(VH{*element});
+    } else if (element.Element == Element::Edge && element) {
+        const auto heh = mesh.GetHalfedge(EH{*element}, 0);
+        selected.Vertices.emplace(mesh.GetFromVertex(heh));
+        selected.Vertices.emplace(mesh.GetToVertex(heh));
+    } else if (element.Element == Element::Face && element) {
+        for (const auto vh : mesh.fv_range(FH{*element})) selected.Vertices.emplace(vh);
+    }
+    UpdateRenderBuffers(mesh_entity);
 }
 
 void Scene::WaitFor(vk::Fence fence) const {
@@ -1111,17 +1129,10 @@ void Scene::WaitFor(vk::Fence fence) const {
 void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
         auto &mesh_buffers = R.get<MeshBuffers>(e);
-        const auto active_entity = FindActiveEntity(R);
-        const bool is_active = active_entity != entt::null && R.get<MeshInstance>(active_entity).MeshEntity == e;
-        const AnyHandle selected{
-            is_active && InteractionMode == InteractionMode::Edit ? EditingHandle :
-                is_active && InteractionMode == InteractionMode::Excite && R.all_of<Excitable>(active_entity) ?
-                                                                    AnyHandle{Element::Vertex, R.get<Excitable>(active_entity).SelectedVertex()} :
-                                                                    AnyHandle{}
-        };
-        const auto &highlighted = R.get<MeshHighlightedHandles>(e).Handles;
+        const auto &selected = R.get<MeshSelectedVertices>(e).Vertices;
+        const auto &highlighted = R.get<MeshHighlightedVertices>(e).Vertices;
         mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(*mesh, SmoothShading, selected, highlighted));
-        mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(*mesh, selected, highlighted));
+        mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(*mesh, EditMode, selected, highlighted));
         InvalidateCommandBuffer();
     };
 }
@@ -1269,11 +1280,11 @@ void Scene::UpdateTransformBuffers() {
 }
 
 void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable) {
-    if (auto *highlighted = R.try_get<MeshHighlightedHandles>(e)) {
-        highlighted->Handles.clear();
+    if (auto *highlighted = R.try_get<MeshHighlightedVertices>(e)) {
+        highlighted->Vertices.clear();
         if (InteractionMode == InteractionMode::Excite) {
             for (const auto vertex : excitable.ExcitableVertices) {
-                highlighted->Handles.emplace(VH(vertex));
+                highlighted->Vertices.emplace(VH(vertex));
             }
         }
         UpdateRenderBuffers(e);
@@ -1415,9 +1426,9 @@ void Scene::Interact() {
             SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
         }
         if (InteractionMode == InteractionMode::Edit) {
-            if (IsKeyPressed(ImGuiKey_1, false)) SetEditingHandle({Element::Vertex});
-            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditingHandle({Element::Edge});
-            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditingHandle({Element::Face});
+            if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
+            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
+            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
         }
         if (!R.storage<Selected>().empty()) {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
@@ -1511,16 +1522,16 @@ void Scene::Interact() {
     const auto mouse_pos = (GetMousePos() - GetCursorScreenPos()) / size;
     const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
     if (InteractionMode == InteractionMode::Edit) {
-        if (EditingHandle.Element != Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
+        if (EditMode != Element::None && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
             const auto &world_matrix = R.get<WorldMatrix>(active_entity);
             const auto mouse_ray = WorldToLocal(mouse_ray_ws, world_matrix.MInv);
             const auto mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
             const auto &bvh = R.get<BVH>(mesh_entity);
             const auto &mesh = R.get<Mesh>(mesh_entity);
-            const auto nearest_vertex = MeshIntersection::FindNearestVertex(bvh, mesh, mouse_ray);
-            if (EditingHandle.Element == Element::Vertex) SetEditingHandle(AnyHandle{nearest_vertex});
-            else if (EditingHandle.Element == Element::Edge) SetEditingHandle(AnyHandle{MeshIntersection::FindNearestEdge(bvh, mesh, mouse_ray)});
-            else if (EditingHandle.Element == Element::Face) SetEditingHandle(AnyHandle{MeshIntersection::FindNearestIntersectingFace(bvh, mesh, mouse_ray)});
+            using namespace MeshIntersection;
+            if (EditMode == Element::Vertex) SelectElement(mesh_entity, FindNearestVertex(bvh, mesh, mouse_ray));
+            else if (EditMode == Element::Edge) SelectElement(mesh_entity, FindNearestEdge(bvh, mesh, mouse_ray));
+            else if (EditMode == Element::Face) SelectElement(mesh_entity, FindNearestIntersectingFace(bvh, mesh, mouse_ray));
         }
     } else if (InteractionMode == InteractionMode::Object) {
         const auto intersected = CycleIntersectedEntity(R, active_entity, mouse_ray_ws);
@@ -2018,20 +2029,26 @@ void Scene::RenderControls() {
                 if (InteractionMode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    auto type_interaction_mode = int(EditingHandle.Element);
+                    auto type_interaction_mode = int(EditMode);
                     for (const auto element : Elements) {
                         auto name = Capitalize(label(element));
                         SameLine();
                         if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) {
-                            SetEditingHandle({element});
+                            SetEditMode(element);
                         }
                     }
-                    Text("Editing %s: %s", label(EditingHandle.Element).data(), EditingHandle ? std::to_string(*EditingHandle).c_str() : "None");
                     const auto active_entity = FindActiveEntity(R);
-                    if (EditingHandle.Element == Element::Vertex && EditingHandle && active_entity != entt::null) {
-                        const auto &mesh = R.get<Mesh>(R.get<MeshInstance>(active_entity).MeshEntity);
-                        const auto pos = mesh.GetPosition(VH{*EditingHandle});
-                        Text("Vertex %d: (%.4f, %.4f, %.4f)", *EditingHandle, pos.x, pos.y, pos.z);
+                    if (active_entity != entt::null) {
+                        const auto mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
+                        const auto &selected = R.get<MeshSelectedVertices>(mesh_entity).Vertices;
+                        Text("Editing %s: %zu selected", label(EditMode).data(), selected.size());
+                        if (EditMode == Element::Vertex && !selected.empty()) {
+                            const auto &mesh = R.get<Mesh>(mesh_entity);
+                            for (const auto vh : selected) {
+                                const auto pos = mesh.GetPosition(vh);
+                                Text("Vertex %d: (%.4f, %.4f, %.4f)", *vh, pos.x, pos.y, pos.z);
+                            }
+                        }
                     }
                 }
                 PopID();

@@ -86,3 +86,12 @@ struct AnyHandleHash {
     }
 };
 } // namespace he
+
+namespace std {
+template<typename Tag>
+struct hash<he::Handle<Tag>> {
+    size_t operator()(const he::Handle<Tag> &h) const noexcept {
+        return std::hash<he::uint>{}(*h);
+    }
+};
+} // namespace std
