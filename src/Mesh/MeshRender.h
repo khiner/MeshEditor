@@ -90,13 +90,14 @@ constexpr float NormalIndicatorLengthScale{0.25};
 std::vector<Vertex3D> CreateFaceVertices(
     const Mesh &mesh,
     bool smooth_shading,
-    const std::unordered_set<he::VH> &selected_vertices = {},
-    const std::unordered_set<he::VH> &highlighted_vertices = {}
+    const std::unordered_set<he::VH> &highlighted_vertices = {},
+    const std::unordered_set<he::FH> &selected_faces = {}
 );
 std::vector<Vertex3D> CreateEdgeVertices(
     const Mesh &mesh,
     he::Element edit_mode,
-    const std::unordered_set<he::VH> &selected_vertices = {}
+    const std::unordered_set<he::VH> &selected_vertices = {},
+    const std::unordered_set<he::EH> &selected_edges = {}
 );
 std::vector<uint> CreateFaceIndices(const Mesh &mesh);
 std::vector<uint> CreateEdgeIndices(const Mesh &mesh);

@@ -235,7 +235,7 @@ private:
 
     void SetInteractionMode(::InteractionMode);
     void SetEditMode(he::Element mode);
-    void SelectElement(entt::entity mesh_entity, he::AnyHandle element);
+    void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

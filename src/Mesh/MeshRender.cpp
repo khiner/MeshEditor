@@ -76,16 +76,15 @@ struct VerticesHandle {
 std::vector<Vertex3D> CreateFaceVertices(
     const Mesh &mesh,
     bool smooth_shading,
-    const std::unordered_set<VH> &selected_vertices,
-    const std::unordered_set<VH> &highlighted_vertices
+    const std::unordered_set<VH> &highlighted_vertices,
+    const std::unordered_set<FH> &selected_faces
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.FaceCount() * 3); // Lower bound assuming all faces are triangles
 
     const auto mesh_color = mesh.GetColor();
     for (const auto fh : mesh.faces()) {
-        const auto fv_range = mesh.fv_range(fh);
-        const bool is_selected = all_of(fv_range, [&](auto vh) { return selected_vertices.contains(vh); });
+        const bool is_selected = selected_faces.contains(fh);
         for (const auto vh : mesh.fv_range(fh)) {
             const auto color = is_selected        ? SelectedColor :
                 highlighted_vertices.contains(vh) ? HighlightedColor :
@@ -100,20 +99,22 @@ std::vector<Vertex3D> CreateFaceVertices(
 std::vector<Vertex3D> CreateEdgeVertices(
     const Mesh &mesh,
     Element edit_mode,
-    const std::unordered_set<VH> &selected_vertices
+    const std::unordered_set<VH> &selected_vertices,
+    const std::unordered_set<EH> &selected_edges
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.EdgeCount() * 2);
 
-    const bool vertex_mode = edit_mode == Element::Vertex;
     for (const auto eh : mesh.edges()) {
+        const bool edge_selected = selected_edges.contains(eh);
         const auto heh = mesh.GetHalfedge(eh, 0);
         const auto v_from = mesh.GetFromVertex(heh);
         const auto v_to = mesh.GetToVertex(heh);
         for (const auto vh : {v_from, v_to}) {
-            const bool is_selected = vertex_mode ?
-                selected_vertices.contains(vh) :
-                selected_vertices.contains(v_from) && selected_vertices.contains(v_to);
+            const bool is_selected =
+                edge_selected                ? true :
+                edit_mode == Element::Vertex ? selected_vertices.contains(vh) :
+                                               selected_vertices.contains(v_from) && selected_vertices.contains(v_to);
             const auto color = is_selected ? SelectedColor :
                                              EdgeColor;
             vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), color);
