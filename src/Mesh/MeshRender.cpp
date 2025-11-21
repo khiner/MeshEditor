@@ -86,11 +86,10 @@ std::vector<Vertex3D> CreateFaceVertices(
     for (const auto fh : mesh.faces()) {
         const auto fv_range = mesh.fv_range(fh);
         const bool is_selected = all_of(fv_range, [&](auto vh) { return selected_vertices.contains(vh); });
-        const bool is_highlighted = all_of(fv_range, [&](auto vh) { return highlighted_vertices.contains(vh); });
         for (const auto vh : mesh.fv_range(fh)) {
-            const auto color = is_selected ? SelectedColor :
-                is_highlighted             ? HighlightedColor :
-                                             mesh_color;
+            const auto color = is_selected        ? SelectedColor :
+                highlighted_vertices.contains(vh) ? HighlightedColor :
+                                                    mesh_color;
             vertices.emplace_back(mesh.GetPosition(vh), smooth_shading ? mesh.GetNormal(vh) : mesh.GetNormal(fh), color);
         }
     }
@@ -101,8 +100,7 @@ std::vector<Vertex3D> CreateFaceVertices(
 std::vector<Vertex3D> CreateEdgeVertices(
     const Mesh &mesh,
     Element edit_mode,
-    const std::unordered_set<VH> &selected_vertices,
-    const std::unordered_set<VH> &highlighted_vertices
+    const std::unordered_set<VH> &selected_vertices
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.EdgeCount() * 2);
@@ -116,11 +114,7 @@ std::vector<Vertex3D> CreateEdgeVertices(
             const bool is_selected = vertex_mode ?
                 selected_vertices.contains(vh) :
                 selected_vertices.contains(v_from) && selected_vertices.contains(v_to);
-            const bool is_highlighted = vertex_mode ?
-                highlighted_vertices.contains(vh) :
-                highlighted_vertices.contains(v_from) && highlighted_vertices.contains(v_to);
             const auto color = is_selected ? SelectedColor :
-                is_highlighted             ? HighlightedColor :
                                              EdgeColor;
             vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), color);
         }

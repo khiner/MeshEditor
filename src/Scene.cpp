@@ -1132,7 +1132,7 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         const auto &selected = R.get<MeshSelectedVertices>(e).Vertices;
         const auto &highlighted = R.get<MeshHighlightedVertices>(e).Vertices;
         mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(*mesh, SmoothShading, selected, highlighted));
-        mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(*mesh, EditMode, selected, highlighted));
+        mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(*mesh, EditMode, selected));
         InvalidateCommandBuffer();
     };
 }

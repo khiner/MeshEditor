@@ -96,8 +96,7 @@ std::vector<Vertex3D> CreateFaceVertices(
 std::vector<Vertex3D> CreateEdgeVertices(
     const Mesh &mesh,
     he::Element edit_mode,
-    const std::unordered_set<he::VH> &selected_vertices = {},
-    const std::unordered_set<he::VH> &highlighted_vertices = {}
+    const std::unordered_set<he::VH> &selected_vertices = {}
 );
 std::vector<uint> CreateFaceIndices(const Mesh &mesh);
 std::vector<uint> CreateEdgeIndices(const Mesh &mesh);
