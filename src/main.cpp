@@ -309,7 +309,10 @@ int main(int, char **) {
         .UseDynamicRendering = false,
         .Allocator = nullptr,
         .CheckVkResultFn = [](VkResult err) {
-            if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
+            if (err != 0) {
+                std::println("Vulkan error: {}", int(err));
+                throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
+            }
         },
         .MinAllocationSize = {},
         .CustomShaderVertCreateInfo = {},

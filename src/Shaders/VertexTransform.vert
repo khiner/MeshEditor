@@ -21,4 +21,5 @@ void main() {
     WorldPosition = vec3(Model * vec4(Position, 1.0));
     Color = VertexColor;
     gl_Position = Camera.Proj * Camera.View * Model * vec4(Position, 1.0);
+    gl_PointSize = 6.0;
 }

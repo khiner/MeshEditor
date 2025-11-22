@@ -153,6 +153,22 @@ std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {
     return vertices;
 }
 
+std::vector<Vertex3D> CreatePointVertices(const Mesh &mesh, const std::unordered_set<VH> &selected_vertices) {
+    std::vector<Vertex3D> vertices;
+    vertices.reserve(mesh.VertexCount());
+    for (const auto vh : mesh.vertices()) {
+        const bool is_selected = selected_vertices.contains(vh);
+        vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), is_selected ? vec4{1, 1, 1, 1} : vec4{0, 0, 0, 1});
+    }
+    return vertices;
+}
+
+std::vector<uint> CreatePointIndices(const Mesh &mesh) {
+    std::vector<uint> indices(mesh.VertexCount());
+    std::iota(indices.begin(), indices.end(), 0);
+    return indices;
+}
+
 BBox ComputeBoundingBox(const Mesh &mesh) {
     BBox bbox;
     for (const auto vh : mesh.vertices()) {

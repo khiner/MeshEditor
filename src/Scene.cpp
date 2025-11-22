@@ -59,6 +59,7 @@ struct ViewProjNearFar {
 enum class ShaderPipelineType {
     Fill,
     Line,
+    Point,
     Grid,
     SilhouetteDepthObject,
     SilhouetteEdgeDepthObject,
@@ -321,7 +322,11 @@ void PipelineRenderer::Render(vk::CommandBuffer cb, SPT spt, const RenderBuffers
     Bind(cb, ShaderPipelines.at(spt), render_buffers, models);
     const auto first_instance = model_index.value_or(0);
     const auto instance_count = model_index.has_value() ? 1 : models.UsedSize / sizeof(WorldMatrix);
-    cb.drawIndexed(render_buffers.Indices.UsedSize / sizeof(uint), instance_count, 0, 0, first_instance);
+    if (render_buffers.Indices.UsedSize > 0) {
+        cb.drawIndexed(render_buffers.Indices.UsedSize / sizeof(uint), instance_count, 0, 0, first_instance);
+    } else {
+        cb.draw(render_buffers.Vertices.UsedSize / sizeof(Vertex3D), instance_count, 0, first_instance);
+    }
 }
 
 mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
@@ -456,6 +461,18 @@ struct MainPipeline {
                 },
                 CreateVertexInputState(),
                 vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+                CreateColorBlendAttachment(true), CreateDepthStencil(), msaa_samples
+            }
+        );
+        pipelines.emplace(
+            SPT::Point,
+            ShaderPipeline{
+                d, descriptor_pool,
+                Shaders{
+                    {{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}
+                },
+                CreateVertexInputState(),
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
                 CreateColorBlendAttachment(true), CreateDepthStencil(), msaa_samples
             }
         );
@@ -954,7 +971,6 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             MeshRender::CreateEdgeVertices(mesh, Element::Vertex),
             MeshRender::CreateEdgeIndices(mesh)
         );
-
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
         R.emplace<MeshSelection>(mesh_entity);
         R.emplace<MeshHighlightedVertices>(mesh_entity);
@@ -1093,6 +1109,7 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
     mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm, Element::Vertex));
     mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
+    mesh_buffers.Points.reset();
 
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
         buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
@@ -1223,6 +1240,20 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
                     element == Element::Edge || element == Element::Face ? Edges : std::unordered_set<EH>{}
                 )
             );
+            if (element == Element::Vertex) {
+                if (!mb.Points) {
+                    mb.Points.emplace(
+                        UniqueBuffers->CreateRenderBuffers(
+                            MeshRender::CreatePointVertices(*mesh, Vertices),
+                            MeshRender::CreatePointIndices(*mesh)
+                        )
+                    );
+                } else {
+                    mb.Points->Vertices.Update(MeshRender::CreatePointVertices(*mesh, Vertices));
+                }
+            } else if (mb.Points) {
+                mb.Points.reset();
+            }
         });
         InvalidateCommandBuffer();
     };
@@ -1313,11 +1344,15 @@ void Scene::RecordRenderCommandBuffer() {
 
         for (const auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             const bool show_wireframe_overlay = InteractionMode == InteractionMode::Edit && selected_mesh_entities.contains(entity);
+            const bool show_point_overlay = show_wireframe_overlay && EditMode == Element::Vertex;
             if (ViewportShading == ViewportShadingMode::Solid) {
                 main.Renderer.Render(cb, fill_pipeline, mesh_buffers.Faces, models.Buffer);
             }
             if (ViewportShading == ViewportShadingMode::Wireframe || show_wireframe_overlay) {
                 main.Renderer.Render(cb, SPT::Line, mesh_buffers.Edges, models.Buffer);
+            }
+            if (show_point_overlay && mesh_buffers.Points) {
+                main.Renderer.Render(cb, SPT::Point, *mesh_buffers.Points, models.Buffer);
             }
         }
     }

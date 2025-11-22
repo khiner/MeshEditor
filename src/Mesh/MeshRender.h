@@ -69,6 +69,7 @@ struct MeshBuffers {
     MeshBuffers &operator=(const MeshBuffers &) = delete;
 
     RenderBuffers Faces, Edges;
+    std::optional<RenderBuffers> Points;
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
@@ -99,6 +100,11 @@ std::vector<Vertex3D> CreateEdgeVertices(
     const std::unordered_set<he::VH> &selected_vertices = {},
     const std::unordered_set<he::EH> &selected_edges = {}
 );
+std::vector<Vertex3D> CreatePointVertices(
+    const Mesh &mesh,
+    const std::unordered_set<he::VH> &selected_vertices = {}
+);
+std::vector<uint> CreatePointIndices(const Mesh &mesh);
 std::vector<uint> CreateFaceIndices(const Mesh &mesh);
 std::vector<uint> CreateEdgeIndices(const Mesh &mesh);
 

@@ -26,7 +26,9 @@ struct UniqueBuffer::Impl {
         } else {
             bci.usage |= vk::BufferUsageFlagBits::eTransferDst;
         }
-        if (vmaCreateBuffer(Vma, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Handle), &Allocation, &Info) != VK_SUCCESS) {
+        if (auto result = vmaCreateBuffer(Vma, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Handle), &Allocation, &Info);
+            result != VK_SUCCESS) {
+            std::println("vmaCreateBuffer failed with error code {}", int(result));
             throw std::runtime_error("vmaCreateBuffer failed");
         }
     }
