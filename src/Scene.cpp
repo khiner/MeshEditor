@@ -88,7 +88,7 @@ struct PipelineRenderer {
 };
 
 struct MeshSelection {
-    Element Kind{Element::None};
+    Element Element{Element::None};
     std::vector<uint32_t> Handles;
 };
 
@@ -134,37 +134,53 @@ std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
         to<std::vector>();
 }
 
-struct SelectionForRender {
-    std::unordered_set<VH> Vertices;
-    std::unordered_set<EH> Edges;
-    std::unordered_set<FH> Faces;
-};
+std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, const Mesh &mesh, Element new_element) {
+    if (selection.Element == Element::None || selection.Handles.empty()) return {};
+    if (selection.Element == new_element) return selection.Handles;
 
-SelectionForRender BuildSelectionForRender(const MeshSelection &selection, const Mesh &mesh) {
-    SelectionForRender result;
-    switch (selection.Kind) {
-        case Element::Vertex:
-            for (auto h : selection.Handles) result.Vertices.emplace(VH{h});
-            break;
-        case Element::Edge:
-            for (auto h : selection.Handles) {
-                result.Edges.emplace(EH{h});
-                const auto heh = mesh.GetHalfedge(EH{h}, 0);
-                result.Vertices.emplace(mesh.GetFromVertex(heh));
-                result.Vertices.emplace(mesh.GetToVertex(heh));
+    const auto handles = selection.Handles | to<std::unordered_set>();
+    std::unordered_set<uint32_t> new_handles;
+    if (selection.Element == Element::Face) {
+        if (new_element == Element::Edge) {
+            for (auto f : handles) {
+                for (const auto heh : mesh.fh_range(FH{f})) new_handles.emplace(*mesh.GetEdge(heh));
             }
-            break;
-        case Element::Face:
-            for (auto h : selection.Handles) {
-                const auto fh = FH{h};
-                result.Faces.emplace(fh);
-                for (const auto heh : mesh.fh_range(fh)) result.Edges.emplace(mesh.GetEdge(heh));
+        } else if (new_element == Element::Vertex) {
+            for (auto f : handles) {
+                for (const auto vh : mesh.fv_range(FH{f})) new_handles.emplace(*vh);
             }
-            break;
-        case Element::None:
-            break;
+        }
+    } else if (selection.Element == Element::Edge) {
+        if (new_element == Element::Vertex) {
+            for (auto eh_raw : handles) {
+                const auto heh = mesh.GetHalfedge(EH{eh_raw}, 0);
+                new_handles.emplace(*mesh.GetFromVertex(heh));
+                new_handles.emplace(*mesh.GetToVertex(heh));
+            }
+        } else if (new_element == Element::Face) {
+            for (const auto fh : mesh.faces()) {
+                const bool all_selected = all_of(mesh.fh_range(fh), [&](auto heh) {
+                    return handles.contains(*mesh.GetEdge(heh));
+                });
+                if (all_selected) new_handles.emplace(*fh);
+            }
+        }
+    } else if (selection.Element == Element::Vertex) {
+        if (new_element == Element::Edge) {
+            for (const auto eh : mesh.edges()) {
+                const auto heh = mesh.GetHalfedge(eh, 0);
+                if (handles.contains(*mesh.GetFromVertex(heh)) && handles.contains(*mesh.GetToVertex(heh))) {
+                    new_handles.emplace(*eh);
+                }
+            }
+        } else if (new_element == Element::Face) {
+            for (const auto fh : mesh.faces()) {
+                const bool all_selected = all_of(mesh.fv_range(fh), [&](auto vh) { return handles.contains(*vh); });
+                if (all_selected) new_handles.emplace(*fh);
+            }
+        }
     }
-    return result;
+    return new_handles | to<std::vector>();
 }
 
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
@@ -1138,15 +1154,18 @@ void Scene::SetEditMode(Element mode) {
     if (EditMode == mode) return;
     EditMode = mode;
     for (const auto mesh_entity : R.view<MeshSelection, Mesh>()) {
+        R.patch<MeshSelection>(mesh_entity, [&](auto &s) {
+            s = {EditMode, ConvertSelectionElement(s, R.get<Mesh>(mesh_entity), EditMode)};
+        });
         UpdateRenderBuffers(mesh_entity);
     }
 }
 
 void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool toggle) {
     auto &selection = R.get<MeshSelection>(mesh_entity);
-    const auto new_kind = element ? element.Element : Element::None;
-    if (!toggle || selection.Kind != new_kind) {
-        selection.Kind = new_kind;
+    const auto new_element = element ? element.Element : Element::None;
+    if (!toggle || selection.Element != new_element) {
+        selection.Element = new_element;
         selection.Handles.clear();
     }
 
@@ -1167,22 +1186,44 @@ void Scene::WaitFor(vk::Fence fence) const {
 
 void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
-        auto &mesh_buffers = R.get<MeshBuffers>(e);
-        const auto &mesh_selection = R.get<MeshSelection>(e);
-        const auto selection = BuildSelectionForRender(mesh_selection, *mesh);
+        std::unordered_set<VH> Vertices;
+        std::unordered_set<EH> Edges;
+        std::unordered_set<FH> Faces;
+        const auto &selection = R.get<MeshSelection>(e);
+        if (selection.Element == Element::Vertex) {
+            for (auto h : selection.Handles) Vertices.emplace(h);
+        } else if (selection.Element == Element::Edge) {
+            for (auto h : selection.Handles) {
+                Edges.emplace(h);
+                const auto heh = mesh->GetHalfedge(EH{h}, 0);
+                Vertices.emplace(mesh->GetFromVertex(heh));
+                Vertices.emplace(mesh->GetToVertex(heh));
+            }
+        } else if (selection.Element == Element::Face) {
+            for (auto h : selection.Handles) {
+                Faces.emplace(h);
+                for (const auto heh : mesh->fh_range(FH{h})) Edges.emplace(mesh->GetEdge(heh));
+            }
+        }
+
         const auto &highlighted = R.get<MeshHighlightedVertices>(e).Vertices;
         const bool edit_mode = InteractionMode == InteractionMode::Edit;
-        const auto selection_kind = edit_mode && mesh_selection.Kind == EditMode ? mesh_selection.Kind : Element::None;
-        const bool vertex_mode = selection_kind == Element::Vertex;
-        const bool face_mode = selection_kind == Element::Face;
-        const auto face_selected_faces = face_mode ? selection.Faces : std::unordered_set<FH>{};
-
-        const bool edge_mode = selection_kind == Element::Edge;
-        const auto edge_selected_vertices = vertex_mode ? selection.Vertices : std::unordered_set<VH>{};
-        const auto edge_selected_edges = (edge_mode || face_mode) ? selection.Edges : std::unordered_set<EH>{};
-
-        mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(*mesh, SmoothShading, highlighted, face_selected_faces));
-        mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(*mesh, EditMode, edge_selected_vertices, edge_selected_edges));
+        const auto element = edit_mode && selection.Element == EditMode ? selection.Element : Element::None;
+        R.patch<MeshBuffers>(e, [&](auto &mb) {
+            mb.Faces.Vertices.Update(
+                MeshRender::CreateFaceVertices(
+                    *mesh, SmoothShading,
+                    highlighted, element == Element::Face ? Faces : std::unordered_set<FH>{}
+                )
+            );
+            mb.Edges.Vertices.Update(
+                MeshRender::CreateEdgeVertices(
+                    *mesh, EditMode,
+                    element == Element::Vertex ? Vertices : std::unordered_set<VH>{},
+                    element == Element::Edge || element == Element::Face ? Edges : std::unordered_set<EH>{}
+                )
+            );
+        });
         InvalidateCommandBuffer();
     };
 }
@@ -1585,7 +1626,7 @@ void Scene::Interact() {
                 if (!toggle) {
                     for (const auto [e, selection] : R.view<MeshSelection>().each()) {
                         if (selection.Handles.empty()) continue;
-                        R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.Kind = Element::None; });
+                        R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.Element = Element::None; });
                         UpdateRenderBuffers(e);
                     }
                 }
@@ -2108,7 +2149,7 @@ void Scene::RenderControls() {
                     if (active_entity != entt::null) {
                         const auto mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
                         const auto &selection = R.get<MeshSelection>(mesh_entity);
-                        const bool matching_mode = selection.Kind == EditMode;
+                        const bool matching_mode = selection.Element == EditMode;
                         const auto selected_count = matching_mode ? selection.Handles.size() : 0;
                         Text("Editing %s: %zu selected", label(EditMode).data(), selected_count);
                         if (EditMode == Element::Vertex && matching_mode && selected_count > 0) {
