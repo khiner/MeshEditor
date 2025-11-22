@@ -82,13 +82,14 @@ ShaderPipeline::ShaderPipeline(
     vk::PipelineColorBlendAttachmentState color_blend_attachment,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
     vk::SampleCountFlagBits msaa_samples,
-    std::optional<vk::PushConstantRange> push_constant_range
+    std::optional<vk::PushConstantRange> push_constant_range,
+    float depth_bias
 ) : Device(device), Shaders(std::move(shaders)),
     VertexInputState(std::move(vertex_input_state)),
     MultisampleState({{}, msaa_samples}),
     ColorBlendAttachment(std::move(color_blend_attachment)),
     DepthStencilState(std::move(depth_stencil_state)),
-    RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, {}, {}, {}, {}, 1.f}),
+    RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, depth_bias != 0.f, depth_bias, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
     Shaders.CompileAll(Device); // Populates descriptor sets. todo This is done redundantly for all shaders in `Compile` at app startup.
     DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.GetLayoutBindings()});

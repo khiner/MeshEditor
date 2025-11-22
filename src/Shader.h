@@ -95,7 +95,8 @@ struct ShaderPipeline {
         vk::PipelineColorBlendAttachmentState color_blend_attachment = {},
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state = {},
         vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1,
-        std::optional<vk::PushConstantRange> push_constant_range = std::nullopt
+        std::optional<vk::PushConstantRange> push_constant_range = std::nullopt,
+        float depth_bias = 0.f
     );
     ShaderPipeline(ShaderPipeline &&) = default;
     ~ShaderPipeline() = default;

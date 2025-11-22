@@ -63,12 +63,12 @@ struct BvhBoxesBuffers {
     RenderBuffers Buffers;
 };
 struct MeshBuffers {
-    MeshBuffers(RenderBuffers &&faces, RenderBuffers &&edges)
-        : Faces{std::move(faces)}, Edges{std::move(edges)} {}
+    MeshBuffers(RenderBuffers &&faces, RenderBuffers &&edges, RenderBuffers &&vertices)
+        : Faces{std::move(faces)}, Edges{std::move(edges)}, Vertices{std::move(vertices)} {}
     MeshBuffers(const MeshBuffers &) = delete;
     MeshBuffers &operator=(const MeshBuffers &) = delete;
 
-    RenderBuffers Faces, Edges;
+    RenderBuffers Faces, Edges, Vertices;
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
@@ -99,8 +99,14 @@ std::vector<Vertex3D> CreateEdgeVertices(
     const std::unordered_set<he::VH> &selected_vertices = {},
     const std::unordered_set<he::EH> &selected_edges = {}
 );
+std::vector<Vertex3D> CreateVertexPoints(
+    const Mesh &mesh,
+    he::Element edit_mode,
+    const std::unordered_set<he::VH> &selected_vertices = {}
+);
 std::vector<uint> CreateFaceIndices(const Mesh &mesh);
 std::vector<uint> CreateEdgeIndices(const Mesh &mesh);
+std::vector<uint> CreateVertexIndices(const Mesh &mesh);
 
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, he::Element element);
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, he::Element element);

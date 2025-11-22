@@ -189,7 +189,7 @@ struct VulkanContext {
             // 6-9) SVG icons (move/rotate/scale/universal)
             vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 9},
             // All uniform buffer descriptors used across all shaders.
-            {vk::DescriptorType::eUniformBuffer, 7},
+            {vk::DescriptorType::eUniformBuffer, 10},
         };
         const uint max_sets = std::accumulate(
             pool_sizes.begin(), pool_sizes.end(), 0u,
@@ -308,8 +308,11 @@ int main(int, char **) {
         .PipelineInfoForViewports = {},
         .UseDynamicRendering = false,
         .Allocator = nullptr,
-        .CheckVkResultFn = [](VkResult err) {
-            if (err != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(err)));
+        .CheckVkResultFn = [](VkResult res) {
+            if (res != 0) {
+                std::println("Vulkan error: {}", int(res));
+                throw std::runtime_error(std::format("Vulkan error: {}", int(res)));
+            }
         },
         .MinAllocationSize = {},
         .CustomShaderVertCreateInfo = {},

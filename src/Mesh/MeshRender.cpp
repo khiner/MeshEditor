@@ -52,6 +52,15 @@ std::vector<uint> CreateEdgeIndices(const Mesh &mesh) {
     return mesh.CreateEdgeIndices();
 }
 
+std::vector<uint> CreateVertexIndices(const Mesh &mesh) {
+    std::vector<uint> indices;
+    indices.reserve(mesh.VertexCount());
+    for (uint i = 0; i < mesh.VertexCount(); ++i) {
+        indices.push_back(i);
+    }
+    return indices;
+}
+
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     if (element == Element::None || element == Element::Edge) return {};
 
@@ -119,6 +128,23 @@ std::vector<Vertex3D> CreateEdgeVertices(
                                              EdgeColor;
             vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), color);
         }
+    }
+
+    return vertices;
+}
+
+std::vector<Vertex3D> CreateVertexPoints(
+    const Mesh &mesh,
+    Element edit_mode,
+    const std::unordered_set<VH> &selected_vertices
+) {
+    std::vector<Vertex3D> vertices;
+    vertices.reserve(mesh.VertexCount());
+
+    for (const auto vh : mesh.vertices()) {
+        const bool is_selected = edit_mode == Element::Vertex && selected_vertices.contains(vh);
+        const auto color = is_selected ? vec4{1, 1, 1, 1} : vec4{0, 0, 0, 1}; // White : Black
+        vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), color);
     }
 
     return vertices;

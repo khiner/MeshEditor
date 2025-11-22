@@ -59,6 +59,7 @@ struct ViewProjNearFar {
 enum class ShaderPipelineType {
     Fill,
     Line,
+    Point,
     Grid,
     SilhouetteDepthObject,
     SilhouetteEdgeDepthObject,
@@ -460,6 +461,18 @@ struct MainPipeline {
             }
         );
         pipelines.emplace(
+            SPT::Point,
+            ShaderPipeline{
+                d, descriptor_pool,
+                Shaders{
+                    {{ShaderType::eVertex, "VertexPoint.vert"}, {ShaderType::eFragment, "VertexPoint.frag"}}
+                },
+                CreateVertexInputState(),
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
+                CreateColorBlendAttachment(true), CreateDepthStencil(), msaa_samples, std::nullopt, -1.0f
+            }
+        );
+        pipelines.emplace(
             SPT::Grid,
             ShaderPipeline{
                 d, descriptor_pool,
@@ -807,6 +820,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         {SPT::Fill, "CameraUBO", &transform_buffer},
         {SPT::Fill, "LightsUBO", &lights_buffer},
         {SPT::Line, "CameraUBO", &transform_buffer},
+        {SPT::Point, "CameraUBO", &transform_buffer},
         {SPT::Grid, "ViewProjNearFarUBO", &view_proj_near_far_buffer},
         {SPT::SilhouetteEdgeColor, "SilhouetteColorsUBO", &silhouette_display_buffer},
         {SPT::DebugNormals, "CameraUBO", &transform_buffer},
@@ -954,12 +968,16 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             MeshRender::CreateEdgeVertices(mesh, Element::Vertex),
             MeshRender::CreateEdgeIndices(mesh)
         );
+        auto vertex_buffers = UniqueBuffers->CreateRenderBuffers(
+            MeshRender::CreateVertexPoints(mesh, Element::None, {}),
+            MeshRender::CreateVertexIndices(mesh)
+        );
 
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
         R.emplace<MeshSelection>(mesh_entity);
         R.emplace<MeshHighlightedVertices>(mesh_entity);
         R.emplace<ModelsBuffer>(mesh_entity, mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer});
-        R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers));
+        R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
         if (ShowBoundingBoxes) {
             R.emplace<BoundingBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices));
         }
@@ -1223,6 +1241,12 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
                     element == Element::Edge || element == Element::Face ? Edges : std::unordered_set<EH>{}
                 )
             );
+            mb.Vertices.Vertices.Update(
+                MeshRender::CreateVertexPoints(
+                    *mesh, element,
+                    element == Element::Vertex ? Vertices : std::unordered_set<VH>{}
+                )
+            );
         });
         InvalidateCommandBuffer();
     };
@@ -1318,6 +1342,9 @@ void Scene::RecordRenderCommandBuffer() {
             }
             if (ViewportShading == ViewportShadingMode::Wireframe || show_wireframe_overlay) {
                 main.Renderer.Render(cb, SPT::Line, mesh_buffers.Edges, models.Buffer);
+            }
+            if (show_wireframe_overlay && EditMode == Element::Vertex) {
+                main.Renderer.Render(cb, SPT::Point, mesh_buffers.Vertices, models.Buffer);
             }
         }
     }
