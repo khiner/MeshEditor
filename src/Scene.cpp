@@ -1135,7 +1135,11 @@ void Scene::SetInteractionMode(::InteractionMode mode) {
     }
 }
 void Scene::SetEditMode(Element mode) {
+    if (EditMode == mode) return;
     EditMode = mode;
+    for (const auto mesh_entity : R.view<MeshSelection, Mesh>()) {
+        UpdateRenderBuffers(mesh_entity);
+    }
 }
 
 void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool toggle) {
@@ -1168,12 +1172,12 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         const auto selection = BuildSelectionForRender(mesh_selection, *mesh);
         const auto &highlighted = R.get<MeshHighlightedVertices>(e).Vertices;
         const bool edit_mode = InteractionMode == InteractionMode::Edit;
-        const auto selection_kind = edit_mode ? mesh_selection.Kind : Element::None;
-        const bool vertex_mode = edit_mode && selection_kind == Element::Vertex;
-        const bool face_mode = edit_mode && selection_kind == Element::Face;
+        const auto selection_kind = edit_mode && mesh_selection.Kind == EditMode ? mesh_selection.Kind : Element::None;
+        const bool vertex_mode = selection_kind == Element::Vertex;
+        const bool face_mode = selection_kind == Element::Face;
         const auto face_selected_faces = face_mode ? selection.Faces : std::unordered_set<FH>{};
 
-        const bool edge_mode = edit_mode && selection_kind == Element::Edge;
+        const bool edge_mode = selection_kind == Element::Edge;
         const auto edge_selected_vertices = vertex_mode ? selection.Vertices : std::unordered_set<VH>{};
         const auto edge_selected_edges = (edge_mode || face_mode) ? selection.Edges : std::unordered_set<EH>{};
 
