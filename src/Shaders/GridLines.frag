@@ -14,24 +14,27 @@ layout(location = 0) out vec4 Color;
 
 vec4 Grid(vec3 pos_3d, float scale) {
     const float AxisWidth = 0.5;
-    const float Gray = 0.4; // For the grid lines.
+    const float LineColor = 0.4;
     const float ScaleFactor = 0.2;
     const vec3 XAxisColor = vec3(1.0, 0.2, 0.332);
     const vec3 ZAxisColor = vec3(0.157, 0.565, 1.0);
 
     const vec2 coord = pos_3d.xz * scale * ScaleFactor;
-    const vec2 derivative = fwidth(coord);
-    const vec2 grid = abs(fract(coord - 0.5) - 0.5) / derivative;
-    const vec2 clipped_deriv = min(derivative, 1.0);
+    const vec2 d = fwidth(coord);
+    const vec2 grid = abs(fract(coord - 0.5) - 0.5) / d;
+    const vec2 clipped_deriv = min(d, 1.0);
 
     const vec2 fades = exp(-pow(abs(pos_3d.xz) / (AxisWidth * clipped_deriv), vec2(5.0)));
     const float xfade = fades.y;
     const float zfade = fades.x;
     const vec3 axis_color = mix(XAxisColor, ZAxisColor, step(xfade, zfade));
-
     const float axis_alpha = max(xfade, zfade);
-    const float grid_alpha = (1.0 - min(min(grid.x, grid.y), 1.0)) * 0.85;
-    return vec4(mix(vec3(Gray), axis_color, axis_alpha), max(grid_alpha, axis_alpha));
+
+    // Fade when lines become subpixel to prevent Moiré.
+    const float derivative_fade = 1 - smoothstep(0.2, 1, max(d.x, d.y));
+
+    const float grid_alpha = (1 - min(min(grid.x, grid.y), 1)) * 0.85 * derivative_fade;
+    return vec4(mix(vec3(LineColor), axis_color, axis_alpha), max(grid_alpha, axis_alpha));
 }
 
 // Assumes `gl_FragDepth` is set to the depth of the fragment in clip space.
