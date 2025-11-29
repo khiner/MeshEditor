@@ -79,11 +79,14 @@ void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
 namespace MeshRender {
 // Rendering colors
 inline vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
-inline vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select
-inline vec4 HighlightedColor{0, 0.647, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Bevel
-inline vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal
-inline vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
-inline vec4 HighlightedFaceColor{0.790, 0.930, 1, 1}; // Custom
+
+constexpr vec4 ActiveColor{1, 1, 1, 1};
+constexpr vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select
+constexpr vec4 HighlightedColor{0, 0.647, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Bevel
+constexpr vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal
+constexpr vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
+constexpr vec4 HighlightedFaceColor{0.790, 0.930, 1, 1}; // Custom
+constexpr vec4 UnselectedVertexEditColor{0, 0, 0, 1}; // Unselected vertex in edit mode
 constexpr float NormalIndicatorLengthScale{0.25};
 
 // Create vertices for faces (with optional smooth/flat shading) or edges
@@ -91,18 +94,22 @@ std::vector<Vertex3D> CreateFaceVertices(
     const Mesh &mesh,
     bool smooth_shading,
     const std::unordered_set<he::VH> &highlighted_vertices = {},
-    const std::unordered_set<he::FH> &selected_faces = {}
+    const std::unordered_set<he::FH> &selected_faces = {},
+    const std::unordered_set<he::FH> &active_faces = {}
 );
 std::vector<Vertex3D> CreateEdgeVertices(
     const Mesh &mesh,
     he::Element edit_mode,
     const std::unordered_set<he::VH> &selected_vertices = {},
-    const std::unordered_set<he::EH> &selected_edges = {}
+    const std::unordered_set<he::EH> &selected_edges = {},
+    const std::unordered_set<he::VH> &active_vertices = {},
+    const std::unordered_set<he::EH> &active_edges = {}
 );
 std::vector<Vertex3D> CreateVertexPoints(
     const Mesh &mesh,
     he::Element edit_mode,
-    const std::unordered_set<he::VH> &selected_vertices = {}
+    const std::unordered_set<he::VH> &selected_vertices = {},
+    const std::unordered_set<he::VH> &active_vertices = {}
 );
 std::vector<uint> CreateFaceIndices(const Mesh &mesh);
 std::vector<uint> CreateEdgeIndices(const Mesh &mesh);

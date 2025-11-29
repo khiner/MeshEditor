@@ -91,6 +91,7 @@ struct PipelineRenderer {
 struct MeshSelection {
     Element Element{Element::None};
     std::vector<uint32_t> Handles;
+    std::optional<uint32_t> ActiveHandle; // Most recently selected element (always in Handles if set)
 };
 
 // Component: Vertices highlighted for rendering (in addition to selected elements)
@@ -1173,7 +1174,7 @@ void Scene::SetEditMode(Element mode) {
     EditMode = mode;
     for (const auto mesh_entity : R.view<MeshSelection, Mesh>()) {
         R.patch<MeshSelection>(mesh_entity, [&](auto &s) {
-            s = {EditMode, ConvertSelectionElement(s, R.get<Mesh>(mesh_entity), EditMode)};
+            s = {EditMode, ConvertSelectionElement(s, R.get<Mesh>(mesh_entity), EditMode), std::nullopt};
         });
         UpdateRenderBuffers(mesh_entity);
     }
@@ -1185,12 +1186,18 @@ void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool togg
     if (!toggle || selection.Element != new_element) {
         selection.Element = new_element;
         selection.Handles.clear();
+        selection.ActiveHandle = {};
     }
 
     if (element.Element != Element::None && element) {
         const auto handle = *element;
-        if (auto it = find(selection.Handles, handle); toggle && it != selection.Handles.end()) selection.Handles.erase(it);
-        else selection.Handles.emplace_back(handle);
+        if (auto it = find(selection.Handles, handle); toggle && it != selection.Handles.end()) {
+            selection.Handles.erase(it);
+            if (selection.ActiveHandle == handle) selection.ActiveHandle = {};
+        } else {
+            selection.Handles.emplace_back(handle);
+            selection.ActiveHandle = handle;
+        }
     }
     UpdateRenderBuffers(mesh_entity);
 }
@@ -1204,23 +1211,28 @@ void Scene::WaitFor(vk::Fence fence) const {
 
 void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
-        std::unordered_set<VH> Vertices;
-        std::unordered_set<EH> Edges;
-        std::unordered_set<FH> Faces;
+        std::unordered_set<VH> SelectedVertices, ActiveVertex;
+        std::unordered_set<EH> SelectedEdges, ActiveEdge;
+        std::unordered_set<FH> SelectedFaces, ActiveFace;
         const auto &selection = R.get<MeshSelection>(e);
         if (selection.Element == Element::Vertex) {
-            for (auto h : selection.Handles) Vertices.emplace(h);
+            for (auto h : selection.Handles) {
+                SelectedVertices.emplace(h);
+                if (selection.ActiveHandle && *selection.ActiveHandle == h) ActiveVertex.emplace(h);
+            }
         } else if (selection.Element == Element::Edge) {
             for (auto h : selection.Handles) {
-                Edges.emplace(h);
+                SelectedEdges.emplace(h);
                 const auto heh = mesh->GetHalfedge(EH{h}, 0);
-                Vertices.emplace(mesh->GetFromVertex(heh));
-                Vertices.emplace(mesh->GetToVertex(heh));
+                SelectedVertices.emplace(mesh->GetFromVertex(heh));
+                SelectedVertices.emplace(mesh->GetToVertex(heh));
+                if (selection.ActiveHandle && *selection.ActiveHandle == h) ActiveEdge.emplace(h);
             }
         } else if (selection.Element == Element::Face) {
             for (auto h : selection.Handles) {
-                Faces.emplace(h);
-                for (const auto heh : mesh->fh_range(FH{h})) Edges.emplace(mesh->GetEdge(heh));
+                SelectedFaces.emplace(h);
+                for (const auto heh : mesh->fh_range(FH{h})) SelectedEdges.emplace(mesh->GetEdge(heh));
+                if (selection.ActiveHandle && *selection.ActiveHandle == h) ActiveFace.emplace(h);
             }
         }
 
@@ -1231,20 +1243,25 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
             mb.Faces.Vertices.Update(
                 MeshRender::CreateFaceVertices(
                     *mesh, SmoothShading,
-                    highlighted, element == Element::Face ? Faces : std::unordered_set<FH>{}
+                    highlighted,
+                    element == Element::Face ? SelectedFaces : std::unordered_set<FH>{},
+                    element == Element::Face ? ActiveFace : std::unordered_set<FH>{}
                 )
             );
             mb.Edges.Vertices.Update(
                 MeshRender::CreateEdgeVertices(
                     *mesh, EditMode,
-                    element == Element::Vertex ? Vertices : std::unordered_set<VH>{},
-                    element == Element::Edge || element == Element::Face ? Edges : std::unordered_set<EH>{}
+                    element == Element::Vertex ? SelectedVertices : std::unordered_set<VH>{},
+                    element == Element::Edge || element == Element::Face ? SelectedEdges : std::unordered_set<EH>{},
+                    element == Element::Vertex ? ActiveVertex : std::unordered_set<VH>{},
+                    element == Element::Edge ? ActiveEdge : std::unordered_set<EH>{}
                 )
             );
             mb.Vertices.Vertices.Update(
                 MeshRender::CreateVertexPoints(
                     *mesh, element,
-                    element == Element::Vertex ? Vertices : std::unordered_set<VH>{}
+                    element == Element::Vertex ? SelectedVertices : std::unordered_set<VH>{},
+                    element == Element::Vertex ? ActiveVertex : std::unordered_set<VH>{}
                 )
             );
         });
