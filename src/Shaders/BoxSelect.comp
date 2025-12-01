@@ -1,0 +1,40 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PC {
+    uvec2 box_min;
+    uvec2 box_max;
+    uint fragment_count;
+    uint object_count;
+} pc;
+
+// Note: Using separate uint fields instead of uvec2 since std430 seems to automatically reorder for alignment when using uvec2.
+struct SelectionFragment {
+    uint objectID;
+    uint pixel_x, pixel_y;
+    float depth;
+};
+
+layout(binding = 1, std430) buffer SelectionBuffer {
+    uint fragment_count;
+    SelectionFragment fragments[];
+};
+
+layout(binding = 2, std430) buffer BoxSelectResult {
+    uint bits[];
+};
+
+void main() {
+    const uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.fragment_count) return;
+
+    const SelectionFragment f = fragments[idx];
+    if (f.objectID == 0 || f.objectID > pc.object_count) return;
+    if (f.pixel_x < pc.box_min.x || f.pixel_y < pc.box_min.y || f.pixel_x >= pc.box_max.x || f.pixel_y >= pc.box_max.y) return;
+
+    const uint object_idx = f.objectID - 1;
+    const uint word_idx = object_idx >> 5;
+    const uint bit = object_idx & 31;
+    atomicOr(bits[word_idx], 1u << bit);
+}

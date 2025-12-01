@@ -310,10 +310,19 @@ struct ClickSelectPushConstants {
     uint32_t fragment_count;
     uint32_t _pad{};
 };
+
+struct BoxSelectPushConstants {
+    glm::uvec2 box_min;
+    glm::uvec2 box_max;
+    uint32_t fragment_count;
+    uint32_t object_count;
+};
 } // namespace
 
 struct SceneUniqueBuffers {
     static constexpr uint32_t MaxSelectionFragments = 4'000'000; // 4M fragments ~= 64 MB
+    static constexpr uint32_t MaxSelectableObjects = MaxSelectionFragments;
+    static constexpr uint32_t BoxSelectBitsetWords = (MaxSelectableObjects + 31) / 32;
 
     SceneUniqueBuffers(
         vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandPool command_pool,
@@ -324,10 +333,17 @@ struct SceneUniqueBuffers {
         Lights{Ctx, lights, vk::BufferUsageFlagBits::eUniformBuffer},
         SilhouetteColors{Ctx, colors, vk::BufferUsageFlagBits::eUniformBuffer},
         SelectionFragmentBuffer{Ctx, sizeof(uint32_t) + MaxSelectionFragments * sizeof(SelectionFragment), vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
-        ClickResultBuffer{*Ctx.Allocator, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {
+        ClickResultBuffer{*Ctx.Allocator, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+        BoxSelectBitsetBuffer{
+            *Ctx.Allocator,
+            BoxSelectBitsetWords * sizeof(uint32_t),
+            mvk::MemoryUsage::CpuToGpu,
+            vk::BufferUsageFlagBits::eStorageBuffer
+        } {
     }
 
     const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
+    vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
         return {
@@ -346,6 +362,7 @@ struct SceneUniqueBuffers {
     mvk::BufferContext Ctx;
     mvk::UniqueBuffers CameraUBO, ViewProjNearFar, Lights, SilhouetteColors, SelectionFragmentBuffer;
     mvk::UniqueBuffer ClickResultBuffer;
+    mvk::UniqueBuffer BoxSelectBitsetBuffer;
 };
 
 void PipelineRenderer::CompileShaders() {
@@ -867,7 +884,8 @@ struct ScenePipelines {
           Silhouette{SilhouettePipeline::CreateRenderer(d, dp), nullptr},
           SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, dp), nullptr},
           SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, dp), nullptr},
-          ClickSelect{d, dp, Shaders{{{ShaderType::eCompute, "ClickSelect.comp"}}}, vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectPushConstants)}} {}
+          ClickSelect{d, dp, Shaders{{{ShaderType::eCompute, "ClickSelect.comp"}}}, vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectPushConstants)}},
+          BoxSelect{d, dp, Shaders{{{ShaderType::eCompute, "BoxSelect.comp"}}}, vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(BoxSelectPushConstants)}} {}
 
     vk::Device d;
     vk::PhysicalDevice pd;
@@ -878,6 +896,7 @@ struct ScenePipelines {
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
     ComputePipeline ClickSelect;
+    ComputePipeline BoxSelect;
 
     void SetExtent(vk::Extent2D);
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
@@ -887,6 +906,7 @@ struct ScenePipelines {
         SilhouetteEdge.Renderer.CompileShaders();
         SelectionFragment.Renderer.CompileShaders();
         ClickSelect.Compile();
+        BoxSelect.Compile();
     }
 };
 
@@ -913,12 +933,14 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     UpdateEdgeColors();
     UpdateTransformBuffers();
+    BoxSelectZeroBits.assign(SceneUniqueBuffers::BoxSelectBitsetWords, 0);
 
     const auto transform_buffer = UniqueBuffers->CameraUBO.GetDescriptor();
     const auto lights_buffer = UniqueBuffers->Lights.GetDescriptor();
     const auto view_proj_near_far_buffer = UniqueBuffers->ViewProjNearFar.GetDescriptor();
     const auto silhouette_display_buffer = UniqueBuffers->SilhouetteColors.GetDescriptor();
     const auto selection_fragment_buffer = UniqueBuffers->SelectionFragmentBuffer.GetDescriptor();
+    const auto box_select_result_buffer = UniqueBuffers->GetBoxSelectBitsetDescriptor();
     const auto click_result_buffer = vk::DescriptorBufferInfo{*UniqueBuffers->ClickResultBuffer, 0, sizeof(ClickResult)};
     auto descriptors = Pipelines->Main.Renderer.GetDescriptors({
         {SPT::Fill, "CameraUBO", &transform_buffer},
@@ -942,6 +964,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     );
     if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("SelectionBuffer", &selection_fragment_buffer, nullptr)) descriptors.emplace_back(*ds);
     if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("ClickResult", &click_result_buffer, nullptr)) descriptors.emplace_back(*ds);
+    if (auto ds = Pipelines->BoxSelect.CreateWriteDescriptorSet("SelectionBuffer", &selection_fragment_buffer, nullptr)) descriptors.emplace_back(*ds);
+    if (auto ds = Pipelines->BoxSelect.CreateWriteDescriptorSet("BoxSelectResult", &box_select_result_buffer, nullptr)) descriptors.emplace_back(*ds);
     Vk.Device.updateDescriptorSets(descriptors, {});
 
     Pipelines->CompileShaders();
@@ -1710,6 +1734,51 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     return entities;
 }
 
+std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max) {
+    if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
+    const auto fragment_count = LastFragmentCount;
+    if (fragment_count == 0) return {};
+
+    const auto visible_entities = R.view<Visible>() | to<std::vector>();
+    const auto object_count = static_cast<uint32_t>(visible_entities.size());
+    if (object_count == 0) return {};
+
+    const uint32_t bitset_words = (object_count + 31) / 32;
+    if (bitset_words > BoxSelectZeroBits.size()) return {};
+    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
+    UniqueBuffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
+
+    auto cb = *ClickCommandBuffer;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const auto &compute = Pipelines->BoxSelect;
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, *compute.DescriptorSet, {});
+    const BoxSelectPushConstants pc{box_min, box_max, fragment_count, object_count};
+    cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+    const uint32_t group_count = (fragment_count + 255) / 256;
+    cb.dispatch(group_count, 1, 1);
+
+    const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
+    cb.end();
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    Vk.Queue.submit(submit, *TransferFence);
+    WaitFor(*TransferFence);
+
+    const auto bitset_data = UniqueBuffers->BoxSelectBitsetBuffer.GetData();
+    const auto *bits = reinterpret_cast<const uint32_t *>(bitset_data.data());
+    std::vector<entt::entity> entities;
+    entities.reserve(object_count);
+    for (uint32_t i = 0; i < object_count; ++i) {
+        const uint32_t mask = 1u << (i % 32);
+        if (bits[i / 32] & mask) entities.push_back(visible_entities[i]);
+    }
+    return entities;
+}
+
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
 
@@ -1779,29 +1848,26 @@ void Scene::Interact() {
             BoxSelectStart = mouse_pos;
             BoxSelectEnd = mouse_pos;
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
-            // Select (only) meshes whose centers are within the box.
-            // Only start selection if mouse moved past drag threshold.
-            // todo: overlap geometry, not just centers
             BoxSelectEnd = mouse_pos;
             static constexpr float drag_threshold{2};
             if (glm::distance(*BoxSelectStart, *BoxSelectEnd) > drag_threshold) {
-                const auto size = ToGlm(GetContentRegionAvail());
-                const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
                 const auto window_pos = ToGlm(GetCursorScreenPos());
-                const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd);
-                const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd);
+                const vec2 extent_size{float(Extent.width), float(Extent.height)};
+                const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd) - window_pos;
+                const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd) - window_pos;
+                const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, extent_size);
+                const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, extent_size);
+                const glm::uvec2 box_min_px{
+                    static_cast<uint32_t>(glm::floor(local_min.x)),
+                    static_cast<uint32_t>(glm::floor(extent_size.y - local_max.y))
+                };
+                const glm::uvec2 box_max_px{
+                    static_cast<uint32_t>(glm::ceil(local_max.x)),
+                    static_cast<uint32_t>(glm::ceil(extent_size.y - local_min.y))
+                };
+                const auto selected_entities = RunBoxSelect(box_min_px, box_max_px);
                 R.clear<Selected>();
-                for (const auto [e, p] : R.view<const Position, const Visible>().each()) {
-                    const auto p_cs = vp * vec4{p.Value, 1};
-                    if (fabsf(p_cs.w) <= FLT_EPSILON) continue;
-                    const auto p_ndc = vec3{p_cs} / p_cs.w;
-                    const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f;
-                    const auto p_px = window_pos + p_uv * size;
-                    if (p_px.x >= box_min.x && p_px.x <= box_max.x &&
-                        p_px.y >= box_min.y && p_px.y <= box_max.y) {
-                        R.emplace<Selected>(e);
-                    }
-                }
+                for (const auto e : selected_entities) R.emplace<Selected>(e);
                 InvalidateCommandBuffer();
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {

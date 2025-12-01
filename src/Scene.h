@@ -195,6 +195,7 @@ private:
     he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
     uint32_t LastFragmentCount{0};
+    std::vector<uint32_t> BoxSelectZeroBits;
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.25, 0.25, 0.25, 1.f};
@@ -240,6 +241,7 @@ private:
     void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
 
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
+    std::vector<entt::entity> RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);
