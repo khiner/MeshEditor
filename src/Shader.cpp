@@ -4,6 +4,7 @@
 #include <shaderc/shaderc.hpp>
 #include <spirv_cross/spirv_cross.hpp>
 
+#include <cassert>
 #include <format>
 #include <ranges>
 
@@ -38,7 +39,14 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
             }();
             const auto type = resource.TypePath.Type;
             const auto shader_text = File::Read(ShadersDir / resource.TypePath.Path);
-            const auto kind = type == ShaderType::eVertex ? shaderc_glsl_vertex_shader : shaderc_glsl_fragment_shader;
+            const auto kind = [type] {
+                switch (type) {
+                    case ShaderType::eVertex: return shaderc_glsl_vertex_shader;
+                    case ShaderType::eFragment: return shaderc_glsl_fragment_shader;
+                    case ShaderType::eCompute: return shaderc_glsl_compute_shader;
+                    default: throw std::runtime_error(std::format("Unsupported shader stage {}", vk::to_string(type)));
+                }
+            }();
             const auto comp_result = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
             if (comp_result.GetCompilationStatus() != shaderc_compilation_status_success) {
                 // todo type to string
@@ -157,4 +165,39 @@ void ShaderPipeline::RenderQuad(vk::CommandBuffer cb) const {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &*DescriptorSet, 0, nullptr);
     cb.draw(4, 1, 0, 0); // Draw a full-screen quad triangle strip.
+}
+
+ComputePipeline::ComputePipeline(vk::Device d, vk::DescriptorPool descriptor_pool, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range)
+    : Device(d), ShaderModules(std::move(shaders)) {
+    const auto shader_stages = ShaderModules.CompileAll(d);
+    const auto layout_bindings = ShaderModules.GetLayoutBindings();
+    const vk::DescriptorSetLayoutCreateInfo layout_info{{}, layout_bindings};
+    DescriptorSetLayout = d.createDescriptorSetLayoutUnique(layout_info);
+
+    static const uint32_t descriptor_count = 1;
+    const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, descriptor_count, &*DescriptorSetLayout};
+    DescriptorSet = std::move(d.allocateDescriptorSetsUnique(alloc_info).front());
+
+    PipelineLayout = d.createPipelineLayoutUnique({{}, 1, &*DescriptorSetLayout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
+    const vk::ComputePipelineCreateInfo pipeline_info{{}, shader_stages.front(), *PipelineLayout};
+    Pipeline = Device.createComputePipelineUnique({}, pipeline_info).value;
+}
+
+std::optional<vk::WriteDescriptorSet> ComputePipeline::CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *buffer_info, const vk::DescriptorImageInfo *image_info) const {
+    if (!ShaderModules.HasBinding(binding_name)) return std::nullopt;
+
+    const auto binding = ShaderModules.GetBinding(binding_name);
+    if (buffer_info) {
+        const auto &layout_bindings = ShaderModules.GetLayoutBindings();
+        const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
+        return {{*DescriptorSet, binding, 0, 1, it->descriptorType, nullptr, buffer_info}};
+    }
+    return {{*DescriptorSet, binding, 0, 1, vk::DescriptorType::eCombinedImageSampler, image_info, nullptr}};
+}
+
+void ComputePipeline::Compile() {
+    const auto shader_stages = ShaderModules.CompileAll(Device);
+    assert(shader_stages.size() == 1 && shader_stages.front().stage == vk::ShaderStageFlagBits::eCompute && "Compute pipeline expects a single compute shader stage");
+    const vk::ComputePipelineCreateInfo pipeline_info{{}, shader_stages.front(), *PipelineLayout};
+    Pipeline = Device.createComputePipelineUnique({}, pipeline_info).value;
 }

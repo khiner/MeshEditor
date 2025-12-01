@@ -193,7 +193,8 @@ struct VulkanContext {
             {vk::DescriptorType::eUniformBuffer, 10},
             // Storage buffers:
             // 1) Selection fragment buffer
-            {vk::DescriptorType::eStorageBuffer, 5},
+            // 2) Click result buffer
+            {vk::DescriptorType::eStorageBuffer, 7},
         };
         const uint max_sets = std::accumulate(
             pool_sizes.begin(), pool_sizes.end(), 0u,

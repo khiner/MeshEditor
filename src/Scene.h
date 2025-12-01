@@ -178,6 +178,7 @@ private:
     vk::UniqueCommandPool CommandPool;
     vk::UniqueCommandBuffer RenderCommandBuffer;
     vk::UniqueFence RenderFence, TransferFence;
+    vk::UniqueCommandBuffer ClickCommandBuffer;
 
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
@@ -193,6 +194,7 @@ private:
     InteractionMode InteractionMode{InteractionMode::Object};
     he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
+    uint32_t LastFragmentCount{0};
 
     vk::Extent2D Extent;
     vk::ClearColorValue BackgroundColor{0.25, 0.25, 0.25, 1.f};
@@ -237,7 +239,7 @@ private:
     void SetEditMode(he::Element mode);
     void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
 
-    std::vector<entt::entity> GetObjectsAtPixel(glm::uvec2 pixel) const;
+    std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include <filesystem>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -122,4 +123,21 @@ struct ShaderPipeline {
     std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
 
     void RenderQuad(vk::CommandBuffer) const;
+};
+
+struct ComputePipeline {
+    ComputePipeline(vk::Device, vk::DescriptorPool, Shaders &&, std::optional<vk::PushConstantRange> = std::nullopt);
+    ComputePipeline(ComputePipeline &&) = default;
+    ~ComputePipeline() = default;
+
+    vk::Device Device;
+    Shaders ShaderModules;
+
+    vk::UniqueDescriptorSetLayout DescriptorSetLayout;
+    vk::UniqueDescriptorSet DescriptorSet;
+    vk::UniquePipelineLayout PipelineLayout;
+    vk::UniquePipeline Pipeline;
+
+    void Compile();
+    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
 };

@@ -19,7 +19,9 @@
 #include <imgui_internal.h>
 
 #include <array>
+#include <chrono>
 #include <format>
+#include <print>
 #include <ranges>
 #include <unordered_map>
 #include <variant>
@@ -292,6 +294,22 @@ struct SelectionFragment {
     uint32_t pixel_x, pixel_y;
     float depth;
 };
+
+struct ClickHit {
+    float depth;
+    uint32_t object_id;
+};
+
+struct ClickResult {
+    uint32_t count;
+    std::array<ClickHit, 64> hits;
+};
+
+struct ClickSelectPushConstants {
+    glm::uvec2 target_px;
+    uint32_t fragment_count;
+    uint32_t _pad{};
+};
 } // namespace
 
 struct SceneUniqueBuffers {
@@ -305,13 +323,11 @@ struct SceneUniqueBuffers {
         ViewProjNearFar{Ctx, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer},
         Lights{Ctx, lights, vk::BufferUsageFlagBits::eUniformBuffer},
         SilhouetteColors{Ctx, colors, vk::BufferUsageFlagBits::eUniformBuffer},
-        SelectionFragmentBuffer{Ctx, sizeof(uint32_t) + MaxSelectionFragments * sizeof(SelectionFragment), vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst} {
+        SelectionFragmentBuffer{Ctx, sizeof(uint32_t) + MaxSelectionFragments * sizeof(SelectionFragment), vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
+        ClickResultBuffer{*Ctx.Allocator, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {
     }
 
-    std::span<const SelectionFragment> SelectionFragments() const {
-        const auto *data = SelectionFragmentBuffer.HostBuffer.GetData().data();
-        return {reinterpret_cast<const SelectionFragment *>(data + sizeof(uint32_t)), *reinterpret_cast<const uint32_t *>(data)};
-    }
+    const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
         return {
@@ -329,6 +345,7 @@ struct SceneUniqueBuffers {
 
     mvk::BufferContext Ctx;
     mvk::UniqueBuffers CameraUBO, ViewProjNearFar, Lights, SilhouetteColors, SelectionFragmentBuffer;
+    mvk::UniqueBuffer ClickResultBuffer;
 };
 
 void PipelineRenderer::CompileShaders() {
@@ -849,7 +866,8 @@ struct ScenePipelines {
           Main{MainPipeline::CreateRenderer(d, dp, Samples), nullptr},
           Silhouette{SilhouettePipeline::CreateRenderer(d, dp), nullptr},
           SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, dp), nullptr},
-          SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, dp), nullptr} {}
+          SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, dp), nullptr},
+          ClickSelect{d, dp, Shaders{{{ShaderType::eCompute, "ClickSelect.comp"}}}, vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectPushConstants)}} {}
 
     vk::Device d;
     vk::PhysicalDevice pd;
@@ -859,6 +877,7 @@ struct ScenePipelines {
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
+    ComputePipeline ClickSelect;
 
     void SetExtent(vk::Extent2D);
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
@@ -867,6 +886,7 @@ struct ScenePipelines {
         Silhouette.Renderer.CompileShaders();
         SilhouetteEdge.Renderer.CompileShaders();
         SelectionFragment.Renderer.CompileShaders();
+        ClickSelect.Compile();
     }
 };
 
@@ -877,6 +897,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       RenderCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
       RenderFence{Vk.Device.createFenceUnique({})},
       TransferFence{Vk.Device.createFenceUnique({})},
+      ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
       Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool)},
       UniqueBuffers{std::make_unique<SceneUniqueBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool, as_bytes(Lights), as_bytes(Colors))} {
     // EnTT listeners
@@ -898,6 +919,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     const auto view_proj_near_far_buffer = UniqueBuffers->ViewProjNearFar.GetDescriptor();
     const auto silhouette_display_buffer = UniqueBuffers->SilhouetteColors.GetDescriptor();
     const auto selection_fragment_buffer = UniqueBuffers->SelectionFragmentBuffer.GetDescriptor();
+    const auto click_result_buffer = vk::DescriptorBufferInfo{*UniqueBuffers->ClickResultBuffer, 0, sizeof(ClickResult)};
     auto descriptors = Pipelines->Main.Renderer.GetDescriptors({
         {SPT::Fill, "CameraUBO", &transform_buffer},
         {SPT::Fill, "LightsUBO", &lights_buffer},
@@ -918,6 +940,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
             {SPT::SelectionFragment, "SelectionBuffer", &selection_fragment_buffer},
         })
     );
+    if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("SelectionBuffer", &selection_fragment_buffer, nullptr)) descriptors.emplace_back(*ds);
+    if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("ClickResult", &click_result_buffer, nullptr)) descriptors.emplace_back(*ds);
     Vk.Device.updateDescriptorSets(descriptors, {});
 
     Pipelines->CompileShaders();
@@ -1636,25 +1660,51 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 }
 } // namespace
 
-std::vector<entt::entity> Scene::GetObjectsAtPixel(glm::uvec2 mouse_px) const {
-    // Collect fragments at pixel
-    std::vector<std::pair<float, uint32_t>> fragments_at_pixel;
-    for (const auto &fragment : UniqueBuffers->SelectionFragments()) {
-        if (fragment.pixel_x == mouse_px.x && fragment.pixel_y == mouse_px.y) {
-            fragments_at_pixel.emplace_back(fragment.depth, fragment.objectID);
-        }
+std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
+    auto cb = *ClickCommandBuffer;
+    cb.reset({});
+
+    const auto fragment_count = LastFragmentCount;
+    if (fragment_count == 0) return {};
+
+    // Dispatch click-reduction compute writing directly to host-visible buffer (no copy needed).
+    UniqueBuffers->ClickResultBuffer.Write(as_bytes(ClickResult{})); // Reset count/hits.
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const auto &compute = Pipelines->ClickSelect;
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, *compute.DescriptorSet, {});
+    const ClickSelectPushConstants pc{mouse_px, fragment_count};
+    cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+    const uint32_t group_count = (fragment_count + 255) / 256;
+    cb.dispatch(group_count, 1, 1);
+
+    const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
+    cb.end();
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    Vk.Queue.submit(submit, *TransferFence);
+    WaitFor(*TransferFence);
+
+    // Step 3: convert click hits to entities.
+    const auto &result = UniqueBuffers->GetClickResult();
+    const auto visible_entities = R.view<Visible>() | to<std::vector>();
+    const uint32_t hit_count = std::min<uint32_t>(result.count, result.hits.size());
+    std::vector<std::pair<float, uint32_t>> hits;
+    hits.reserve(hit_count);
+    for (uint32_t i = 0; i < hit_count; ++i) {
+        const auto &hit = result.hits[i];
+        if (hit.object_id == 0 || hit.object_id > visible_entities.size()) continue;
+        hits.emplace_back(hit.depth, hit.object_id);
     }
+    std::ranges::sort(hits);
 
-    // Sort by depth (front to back)
-    std::ranges::sort(fragments_at_pixel);
-
-    // Convert to entities, deduplicating by object ID
-    const auto entities_vec = R.view<Visible>() | to<std::vector>();
     std::vector<entt::entity> entities;
     std::unordered_set<uint32_t> seen_object_ids;
-    for (const auto &[_, object_id] : fragments_at_pixel) {
-        if (seen_object_ids.insert(object_id).second && object_id > 0 && object_id <= entities_vec.size()) {
-            entities.push_back(entities_vec[object_id - 1]);
+    for (const auto &[_, object_id] : hits) {
+        if (seen_object_ids.insert(object_id).second) {
+            entities.push_back(visible_entities[object_id - 1]);
         }
     }
     return entities;
@@ -1794,9 +1844,10 @@ void Scene::Interact() {
             }
         }
     } else if (InteractionMode == InteractionMode::Object) {
+        const auto click_select_start = std::chrono::steady_clock::now();
         const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
         // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
-        const auto objects = GetObjectsAtPixel({uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)});
+        const auto objects = RunClickSelect({uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)});
         entt::entity intersected = entt::null;
         if (!objects.empty()) {
             auto it = find(objects, active_entity);
@@ -1817,6 +1868,8 @@ void Scene::Interact() {
         } else {
             Select(intersected);
         }
+        const auto click_select_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - click_select_start).count();
+        std::println("Click-select {:.3f} ms", click_select_ms);
     } else if (InteractionMode == InteractionMode::Excite) {
         // Excite the nearest entity if it's excitable.
         if (const auto nearest = IntersectVisible<>(R, mouse_ray_ws); !nearest.empty()) {
@@ -1866,6 +1919,8 @@ bool Scene::RenderViewport() {
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty) return false;
 
+    const auto render_start = std::chrono::steady_clock::now();
+
     CommandBufferDirty = false;
 
     if (extent_changed) {
@@ -1876,6 +1931,7 @@ bool Scene::RenderViewport() {
     }
 
     const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
+    // transfer_cb is kept recording between frames by BufferContext and our end-of-frame begin().
     if (InteractionMode == InteractionMode::Object) {
         const auto buffer_size = sizeof(uint32_t) + UniqueBuffers->MaxSelectionFragments * sizeof(SelectionFragment);
         transfer_cb.fillBuffer(*UniqueBuffers->SelectionFragmentBuffer.DeviceBuffer, 0, buffer_size, 0);
@@ -1891,16 +1947,25 @@ bool Scene::RenderViewport() {
     Vk.Queue.submit(submit, *RenderFence);
     WaitFor(*RenderFence);
 
-    // Copy selection fragment buffer from device to host for CPU readback
-    transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    if (InteractionMode == InteractionMode::Object) UniqueBuffers->SelectionFragmentBuffer.CopyDeviceToHost();
-    transfer_cb.end();
-    submit.setCommandBuffers(transfer_cb);
-    Vk.Queue.submit(submit, *TransferFence);
-    WaitFor(*TransferFence);
+    // Read back fragment count (first uint) for later click-select dispatch sizing.
+    if (InteractionMode == InteractionMode::Object) {
+        transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        transfer_cb.copyBuffer(*UniqueBuffers->SelectionFragmentBuffer.DeviceBuffer, *UniqueBuffers->SelectionFragmentBuffer.HostBuffer, vk::BufferCopy{0, 0, sizeof(uint32_t)});
+        transfer_cb.end();
+        submit.setCommandBuffers(transfer_cb);
+        Vk.Queue.submit(submit, *TransferFence);
+        WaitFor(*TransferFence);
+        LastFragmentCount = *reinterpret_cast<const uint32_t *>(UniqueBuffers->SelectionFragmentBuffer.HostBuffer.GetData().data());
+    } else {
+        LastFragmentCount = 0;
+    }
 
     UniqueBuffers->Ctx.Reclaimer.Reclaim();
+    // Leave transfer_cb recording for next frame's staging.
     transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const auto render_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start).count();
+    std::println("Render {:.3f} ms", render_ms);
 
     return extent_changed;
 }

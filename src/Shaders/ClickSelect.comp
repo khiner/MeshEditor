@@ -1,0 +1,47 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PC {
+    uvec2 target_px;
+    uint fragment_count;
+    uint _pad;
+} pc;
+
+// Note: Using separate uint fields instead of uvec2 since std430 seems to automatically reorder for alignment when using uvec2.
+struct SelectionFragment {
+    uint objectID;
+    uint pixel_x, pixel_y;
+    float depth;
+};
+
+#define MAX_CLICK_RESULTS 64
+
+layout(binding = 1, std430) buffer SelectionBuffer {
+    uint fragment_count;
+    SelectionFragment fragments[];
+};
+
+struct ClickHit {
+    float depth;
+    uint objectID;
+};
+
+layout(binding = 2, std430) buffer ClickResult {
+    uint count;
+    ClickHit hits[MAX_CLICK_RESULTS];
+};
+
+void main() {
+    const uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.fragment_count) return;
+
+    const SelectionFragment f = fragments[idx];
+    if (f.pixel_x != pc.target_px.x || f.pixel_y != pc.target_px.y) return;
+
+    const uint write_idx = atomicAdd(count, 1);
+    if (write_idx < MAX_CLICK_RESULTS) {
+        hits[write_idx].depth = f.depth;
+        hits[write_idx].objectID = f.objectID;
+    }
+}
