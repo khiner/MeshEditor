@@ -7,7 +7,7 @@
 #include <format>
 #include <ranges>
 
-using std::views::transform, std::ranges::to;
+using std::views::transform, std::ranges::find_if, std::ranges::to;
 
 #ifdef RELEASE_BUILD
 // All files in `src/shaders` are copied to `build/shaders` at build time.
@@ -64,6 +64,17 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
                 }
             }
 
+            for (const auto &resource : resource.Resources->storage_buffers) {
+                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+                if (!BindingByName.contains(resource.name)) {
+                    BindingByName.emplace(resource.name, binding);
+                    const auto pos = std::lower_bound(LayoutBindings.begin(), LayoutBindings.end(), binding, [](const auto &b, uint i) { return b.binding < i; });
+                    LayoutBindings.insert(pos, {binding, vk::DescriptorType::eStorageBuffer, 1, type, nullptr});
+                } else {
+                    LayoutBindings[binding].stageFlags |= type;
+                }
+            }
+
             for (const auto &resource : resource.Resources->sampled_images) {
                 const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
                 LayoutBindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
@@ -102,7 +113,11 @@ std::optional<vk::WriteDescriptorSet> ShaderPipeline::CreateWriteDescriptorSet(s
     if (!Shaders.HasBinding(binding_name)) return std::nullopt;
 
     const auto binding = Shaders.GetBinding(binding_name);
-    if (buffer_info) return {{*DescriptorSet, binding, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, buffer_info}};
+    if (buffer_info) {
+        const auto &layout_bindings = Shaders.GetLayoutBindings();
+        const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
+        return {{*DescriptorSet, binding, 0, 1, it->descriptorType, nullptr, buffer_info}};
+    }
     return {{*DescriptorSet, binding, 0, 1, vk::DescriptorType::eCombinedImageSampler, image_info, nullptr}};
 }
 

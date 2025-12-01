@@ -237,6 +237,8 @@ private:
     void SetEditMode(he::Element mode);
     void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
 
+    std::vector<entt::entity> GetObjectsAtPixel(glm::uvec2 pixel) const;
+
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);
 

@@ -170,6 +170,7 @@ struct VulkanContext {
 
         vk::PhysicalDeviceFeatures device_features{};
         device_features.fillModeNonSolid = VK_TRUE;
+        device_features.fragmentStoresAndAtomics = VK_TRUE; // For writing to storage buffers from fragment shaders
 
         // Create logical device (with one queue).
         static const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
@@ -190,6 +191,9 @@ struct VulkanContext {
             vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 9},
             // All uniform buffer descriptors used across all shaders.
             {vk::DescriptorType::eUniformBuffer, 10},
+            // Storage buffers:
+            // 1) Selection fragment buffer
+            {vk::DescriptorType::eStorageBuffer, 5},
         };
         const uint max_sets = std::accumulate(
             pool_sizes.begin(), pool_sizes.end(), 0u,

@@ -20,7 +20,6 @@
 
 #include <array>
 #include <format>
-#include <map>
 #include <ranges>
 #include <unordered_map>
 #include <variant>
@@ -65,6 +64,7 @@ enum class ShaderPipelineType {
     SilhouetteEdgeDepthObject,
     SilhouetteEdgeDepth,
     SilhouetteEdgeColor,
+    SelectionFragment,
     DebugNormals,
 };
 using SPT = ShaderPipelineType;
@@ -114,8 +114,8 @@ entt::entity Scene::GetActiveMeshEntity() const {
 
 void Scene::Select(entt::entity e) {
     R.clear<Selected>();
+    R.clear<Active>();
     if (e != entt::null) {
-        R.clear<Active>();
         R.emplace<Active>(e);
         R.emplace<Selected>(e);
     }
@@ -285,9 +285,18 @@ vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.heig
 
 constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
 constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+
+// Note: Using separate uint fields instead of uvec2 since std430 seems to automatically reorder for alignment when using uvec2.
+struct SelectionFragment {
+    uint32_t objectID;
+    uint32_t pixel_x, pixel_y;
+    float depth;
+};
 } // namespace
 
 struct SceneUniqueBuffers {
+    static constexpr uint32_t MaxSelectionFragments = 4'000'000; // 4M fragments ~= 64 MB
+
     SceneUniqueBuffers(
         vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandPool command_pool,
         std::span<const std::byte> lights, std::span<const std::byte> colors
@@ -295,7 +304,14 @@ struct SceneUniqueBuffers {
         CameraUBO{Ctx, sizeof(CameraUBO), vk::BufferUsageFlagBits::eUniformBuffer},
         ViewProjNearFar{Ctx, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer},
         Lights{Ctx, lights, vk::BufferUsageFlagBits::eUniformBuffer},
-        SilhouetteColors{Ctx, colors, vk::BufferUsageFlagBits::eUniformBuffer} {};
+        SilhouetteColors{Ctx, colors, vk::BufferUsageFlagBits::eUniformBuffer},
+        SelectionFragmentBuffer{Ctx, sizeof(uint32_t) + MaxSelectionFragments * sizeof(SelectionFragment), vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst} {
+    }
+
+    std::span<const SelectionFragment> SelectionFragments() const {
+        const auto *data = SelectionFragmentBuffer.HostBuffer.GetData().data();
+        return {reinterpret_cast<const SelectionFragment *>(data + sizeof(uint32_t)), *reinterpret_cast<const uint32_t *>(data)};
+    }
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
         return {
@@ -312,7 +328,7 @@ struct SceneUniqueBuffers {
     }
 
     mvk::BufferContext Ctx;
-    mvk::UniqueBuffers CameraUBO, ViewProjNearFar, Lights, SilhouetteColors;
+    mvk::UniqueBuffers CameraUBO, ViewProjNearFar, Lights, SilhouetteColors, SelectionFragmentBuffer;
 };
 
 void PipelineRenderer::CompileShaders() {
@@ -764,6 +780,67 @@ struct SilhouetteEdgePipeline {
     PipelineRenderer Renderer;
     std::unique_ptr<ResourcesT> Resources;
 };
+
+struct SelectionFragmentPipeline {
+    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool) {
+        const std::vector<vk::AttachmentDescription> attachments{
+            // Only need depth for depth testing, don't need to store it
+            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        };
+        const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
+        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
+        std::unordered_map<SPT, ShaderPipeline> pipelines;
+        pipelines.emplace(
+            SPT::SelectionFragment,
+            ShaderPipeline{
+                d,
+                descriptor_pool,
+                Shaders{
+                    {{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}
+                },
+                CreateVertexInputState(),
+                vk::PolygonMode::eFill,
+                vk::PrimitiveTopology::eTriangleList,
+                {}, // No color attachment
+                CreateDepthStencil(),
+                vk::SampleCountFlagBits::e1,
+                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)},
+            }
+        );
+        return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    }
+
+    struct ResourcesT {
+        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass)
+            : DepthImage{mvk::CreateImage(
+                  d, pd,
+                  {{},
+                   vk::ImageType::e2D,
+                   Format::Depth,
+                   vk::Extent3D{extent, 1},
+                   1,
+                   1,
+                   vk::SampleCountFlagBits::e1,
+                   vk::ImageTiling::eOptimal,
+                   vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                   vk::SharingMode::eExclusive},
+                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
+              )} {
+            const std::array image_views{*DepthImage.View};
+            Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+        }
+
+        mvk::ImageResource DepthImage;
+        vk::UniqueFramebuffer Framebuffer;
+    };
+
+    void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
+        Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
+    }
+
+    PipelineRenderer Renderer;
+    std::unique_ptr<ResourcesT> Resources;
+};
 } // namespace
 
 struct ScenePipelines {
@@ -771,7 +848,8 @@ struct ScenePipelines {
         : d(d), pd(pd), Samples{GetMaxUsableSampleCount(pd)},
           Main{MainPipeline::CreateRenderer(d, dp, Samples), nullptr},
           Silhouette{SilhouettePipeline::CreateRenderer(d, dp), nullptr},
-          SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, dp), nullptr} {}
+          SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, dp), nullptr},
+          SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, dp), nullptr} {}
 
     vk::Device d;
     vk::PhysicalDevice pd;
@@ -780,6 +858,7 @@ struct ScenePipelines {
     MainPipeline Main;
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
+    SelectionFragmentPipeline SelectionFragment;
 
     void SetExtent(vk::Extent2D);
     // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
@@ -787,6 +866,7 @@ struct ScenePipelines {
         Main.Renderer.CompileShaders();
         Silhouette.Renderer.CompileShaders();
         SilhouetteEdge.Renderer.CompileShaders();
+        SelectionFragment.Renderer.CompileShaders();
     }
 };
 
@@ -817,6 +897,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     const auto lights_buffer = UniqueBuffers->Lights.GetDescriptor();
     const auto view_proj_near_far_buffer = UniqueBuffers->ViewProjNearFar.GetDescriptor();
     const auto silhouette_display_buffer = UniqueBuffers->SilhouetteColors.GetDescriptor();
+    const auto selection_fragment_buffer = UniqueBuffers->SelectionFragmentBuffer.GetDescriptor();
     auto descriptors = Pipelines->Main.Renderer.GetDescriptors({
         {SPT::Fill, "CameraUBO", &transform_buffer},
         {SPT::Fill, "LightsUBO", &lights_buffer},
@@ -829,6 +910,12 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     descriptors.append_range(
         Pipelines->Silhouette.Renderer.GetDescriptors({
             {SPT::SilhouetteDepthObject, "CameraUBO", &transform_buffer},
+        })
+    );
+    descriptors.append_range(
+        Pipelines->SelectionFragment.Renderer.GetDescriptors({
+            {SPT::SelectionFragment, "CameraUBO", &transform_buffer},
+            {SPT::SelectionFragment, "SelectionBuffer", &selection_fragment_buffer},
         })
     );
     Vk.Device.updateDescriptorSets(descriptors, {});
@@ -1302,39 +1389,61 @@ void Scene::RecordRenderCommandBuffer() {
 
     const auto active_entity = FindActiveEntity(R);
     const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
+
+    // Helper to render meshes with object IDs
+    auto render_meshes_with_ids = [&](const auto &entity_view, const ShaderPipeline &shader_pipeline, auto &&get_object_id) {
+        for (const auto e : entity_view) {
+            const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+            const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
+            const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
+            Bind(cb, shader_pipeline, render_buffers, models);
+
+            const auto object_id = get_object_id(e);
+            cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_id), &object_id);
+            cb.drawIndexed(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0, *GetModelBufferIndex(R, e));
+        }
+    };
+
+    // Pass 1: Silhouette depth/object rendering (selected meshes only, for visual outline)
     if (render_silhouette) {
-        // Render all selected mesh instances into a depth/object ID texture.
         const auto &silhouette = Pipelines->Silhouette;
-        {
-            static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
-            const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-            cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-        }
-        {
-            static constexpr uint32_t active_id = 1;
-            uint32_t selected_id = 2; // 2+
-            for (const auto selected_entity : R.view<Selected>()) {
-                const auto &shader_pipeline = silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject);
-                const auto mesh_entity = R.get<MeshInstance>(selected_entity).MeshEntity;
-                const auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
-                const auto &models = R.get<ModelsBuffer>(mesh_entity).Buffer;
-                Bind(cb, shader_pipeline, render_buffers, models);
-                const auto object_id = R.all_of<Active>(selected_entity) ? active_id : selected_id++;
-                cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(object_id), &object_id);
-                cb.drawIndexed(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0, *GetModelBufferIndex(R, selected_entity));
-            }
-            cb.endRenderPass();
-        }
-        {
-            const auto &silhouette_edge = Pipelines->SilhouetteEdge;
-            static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
-            const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
-            cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-            const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
-            cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(SilhouetteEdgeWidth), &SilhouetteEdgeWidth);
-            silhouette_edo.RenderQuad(cb);
-            cb.endRenderPass();
-        }
+        static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
+        const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
+        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+
+        static constexpr uint32_t ActiveId{1};
+        uint32_t selected_id = 2;
+        render_meshes_with_ids(
+            R.view<Selected>(),
+            silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject),
+            [&](entt::entity e) { return R.all_of<Active>(e) ? ActiveId : selected_id++; }
+        );
+        cb.endRenderPass();
+
+        const auto &silhouette_edge = Pipelines->SilhouetteEdge;
+        static const std::vector<vk::ClearValue> edge_clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
+        const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
+        cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, edge_clear_values}, vk::SubpassContents::eInline);
+        const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
+        cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(SilhouetteEdgeWidth), &SilhouetteEdgeWidth);
+        silhouette_edo.RenderQuad(cb);
+        cb.endRenderPass();
+    }
+
+    // Pass 2: Selection fragment list (all visible meshes, for click selection)
+    if (InteractionMode == InteractionMode::Object) {
+        const auto &selection = Pipelines->SelectionFragment;
+        static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}};
+        const vk::Rect2D rect{{0, 0}, ToExtent2D(selection.Resources->DepthImage.Extent)};
+        cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+
+        uint32_t object_id = 1;
+        render_meshes_with_ids(
+            R.view<Visible>(),
+            selection.Renderer.ShaderPipelines.at(SPT::SelectionFragment),
+            [&](entt::entity) { return object_id++; }
+        );
+        cb.endRenderPass();
     }
 
     // Main rendering pass
@@ -1474,30 +1583,6 @@ ray WorldToLocal(const ray &r, const mat4 &world_inv_transp) {
     return {{world_inv * vec4{r.o, 1}}, glm::normalize(vec3{world_inv * vec4{r.d, 0}})};
 }
 
-std::multimap<float, entt::entity> IntersectedEntitiesByDistance(const entt::registry &r, const ray &world_ray) {
-    std::multimap<float, entt::entity> entities_by_distance;
-    for (const auto &[e, world_matrix] : r.view<const WorldMatrix, const Visible>().each()) {
-        const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
-        const auto &bvh = r.get<const BVH>(mesh_entity);
-        const auto &mesh = r.get<const Mesh>(mesh_entity);
-        if (auto intersection = MeshIntersection::Intersect(bvh, mesh, WorldToLocal(world_ray, world_matrix.MInv))) {
-            entities_by_distance.emplace(intersection->Distance, e);
-        }
-    }
-    return entities_by_distance;
-}
-
-entt::entity CycleIntersectedEntity(const entt::registry &r, entt::entity active_entity, const ray &mouse_ray_ws) {
-    if (const auto entities_by_distance = IntersectedEntitiesByDistance(r, mouse_ray_ws); !entities_by_distance.empty()) {
-        // Cycle through hovered entities.
-        auto it = find_if(entities_by_distance, [active_entity](const auto &entry) { return entry.second == active_entity; });
-        if (it != entities_by_distance.end()) ++it;
-        if (it == entities_by_distance.end()) it = entities_by_distance.begin();
-        return it->second;
-    }
-    return entt::null;
-}
-
 // Nearest intersection across all meshes.
 struct EntityIntersection {
     entt::entity Entity;
@@ -1550,6 +1635,30 @@ bool IsSingleClicked(ImGuiMouseButton button) {
     return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
 }
 } // namespace
+
+std::vector<entt::entity> Scene::GetObjectsAtPixel(glm::uvec2 mouse_px) const {
+    // Collect fragments at pixel
+    std::vector<std::pair<float, uint32_t>> fragments_at_pixel;
+    for (const auto &fragment : UniqueBuffers->SelectionFragments()) {
+        if (fragment.pixel_x == mouse_px.x && fragment.pixel_y == mouse_px.y) {
+            fragments_at_pixel.emplace_back(fragment.depth, fragment.objectID);
+        }
+    }
+
+    // Sort by depth (front to back)
+    std::ranges::sort(fragments_at_pixel);
+
+    // Convert to entities, deduplicating by object ID
+    const auto entities_vec = R.view<Visible>() | to<std::vector>();
+    std::vector<entt::entity> entities;
+    std::unordered_set<uint32_t> seen_object_ids;
+    for (const auto &[_, object_id] : fragments_at_pixel) {
+        if (seen_object_ids.insert(object_id).second && object_id > 0 && object_id <= entities_vec.size()) {
+            entities.push_back(entities_vec[object_id - 1]);
+        }
+    }
+    return entities;
+}
 
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
@@ -1685,7 +1794,17 @@ void Scene::Interact() {
             }
         }
     } else if (InteractionMode == InteractionMode::Object) {
-        const auto intersected = CycleIntersectedEntity(R, active_entity, mouse_ray_ws);
+        const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
+        // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
+        const auto objects = GetObjectsAtPixel({uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)});
+        entt::entity intersected = entt::null;
+        if (!objects.empty()) {
+            auto it = find(objects, active_entity);
+            if (it != objects.end()) ++it;
+            if (it == objects.end()) it = objects.begin();
+            intersected = *it;
+        }
+
         if (intersected != entt::null && IsKeyDown(ImGuiMod_Shift)) {
             if (active_entity == intersected) {
                 ToggleSelected(intersected);
@@ -1727,6 +1846,7 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     Main.SetExtent(extent, d, pd, Samples);
     Silhouette.SetExtent(extent, d, pd);
     SilhouetteEdge.SetExtent(extent, d, pd);
+    SelectionFragment.SetExtent(extent, d, pd);
 
     const auto silhouette_info = vk::DescriptorImageInfo{*Silhouette.Resources->ImageSampler, *Silhouette.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     auto ds = SilhouetteEdge.Renderer.GetDescriptors({
@@ -1748,31 +1868,37 @@ bool Scene::RenderViewport() {
 
     CommandBufferDirty = false;
 
-    const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
-    vk::SubmitInfo submit;
     if (extent_changed) {
         Extent = ToExtent(content_region);
-        // Must submit the transfer command buffer before updating the pipelines,
-        // so we need two submits for the extent change.
-        UpdateTransformBuffers(); // Depends on the aspect ratio.
-        transfer_cb.end();
-        submit.setCommandBuffers(transfer_cb);
-        Vk.Queue.submit(submit, *TransferFence);
-        WaitFor(*TransferFence);
+        UpdateTransformBuffers();
+        Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
         Pipelines->SetExtent(Extent);
-        RecordRenderCommandBuffer();
-        submit.setCommandBuffers(*RenderCommandBuffer);
-    } else {
-        std::array<vk::CommandBuffer, 2> CommandBuffers{*UniqueBuffers->Ctx.TransferCb, *RenderCommandBuffer};
-        transfer_cb.end();
-        RecordRenderCommandBuffer();
-        submit.setCommandBuffers(CommandBuffers);
     }
 
+    const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
+    if (InteractionMode == InteractionMode::Object) {
+        const auto buffer_size = sizeof(uint32_t) + UniqueBuffers->MaxSelectionFragments * sizeof(SelectionFragment);
+        transfer_cb.fillBuffer(*UniqueBuffers->SelectionFragmentBuffer.DeviceBuffer, 0, buffer_size, 0);
+    }
+    transfer_cb.end();
+
+    RecordRenderCommandBuffer();
+
+    // Submit transfer and render commands together
+    const std::array command_buffers{transfer_cb, *RenderCommandBuffer};
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(command_buffers);
     Vk.Queue.submit(submit, *RenderFence);
-    // The caller may use the resolve image and sampler immediately after `Scene::Render` returns.
-    // Returning `true` indicates that the resolve image/sampler have been recreated.
     WaitFor(*RenderFence);
+
+    // Copy selection fragment buffer from device to host for CPU readback
+    transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    if (InteractionMode == InteractionMode::Object) UniqueBuffers->SelectionFragmentBuffer.CopyDeviceToHost();
+    transfer_cb.end();
+    submit.setCommandBuffers(transfer_cb);
+    Vk.Queue.submit(submit, *TransferFence);
+    WaitFor(*TransferFence);
+
     UniqueBuffers->Ctx.Reclaimer.Reclaim();
     transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
@@ -1889,7 +2015,7 @@ void Scene::RenderOverlay() {
             return false;
         };
         auto root_selected = selected_view | std::views::filter([&](auto e) { return !is_parent_selected(e); });
-        const auto root_count = std::ranges::distance(root_selected);
+        const auto root_count = distance(root_selected);
 
         const auto active_transform = GetTransform(R, FindActiveEntity(R));
         const auto p = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);

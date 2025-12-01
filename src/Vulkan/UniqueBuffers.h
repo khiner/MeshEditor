@@ -59,6 +59,9 @@ struct UniqueBuffers {
     // Doesn't free memory, so the allocated size will be greater than the used size.
     void Erase(vk::DeviceSize offset, vk::DeviceSize size);
 
+    // Copy from device buffer to host buffer (GPU->CPU)
+    void CopyDeviceToHost(vk::DeviceSize size = vk::WholeSize);
+
     const BufferContext &Ctx;
     vk::DeviceSize UsedSize{0}; // Used (not allocated) bytes
     vk::BufferUsageFlags Usage;

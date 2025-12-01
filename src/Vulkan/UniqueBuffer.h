@@ -8,6 +8,8 @@
 // Forwards to avoid including `vk_mem_alloc.h`.
 struct VmaAllocator_T;
 using VmaAllocator = VmaAllocator_T *;
+struct VmaAllocation_T;
+using VmaAllocation = VmaAllocation_T *;
 
 namespace mvk {
 enum class MemoryUsage {

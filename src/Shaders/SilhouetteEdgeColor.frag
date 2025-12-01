@@ -17,7 +17,7 @@ const vec4 ManipulatingColor = vec4(1, 1, 1, 1);
 
 void main() {
     const ivec2 texel = ivec2(TexCoord * textureSize(ObjectIdSampler, 0));
-    const float object_id  = texelFetch(ObjectIdSampler, texel, 0).r;
+    const float object_id = texelFetch(ObjectIdSampler, texel, 0).r;
     if (object_id < 1) {
         discard;
     } else {

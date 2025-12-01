@@ -20,8 +20,8 @@ uint64_t NextPowerOfTwo(uint64_t x) {
 UniqueBuffers::UniqueBuffers(const BufferContext &ctx, vk::DeviceSize size, vk::BufferUsageFlags usage)
     : Ctx(ctx),
       Usage(usage),
-      HostBuffer(*Ctx.Allocator, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc),
-      DeviceBuffer(*Ctx.Allocator, size, MemoryUsage::GpuOnly, usage) {}
+      HostBuffer(*Ctx.Allocator, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst),
+      DeviceBuffer(*Ctx.Allocator, size, MemoryUsage::GpuOnly, usage | vk::BufferUsageFlagBits::eTransferSrc) {}
 
 UniqueBuffers::UniqueBuffers(const BufferContext &ctx, std::span<const std::byte> data, vk::BufferUsageFlags usage)
     : UniqueBuffers(ctx, data.size(), usage) {
@@ -100,5 +100,10 @@ void UniqueBuffers::Erase(vk::DeviceSize offset, vk::DeviceSize size) {
         Ctx.TransferCb->copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
     }
     UsedSize -= size;
+}
+
+void UniqueBuffers::CopyDeviceToHost(vk::DeviceSize size) {
+    const auto copy_size = size == vk::WholeSize ? DeviceBuffer.GetAllocatedSize() : size;
+    Ctx.TransferCb->copyBuffer(*DeviceBuffer, *HostBuffer, vk::BufferCopy{0, 0, copy_size});
 }
 } // namespace mvk
