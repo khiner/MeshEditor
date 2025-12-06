@@ -21,6 +21,7 @@
 #include <array>
 #include <chrono>
 #include <format>
+#include <limits>
 #include <print>
 #include <ranges>
 #include <unordered_map>
@@ -196,6 +197,7 @@ constexpr auto Float = vk::Format::eR32Sfloat;
 constexpr auto Float2 = vk::Format::eR32G32Sfloat;
 constexpr auto Float3 = vk::Format::eR32G32B32Sfloat;
 constexpr auto Float4 = vk::Format::eR32G32B32A32Sfloat;
+constexpr auto Uint = vk::Format::eR32Uint;
 } // namespace Format
 
 namespace {
@@ -289,11 +291,18 @@ constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBit
 constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 
 // Note: Using separate uint fields instead of uvec2 since std430 seems to automatically reorder for alignment when using uvec2.
-struct SelectionFragment {
-    uint32_t objectID;
-    uint32_t pixel_x, pixel_y;
+struct SelectionNode {
+    uint32_t object_id;
     float depth;
+    uint32_t next;
 };
+
+struct SelectionCounters {
+    uint32_t count;
+    uint32_t overflow;
+};
+
+constexpr uint32_t InvalidSelectionNodeIndex = std::numeric_limits<uint32_t>::max();
 
 struct ClickHit {
     float depth;
@@ -307,21 +316,19 @@ struct ClickResult {
 
 struct ClickSelectPushConstants {
     glm::uvec2 target_px;
-    uint32_t fragment_count;
-    uint32_t _pad{};
 };
 
 struct BoxSelectPushConstants {
     glm::uvec2 box_min;
     glm::uvec2 box_max;
-    uint32_t fragment_count;
     uint32_t object_count;
+    uint32_t _pad{};
 };
 } // namespace
 
 struct SceneUniqueBuffers {
-    static constexpr uint32_t MaxSelectionFragments = 4'000'000; // 4M fragments ~= 64 MB
-    static constexpr uint32_t MaxSelectableObjects = MaxSelectionFragments;
+    static constexpr uint32_t MaxSelectionNodes = 4'000'000; // Matches prior fragment cap
+    static constexpr uint32_t MaxSelectableObjects = MaxSelectionNodes;
     static constexpr uint32_t BoxSelectBitsetWords = (MaxSelectableObjects + 31) / 32;
 
     SceneUniqueBuffers(
@@ -332,7 +339,8 @@ struct SceneUniqueBuffers {
         ViewProjNearFar{Ctx, sizeof(ViewProjNearFar), vk::BufferUsageFlagBits::eUniformBuffer},
         Lights{Ctx, lights, vk::BufferUsageFlagBits::eUniformBuffer},
         SilhouetteColors{Ctx, colors, vk::BufferUsageFlagBits::eUniformBuffer},
-        SelectionFragmentBuffer{Ctx, sizeof(uint32_t) + MaxSelectionFragments * sizeof(SelectionFragment), vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
+        SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer},
+        SelectionCounterBuffer{*Ctx.Allocator, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
         ClickResultBuffer{*Ctx.Allocator, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
         BoxSelectBitsetBuffer{
             *Ctx.Allocator,
@@ -360,7 +368,9 @@ struct SceneUniqueBuffers {
     }
 
     mvk::BufferContext Ctx;
-    mvk::UniqueBuffers CameraUBO, ViewProjNearFar, Lights, SilhouetteColors, SelectionFragmentBuffer;
+    mvk::UniqueBuffers CameraUBO, ViewProjNearFar, Lights, SilhouetteColors;
+    mvk::UniqueBuffers SelectionNodeBuffer;
+    mvk::UniqueBuffer SelectionCounterBuffer;
     mvk::UniqueBuffer ClickResultBuffer;
     mvk::UniqueBuffer BoxSelectBitsetBuffer;
 };
@@ -859,12 +869,26 @@ struct SelectionFragmentPipeline {
                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
                    vk::SharingMode::eExclusive},
                   {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
+              )},
+              HeadImage{mvk::CreateImage(
+                  d, pd,
+                  {{},
+                   vk::ImageType::e2D,
+                   Format::Uint,
+                   vk::Extent3D{extent, 1},
+                   1,
+                   1,
+                   vk::SampleCountFlagBits::e1,
+                   vk::ImageTiling::eOptimal,
+                   vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst,
+                   vk::SharingMode::eExclusive},
+                  {{}, {}, vk::ImageViewType::e2D, Format::Uint, {}, ColorSubresourceRange}
               )} {
             const std::array image_views{*DepthImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
         }
 
-        mvk::ImageResource DepthImage;
+        mvk::ImageResource DepthImage, HeadImage;
         vk::UniqueFramebuffer Framebuffer;
     };
 
@@ -939,9 +963,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     const auto lights_buffer = UniqueBuffers->Lights.GetDescriptor();
     const auto view_proj_near_far_buffer = UniqueBuffers->ViewProjNearFar.GetDescriptor();
     const auto silhouette_display_buffer = UniqueBuffers->SilhouetteColors.GetDescriptor();
-    const auto selection_fragment_buffer = UniqueBuffers->SelectionFragmentBuffer.GetDescriptor();
-    const auto box_select_result_buffer = UniqueBuffers->GetBoxSelectBitsetDescriptor();
-    const auto click_result_buffer = vk::DescriptorBufferInfo{*UniqueBuffers->ClickResultBuffer, 0, sizeof(ClickResult)};
     auto descriptors = Pipelines->Main.Renderer.GetDescriptors({
         {SPT::Fill, "CameraUBO", &transform_buffer},
         {SPT::Fill, "LightsUBO", &lights_buffer},
@@ -959,13 +980,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     descriptors.append_range(
         Pipelines->SelectionFragment.Renderer.GetDescriptors({
             {SPT::SelectionFragment, "CameraUBO", &transform_buffer},
-            {SPT::SelectionFragment, "SelectionBuffer", &selection_fragment_buffer},
         })
     );
-    if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("SelectionBuffer", &selection_fragment_buffer, nullptr)) descriptors.emplace_back(*ds);
-    if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("ClickResult", &click_result_buffer, nullptr)) descriptors.emplace_back(*ds);
-    if (auto ds = Pipelines->BoxSelect.CreateWriteDescriptorSet("SelectionBuffer", &selection_fragment_buffer, nullptr)) descriptors.emplace_back(*ds);
-    if (auto ds = Pipelines->BoxSelect.CreateWriteDescriptorSet("BoxSelectResult", &box_select_result_buffer, nullptr)) descriptors.emplace_back(*ds);
     Vk.Device.updateDescriptorSets(descriptors, {});
 
     Pipelines->CompileShaders();
@@ -1682,26 +1698,50 @@ bool IsSingleClicked(ImGuiMouseButton button) {
     }
     return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
 }
+
+void BarrierSelectionData(vk::CommandBuffer cb, const SceneUniqueBuffers &buffers, const mvk::ImageResource &head_image) {
+    const vk::BufferMemoryBarrier node_barrier{
+        vk::AccessFlagBits::eShaderWrite,
+        vk::AccessFlagBits::eShaderRead,
+        {}, {}, *buffers.SelectionNodeBuffer.DeviceBuffer, 0, VK_WHOLE_SIZE
+    };
+    const vk::ImageMemoryBarrier head_barrier{
+        vk::AccessFlagBits::eShaderWrite,
+        vk::AccessFlagBits::eShaderRead,
+        vk::ImageLayout::eGeneral,
+        vk::ImageLayout::eGeneral,
+        {}, {},
+        *head_image.Image,
+        ColorSubresourceRange
+    };
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eFragmentShader,
+        vk::PipelineStageFlagBits::eComputeShader,
+        {}, {}, {node_barrier}, {head_barrier}
+    );
+}
 } // namespace
 
 std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     auto cb = *ClickCommandBuffer;
     cb.reset({});
 
-    const auto fragment_count = LastFragmentCount;
-    if (fragment_count == 0) return {};
+    const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
+    const auto node_count = std::min<uint32_t>(counters->count, SceneUniqueBuffers::MaxSelectionNodes);
+    if (node_count == 0) return {};
 
     // Dispatch click-reduction compute writing directly to host-visible buffer (no copy needed).
     UniqueBuffers->ClickResultBuffer.Write(as_bytes(ClickResult{})); // Reset count/hits.
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
+    BarrierSelectionData(cb, *UniqueBuffers, Pipelines->SelectionFragment.Resources->HeadImage);
+
     const auto &compute = Pipelines->ClickSelect;
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, *compute.DescriptorSet, {});
-    const ClickSelectPushConstants pc{mouse_px, fragment_count};
+    const ClickSelectPushConstants pc{mouse_px};
     cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    const uint32_t group_count = (fragment_count + 255) / 256;
-    cb.dispatch(group_count, 1, 1);
+    cb.dispatch(1, 1, 1);
 
     const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
     cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
@@ -1736,8 +1776,9 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 
 std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max) {
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
-    const auto fragment_count = LastFragmentCount;
-    if (fragment_count == 0) return {};
+    const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
+    const auto node_count = std::min<uint32_t>(counters->count, SceneUniqueBuffers::MaxSelectionNodes);
+    if (node_count == 0) return {};
 
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
     const auto object_count = static_cast<uint32_t>(visible_entities.size());
@@ -1752,13 +1793,18 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
+    BarrierSelectionData(cb, *UniqueBuffers, Pipelines->SelectionFragment.Resources->HeadImage);
+
     const auto &compute = Pipelines->BoxSelect;
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, *compute.DescriptorSet, {});
-    const BoxSelectPushConstants pc{box_min, box_max, fragment_count, object_count};
+    const BoxSelectPushConstants pc{box_min, box_max, object_count};
     cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    const uint32_t group_count = (fragment_count + 255) / 256;
-    cb.dispatch(group_count, 1, 1);
+    const uint32_t width = box_max.x - box_min.x;
+    const uint32_t height = box_max.y - box_min.y;
+    const uint32_t group_count_x = (width + 15) / 16;
+    const uint32_t group_count_y = (height + 15) / 16;
+    cb.dispatch(group_count_x, group_count_y, 1);
 
     const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
     cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
@@ -1910,7 +1956,6 @@ void Scene::Interact() {
             }
         }
     } else if (InteractionMode == InteractionMode::Object) {
-        const auto click_select_start = std::chrono::steady_clock::now();
         const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
         // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
         const auto objects = RunClickSelect({uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)});
@@ -1934,8 +1979,6 @@ void Scene::Interact() {
         } else {
             Select(intersected);
         }
-        const auto click_select_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - click_select_start).count();
-        std::println("Click-select {:.3f} ms", click_select_ms);
     } else if (InteractionMode == InteractionMode::Excite) {
         // Excite the nearest entity if it's excitable.
         if (const auto nearest = IntersectVisible<>(R, mouse_ray_ws); !nearest.empty()) {
@@ -1985,8 +2028,6 @@ bool Scene::RenderViewport() {
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty) return false;
 
-    const auto render_start = std::chrono::steady_clock::now();
-
     CommandBufferDirty = false;
 
     if (extent_changed) {
@@ -1994,13 +2035,58 @@ bool Scene::RenderViewport() {
         UpdateTransformBuffers();
         Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
         Pipelines->SetExtent(Extent);
+
+        // Update descriptors that depend on extent (selection head image).
+        const auto transform_buffer = UniqueBuffers->CameraUBO.GetDescriptor();
+        const auto selection_nodes = UniqueBuffers->SelectionNodeBuffer.GetDescriptor();
+        const auto selection_counter = vk::DescriptorBufferInfo{*UniqueBuffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
+        const auto head_image_info = vk::DescriptorImageInfo{nullptr, *Pipelines->SelectionFragment.Resources->HeadImage.View, vk::ImageLayout::eGeneral};
+        const auto box_select_result_buffer = UniqueBuffers->GetBoxSelectBitsetDescriptor();
+        const auto click_result_buffer = vk::DescriptorBufferInfo{*UniqueBuffers->ClickResultBuffer, 0, sizeof(ClickResult)};
+
+        auto selection_descriptors = Pipelines->SelectionFragment.Renderer.GetDescriptors({
+            {SPT::SelectionFragment, "CameraUBO", &transform_buffer},
+            {SPT::SelectionFragment, "SelectionNodes", &selection_nodes},
+            {SPT::SelectionFragment, "SelectionCounter", &selection_counter},
+            {SPT::SelectionFragment, "HeadImage", nullptr, &head_image_info},
+        });
+        if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("HeadImage", nullptr, &head_image_info)) selection_descriptors.emplace_back(*ds);
+        if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("SelectionNodes", &selection_nodes, nullptr)) selection_descriptors.emplace_back(*ds);
+        if (auto ds = Pipelines->ClickSelect.CreateWriteDescriptorSet("ClickResult", &click_result_buffer, nullptr)) selection_descriptors.emplace_back(*ds);
+
+        if (auto ds = Pipelines->BoxSelect.CreateWriteDescriptorSet("HeadImage", nullptr, &head_image_info)) selection_descriptors.emplace_back(*ds);
+        if (auto ds = Pipelines->BoxSelect.CreateWriteDescriptorSet("SelectionNodes", &selection_nodes, nullptr)) selection_descriptors.emplace_back(*ds);
+        if (auto ds = Pipelines->BoxSelect.CreateWriteDescriptorSet("BoxSelectResult", &box_select_result_buffer, nullptr)) selection_descriptors.emplace_back(*ds);
+
+        Vk.Device.updateDescriptorSets(selection_descriptors, {});
     }
 
     const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
     // transfer_cb is kept recording between frames by BufferContext and our end-of-frame begin().
     if (InteractionMode == InteractionMode::Object) {
-        const auto buffer_size = sizeof(uint32_t) + UniqueBuffers->MaxSelectionFragments * sizeof(SelectionFragment);
-        transfer_cb.fillBuffer(*UniqueBuffers->SelectionFragmentBuffer.DeviceBuffer, 0, buffer_size, 0);
+        UniqueBuffers->SelectionCounterBuffer.Write(as_bytes(SelectionCounters{}));
+
+        const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
+        const vk::ImageMemoryBarrier to_general{
+            {}, vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
+            {}, {}, *head_image.Image, ColorSubresourceRange
+        };
+        transfer_cb.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, to_general);
+
+        const vk::ClearColorValue clear_value{std::array<uint32_t, 4>{InvalidSelectionNodeIndex, 0, 0, 0}};
+        transfer_cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, clear_value, ColorSubresourceRange);
+
+        const vk::ImageMemoryBarrier to_shader{
+            vk::AccessFlagBits::eTransferWrite,
+            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+            vk::ImageLayout::eGeneral,
+            vk::ImageLayout::eGeneral,
+            {}, {},
+            *head_image.Image,
+            ColorSubresourceRange
+        };
+        transfer_cb.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, to_shader);
     }
     transfer_cb.end();
 
@@ -2013,25 +2099,12 @@ bool Scene::RenderViewport() {
     Vk.Queue.submit(submit, *RenderFence);
     WaitFor(*RenderFence);
 
-    // Read back fragment count (first uint) for later click-select dispatch sizing.
-    if (InteractionMode == InteractionMode::Object) {
-        transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        transfer_cb.copyBuffer(*UniqueBuffers->SelectionFragmentBuffer.DeviceBuffer, *UniqueBuffers->SelectionFragmentBuffer.HostBuffer, vk::BufferCopy{0, 0, sizeof(uint32_t)});
-        transfer_cb.end();
-        submit.setCommandBuffers(transfer_cb);
-        Vk.Queue.submit(submit, *TransferFence);
-        WaitFor(*TransferFence);
-        LastFragmentCount = *reinterpret_cast<const uint32_t *>(UniqueBuffers->SelectionFragmentBuffer.HostBuffer.GetData().data());
-    } else {
-        LastFragmentCount = 0;
-    }
+    // Read back selection node count for dispatch sizing (host-visible buffer).
+    // No copy needed; buffer is host-visible and GPU work is done by this point.
 
     UniqueBuffers->Ctx.Reclaimer.Reclaim();
     // Leave transfer_cb recording for next frame's staging.
     transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    const auto render_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start).count();
-    std::println("Render {:.3f} ms", render_ms);
 
     return extent_changed;
 }

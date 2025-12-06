@@ -1,25 +1,24 @@
 #version 450
 
-layout(local_size_x = 256) in;
+layout(local_size_x = 1) in;
 
 layout(push_constant) uniform PC {
     uvec2 target_px;
-    uint fragment_count;
-    uint _pad;
 } pc;
 
-// Note: Using separate uint fields instead of uvec2 since std430 seems to automatically reorder for alignment when using uvec2.
-struct SelectionFragment {
+struct SelectionNode {
     uint objectID;
-    uint pixel_x, pixel_y;
     float depth;
+    uint next;
 };
 
 #define MAX_CLICK_RESULTS 64
+const uint INVALID_NODE = 0xffffffffu;
 
-layout(binding = 1, std430) buffer SelectionBuffer {
-    uint fragment_count;
-    SelectionFragment fragments[];
+layout(binding = 1, r32ui) uniform uimage2D HeadImage;
+
+layout(binding = 2, std430) buffer SelectionNodes {
+    SelectionNode nodes[];
 };
 
 struct ClickHit {
@@ -27,21 +26,23 @@ struct ClickHit {
     uint objectID;
 };
 
-layout(binding = 2, std430) buffer ClickResult {
+layout(binding = 3, std430) buffer ClickResult {
     uint count;
     ClickHit hits[MAX_CLICK_RESULTS];
 };
 
 void main() {
-    const uint idx = gl_GlobalInvocationID.x;
-    if (idx >= pc.fragment_count) return;
+    // Single invocation does the traversal
+    if (gl_GlobalInvocationID.x != 0) return;
 
-    const SelectionFragment f = fragments[idx];
-    if (f.pixel_x != pc.target_px.x || f.pixel_y != pc.target_px.y) return;
-
-    const uint write_idx = atomicAdd(count, 1);
-    if (write_idx < MAX_CLICK_RESULTS) {
-        hits[write_idx].depth = f.depth;
-        hits[write_idx].objectID = f.objectID;
+    uint idx = imageLoad(HeadImage, ivec2(pc.target_px)).r;
+    while (idx != INVALID_NODE) {
+        const SelectionNode node = nodes[idx];
+        const uint write_idx = atomicAdd(count, 1);
+        if (write_idx < MAX_CLICK_RESULTS) {
+            hits[write_idx].depth = node.depth;
+            hits[write_idx].objectID = node.objectID;
+        }
+        idx = node.next;
     }
 }

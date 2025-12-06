@@ -192,9 +192,11 @@ struct VulkanContext {
             // All uniform buffer descriptors used across all shaders.
             {vk::DescriptorType::eUniformBuffer, 10},
             // Storage buffers:
-            // 1) Selection fragment buffer
-            // 2) Click result buffer
-            {vk::DescriptorType::eStorageBuffer, 7},
+            // Selection nodes, counters, click/box results, etc.
+            {vk::DescriptorType::eStorageBuffer, 9},
+            // Storage images:
+            // 1) Selection head image for fragment/compute passes (shared but counted per set)
+            {vk::DescriptorType::eStorageImage, 3},
         };
         const uint max_sets = std::accumulate(
             pool_sizes.begin(), pool_sizes.end(), 0u,

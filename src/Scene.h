@@ -194,7 +194,6 @@ private:
     InteractionMode InteractionMode{InteractionMode::Object};
     he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
-    uint32_t LastFragmentCount{0};
     std::vector<uint32_t> BoxSelectZeroBits;
 
     vk::Extent2D Extent;
