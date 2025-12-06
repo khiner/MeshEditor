@@ -88,6 +88,11 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
                 LayoutBindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
                 BindingByName.emplace(resource.name, binding);
             }
+            for (const auto &resource : resource.Resources->storage_images) {
+                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
+                LayoutBindings.emplace_back(binding, vk::DescriptorType::eStorageImage, 1, type);
+                BindingByName.emplace(resource.name, binding);
+            }
             return vk::PipelineShaderStageCreateInfo{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
         }) |
         to<std::vector>();
@@ -121,12 +126,13 @@ std::optional<vk::WriteDescriptorSet> ShaderPipeline::CreateWriteDescriptorSet(s
     if (!Shaders.HasBinding(binding_name)) return std::nullopt;
 
     const auto binding = Shaders.GetBinding(binding_name);
+    const auto &layout_bindings = Shaders.GetLayoutBindings();
+    const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
+    if (it == layout_bindings.end()) return std::nullopt;
     if (buffer_info) {
-        const auto &layout_bindings = Shaders.GetLayoutBindings();
-        const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
         return {{*DescriptorSet, binding, 0, 1, it->descriptorType, nullptr, buffer_info}};
     }
-    return {{*DescriptorSet, binding, 0, 1, vk::DescriptorType::eCombinedImageSampler, image_info, nullptr}};
+    return {{*DescriptorSet, binding, 0, 1, it->descriptorType, image_info, nullptr}};
 }
 
 void ShaderPipeline::Compile(vk::RenderPass render_pass) {
@@ -187,12 +193,13 @@ std::optional<vk::WriteDescriptorSet> ComputePipeline::CreateWriteDescriptorSet(
     if (!ShaderModules.HasBinding(binding_name)) return std::nullopt;
 
     const auto binding = ShaderModules.GetBinding(binding_name);
+    const auto &layout_bindings = ShaderModules.GetLayoutBindings();
+    const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
+    if (it == layout_bindings.end()) return std::nullopt;
     if (buffer_info) {
-        const auto &layout_bindings = ShaderModules.GetLayoutBindings();
-        const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
         return {{*DescriptorSet, binding, 0, 1, it->descriptorType, nullptr, buffer_info}};
     }
-    return {{*DescriptorSet, binding, 0, 1, vk::DescriptorType::eCombinedImageSampler, image_info, nullptr}};
+    return {{*DescriptorSet, binding, 0, 1, it->descriptorType, image_info, nullptr}};
 }
 
 void ComputePipeline::Compile() {
