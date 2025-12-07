@@ -1,9 +1,7 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
-layout(binding = 0) uniform ViewProjNearFarUBO {
-    mat4 View, Projection;
-    float Near, Far;
-} ViewProjection;
+#include "SceneUBO.glsl"
 
 layout(location = 0) out vec3 NearPos;
 layout(location = 1) out vec3 FarPos;
@@ -18,7 +16,7 @@ vec3 Unproject(vec3 screen_pos, mat4 inv_view_proj) {
 
 void main() {
     const vec2 p = QuadPositions[gl_VertexIndex];
-    const mat4 inv_view_proj = inverse(ViewProjection.Projection * ViewProjection.View);
+    const mat4 inv_view_proj = inverse(Scene.Proj * Scene.View);
     NearPos = Unproject(vec3(p, 0), inv_view_proj).xyz;
     FarPos = Unproject(vec3(p, 1), inv_view_proj).xyz;
     gl_Position = vec4(p, 0, 1);

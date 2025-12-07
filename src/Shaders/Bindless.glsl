@@ -1,0 +1,42 @@
+// Shared bindless buffer definitions
+// Include after declaring #version and extensions
+
+#extension GL_EXT_scalar_block_layout : require
+
+#include "SceneUBO.glsl"
+
+struct Vertex {
+    vec3 Position;
+    vec3 Normal;
+    vec4 Color;
+};
+
+struct WorldMatrix {
+    mat4 M;
+    mat4 MInv;
+};
+
+layout(set = 0, binding = 3, scalar) readonly buffer VertexBuffer {
+    Vertex vertices[];
+} VertexBuffers[];
+
+layout(set = 0, binding = 5, scalar) readonly buffer ModelBuffer {
+    WorldMatrix models[];
+} ModelBuffers[];
+
+layout(set = 0, binding = 4, scalar) readonly buffer IndexBuffer {
+    uint indices[];
+} IndexBuffers[];
+
+layout(push_constant) uniform PushConstants {
+    uint VertexSlot;
+    uint IndexSlot;
+    uint ModelSlot;
+    uint FirstIndex;
+    uint VertexOffset;
+    uint FirstInstance;
+    uint ObjectId;
+    uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
+    uint SelectionNodesSlot;
+    uint SelectionCounterSlot;
+} pc;

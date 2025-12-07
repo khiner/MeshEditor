@@ -1,12 +1,18 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
+// Bindless layout (set 0):
+// binding 1: storage images (HeadImage)
+// binding 3: storage buffers (SelectionNodes, BoxSelectResult) via indices
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(push_constant) uniform PC {
     uvec2 box_min;
     uvec2 box_max;
     uint object_count;
-    uint _pad;
+    uint headImageIndex;
+    uint selectionNodesIndex;
+    uint boxResultIndex;
 } pc;
 
 struct SelectionNode {
@@ -17,29 +23,29 @@ struct SelectionNode {
 
 const uint INVALID_NODE = 0xffffffffu;
 
-layout(binding = 1, r32ui) uniform uimage2D HeadImage;
+layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
 
-layout(binding = 2, std430) buffer SelectionNodes {
+layout(set = 0, binding = 6, std430) buffer SelectionNodes {
     SelectionNode nodes[];
-};
+} selectionBuffers[];
 
-layout(binding = 3, std430) buffer BoxSelectResult {
+layout(set = 0, binding = 6, std430) buffer BoxSelectResult {
     uint bits[];
-};
+} boxResults[];
 
 void main() {
     const uvec2 local = gl_GlobalInvocationID.xy;
     const uvec2 pixel = pc.box_min + local;
     if (pixel.x >= pc.box_max.x || pixel.y >= pc.box_max.y) return;
 
-    uint idx = imageLoad(HeadImage, ivec2(pixel)).r;
+    uint idx = imageLoad(HeadImages[nonuniformEXT(pc.headImageIndex)], ivec2(pixel)).r;
     while (idx != INVALID_NODE) {
-        const SelectionNode node = nodes[idx];
+        const SelectionNode node = selectionBuffers[nonuniformEXT(pc.selectionNodesIndex)].nodes[idx];
         if (node.objectID != 0 && node.objectID <= pc.object_count) {
             const uint object_idx = node.objectID - 1;
             const uint word_idx = object_idx >> 5;
             const uint bit = object_idx & 31;
-            atomicOr(bits[word_idx], 1u << bit);
+            atomicOr(boxResults[nonuniformEXT(pc.boxResultIndex)].bits[word_idx], 1u << bit);
         }
         idx = node.next;
     }

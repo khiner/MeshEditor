@@ -1,8 +1,7 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
-layout(push_constant) uniform PC {
-    uint ObjectId;
-} pc;
+#include "Bindless.glsl"
 
 struct SelectionNode {
     uint objectID;
@@ -10,30 +9,34 @@ struct SelectionNode {
     uint next;
 };
 
-layout(binding = 1, std430) buffer SelectionNodes {
+layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
+
+layout(set = 0, binding = 6, std430) buffer SelectionNodes {
     SelectionNode nodes[];
-};
+} selectionBuffers[];
 
-layout(binding = 2, r32ui) uniform uimage2D HeadImage;
-
-layout(binding = 3, std430) buffer SelectionCounter {
+layout(set = 0, binding = 6, std430) buffer SelectionCounter {
     uint count;
     uint overflow;
-};
+} counters[];
 
 const uint INVALID_NODE = 0xffffffffu;
 
 void main() {
-    const uint idx = atomicAdd(count, 1);
-    if (idx >= nodes.length()) {
-        atomicAdd(overflow, 1);
+    const uint head_index = nonuniformEXT(pc.VertexCountOrHeadImageSlot);
+    const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
+    const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
+
+    const uint idx = atomicAdd(counters[counter_index].count, 1);
+    if (idx >= selectionBuffers[nodes_index].nodes.length()) {
+        atomicAdd(counters[counter_index].overflow, 1);
         return;
     }
 
-    nodes[idx].objectID = pc.ObjectId;
-    nodes[idx].depth = gl_FragCoord.z;
+    selectionBuffers[nodes_index].nodes[idx].objectID = pc.ObjectId;
+    selectionBuffers[nodes_index].nodes[idx].depth = gl_FragCoord.z;
 
     const ivec2 coord = ivec2(gl_FragCoord.xy);
-    const uint prev = imageAtomicExchange(HeadImage, coord, idx);
-    nodes[idx].next = prev;
+    const uint prev = imageAtomicExchange(HeadImages[head_index], coord, idx);
+    selectionBuffers[nodes_index].nodes[idx].next = prev;
 }

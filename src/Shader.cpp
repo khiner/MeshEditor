@@ -1,12 +1,11 @@
 #include "Shader.h"
 #include "File.h"
 
-#include <shaderc/shaderc.hpp>
-#include <spirv_cross/spirv_cross.hpp>
-
 #include <cassert>
 #include <format>
+#include <print>
 #include <ranges>
+#include <shaderc/shaderc.hpp>
 
 using std::views::transform, std::ranges::find_if, std::ranges::to;
 
@@ -17,6 +16,48 @@ static const fs::path ShadersDir = "Shaders";
 static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
 #endif
 
+// Resolves #include directives relative to `ShadersDir`
+class ShaderIncluder : public shaderc::CompileOptions::IncluderInterface {
+public:
+    shaderc_include_result *GetInclude(
+        const char *requested_source, shaderc_include_type, const char *, size_t
+    ) override {
+        const auto path = ShadersDir / requested_source;
+        auto *result = new shaderc_include_result;
+        try {
+            auto *content = new std::string(File::Read(path));
+            auto *name = new std::string(path.string());
+            result->source_name = name->c_str();
+            result->source_name_length = name->size();
+            result->content = content->c_str();
+            result->content_length = content->size();
+            result->user_data = new IncludeData{content, name};
+        } catch (...) {
+            auto *error = new std::string(std::format("Failed to include '{}'", requested_source));
+            result->source_name = "";
+            result->source_name_length = 0;
+            result->content = error->c_str();
+            result->content_length = error->size();
+            result->user_data = new IncludeData{error, nullptr};
+        }
+        return result;
+    }
+
+    void ReleaseInclude(shaderc_include_result *data) override {
+        auto *include_data = static_cast<IncludeData *>(data->user_data);
+        delete include_data->Content;
+        delete include_data->Name;
+        delete include_data;
+        delete data;
+    }
+
+private:
+    struct IncludeData {
+        std::string *Content;
+        std::string *Name;
+    };
+};
+
 Shaders::Shaders(std::vector<ShaderTypePath> type_paths)
     : Resources(type_paths | transform([](const auto &tp) { return ShaderResource{tp}; }) | to<std::vector>()) {}
 Shaders::Shaders(Shaders &&) = default;
@@ -25,18 +66,13 @@ Shaders::~Shaders() = default;
 Shaders &Shaders::operator=(Shaders &&) = default;
 
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
-    LayoutBindings.clear();
-    BindingByName.clear();
-
     auto stages =
-        Resources | transform([this, device](auto &resource) {
+        Resources | transform([device](auto &resource) {
             static const shaderc::Compiler compiler;
-            static const auto compile_opts = [] {
-                shaderc::CompileOptions opts;
-                opts.SetGenerateDebugInfo(); // To get resource variable names for linking with their binding.
-                opts.SetOptimizationLevel(shaderc_optimization_level_performance);
-                return opts;
-            }();
+            shaderc::CompileOptions compile_opts;
+            compile_opts.SetGenerateDebugInfo(); // To get resource variable names for linking with their binding.
+            compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
+            compile_opts.SetIncluder(std::make_unique<ShaderIncluder>());
             const auto type = resource.TypePath.Type;
             const auto shader_text = File::Read(ShadersDir / resource.TypePath.Path);
             const auto kind = [type] {
@@ -49,50 +85,12 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
             }();
             const auto comp_result = compiler.CompileGlslToSpv(shader_text, kind, "", compile_opts);
             if (comp_result.GetCompilationStatus() != shaderc_compilation_status_success) {
-                // todo type to string
-                throw std::runtime_error(std::format("Failed to compile {} shader: {}", int(type), comp_result.GetErrorMessage()));
+                const auto error_message = comp_result.GetErrorMessage();
+                std::println("Shader compilation error in {} shader:\n{}", vk::to_string(type), error_message);
+                throw std::runtime_error(std::format("Failed to compile {} shader: {}", vk::to_string(type), error_message));
             }
             std::vector<uint> spirv_words{comp_result.cbegin(), comp_result.cend()};
             resource.Module = device.createShaderModuleUnique({{}, spirv_words});
-            spirv_cross::Compiler comp(std::move(spirv_words));
-            resource.Resources = std::make_unique<spirv_cross::ShaderResources>(comp.get_shader_resources());
-
-            for (const auto &resource : resource.Resources->uniform_buffers) {
-                // Only using a single set for now. Otherwise, we'd group LayoutBindings by set.
-                // uint set = comp.get_decoration(resource.id, spv::DecorationDescriptorSet);
-
-                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-                if (!BindingByName.contains(resource.name)) {
-                    BindingByName.emplace(resource.name, binding);
-                    // Keep LayoutBindings sorted by binding number.
-                    const auto pos = std::lower_bound(LayoutBindings.begin(), LayoutBindings.end(), binding, [](const auto &b, uint i) { return b.binding < i; });
-                    LayoutBindings.insert(pos, {binding, vk::DescriptorType::eUniformBuffer, 1, type, nullptr});
-                } else {
-                    LayoutBindings[binding].stageFlags |= type; // This binding is used in multiple stages.
-                }
-            }
-
-            for (const auto &resource : resource.Resources->storage_buffers) {
-                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-                if (!BindingByName.contains(resource.name)) {
-                    BindingByName.emplace(resource.name, binding);
-                    const auto pos = std::lower_bound(LayoutBindings.begin(), LayoutBindings.end(), binding, [](const auto &b, uint i) { return b.binding < i; });
-                    LayoutBindings.insert(pos, {binding, vk::DescriptorType::eStorageBuffer, 1, type, nullptr});
-                } else {
-                    LayoutBindings[binding].stageFlags |= type;
-                }
-            }
-
-            for (const auto &resource : resource.Resources->sampled_images) {
-                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-                LayoutBindings.emplace_back(binding, vk::DescriptorType::eCombinedImageSampler, 1, type);
-                BindingByName.emplace(resource.name, binding);
-            }
-            for (const auto &resource : resource.Resources->storage_images) {
-                const uint binding = comp.get_decoration(resource.id, spv::DecorationBinding);
-                LayoutBindings.emplace_back(binding, vk::DescriptorType::eStorageImage, 1, type);
-                BindingByName.emplace(resource.name, binding);
-            }
             return vk::PipelineShaderStageCreateInfo{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
         }) |
         to<std::vector>();
@@ -107,7 +105,9 @@ ShaderPipeline::ShaderPipeline(
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
     vk::SampleCountFlagBits msaa_samples,
     std::optional<vk::PushConstantRange> push_constant_range,
-    float depth_bias
+    float depth_bias,
+    vk::DescriptorSetLayout shared_set_layout,
+    vk::DescriptorSet shared_set
 ) : Device(device), Shaders(std::move(shaders)),
     VertexInputState(std::move(vertex_input_state)),
     MultisampleState({{}, msaa_samples}),
@@ -115,24 +115,8 @@ ShaderPipeline::ShaderPipeline(
     DepthStencilState(std::move(depth_stencil_state)),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, depth_bias != 0.f, depth_bias, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}) {
-    Shaders.CompileAll(Device); // Populates descriptor sets. todo This is done redundantly for all shaders in `Compile` at app startup.
-    DescriptorSetLayout = Device.createDescriptorSetLayoutUnique({{}, Shaders.GetLayoutBindings()});
-    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &(*DescriptorSetLayout), push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
-    const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, 1, &(*DescriptorSetLayout)};
-    DescriptorSet = std::move(Device.allocateDescriptorSetsUnique(alloc_info).front());
-}
-
-std::optional<vk::WriteDescriptorSet> ShaderPipeline::CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *buffer_info, const vk::DescriptorImageInfo *image_info) const {
-    if (!Shaders.HasBinding(binding_name)) return std::nullopt;
-
-    const auto binding = Shaders.GetBinding(binding_name);
-    const auto &layout_bindings = Shaders.GetLayoutBindings();
-    const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
-    if (it == layout_bindings.end()) return std::nullopt;
-    if (buffer_info) {
-        return {{*DescriptorSet, binding, 0, 1, it->descriptorType, nullptr, buffer_info}};
-    }
-    return {{*DescriptorSet, binding, 0, 1, it->descriptorType, image_info, nullptr}};
+    Descriptors.Init(Device, descriptor_pool, shared_set_layout, shared_set);
+    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &Descriptors.Layout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
 }
 
 void ShaderPipeline::Compile(vk::RenderPass render_pass) {
@@ -169,37 +153,15 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
 
 void ShaderPipeline::RenderQuad(vk::CommandBuffer cb) const {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &*DescriptorSet, 0, nullptr);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &Descriptors.Set, 0, nullptr);
     cb.draw(4, 1, 0, 0); // Draw a full-screen quad triangle strip.
 }
 
-ComputePipeline::ComputePipeline(vk::Device d, vk::DescriptorPool descriptor_pool, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range)
+ComputePipeline::ComputePipeline(vk::Device d, vk::DescriptorPool descriptor_pool, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range, vk::DescriptorSetLayout shared_set_layout, vk::DescriptorSet shared_set)
     : Device(d), ShaderModules(std::move(shaders)) {
-    const auto shader_stages = ShaderModules.CompileAll(d);
-    const auto layout_bindings = ShaderModules.GetLayoutBindings();
-    const vk::DescriptorSetLayoutCreateInfo layout_info{{}, layout_bindings};
-    DescriptorSetLayout = d.createDescriptorSetLayoutUnique(layout_info);
-
-    static const uint32_t descriptor_count = 1;
-    const vk::DescriptorSetAllocateInfo alloc_info{descriptor_pool, descriptor_count, &*DescriptorSetLayout};
-    DescriptorSet = std::move(d.allocateDescriptorSetsUnique(alloc_info).front());
-
-    PipelineLayout = d.createPipelineLayoutUnique({{}, 1, &*DescriptorSetLayout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
-    const vk::ComputePipelineCreateInfo pipeline_info{{}, shader_stages.front(), *PipelineLayout};
-    Pipeline = Device.createComputePipelineUnique({}, pipeline_info).value;
-}
-
-std::optional<vk::WriteDescriptorSet> ComputePipeline::CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *buffer_info, const vk::DescriptorImageInfo *image_info) const {
-    if (!ShaderModules.HasBinding(binding_name)) return std::nullopt;
-
-    const auto binding = ShaderModules.GetBinding(binding_name);
-    const auto &layout_bindings = ShaderModules.GetLayoutBindings();
-    const auto it = find_if(layout_bindings, [binding](const auto &b) { return b.binding == binding; });
-    if (it == layout_bindings.end()) return std::nullopt;
-    if (buffer_info) {
-        return {{*DescriptorSet, binding, 0, 1, it->descriptorType, nullptr, buffer_info}};
-    }
-    return {{*DescriptorSet, binding, 0, 1, it->descriptorType, image_info, nullptr}};
+    Descriptors.Init(d, descriptor_pool, shared_set_layout, shared_set);
+    PipelineLayout = d.createPipelineLayoutUnique({{}, 1, &Descriptors.Layout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
+    Compile();
 }
 
 void ComputePipeline::Compile() {
@@ -207,4 +169,28 @@ void ComputePipeline::Compile() {
     assert(shader_stages.size() == 1 && shader_stages.front().stage == vk::ShaderStageFlagBits::eCompute && "Compute pipeline expects a single compute shader stage");
     const vk::ComputePipelineCreateInfo pipeline_info{{}, shader_stages.front(), *PipelineLayout};
     Pipeline = Device.createComputePipelineUnique({}, pipeline_info).value;
+}
+
+ShaderPipeline PipelineContext::CreateGraphics(
+    Shaders &&shaders,
+    vk::PipelineVertexInputStateCreateInfo vertex_input,
+    vk::PolygonMode polygon_mode,
+    vk::PrimitiveTopology topology,
+    vk::PipelineColorBlendAttachmentState color_blend,
+    std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil,
+    std::optional<vk::PushConstantRange> push_constants,
+    float depth_bias
+) const {
+    return {
+        Device, Pool, std::move(shaders), vertex_input,
+        polygon_mode, topology, color_blend, depth_stencil,
+        MsaaSamples, push_constants, depth_bias, SharedLayout, SharedSet
+    };
+}
+
+ComputePipeline PipelineContext::CreateCompute(
+    Shaders &&shaders,
+    std::optional<vk::PushConstantRange> push_constants
+) const {
+    return {Device, Pool, std::move(shaders), push_constants, SharedLayout, SharedSet};
 }

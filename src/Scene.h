@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Camera.h"
+#include "Slots.h"
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "mesh/Handle.h"
@@ -20,6 +21,9 @@ namespace fs = std::filesystem;
 struct Path {
     fs::path Value;
 };
+
+struct RenderBuffers;
+struct ModelsBuffer;
 
 struct World {
     const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
@@ -92,6 +96,8 @@ inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice
 struct SvgResource;
 struct ScenePipelines;
 struct SceneUniqueBuffers;
+struct BindlessResources;
+struct BindlessAllocator;
 
 struct SceneVulkanResources {
     vk::Instance Instance;
@@ -157,6 +163,11 @@ struct Scene {
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
     void UpdateRenderBuffers(entt::entity);
+    void UpdateSelectionBindlessDescriptors();
+    void UpdateRenderBufferBindless(RenderBuffers &);
+    void UpdateModelBufferBindless(ModelsBuffer &);
+    void ReleaseRenderBufferBindless(RenderBuffers &);
+    void ReleaseModelBufferBindless(ModelsBuffer &);
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
 
@@ -169,6 +180,10 @@ struct Scene {
 
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
+    void OnDestroyMeshBuffers(entt::registry &, entt::entity);
+    void OnDestroyModelsBuffer(entt::registry &, entt::entity);
+    void OnDestroyBoundingBoxesBuffers(entt::registry &, entt::entity);
+    void OnDestroyBvhBoxesBuffers(entt::registry &, entt::entity);
 
     std::string DebugBufferHeapUsage() const;
 
@@ -179,6 +194,13 @@ private:
     vk::UniqueCommandBuffer RenderCommandBuffer;
     vk::UniqueFence RenderFence, TransferFence;
     vk::UniqueCommandBuffer ClickCommandBuffer;
+    std::unique_ptr<BindlessResources> Bindless;
+    std::unique_ptr<BindlessAllocator> BindlessAlloc;
+
+    struct SelectionBindlessHandles;
+    std::unique_ptr<SelectionBindlessHandles> SelectionHandles;
+
+    static constexpr uint32_t SceneUBOSlot{0};
 
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};

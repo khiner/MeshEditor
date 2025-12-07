@@ -1,11 +1,9 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
 // Based on https://asliceofrendering.com/scene%20helper/2020/01/05/InfiniteGrid/
 
-layout(binding = 0) uniform ViewProjNearFarUBO {
-    mat4 View, Projection;
-    float Near, Far;
-} ViewProjection;
+#include "SceneUBO.glsl"
 
 layout(location = 0) in vec3 NearPos;
 layout(location = 1) in vec3 FarPos;
@@ -39,7 +37,8 @@ vec4 Grid(vec3 pos_3d, float scale) {
 
 // Assumes `gl_FragDepth` is set to the depth of the fragment in clip space.
 float LinearDepth() {
-    const float near = ViewProjection.Near, far = ViewProjection.Far;
+    const float near = Scene.CameraPositionNear.w;
+    const float far = Scene.LightDirectionFar.w;
     const float clip_space_depth = gl_FragDepth * 2.0 - 1.0; // Normalize to [-1, 1].
     const float linear_depth = (2.0 * near * far) / (near + far - clip_space_depth * (far - near));
     return linear_depth / far; // Normalize.
@@ -55,7 +54,7 @@ vec4 BlendGrids(vec4 a, vec4 b) {
 void main() {
     const float t = -NearPos.y / (FarPos.y - NearPos.y);
     const vec3 pos_3d = NearPos + t * (FarPos - NearPos);
-    const vec4 clip_space_pos = ViewProjection.Projection * ViewProjection.View * vec4(pos_3d.xyz, 1);
+    const vec4 clip_space_pos = Scene.Proj * Scene.View * vec4(pos_3d.xyz, 1);
     gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
 
     // Draw grid at three scales.

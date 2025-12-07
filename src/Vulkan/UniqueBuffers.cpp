@@ -21,7 +21,13 @@ UniqueBuffers::UniqueBuffers(const BufferContext &ctx, vk::DeviceSize size, vk::
     : Ctx(ctx),
       Usage(usage),
       HostBuffer(*Ctx.Allocator, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst),
-      DeviceBuffer(*Ctx.Allocator, size, MemoryUsage::GpuOnly, usage | vk::BufferUsageFlagBits::eTransferSrc) {}
+      // Device buffers need to be copy destinations for staging uploads and copy sources for reallocations.
+      DeviceBuffer(
+          *Ctx.Allocator,
+          size,
+          MemoryUsage::GpuOnly,
+          usage | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst
+      ) {}
 
 UniqueBuffers::UniqueBuffers(const BufferContext &ctx, std::span<const std::byte> data, vk::BufferUsageFlags usage)
     : UniqueBuffers(ctx, data.size(), usage) {

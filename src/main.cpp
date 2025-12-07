@@ -46,7 +46,6 @@ void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &w
     const auto &fd = wd.Frames[wd.FrameIndex];
     vk::Fence fd_fence{fd.Fence};
     CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX));
-    CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX)); // wait indefinitely instead of periodically checking
     device.resetFences(fd_fence);
     device.resetCommandPool(fd.CommandPool);
     vk::CommandBuffer command_buffer{fd.CommandBuffer};
@@ -123,6 +122,10 @@ constexpr auto VkApiVersion = VK_API_VERSION_1_4;
 
 struct VulkanContext {
     VulkanContext(std::vector<const char *> enabled_extensions) {
+        const auto IsExtensionAvailable = [](std::span<const vk::ExtensionProperties> props, std::string_view extension) {
+            return any_of(props, [extension](const auto &prop) { return strcmp(prop.extensionName, extension.data()) == 0; });
+        };
+
         const auto IsLayerAvailable = [&](std::string_view layer) {
             static const auto available_layers = vk::enumerateInstanceLayerProperties();
             return any_of(available_layers, [layer](const auto &prop) { return strcmp(prop.layerName, layer.data()) == 0; });
@@ -138,13 +141,10 @@ struct VulkanContext {
         AddLayerIfAvailable("VK_LAYER_KHRONOS_validation");
 
         const auto instance_props = vk::enumerateInstanceExtensionProperties();
-        const auto IsExtensionAvailable = [&](std::string_view extension) {
-            return any_of(instance_props, [extension](const auto &prop) { return strcmp(prop.extensionName, extension.data()) == 0; });
-        };
 
         vk::InstanceCreateFlags flags;
         const auto AddExtensionIfAvailable = [&](std::string_view extension, vk::InstanceCreateFlags flag = {}) {
-            if (IsExtensionAvailable(extension)) {
+            if (IsExtensionAvailable(instance_props, extension)) {
                 enabled_extensions.push_back(extension.data());
                 flags |= flag;
                 return true;
@@ -158,6 +158,24 @@ struct VulkanContext {
         const vk::ApplicationInfo app{"", {}, "", {}, VkApiVersion};
         Instance = vk::createInstanceUnique({flags, &app, enabled_layers, enabled_extensions});
         PhysicalDevice = FindPhysicalDevice(Instance);
+
+        const auto device_extensions_props = PhysicalDevice.enumerateDeviceExtensionProperties();
+        const auto RequireDeviceExtension = [&](std::string_view extension) {
+            if (!IsExtensionAvailable(device_extensions_props, extension)) {
+                throw std::runtime_error(std::format("Required device extension {} is not available.", extension));
+            }
+        };
+        const auto supported_features = PhysicalDevice.getFeatures2<
+            vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceDescriptorIndexingFeatures,
+            vk::PhysicalDeviceBufferDeviceAddressFeatures,
+            vk::PhysicalDeviceScalarBlockLayoutFeatures>();
+        const auto &supported_indexing = supported_features.get<vk::PhysicalDeviceDescriptorIndexingFeatures>();
+        const auto &supported_bda = supported_features.get<vk::PhysicalDeviceBufferDeviceAddressFeatures>();
+        const auto &supported_scalar = supported_features.get<vk::PhysicalDeviceScalarBlockLayoutFeatures>();
+        const auto RequireFeature = [](bool supported, std::string_view feature_name) {
+            if (!supported) throw std::runtime_error(std::format("Required device feature {} is not available.", feature_name));
+        };
 
         const auto qfp = PhysicalDevice.getQueueFamilyProperties();
         const auto qfp_find_graphics_it = find_if(qfp, [](const auto &qfp) { return bool(qfp.queueFlags & vk::QueueFlagBits::eGraphics); });
@@ -173,36 +191,64 @@ struct VulkanContext {
         device_features.fragmentStoresAndAtomics = VK_TRUE; // For writing to storage buffers from fragment shaders
 
         // Create logical device (with one queue).
-        static const std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"};
+        RequireDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        std::vector<const char *> device_extensions{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+        if (IsExtensionAvailable(device_extensions_props, "VK_KHR_portability_subset")) {
+            device_extensions.push_back("VK_KHR_portability_subset");
+        }
+        RequireDeviceExtension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+        device_extensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+        RequireDeviceExtension(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+
+        RequireFeature(supported_indexing.runtimeDescriptorArray, "runtimeDescriptorArray");
+        RequireFeature(supported_indexing.descriptorBindingPartiallyBound, "descriptorBindingPartiallyBound");
+        RequireFeature(supported_indexing.descriptorBindingVariableDescriptorCount, "descriptorBindingVariableDescriptorCount");
+        RequireFeature(supported_indexing.shaderSampledImageArrayNonUniformIndexing, "shaderSampledImageArrayNonUniformIndexing");
+        RequireFeature(supported_indexing.shaderStorageBufferArrayNonUniformIndexing, "shaderStorageBufferArrayNonUniformIndexing");
+        RequireFeature(supported_indexing.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind");
+        RequireFeature(supported_indexing.descriptorBindingStorageBufferUpdateAfterBind, "descriptorBindingStorageBufferUpdateAfterBind");
+        RequireFeature(supported_indexing.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
+        RequireFeature(supported_bda.bufferDeviceAddress, "bufferDeviceAddress");
+        RequireFeature(supported_scalar.scalarBlockLayout, "scalarBlockLayout");
+
+        vk::PhysicalDeviceBufferDeviceAddressFeatures buffer_device_address_features{};
+        buffer_device_address_features.bufferDeviceAddress = VK_TRUE;
+        vk::PhysicalDeviceScalarBlockLayoutFeatures scalar_block_layout_features{};
+        scalar_block_layout_features.scalarBlockLayout = VK_TRUE;
+        scalar_block_layout_features.pNext = &buffer_device_address_features;
+        vk::PhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_features{};
+        descriptor_indexing_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        descriptor_indexing_features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+        descriptor_indexing_features.shaderStorageImageArrayNonUniformIndexing = supported_indexing.shaderStorageImageArrayNonUniformIndexing;
+        descriptor_indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
+        descriptor_indexing_features.runtimeDescriptorArray = VK_TRUE;
+        descriptor_indexing_features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        descriptor_indexing_features.descriptorBindingSampledImageUpdateAfterBind = supported_indexing.descriptorBindingSampledImageUpdateAfterBind;
+        descriptor_indexing_features.descriptorBindingStorageBufferUpdateAfterBind = supported_indexing.descriptorBindingStorageBufferUpdateAfterBind;
+        descriptor_indexing_features.descriptorBindingStorageImageUpdateAfterBind = supported_indexing.descriptorBindingStorageImageUpdateAfterBind;
+        descriptor_indexing_features.pNext = &scalar_block_layout_features;
+        vk::PhysicalDeviceFeatures2 features2{};
+        features2.features = device_features;
+        features2.pNext = &descriptor_indexing_features;
+
         static constexpr std::array queue_priority{1.0f};
         const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
-        Device = PhysicalDevice.createDeviceUnique({{}, queue_info, {}, device_extensions, &device_features});
+        vk::DeviceCreateInfo dci{{}, queue_info, {}, device_extensions, nullptr};
+        dci.pNext = &features2;
+        Device = PhysicalDevice.createDeviceUnique(dci);
         Queue = Device->getQueue(QueueFamily, 0);
 
         // Create descriptor pool.
-        const std::vector pool_sizes{
-            // Image samplers:
-            // 1) (2D filled shape) silhouette of the active mesh
-            // 2) (2D line) silhouette of the active mesh, after edge detection
-            // 3) Final scene texture sampler
-            // 4) ImGui fonts
-            // 5) SVG image texture
-            // 6-9) SVG icons (move/rotate/scale/universal)
-            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 9},
-            // All uniform buffer descriptors used across all shaders.
-            {vk::DescriptorType::eUniformBuffer, 10},
-            // Storage buffers:
-            // Selection nodes, counters, click/box results, etc.
-            {vk::DescriptorType::eStorageBuffer, 9},
-            // Storage images:
-            // 1) Selection head image for fragment/compute passes (shared but counted per set)
-            {vk::DescriptorType::eStorageImage, 3},
+        // The traditional descriptor pool is now mostly for ImGui and a few legacy descriptors.
+        const std::array pool_sizes{
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 16},
+            vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 8},
+            vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 8},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 8},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 4},
         };
-        const uint max_sets = std::accumulate(
-            pool_sizes.begin(), pool_sizes.end(), 0u,
-            [](uint sum, const vk::DescriptorPoolSize &pool_size) { return sum + pool_size.descriptorCount; }
-        );
-        DescriptorPool = Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, max_sets, pool_sizes});
+        DescriptorPool = Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 64, pool_sizes});
     }
     ~VulkanContext() = default; // Using unique handles, so no need to manually destroy anything.
 

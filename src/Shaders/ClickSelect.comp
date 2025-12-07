@@ -1,9 +1,16 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
+// Bindless layout (set 0):
+// binding 1: storage images (HeadImage)
+// binding 3: storage buffers (SelectionNodes, ClickResult) via indices
 layout(local_size_x = 1) in;
 
 layout(push_constant) uniform PC {
     uvec2 target_px;
+    uint headImageIndex;
+    uint selectionNodesIndex;
+    uint clickResultIndex;
 } pc;
 
 struct SelectionNode {
@@ -15,33 +22,33 @@ struct SelectionNode {
 #define MAX_CLICK_RESULTS 64
 const uint INVALID_NODE = 0xffffffffu;
 
-layout(binding = 1, r32ui) uniform uimage2D HeadImage;
+layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
 
-layout(binding = 2, std430) buffer SelectionNodes {
+layout(set = 0, binding = 6, std430) buffer SelectionNodes {
     SelectionNode nodes[];
-};
+} selectionBuffers[];
 
 struct ClickHit {
     float depth;
     uint objectID;
 };
 
-layout(binding = 3, std430) buffer ClickResult {
+layout(set = 0, binding = 6, std430) buffer ClickResult {
     uint count;
     ClickHit hits[MAX_CLICK_RESULTS];
-};
+} clickResults[];
 
 void main() {
     // Single invocation does the traversal
     if (gl_GlobalInvocationID.x != 0) return;
 
-    uint idx = imageLoad(HeadImage, ivec2(pc.target_px)).r;
+    uint idx = imageLoad(HeadImages[nonuniformEXT(pc.headImageIndex)], ivec2(pc.target_px)).r;
     while (idx != INVALID_NODE) {
-        const SelectionNode node = nodes[idx];
-        const uint write_idx = atomicAdd(count, 1);
+        const SelectionNode node = selectionBuffers[nonuniformEXT(pc.selectionNodesIndex)].nodes[idx];
+        const uint write_idx = atomicAdd(clickResults[nonuniformEXT(pc.clickResultIndex)].count, 1);
         if (write_idx < MAX_CLICK_RESULTS) {
-            hits[write_idx].depth = node.depth;
-            hits[write_idx].objectID = node.objectID;
+            clickResults[nonuniformEXT(pc.clickResultIndex)].hits[write_idx].depth = node.depth;
+            clickResults[nonuniformEXT(pc.clickResultIndex)].hits[write_idx].objectID = node.objectID;
         }
         idx = node.next;
     }

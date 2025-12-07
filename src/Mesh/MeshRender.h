@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Slots.h"
 #include "../Vulkan/UniqueBuffers.h"
 #include "BBox.h"
 #include "Mesh.h"
@@ -38,6 +39,7 @@ struct RenderInstance {
 // Holds the `WorldMatrix` of all instances of the mesh.
 struct ModelsBuffer {
     mvk::UniqueBuffers Buffer;
+    uint32_t Slot{InvalidSlot};
 };
 
 // Component for entities that render a mesh via instancing.
@@ -54,6 +56,8 @@ struct RenderBuffers {
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
     mvk::UniqueBuffers Vertices, Indices;
+    uint32_t VertexSlot{InvalidSlot};
+    uint32_t IndexSlot{InvalidSlot};
 };
 
 struct BoundingBoxesBuffers {

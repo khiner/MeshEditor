@@ -39,9 +39,8 @@ Audio-specific features:
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
+* Bindless rendering
 * Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
-* Resource reflection: Use [`SPIRV-Cross`](https://github.com/KhronosGroup/SPIRV-Cross) to automatically create descriptor set layout bindings for all shader pipelines
-* Instanced rendering of shared geometry with variable transforms
 
 ### Physical audio modeling
 

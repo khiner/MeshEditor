@@ -10,10 +10,6 @@
 
 namespace fs = std::filesystem;
 
-namespace spirv_cross {
-struct ShaderResources;
-}
-
 using ShaderType = vk::ShaderStageFlagBits;
 
 struct ShaderTypePath {
@@ -28,26 +24,17 @@ struct Shaders {
 
     Shaders &operator=(Shaders &&);
 
-    // Populates all fields.
+    // Populates modules and returns shader stage infos.
     std::vector<vk::PipelineShaderStageCreateInfo> CompileAll(vk::Device);
 
-    bool HasBinding(std::string_view name) const { return BindingByName.contains(name); }
-    uint GetBinding(std::string_view name) const { return BindingByName.at(name); }
-    const auto &GetLayoutBindings() const { return LayoutBindings; }
-
 private:
-    std::vector<vk::DescriptorSetLayoutBinding> LayoutBindings{}; // Sorted by binding number.
-    std::unordered_map<std::string_view, uint> BindingByName{};
-
     struct ShaderResource {
         ShaderTypePath TypePath;
         vk::UniqueShaderModule Module{};
-        std::unique_ptr<spirv_cross::ShaderResources> Resources{};
     };
     std::vector<ShaderResource> Resources;
 };
 
-// Convenience generators for default pipeline states.
 constexpr vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test = true, bool write = true, vk::CompareOp compare_op = vk::CompareOp::eLess) {
     return {
         {}, // flags
@@ -87,6 +74,30 @@ constexpr vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool 
     };
 }
 
+struct DescriptorSetOwnership {
+    vk::DescriptorSetLayout Layout{};
+    vk::DescriptorSet Set{};
+
+    void Init(vk::Device device, vk::DescriptorPool pool, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
+        if (shared_layout) {
+            Layout = shared_layout;
+        } else {
+            OwnedLayout = device.createDescriptorSetLayoutUnique({});
+            Layout = *OwnedLayout;
+        }
+        if (shared_set) {
+            Set = shared_set;
+        } else {
+            OwnedSet = std::move(device.allocateDescriptorSetsUnique({pool, 1, &Layout}).front());
+            Set = *OwnedSet;
+        }
+    }
+
+private:
+    vk::UniqueDescriptorSetLayout OwnedLayout;
+    vk::UniqueDescriptorSet OwnedSet;
+};
+
 struct ShaderPipeline {
     ShaderPipeline(
         vk::Device, vk::DescriptorPool, Shaders &&,
@@ -97,7 +108,9 @@ struct ShaderPipeline {
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state = {},
         vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1,
         std::optional<vk::PushConstantRange> push_constant_range = std::nullopt,
-        float depth_bias = 0.f
+        float depth_bias = 0.f,
+        vk::DescriptorSetLayout shared_set_layout = {},
+        vk::DescriptorSet shared_set = {}
     );
     ShaderPipeline(ShaderPipeline &&) = default;
     ~ShaderPipeline() = default;
@@ -113,31 +126,59 @@ struct ShaderPipeline {
     vk::PipelineRasterizationStateCreateInfo RasterizationState;
     vk::PipelineInputAssemblyStateCreateInfo InputAssemblyState;
 
-    vk::UniqueDescriptorSetLayout DescriptorSetLayout;
-    vk::UniqueDescriptorSet DescriptorSet;
+    DescriptorSetOwnership Descriptors;
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
-    void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
+    vk::DescriptorSetLayout GetDescriptorSetLayout() const { return Descriptors.Layout; }
+    vk::DescriptorSet GetDescriptorSet() const { return Descriptors.Set; }
 
-    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
+    void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
 
     void RenderQuad(vk::CommandBuffer) const;
 };
 
 struct ComputePipeline {
-    ComputePipeline(vk::Device, vk::DescriptorPool, Shaders &&, std::optional<vk::PushConstantRange> = std::nullopt);
+    ComputePipeline(
+        vk::Device, vk::DescriptorPool, Shaders &&, std::optional<vk::PushConstantRange> = std::nullopt,
+        vk::DescriptorSetLayout shared_set_layout = {}, vk::DescriptorSet shared_set = {}
+    );
     ComputePipeline(ComputePipeline &&) = default;
     ~ComputePipeline() = default;
 
     vk::Device Device;
     Shaders ShaderModules;
 
-    vk::UniqueDescriptorSetLayout DescriptorSetLayout;
-    vk::UniqueDescriptorSet DescriptorSet;
+    DescriptorSetOwnership Descriptors;
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
+    vk::DescriptorSetLayout GetDescriptorSetLayout() const { return Descriptors.Layout; }
+    vk::DescriptorSet GetDescriptorSet() const { return Descriptors.Set; }
+
     void Compile();
-    std::optional<vk::WriteDescriptorSet> CreateWriteDescriptorSet(std::string_view binding_name, const vk::DescriptorBufferInfo *, const vk::DescriptorImageInfo *) const;
+};
+
+struct PipelineContext {
+    vk::Device Device;
+    vk::DescriptorPool Pool;
+    vk::DescriptorSetLayout SharedLayout;
+    vk::DescriptorSet SharedSet;
+    vk::SampleCountFlagBits MsaaSamples;
+
+    ShaderPipeline CreateGraphics(
+        Shaders &&shaders,
+        vk::PipelineVertexInputStateCreateInfo vertex_input,
+        vk::PolygonMode polygon_mode,
+        vk::PrimitiveTopology topology,
+        vk::PipelineColorBlendAttachmentState color_blend,
+        std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil,
+        std::optional<vk::PushConstantRange> push_constants = std::nullopt,
+        float depth_bias = 0.f
+    ) const;
+
+    ComputePipeline CreateCompute(
+        Shaders &&shaders,
+        std::optional<vk::PushConstantRange> push_constants = std::nullopt
+    ) const;
 };
