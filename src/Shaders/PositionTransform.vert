@@ -6,6 +6,6 @@
 void main() {
     const uint idx = IndexBuffers[nonuniformEXT(pc.IndexSlot)].indices[pc.FirstIndex + gl_VertexIndex] + pc.VertexOffset;
     const vec3 position = VertexBuffers[nonuniformEXT(pc.VertexSlot)].vertices[idx].Position;
-    const mat4 model = ModelBuffers[nonuniformEXT(pc.ModelSlot)].models[pc.FirstInstance].M;
+    const mat4 model = ModelBuffers[nonuniformEXT(pc.ModelSlot)].models[pc.FirstInstance + gl_InstanceIndex].M;
     gl_Position = Scene.Proj * Scene.View * model * vec4(position, 1.0);
 }

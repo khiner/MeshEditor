@@ -275,7 +275,7 @@ BindlessConfig MakeBindlessConfig(vk::PhysicalDevice pd) {
     const auto &indexing_props = props2.get<vk::PhysicalDeviceDescriptorIndexingProperties>();
     const uint32_t max_buffers = std::clamp(
         std::min(indexing_props.maxDescriptorSetUpdateAfterBindStorageBuffers, indexing_props.maxPerStageDescriptorUpdateAfterBindStorageBuffers),
-        1u, 1024u
+        1u, 32768u
     );
     const uint32_t max_images = std::clamp(
         std::min(indexing_props.maxDescriptorSetUpdateAfterBindStorageImages, indexing_props.maxPerStageDescriptorUpdateAfterBindStorageImages),
@@ -1093,7 +1093,8 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
     const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
-    auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
+    auto &models = R.get<ModelsBuffer>(mesh_entity);
+    auto &model_buffer = models.Buffer;
     if (visible) {
         auto &render_instance = R.emplace_or_replace<RenderInstance>(entity);
         render_instance.BufferIndex = model_buffer.UsedSize / sizeof(WorldMatrix);
@@ -1118,7 +1119,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
             }
         }
     }
-    UpdateModelBufferBindless(R.get<ModelsBuffer>(mesh_entity));
+    UpdateModelBufferBindless(models);
     InvalidateCommandBuffer();
 }
 
@@ -1146,7 +1147,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<MeshSelection>(mesh_entity);
         R.emplace<MeshHighlightedVertices>(mesh_entity);
         R.emplace<ModelsBuffer>(
-            mesh_entity, mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer}
+            mesh_entity,
+            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer}
         );
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Faces);
