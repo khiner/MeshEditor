@@ -8,7 +8,7 @@ layout(location = 1) out vec3 WorldPosition;
 layout(location = 2) out vec4 Color;
 
 void main() {
-    const uint idx = IndexBuffers[nonuniformEXT(pc.IndexSlot)].indices[pc.FirstIndex + gl_VertexIndex] + pc.VertexOffset;
+    const uint idx = IndexBuffers[nonuniformEXT(pc.IndexSlot)].indices[gl_VertexIndex];
     const Vertex vert = VertexBuffers[nonuniformEXT(pc.VertexSlot)].vertices[idx];
     const WorldMatrix world = ModelBuffers[nonuniformEXT(pc.ModelSlot)].models[pc.FirstInstance + gl_InstanceIndex];
 

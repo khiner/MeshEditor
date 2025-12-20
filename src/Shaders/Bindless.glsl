@@ -32,8 +32,6 @@ layout(push_constant) uniform PushConstants {
     uint VertexSlot;
     uint IndexSlot;
     uint ModelSlot;
-    uint FirstIndex;
-    uint VertexOffset;
     uint FirstInstance;
     uint ObjectId;
     uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment

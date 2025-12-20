@@ -9,7 +9,7 @@ layout(location = 2) out vec4 Color;
 
 void main() {
     const uint vertex_count = max(pc.VertexCountOrHeadImageSlot, 1u);
-    const uint idx = min(gl_VertexIndex, vertex_count - 1) + pc.VertexOffset;
+    const uint idx = min(gl_VertexIndex, vertex_count - 1);
     const Vertex vert = VertexBuffers[nonuniformEXT(pc.VertexSlot)].vertices[idx];
     const WorldMatrix world = ModelBuffers[nonuniformEXT(pc.ModelSlot)].models[pc.FirstInstance + gl_InstanceIndex];
 

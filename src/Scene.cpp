@@ -80,8 +80,6 @@ struct DrawPushConstants {
     uint32_t VertexSlot;
     uint32_t IndexSlot;
     uint32_t ModelSlot;
-    uint32_t FirstIndex;
-    uint32_t VertexOffset;
     uint32_t FirstInstance;
     uint32_t ObjectId;
     uint32_t VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
@@ -257,9 +255,6 @@ void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
     UpdateWorldMatrix(r, e);
 }
 
-// todo: consider updating `drawIndexed` to use a different strategy:
-//   -  https://www.reddit.com/r/vulkan/comments/b7u2hu/way_to_draw_multiple_meshes_with_different/
-//      vkCmdDrawIndexedIndirectCount & put the offsets in a UBO indexed with gl_DrawId.
 void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline) {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, shader_pipeline.GetDescriptorSet(), {});
@@ -271,28 +266,28 @@ constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBit
 constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 
 BindlessConfig MakeBindlessConfig(vk::PhysicalDevice pd) {
-    const auto props2 = pd.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>();
-    const auto &indexing_props = props2.get<vk::PhysicalDeviceDescriptorIndexingProperties>();
-    const uint32_t max_buffers = std::clamp(
-        std::min(indexing_props.maxDescriptorSetUpdateAfterBindStorageBuffers, indexing_props.maxPerStageDescriptorUpdateAfterBindStorageBuffers),
-        1u, 32768u
-    );
-    const uint32_t max_images = std::clamp(
-        std::min(indexing_props.maxDescriptorSetUpdateAfterBindStorageImages, indexing_props.maxPerStageDescriptorUpdateAfterBindStorageImages),
-        1u, 1024u
-    );
-    const uint32_t max_uniforms = std::clamp(
-        std::min(indexing_props.maxDescriptorSetUpdateAfterBindUniformBuffers, indexing_props.maxPerStageDescriptorUpdateAfterBindUniformBuffers),
-        1u, 64u
-    );
-    const uint32_t max_samplers = std::clamp(
-        std::min(indexing_props.maxDescriptorSetUpdateAfterBindSampledImages, indexing_props.maxPerStageDescriptorUpdateAfterBindSamplers),
-        1u, 256u
-    );
-    return BindlessConfig{max_buffers, max_images, max_uniforms, max_samplers};
+    const auto p2 = pd.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>();
+    const auto &props = p2.get<vk::PhysicalDeviceDescriptorIndexingProperties>();
+    return {
+        .MaxBuffers = std::clamp(
+            std::min(props.maxDescriptorSetUpdateAfterBindStorageBuffers, props.maxPerStageDescriptorUpdateAfterBindStorageBuffers),
+            1u, 32768u
+        ),
+        .MaxImages = std::clamp(
+            std::min(props.maxDescriptorSetUpdateAfterBindStorageImages, props.maxPerStageDescriptorUpdateAfterBindStorageImages),
+            1u, 1024u
+        ),
+        .MaxUniforms = std::clamp(
+            std::min(props.maxDescriptorSetUpdateAfterBindUniformBuffers, props.maxPerStageDescriptorUpdateAfterBindUniformBuffers),
+            1u, 64u
+        ),
+        .MaxSamplers = std::clamp(
+            std::min(props.maxDescriptorSetUpdateAfterBindSampledImages, props.maxPerStageDescriptorUpdateAfterBindSamplers),
+            1u, 256u
+        )
+    };
 }
 
-// Note: Using separate uint fields instead of uvec2 since std430 seems to automatically reorder for alignment when using uvec2.
 struct SelectionNode {
     uint32_t object_id;
     float depth;
@@ -385,7 +380,7 @@ void PipelineRenderer::Render(
     pc.FirstInstance = model_index.value_or(0);
     const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
     cb.pushConstants(*ShaderPipelines.at(spt).PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants), &pc);
-    cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), instance_count, 0, pc.FirstInstance);
+    cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), instance_count, 0, 0);
 }
 
 mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
@@ -1492,8 +1487,6 @@ void Scene::RecordRenderCommandBuffer() {
             render_buffers.VertexSlot,
             render_buffers.IndexSlot,
             models.Slot,
-            0, // FirstIndex
-            0, // VertexOffset
             first_instance,
             0, // ObjectId
             vertex_count,
@@ -1514,7 +1507,7 @@ void Scene::RecordRenderCommandBuffer() {
             pc.ObjectId = get_object_id(e);
             push_extra(pc);
             cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-            cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, pc.FirstInstance);
+            cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0);
         }
     };
 
