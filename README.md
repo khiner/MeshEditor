@@ -39,7 +39,7 @@ Audio-specific features:
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
-* Bindless rendering
+* Bindless, multi-draw indirect rendering
 * Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
 
 ### Physical audio modeling

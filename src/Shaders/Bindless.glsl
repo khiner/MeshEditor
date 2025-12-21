@@ -16,6 +16,17 @@ struct WorldMatrix {
     mat4 MInv;
 };
 
+struct DrawData {
+    uint VertexSlot;
+    uint IndexSlot;
+    uint ModelSlot;
+    uint ModelIndex;
+    uint ObjectId;
+    uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
+    uint SelectionNodesSlot;
+    uint SelectionCounterSlot;
+};
+
 layout(set = 0, binding = 3, scalar) readonly buffer VertexBuffer {
     Vertex Vertices[];
 } VertexBuffers[];
@@ -28,13 +39,10 @@ layout(set = 0, binding = 4, scalar) readonly buffer IndexBuffer {
     uint Indices[];
 } IndexBuffers[];
 
-layout(push_constant) uniform PushConstants {
-    uint VertexSlot;
-    uint IndexSlot;
-    uint ModelSlot;
-    uint FirstInstance;
-    uint ObjectId;
-    uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
-    uint SelectionNodesSlot;
-    uint SelectionCounterSlot;
+layout(set = 0, binding = 6, scalar) readonly buffer DrawDataBuffer {
+    DrawData Draws[];
+} DrawDataBuffers[];
+
+layout(push_constant) uniform PassConstants {
+    uint DrawDataSlot;
 } pc;

@@ -48,6 +48,10 @@ struct UniqueBuffers {
 
     // Updates the buffer with the given data, growing it if necessary.
     void Update(std::span<const std::byte>, vk::DeviceSize offset = 0);
+    // Appends data to the staging buffer, growing it if necessary.
+    vk::DeviceSize Append(std::span<const std::byte>);
+    template<typename T> vk::DeviceSize Append(const T &value) { return Append(as_bytes(value)); }
+    void EndWrite();
 
     // Grows the buffer if it's not big enough (to the next power of 2).
     void Reserve(vk::DeviceSize);
@@ -59,9 +63,6 @@ struct UniqueBuffers {
     // Doesn't free memory, so the allocated size will be greater than the used size.
     void Erase(vk::DeviceSize offset, vk::DeviceSize size);
 
-    // Copy from device buffer to host buffer (GPU->CPU)
-    void CopyDeviceToHost(vk::DeviceSize size = vk::WholeSize);
-
     const BufferContext &Ctx;
     vk::DeviceSize UsedSize{0}; // Used (not allocated) bytes
     vk::BufferUsageFlags Usage;
@@ -72,5 +73,9 @@ struct UniqueBuffers {
 
 private:
     void Retire();
+    void ReserveForWrite(vk::DeviceSize);
+
+    vk::DeviceSize PendingWriteSize{0};
+    bool WritePending{false};
 };
 } // namespace mvk

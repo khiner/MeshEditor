@@ -76,15 +76,19 @@ enum class ShaderPipelineType {
 };
 using SPT = ShaderPipelineType;
 
-struct DrawPushConstants {
+struct DrawData {
     uint32_t VertexSlot;
     uint32_t IndexSlot;
     uint32_t ModelSlot;
-    uint32_t FirstInstance;
+    uint32_t ModelIndex;
     uint32_t ObjectId;
     uint32_t VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
     uint32_t SelectionNodesSlot;
     uint32_t SelectionCounterSlot;
+};
+
+struct PassConstants {
+    uint32_t DrawDataSlot;
 };
 
 struct PipelineRenderer {
@@ -92,12 +96,6 @@ struct PipelineRenderer {
     std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
 
     void CompileShaders();
-
-    // If `model_index` is set, only the model at that index is rendered.
-    // Otherwise, all models are rendered.
-    void Render(
-        vk::CommandBuffer, SPT, const RenderBuffers &, const ModelsBuffer &, DrawPushConstants, std::optional<uint> model_index = std::nullopt
-    ) const;
 };
 
 struct MeshSelection {
@@ -109,6 +107,17 @@ struct MeshSelection {
 // Component: Vertices highlighted for rendering (in addition to selected elements)
 struct MeshHighlightedVertices {
     std::unordered_set<VH> Vertices;
+};
+
+struct VisibleInstanceList {
+    std::vector<entt::entity> Instances;
+};
+
+struct SelectionObjectId {
+    uint32_t Id{0};
+};
+struct SilhouetteObjectId {
+    uint32_t Id{0};
 };
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
@@ -373,16 +382,6 @@ void PipelineRenderer::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
 }
 
-void PipelineRenderer::Render(
-    vk::CommandBuffer cb, SPT spt, const RenderBuffers &render_buffers, const ModelsBuffer &models, DrawPushConstants pc, std::optional<uint> model_index
-) const {
-    Bind(cb, ShaderPipelines.at(spt));
-    pc.FirstInstance = model_index.value_or(0);
-    const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
-    cb.pushConstants(*ShaderPipelines.at(spt).PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants), &pc);
-    cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), instance_count, 0, 0);
-}
-
 mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
     auto image = mvk::CreateImage(
         Vk.Device, Vk.PhysicalDevice,
@@ -485,7 +484,7 @@ struct MainPipeline {
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
 
         const PipelineContext ctx{d, shared_layout, shared_set, msaa_samples};
-        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
+        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(PassConstants)};
 
         // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
         std::unordered_map<SPT, ShaderPipeline> pipelines;
@@ -637,7 +636,7 @@ struct SilhouettePipeline {
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
         const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
-        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
+        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(PassConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
             SPT::SilhouetteDepthObject,
@@ -793,7 +792,7 @@ struct SelectionFragmentPipeline {
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
 
         const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
-        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
+        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(PassConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
             SPT::SelectionFragment,
@@ -933,6 +932,56 @@ struct Scene::SelectionBindlessHandles {
     }
 };
 
+struct DrawIndirectResources {
+    struct PassBuffers {
+        mvk::UniqueBuffers DrawData;
+        mvk::UniqueBuffers Indirect;
+        uint32_t DrawDataSlot{InvalidSlot};
+        uint32_t DrawCount{0};
+    };
+
+    explicit DrawIndirectResources(const SceneUniqueBuffers &buffers, BindlessAllocator &alloc, vk::Device device)
+        : Device(device),
+          MainFill{CreatePass(buffers, alloc)},
+          MainLine{CreatePass(buffers, alloc)},
+          MainPoint{CreatePass(buffers, alloc)},
+          Selection{CreatePass(buffers, alloc)},
+          Silhouette{CreatePass(buffers, alloc)} {}
+
+    void Release(BindlessAllocator &alloc) {
+        ReleasePass(alloc, MainFill);
+        ReleasePass(alloc, MainLine);
+        ReleasePass(alloc, MainPoint);
+        ReleasePass(alloc, Selection);
+        ReleasePass(alloc, Silhouette);
+    }
+
+    void UpdatePassDescriptor(BindlessAllocator &alloc, PassBuffers &pass) const {
+        const auto draw_info = pass.DrawData.GetDescriptor();
+        Device.updateDescriptorSets(alloc.MakeBufferWrite(SlotType::Buffer, pass.DrawDataSlot, draw_info), {});
+    }
+
+    vk::Device Device;
+    PassBuffers MainFill, MainLine, MainPoint, Selection, Silhouette;
+    std::unordered_set<entt::entity> SelectedMeshEntities;
+
+private:
+    static PassBuffers CreatePass(const SceneUniqueBuffers &buffers, BindlessAllocator &alloc) {
+        return {
+            mvk::UniqueBuffers{buffers.Ctx, sizeof(DrawData), vk::BufferUsageFlagBits::eStorageBuffer},
+            mvk::UniqueBuffers{buffers.Ctx, sizeof(vk::DrawIndirectCommand), vk::BufferUsageFlagBits::eIndirectBuffer},
+            alloc.Allocate(SlotType::Buffer)
+        };
+    }
+
+    static void ReleasePass(BindlessAllocator &alloc, PassBuffers &pass) {
+        if (pass.DrawDataSlot != InvalidSlot) {
+            alloc.Release(SlotType::Buffer, pass.DrawDataSlot);
+            pass.DrawDataSlot = InvalidSlot;
+        }
+    }
+};
+
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : Vk{vc},
       R{r},
@@ -964,6 +1013,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.on_destroy<ModelsBuffer>().connect<&Scene::OnDestroyModelsBuffer>(*this);
     R.on_destroy<BoundingBoxesBuffers>().connect<&Scene::OnDestroyBoundingBoxesBuffers>(*this);
     R.on_destroy<BvhBoxesBuffers>().connect<&Scene::OnDestroyBvhBoxesBuffers>(*this);
+
+    DrawIndirect = std::make_unique<DrawIndirectResources>(*UniqueBuffers, *BindlessAlloc, Vk.Device);
 
     UpdateEdgeColors();
     UpdateTransformBuffers();
@@ -997,7 +1048,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 }
 
 Scene::~Scene() {
+    if (BindlessAlloc && DrawIndirect) DrawIndirect->Release(*BindlessAlloc);
     if (BindlessAlloc && SelectionHandles) SelectionHandles->Release(*BindlessAlloc);
+    DrawIndirect.reset(); // Destroy buffers before allocator teardown.
+    SelectionHandles.reset();
 }
 
 void Scene::LoadIcons(vk::Device device) {
@@ -1472,6 +1526,171 @@ void SetTransform(entt::registry &r, entt::entity e, Transform &&t) {
 }
 } // namespace
 
+void Scene::UpdateDrawIndirectBuffers() {
+    enum class ObjectIdSource {
+        None,
+        Selection,
+        Silhouette,
+    };
+
+    struct PassStream {
+        DrawIndirectResources::PassBuffers &Pass;
+        uint32_t DrawIndex{0};
+        uint32_t CommandCount{0};
+    };
+
+    auto add_mesh_draw = [&](PassStream &pass, RenderBuffers &render_buffers, ModelsBuffer &models, const std::vector<entt::entity> &instances,
+                             ObjectIdSource object_id_source,
+                             uint32_t vertex_count_or_head, uint32_t selection_nodes_slot, uint32_t selection_counter_slot) {
+        if (instances.empty()) return;
+        if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
+        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+        const uint32_t index_count = static_cast<uint32_t>(render_buffers.Indices.UsedSize / sizeof(uint32_t));
+        if (index_count == 0) return;
+        const uint32_t draw_base = pass.DrawIndex;
+        for (const auto e : instances) {
+            const uint32_t model_index = R.get<RenderInstance>(e).BufferIndex;
+            uint32_t object_id = 0;
+            switch (object_id_source) {
+                case ObjectIdSource::None: break;
+                case ObjectIdSource::Selection:
+                    if (const auto *id = R.try_get<SelectionObjectId>(e)) object_id = id->Id;
+                    break;
+                case ObjectIdSource::Silhouette:
+                    if (const auto *id = R.try_get<SilhouetteObjectId>(e)) object_id = id->Id;
+                    break;
+            }
+            pass.Pass.DrawData.Append(DrawData{render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, model_index, object_id, vertex_count_or_head, selection_nodes_slot, selection_counter_slot});
+            pass.DrawIndex += 1;
+        }
+        pass.Pass.Indirect.Append(vk::DrawIndirectCommand{index_count, static_cast<uint32_t>(instances.size()), 0, draw_base});
+        pass.CommandCount += 1;
+    };
+
+    const auto active_entity = FindActiveEntity(R);
+    const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
+
+    // todo: manage these in an event-based way rather than rebuild every frame (also object selection/silhouette ids and such)
+    R.clear<VisibleInstanceList>();
+    for (const auto [e, mesh_instance, render_instance] : R.view<const Visible, const MeshInstance, const RenderInstance>().each()) {
+        auto *list = R.try_get<VisibleInstanceList>(mesh_instance.MeshEntity);
+        if (!list) list = &R.emplace<VisibleInstanceList>(mesh_instance.MeshEntity);
+        list->Instances.emplace_back(e);
+    }
+
+    DrawIndirect->SelectedMeshEntities.clear();
+    for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) {
+        DrawIndirect->SelectedMeshEntities.emplace(mi.MeshEntity);
+    }
+
+    PassStream main_fill{DrawIndirect->MainFill},
+        main_line{DrawIndirect->MainLine},
+        main_point{DrawIndirect->MainPoint},
+        selection{DrawIndirect->Selection},
+        silhouette{DrawIndirect->Silhouette};
+
+    auto build_passes = [&]() {
+        { // Main fill/line/point draws
+            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                const auto *instances_list = R.try_get<VisibleInstanceList>(entity);
+                if (!instances_list) continue;
+                const auto &instances = instances_list->Instances;
+                const bool show_wireframe_overlay = InteractionMode == InteractionMode::Edit && DrawIndirect->SelectedMeshEntities.contains(entity);
+                if (ViewportShading == ViewportShadingMode::Solid) {
+                    add_mesh_draw(main_fill, mesh_buffers.Faces, models, instances, ObjectIdSource::None, 0, 0, 0);
+                }
+                if (ViewportShading == ViewportShadingMode::Wireframe || show_wireframe_overlay) {
+                    add_mesh_draw(main_line, mesh_buffers.Edges, models, instances, ObjectIdSource::None, 0, 0, 0);
+                }
+                if (show_wireframe_overlay && EditMode == Element::Vertex) {
+                    const uint32_t vertex_count = static_cast<uint32_t>(mesh_buffers.Vertices.Vertices.UsedSize / sizeof(Vertex3D));
+                    add_mesh_draw(main_point, mesh_buffers.Vertices, models, instances, ObjectIdSource::None, vertex_count, 0, 0);
+                }
+            }
+        }
+
+        { // Line overlays (normals, bounding boxes, BVH boxes)
+            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                const auto *instances_list = R.try_get<VisibleInstanceList>(entity);
+                if (!instances_list) continue;
+                const auto &instances = instances_list->Instances;
+                for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
+                    add_mesh_draw(main_line, buffers, models, instances, ObjectIdSource::None, 0, 0, 0);
+                }
+            }
+            for (auto [entity, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
+                const auto *instances_list = R.try_get<VisibleInstanceList>(entity);
+                if (!instances_list) continue;
+                add_mesh_draw(main_line, bvh_boxes.Buffers, models, instances_list->Instances, ObjectIdSource::None, 0, 0, 0);
+            }
+            for (auto [entity, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
+                const auto *instances_list = R.try_get<VisibleInstanceList>(entity);
+                if (!instances_list) continue;
+                add_mesh_draw(main_line, bounding_boxes.Buffers, models, instances_list->Instances, ObjectIdSource::None, 0, 0, 0);
+            }
+        }
+
+        R.clear<SilhouetteObjectId>();
+        if (render_silhouette) {
+            static constexpr uint32_t ActiveId{1};
+            uint32_t selected_id = 2;
+            for (const auto e : R.view<const Visible, const Selected>()) {
+                const uint32_t object_id = R.all_of<Active>(e) ? ActiveId : selected_id++;
+                R.emplace_or_replace<SilhouetteObjectId>(e, SilhouetteObjectId{object_id});
+            }
+            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                if (const auto *instances_list = R.try_get<VisibleInstanceList>(entity);
+                    instances_list && !instances_list->Instances.empty()) {
+                    std::vector<entt::entity> selected_instances;
+                    selected_instances.reserve(instances_list->Instances.size());
+                    for (const auto e : instances_list->Instances) {
+                        if (R.all_of<SilhouetteObjectId>(e)) selected_instances.emplace_back(e);
+                    }
+                    add_mesh_draw(silhouette, mesh_buffers.Faces, models, selected_instances, ObjectIdSource::Silhouette, 0, 0, 0);
+                }
+            }
+        }
+
+        R.clear<SelectionObjectId>();
+        if (InteractionMode == InteractionMode::Object) {
+            const auto visible = R.view<Visible>();
+            uint32_t object_id = 1;
+            for (const auto e : visible) {
+                R.emplace_or_replace<SelectionObjectId>(e, SelectionObjectId{object_id++});
+            }
+            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                const auto *instances_list = R.try_get<VisibleInstanceList>(entity);
+                if (!instances_list) continue;
+                add_mesh_draw(
+                    selection,
+                    mesh_buffers.Faces,
+                    models,
+                    instances_list->Instances,
+                    ObjectIdSource::Selection,
+                    SelectionHandles->HeadImage,
+                    SelectionHandles->SelectionNodes,
+                    SelectionHandles->SelectionCounter
+                );
+            }
+        }
+    };
+
+    build_passes();
+
+    auto end_pass = [&](DrawIndirectResources::PassBuffers &pass, PassStream &stream) {
+        pass.DrawCount = stream.CommandCount;
+        pass.DrawData.EndWrite();
+        pass.Indirect.EndWrite();
+        if (stream.CommandCount > 0) DrawIndirect->UpdatePassDescriptor(*BindlessAlloc, pass);
+    };
+
+    end_pass(DrawIndirect->MainFill, main_fill);
+    end_pass(DrawIndirect->MainLine, main_line);
+    end_pass(DrawIndirect->MainPoint, main_point);
+    end_pass(DrawIndirect->Selection, selection);
+    end_pass(DrawIndirect->Silhouette, silhouette);
+}
+
 void Scene::RecordRenderCommandBuffer() {
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
@@ -1498,36 +1717,12 @@ void Scene::RecordRenderCommandBuffer() {
     const auto active_entity = FindActiveEntity(R);
     const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
 
-    const auto make_pc = [this](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
-        if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
-        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
-        const uint32_t vertex_count = static_cast<uint32_t>(render_buffers.Vertices.UsedSize / sizeof(Vertex3D));
-        return DrawPushConstants{
-            render_buffers.VertexSlot,
-            render_buffers.IndexSlot,
-            models.Slot,
-            first_instance,
-            0, // ObjectId
-            vertex_count,
-            0, // SelectionNodesSlot
-            0 // SelectionCounterSlot
-        };
-    };
-
-    // Helper to render meshes with object IDs
-    auto render_meshes_with_ids = [&](const auto &entity_view, const ShaderPipeline &shader_pipeline, auto &&get_object_id, auto &&push_extra) {
-        Bind(cb, shader_pipeline);
-        for (const auto e : entity_view) {
-            const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-            auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
-            auto &models = R.get<ModelsBuffer>(mesh_entity);
-
-            auto pc = make_pc(render_buffers, models, *GetModelBufferIndex(R, e));
-            pc.ObjectId = get_object_id(e);
-            push_extra(pc);
-            cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-            cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0);
-        }
+    auto draw_indirect = [&](const ShaderPipeline &pipeline, const DrawIndirectResources::PassBuffers &pass) {
+        if (pass.DrawCount == 0) return;
+        const PassConstants pc{pass.DrawDataSlot};
+        Bind(cb, pipeline);
+        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+        cb.drawIndirect(*pass.Indirect.DeviceBuffer, 0, pass.DrawCount, sizeof(vk::DrawIndirectCommand));
     };
 
     // Pass 1: Silhouette depth/object rendering (selected meshes only, for visual outline)
@@ -1536,15 +1731,7 @@ void Scene::RecordRenderCommandBuffer() {
         static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-
-        static constexpr uint32_t ActiveId{1};
-        uint32_t selected_id = 2;
-        render_meshes_with_ids(
-            R.view<Selected>(),
-            silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject),
-            [&](entt::entity e) { return R.all_of<Active>(e) ? ActiveId : selected_id++; },
-            [&](DrawPushConstants &) {}
-        );
+        draw_indirect(silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject), DrawIndirect->Silhouette);
         cb.endRenderPass();
 
         const auto &silhouette_edge = Pipelines->SilhouetteEdge;
@@ -1567,18 +1754,7 @@ void Scene::RecordRenderCommandBuffer() {
         static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(selection.Resources->DepthImage.Extent)};
         cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-
-        uint32_t object_id = 1;
-        render_meshes_with_ids(
-            R.view<Visible>(),
-            selection.Renderer.ShaderPipelines.at(SPT::SelectionFragment),
-            [&](entt::entity) { return object_id++; },
-            [&](DrawPushConstants &pc) {
-                pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage; // Reused as HeadImageSlot
-                pc.SelectionNodesSlot = SelectionHandles->SelectionNodes;
-                pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
-            }
-        );
+        draw_indirect(selection.Renderer.ShaderPipelines.at(SPT::SelectionFragment), DrawIndirect->Selection);
         cb.endRenderPass();
     }
 
@@ -1599,21 +1775,11 @@ void Scene::RecordRenderCommandBuffer() {
 
     { // Meshes
         const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-        std::unordered_set<entt::entity> selected_mesh_entities;
-        for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) selected_mesh_entities.emplace(mi.MeshEntity);
-
-        for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-            const bool show_wireframe_overlay = InteractionMode == InteractionMode::Edit && selected_mesh_entities.contains(entity);
-            if (ViewportShading == ViewportShadingMode::Solid) {
-                main.Renderer.Render(cb, fill_pipeline, mesh_buffers.Faces, models, make_pc(mesh_buffers.Faces, models));
-            }
-            if (ViewportShading == ViewportShadingMode::Wireframe || show_wireframe_overlay) {
-                main.Renderer.Render(cb, SPT::Line, mesh_buffers.Edges, models, make_pc(mesh_buffers.Edges, models));
-            }
-            if (show_wireframe_overlay && EditMode == Element::Vertex) {
-                main.Renderer.Render(cb, SPT::Point, mesh_buffers.Vertices, models, make_pc(mesh_buffers.Vertices, models));
-            }
+        if (ViewportShading == ViewportShadingMode::Solid) {
+            draw_indirect(main.Renderer.ShaderPipelines.at(fill_pipeline), DrawIndirect->MainFill);
         }
+        draw_indirect(main.Renderer.ShaderPipelines.at(SPT::Line), DrawIndirect->MainLine);
+        draw_indirect(main.Renderer.ShaderPipelines.at(SPT::Point), DrawIndirect->MainPoint);
     }
 
     // Silhouette edge color (rendered ontop of meshes)
@@ -1625,19 +1791,6 @@ void Scene::RecordRenderCommandBuffer() {
         } pc{TransformGizmo::IsUsing(), SelectionHandles->ObjectIdSampler};
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         silhouette_edc.RenderQuad(cb);
-    }
-
-    // Selection overlays
-    for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-        for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-            main.Renderer.Render(cb, SPT::Line, buffers, models, make_pc(buffers, models));
-        }
-    }
-    for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
-        main.Renderer.Render(cb, SPT::Line, bvh_boxes.Buffers, models, make_pc(bvh_boxes.Buffers, models));
-    }
-    for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-        main.Renderer.Render(cb, SPT::Line, bounding_boxes.Buffers, models, make_pc(bounding_boxes.Buffers, models));
     }
 
     // Grid lines texture
@@ -1871,7 +2024,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     std::unordered_set<uint32_t> seen_object_ids;
     for (const auto &[_, object_id] : hits) {
         if (seen_object_ids.insert(object_id).second) {
-            entities.push_back(visible_entities[object_id - 1]);
+            entities.emplace_back(visible_entities[object_id - 1]);
         }
     }
     return entities;
@@ -1930,7 +2083,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
     entities.reserve(object_count);
     for (uint32_t i = 0; i < object_count; ++i) {
         const uint32_t mask = 1u << (i % 32);
-        if (bits[i / 32] & mask) entities.push_back(visible_entities[i]);
+        if (bits[i / 32] & mask) entities.emplace_back(visible_entities[i]);
     }
     return entities;
 }
@@ -1947,7 +2100,7 @@ void Scene::UpdateSelectionBindlessDescriptors() {
         *Pipelines->SelectionFragment.Resources->HeadImage.View,
         vk::ImageLayout::eGeneral
     };
-    writes.push_back(alloc.MakeImageWrite(handles.HeadImage, head_image_info));
+    writes.emplace_back(alloc.MakeImageWrite(handles.HeadImage, head_image_info));
 
     const auto selection_nodes = UniqueBuffers->SelectionNodeBuffer.GetDescriptor();
     const auto selection_counter = vk::DescriptorBufferInfo{*UniqueBuffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
@@ -1955,20 +2108,20 @@ void Scene::UpdateSelectionBindlessDescriptors() {
     const auto box_result = UniqueBuffers->GetBoxSelectBitsetDescriptor();
     const auto scene_ubo = UniqueBuffers->SceneUBO.GetDescriptor();
 
-    writes.push_back(alloc.MakeUniformWrite(SceneUBOSlot, scene_ubo));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionNodes, selection_nodes));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionCounter, selection_counter));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickResult, click_result));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.BoxResult, box_result));
+    writes.emplace_back(alloc.MakeUniformWrite(SceneUBOSlot, scene_ubo));
+    writes.emplace_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionNodes, selection_nodes));
+    writes.emplace_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionCounter, selection_counter));
+    writes.emplace_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickResult, click_result));
+    writes.emplace_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.BoxResult, box_result));
     // Samplers
     const auto &sil = Pipelines->Silhouette;
     const auto &sil_edge = Pipelines->SilhouetteEdge;
     const auto object_id_sampler = vk::DescriptorImageInfo{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     const auto depth_sampler = vk::DescriptorImageInfo{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
     const auto silhouette_sampler = vk::DescriptorImageInfo{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-    writes.push_back(alloc.MakeSamplerWrite(handles.ObjectIdSampler, object_id_sampler));
-    writes.push_back(alloc.MakeSamplerWrite(handles.DepthSampler, depth_sampler));
-    writes.push_back(alloc.MakeSamplerWrite(handles.SilhouetteSampler, silhouette_sampler));
+    writes.emplace_back(alloc.MakeSamplerWrite(handles.ObjectIdSampler, object_id_sampler));
+    writes.emplace_back(alloc.MakeSamplerWrite(handles.DepthSampler, depth_sampler));
+    writes.emplace_back(alloc.MakeSamplerWrite(handles.SilhouetteSampler, silhouette_sampler));
 
     Vk.Device.updateDescriptorSets(writes, {});
 }
@@ -2258,6 +2411,9 @@ bool Scene::RenderViewport() {
         };
         transfer_cb.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, to_shader);
     }
+
+    UpdateDrawIndirectBuffers();
+
     // Ensure buffer writes (staging copies) are visible to shader reads.
     const vk::MemoryBarrier buffer_barrier{
         vk::AccessFlagBits::eTransferWrite,

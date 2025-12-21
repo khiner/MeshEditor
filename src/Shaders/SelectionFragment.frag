@@ -3,6 +3,11 @@
 
 #include "Bindless.glsl"
 
+layout(location = 0) flat in uint ObjectId;
+layout(location = 1) flat in uint HeadImageSlot;
+layout(location = 2) flat in uint SelectionNodesSlot;
+layout(location = 3) flat in uint SelectionCounterSlot;
+
 struct SelectionNode {
     uint ObjectId;
     float Depth;
@@ -23,9 +28,9 @@ layout(set = 0, binding = 6, std430) buffer SelectionCounter {
 const uint INVALID_NODE = 0xffffffffu;
 
 void main() {
-    const uint head_index = nonuniformEXT(pc.VertexCountOrHeadImageSlot);
-    const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
-    const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
+    const uint head_index = nonuniformEXT(HeadImageSlot);
+    const uint nodes_index = nonuniformEXT(SelectionNodesSlot);
+    const uint counter_index = nonuniformEXT(SelectionCounterSlot);
 
     const uint idx = atomicAdd(Counters[counter_index].Count, 1);
     if (idx >= SelectionBuffers[nodes_index].Nodes.length()) {
@@ -33,7 +38,7 @@ void main() {
         return;
     }
 
-    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = pc.ObjectId;
+    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = ObjectId;
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
 
     const ivec2 coord = ivec2(gl_FragCoord.xy);

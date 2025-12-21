@@ -98,6 +98,7 @@ struct ScenePipelines;
 struct SceneUniqueBuffers;
 struct BindlessResources;
 struct BindlessAllocator;
+struct DrawIndirectResources;
 
 struct SceneVulkanResources {
     vk::Instance Instance;
@@ -183,6 +184,7 @@ struct Scene {
     void OnDestroyModelsBuffer(entt::registry &, entt::entity);
     void OnDestroyBoundingBoxesBuffers(entt::registry &, entt::entity);
     void OnDestroyBvhBoxesBuffers(entt::registry &, entt::entity);
+    void UpdateDrawIndirectBuffers();
 
     std::string DebugBufferHeapUsage() const;
 
@@ -198,6 +200,7 @@ private:
 
     struct SelectionBindlessHandles;
     std::unique_ptr<SelectionBindlessHandles> SelectionHandles;
+    std::unique_ptr<DrawIndirectResources> DrawIndirect;
 
     static constexpr uint32_t SceneUBOSlot{0};
 
