@@ -972,8 +972,27 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     Pipelines->CompileShaders();
 
     { // Default scene content
-        const auto e = AddMesh(CreateDefaultPrimitive(PrimitiveType::Cube), {.Name = ToString(PrimitiveType::Cube)});
-        R.emplace<PrimitiveType>(e, PrimitiveType::Cube);
+        static constexpr int kGrid = 10;
+        static constexpr float kSpacing = 2.0f;
+        int count = 0;
+        for (int z = 0; z < kGrid; ++z) {
+            for (int y = 0; y < kGrid; ++y) {
+                for (int x = 0; x < kGrid; ++x) {
+                    if (count >= kGrid * kGrid * kGrid) break;
+                    const Transform t{.P = vec3{float(x) * kSpacing, float(y) * kSpacing, float(z) * kSpacing}};
+                    const auto e = AddMesh(
+                        CreateDefaultPrimitive(PrimitiveType::Cube),
+                        {.Name = ToString(PrimitiveType::Cube), .Transform = t, .Select = MeshCreateInfo::SelectBehavior::None}
+                    );
+                    R.emplace<PrimitiveType>(e, PrimitiveType::Cube);
+                    ++count;
+                }
+            }
+        }
+        const float extent = float(kGrid - 1) * kSpacing;
+        const vec3 center{extent * 0.5f, extent * 0.5f, extent * 0.5f};
+        const vec3 position = center + vec3{extent, extent, extent};
+        Camera = ::Camera{position, center, glm::radians(60.f), 0.01f, 500.f};
     }
 }
 
@@ -2191,6 +2210,17 @@ bool Scene::RenderViewport() {
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty) return false;
+
+    struct RenderViewportTimer {
+        std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
+        ~RenderViewportTimer() {
+            const auto end = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
+            std::println("RenderViewport: ms={:.3f}", ms);
+        }
+    };
+
+    const RenderViewportTimer timer{};
 
     CommandBufferDirty = false;
 
