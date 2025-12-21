@@ -289,40 +289,40 @@ BindlessConfig MakeBindlessConfig(vk::PhysicalDevice pd) {
 }
 
 struct SelectionNode {
-    uint32_t object_id;
-    float depth;
-    uint32_t next;
+    uint32_t ObjectId;
+    float Depth;
+    uint32_t Next;
 };
 
 struct SelectionCounters {
-    uint32_t count;
-    uint32_t overflow;
+    uint32_t Count;
+    uint32_t Overflow;
 };
 
 struct ClickHit {
-    float depth;
-    uint32_t object_id;
+    float Depth;
+    uint32_t ObjectId;
 };
 
 struct ClickResult {
-    uint32_t count;
-    std::array<ClickHit, 64> hits;
+    uint32_t Count;
+    std::array<ClickHit, 64> Hits;
 };
 
 struct ClickSelectPushConstants {
-    glm::uvec2 target_px;
-    uint32_t head_image_index;
-    uint32_t selection_nodes_index;
-    uint32_t click_result_index;
+    glm::uvec2 TargetPx;
+    uint32_t HeadImageIndex;
+    uint32_t SelectionNodesIndex;
+    uint32_t ClickResultIndex;
 };
 
 struct BoxSelectPushConstants {
-    glm::uvec2 box_min;
-    glm::uvec2 box_max;
-    uint32_t object_count;
-    uint32_t head_image_index;
-    uint32_t selection_nodes_index;
-    uint32_t box_result_index;
+    glm::uvec2 BoxMin;
+    glm::uvec2 BoxMax;
+    uint32_t ObjectCount;
+    uint32_t HeadImageIndex;
+    uint32_t SelectionNodesIndex;
+    uint32_t BoxResultIndex;
 };
 } // namespace
 
@@ -859,7 +859,7 @@ struct ScenePipelines {
         vk::Device d, vk::PhysicalDevice pd, vk::DescriptorPool dp,
         vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {}
     )
-        : d(d), pd(pd), Samples{GetMaxUsableSampleCount(pd)},
+        : Device(d), PhysicalDevice(pd), Samples{GetMaxUsableSampleCount(pd)},
           Main{MainPipeline::CreateRenderer(d, dp, Samples, selection_layout, selection_set), nullptr},
           Silhouette{SilhouettePipeline::CreateRenderer(d, dp, selection_layout, selection_set), nullptr},
           SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, dp, selection_layout, selection_set), nullptr},
@@ -877,8 +877,8 @@ struct ScenePipelines {
               selection_set
           } {}
 
-    vk::Device d;
-    vk::PhysicalDevice pd;
+    vk::Device Device;
+    vk::PhysicalDevice PhysicalDevice;
     vk::SampleCountFlagBits Samples;
 
     MainPipeline Main;
@@ -1806,7 +1806,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     cb.reset({});
 
     const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
-    const auto node_count = std::min<uint32_t>(counters->count, SceneUniqueBuffers::MaxSelectionNodes);
+    const auto node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
     if (node_count == 0) return {};
 
     // Dispatch click-reduction compute writing directly to host-visible buffer (no copy needed).
@@ -1819,10 +1819,10 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
     const ClickSelectPushConstants pc{
-        mouse_px,
-        SelectionHandles->HeadImage,
-        SelectionHandles->SelectionNodes,
-        SelectionHandles->ClickResult
+        .TargetPx = mouse_px,
+        .HeadImageIndex = SelectionHandles->HeadImage,
+        .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+        .ClickResultIndex = SelectionHandles->ClickResult
     };
     cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
     cb.dispatch(1, 1, 1);
@@ -1838,13 +1838,13 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     // Step 3: convert click hits to entities.
     const auto &result = UniqueBuffers->GetClickResult();
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
-    const uint32_t hit_count = std::min<uint32_t>(result.count, result.hits.size());
+    const uint32_t hit_count = std::min<uint32_t>(result.Count, result.Hits.size());
     std::vector<std::pair<float, uint32_t>> hits;
     hits.reserve(hit_count);
     for (uint32_t i = 0; i < hit_count; ++i) {
-        const auto &hit = result.hits[i];
-        if (hit.object_id == 0 || hit.object_id > visible_entities.size()) continue;
-        hits.emplace_back(hit.depth, hit.object_id);
+        const auto &hit = result.Hits[i];
+        if (hit.ObjectId == 0 || hit.ObjectId > visible_entities.size()) continue;
+        hits.emplace_back(hit.Depth, hit.ObjectId);
     }
     std::ranges::sort(hits);
 
@@ -1861,7 +1861,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max) {
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
     const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
-    const auto node_count = std::min<uint32_t>(counters->count, SceneUniqueBuffers::MaxSelectionNodes);
+    const auto node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
     if (node_count == 0) return {};
 
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
@@ -1883,12 +1883,12 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
     const BoxSelectPushConstants pc{
-        box_min,
-        box_max,
-        object_count,
-        SelectionHandles->HeadImage,
-        SelectionHandles->SelectionNodes,
-        SelectionHandles->BoxResult
+        .BoxMin = box_min,
+        .BoxMax = box_max,
+        .ObjectCount = object_count,
+        .HeadImageIndex = SelectionHandles->HeadImage,
+        .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+        .BoxResultIndex = SelectionHandles->BoxResult
     };
     cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
     const uint32_t width = box_max.x - box_min.x;
@@ -2179,10 +2179,10 @@ void Scene::Interact() {
 }
 
 void ScenePipelines::SetExtent(vk::Extent2D extent) {
-    Main.SetExtent(extent, d, pd, Samples);
-    Silhouette.SetExtent(extent, d, pd);
-    SilhouetteEdge.SetExtent(extent, d, pd);
-    SelectionFragment.SetExtent(extent, d, pd);
+    Main.SetExtent(extent, Device, PhysicalDevice, Samples);
+    Silhouette.SetExtent(extent, Device, PhysicalDevice);
+    SilhouetteEdge.SetExtent(extent, Device, PhysicalDevice);
+    SelectionFragment.SetExtent(extent, Device, PhysicalDevice);
 
     // Using bindless for samplers; no per-descriptor updates needed.
 };
@@ -2264,10 +2264,10 @@ void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
-            const SvgResource &icon;
-            TransformGizmo::Type button_type;
-            ImDrawFlags corners;
-            bool enabled;
+            const SvgResource &Icon;
+            TransformGizmo::Type ButtonType;
+            ImDrawFlags Corners;
+            bool Enabled;
         };
 
         using enum TransformGizmo::Type;

@@ -17,15 +17,15 @@ struct WorldMatrix {
 };
 
 layout(set = 0, binding = 3, scalar) readonly buffer VertexBuffer {
-    Vertex vertices[];
+    Vertex Vertices[];
 } VertexBuffers[];
 
 layout(set = 0, binding = 5, scalar) readonly buffer ModelBuffer {
-    WorldMatrix models[];
+    WorldMatrix Models[];
 } ModelBuffers[];
 
 layout(set = 0, binding = 4, scalar) readonly buffer IndexBuffer {
-    uint indices[];
+    uint Indices[];
 } IndexBuffers[];
 
 layout(push_constant) uniform PushConstants {

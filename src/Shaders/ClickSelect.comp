@@ -7,16 +7,16 @@
 layout(local_size_x = 1) in;
 
 layout(push_constant) uniform PC {
-    uvec2 target_px;
-    uint headImageIndex;
-    uint selectionNodesIndex;
-    uint clickResultIndex;
+    uvec2 TargetPx;
+    uint HeadImageIndex;
+    uint SelectionNodesIndex;
+    uint ClickResultIndex;
 } pc;
 
 struct SelectionNode {
-    uint objectID;
-    float depth;
-    uint next;
+    uint ObjectId;
+    float Depth;
+    uint Next;
 };
 
 #define MAX_CLICK_RESULTS 64
@@ -25,31 +25,31 @@ const uint INVALID_NODE = 0xffffffffu;
 layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
 
 layout(set = 0, binding = 6, std430) buffer SelectionNodes {
-    SelectionNode nodes[];
-} selectionBuffers[];
+    SelectionNode Nodes[];
+} SelectionBuffers[];
 
 struct ClickHit {
-    float depth;
-    uint objectID;
+    float Depth;
+    uint ObjectId;
 };
 
 layout(set = 0, binding = 6, std430) buffer ClickResult {
-    uint count;
-    ClickHit hits[MAX_CLICK_RESULTS];
-} clickResults[];
+    uint Count;
+    ClickHit Hits[MAX_CLICK_RESULTS];
+} ClickResults[];
 
 void main() {
     // Single invocation does the traversal
     if (gl_GlobalInvocationID.x != 0) return;
 
-    uint idx = imageLoad(HeadImages[nonuniformEXT(pc.headImageIndex)], ivec2(pc.target_px)).r;
+    uint idx = imageLoad(HeadImages[nonuniformEXT(pc.HeadImageIndex)], ivec2(pc.TargetPx)).r;
     while (idx != INVALID_NODE) {
-        const SelectionNode node = selectionBuffers[nonuniformEXT(pc.selectionNodesIndex)].nodes[idx];
-        const uint write_idx = atomicAdd(clickResults[nonuniformEXT(pc.clickResultIndex)].count, 1);
+        const SelectionNode node = SelectionBuffers[nonuniformEXT(pc.SelectionNodesIndex)].Nodes[idx];
+        const uint write_idx = atomicAdd(ClickResults[nonuniformEXT(pc.ClickResultIndex)].Count, 1);
         if (write_idx < MAX_CLICK_RESULTS) {
-            clickResults[nonuniformEXT(pc.clickResultIndex)].hits[write_idx].depth = node.depth;
-            clickResults[nonuniformEXT(pc.clickResultIndex)].hits[write_idx].objectID = node.objectID;
+            ClickResults[nonuniformEXT(pc.ClickResultIndex)].Hits[write_idx].Depth = node.Depth;
+            ClickResults[nonuniformEXT(pc.ClickResultIndex)].Hits[write_idx].ObjectId = node.ObjectId;
         }
-        idx = node.next;
+        idx = node.Next;
     }
 }

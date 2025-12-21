@@ -10,8 +10,8 @@ layout(location = 2) out vec4 Color;
 void main() {
     const uint vertex_count = max(pc.VertexCountOrHeadImageSlot, 1u);
     const uint idx = min(gl_VertexIndex, vertex_count - 1);
-    const Vertex vert = VertexBuffers[nonuniformEXT(pc.VertexSlot)].vertices[idx];
-    const WorldMatrix world = ModelBuffers[nonuniformEXT(pc.ModelSlot)].models[pc.FirstInstance + gl_InstanceIndex];
+    const Vertex vert = VertexBuffers[nonuniformEXT(pc.VertexSlot)].Vertices[idx];
+    const WorldMatrix world = ModelBuffers[nonuniformEXT(pc.ModelSlot)].Models[pc.FirstInstance + gl_InstanceIndex];
 
     WorldNormal = mat3(world.MInv) * vert.Normal;
     WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
