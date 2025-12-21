@@ -105,7 +105,6 @@ struct SceneVulkanResources {
     vk::Device Device;
     uint32_t QueueFamily;
     vk::Queue Queue;
-    vk::DescriptorPool DescriptorPool;
 };
 
 struct Mesh;

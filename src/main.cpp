@@ -384,7 +384,6 @@ int main(int, char **) {
             *vc->Device,
             vc->QueueFamily,
             vc->Queue,
-            *vc->DescriptorPool,
         },
         r
     );

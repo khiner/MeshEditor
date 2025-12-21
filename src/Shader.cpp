@@ -98,7 +98,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
 }
 
 ShaderPipeline::ShaderPipeline(
-    vk::Device device, vk::DescriptorPool descriptor_pool, ::Shaders &&shaders,
+    vk::Device device, ::Shaders &&shaders,
     vk::PipelineVertexInputStateCreateInfo vertex_input_state,
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
     vk::PipelineColorBlendAttachmentState color_blend_attachment,
@@ -106,17 +106,19 @@ ShaderPipeline::ShaderPipeline(
     vk::SampleCountFlagBits msaa_samples,
     std::optional<vk::PushConstantRange> push_constant_range,
     float depth_bias,
-    vk::DescriptorSetLayout shared_set_layout,
-    vk::DescriptorSet shared_set
+    vk::DescriptorSetLayout set_layout,
+    vk::DescriptorSet set
 ) : Device(device), Shaders(std::move(shaders)),
     VertexInputState(std::move(vertex_input_state)),
     MultisampleState({{}, msaa_samples}),
     ColorBlendAttachment(std::move(color_blend_attachment)),
     DepthStencilState(std::move(depth_stencil_state)),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, depth_bias != 0.f, depth_bias, {}, {}, 1.f}),
-    InputAssemblyState({{}, topology}) {
-    Descriptors.Init(Device, descriptor_pool, shared_set_layout, shared_set);
-    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &Descriptors.Layout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
+    InputAssemblyState({{}, topology}),
+    DescriptorSetLayout(set_layout),
+    DescriptorSet(set) {
+    assert(DescriptorSetLayout && DescriptorSet && "Bindless descriptor set/layout required.");
+    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &DescriptorSetLayout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
 }
 
 void ShaderPipeline::Compile(vk::RenderPass render_pass) {
@@ -153,14 +155,14 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
 
 void ShaderPipeline::RenderQuad(vk::CommandBuffer cb) const {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &Descriptors.Set, 0, nullptr);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &DescriptorSet, 0, nullptr);
     cb.draw(4, 1, 0, 0); // Draw a full-screen quad triangle strip.
 }
 
-ComputePipeline::ComputePipeline(vk::Device d, vk::DescriptorPool descriptor_pool, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range, vk::DescriptorSetLayout shared_set_layout, vk::DescriptorSet shared_set)
-    : Device(d), ShaderModules(std::move(shaders)) {
-    Descriptors.Init(d, descriptor_pool, shared_set_layout, shared_set);
-    PipelineLayout = d.createPipelineLayoutUnique({{}, 1, &Descriptors.Layout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
+ComputePipeline::ComputePipeline(vk::Device d, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range, vk::DescriptorSetLayout set_layout, vk::DescriptorSet set)
+    : Device(d), ShaderModules(std::move(shaders)), DescriptorSetLayout(set_layout), DescriptorSet(set) {
+    assert(DescriptorSetLayout && DescriptorSet && "Bindless descriptor set/layout required.");
+    PipelineLayout = d.createPipelineLayoutUnique({{}, 1, &DescriptorSetLayout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
     Compile();
 }
 
@@ -182,7 +184,7 @@ ShaderPipeline PipelineContext::CreateGraphics(
     float depth_bias
 ) const {
     return {
-        Device, Pool, std::move(shaders), vertex_input,
+        Device, std::move(shaders), vertex_input,
         polygon_mode, topology, color_blend, depth_stencil,
         MsaaSamples, push_constants, depth_bias, SharedLayout, SharedSet
     };
@@ -192,5 +194,5 @@ ComputePipeline PipelineContext::CreateCompute(
     Shaders &&shaders,
     std::optional<vk::PushConstantRange> push_constants
 ) const {
-    return {Device, Pool, std::move(shaders), push_constants, SharedLayout, SharedSet};
+    return {Device, std::move(shaders), push_constants, SharedLayout, SharedSet};
 }

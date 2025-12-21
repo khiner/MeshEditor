@@ -344,8 +344,8 @@ struct SceneUniqueBuffers {
     vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
-        const auto vertex_usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer;
-        const auto index_usage = vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eStorageBuffer;
+        const auto vertex_usage = vk::BufferUsageFlagBits::eStorageBuffer;
+        const auto index_usage = vk::BufferUsageFlagBits::eStorageBuffer;
         return {
             {Ctx, as_bytes(vertices), vertex_usage},
             {Ctx, as_bytes(indices), index_usage}
@@ -353,8 +353,8 @@ struct SceneUniqueBuffers {
     }
     template<size_t N>
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) const {
-        const auto vertex_usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer;
-        const auto index_usage = vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eStorageBuffer;
+        const auto vertex_usage = vk::BufferUsageFlagBits::eStorageBuffer;
+        const auto index_usage = vk::BufferUsageFlagBits::eStorageBuffer;
         return {
             {Ctx, as_bytes(vertices), vertex_usage},
             {Ctx, as_bytes(indices), index_usage}
@@ -468,7 +468,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
 namespace {
 struct MainPipeline {
     static PipelineRenderer CreateRenderer(
-        vk::Device d, vk::DescriptorPool descriptor_pool, vk::SampleCountFlagBits msaa_samples,
+        vk::Device d, vk::SampleCountFlagBits msaa_samples,
         vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}
     ) {
         const std::vector<vk::AttachmentDescription> attachments{
@@ -484,7 +484,7 @@ struct MainPipeline {
         const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
 
-        const PipelineContext ctx{d, descriptor_pool, shared_layout, shared_set, msaa_samples};
+        const PipelineContext ctx{d, shared_layout, shared_set, msaa_samples};
         const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
 
         // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
@@ -625,7 +625,7 @@ struct MainPipeline {
 };
 
 struct SilhouettePipeline {
-    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
+    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
         const std::vector<vk::AttachmentDescription> attachments{
             // We need to test and write depth since we want silhouette edges to respect mutual occlusion when multiple meshes are selected.
             {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -636,7 +636,7 @@ struct SilhouettePipeline {
         const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
-        const PipelineContext ctx{d, descriptor_pool, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
+        const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
         const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
@@ -710,7 +710,7 @@ struct SilhouettePipeline {
 };
 
 struct SilhouetteEdgePipeline {
-    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
+    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
         const std::vector<vk::AttachmentDescription> attachments{
             {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal},
             {{}, Format::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -719,7 +719,7 @@ struct SilhouetteEdgePipeline {
         const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
-        const PipelineContext ctx{d, descriptor_pool, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
+        const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
             SPT::SilhouetteEdgeDepthObject,
@@ -784,7 +784,7 @@ struct SilhouetteEdgePipeline {
 };
 
 struct SelectionFragmentPipeline {
-    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorPool descriptor_pool, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
+    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
         const std::vector<vk::AttachmentDescription> attachments{
             // Only need depth for depth testing, don't need to store it
             {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -792,7 +792,7 @@ struct SelectionFragmentPipeline {
         const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
 
-        const PipelineContext ctx{d, descriptor_pool, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
+        const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
         const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
@@ -856,22 +856,22 @@ struct SelectionFragmentPipeline {
 
 struct ScenePipelines {
     ScenePipelines(
-        vk::Device d, vk::PhysicalDevice pd, vk::DescriptorPool dp,
+        vk::Device d, vk::PhysicalDevice pd,
         vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {}
     )
         : Device(d), PhysicalDevice(pd), Samples{GetMaxUsableSampleCount(pd)},
-          Main{MainPipeline::CreateRenderer(d, dp, Samples, selection_layout, selection_set), nullptr},
-          Silhouette{SilhouettePipeline::CreateRenderer(d, dp, selection_layout, selection_set), nullptr},
-          SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, dp, selection_layout, selection_set), nullptr},
-          SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, dp, selection_layout, selection_set), nullptr},
+          Main{MainPipeline::CreateRenderer(d, Samples, selection_layout, selection_set), nullptr},
+          Silhouette{SilhouettePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
+          SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
+          SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
           ClickSelect{
-              d, dp, Shaders{{{ShaderType::eCompute, "ClickSelect.comp"}}},
+              d, Shaders{{{ShaderType::eCompute, "ClickSelect.comp"}}},
               vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectPushConstants)},
               selection_layout,
               selection_set
           },
           BoxSelect{
-              d, dp, Shaders{{{ShaderType::eCompute, "BoxSelect.comp"}}},
+              d, Shaders{{{ShaderType::eCompute, "BoxSelect.comp"}}},
               vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(BoxSelectPushConstants)},
               selection_layout,
               selection_set
@@ -945,7 +945,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       BindlessAlloc{std::make_unique<BindlessAllocator>(*Bindless)},
       SelectionHandles{std::make_unique<SelectionBindlessHandles>(*BindlessAlloc)},
       Pipelines{std::make_unique<ScenePipelines>(
-          Vk.Device, Vk.PhysicalDevice, Vk.DescriptorPool,
+          Vk.Device, Vk.PhysicalDevice,
           Bindless->SetLayout.get(), *Bindless->DescriptorSet
       )},
       UniqueBuffers{std::make_unique<SceneUniqueBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool)} {
@@ -1143,7 +1143,7 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<MeshHighlightedVertices>(mesh_entity);
         R.emplace<ModelsBuffer>(
             mesh_entity,
-            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer}
+            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer}
         );
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Faces);

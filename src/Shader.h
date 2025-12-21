@@ -74,33 +74,9 @@ constexpr vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool 
     };
 }
 
-struct DescriptorSetOwnership {
-    vk::DescriptorSetLayout Layout{};
-    vk::DescriptorSet Set{};
-
-    void Init(vk::Device device, vk::DescriptorPool pool, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
-        if (shared_layout) {
-            Layout = shared_layout;
-        } else {
-            OwnedLayout = device.createDescriptorSetLayoutUnique({});
-            Layout = *OwnedLayout;
-        }
-        if (shared_set) {
-            Set = shared_set;
-        } else {
-            OwnedSet = std::move(device.allocateDescriptorSetsUnique({pool, 1, &Layout}).front());
-            Set = *OwnedSet;
-        }
-    }
-
-private:
-    vk::UniqueDescriptorSetLayout OwnedLayout;
-    vk::UniqueDescriptorSet OwnedSet;
-};
-
 struct ShaderPipeline {
     ShaderPipeline(
-        vk::Device, vk::DescriptorPool, Shaders &&,
+        vk::Device, Shaders &&,
         vk::PipelineVertexInputStateCreateInfo,
         vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
         vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
@@ -109,8 +85,8 @@ struct ShaderPipeline {
         vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1,
         std::optional<vk::PushConstantRange> push_constant_range = std::nullopt,
         float depth_bias = 0.f,
-        vk::DescriptorSetLayout shared_set_layout = {},
-        vk::DescriptorSet shared_set = {}
+        vk::DescriptorSetLayout set_layout = {},
+        vk::DescriptorSet set = {}
     );
     ShaderPipeline(ShaderPipeline &&) = default;
     ~ShaderPipeline() = default;
@@ -126,12 +102,13 @@ struct ShaderPipeline {
     vk::PipelineRasterizationStateCreateInfo RasterizationState;
     vk::PipelineInputAssemblyStateCreateInfo InputAssemblyState;
 
-    DescriptorSetOwnership Descriptors;
+    vk::DescriptorSetLayout DescriptorSetLayout{};
+    vk::DescriptorSet DescriptorSet{};
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
-    vk::DescriptorSetLayout GetDescriptorSetLayout() const { return Descriptors.Layout; }
-    vk::DescriptorSet GetDescriptorSet() const { return Descriptors.Set; }
+    vk::DescriptorSetLayout GetDescriptorSetLayout() const { return DescriptorSetLayout; }
+    vk::DescriptorSet GetDescriptorSet() const { return DescriptorSet; }
 
     void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
 
@@ -140,8 +117,8 @@ struct ShaderPipeline {
 
 struct ComputePipeline {
     ComputePipeline(
-        vk::Device, vk::DescriptorPool, Shaders &&, std::optional<vk::PushConstantRange> = std::nullopt,
-        vk::DescriptorSetLayout shared_set_layout = {}, vk::DescriptorSet shared_set = {}
+        vk::Device, Shaders &&, std::optional<vk::PushConstantRange> = std::nullopt,
+        vk::DescriptorSetLayout set_layout = {}, vk::DescriptorSet set = {}
     );
     ComputePipeline(ComputePipeline &&) = default;
     ~ComputePipeline() = default;
@@ -149,19 +126,19 @@ struct ComputePipeline {
     vk::Device Device;
     Shaders ShaderModules;
 
-    DescriptorSetOwnership Descriptors;
+    vk::DescriptorSetLayout DescriptorSetLayout{};
+    vk::DescriptorSet DescriptorSet{};
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
-    vk::DescriptorSetLayout GetDescriptorSetLayout() const { return Descriptors.Layout; }
-    vk::DescriptorSet GetDescriptorSet() const { return Descriptors.Set; }
+    vk::DescriptorSetLayout GetDescriptorSetLayout() const { return DescriptorSetLayout; }
+    vk::DescriptorSet GetDescriptorSet() const { return DescriptorSet; }
 
     void Compile();
 };
 
 struct PipelineContext {
     vk::Device Device;
-    vk::DescriptorPool Pool;
     vk::DescriptorSetLayout SharedLayout;
     vk::DescriptorSet SharedSet;
     vk::SampleCountFlagBits MsaaSamples;

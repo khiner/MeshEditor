@@ -3,7 +3,7 @@
 
 // Bindless layout (set 0):
 // binding 1: storage images (HeadImage)
-// binding 3: storage buffers (SelectionNodes, ClickResult) via indices
+// binding 6: storage buffers (SelectionNodes, ClickResult) via indices
 layout(local_size_x = 1) in;
 
 layout(push_constant) uniform PC {
