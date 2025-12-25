@@ -91,13 +91,16 @@ struct PipelineRenderer {
     vk::UniqueRenderPass RenderPass;
     std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
 
-    void CompileShaders();
+    void CompileShaders() {
+        for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
+    }
 
-    // If `model_index` is set, only the model at that index is rendered.
-    // Otherwise, all models are rendered.
-    void Render(
-        vk::CommandBuffer, SPT, const RenderBuffers &, const ModelsBuffer &, DrawPushConstants, std::optional<uint> model_index = std::nullopt
-    ) const;
+    const ShaderPipeline &Bind(vk::CommandBuffer cb, SPT spt) const {
+        const auto &pipeline = ShaderPipelines.at(spt);
+        cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.Pipeline);
+        cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.PipelineLayout, 0, pipeline.GetDescriptorSet(), {});
+        return pipeline;
+    }
 };
 
 struct MeshSelection {
@@ -255,11 +258,6 @@ void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
     UpdateWorldMatrix(r, e);
 }
 
-void Bind(vk::CommandBuffer cb, const ShaderPipeline &shader_pipeline) {
-    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *shader_pipeline.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *shader_pipeline.PipelineLayout, 0, shader_pipeline.GetDescriptorSet(), {});
-}
-
 vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 
 constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -368,20 +366,6 @@ struct SceneUniqueBuffers {
     mvk::UniqueBuffer ClickResultBuffer;
     mvk::UniqueBuffer BoxSelectBitsetBuffer;
 };
-
-void PipelineRenderer::CompileShaders() {
-    for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
-}
-
-void PipelineRenderer::Render(
-    vk::CommandBuffer cb, SPT spt, const RenderBuffers &render_buffers, const ModelsBuffer &models, DrawPushConstants pc, std::optional<uint> model_index
-) const {
-    Bind(cb, ShaderPipelines.at(spt));
-    pc.FirstInstance = model_index.value_or(0);
-    const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
-    cb.pushConstants(*ShaderPipelines.at(spt).PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants), &pc);
-    cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), instance_count, 0, 0);
-}
 
 mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
     auto image = mvk::CreateImage(
@@ -1470,6 +1454,17 @@ namespace {
 void SetTransform(entt::registry &r, entt::entity e, Transform &&t) {
     UpdateTransform(r, e, std::move(t));
 }
+
+// If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.
+void Draw(
+    vk::CommandBuffer cb, const ShaderPipeline &pipeline, const RenderBuffers &render_buffers, const ModelsBuffer &models,
+    DrawPushConstants pc, std::optional<uint> model_index = std::nullopt
+) {
+    pc.FirstInstance = model_index.value_or(0);
+    const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
+    cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants), &pc);
+    cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), instance_count, 0, 0);
+}
 } // namespace
 
 void Scene::RecordRenderCommandBuffer() {
@@ -1514,9 +1509,8 @@ void Scene::RecordRenderCommandBuffer() {
         };
     };
 
-    // Helper to render meshes with object IDs
-    auto render_meshes_with_ids = [&](const auto &entity_view, const ShaderPipeline &shader_pipeline, auto &&get_object_id, auto &&push_extra) {
-        Bind(cb, shader_pipeline);
+    auto render_meshes_with_ids = [&](const auto &entity_view, const PipelineRenderer &renderer, SPT spt, auto &&get_object_id, auto &&push_extra) {
+        const auto &pipeline = renderer.Bind(cb, spt);
         for (const auto e : entity_view) {
             const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
             auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
@@ -1525,7 +1519,7 @@ void Scene::RecordRenderCommandBuffer() {
             auto pc = make_pc(render_buffers, models, *GetModelBufferIndex(R, e));
             pc.ObjectId = get_object_id(e);
             push_extra(pc);
-            cb.pushConstants(*shader_pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
             cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0);
         }
     };
@@ -1541,7 +1535,7 @@ void Scene::RecordRenderCommandBuffer() {
         uint32_t selected_id = 2;
         render_meshes_with_ids(
             R.view<Selected>(),
-            silhouette.Renderer.ShaderPipelines.at(SPT::SilhouetteDepthObject),
+            silhouette.Renderer, SPT::SilhouetteDepthObject,
             [&](entt::entity e) { return R.all_of<Active>(e) ? ActiveId : selected_id++; },
             [&](DrawPushConstants &) {}
         );
@@ -1571,7 +1565,7 @@ void Scene::RecordRenderCommandBuffer() {
         uint32_t object_id = 1;
         render_meshes_with_ids(
             R.view<Visible>(),
-            selection.Renderer.ShaderPipelines.at(SPT::SelectionFragment),
+            selection.Renderer, SPT::SelectionFragment,
             [&](entt::entity) { return object_id++; },
             [&](DrawPushConstants &pc) {
                 pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage; // Reused as HeadImageSlot
@@ -1602,16 +1596,35 @@ void Scene::RecordRenderCommandBuffer() {
         std::unordered_set<entt::entity> selected_mesh_entities;
         for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) selected_mesh_entities.emplace(mi.MeshEntity);
 
-        for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-            const bool show_wireframe_overlay = InteractionMode == InteractionMode::Edit && selected_mesh_entities.contains(entity);
-            if (ViewportShading == ViewportShadingMode::Solid) {
-                main.Renderer.Render(cb, fill_pipeline, mesh_buffers.Faces, models, make_pc(mesh_buffers.Faces, models));
+        const bool is_edit_mode = InteractionMode == InteractionMode::Edit;
+        const bool show_solid = ViewportShading == ViewportShadingMode::Solid;
+        const bool show_wireframe = ViewportShading == ViewportShadingMode::Wireframe;
+
+        // Solid faces
+        if (show_solid) {
+            const auto &pipeline = main.Renderer.Bind(cb, fill_pipeline);
+            for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                Draw(cb, pipeline, mesh_buffers.Faces, models, make_pc(mesh_buffers.Faces, models));
             }
-            if (ViewportShading == ViewportShadingMode::Wireframe || show_wireframe_overlay) {
-                main.Renderer.Render(cb, SPT::Line, mesh_buffers.Edges, models, make_pc(mesh_buffers.Edges, models));
+        }
+
+        // Wireframe edges (wireframe mode or overlay for selected meshes in edit mode)
+        if (show_wireframe || is_edit_mode) {
+            const auto &pipeline = main.Renderer.Bind(cb, SPT::Line);
+            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                if (show_wireframe || selected_mesh_entities.contains(entity)) {
+                    Draw(cb, pipeline, mesh_buffers.Edges, models, make_pc(mesh_buffers.Edges, models));
+                }
             }
-            if (show_wireframe_overlay && EditMode == Element::Vertex) {
-                main.Renderer.Render(cb, SPT::Point, mesh_buffers.Vertices, models, make_pc(mesh_buffers.Vertices, models));
+        }
+
+        // Vertex points (only for selected meshes in vertex edit mode)
+        if (is_edit_mode && EditMode == Element::Vertex) {
+            const auto &pipeline = main.Renderer.Bind(cb, SPT::Point);
+            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                if (selected_mesh_entities.contains(entity)) {
+                    Draw(cb, pipeline, mesh_buffers.Vertices, models, make_pc(mesh_buffers.Vertices, models));
+                }
             }
         }
     }
@@ -1627,17 +1640,19 @@ void Scene::RecordRenderCommandBuffer() {
         silhouette_edc.RenderQuad(cb);
     }
 
-    // Selection overlays
-    for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-        for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-            main.Renderer.Render(cb, SPT::Line, buffers, models, make_pc(buffers, models));
+    { // Selection overlays
+        const auto &pipeline = main.Renderer.Bind(cb, SPT::Line);
+        for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
+                Draw(cb, pipeline, buffers, models, make_pc(buffers, models));
+            }
         }
-    }
-    for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
-        main.Renderer.Render(cb, SPT::Line, bvh_boxes.Buffers, models, make_pc(bvh_boxes.Buffers, models));
-    }
-    for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-        main.Renderer.Render(cb, SPT::Line, bounding_boxes.Buffers, models, make_pc(bounding_boxes.Buffers, models));
+        for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
+            Draw(cb, pipeline, bvh_boxes.Buffers, models, make_pc(bvh_boxes.Buffers, models));
+        }
+        for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
+            Draw(cb, pipeline, bounding_boxes.Buffers, models, make_pc(bounding_boxes.Buffers, models));
+        }
     }
 
     // Grid lines texture
