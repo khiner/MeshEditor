@@ -255,6 +255,7 @@ private:
     std::unordered_set<he::Element> ShownNormalElements{};
 
     bool CommandBufferDirty{false};
+    bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
 
     void SetInteractionMode(::InteractionMode);
     void SetEditMode(he::Element mode);
@@ -262,6 +263,7 @@ private:
 
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max);
+    void RenderSelectionPass(); // On-demand selection fragment rendering.
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

@@ -1468,6 +1468,7 @@ void Draw(
 } // namespace
 
 void Scene::RecordRenderCommandBuffer() {
+    SelectionStale = true;
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
@@ -1552,27 +1553,6 @@ void Scene::RecordRenderCommandBuffer() {
         } edge_pc{SilhouetteEdgeWidth, SelectionHandles->SilhouetteSampler};
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
         silhouette_edo.RenderQuad(cb);
-        cb.endRenderPass();
-    }
-
-    // Pass 2: Selection fragment list (all visible meshes, for click selection)
-    if (InteractionMode == InteractionMode::Object) {
-        const auto &selection = Pipelines->SelectionFragment;
-        static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}};
-        const vk::Rect2D rect{{0, 0}, ToExtent2D(selection.Resources->DepthImage.Extent)};
-        cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-
-        uint32_t object_id = 1;
-        render_meshes_with_ids(
-            R.view<Visible>(),
-            selection.Renderer, SPT::SelectionFragment,
-            [&](entt::entity) { return object_id++; },
-            [&](DrawPushConstants &pc) {
-                pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage; // Reused as HeadImageSlot
-                pc.SelectionNodesSlot = SelectionHandles->SelectionNodes;
-                pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
-            }
-        );
         cb.endRenderPass();
     }
 
@@ -1806,36 +1786,71 @@ bool IsSingleClicked(ImGuiMouseButton button) {
     return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
 }
 
-void BarrierSelectionData(vk::CommandBuffer cb, const SceneUniqueBuffers &buffers, const mvk::ImageResource &head_image) {
-    const vk::BufferMemoryBarrier node_barrier{
-        vk::AccessFlagBits::eShaderWrite,
-        vk::AccessFlagBits::eShaderRead,
-        {},
-        {},
-        *buffers.SelectionNodeBuffer.DeviceBuffer,
-        0,
-        VK_WHOLE_SIZE
-    };
-    const vk::ImageMemoryBarrier head_barrier{
-        vk::AccessFlagBits::eShaderWrite,
-        vk::AccessFlagBits::eShaderRead,
-        vk::ImageLayout::eGeneral,
-        vk::ImageLayout::eGeneral,
-        {},
-        {},
-        *head_image.Image,
-        ColorSubresourceRange
-    };
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eFragmentShader,
-        vk::PipelineStageFlagBits::eComputeShader,
-        {}, {}, {node_barrier}, {head_barrier}
-    );
-}
-
 } // namespace
 
+void Scene::RenderSelectionPass() {
+    auto cb = *ClickCommandBuffer;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Reset selection counter.
+    UniqueBuffers->SelectionCounterBuffer.Write(as_bytes(SelectionCounters{}));
+
+    // Transition head image to general layout and clear.
+    const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
+    );
+    cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+        vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
+    );
+
+    // Render all visible meshes to selection fragment list.
+    const auto &selection = Pipelines->SelectionFragment;
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
+    static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}};
+    const vk::Rect2D rect{{0, 0}, ToExtent2D(selection.Resources->DepthImage.Extent)};
+    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+
+    const auto &pipeline = selection.Renderer.Bind(cb, SPT::SelectionFragment);
+    uint32_t object_id = 1;
+    for (const auto e : R.view<Visible>()) {
+        const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+        auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
+        auto &models = R.get<ModelsBuffer>(mesh_entity);
+        if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
+        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+        const DrawPushConstants pc{
+            render_buffers.VertexSlot,
+            render_buffers.IndexSlot,
+            models.Slot,
+            *GetModelBufferIndex(R, e),
+            object_id++,
+            SelectionHandles->HeadImage,
+            SelectionHandles->SelectionNodes,
+            SelectionHandles->SelectionCounter
+        };
+        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+        cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0);
+    }
+    cb.endRenderPass();
+
+    cb.end();
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    Vk.Queue.submit(submit, *TransferFence);
+    WaitFor(*TransferFence);
+
+    SelectionStale = false;
+}
+
 std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
+    if (SelectionStale) RenderSelectionPass();
+
     auto cb = *ClickCommandBuffer;
     cb.reset({});
 
@@ -1843,11 +1858,8 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     const auto node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
     if (node_count == 0) return {};
 
-    // Dispatch click-reduction compute writing directly to host-visible buffer (no copy needed).
-    UniqueBuffers->ClickResultBuffer.Write(as_bytes(ClickResult{})); // Reset count/hits.
+    UniqueBuffers->ClickResultBuffer.Write(as_bytes(ClickResult{}));
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    BarrierSelectionData(cb, *UniqueBuffers, Pipelines->SelectionFragment.Resources->HeadImage);
 
     const auto &compute = Pipelines->ClickSelect;
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
@@ -1894,6 +1906,8 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 
 std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max) {
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
+    if (SelectionStale) RenderSelectionPass();
+
     const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
     const auto node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
     if (node_count == 0) return {};
@@ -1910,8 +1924,6 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
     auto cb = *ClickCommandBuffer;
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    BarrierSelectionData(cb, *UniqueBuffers, Pipelines->SelectionFragment.Resources->HeadImage);
 
     const auto &compute = Pipelines->BoxSelect;
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
@@ -2249,30 +2261,6 @@ bool Scene::RenderViewport() {
 
     const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
     // transfer_cb is kept recording between frames by BufferContext and our end-of-frame begin().
-    if (InteractionMode == InteractionMode::Object) {
-        UniqueBuffers->SelectionCounterBuffer.Write(as_bytes(SelectionCounters{}));
-
-        const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
-        const vk::ImageMemoryBarrier to_general{
-            {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange
-        };
-        transfer_cb.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, to_general);
-
-        const vk::ClearColorValue clear_value{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}};
-        transfer_cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, clear_value, ColorSubresourceRange);
-
-        const vk::ImageMemoryBarrier to_shader{
-            vk::AccessFlagBits::eTransferWrite,
-            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
-            vk::ImageLayout::eGeneral,
-            vk::ImageLayout::eGeneral,
-            {},
-            {},
-            *head_image.Image,
-            ColorSubresourceRange
-        };
-        transfer_cb.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, to_shader);
-    }
     // Ensure buffer writes (staging copies) are visible to shader reads.
     const vk::MemoryBarrier buffer_barrier{
         vk::AccessFlagBits::eTransferWrite,
