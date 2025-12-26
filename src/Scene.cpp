@@ -1517,11 +1517,10 @@ void Scene::RecordRenderCommandBuffer() {
             auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
             auto &models = R.get<ModelsBuffer>(mesh_entity);
 
-            auto pc = make_pc(render_buffers, models, *GetModelBufferIndex(R, e));
+            auto pc = make_pc(render_buffers, models);
             pc.ObjectId = get_object_id(e);
             push_extra(pc);
-            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-            cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0);
+            Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, e));
         }
     };
 
@@ -1825,17 +1824,10 @@ void Scene::RenderSelectionPass() {
         if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
         if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
         const DrawPushConstants pc{
-            render_buffers.VertexSlot,
-            render_buffers.IndexSlot,
-            models.Slot,
-            *GetModelBufferIndex(R, e),
-            object_id++,
-            SelectionHandles->HeadImage,
-            SelectionHandles->SelectionNodes,
-            SelectionHandles->SelectionCounter
+            render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, object_id++,
+            SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter
         };
-        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.draw(render_buffers.Indices.UsedSize / sizeof(uint32_t), 1, 0, 0);
+        Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, e));
     }
     cb.endRenderPass();
 
