@@ -7,11 +7,12 @@ namespace {
 constexpr vk::DescriptorBindingFlags BindlessFlagsUpdateAfterBind = vk::DescriptorBindingFlagBits::ePartiallyBound |
     vk::DescriptorBindingFlagBits::eUpdateAfterBind;
 
-constexpr std::array SlotTypeNames{"uniform", "image", "sampler", "buffer", "vertex buffer", "index buffer", "model buffer"};
+constexpr std::array SlotTypeNames{"uniform", "image", "sampler", "buffer", "vertex buffer", "index buffer", "model buffer", "object id buffer"};
 constexpr std::array SlotTypeDescriptors{
     vk::DescriptorType::eUniformBuffer,
     vk::DescriptorType::eStorageImage,
     vk::DescriptorType::eCombinedImageSampler,
+    vk::DescriptorType::eStorageBuffer,
     vk::DescriptorType::eStorageBuffer,
     vk::DescriptorType::eStorageBuffer,
     vk::DescriptorType::eStorageBuffer,
@@ -24,7 +25,8 @@ constexpr std::array SlotTypeBindings{
     6u, // General storage buffers
     3u, // Vertex buffers
     4u, // Index buffers
-    5u // Model buffers
+    5u, // Model buffers
+    7u // Object ID buffers
 };
 } // namespace
 
@@ -38,6 +40,7 @@ BindlessResources::BindlessResources(vk::Device device, const BindlessConfig &co
         vk::DescriptorSetLayoutBinding{4, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
         vk::DescriptorSetLayoutBinding{5, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
         vk::DescriptorSetLayoutBinding{6, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
+        vk::DescriptorSetLayoutBinding{7, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
     };
     const std::array<vk::DescriptorBindingFlags, bindings.size()> binding_flags{
         vk::DescriptorBindingFlagBits::ePartiallyBound, // Uniforms
@@ -46,7 +49,8 @@ BindlessResources::BindlessResources(vk::Device device, const BindlessConfig &co
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Vertex buffers
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Index buffers
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Model buffers
-        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind // General buffers
+        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // General buffers
+        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind // Object ID buffers
     };
     const vk::DescriptorSetLayoutBindingFlagsCreateInfo binding_flags_ci{
         static_cast<uint32_t>(binding_flags.size()),
@@ -60,8 +64,8 @@ BindlessResources::BindlessResources(vk::Device device, const BindlessConfig &co
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, Config.MaxUniforms},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, Config.MaxImages},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, Config.MaxSamplers},
-        // Four storage-buffer bindings, each with MaxBuffers slots.
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, Config.MaxBuffers * 4},
+        // Storage-buffer bindings (vertex, index, model, general, object id), each with MaxBuffers slots.
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, Config.MaxBuffers * 5},
     };
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
 

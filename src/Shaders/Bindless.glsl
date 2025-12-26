@@ -28,12 +28,18 @@ layout(set = 0, binding = 4, scalar) readonly buffer IndexBuffer {
     uint Indices[];
 } IndexBuffers[];
 
+layout(set = 0, binding = 7, scalar) readonly buffer ObjectIdBuffer {
+    uint Ids[];
+} ObjectIdBuffers[];
+
+const uint INVALID_SLOT = 0xffffffffu;
+
 layout(push_constant) uniform PushConstants {
     uint VertexSlot;
     uint IndexSlot;
     uint ModelSlot;
     uint FirstInstance;
-    uint ObjectId;
+    uint ObjectIdSlot; // Slot for per-instance ObjectId buffer (INVALID_SLOT if unused)
     uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
     uint SelectionNodesSlot;
     uint SelectionCounterSlot;

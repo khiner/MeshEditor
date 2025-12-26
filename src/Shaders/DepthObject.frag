@@ -1,18 +1,12 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
-layout(push_constant) uniform PC {
-    uint VertexSlot;
-    uint IndexSlot;
-    uint ModelSlot;
-    uint FirstInstance;
-    uint ObjectId;
-    uint _reserved0;
-    uint _reserved1;
-    uint _reserved2;
-} pc;
+#include "Bindless.glsl"
 
+layout(location = 0) flat in uint InstanceIndex;
 layout(location = 0) out vec2 DepthObjectId; // {Depth, ObjectID}
 
 void main() {
-    DepthObjectId = vec2(gl_FragCoord.z, float(pc.ObjectId));
+    const uint objectId = ObjectIdBuffers[nonuniformEXT(pc.ObjectIdSlot)].Ids[pc.FirstInstance + InstanceIndex];
+    DepthObjectId = vec2(gl_FragCoord.z, float(objectId));
 }

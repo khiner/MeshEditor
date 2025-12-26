@@ -81,7 +81,7 @@ struct DrawPushConstants {
     uint32_t IndexSlot;
     uint32_t ModelSlot;
     uint32_t FirstInstance;
-    uint32_t ObjectId;
+    uint32_t ObjectIdSlot; // Slot for per-instance ObjectId buffer (InvalidSlot if unused)
     uint32_t VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
     uint32_t SelectionNodesSlot;
     uint32_t SelectionCounterSlot;
@@ -531,7 +531,7 @@ struct MainPipeline {
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
                 CreateColorBlendAttachment(true), CreateDepthStencil(false, false),
-                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2} // Manipulating flag + sampler index
+                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 3} // Manipulating flag + sampler index + active object id
             )
         );
         pipelines.emplace(
@@ -1086,6 +1086,29 @@ void Scene::OnDestroyBvhBoxesBuffers(entt::registry &r, entt::entity e) {
 
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
 
+namespace {
+void UpdateVisibleObjectIds(entt::registry &r) {
+    std::unordered_map<entt::entity, std::vector<uint32_t>> ids_by_mesh;
+    uint32_t object_id = 1;
+    for (const auto e : r.view<Visible>()) {
+        const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
+        auto &models = r.get<ModelsBuffer>(mesh_entity);
+        const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
+        if (instance_count == 0) continue;
+        auto &ids = ids_by_mesh[mesh_entity];
+        if (ids.empty()) ids.resize(instance_count, 0);
+        const auto buffer_index = r.get<RenderInstance>(e).BufferIndex;
+        if (buffer_index < ids.size()) ids[buffer_index] = object_id;
+        ++object_id;
+    }
+
+    for (auto &[mesh_entity, ids] : ids_by_mesh) {
+        auto &models = r.get<ModelsBuffer>(mesh_entity);
+        models.ObjectIds.Update(as_bytes(ids));
+    }
+}
+} // namespace
+
 void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<Visible>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
@@ -1093,15 +1116,18 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
     auto &models = R.get<ModelsBuffer>(mesh_entity);
     auto &model_buffer = models.Buffer;
+    auto &object_ids = models.ObjectIds;
     if (visible) {
         auto &render_instance = R.emplace_or_replace<RenderInstance>(entity);
         render_instance.BufferIndex = model_buffer.UsedSize / sizeof(WorldMatrix);
         model_buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), model_buffer.UsedSize);
+        object_ids.Insert(as_bytes(uint32_t{0}), object_ids.UsedSize); // Placeholder; actual IDs set on-demand.
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
         const uint old_model_index = R.get<RenderInstance>(entity).BufferIndex;
         model_buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
+        object_ids.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
         // Update buffer indices for all instances of this mesh that have higher indices
         for (const auto [other_entity, mesh_instance, render_instance] : R.view<MeshInstance, RenderInstance>().each()) {
             if (mesh_instance.MeshEntity == mesh_entity && render_instance.BufferIndex > old_model_index) {
@@ -1118,6 +1144,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         }
     }
     UpdateModelBufferBindless(models);
+    UpdateVisibleObjectIds(R);
     InvalidateCommandBuffer();
 }
 
@@ -1146,7 +1173,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<MeshHighlightedVertices>(mesh_entity);
         R.emplace<ModelsBuffer>(
             mesh_entity,
-            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer}
+            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer},
+            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer}
         );
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Faces);
@@ -1165,8 +1193,9 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     UpdateTransform(R, instance_entity, info.Transform);
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
-    auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
-    model_buffer.Reserve(model_buffer.UsedSize + sizeof(WorldMatrix));
+    auto &models = R.get<ModelsBuffer>(mesh_entity);
+    models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
+    models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
     SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
 
@@ -1222,8 +1251,9 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
     }
     R.emplace<MeshInstance>(e_new, mesh_entity);
     {
-        auto &model_buffer = R.get<ModelsBuffer>(mesh_entity).Buffer;
-        model_buffer.Reserve(model_buffer.UsedSize + sizeof(WorldMatrix));
+        auto &models = R.get<ModelsBuffer>(mesh_entity);
+        models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
+        models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
     }
     UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
@@ -1493,6 +1523,17 @@ void Scene::RecordRenderCommandBuffer() {
 
     const auto active_entity = FindActiveEntity(R);
     const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
+    uint32_t active_object_id = 0;
+    if (render_silhouette && active_entity != entt::null) {
+        uint32_t object_id = 1;
+        for (const auto e : R.view<Visible>()) {
+            if (e == active_entity) {
+                active_object_id = object_id;
+                break;
+            }
+            ++object_id;
+        }
+    }
 
     const auto make_pc = [this](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
         if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
@@ -1503,23 +1544,22 @@ void Scene::RecordRenderCommandBuffer() {
             render_buffers.IndexSlot,
             models.Slot,
             first_instance,
-            0, // ObjectId
+            InvalidSlot, // ObjectIdSlot - unused for regular rendering
             vertex_count,
             0, // SelectionNodesSlot
             0 // SelectionCounterSlot
         };
     };
 
-    auto render_meshes_with_ids = [&](const auto &entity_view, const PipelineRenderer &renderer, SPT spt, auto &&get_object_id, auto &&push_extra) {
+    auto render_meshes_with_ids = [&](const PipelineRenderer &renderer, SPT spt) {
         const auto &pipeline = renderer.Bind(cb, spt);
-        for (const auto e : entity_view) {
+        for (const auto e : R.view<Selected>()) {
             const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
             auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
             auto &models = R.get<ModelsBuffer>(mesh_entity);
 
             auto pc = make_pc(render_buffers, models);
-            pc.ObjectId = get_object_id(e);
-            push_extra(pc);
+            pc.ObjectIdSlot = models.ObjectIdSlot;
             Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, e));
         }
     };
@@ -1531,14 +1571,7 @@ void Scene::RecordRenderCommandBuffer() {
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
 
-        static constexpr uint32_t ActiveId{1};
-        uint32_t selected_id = 2;
-        render_meshes_with_ids(
-            R.view<Selected>(),
-            silhouette.Renderer, SPT::SilhouetteDepthObject,
-            [&](entt::entity e) { return R.all_of<Active>(e) ? ActiveId : selected_id++; },
-            [&](DrawPushConstants &) {}
-        );
+        render_meshes_with_ids(silhouette.Renderer, SPT::SilhouetteDepthObject);
         cb.endRenderPass();
 
         const auto &silhouette_edge = Pipelines->SilhouetteEdge;
@@ -1614,7 +1647,8 @@ void Scene::RecordRenderCommandBuffer() {
         struct SilhouetteEdgeColorPushConstants {
             uint32_t Manipulating;
             uint32_t ObjectSamplerIndex;
-        } pc{TransformGizmo::IsUsing(), SelectionHandles->ObjectIdSampler};
+            uint32_t ActiveObjectId;
+        } pc{TransformGizmo::IsUsing(), SelectionHandles->ObjectIdSampler, active_object_id};
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         silhouette_edc.RenderQuad(cb);
     }
@@ -1787,7 +1821,21 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 
 } // namespace
 
+struct Timer {
+    std::string_view Name;
+    std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
+
+    Timer(const std::string_view name) : Name{name} {}
+    ~Timer() {
+        const auto end = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
+        std::println("{}: ms={:.3f}", Name, ms);
+    }
+};
+
 void Scene::RenderSelectionPass() {
+    const Timer timer{"RenderSelectionPass"};
+
     auto cb = *ClickCommandBuffer;
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -1816,18 +1864,17 @@ void Scene::RenderSelectionPass() {
     cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
 
     const auto &pipeline = selection.Renderer.Bind(cb, SPT::SelectionFragment);
-    uint32_t object_id = 1;
-    for (const auto e : R.view<Visible>()) {
-        const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-        auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
-        auto &models = R.get<ModelsBuffer>(mesh_entity);
+    for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+        const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
+        if (instance_count == 0) continue;
+
+        auto &render_buffers = mesh_buffers.Faces;
         if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
-        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
         const DrawPushConstants pc{
-            render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, object_id++,
+            render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, models.ObjectIdSlot,
             SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter
         };
-        Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, e));
+        Draw(cb, pipeline, render_buffers, models, pc);
     }
     cb.endRenderPass();
 
@@ -2013,8 +2060,13 @@ void Scene::UpdateModelBufferBindless(ModelsBuffer &mb) {
 
     auto &alloc = *BindlessAlloc;
     if (mb.Slot == InvalidSlot) mb.Slot = alloc.Allocate(SlotType::ModelBuffer);
-    const auto info = mb.Buffer.GetDescriptor();
-    Vk.Device.updateDescriptorSets(alloc.MakeBufferWrite(SlotType::ModelBuffer, mb.Slot, info), {});
+    if (mb.ObjectIdSlot == InvalidSlot) mb.ObjectIdSlot = alloc.Allocate(SlotType::ObjectIdBuffer);
+
+    const std::array writes{
+        alloc.MakeBufferWrite(SlotType::ModelBuffer, mb.Slot, mb.Buffer.GetDescriptor()),
+        alloc.MakeBufferWrite(SlotType::ObjectIdBuffer, mb.ObjectIdSlot, mb.ObjectIds.GetDescriptor())
+    };
+    Vk.Device.updateDescriptorSets(writes, {});
 }
 
 void Scene::ReleaseRenderBufferBindless(RenderBuffers &rb) {
@@ -2034,6 +2086,10 @@ void Scene::ReleaseModelBufferBindless(ModelsBuffer &mb) {
     if (mb.Slot != InvalidSlot) {
         BindlessAlloc->Release(SlotType::ModelBuffer, mb.Slot);
         mb.Slot = InvalidSlot;
+    }
+    if (mb.ObjectIdSlot != InvalidSlot) {
+        BindlessAlloc->Release(SlotType::ObjectIdBuffer, mb.ObjectIdSlot);
+        mb.ObjectIdSlot = InvalidSlot;
     }
 }
 
@@ -2230,17 +2286,7 @@ bool Scene::RenderViewport() {
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty) return false;
 
-    struct RenderViewportTimer {
-        std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
-        ~RenderViewportTimer() {
-            const auto end = std::chrono::steady_clock::now();
-            const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
-            std::println("RenderViewport: ms={:.3f}", ms);
-        }
-    };
-
-    const RenderViewportTimer timer{};
-
+    const Timer timer{"RenderViewport"};
     CommandBufferDirty = false;
 
     if (extent_changed) {

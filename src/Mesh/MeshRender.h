@@ -39,7 +39,9 @@ struct RenderInstance {
 // Holds the `WorldMatrix` of all instances of the mesh.
 struct ModelsBuffer {
     mvk::UniqueBuffers Buffer;
+    mvk::UniqueBuffers ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
     uint32_t Slot{InvalidSlot};
+    uint32_t ObjectIdSlot{InvalidSlot};
 };
 
 // Component for entities that render a mesh via instancing.

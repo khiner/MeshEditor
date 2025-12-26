@@ -20,6 +20,8 @@ layout(set = 0, binding = 6, std430) buffer SelectionCounter {
     uint Overflow;
 } Counters[];
 
+layout(location = 0) flat in uint InstanceIndex;
+
 const uint INVALID_NODE = 0xffffffffu;
 
 void main() {
@@ -33,7 +35,8 @@ void main() {
         return;
     }
 
-    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = pc.ObjectId;
+    const uint objectId = ObjectIdBuffers[nonuniformEXT(pc.ObjectIdSlot)].Ids[pc.FirstInstance + InstanceIndex];
+    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = objectId;
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
 
     const ivec2 coord = ivec2(gl_FragCoord.xy);

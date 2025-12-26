@@ -3,7 +3,10 @@
 
 #include "Bindless.glsl"
 
+layout(location = 0) flat out uint InstanceIndex;
+
 void main() {
+    InstanceIndex = gl_InstanceIndex;
     const uint idx = IndexBuffers[nonuniformEXT(pc.IndexSlot)].Indices[gl_VertexIndex];
     const vec3 position = VertexBuffers[nonuniformEXT(pc.VertexSlot)].Vertices[idx].Position;
     const mat4 model = ModelBuffers[nonuniformEXT(pc.ModelSlot)].Models[pc.FirstInstance + gl_InstanceIndex].M;

@@ -6,8 +6,9 @@
 layout(set = 0, binding = 2) uniform sampler2D Samplers[];
 
 layout(push_constant) uniform PC {
-    int Manipulating;
+    uint Manipulating;
     uint ObjectSamplerIndex;
+    uint ActiveObjectId;
 } pc;
 
 layout(location = 0) in vec2 TexCoord;
@@ -17,10 +18,11 @@ const vec4 ManipulatingColor = vec4(1, 1, 1, 1);
 
 void main() {
     const ivec2 texel = ivec2(TexCoord * textureSize(Samplers[nonuniformEXT(pc.ObjectSamplerIndex)], 0));
-    const float object_id = texelFetch(Samplers[nonuniformEXT(pc.ObjectSamplerIndex)], texel, 0).r;
-    if (object_id < 1) {
+    const uint object_id = uint(texelFetch(Samplers[nonuniformEXT(pc.ObjectSamplerIndex)], texel, 0).r);
+    if (object_id == 0) {
         discard;
     } else {
-        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor : object_id == 1 ? Scene.SilhouetteActive : Scene.SilhouetteSelected;
+        const bool is_active = pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId;
+        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor : is_active ? Scene.SilhouetteActive : Scene.SilhouetteSelected;
     }
 }
