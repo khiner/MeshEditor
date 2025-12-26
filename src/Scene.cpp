@@ -32,7 +32,7 @@
 #include <variant>
 
 using std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
-using std::views::transform;
+using std::views::filter, std::views::iota, std::views::take, std::views::transform;
 
 using namespace he;
 
@@ -322,6 +322,13 @@ struct BoxSelectPushConstants {
     uint32_t SelectionNodesIndex;
     uint32_t BoxResultIndex;
 };
+
+void WaitFor(vk::Fence fence, vk::Device device) {
+    if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    device.resetFences(fence);
+}
 } // namespace
 
 struct SceneUniqueBuffers {
@@ -439,7 +446,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         vk::SubmitInfo submit;
         submit.setCommandBuffers(cb);
         Vk.Queue.submit(submit, *TransferFence);
-        WaitFor(*TransferFence);
+        WaitFor(*TransferFence, Vk.Device);
     } // staging buffer is destroyed here
 
     UniqueBuffers->Ctx.Reclaimer.Reclaim();
@@ -1412,13 +1419,6 @@ void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool togg
     UpdateRenderBuffers(mesh_entity);
 }
 
-void Scene::WaitFor(vk::Fence fence) const {
-    if (auto wait_result = Vk.Device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    Vk.Device.resetFences(fence);
-}
-
 void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
         std::unordered_set<VH> SelectedVertices, ActiveVertex;
@@ -1879,58 +1879,67 @@ void Scene::RenderSelectionPass() {
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
     Vk.Queue.submit(submit, *TransferFence);
-    WaitFor(*TransferFence);
+    WaitFor(*TransferFence, Vk.Device);
 
     SelectionStale = false;
 }
 
-std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
-    if (SelectionStale) RenderSelectionPass();
-
-    auto cb = *ClickCommandBuffer;
+namespace {
+void RunSelectionCompute(vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device, const auto &compute, const auto &pc, auto &&dispatch) {
     cb.reset({});
-
-    const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
-    const auto node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
-    if (node_count == 0) return {};
-
-    UniqueBuffers->ClickResultBuffer.Write(as_bytes(ClickResult{}));
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    const auto &compute = Pipelines->ClickSelect;
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
-    const ClickSelectPushConstants pc{
-        .TargetPx = mouse_px,
-        .HeadImageIndex = SelectionHandles->HeadImage,
-        .SelectionNodesIndex = SelectionHandles->SelectionNodes,
-        .ClickResultIndex = SelectionHandles->ClickResult
-    };
     cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    cb.dispatch(1, 1, 1);
+    dispatch(cb);
 
     const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
     cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
     cb.end();
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
-    Vk.Queue.submit(submit, *TransferFence);
-    WaitFor(*TransferFence);
+    queue.submit(submit, fence);
+    WaitFor(fence, device);
+}
+
+bool HasSelectionNodes(const mvk::UniqueBuffer &counter_buffer) {
+    const auto *counters = reinterpret_cast<const SelectionCounters *>(counter_buffer.GetData().data());
+    return std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes) != 0;
+}
+} // namespace
+
+// Returns entities hit at mouse_px, sorted by depth (near-to-far), with duplicates removed.
+std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
+    if (SelectionStale) RenderSelectionPass();
+    if (!HasSelectionNodes(UniqueBuffers->SelectionCounterBuffer)) return {};
+
+    UniqueBuffers->ClickResultBuffer.Write(as_bytes(ClickResult{}));
+    auto cb = *ClickCommandBuffer;
+    const auto &compute = Pipelines->ClickSelect;
+    RunSelectionCompute(
+        cb, Vk.Queue, *TransferFence, Vk.Device, compute,
+        ClickSelectPushConstants{
+            .TargetPx = mouse_px,
+            .HeadImageIndex = SelectionHandles->HeadImage,
+            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+            .ClickResultIndex = SelectionHandles->ClickResult,
+        },
+        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }
+    );
 
     // Step 3: convert click hits to entities.
     const auto &result = UniqueBuffers->GetClickResult();
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
-    const uint32_t hit_count = std::min<uint32_t>(result.Count, result.Hits.size());
-    std::vector<std::pair<float, uint32_t>> hits;
-    hits.reserve(hit_count);
-    for (uint32_t i = 0; i < hit_count; ++i) {
-        const auto &hit = result.Hits[i];
-        if (hit.ObjectId == 0 || hit.ObjectId > visible_entities.size()) continue;
-        hits.emplace_back(hit.Depth, hit.ObjectId);
-    }
+    auto hits = result.Hits //
+        | take(std::min<uint32_t>(result.Count, result.Hits.size())) //
+        | filter([&](const auto &hit) { return hit.ObjectId != 0 && hit.ObjectId <= visible_entities.size(); }) //
+        | transform([](const auto &hit) { return std::pair{hit.Depth, hit.ObjectId}; }) //
+        | to<std::vector>();
     std::ranges::sort(hits);
 
     std::vector<entt::entity> entities;
+    entities.reserve(hits.size());
     std::unordered_set<uint32_t> seen_object_ids;
     for (const auto &[_, object_id] : hits) {
         if (seen_object_ids.insert(object_id).second) {
@@ -1944,9 +1953,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
     if (SelectionStale) RenderSelectionPass();
 
-    const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
-    const auto node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
-    if (node_count == 0) return {};
+    if (!HasSelectionNodes(UniqueBuffers->SelectionCounterBuffer)) return {};
 
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
     const auto object_count = static_cast<uint32_t>(visible_entities.size());
@@ -1954,48 +1961,35 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
 
     const uint32_t bitset_words = (object_count + 31) / 32;
     if (bitset_words > BoxSelectZeroBits.size()) return {};
+
     const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
     UniqueBuffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
 
     auto cb = *ClickCommandBuffer;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
     const auto &compute = Pipelines->BoxSelect;
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
-    const BoxSelectPushConstants pc{
-        .BoxMin = box_min,
-        .BoxMax = box_max,
-        .ObjectCount = object_count,
-        .HeadImageIndex = SelectionHandles->HeadImage,
-        .SelectionNodesIndex = SelectionHandles->SelectionNodes,
-        .BoxResultIndex = SelectionHandles->BoxResult
-    };
-    cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    const uint32_t width = box_max.x - box_min.x;
-    const uint32_t height = box_max.y - box_min.y;
-    const uint32_t group_count_x = (width + 15) / 16;
-    const uint32_t group_count_y = (height + 15) / 16;
-    cb.dispatch(group_count_x, group_count_y, 1);
+    const uint32_t group_count_x = (box_max.x - box_min.x + 15) / 16;
+    const uint32_t group_count_y = (box_max.y - box_min.y + 15) / 16;
+    RunSelectionCompute(
+        cb, Vk.Queue, *TransferFence, Vk.Device, compute,
+        BoxSelectPushConstants{
+            .BoxMin = box_min,
+            .BoxMax = box_max,
+            .ObjectCount = object_count,
+            .HeadImageIndex = SelectionHandles->HeadImage,
+            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+            .BoxResultIndex = SelectionHandles->BoxResult,
+        },
+        [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
+            dispatch_cb.dispatch(group_count_x, group_count_y, 1);
+        }
+    );
 
-    const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
-    cb.end();
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    Vk.Queue.submit(submit, *TransferFence);
-    WaitFor(*TransferFence);
-
-    const auto bitset_data = UniqueBuffers->BoxSelectBitsetBuffer.GetData();
-    const auto *bits = reinterpret_cast<const uint32_t *>(bitset_data.data());
-    std::vector<entt::entity> entities;
-    entities.reserve(object_count);
-    for (uint32_t i = 0; i < object_count; ++i) {
-        const uint32_t mask = 1u << (i % 32);
-        if (bits[i / 32] & mask) entities.push_back(visible_entities[i]);
-    }
-    return entities;
+    const auto *bits = reinterpret_cast<const uint32_t *>(UniqueBuffers->BoxSelectBitsetBuffer.GetData().data());
+    return iota(uint32_t{0}, object_count) | filter([&](uint32_t i) {
+               const uint32_t mask = 1u << (i % 32);
+               return (bits[i / 32] & mask) != 0;
+           }) |
+        transform([&](uint32_t i) { return visible_entities[i]; }) | to<std::vector>();
 }
 
 void Scene::UpdateSelectionBindlessDescriptors() {
@@ -2316,7 +2310,7 @@ bool Scene::RenderViewport() {
     vk::SubmitInfo submit;
     submit.setCommandBuffers(command_buffers);
     Vk.Queue.submit(submit, *RenderFence);
-    WaitFor(*RenderFence);
+    WaitFor(*RenderFence, Vk.Device);
 
     // Read back selection node count for dispatch sizing (host-visible buffer).
     // No copy needed; buffer is host-visible and GPU work is done by this point.
@@ -2437,7 +2431,7 @@ void Scene::RenderOverlay() {
             }
             return false;
         };
-        auto root_selected = selected_view | std::views::filter([&](auto e) { return !is_parent_selected(e); });
+        auto root_selected = selected_view | filter([&](auto e) { return !is_parent_selected(e); });
         const auto root_count = distance(root_selected);
 
         const auto active_transform = GetTransform(R, FindActiveEntity(R));

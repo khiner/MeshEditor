@@ -273,6 +273,4 @@ private:
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);
-
-    void WaitFor(vk::Fence) const;
 };
