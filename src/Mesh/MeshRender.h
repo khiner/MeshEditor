@@ -79,6 +79,11 @@ struct MeshBuffers {
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
+struct MeshFaceIdBuffer {
+    mvk::UniqueBuffers Faces;
+    uint32_t Slot{InvalidSlot};
+};
+
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity);
 void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
@@ -121,6 +126,7 @@ std::vector<Vertex3D> CreateVertexPoints(
 std::vector<uint> CreateFaceIndices(const Mesh &mesh);
 std::vector<uint> CreateEdgeIndices(const Mesh &mesh);
 std::vector<uint> CreateVertexIndices(const Mesh &mesh);
+std::vector<uint32_t> CreateFaceElementIds(const Mesh &mesh);
 
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, he::Element element);
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, he::Element element);

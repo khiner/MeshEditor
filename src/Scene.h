@@ -11,9 +11,12 @@
 #include "entt_fwd.h"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <set>
+#include <span>
 #include <unordered_set>
+#include <vector>
 
 using uint = uint32_t;
 namespace fs = std::filesystem;
@@ -24,6 +27,8 @@ struct Path {
 
 struct RenderBuffers;
 struct ModelsBuffer;
+struct MeshFaceIdBuffer;
+struct PipelineRenderer;
 
 struct World {
     const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
@@ -165,8 +170,10 @@ struct Scene {
     void UpdateSelectionBindlessDescriptors();
     void UpdateRenderBufferBindless(RenderBuffers &);
     void UpdateModelBufferBindless(ModelsBuffer &);
+    void UpdateFaceIdBufferBindless(MeshFaceIdBuffer &);
     void ReleaseRenderBufferBindless(RenderBuffers &);
     void ReleaseModelBufferBindless(ModelsBuffer &);
+    void ReleaseFaceIdBufferBindless(MeshFaceIdBuffer &);
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
 
@@ -181,6 +188,7 @@ struct Scene {
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyMeshBuffers(entt::registry &, entt::entity);
     void OnDestroyModelsBuffer(entt::registry &, entt::entity);
+    void OnDestroyFaceIdBuffer(entt::registry &, entt::entity);
     void OnDestroyBoundingBoxesBuffers(entt::registry &, entt::entity);
     void OnDestroyBvhBoxesBuffers(entt::registry &, entt::entity);
 
@@ -257,6 +265,12 @@ private:
     bool CommandBufferDirty{false};
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
 
+    struct ElementRange {
+        entt::entity MeshEntity{};
+        uint32_t Offset{0};
+        uint32_t Count{0};
+    };
+
     void SetInteractionMode(::InteractionMode);
     void SetEditMode(he::Element mode);
     void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
@@ -264,6 +278,9 @@ private:
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max);
     void RenderSelectionPass(); // On-demand selection fragment rendering.
+    void RenderSelectionPassWith(const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn);
+    void RenderEditSelectionPass(std::span<const ElementRange> ranges, he::Element element);
+    std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

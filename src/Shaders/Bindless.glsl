@@ -43,4 +43,5 @@ layout(push_constant) uniform PushConstants {
     uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
     uint SelectionNodesSlot;
     uint SelectionCounterSlot;
+    uint ElementIdOffset;
 } pc;

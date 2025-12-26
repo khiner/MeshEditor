@@ -71,6 +71,9 @@ enum class ShaderPipelineType {
     SilhouetteEdgeDepthObject,
     SilhouetteEdgeDepth,
     SilhouetteEdgeColor,
+    SelectionElementFace,
+    SelectionElementEdge,
+    SelectionElementVertex,
     SelectionFragment,
     DebugNormals,
 };
@@ -85,6 +88,7 @@ struct DrawPushConstants {
     uint32_t VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
     uint32_t SelectionNodesSlot;
     uint32_t SelectionCounterSlot;
+    uint32_t ElementIdOffset;
 };
 
 struct PipelineRenderer {
@@ -787,6 +791,33 @@ struct SelectionFragmentPipeline {
         const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
+            SPT::SelectionElementFace,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+                {}, CreateDepthStencil(), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionElementEdge,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
+                {}, CreateDepthStencil(), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionElementVertex,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
+                {}, CreateDepthStencil(), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
             SPT::SelectionFragment,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
@@ -953,6 +984,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     R.on_destroy<MeshBuffers>().connect<&Scene::OnDestroyMeshBuffers>(*this);
     R.on_destroy<ModelsBuffer>().connect<&Scene::OnDestroyModelsBuffer>(*this);
+    R.on_destroy<MeshFaceIdBuffer>().connect<&Scene::OnDestroyFaceIdBuffer>(*this);
     R.on_destroy<BoundingBoxesBuffers>().connect<&Scene::OnDestroyBoundingBoxesBuffers>(*this);
     R.on_destroy<BvhBoxesBuffers>().connect<&Scene::OnDestroyBvhBoxesBuffers>(*this);
 
@@ -1083,6 +1115,10 @@ void Scene::OnDestroyModelsBuffer(entt::registry &r, entt::entity e) {
     if (auto *models = r.try_get<ModelsBuffer>(e)) ReleaseModelBufferBindless(*models);
 }
 
+void Scene::OnDestroyFaceIdBuffer(entt::registry &r, entt::entity e) {
+    if (auto *buffers = r.try_get<MeshFaceIdBuffer>(e)) ReleaseFaceIdBufferBindless(*buffers);
+}
+
 void Scene::OnDestroyBoundingBoxesBuffers(entt::registry &r, entt::entity e) {
     if (auto *bbox = r.try_get<BoundingBoxesBuffers>(e)) ReleaseRenderBufferBindless(bbox->Buffers);
 }
@@ -1188,10 +1224,18 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer}
         );
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
+        {
+            const auto &mesh_ref = R.get<Mesh>(mesh_entity);
+            R.emplace<MeshFaceIdBuffer>(
+                mesh_entity,
+                mvk::UniqueBuffers{UniqueBuffers->Ctx, as_bytes(MeshRender::CreateFaceElementIds(mesh_ref)), vk::BufferUsageFlagBits::eStorageBuffer}
+            );
+        }
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Faces);
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Edges);
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Vertices);
         UpdateModelBufferBindless(R.get<ModelsBuffer>(mesh_entity));
+        UpdateFaceIdBufferBindless(R.get<MeshFaceIdBuffer>(mesh_entity));
         if (ShowBoundingBoxes) {
             auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices);
             UpdateRenderBufferBindless(buffers);
@@ -1544,7 +1588,8 @@ void Scene::RecordRenderCommandBuffer() {
             InvalidSlot, // ObjectIdSlot - unused for regular rendering
             vertex_count,
             0, // SelectionNodesSlot
-            0 // SelectionCounterSlot
+            0, // SelectionCounterSlot
+            0 // ElementIdOffset
         };
     };
 
@@ -1748,6 +1793,31 @@ namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr vk::Extent2D ToExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
+std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(
+    vec2 start,
+    vec2 end,
+    vec2 window_pos,
+    vk::Extent2D extent,
+    float drag_threshold
+) {
+    if (glm::distance(start, end) <= drag_threshold) return std::nullopt;
+
+    const vec2 extent_size{float(extent.width), float(extent.height)};
+    const auto box_min = glm::min(start, end) - window_pos;
+    const auto box_max = glm::max(start, end) - window_pos;
+    const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, extent_size);
+    const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, extent_size);
+    const glm::uvec2 box_min_px{
+        static_cast<uint32_t>(glm::floor(local_min.x)),
+        static_cast<uint32_t>(glm::floor(extent_size.y - local_max.y))
+    };
+    const glm::uvec2 box_max_px{
+        static_cast<uint32_t>(glm::ceil(local_max.x)),
+        static_cast<uint32_t>(glm::ceil(extent_size.y - local_min.y))
+    };
+    return std::pair{box_min_px, box_max_px};
+}
+
 constexpr std::string Capitalize(std::string_view str) {
     if (str.empty()) return {};
 
@@ -1833,6 +1903,26 @@ struct Timer {
 void Scene::RenderSelectionPass() {
     const Timer timer{"RenderSelectionPass"};
 
+    RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
+        const auto &pipeline = renderer.Bind(cb, SPT::SelectionFragment);
+        for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
+            if (instance_count == 0) continue;
+
+            auto &render_buffers = mesh_buffers.Faces;
+            if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
+            const DrawPushConstants pc{
+                render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, models.ObjectIdSlot,
+                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0
+            };
+            Draw(cb, pipeline, render_buffers, models, pc);
+        }
+    });
+
+    SelectionStale = false;
+}
+
+void Scene::RenderSelectionPassWith(const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn) {
     auto cb = *ClickCommandBuffer;
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -1852,7 +1942,7 @@ void Scene::RenderSelectionPass() {
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    // Render all visible meshes to selection fragment list.
+    // Render to selection fragment list.
     const auto &selection = Pipelines->SelectionFragment;
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
@@ -1860,28 +1950,14 @@ void Scene::RenderSelectionPass() {
     const vk::Rect2D rect{{0, 0}, ToExtent2D(selection.Resources->DepthImage.Extent)};
     cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
 
-    const auto &pipeline = selection.Renderer.Bind(cb, SPT::SelectionFragment);
-    for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-        const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
-        if (instance_count == 0) continue;
+    draw_fn(cb, selection.Renderer);
 
-        auto &render_buffers = mesh_buffers.Faces;
-        if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
-        const DrawPushConstants pc{
-            render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, models.ObjectIdSlot,
-            SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter
-        };
-        Draw(cb, pipeline, render_buffers, models, pc);
-    }
     cb.endRenderPass();
-
     cb.end();
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
     Vk.Queue.submit(submit, *TransferFence);
     WaitFor(*TransferFence, Vk.Device);
-
-    SelectionStale = false;
 }
 
 namespace {
@@ -1907,7 +1983,118 @@ bool HasSelectionNodes(const mvk::UniqueBuffer &counter_buffer) {
     const auto *counters = reinterpret_cast<const SelectionCounters *>(counter_buffer.GetData().data());
     return std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes) != 0;
 }
+
+uint32_t GetElementCount(const Mesh &mesh, Element element) {
+    if (element == Element::Vertex) return mesh.VertexCount();
+    if (element == Element::Edge) return mesh.EdgeCount();
+    if (element == Element::Face) return mesh.FaceCount();
+    return 0;
+}
+
+SPT SelectionPipelineForElement(Element element) {
+    if (element == Element::Vertex) return SPT::SelectionElementVertex;
+    if (element == Element::Edge) return SPT::SelectionElementEdge;
+    return SPT::SelectionElementFace;
+}
+
+RenderBuffers &SelectionRenderBuffersForElement(MeshBuffers &mesh_buffers, Element element) {
+    if (element == Element::Vertex) return mesh_buffers.Vertices;
+    if (element == Element::Edge) return mesh_buffers.Edges;
+    return mesh_buffers.Faces;
+}
 } // namespace
+
+void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element) {
+    if (ranges.empty() || element == Element::None) return;
+
+    const Timer timer{"RenderEditSelectionPass"};
+    RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
+        const auto &pipeline = renderer.Bind(cb, SelectionPipelineForElement(element));
+
+        for (const auto &range : ranges) {
+            auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
+            auto &models = R.get<ModelsBuffer>(range.MeshEntity);
+            auto &face_ids = R.get<MeshFaceIdBuffer>(range.MeshEntity);
+
+            auto &render_buffers = SelectionRenderBuffersForElement(mesh_buffers, element);
+            uint32_t element_slot = element == Element::Face ? face_ids.Slot : InvalidSlot;
+
+            if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
+            if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+            if (element == Element::Face && element_slot == InvalidSlot) {
+                UpdateFaceIdBufferBindless(face_ids);
+                element_slot = face_ids.Slot;
+            }
+
+            const DrawPushConstants pc{
+                render_buffers.VertexSlot,
+                render_buffers.IndexSlot,
+                models.Slot,
+                0,
+                element_slot,
+                SelectionHandles->HeadImage,
+                SelectionHandles->SelectionNodes,
+                SelectionHandles->SelectionCounter,
+                range.Offset
+            };
+            Draw(cb, pipeline, render_buffers, models, pc);
+        }
+    });
+}
+
+std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, glm::uvec2 box_min, glm::uvec2 box_max) {
+    std::vector<std::vector<uint32_t>> results(ranges.size());
+    if (ranges.empty() || element == Element::None) return results;
+    if (box_min.x >= box_max.x || box_min.y >= box_max.y) return results;
+
+    const Timer timer{"RunBoxSelectElements"};
+
+    RenderEditSelectionPass(ranges, element);
+    if (!HasSelectionNodes(UniqueBuffers->SelectionCounterBuffer)) return results;
+
+    const auto element_count = fold_left(
+        ranges, uint32_t{0},
+        [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); }
+    );
+    if (element_count == 0) return results;
+
+    const uint32_t bitset_words = (element_count + 31) / 32;
+    if (bitset_words > BoxSelectZeroBits.size()) return results;
+
+    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
+    UniqueBuffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
+
+    auto cb = *ClickCommandBuffer;
+    const uint32_t group_count_x = (box_max.x - box_min.x + 15) / 16;
+    const uint32_t group_count_y = (box_max.y - box_min.y + 15) / 16;
+    RunSelectionCompute(
+        cb, Vk.Queue, *TransferFence, Vk.Device, Pipelines->BoxSelect,
+        BoxSelectPushConstants{
+            .BoxMin = box_min,
+            .BoxMax = box_max,
+            .ObjectCount = element_count,
+            .HeadImageIndex = SelectionHandles->HeadImage,
+            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+            .BoxResultIndex = SelectionHandles->BoxResult,
+        },
+        [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
+            dispatch_cb.dispatch(group_count_x, group_count_y, 1);
+        }
+    );
+
+    const auto *bits = reinterpret_cast<const uint32_t *>(UniqueBuffers->BoxSelectBitsetBuffer.GetData().data());
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        const auto &range = ranges[i];
+        results[i] = iota(range.Offset, range.Offset + range.Count) //
+            | filter([&](uint32_t idx) {
+                         const uint32_t mask = 1u << (idx % 32);
+                         return (bits[idx / 32] & mask) != 0;
+                     }) //
+            | transform([offset = range.Offset](uint32_t idx) { return idx - offset; }) //
+            | to<std::vector>();
+    }
+    return results;
+}
 
 // Returns entities hit at mouse_px, sorted by depth (near-to-far), with duplicates removed.
 std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
@@ -2060,6 +2247,16 @@ void Scene::UpdateModelBufferBindless(ModelsBuffer &mb) {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
+void Scene::UpdateFaceIdBufferBindless(MeshFaceIdBuffer &buffers) {
+    if (!BindlessAlloc) return;
+
+    auto &alloc = *BindlessAlloc;
+    if (buffers.Slot == InvalidSlot) buffers.Slot = alloc.Allocate(SlotType::ObjectIdBuffer);
+
+    const auto write = alloc.MakeBufferWrite(SlotType::ObjectIdBuffer, buffers.Slot, buffers.Faces.GetDescriptor());
+    Vk.Device.updateDescriptorSets(write, {});
+}
+
 void Scene::ReleaseRenderBufferBindless(RenderBuffers &rb) {
     if (!BindlessAlloc) return;
     if (rb.VertexSlot != InvalidSlot) {
@@ -2081,6 +2278,14 @@ void Scene::ReleaseModelBufferBindless(ModelsBuffer &mb) {
     if (mb.ObjectIdSlot != InvalidSlot) {
         BindlessAlloc->Release(SlotType::ObjectIdBuffer, mb.ObjectIdSlot);
         mb.ObjectIdSlot = InvalidSlot;
+    }
+}
+
+void Scene::ReleaseFaceIdBufferBindless(MeshFaceIdBuffer &buffers) {
+    if (!BindlessAlloc) return;
+    if (buffers.Slot != InvalidSlot) {
+        BindlessAlloc->Release(SlotType::ObjectIdBuffer, buffers.Slot);
+        buffers.Slot = InvalidSlot;
     }
 }
 
@@ -2146,7 +2351,54 @@ void Scene::Interact() {
 
     if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
-    // todo box selection for edit mode (select vertices/edges/faces within box)
+    if (SelectionMode == SelectionMode::Box && InteractionMode == InteractionMode::Edit) {
+        const auto mouse_pos = ToGlm(GetMousePos());
+        if (IsMouseClicked(ImGuiMouseButton_Left)) {
+            BoxSelectStart = mouse_pos;
+            BoxSelectEnd = mouse_pos;
+        } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
+            BoxSelectEnd = mouse_pos;
+            static constexpr float drag_threshold{2};
+            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent, drag_threshold)) {
+                const auto &[box_min_px, box_max_px] = *box_px;
+
+                for (const auto mesh_entity : R.view<MeshSelection>()) {
+                    R.patch<MeshSelection>(mesh_entity, [](auto &s) { s.Handles.clear(); s.ActiveHandle = {}; });
+                }
+
+                Timer timer{"BoxSelectElements (all)"};
+                std::unordered_set<entt::entity> mesh_entities;
+                for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) mesh_entities.emplace(mi.MeshEntity);
+                std::vector<ElementRange> ranges;
+                ranges.reserve(mesh_entities.size());
+                uint32_t offset = 0;
+                for (const auto mesh_entity : mesh_entities) {
+                    const auto &mesh = R.get<Mesh>(mesh_entity);
+                    const uint32_t count = GetElementCount(mesh, EditMode);
+                    if (count == 0) continue;
+                    ranges.emplace_back(mesh_entity, offset, count);
+                    offset += count;
+                }
+
+                auto results = RunBoxSelectElements(ranges, EditMode, box_min_px, box_max_px);
+                for (size_t i = 0; i < ranges.size(); ++i) {
+                    const auto mesh_entity = ranges[i].MeshEntity;
+                    R.patch<MeshSelection>(mesh_entity, [&](auto &s) {
+                        s.Element = EditMode;
+                        s.Handles = i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{};
+                        s.ActiveHandle = {};
+                    });
+                    UpdateRenderBuffers(mesh_entity);
+                }
+                InvalidateCommandBuffer();
+            }
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
+            BoxSelectStart.reset();
+            BoxSelectEnd.reset();
+        }
+        if (BoxSelectStart.has_value()) return;
+    }
+
     if (SelectionMode == SelectionMode::Box && InteractionMode == InteractionMode::Object) {
         const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -2155,21 +2407,8 @@ void Scene::Interact() {
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
             BoxSelectEnd = mouse_pos;
             static constexpr float drag_threshold{2};
-            if (glm::distance(*BoxSelectStart, *BoxSelectEnd) > drag_threshold) {
-                const auto window_pos = ToGlm(GetCursorScreenPos());
-                const vec2 extent_size{float(Extent.width), float(Extent.height)};
-                const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd) - window_pos;
-                const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd) - window_pos;
-                const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, extent_size);
-                const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, extent_size);
-                const glm::uvec2 box_min_px{
-                    static_cast<uint32_t>(glm::floor(local_min.x)),
-                    static_cast<uint32_t>(glm::floor(extent_size.y - local_max.y))
-                };
-                const glm::uvec2 box_max_px{
-                    static_cast<uint32_t>(glm::ceil(local_max.x)),
-                    static_cast<uint32_t>(glm::ceil(extent_size.y - local_min.y))
-                };
+            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent, drag_threshold)) {
+                const auto &[box_min_px, box_max_px] = *box_px;
                 const auto selected_entities = RunBoxSelect(box_min_px, box_max_px);
                 R.clear<Selected>();
                 for (const auto e : selected_entities) R.emplace<Selected>(e);

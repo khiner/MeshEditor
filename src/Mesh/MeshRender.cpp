@@ -61,6 +61,18 @@ std::vector<uint> CreateVertexIndices(const Mesh &mesh) {
     return indices;
 }
 
+std::vector<uint32_t> CreateFaceElementIds(const Mesh &mesh) {
+    std::vector<uint32_t> ids;
+    ids.reserve(mesh.FaceCount() * 3);
+    for (const auto fh : mesh.faces()) {
+        const uint32_t id = *fh + 1;
+        for (uint32_t i = 0; i < mesh.GetValence(fh); ++i) {
+            ids.push_back(id);
+        }
+    }
+    return ids;
+}
+
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     if (element == Element::None || element == Element::Edge) return {};
 
