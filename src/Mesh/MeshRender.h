@@ -33,6 +33,7 @@ struct Visible {};
 
 struct RenderInstance {
     uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
+    uint32_t ObjectId{0};
 };
 
 // Stored on mesh entities.

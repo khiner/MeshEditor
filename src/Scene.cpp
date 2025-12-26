@@ -1099,6 +1099,7 @@ void UpdateVisibleObjectIds(entt::registry &r) {
         if (ids.empty()) ids.resize(instance_count, 0);
         const auto buffer_index = r.get<RenderInstance>(e).BufferIndex;
         if (buffer_index < ids.size()) ids[buffer_index] = object_id;
+        r.get<RenderInstance>(e).ObjectId = object_id;
         ++object_id;
     }
 
@@ -1120,12 +1121,15 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     if (visible) {
         auto &render_instance = R.emplace_or_replace<RenderInstance>(entity);
         render_instance.BufferIndex = model_buffer.UsedSize / sizeof(WorldMatrix);
+        render_instance.ObjectId = 0;
         model_buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), model_buffer.UsedSize);
         object_ids.Insert(as_bytes(uint32_t{0}), object_ids.UsedSize); // Placeholder; actual IDs set on-demand.
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
-        const uint old_model_index = R.get<RenderInstance>(entity).BufferIndex;
+        auto &render_instance = R.get<RenderInstance>(entity);
+        const uint old_model_index = render_instance.BufferIndex;
+        render_instance.ObjectId = 0;
         model_buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
         object_ids.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
         // Update buffer indices for all instances of this mesh that have higher indices
@@ -1524,15 +1528,8 @@ void Scene::RecordRenderCommandBuffer() {
     const auto active_entity = FindActiveEntity(R);
     const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
     uint32_t active_object_id = 0;
-    if (render_silhouette && active_entity != entt::null) {
-        uint32_t object_id = 1;
-        for (const auto e : R.view<Visible>()) {
-            if (e == active_entity) {
-                active_object_id = object_id;
-                break;
-            }
-            ++object_id;
-        }
+    if (render_silhouette && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
+        active_object_id = R.get<RenderInstance>(active_entity).ObjectId;
     }
 
     const auto make_pc = [this](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
