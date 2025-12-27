@@ -34,6 +34,7 @@ struct UniqueBuffer {
     vk::Buffer Get() const;
     std::span<const std::byte> GetData() const;
     vk::DeviceSize GetAllocatedSize() const;
+    bool IsMapped() const; // Is allocation persistently mapped and host‑visible+coherent (safe for direct CPU writes)?
 
     void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;

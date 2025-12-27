@@ -1281,11 +1281,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Edges);
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Vertices);
         UpdateModelBufferBindless(R.get<ModelsBuffer>(mesh_entity));
-        {
-            auto &states = R.get<MeshElementStateBuffers>(mesh_entity);
-            UpdateElementStateBuffers(*this, states);
-        }
         UpdateFaceIdBufferBindless(R.get<MeshFaceIdBuffer>(mesh_entity));
+        UpdateRenderBuffers(mesh_entity);
         if (ShowBoundingBoxes) {
             auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices);
             UpdateRenderBufferBindless(buffers);

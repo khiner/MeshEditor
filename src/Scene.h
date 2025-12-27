@@ -270,9 +270,9 @@ private:
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
 
     struct ElementRange {
-        entt::entity MeshEntity{};
-        uint32_t Offset{0};
-        uint32_t Count{0};
+        entt::entity MeshEntity;
+        uint32_t Offset;
+        uint32_t Count;
     };
 
     void SetInteractionMode(::InteractionMode);

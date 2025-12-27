@@ -3,6 +3,7 @@
 #include "UniqueBuffer.h"
 
 #include <array>
+#include <optional>
 #include <vector>
 
 template<typename T>
@@ -36,6 +37,7 @@ struct BufferContext {
     mutable DeferredBufferReclaimer Reclaimer{};
 };
 
+// Wraps either a staging+device pair or a single host-visible device buffer.
 struct UniqueBuffers {
     UniqueBuffers(const BufferContext &, vk::DeviceSize, vk::BufferUsageFlags);
     UniqueBuffers(const BufferContext &, std::span<const std::byte>, vk::BufferUsageFlags);
@@ -62,12 +64,25 @@ struct UniqueBuffers {
     const BufferContext &Ctx;
     vk::DeviceSize UsedSize{0}; // Used (not allocated) bytes
     vk::BufferUsageFlags Usage;
-    UniqueBuffer HostBuffer; // Host (staging) buffer (CPU)
+    std::optional<UniqueBuffer> HostBuffer; // Host (staging) buffer (CPU), if needed.
     UniqueBuffer DeviceBuffer; // Device buffer (GPU)
 
     vk::DescriptorBufferInfo GetDescriptor() const { return {*DeviceBuffer, 0, vk::WholeSize}; }
 
 private:
     void Retire();
+    using UpdateFn = void (*)(UniqueBuffers &, std::span<const std::byte>, vk::DeviceSize);
+    using ReserveFn = void (*)(UniqueBuffers &, vk::DeviceSize);
+    using InsertFn = void (*)(UniqueBuffers &, std::span<const std::byte>, vk::DeviceSize);
+    using EraseFn = void (*)(UniqueBuffers &, vk::DeviceSize, vk::DeviceSize);
+
+    struct Impl {
+        UpdateFn Update;
+        ReserveFn Reserve;
+        InsertFn Insert;
+        EraseFn Erase;
+    };
+
+    Impl ImplOps{};
 };
 } // namespace mvk

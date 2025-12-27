@@ -19,6 +19,14 @@ struct UniqueBuffer::Impl {
     Impl(VmaAllocator vma, vk::DeviceSize size, mvk::MemoryUsage memory_usage, vk::BufferUsageFlags usage) : Vma(vma) {
         VmaAllocationCreateInfo aci{};
         aci.usage = ToVmaMemoryUsage(memory_usage);
+        if (memory_usage == mvk::MemoryUsage::GpuOnly) {
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            aci.preferredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            aci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        }
         // All staging and device buffers act as transfer sources, since buffer updates include a device->device copy.
         vk::BufferCreateInfo bci{{}, size, usage | vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive};
         if (memory_usage == mvk::MemoryUsage::CpuOnly || memory_usage == mvk::MemoryUsage::CpuToGpu) {
@@ -29,6 +37,7 @@ struct UniqueBuffer::Impl {
         if (vmaCreateBuffer(Vma, reinterpret_cast<const VkBufferCreateInfo *>(&bci), &aci, reinterpret_cast<VkBuffer *>(&Handle), &Allocation, &Info) != VK_SUCCESS) {
             throw std::runtime_error("vmaCreateBuffer failed");
         }
+        vmaGetMemoryTypeProperties(Vma, Info.memoryType, &MemoryProps);
     }
 
     Impl(Impl &&other) noexcept
@@ -45,6 +54,7 @@ struct UniqueBuffer::Impl {
     vk::Buffer Handle;
     VmaAllocation Allocation;
     VmaAllocationInfo Info;
+    VkMemoryPropertyFlags MemoryProps{};
 };
 
 UniqueBuffer::UniqueBuffer(VmaAllocator vma, vk::DeviceSize size, mvk::MemoryUsage memory_usage, vk::BufferUsageFlags usage)
@@ -67,6 +77,11 @@ vk::Buffer UniqueBuffer::Get() const { return Imp->Handle; }
 std::span<const std::byte> UniqueBuffer::GetData() const { return {static_cast<const std::byte *>(Imp->Info.pMappedData), Imp->Info.size}; }
 std::span<std::byte> UniqueBuffer::GetMappedData() const { return {static_cast<std::byte *>(Imp->Info.pMappedData), Imp->Info.size}; }
 vk::DeviceSize UniqueBuffer::GetAllocatedSize() const { return Imp->Info.size; }
+bool UniqueBuffer::IsMapped() const {
+    return Imp->Info.pMappedData != nullptr &&
+        (Imp->MemoryProps & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+        (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+}
 
 void UniqueBuffer::Write(std::span<const std::byte> src, vk::DeviceSize offset) const {
     if (src.empty() || offset >= GetAllocatedSize()) return;

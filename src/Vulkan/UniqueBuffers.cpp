@@ -1,5 +1,7 @@
 #include "UniqueBuffers.h"
 
+#include <cassert>
+
 namespace mvk {
 namespace {
 // Adapted from https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2 for 64-bits.
@@ -15,19 +17,103 @@ uint64_t NextPowerOfTwo(uint64_t x) {
     x |= x >> 32;
     return x + 1;
 }
+
+void ReserveStaging(UniqueBuffers &buffers, vk::DeviceSize required_size);
+void ReserveDirect(UniqueBuffers &buffers, vk::DeviceSize required_size);
+
+void UpdateStaging(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
+    if (data.empty()) return;
+    const auto required_size = offset + data.size();
+    ReserveStaging(buffers, required_size);
+    buffers.UsedSize = std::max(buffers.UsedSize, required_size);
+    buffers.HostBuffer->Write(data, offset);
+    buffers.Ctx.TransferCb->copyBuffer(**buffers.HostBuffer, *buffers.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
+}
+
+void UpdateDirect(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
+    if (data.empty()) return;
+    const auto required_size = offset + data.size();
+    ReserveDirect(buffers, required_size);
+    buffers.UsedSize = std::max(buffers.UsedSize, required_size);
+    assert(!buffers.HostBuffer && "Direct buffer unexpectedly requires staging.");
+    buffers.DeviceBuffer.Write(data, offset);
+}
+
+void ReserveStaging(UniqueBuffers &buffers, vk::DeviceSize required_size) {
+    if (required_size <= buffers.DeviceBuffer.GetAllocatedSize()) return;
+
+    UniqueBuffers new_buffer(buffers.Ctx, NextPowerOfTwo(required_size), buffers.Usage);
+    assert(new_buffer.HostBuffer && "Staging buffer unexpectedly missing.");
+    if (buffers.UsedSize > 0) {
+        new_buffer.HostBuffer->Write(buffers.HostBuffer->GetData());
+        new_buffer.UsedSize = buffers.UsedSize;
+        buffers.Ctx.TransferCb->copyBuffer(*buffers.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffers.UsedSize});
+    }
+    buffers = std::move(new_buffer);
+}
+
+void ReserveDirect(UniqueBuffers &buffers, vk::DeviceSize required_size) {
+    if (required_size <= buffers.DeviceBuffer.GetAllocatedSize()) return;
+
+    UniqueBuffers new_buffer(buffers.Ctx, NextPowerOfTwo(required_size), buffers.Usage);
+    assert(!new_buffer.HostBuffer && "Direct buffer lost host-visible mapping.");
+    if (buffers.UsedSize > 0) {
+        new_buffer.DeviceBuffer.Write(buffers.DeviceBuffer.GetData());
+        new_buffer.UsedSize = buffers.UsedSize;
+    }
+    buffers = std::move(new_buffer);
+}
+
+void InsertStaging(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
+    if (data.empty() || buffers.UsedSize + data.size() > buffers.DeviceBuffer.GetAllocatedSize()) return;
+    if (offset < buffers.UsedSize) {
+        buffers.HostBuffer->Move(offset, offset + data.size(), buffers.UsedSize - offset);
+    }
+    buffers.HostBuffer->Write(data, offset);
+    buffers.UsedSize += data.size();
+    buffers.Ctx.TransferCb->copyBuffer(**buffers.HostBuffer, *buffers.DeviceBuffer, vk::BufferCopy{offset, offset, buffers.UsedSize - offset});
+}
+
+void InsertDirect(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
+    if (data.empty() || buffers.UsedSize + data.size() > buffers.DeviceBuffer.GetAllocatedSize()) return;
+    if (offset < buffers.UsedSize) {
+        buffers.DeviceBuffer.Move(offset, offset + data.size(), buffers.UsedSize - offset);
+    }
+    buffers.DeviceBuffer.Write(data, offset);
+    buffers.UsedSize += data.size();
+}
+
+void EraseStaging(UniqueBuffers &buffers, vk::DeviceSize offset, vk::DeviceSize size) {
+    if (size == 0 || offset + size > buffers.UsedSize) return;
+    if (const auto move_size = buffers.UsedSize - (offset + size); move_size > 0) {
+        buffers.HostBuffer->Move(offset + size, offset, move_size);
+        buffers.Ctx.TransferCb->copyBuffer(**buffers.HostBuffer, *buffers.DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
+    }
+    buffers.UsedSize -= size;
+}
+
+void EraseDirect(UniqueBuffers &buffers, vk::DeviceSize offset, vk::DeviceSize size) {
+    if (size == 0 || offset + size > buffers.UsedSize) return;
+    if (const auto move_size = buffers.UsedSize - (offset + size); move_size > 0) {
+        buffers.DeviceBuffer.Move(offset + size, offset, move_size);
+    }
+    buffers.UsedSize -= size;
+}
 } // namespace
 
 UniqueBuffers::UniqueBuffers(const BufferContext &ctx, vk::DeviceSize size, vk::BufferUsageFlags usage)
     : Ctx(ctx),
       Usage(usage),
-      HostBuffer(*Ctx.Allocator, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc),
-      DeviceBuffer(*Ctx.Allocator, size, MemoryUsage::GpuOnly, usage | vk::BufferUsageFlagBits::eTransferDst) {}
+      DeviceBuffer(*Ctx.Allocator, size, MemoryUsage::GpuOnly, usage | vk::BufferUsageFlagBits::eTransferDst) {
+    if (!DeviceBuffer.IsMapped()) {
+        HostBuffer.emplace(*Ctx.Allocator, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
+    }
+    ImplOps = HostBuffer ? Impl{UpdateStaging, ReserveStaging, InsertStaging, EraseStaging} : Impl{UpdateDirect, ReserveDirect, InsertDirect, EraseDirect};
+}
 
 UniqueBuffers::UniqueBuffers(const BufferContext &ctx, std::span<const std::byte> data, vk::BufferUsageFlags usage)
     : UniqueBuffers(ctx, data.size(), usage) {
-    UsedSize = data.size();
-    HostBuffer.Write(data);
-    Ctx.TransferCb->copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{0, 0, data.size()});
+    Update(data);
 }
 
 UniqueBuffers::UniqueBuffers(UniqueBuffers &&other)
@@ -35,14 +121,18 @@ UniqueBuffers::UniqueBuffers(UniqueBuffers &&other)
       UsedSize(other.UsedSize),
       Usage(other.Usage),
       HostBuffer(std::move(other.HostBuffer)),
-      DeviceBuffer(std::move(other.DeviceBuffer)) {}
+      DeviceBuffer(std::move(other.DeviceBuffer)),
+      ImplOps(other.ImplOps) {}
 
 UniqueBuffers::~UniqueBuffers() {
     Retire();
 }
 
 void UniqueBuffers::Retire() {
-    Ctx.Reclaimer.Retire(std::move(HostBuffer));
+    if (HostBuffer) {
+        Ctx.Reclaimer.Retire(std::move(*HostBuffer));
+        HostBuffer.reset();
+    }
     Ctx.Reclaimer.Retire(std::move(DeviceBuffer));
 }
 
@@ -53,52 +143,13 @@ UniqueBuffers &UniqueBuffers::operator=(UniqueBuffers &&other) {
         Retire();
         HostBuffer = std::move(other.HostBuffer);
         DeviceBuffer = std::move(other.DeviceBuffer);
+        ImplOps = other.ImplOps;
     }
     return *this;
 }
 
-void UniqueBuffers::Update(std::span<const std::byte> data, vk::DeviceSize offset) {
-    if (data.empty()) return;
-
-    const auto required_size = offset + data.size();
-    Reserve(required_size);
-    UsedSize = std::max(UsedSize, required_size);
-    HostBuffer.Write(data, offset);
-    Ctx.TransferCb->copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
-}
-
-void UniqueBuffers::Reserve(vk::DeviceSize required_size) {
-    if (required_size <= DeviceBuffer.GetAllocatedSize()) return;
-
-    // Create a new buffer with enough space.
-    UniqueBuffers new_buffer(Ctx, NextPowerOfTwo(required_size), Usage);
-    if (UsedSize > 0) {
-        // Copy the old buffer into the new buffer (host and device).
-        new_buffer.HostBuffer.Write(HostBuffer.GetData());
-        new_buffer.UsedSize = UsedSize;
-        Ctx.TransferCb->copyBuffer(*DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, UsedSize});
-    }
-    *this = std::move(new_buffer);
-}
-
-void UniqueBuffers::Insert(std::span<const std::byte> data, vk::DeviceSize offset) {
-    if (data.empty() || UsedSize + data.size() > DeviceBuffer.GetAllocatedSize()) return;
-
-    if (offset < UsedSize) {
-        HostBuffer.Move(offset, offset + data.size(), UsedSize - offset);
-    }
-    HostBuffer.Write(data, offset);
-    UsedSize += data.size();
-    Ctx.TransferCb->copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{offset, offset, UsedSize - offset});
-}
-
-void UniqueBuffers::Erase(vk::DeviceSize offset, vk::DeviceSize size) {
-    if (size == 0 || offset + size > UsedSize) return;
-
-    if (const auto move_size = UsedSize - (offset + size); move_size > 0) {
-        HostBuffer.Move(offset + size, offset, move_size);
-        Ctx.TransferCb->copyBuffer(*HostBuffer, *DeviceBuffer, vk::BufferCopy{offset, offset, move_size});
-    }
-    UsedSize -= size;
-}
+void UniqueBuffers::Update(std::span<const std::byte> data, vk::DeviceSize offset) { ImplOps.Update(*this, data, offset); }
+void UniqueBuffers::Reserve(vk::DeviceSize required_size) { ImplOps.Reserve(*this, required_size); }
+void UniqueBuffers::Insert(std::span<const std::byte> data, vk::DeviceSize offset) { ImplOps.Insert(*this, data, offset); }
+void UniqueBuffers::Erase(vk::DeviceSize offset, vk::DeviceSize size) { ImplOps.Erase(*this, offset, size); }
 } // namespace mvk
