@@ -128,9 +128,9 @@ void ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
     buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
 }
 void UpdateElementStateBuffers(Scene &scene, MeshElementStateBuffers &buffers) {
-    scene.UpdateElementStateBufferBindless(buffers.Faces);
-    scene.UpdateElementStateBufferBindless(buffers.Edges);
-    scene.UpdateElementStateBufferBindless(buffers.Vertices);
+    scene.UpdateElementStateBuffer(buffers.Faces);
+    scene.UpdateElementStateBuffer(buffers.Edges);
+    scene.UpdateElementStateBuffer(buffers.Vertices);
 }
 } // namespace
 
@@ -949,16 +949,16 @@ struct ScenePipelines {
     }
 };
 
-struct Scene::SelectionBindlessHandles {
-    explicit SelectionBindlessHandles(BindlessAllocator &alloc) {
-        HeadImage = alloc.Allocate(SlotType::Image);
-        SelectionNodes = alloc.Allocate(SlotType::Buffer);
-        SelectionCounter = alloc.Allocate(SlotType::Buffer);
-        ClickResult = alloc.Allocate(SlotType::Buffer);
-        BoxResult = alloc.Allocate(SlotType::Buffer);
-        ObjectIdSampler = alloc.Allocate(SlotType::Sampler);
-        DepthSampler = alloc.Allocate(SlotType::Sampler);
-        SilhouetteSampler = alloc.Allocate(SlotType::Sampler);
+struct Scene::SelectionSlotHandles {
+    explicit SelectionSlotHandles(DescriptorSlots &slots) {
+        HeadImage = slots.Allocate(SlotType::Image);
+        SelectionNodes = slots.Allocate(SlotType::Buffer);
+        SelectionCounter = slots.Allocate(SlotType::Buffer);
+        ClickResult = slots.Allocate(SlotType::Buffer);
+        BoxResult = slots.Allocate(SlotType::Buffer);
+        ObjectIdSampler = slots.Allocate(SlotType::Sampler);
+        DepthSampler = slots.Allocate(SlotType::Sampler);
+        SilhouetteSampler = slots.Allocate(SlotType::Sampler);
     }
 
     uint32_t HeadImage{InvalidSlot};
@@ -970,15 +970,15 @@ struct Scene::SelectionBindlessHandles {
     uint32_t DepthSampler{InvalidSlot};
     uint32_t SilhouetteSampler{InvalidSlot};
 
-    void Release(BindlessAllocator &alloc) {
-        if (HeadImage != InvalidSlot) alloc.Release(SlotType::Image, HeadImage);
-        if (SelectionNodes != InvalidSlot) alloc.Release(SlotType::Buffer, SelectionNodes);
-        if (SelectionCounter != InvalidSlot) alloc.Release(SlotType::Buffer, SelectionCounter);
-        if (ClickResult != InvalidSlot) alloc.Release(SlotType::Buffer, ClickResult);
-        if (BoxResult != InvalidSlot) alloc.Release(SlotType::Buffer, BoxResult);
-        if (ObjectIdSampler != InvalidSlot) alloc.Release(SlotType::Sampler, ObjectIdSampler);
-        if (DepthSampler != InvalidSlot) alloc.Release(SlotType::Sampler, DepthSampler);
-        if (SilhouetteSampler != InvalidSlot) alloc.Release(SlotType::Sampler, SilhouetteSampler);
+    void Release(DescriptorSlots &slots) {
+        if (HeadImage != InvalidSlot) slots.Release(SlotType::Image, HeadImage);
+        if (SelectionNodes != InvalidSlot) slots.Release(SlotType::Buffer, SelectionNodes);
+        if (SelectionCounter != InvalidSlot) slots.Release(SlotType::Buffer, SelectionCounter);
+        if (ClickResult != InvalidSlot) slots.Release(SlotType::Buffer, ClickResult);
+        if (BoxResult != InvalidSlot) slots.Release(SlotType::Buffer, BoxResult);
+        if (ObjectIdSampler != InvalidSlot) slots.Release(SlotType::Sampler, ObjectIdSampler);
+        if (DepthSampler != InvalidSlot) slots.Release(SlotType::Sampler, DepthSampler);
+        if (SilhouetteSampler != InvalidSlot) slots.Release(SlotType::Sampler, SilhouetteSampler);
     }
 };
 
@@ -990,12 +990,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       RenderFence{Vk.Device.createFenceUnique({})},
       TransferFence{Vk.Device.createFenceUnique({})},
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
-      Bindless{std::make_unique<BindlessResources>(Vk.Device, MakeBindlessConfig(Vk.PhysicalDevice))},
-      BindlessAlloc{std::make_unique<BindlessAllocator>(*Bindless)},
-      SelectionHandles{std::make_unique<SelectionBindlessHandles>(*BindlessAlloc)},
+      Slots{std::make_unique<DescriptorSlots>(Vk.Device, MakeBindlessConfig(Vk.PhysicalDevice))},
+      SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
       Pipelines{std::make_unique<ScenePipelines>(
           Vk.Device, Vk.PhysicalDevice,
-          Bindless->SetLayout.get(), *Bindless->DescriptorSet
+          Slots->GetSetLayout(), Slots->GetSet()
       )},
       UniqueBuffers{std::make_unique<SceneUniqueBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool)} {
     // EnTT listeners
@@ -1048,7 +1047,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 }
 
 Scene::~Scene() {
-    if (BindlessAlloc && SelectionHandles) SelectionHandles->Release(*BindlessAlloc);
+    if (Slots && SelectionHandles) SelectionHandles->Release(*Slots);
 }
 
 void Scene::LoadIcons(vk::Device device) {
@@ -1072,7 +1071,7 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
         const auto mesh_entity = mesh_instance->MeshEntity;
         if (auto *buffers = r.try_get<MeshBuffers>(mesh_entity)) {
-            for (auto &[_, indicator] : buffers->NormalIndicators) ReleaseRenderBufferBindless(indicator);
+            for (auto &[_, indicator] : buffers->NormalIndicators) ReleaseRenderBuffer(indicator);
             buffers->NormalIndicators.clear();
         }
         r.remove<BoundingBoxesBuffers>(mesh_entity);
@@ -1132,35 +1131,35 @@ void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
 
 void Scene::OnDestroyMeshBuffers(entt::registry &r, entt::entity e) {
     if (auto *mesh_buffers = r.try_get<MeshBuffers>(e)) {
-        ReleaseRenderBufferBindless(mesh_buffers->Faces);
-        ReleaseRenderBufferBindless(mesh_buffers->Edges);
-        ReleaseRenderBufferBindless(mesh_buffers->Vertices);
-        for (auto &[_, buffers] : mesh_buffers->NormalIndicators) ReleaseRenderBufferBindless(buffers);
+        ReleaseRenderBuffer(mesh_buffers->Faces);
+        ReleaseRenderBuffer(mesh_buffers->Edges);
+        ReleaseRenderBuffer(mesh_buffers->Vertices);
+        for (auto &[_, buffers] : mesh_buffers->NormalIndicators) ReleaseRenderBuffer(buffers);
     }
 }
 
 void Scene::OnDestroyModelsBuffer(entt::registry &r, entt::entity e) {
-    if (auto *models = r.try_get<ModelsBuffer>(e)) ReleaseModelBufferBindless(*models);
+    if (auto *models = r.try_get<ModelsBuffer>(e)) ReleaseModelBuffer(*models);
 }
 
 void Scene::OnDestroyMeshElementStateBuffers(entt::registry &r, entt::entity e) {
     if (auto *buffers = r.try_get<MeshElementStateBuffers>(e)) {
-        ReleaseElementStateBufferBindless(buffers->Faces);
-        ReleaseElementStateBufferBindless(buffers->Edges);
-        ReleaseElementStateBufferBindless(buffers->Vertices);
+        ReleaseElementStateBuffer(buffers->Faces);
+        ReleaseElementStateBuffer(buffers->Edges);
+        ReleaseElementStateBuffer(buffers->Vertices);
     }
 }
 
 void Scene::OnDestroyFaceIdBuffer(entt::registry &r, entt::entity e) {
-    if (auto *buffers = r.try_get<MeshFaceIdBuffer>(e)) ReleaseFaceIdBufferBindless(*buffers);
+    if (auto *buffers = r.try_get<MeshFaceIdBuffer>(e)) ReleaseFaceIdBuffer(*buffers);
 }
 
 void Scene::OnDestroyBoundingBoxesBuffers(entt::registry &r, entt::entity e) {
-    if (auto *bbox = r.try_get<BoundingBoxesBuffers>(e)) ReleaseRenderBufferBindless(bbox->Buffers);
+    if (auto *bbox = r.try_get<BoundingBoxesBuffers>(e)) ReleaseRenderBuffer(bbox->Buffers);
 }
 
 void Scene::OnDestroyBvhBoxesBuffers(entt::registry &r, entt::entity e) {
-    if (auto *bvh = r.try_get<BvhBoxesBuffers>(e)) ReleaseRenderBufferBindless(bvh->Buffers);
+    if (auto *bvh = r.try_get<BvhBoxesBuffers>(e)) ReleaseRenderBuffer(bvh->Buffers);
 }
 
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
@@ -1226,7 +1225,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
             }
         }
     }
-    UpdateModelBufferBindless(models);
+    UpdateModelBuffer(models);
     UpdateVisibleObjectIds(R);
     InvalidateCommandBuffer();
 }
@@ -1277,15 +1276,15 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
                 mvk::UniqueBuffers{UniqueBuffers->Ctx, as_bytes(MeshRender::CreateFaceElementIds(mesh_ref)), vk::BufferUsageFlagBits::eStorageBuffer}
             );
         }
-        UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Faces);
-        UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Edges);
-        UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Vertices);
-        UpdateModelBufferBindless(R.get<ModelsBuffer>(mesh_entity));
-        UpdateFaceIdBufferBindless(R.get<MeshFaceIdBuffer>(mesh_entity));
+        UpdateRenderBuffer(R.get<MeshBuffers>(mesh_entity).Faces);
+        UpdateRenderBuffer(R.get<MeshBuffers>(mesh_entity).Edges);
+        UpdateRenderBuffer(R.get<MeshBuffers>(mesh_entity).Vertices);
+        UpdateModelBuffer(R.get<ModelsBuffer>(mesh_entity));
+        UpdateFaceIdBuffer(R.get<MeshFaceIdBuffer>(mesh_entity));
         UpdateRenderBuffers(mesh_entity);
         if (ShowBoundingBoxes) {
             auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices);
-            UpdateRenderBufferBindless(buffers);
+            UpdateRenderBuffer(buffers);
             R.emplace<BoundingBoxesBuffers>(mesh_entity, std::move(buffers));
         }
     }
@@ -1422,9 +1421,9 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
     mesh_buffers.Vertices.Vertices.Update(MeshRender::CreateVertexPoints(pm));
     mesh_buffers.Vertices.Indices.Update(MeshRender::CreateVertexIndices(pm));
-    UpdateRenderBufferBindless(mesh_buffers.Faces);
-    UpdateRenderBufferBindless(mesh_buffers.Edges);
-    UpdateRenderBufferBindless(mesh_buffers.Vertices);
+    UpdateRenderBuffer(mesh_buffers.Faces);
+    UpdateRenderBuffer(mesh_buffers.Edges);
+    UpdateRenderBuffer(mesh_buffers.Vertices);
     if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(e)) {
         ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
         ResetElementStateBuffer(state_buffers->Edges, pm.EdgeCount() * 2);
@@ -1433,7 +1432,7 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     }
     if (auto *face_ids = R.try_get<MeshFaceIdBuffer>(e)) {
         face_ids->Faces.Update(as_bytes(MeshRender::CreateFaceElementIds(pm)));
-        UpdateFaceIdBufferBindless(*face_ids);
+        UpdateFaceIdBuffer(*face_ids);
     }
 
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
@@ -1845,17 +1844,17 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     for (const auto element : NormalElements) {
         if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
             auto buffers = UniqueBuffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element));
-            UpdateRenderBufferBindless(buffers);
+            UpdateRenderBuffer(buffers);
             mesh_buffers.NormalIndicators.emplace(element, std::move(buffers));
         } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
-            ReleaseRenderBufferBindless(mesh_buffers.NormalIndicators.at(element));
+            ReleaseRenderBuffer(mesh_buffers.NormalIndicators.at(element));
             mesh_buffers.NormalIndicators.erase(element);
         }
     }
     if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         const auto &bbox = R.get<BBox>(mesh_entity);
         auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices);
-        UpdateRenderBufferBindless(buffers);
+        UpdateRenderBuffer(buffers);
         R.emplace<BoundingBoxesBuffers>(mesh_entity, std::move(buffers));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         R.remove<BoundingBoxesBuffers>(mesh_entity);
@@ -1864,7 +1863,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
         const auto &bvh = R.get<BVH>(mesh_entity);
         auto bvh_buffers = MeshRender::CreateBvhBuffers(bvh);
         auto buffers = UniqueBuffers->CreateRenderBuffers(std::move(bvh_buffers.Vertices), std::move(bvh_buffers.Indices));
-        UpdateRenderBufferBindless(buffers);
+        UpdateRenderBuffer(buffers);
         R.emplace<BvhBoxesBuffers>(mesh_entity, std::move(buffers));
     } else if (!ShowBvhBoxes && R.all_of<BvhBoxesBuffers>(mesh_entity)) {
         R.remove<BvhBoxesBuffers>(mesh_entity);
@@ -2260,11 +2259,11 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
         transform([&](uint32_t i) { return visible_entities[i]; }) | to<std::vector>();
 }
 
-void Scene::UpdateSelectionBindlessDescriptors() {
+void Scene::UpdateSelectionDescriptors() {
     if (!Pipelines || !Pipelines->SelectionFragment.Resources) return;
 
     auto &handles = *SelectionHandles;
-    auto &alloc = *BindlessAlloc;
+    auto &alloc = *Slots;
     std::vector<vk::WriteDescriptorSet> writes;
 
     const auto head_image_info = vk::DescriptorImageInfo{
@@ -2298,10 +2297,10 @@ void Scene::UpdateSelectionBindlessDescriptors() {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
-void Scene::UpdateRenderBufferBindless(RenderBuffers &rb) {
-    if (!BindlessAlloc) return;
+void Scene::UpdateRenderBuffer(RenderBuffers &rb) {
+    if (!Slots) return;
 
-    auto &alloc = *BindlessAlloc;
+    auto &alloc = *Slots;
     if (rb.VertexSlot == InvalidSlot) rb.VertexSlot = alloc.Allocate(SlotType::VertexBuffer);
     if (rb.IndexSlot == InvalidSlot) rb.IndexSlot = alloc.Allocate(SlotType::IndexBuffer);
 
@@ -2314,10 +2313,10 @@ void Scene::UpdateRenderBufferBindless(RenderBuffers &rb) {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
-void Scene::UpdateModelBufferBindless(ModelsBuffer &mb) {
-    if (!BindlessAlloc) return;
+void Scene::UpdateModelBuffer(ModelsBuffer &mb) {
+    if (!Slots) return;
 
-    auto &alloc = *BindlessAlloc;
+    auto &alloc = *Slots;
     if (mb.Slot == InvalidSlot) mb.Slot = alloc.Allocate(SlotType::ModelBuffer);
     if (mb.ObjectIdSlot == InvalidSlot) mb.ObjectIdSlot = alloc.Allocate(SlotType::ObjectIdBuffer);
 
@@ -2328,91 +2327,91 @@ void Scene::UpdateModelBufferBindless(ModelsBuffer &mb) {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
-void Scene::UpdateElementStateBufferBindless(ElementStateBuffer &buffer) {
-    if (!BindlessAlloc) return;
+void Scene::UpdateElementStateBuffer(ElementStateBuffer &buffer) {
+    if (!Slots) return;
 
-    auto &alloc = *BindlessAlloc;
+    auto &alloc = *Slots;
     if (buffer.Slot == InvalidSlot) buffer.Slot = alloc.Allocate(SlotType::Buffer);
 
     const auto write = alloc.MakeBufferWrite(SlotType::Buffer, buffer.Slot, buffer.Buffer.GetDescriptor());
     Vk.Device.updateDescriptorSets(write, {});
 }
 
-void Scene::UpdateFaceIdBufferBindless(MeshFaceIdBuffer &buffers) {
-    if (!BindlessAlloc) return;
+void Scene::UpdateFaceIdBuffer(MeshFaceIdBuffer &buffers) {
+    if (!Slots) return;
 
-    auto &alloc = *BindlessAlloc;
+    auto &alloc = *Slots;
     if (buffers.Slot == InvalidSlot) buffers.Slot = alloc.Allocate(SlotType::ObjectIdBuffer);
 
     const auto write = alloc.MakeBufferWrite(SlotType::ObjectIdBuffer, buffers.Slot, buffers.Faces.GetDescriptor());
     Vk.Device.updateDescriptorSets(write, {});
 }
 
-void Scene::ReleaseRenderBufferBindless(RenderBuffers &rb) {
-    if (!BindlessAlloc) return;
+void Scene::ReleaseRenderBuffer(RenderBuffers &rb) {
+    if (!Slots) return;
     if (rb.VertexSlot != InvalidSlot) {
-        BindlessAlloc->Release(SlotType::VertexBuffer, rb.VertexSlot);
+        Slots->Release(SlotType::VertexBuffer, rb.VertexSlot);
         rb.VertexSlot = InvalidSlot;
     }
     if (rb.IndexSlot != InvalidSlot) {
-        BindlessAlloc->Release(SlotType::IndexBuffer, rb.IndexSlot);
+        Slots->Release(SlotType::IndexBuffer, rb.IndexSlot);
         rb.IndexSlot = InvalidSlot;
     }
 }
 
-void Scene::ReleaseModelBufferBindless(ModelsBuffer &mb) {
-    if (!BindlessAlloc) return;
+void Scene::ReleaseModelBuffer(ModelsBuffer &mb) {
+    if (!Slots) return;
     if (mb.Slot != InvalidSlot) {
-        BindlessAlloc->Release(SlotType::ModelBuffer, mb.Slot);
+        Slots->Release(SlotType::ModelBuffer, mb.Slot);
         mb.Slot = InvalidSlot;
     }
     if (mb.ObjectIdSlot != InvalidSlot) {
-        BindlessAlloc->Release(SlotType::ObjectIdBuffer, mb.ObjectIdSlot);
+        Slots->Release(SlotType::ObjectIdBuffer, mb.ObjectIdSlot);
         mb.ObjectIdSlot = InvalidSlot;
     }
 }
 
-void Scene::ReleaseElementStateBufferBindless(ElementStateBuffer &buffer) {
-    if (!BindlessAlloc) return;
+void Scene::ReleaseElementStateBuffer(ElementStateBuffer &buffer) {
+    if (!Slots) return;
     if (buffer.Slot != InvalidSlot) {
-        BindlessAlloc->Release(SlotType::Buffer, buffer.Slot);
+        Slots->Release(SlotType::Buffer, buffer.Slot);
         buffer.Slot = InvalidSlot;
     }
 }
 
-void Scene::ReleaseFaceIdBufferBindless(MeshFaceIdBuffer &buffers) {
-    if (!BindlessAlloc) return;
+void Scene::ReleaseFaceIdBuffer(MeshFaceIdBuffer &buffers) {
+    if (!Slots) return;
     if (buffers.Slot != InvalidSlot) {
-        BindlessAlloc->Release(SlotType::ObjectIdBuffer, buffers.Slot);
+        Slots->Release(SlotType::ObjectIdBuffer, buffers.Slot);
         buffers.Slot = InvalidSlot;
     }
 }
 
-void Scene::PrepareBindlessDescriptors() {
+void Scene::PrepareDescriptors() {
     // Ensure all render resources have valid bindless slots before command buffer recording.
     for (auto [_, mesh_buffers, models, face_ids, state_buffers] :
          R.view<MeshBuffers, ModelsBuffer, MeshFaceIdBuffer, MeshElementStateBuffers>().each()) {
-        if (mesh_buffers.Faces.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(mesh_buffers.Faces);
-        if (mesh_buffers.Edges.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(mesh_buffers.Edges);
-        if (mesh_buffers.Vertices.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(mesh_buffers.Vertices);
+        if (mesh_buffers.Faces.VertexSlot == InvalidSlot) UpdateRenderBuffer(mesh_buffers.Faces);
+        if (mesh_buffers.Edges.VertexSlot == InvalidSlot) UpdateRenderBuffer(mesh_buffers.Edges);
+        if (mesh_buffers.Vertices.VertexSlot == InvalidSlot) UpdateRenderBuffer(mesh_buffers.Vertices);
         for (auto &[_, buffers] : mesh_buffers.NormalIndicators) {
-            if (buffers.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(buffers);
+            if (buffers.VertexSlot == InvalidSlot) UpdateRenderBuffer(buffers);
         }
-        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
-        if (face_ids.Slot == InvalidSlot) UpdateFaceIdBufferBindless(face_ids);
+        if (models.Slot == InvalidSlot) UpdateModelBuffer(models);
+        if (face_ids.Slot == InvalidSlot) UpdateFaceIdBuffer(face_ids);
 
-        if (state_buffers.Faces.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Faces);
-        if (state_buffers.Edges.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Edges);
-        if (state_buffers.Vertices.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Vertices);
+        if (state_buffers.Faces.Slot == InvalidSlot) UpdateElementStateBuffer(state_buffers.Faces);
+        if (state_buffers.Edges.Slot == InvalidSlot) UpdateElementStateBuffer(state_buffers.Edges);
+        if (state_buffers.Vertices.Slot == InvalidSlot) UpdateElementStateBuffer(state_buffers.Vertices);
     }
     // BVH and bounding box buffers (separate components)
     for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
-        if (bvh_boxes.Buffers.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(bvh_boxes.Buffers);
-        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+        if (bvh_boxes.Buffers.VertexSlot == InvalidSlot) UpdateRenderBuffer(bvh_boxes.Buffers);
+        if (models.Slot == InvalidSlot) UpdateModelBuffer(models);
     }
     for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-        if (bounding_boxes.Buffers.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(bounding_boxes.Buffers);
-        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+        if (bounding_boxes.Buffers.VertexSlot == InvalidSlot) UpdateRenderBuffer(bounding_boxes.Buffers);
+        if (models.Slot == InvalidSlot) UpdateModelBuffer(models);
     }
 }
 
@@ -2649,7 +2648,7 @@ bool Scene::RenderViewport() {
         UpdateSceneUBO();
         Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
         Pipelines->SetExtent(Extent);
-        UpdateSelectionBindlessDescriptors();
+        UpdateSelectionDescriptors();
     }
 
     const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
@@ -2667,7 +2666,7 @@ bool Scene::RenderViewport() {
 
     transfer_cb.end();
 
-    PrepareBindlessDescriptors();
+    PrepareDescriptors();
     RecordRenderCommandBuffer();
 
     // Submit transfer and render commands together

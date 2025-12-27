@@ -28,18 +28,8 @@ struct BindlessConfig {
     }
 };
 
-struct BindlessResources {
-    BindlessResources(vk::Device device, const BindlessConfig &config);
-
-    vk::Device Device;
-    BindlessConfig Config;
-    vk::UniqueDescriptorSetLayout SetLayout;
-    vk::UniqueDescriptorPool DescriptorPool;
-    vk::UniqueDescriptorSet DescriptorSet;
-};
-
-struct BindlessAllocator {
-    BindlessAllocator(const BindlessResources &resources);
+struct DescriptorSlots {
+    DescriptorSlots(vk::Device device, const BindlessConfig &config);
 
     uint32_t Allocate(SlotType type);
     void Release(SlotType type, uint32_t slot);
@@ -49,10 +39,15 @@ struct BindlessAllocator {
     vk::WriteDescriptorSet MakeUniformWrite(uint32_t slot, const vk::DescriptorBufferInfo &) const;
     vk::WriteDescriptorSet MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;
 
-    vk::DescriptorSet GetSet() const { return *Resources.DescriptorSet; }
-    const BindlessConfig &GetConfig() const { return Resources.Config; }
+    vk::DescriptorSetLayout GetSetLayout() const { return *SetLayout; }
+    vk::DescriptorSet GetSet() const { return *DescriptorSet; }
+    const BindlessConfig &GetConfig() const { return Config; }
 
 private:
-    const BindlessResources &Resources;
+    vk::Device Device;
+    BindlessConfig Config;
+    vk::UniqueDescriptorSetLayout SetLayout;
+    vk::UniqueDescriptorPool DescriptorPool;
+    vk::UniqueDescriptorSet DescriptorSet;
     std::array<std::vector<uint32_t>, SlotTypeCount> FreeSlots;
 };

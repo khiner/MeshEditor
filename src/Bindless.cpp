@@ -30,7 +30,7 @@ constexpr std::array SlotTypeBindings{
 };
 } // namespace
 
-BindlessResources::BindlessResources(vk::Device device, const BindlessConfig &config)
+DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config)
     : Device(device), Config(config) {
     const std::array bindings{
         vk::DescriptorSetLayoutBinding{0, vk::DescriptorType::eUniformBuffer, Config.MaxUniforms, vk::ShaderStageFlagBits::eAll},
@@ -70,19 +70,18 @@ BindlessResources::BindlessResources(vk::Device device, const BindlessConfig &co
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
 
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
-}
 
-BindlessAllocator::BindlessAllocator(const BindlessResources &resources) : Resources(resources) {
+    // Initialize free slot lists
     for (size_t i = 0; i < SlotTypeCount; ++i) {
         const auto type = static_cast<SlotType>(i);
-        const uint32_t max = Resources.Config.Max(type);
+        const uint32_t max = Config.Max(type);
         const uint32_t start = (type == SlotType::Uniform) ? 1 : 0; // Reserve uniform slot 0 for scene UBO
         FreeSlots[i].reserve(max - start);
         for (uint32_t j = max; j-- > start;) FreeSlots[i].push_back(j);
     }
 }
 
-uint32_t BindlessAllocator::Allocate(SlotType type) {
+uint32_t DescriptorSlots::Allocate(SlotType type) {
     auto &free_list = FreeSlots[static_cast<size_t>(type)];
     if (free_list.empty()) {
         throw std::runtime_error(std::format("Bindless {} slots exhausted", SlotTypeNames[static_cast<size_t>(type)]));
@@ -92,31 +91,31 @@ uint32_t BindlessAllocator::Allocate(SlotType type) {
     return slot;
 }
 
-void BindlessAllocator::Release(SlotType type, uint32_t slot) {
+void DescriptorSlots::Release(SlotType type, uint32_t slot) {
     const auto idx = static_cast<size_t>(type);
-    const uint32_t max = Resources.Config.Max(type);
+    const uint32_t max = Config.Max(type);
     if (slot >= max) {
         throw std::runtime_error(std::format("Bindless {} slot {} is out of range (max {}).", SlotTypeNames[idx], slot, max));
     }
     FreeSlots[idx].push_back(slot);
 }
 
-vk::WriteDescriptorSet BindlessAllocator::MakeBufferWrite(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &info) const {
+vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &info) const {
     const auto idx = static_cast<size_t>(type);
     return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], nullptr, &info};
 }
 
-vk::WriteDescriptorSet BindlessAllocator::MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
+vk::WriteDescriptorSet DescriptorSlots::MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
     constexpr auto idx = static_cast<size_t>(SlotType::Image);
     return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], &info, nullptr};
 }
 
-vk::WriteDescriptorSet BindlessAllocator::MakeUniformWrite(uint32_t slot, const vk::DescriptorBufferInfo &info) const {
+vk::WriteDescriptorSet DescriptorSlots::MakeUniformWrite(uint32_t slot, const vk::DescriptorBufferInfo &info) const {
     constexpr auto idx = static_cast<size_t>(SlotType::Uniform);
     return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], nullptr, &info};
 }
 
-vk::WriteDescriptorSet BindlessAllocator::MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
+vk::WriteDescriptorSet DescriptorSlots::MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
     constexpr auto idx = static_cast<size_t>(SlotType::Sampler);
     return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], &info, nullptr};
 }

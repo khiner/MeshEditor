@@ -102,8 +102,7 @@ inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice
 struct SvgResource;
 struct ScenePipelines;
 struct SceneUniqueBuffers;
-struct BindlessResources;
-struct BindlessAllocator;
+struct DescriptorSlots;
 
 struct SceneVulkanResources {
     vk::Instance Instance;
@@ -168,16 +167,16 @@ struct Scene {
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
     void UpdateRenderBuffers(entt::entity);
-    void UpdateSelectionBindlessDescriptors();
-    void UpdateRenderBufferBindless(RenderBuffers &);
-    void UpdateModelBufferBindless(ModelsBuffer &);
-    void UpdateElementStateBufferBindless(ElementStateBuffer &);
-    void UpdateFaceIdBufferBindless(MeshFaceIdBuffer &);
-    void ReleaseRenderBufferBindless(RenderBuffers &);
-    void ReleaseModelBufferBindless(ModelsBuffer &);
-    void ReleaseElementStateBufferBindless(ElementStateBuffer &);
-    void ReleaseFaceIdBufferBindless(MeshFaceIdBuffer &);
-    void PrepareBindlessDescriptors();
+    void UpdateSelectionDescriptors();
+    void UpdateRenderBuffer(RenderBuffers &);
+    void UpdateModelBuffer(ModelsBuffer &);
+    void UpdateElementStateBuffer(ElementStateBuffer &);
+    void UpdateFaceIdBuffer(MeshFaceIdBuffer &);
+    void ReleaseRenderBuffer(RenderBuffers &);
+    void ReleaseModelBuffer(ModelsBuffer &);
+    void ReleaseElementStateBuffer(ElementStateBuffer &);
+    void ReleaseFaceIdBuffer(MeshFaceIdBuffer &);
+    void PrepareDescriptors();
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
 
@@ -206,11 +205,10 @@ private:
     vk::UniqueCommandBuffer RenderCommandBuffer;
     vk::UniqueFence RenderFence, TransferFence;
     vk::UniqueCommandBuffer ClickCommandBuffer;
-    std::unique_ptr<BindlessResources> Bindless;
-    std::unique_ptr<BindlessAllocator> BindlessAlloc;
+    std::unique_ptr<DescriptorSlots> Slots;
 
-    struct SelectionBindlessHandles;
-    std::unique_ptr<SelectionBindlessHandles> SelectionHandles;
+    struct SelectionSlotHandles;
+    std::unique_ptr<SelectionSlotHandles> SelectionHandles;
 
     static constexpr uint32_t SceneUBOSlot{0};
 
