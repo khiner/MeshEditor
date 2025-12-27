@@ -14,7 +14,7 @@ using ShaderType = vk::ShaderStageFlagBits;
 
 struct ShaderTypePath {
     ShaderType Type;
-    fs::path Path; // Paths are relative to the `Shaders` directory.
+    fs::path Path; // Paths are relative to the `shaders` directory.
 };
 
 struct Shaders {

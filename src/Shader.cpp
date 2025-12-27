@@ -11,7 +11,7 @@ using std::views::transform, std::ranges::find_if, std::ranges::to;
 
 #ifdef RELEASE_BUILD
 // All files in `src/shaders` are copied to `build/shaders` at build time.
-static const fs::path ShadersDir = "Shaders";
+static const fs::path ShadersDir = "shaders";
 #else
 static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
 #endif

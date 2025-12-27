@@ -60,6 +60,12 @@ struct SceneUBO {
     vec4 LightDirectionFar{0, 0, 0, 0}; // xyz = light dir, w = far
     vec4 SilhouetteActive{0, 0, 0, 0};
     vec4 SilhouetteSelected{0, 0, 0, 0};
+    vec4 BaseColor{0, 0, 0, 0};
+    vec4 EdgeColor{0, 0, 0, 0};
+    vec4 VertexUnselectedColor{0, 0, 0, 0};
+    vec4 SelectedColor{0, 0, 0, 0};
+    vec4 ActiveColor{0, 0, 0, 0};
+    vec4 HighlightedColor{0, 0, 0, 0};
 };
 
 enum class ShaderPipelineType {
@@ -89,7 +95,12 @@ struct DrawPushConstants {
     uint32_t SelectionNodesSlot;
     uint32_t SelectionCounterSlot;
     uint32_t ElementIdOffset;
+    uint32_t ElementStateSlot;
+    uint32_t PointFlags;
+    uint32_t Padding0;
+    vec4 LineColor;
 };
+static_assert(sizeof(DrawPushConstants) % 16 == 0, "DrawPushConstants must be 16-byte aligned.");
 
 struct PipelineRenderer {
     vk::UniqueRenderPass RenderPass;
@@ -106,6 +117,22 @@ struct PipelineRenderer {
         return pipeline;
     }
 };
+
+namespace {
+std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
+ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t count) {
+    auto states = MakeElementStates(count);
+    return {mvk::UniqueBuffers{ctx, as_bytes(states), vk::BufferUsageFlagBits::eStorageBuffer}};
+}
+void ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
+    buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
+}
+void UpdateElementStateBuffers(Scene &scene, MeshElementStateBuffers &buffers) {
+    scene.UpdateElementStateBufferBindless(buffers.Faces);
+    scene.UpdateElementStateBufferBindless(buffers.Edges);
+    scene.UpdateElementStateBufferBindless(buffers.Vertices);
+}
+} // namespace
 
 struct MeshSelection {
     Element Element{Element::None};
@@ -148,10 +175,10 @@ void Scene::ToggleSelected(entt::entity e) {
     InvalidateCommandBuffer();
 }
 
-std::vector<Vertex3D> CreateBoxVertices(const BBox &box, const vec4 &color) {
+std::vector<Vertex3D> CreateBoxVertices(const BBox &box) {
     return box.Corners() |
         // Normals don't matter for wireframes.
-        transform([&color](const auto &corner) { return Vertex3D{corner, vec3{}, color}; }) |
+        transform([](const auto &corner) { return Vertex3D{corner, vec3{}}; }) |
         to<std::vector>();
 }
 
@@ -984,12 +1011,13 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     R.on_destroy<MeshBuffers>().connect<&Scene::OnDestroyMeshBuffers>(*this);
     R.on_destroy<ModelsBuffer>().connect<&Scene::OnDestroyModelsBuffer>(*this);
+    R.on_destroy<MeshElementStateBuffers>().connect<&Scene::OnDestroyMeshElementStateBuffers>(*this);
     R.on_destroy<MeshFaceIdBuffer>().connect<&Scene::OnDestroyFaceIdBuffer>(*this);
     R.on_destroy<BoundingBoxesBuffers>().connect<&Scene::OnDestroyBoundingBoxesBuffers>(*this);
     R.on_destroy<BvhBoxesBuffers>().connect<&Scene::OnDestroyBvhBoxesBuffers>(*this);
 
     UpdateEdgeColors();
-    UpdateTransformBuffers();
+    UpdateSceneUBO();
     BoxSelectZeroBits.assign(SceneUniqueBuffers::BoxSelectBitsetWords, 0);
 
     Pipelines->CompileShaders();
@@ -1115,6 +1143,14 @@ void Scene::OnDestroyModelsBuffer(entt::registry &r, entt::entity e) {
     if (auto *models = r.try_get<ModelsBuffer>(e)) ReleaseModelBufferBindless(*models);
 }
 
+void Scene::OnDestroyMeshElementStateBuffers(entt::registry &r, entt::entity e) {
+    if (auto *buffers = r.try_get<MeshElementStateBuffers>(e)) {
+        ReleaseElementStateBufferBindless(buffers->Faces);
+        ReleaseElementStateBufferBindless(buffers->Edges);
+        ReleaseElementStateBufferBindless(buffers->Vertices);
+    }
+}
+
 void Scene::OnDestroyFaceIdBuffer(entt::registry &r, entt::entity e) {
     if (auto *buffers = r.try_get<MeshFaceIdBuffer>(e)) ReleaseFaceIdBufferBindless(*buffers);
 }
@@ -1207,11 +1243,11 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             MeshRender::CreateFaceIndices(mesh)
         );
         auto edge_buffers = UniqueBuffers->CreateRenderBuffers(
-            MeshRender::CreateEdgeVertices(mesh, Element::Vertex),
+            MeshRender::CreateEdgeVertices(mesh),
             MeshRender::CreateEdgeIndices(mesh)
         );
         auto vertex_buffers = UniqueBuffers->CreateRenderBuffers(
-            MeshRender::CreateVertexPoints(mesh, Element::None, {}),
+            MeshRender::CreateVertexPoints(mesh),
             MeshRender::CreateVertexIndices(mesh)
         );
 
@@ -1225,6 +1261,16 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         );
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
         {
+            R.emplace<MeshElementStateBuffers>(
+                mesh_entity,
+                MeshElementStateBuffers{
+                    CreateElementStateBuffer(UniqueBuffers->Ctx, mesh.FaceCount()),
+                    CreateElementStateBuffer(UniqueBuffers->Ctx, mesh.EdgeCount() * 2),
+                    CreateElementStateBuffer(UniqueBuffers->Ctx, mesh.VertexCount())
+                }
+            );
+        }
+        {
             const auto &mesh_ref = R.get<Mesh>(mesh_entity);
             R.emplace<MeshFaceIdBuffer>(
                 mesh_entity,
@@ -1235,9 +1281,13 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Edges);
         UpdateRenderBufferBindless(R.get<MeshBuffers>(mesh_entity).Vertices);
         UpdateModelBufferBindless(R.get<ModelsBuffer>(mesh_entity));
+        {
+            auto &states = R.get<MeshElementStateBuffers>(mesh_entity);
+            UpdateElementStateBuffers(*this, states);
+        }
         UpdateFaceIdBufferBindless(R.get<MeshFaceIdBuffer>(mesh_entity));
         if (ShowBoundingBoxes) {
-            auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices);
+            auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices);
             UpdateRenderBufferBindless(buffers);
             R.emplace<BoundingBoxesBuffers>(mesh_entity, std::move(buffers));
         }
@@ -1371,17 +1421,33 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     auto &mesh_buffers = R.get<MeshBuffers>(e);
     mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
     mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
-    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm, Element::Vertex));
+    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
     mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
+    mesh_buffers.Vertices.Vertices.Update(MeshRender::CreateVertexPoints(pm));
+    mesh_buffers.Vertices.Indices.Update(MeshRender::CreateVertexIndices(pm));
+    UpdateRenderBufferBindless(mesh_buffers.Faces);
+    UpdateRenderBufferBindless(mesh_buffers.Edges);
+    UpdateRenderBufferBindless(mesh_buffers.Vertices);
+    if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(e)) {
+        ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
+        ResetElementStateBuffer(state_buffers->Edges, pm.EdgeCount() * 2);
+        ResetElementStateBuffer(state_buffers->Vertices, pm.VertexCount());
+        UpdateElementStateBuffers(*this, *state_buffers);
+    }
+    if (auto *face_ids = R.try_get<MeshFaceIdBuffer>(e)) {
+        face_ids->Faces.Update(as_bytes(MeshRender::CreateFaceElementIds(pm)));
+        UpdateFaceIdBufferBindless(*face_ids);
+    }
 
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
         buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
         buffers.Indices.Update(MeshRender::CreateNormalIndices(pm, element));
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) {
-        buffers->Buffers.Vertices.Update(CreateBoxVertices(bbox, EdgeColor));
+        buffers->Buffers.Vertices.Update(CreateBoxVertices(bbox));
         // Box indices are always the same.
     }
+    UpdateRenderBuffers(e);
 }
 
 void Scene::Destroy(entt::entity e) {
@@ -1420,11 +1486,7 @@ void Scene::SetInteractionMode(::InteractionMode mode) {
     if (InteractionMode == mode) return;
 
     InteractionMode = mode;
-    for (const auto &[entity, mesh] : R.view<Mesh>().each()) {
-        const bool highlight_faces = InteractionMode == InteractionMode::Excite && R.try_get<Excitable>(entity);
-        mesh.SetColor(highlight_faces ? MeshRender::HighlightedFaceColor : Mesh::DefaultMeshColor);
-        UpdateRenderBuffers(entity);
-    }
+    for (const auto &entity : R.view<Mesh>()) UpdateRenderBuffers(entity);
     const auto e = FindActiveEntity(R);
     if (auto excitable = R.try_get<Excitable>(e)) {
         UpdateHighlightedVertices(e, *excitable);
@@ -1465,63 +1527,73 @@ void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool togg
 
 void Scene::UpdateRenderBuffers(entt::entity e) {
     if (const auto *mesh = R.try_get<Mesh>(e)) {
-        std::unordered_set<VH> SelectedVertices, ActiveVertex;
-        std::unordered_set<EH> SelectedEdges, ActiveEdge;
-        std::unordered_set<FH> SelectedFaces, ActiveFace;
+        std::unordered_set<VH> selected_vertices;
+        std::unordered_set<EH> selected_edges;
+        std::unordered_set<FH> selected_faces;
         const auto &selection = R.get<MeshSelection>(e);
-        if (selection.Element == Element::Vertex) {
+        const bool edit_mode = InteractionMode == InteractionMode::Edit;
+        const auto element = edit_mode && selection.Element == EditMode ? selection.Element : Element::None;
+        if (element == Element::Vertex) {
             for (auto h : selection.Handles) {
-                SelectedVertices.emplace(h);
-                if (selection.ActiveHandle && *selection.ActiveHandle == h) ActiveVertex.emplace(h);
+                selected_vertices.emplace(h);
             }
-        } else if (selection.Element == Element::Edge) {
+        } else if (element == Element::Edge) {
             for (auto h : selection.Handles) {
-                SelectedEdges.emplace(h);
-                const auto heh = mesh->GetHalfedge(EH{h}, 0);
-                SelectedVertices.emplace(mesh->GetFromVertex(heh));
-                SelectedVertices.emplace(mesh->GetToVertex(heh));
-                if (selection.ActiveHandle && *selection.ActiveHandle == h) ActiveEdge.emplace(h);
+                selected_edges.emplace(h);
             }
-        } else if (selection.Element == Element::Face) {
+        } else if (element == Element::Face) {
             for (auto h : selection.Handles) {
-                SelectedFaces.emplace(h);
-                for (const auto heh : mesh->fh_range(FH{h})) SelectedEdges.emplace(mesh->GetEdge(heh));
-                if (selection.ActiveHandle && *selection.ActiveHandle == h) ActiveFace.emplace(h);
+                selected_faces.emplace(h);
+                for (const auto heh : mesh->fh_range(FH{h})) selected_edges.emplace(mesh->GetEdge(heh));
             }
         }
 
-        const auto &highlighted = R.get<MeshHighlightedVertices>(e).Vertices;
-        const bool edit_mode = InteractionMode == InteractionMode::Edit;
-        const auto element = edit_mode && selection.Element == EditMode ? selection.Element : Element::None;
-        R.patch<MeshBuffers>(e, [&](auto &mb) {
-            mb.Faces.Vertices.Update(
-                MeshRender::CreateFaceVertices(
-                    *mesh, SmoothShading,
-                    highlighted,
-                    element == Element::Face ? SelectedFaces : std::unordered_set<FH>{},
-                    element == Element::Face ? ActiveFace : std::unordered_set<FH>{}
-                )
-            );
-            mb.Edges.Vertices.Update(
-                MeshRender::CreateEdgeVertices(
-                    *mesh, EditMode,
-                    element == Element::Vertex ? SelectedVertices : std::unordered_set<VH>{},
-                    element == Element::Edge || element == Element::Face ? SelectedEdges : std::unordered_set<EH>{},
-                    element == Element::Vertex ? ActiveVertex : std::unordered_set<VH>{},
-                    element == Element::Edge ? ActiveEdge : std::unordered_set<EH>{}
-                )
-            );
-            mb.Vertices.Vertices.Update(
-                MeshRender::CreateVertexPoints(
-                    *mesh, element,
-                    element == Element::Vertex ? SelectedVertices : std::unordered_set<VH>{},
-                    element == Element::Vertex ? ActiveVertex : std::unordered_set<VH>{}
-                )
-            );
-        });
-        UpdateRenderBufferBindless(R.get<MeshBuffers>(e).Faces);
-        UpdateRenderBufferBindless(R.get<MeshBuffers>(e).Edges);
-        UpdateRenderBufferBindless(R.get<MeshBuffers>(e).Vertices);
+        auto face_states = MakeElementStates(mesh->FaceCount());
+        auto edge_states = MakeElementStates(mesh->EdgeCount() * 2);
+        auto vertex_states = MakeElementStates(mesh->VertexCount());
+        const auto active_handle = element == selection.Element ? selection.ActiveHandle : std::nullopt;
+        if (element == Element::Face) {
+            for (const auto fh : selected_faces) face_states[*fh] |= MeshRender::ElementStateSelected;
+            if (active_handle) face_states[*active_handle] |= MeshRender::ElementStateActive;
+        }
+        if (element == Element::Edge || element == Element::Face) {
+            const bool has_active_edge = element == Element::Edge && active_handle.has_value();
+            for (uint32_t ei = 0; ei < mesh->EdgeCount(); ++ei) {
+                const EH eh{ei};
+                uint32_t state = 0;
+                if (selected_edges.contains(eh)) state |= MeshRender::ElementStateSelected;
+                if (has_active_edge && *active_handle == ei) state |= MeshRender::ElementStateActive;
+                edge_states[2 * ei] = state;
+                edge_states[2 * ei + 1] = state;
+            }
+        } else if (element == Element::Vertex) {
+            const bool has_active_vertex = active_handle.has_value();
+            for (uint32_t ei = 0; ei < mesh->EdgeCount(); ++ei) {
+                const auto heh = mesh->GetHalfedge(EH{ei}, 0);
+                const auto v_from = mesh->GetFromVertex(heh);
+                const auto v_to = mesh->GetToVertex(heh);
+                uint32_t state_from = 0;
+                uint32_t state_to = 0;
+                if (selected_vertices.contains(v_from)) state_from |= MeshRender::ElementStateSelected;
+                if (selected_vertices.contains(v_to)) state_to |= MeshRender::ElementStateSelected;
+                if (has_active_vertex && *active_handle == *v_from) state_from |= MeshRender::ElementStateActive;
+                if (has_active_vertex && *active_handle == *v_to) state_to |= MeshRender::ElementStateActive;
+                edge_states[2 * ei] = state_from;
+                edge_states[2 * ei + 1] = state_to;
+            }
+        }
+        if (element == Element::Vertex) {
+            for (const auto vh : selected_vertices) vertex_states[*vh] |= MeshRender::ElementStateSelected;
+            if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
+        }
+
+        for (const auto vh : R.get<MeshHighlightedVertices>(e).Vertices) vertex_states[*vh] |= MeshRender::ElementStateHighlighted;
+
+        auto &states = R.get<MeshElementStateBuffers>(e);
+        states.Faces.Buffer.Update(as_bytes(face_states));
+        states.Edges.Buffer.Update(as_bytes(edge_states));
+        states.Vertices.Buffer.Update(as_bytes(vertex_states));
+        UpdateElementStateBuffers(*this, states);
         InvalidateCommandBuffer();
     };
 }
@@ -1589,7 +1661,11 @@ void Scene::RecordRenderCommandBuffer() {
             vertex_count,
             0, // SelectionNodesSlot
             0, // SelectionCounterSlot
-            0 // ElementIdOffset
+            0, // ElementIdOffset
+            InvalidSlot, // ElementStateSlot
+            0, // PointFlags
+            0, // Padding0
+            vec4{0, 0, 0, 0} // LineColor
         };
     };
 
@@ -1657,28 +1733,45 @@ void Scene::RecordRenderCommandBuffer() {
         // Solid faces
         if (show_solid) {
             const auto &pipeline = main.Renderer.Bind(cb, fill_pipeline);
-            for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-                Draw(cb, pipeline, mesh_buffers.Faces, models, make_pc(mesh_buffers.Faces, models));
+            for (auto [_, mesh_buffers, models, face_ids, state_buffers] :
+                 R.view<MeshBuffers, ModelsBuffer, MeshFaceIdBuffer, MeshElementStateBuffers>().each()) {
+                if (face_ids.Slot == InvalidSlot) UpdateFaceIdBufferBindless(face_ids);
+                if (state_buffers.Faces.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Faces);
+                auto pc = make_pc(mesh_buffers.Faces, models);
+                pc.ObjectIdSlot = face_ids.Slot;
+                pc.ElementStateSlot = state_buffers.Faces.Slot;
+                Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
             }
         }
 
         // Wireframe edges (wireframe mode or overlay for selected meshes in edit mode)
         if (show_wireframe || is_edit_mode) {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Line);
-            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            for (auto [entity, mesh_buffers, models, state_buffers] :
+                 R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
                 if (show_wireframe || selected_mesh_entities.contains(entity)) {
-                    Draw(cb, pipeline, mesh_buffers.Edges, models, make_pc(mesh_buffers.Edges, models));
+                    if (state_buffers.Edges.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Edges);
+                    auto pc = make_pc(mesh_buffers.Edges, models);
+                    pc.ElementStateSlot = state_buffers.Edges.Slot;
+                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
                 }
             }
         }
 
-        // Vertex points (only for selected meshes in vertex edit mode)
-        if (is_edit_mode && EditMode == Element::Vertex) {
+        // Vertex points (selected meshes in vertex edit mode, or highlighted vertices in excite mode)
+        const bool show_vertex_points = (is_edit_mode && EditMode == Element::Vertex) || InteractionMode == InteractionMode::Excite;
+        if (show_vertex_points) {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Point);
-            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-                if (selected_mesh_entities.contains(entity)) {
-                    Draw(cb, pipeline, mesh_buffers.Vertices, models, make_pc(mesh_buffers.Vertices, models));
-                }
+            for (auto [entity, mesh_buffers, models, state_buffers, highlighted] :
+                 R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers, MeshHighlightedVertices>().each()) {
+                const bool draw_selected = is_edit_mode && EditMode == Element::Vertex && selected_mesh_entities.contains(entity);
+                const bool draw_highlighted = InteractionMode == InteractionMode::Excite && !highlighted.Vertices.empty();
+                if (!draw_selected && !draw_highlighted) continue;
+                if (state_buffers.Vertices.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Vertices);
+                auto pc = make_pc(mesh_buffers.Vertices, models);
+                pc.ElementStateSlot = state_buffers.Vertices.Slot;
+                pc.PointFlags = InteractionMode == InteractionMode::Excite ? 1u : 0u;
+                Draw(cb, pipeline, mesh_buffers.Vertices, models, pc);
             }
         }
     }
@@ -1699,14 +1792,20 @@ void Scene::RecordRenderCommandBuffer() {
         const auto &pipeline = main.Renderer.Bind(cb, SPT::Line);
         for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-                Draw(cb, pipeline, buffers, models, make_pc(buffers, models));
+                auto pc = make_pc(buffers, models);
+                pc.LineColor = element == Element::Face ? MeshRender::FaceNormalIndicatorColor : MeshRender::VertexNormalIndicatorColor;
+                Draw(cb, pipeline, buffers, models, pc);
             }
         }
         for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
-            Draw(cb, pipeline, bvh_boxes.Buffers, models, make_pc(bvh_boxes.Buffers, models));
+            auto pc = make_pc(bvh_boxes.Buffers, models);
+            pc.LineColor = MeshRender::EdgeColor;
+            Draw(cb, pipeline, bvh_boxes.Buffers, models, pc);
         }
         for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-            Draw(cb, pipeline, bounding_boxes.Buffers, models, make_pc(bounding_boxes.Buffers, models));
+            auto pc = make_pc(bounding_boxes.Buffers, models);
+            pc.LineColor = MeshRender::EdgeColor;
+            Draw(cb, pipeline, bounding_boxes.Buffers, models, pc);
         }
     }
 
@@ -1723,20 +1822,27 @@ void Scene::InvalidateCommandBuffer() {
 
 void Scene::UpdateEdgeColors() {
     MeshRender::EdgeColor = ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
-    for (const auto e : R.view<Mesh>()) UpdateRenderBuffers(e);
+    UpdateSceneUBO();
 }
 
-void Scene::UpdateTransformBuffers() {
+void Scene::UpdateSceneUBO() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    SceneUBO scene_ubo{};
-    scene_ubo.View = Camera.View();
-    scene_ubo.Proj = Camera.Projection(aspect_ratio);
-    scene_ubo.CameraPositionNear = vec4{Camera.Position(), Camera.NearClip};
-    scene_ubo.ViewColorAndAmbient = Lights.ViewColorAndAmbient;
-    scene_ubo.DirectionalColorAndIntensity = Lights.DirectionalColorAndIntensity;
-    scene_ubo.LightDirectionFar = vec4{Lights.Direction, Camera.FarClip};
-    scene_ubo.SilhouetteActive = Colors.Active;
-    scene_ubo.SilhouetteSelected = Colors.Selected;
+    SceneUBO scene_ubo{
+        .View = Camera.View(),
+        .Proj = Camera.Projection(aspect_ratio),
+        .CameraPositionNear = vec4{Camera.Position(), Camera.NearClip},
+        .ViewColorAndAmbient = Lights.ViewColorAndAmbient,
+        .DirectionalColorAndIntensity = Lights.DirectionalColorAndIntensity,
+        .LightDirectionFar = vec4{Lights.Direction, Camera.FarClip},
+        .SilhouetteActive = Colors.Active,
+        .SilhouetteSelected = Colors.Selected,
+        .BaseColor = Mesh::DefaultMeshColor,
+        .EdgeColor = MeshRender::EdgeColor,
+        .VertexUnselectedColor = MeshRender::UnselectedVertexEditColor,
+        .SelectedColor = MeshRender::SelectedColor,
+        .ActiveColor = MeshRender::ActiveColor,
+        .HighlightedColor = MeshRender::HighlightedColor
+    };
     UniqueBuffers->SceneUBO.Update(as_bytes(scene_ubo));
     InvalidateCommandBuffer();
 }
@@ -1770,7 +1876,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     }
     if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         const auto &bbox = R.get<BBox>(mesh_entity);
-        auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox, EdgeColor), BBox::EdgeIndices);
+        auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices);
         UpdateRenderBufferBindless(buffers);
         R.emplace<BoundingBoxesBuffers>(mesh_entity, std::move(buffers));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
@@ -1778,7 +1884,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     }
     if (ShowBvhBoxes && !R.all_of<BvhBoxesBuffers>(mesh_entity)) {
         const auto &bvh = R.get<BVH>(mesh_entity);
-        auto bvh_buffers = MeshRender::CreateBvhBuffers(bvh, EdgeColor);
+        auto bvh_buffers = MeshRender::CreateBvhBuffers(bvh);
         auto buffers = UniqueBuffers->CreateRenderBuffers(std::move(bvh_buffers.Vertices), std::move(bvh_buffers.Indices));
         UpdateRenderBufferBindless(buffers);
         R.emplace<BvhBoxesBuffers>(mesh_entity, std::move(buffers));
@@ -1913,7 +2019,8 @@ void Scene::RenderSelectionPass() {
             if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
             const DrawPushConstants pc{
                 render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, models.ObjectIdSlot,
-                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0
+                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0,
+                InvalidSlot, 0, 0, vec4{0, 0, 0, 0}
             };
             Draw(cb, pipeline, render_buffers, models, pc);
         }
@@ -2035,7 +2142,11 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                 SelectionHandles->HeadImage,
                 SelectionHandles->SelectionNodes,
                 SelectionHandles->SelectionCounter,
-                range.Offset
+                range.Offset,
+                InvalidSlot,
+                0,
+                0,
+                vec4{0, 0, 0, 0}
             };
             Draw(cb, pipeline, render_buffers, models, pc);
         }
@@ -2247,6 +2358,16 @@ void Scene::UpdateModelBufferBindless(ModelsBuffer &mb) {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
+void Scene::UpdateElementStateBufferBindless(ElementStateBuffer &buffer) {
+    if (!BindlessAlloc) return;
+
+    auto &alloc = *BindlessAlloc;
+    if (buffer.Slot == InvalidSlot) buffer.Slot = alloc.Allocate(SlotType::Buffer);
+
+    const auto write = alloc.MakeBufferWrite(SlotType::Buffer, buffer.Slot, buffer.Buffer.GetDescriptor());
+    Vk.Device.updateDescriptorSets(write, {});
+}
+
 void Scene::UpdateFaceIdBufferBindless(MeshFaceIdBuffer &buffers) {
     if (!BindlessAlloc) return;
 
@@ -2278,6 +2399,14 @@ void Scene::ReleaseModelBufferBindless(ModelsBuffer &mb) {
     if (mb.ObjectIdSlot != InvalidSlot) {
         BindlessAlloc->Release(SlotType::ObjectIdBuffer, mb.ObjectIdSlot);
         mb.ObjectIdSlot = InvalidSlot;
+    }
+}
+
+void Scene::ReleaseElementStateBufferBindless(ElementStateBuffer &buffer) {
+    if (!BindlessAlloc) return;
+    if (buffer.Slot != InvalidSlot) {
+        BindlessAlloc->Release(SlotType::Buffer, buffer.Slot);
+        buffer.Slot = InvalidSlot;
     }
 }
 
@@ -2521,7 +2650,7 @@ bool Scene::RenderViewport() {
 
     if (extent_changed) {
         Extent = ToExtent(content_region);
-        UpdateTransformBuffers();
+        UpdateSceneUBO();
         Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
         Pipelines->SetExtent(Extent);
         UpdateSelectionBindlessDescriptors();
@@ -2710,7 +2839,7 @@ void Scene::RenderOverlay() {
         const float padding = GetTextLineHeightWithSpacing();
         const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
         OrientationGizmo::Draw(pos, OGizmoSize, Camera);
-        if (Camera.Tick()) UpdateTransformBuffers();
+        if (Camera.Tick()) UpdateSceneUBO();
     }
 
     if (BoxSelectStart.has_value() && BoxSelectEnd.has_value()) {
@@ -3062,7 +3191,7 @@ void Scene::RenderControls() {
                 bool color_changed = ColorEdit3("Active color", &Colors.Active[0]);
                 color_changed |= ColorEdit3("Selected color", &Colors.Selected[0]);
                 if (color_changed) {
-                    UpdateTransformBuffers();
+                    UpdateSceneUBO();
                 }
                 if (SliderUInt("Edge width", &SilhouetteEdgeWidth, 1, 4)) InvalidateCommandBuffer();
             }
@@ -3111,7 +3240,7 @@ void Scene::RenderControls() {
             camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
             if (camera_changed) {
                 Camera.StopMoving();
-                UpdateTransformBuffers();
+                UpdateSceneUBO();
             }
             EndTabItem();
         }
@@ -3127,7 +3256,7 @@ void Scene::RenderControls() {
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
             if (light_changed) {
-                UpdateTransformBuffers();
+                UpdateSceneUBO();
             }
             EndTabItem();
         }

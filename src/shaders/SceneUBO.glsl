@@ -10,4 +10,10 @@ layout(set = 0, binding = 0) uniform SceneUBO {
     vec4 LightDirectionFar; // xyz: dir, w: far
     vec4 SilhouetteActive;
     vec4 SilhouetteSelected;
+    vec4 BaseColor;
+    vec4 EdgeColor;
+    vec4 VertexUnselectedColor;
+    vec4 SelectedColor;
+    vec4 ActiveColor;
+    vec4 HighlightedColor;
 } Scene;

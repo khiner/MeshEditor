@@ -28,7 +28,7 @@ std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &mesh) {
     return boxes;
 }
 
-MeshRenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color) {
+MeshRenderBuffers CreateBvhBuffers(const BVH &bvh) {
     std::vector<BBox> boxes = bvh.CreateInternalBoxes();
     std::vector<Vertex3D> vertices;
     vertices.reserve(boxes.size() * 8);
@@ -36,7 +36,7 @@ MeshRenderBuffers CreateBvhBuffers(const BVH &bvh, vec4 color) {
     indices.reserve(boxes.size() * BBox::EdgeIndices.size());
     for (uint i = 0; i < boxes.size(); ++i) {
         const auto &box = boxes[i];
-        for (auto &corner : box.Corners()) vertices.emplace_back(corner, vec3{}, color);
+        for (auto &corner : box.Corners()) vertices.emplace_back(corner, vec3{});
 
         const uint index_offset = i * 8;
         for (const auto &index : BBox::EdgeIndices) indices.emplace_back(index_offset + index);
@@ -96,24 +96,14 @@ struct VerticesHandle {
 
 std::vector<Vertex3D> CreateFaceVertices(
     const Mesh &mesh,
-    bool smooth_shading,
-    const std::unordered_set<VH> &highlighted_vertices,
-    const std::unordered_set<FH> &selected_faces,
-    const std::unordered_set<FH> &active_faces
+    bool smooth_shading
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.FaceCount() * 3); // Lower bound assuming all faces are triangles
 
-    const auto mesh_color = mesh.GetColor();
     for (const auto fh : mesh.faces()) {
-        const bool is_active = active_faces.contains(fh);
-        const bool is_selected = selected_faces.contains(fh);
         for (const auto vh : mesh.fv_range(fh)) {
-            const auto color = is_active          ? ActiveColor :
-                is_selected                       ? SelectedColor :
-                highlighted_vertices.contains(vh) ? HighlightedColor :
-                                                    mesh_color;
-            vertices.emplace_back(mesh.GetPosition(vh), smooth_shading ? mesh.GetNormal(vh) : mesh.GetNormal(fh), color);
+            vertices.emplace_back(mesh.GetPosition(vh), smooth_shading ? mesh.GetNormal(vh) : mesh.GetNormal(fh));
         }
     }
 
@@ -121,34 +111,17 @@ std::vector<Vertex3D> CreateFaceVertices(
 }
 
 std::vector<Vertex3D> CreateEdgeVertices(
-    const Mesh &mesh,
-    Element edit_mode,
-    const std::unordered_set<VH> &selected_vertices,
-    const std::unordered_set<EH> &selected_edges,
-    const std::unordered_set<VH> &active_vertices,
-    const std::unordered_set<EH> &active_edges
+    const Mesh &mesh
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.EdgeCount() * 2);
 
     for (const auto eh : mesh.edges()) {
-        const bool edge_active = active_edges.contains(eh);
-        const bool edge_selected = selected_edges.contains(eh);
         const auto heh = mesh.GetHalfedge(eh, 0);
         const auto v_from = mesh.GetFromVertex(heh);
         const auto v_to = mesh.GetToVertex(heh);
         for (const auto vh : {v_from, v_to}) {
-            const bool is_active =
-                edge_active                  ? true :
-                edit_mode == Element::Vertex ? active_vertices.contains(vh) :
-                                               active_vertices.contains(v_from) && active_vertices.contains(v_to);
-            const bool is_selected =
-                edge_selected                ? true :
-                edit_mode == Element::Vertex ? selected_vertices.contains(vh) :
-                                               selected_vertices.contains(v_from) && selected_vertices.contains(v_to);
-            const auto color = is_active ? ActiveColor : is_selected ? SelectedColor :
-                                                                       EdgeColor;
-            vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), color);
+            vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh));
         }
     }
 
@@ -156,19 +129,12 @@ std::vector<Vertex3D> CreateEdgeVertices(
 }
 
 std::vector<Vertex3D> CreateVertexPoints(
-    const Mesh &mesh,
-    Element edit_mode,
-    const std::unordered_set<VH> &selected_vertices,
-    const std::unordered_set<VH> &active_vertices
+    const Mesh &mesh
 ) {
     std::vector<Vertex3D> vertices;
     vertices.reserve(mesh.VertexCount());
     for (const auto vh : mesh.vertices()) {
-        const bool is_active = edit_mode == Element::Vertex && active_vertices.contains(vh);
-        const bool is_selected = edit_mode == Element::Vertex && selected_vertices.contains(vh);
-        const auto color = is_active ? ActiveColor : is_selected ? SelectedColor :
-                                                                   UnselectedVertexEditColor;
-        vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh), color);
+        vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh));
     }
 
     return vertices;
@@ -187,8 +153,8 @@ std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {
             });
             const float avg_edge_length = total_edge_length / mesh.GetValence(vh);
             const auto p = mesh.GetPosition(vh);
-            vertices.emplace_back(p, vn, VertexNormalIndicatorColor);
-            vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn, VertexNormalIndicatorColor);
+            vertices.emplace_back(p, vn);
+            vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn);
         }
     } else if (element == Element::Face) {
         // Line for each face normal, with length scaled by the face area.
@@ -196,8 +162,8 @@ std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {
         for (const auto fh : mesh.faces()) {
             const auto fn = mesh.GetNormal(fh);
             const auto p = mesh.CalcFaceCentroid(fh);
-            vertices.emplace_back(p, fn, FaceNormalIndicatorColor);
-            vertices.emplace_back(p + NormalIndicatorLengthScale * std::sqrt(mesh.CalcFaceArea(fh)) * fn, fn, FaceNormalIndicatorColor);
+            vertices.emplace_back(p, fn);
+            vertices.emplace_back(p + NormalIndicatorLengthScale * std::sqrt(mesh.CalcFaceArea(fh)) * fn, fn);
         }
     }
     return vertices;

@@ -27,6 +27,7 @@ struct Path {
 
 struct RenderBuffers;
 struct ModelsBuffer;
+struct ElementStateBuffer;
 struct MeshFaceIdBuffer;
 struct PipelineRenderer;
 
@@ -170,9 +171,11 @@ struct Scene {
     void UpdateSelectionBindlessDescriptors();
     void UpdateRenderBufferBindless(RenderBuffers &);
     void UpdateModelBufferBindless(ModelsBuffer &);
+    void UpdateElementStateBufferBindless(ElementStateBuffer &);
     void UpdateFaceIdBufferBindless(MeshFaceIdBuffer &);
     void ReleaseRenderBufferBindless(RenderBuffers &);
     void ReleaseModelBufferBindless(ModelsBuffer &);
+    void ReleaseElementStateBufferBindless(ElementStateBuffer &);
     void ReleaseFaceIdBufferBindless(MeshFaceIdBuffer &);
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
@@ -188,6 +191,7 @@ struct Scene {
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyMeshBuffers(entt::registry &, entt::entity);
     void OnDestroyModelsBuffer(entt::registry &, entt::entity);
+    void OnDestroyMeshElementStateBuffers(entt::registry &, entt::entity);
     void OnDestroyFaceIdBuffer(entt::registry &, entt::entity);
     void OnDestroyBoundingBoxesBuffers(entt::registry &, entt::entity);
     void OnDestroyBvhBoxesBuffers(entt::registry &, entt::entity);
@@ -286,7 +290,7 @@ private:
     void RenderEntitiesTable(std::string name, entt::entity parent);
 
     // VK buffer update methods
-    void UpdateTransformBuffers();
+    void UpdateSceneUBO();
     void UpdateEdgeColors();
     void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);
