@@ -10,12 +10,12 @@ layout(location = 2) out vec4 Color;
 void main() {
     const uint vertex_count = max(pc.VertexCountOrHeadImageSlot, 1u);
     const uint idx = min(gl_VertexIndex, vertex_count - 1);
-    const Vertex vert = VertexBuffers[nonuniformEXT(pc.VertexSlot)].Vertices[idx];
-    const WorldMatrix world = ModelBuffers[nonuniformEXT(pc.ModelSlot)].Models[pc.FirstInstance + gl_InstanceIndex];
+    const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx];
+    const WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[pc.FirstInstance + gl_InstanceIndex];
 
     uint state = 0u;
     if (pc.ElementStateSlot != INVALID_SLOT) {
-        state = ElementStateBuffers[nonuniformEXT(pc.ElementStateSlot)].States[idx];
+        state = ElementStateBuffers[pc.ElementStateSlot].States[idx];
     }
     const bool is_selected = (state & STATE_SELECTED) != 0u;
     const bool is_active = (state & STATE_ACTIVE) != 0u;

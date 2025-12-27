@@ -26,6 +26,8 @@ layout(location = 0) flat in uint InstanceIndex;
 const uint INVALID_NODE = 0xffffffffu;
 
 void main() {
+    // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
+    // when using .length() or image atomics, even when the index is uniform.
     const uint head_index = nonuniformEXT(pc.VertexCountOrHeadImageSlot);
     const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
     const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
@@ -36,7 +38,7 @@ void main() {
         return;
     }
 
-    const uint objectId = ObjectIdBuffers[nonuniformEXT(pc.ObjectIdSlot)].Ids[pc.FirstInstance + InstanceIndex];
+    const uint objectId = ObjectIdBuffers[pc.ObjectIdSlot].Ids[pc.FirstInstance + InstanceIndex];
     SelectionBuffers[nodes_index].Nodes[idx].ObjectId = objectId;
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
 

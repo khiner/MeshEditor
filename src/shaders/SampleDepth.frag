@@ -8,6 +8,6 @@ layout(push_constant) uniform PC {
 layout(location = 0) in vec2 TexCoord;
 
 void main() {
-    const ivec2 texel = ivec2(TexCoord * textureSize(Samplers[nonuniformEXT(pc.DepthSamplerIndex)], 0));
-    gl_FragDepth = texelFetch(Samplers[nonuniformEXT(pc.DepthSamplerIndex)], texel, 0).r;
+    const ivec2 texel = ivec2(TexCoord * textureSize(Samplers[pc.DepthSamplerIndex], 0));
+    gl_FragDepth = texelFetch(Samplers[pc.DepthSamplerIndex], texel, 0).r;
 }

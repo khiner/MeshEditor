@@ -42,13 +42,13 @@ void main() {
     // Single invocation does the traversal
     if (gl_GlobalInvocationID.x != 0) return;
 
-    uint idx = imageLoad(HeadImages[nonuniformEXT(pc.HeadImageIndex)], ivec2(pc.TargetPx)).r;
+    uint idx = imageLoad(HeadImages[pc.HeadImageIndex], ivec2(pc.TargetPx)).r;
     while (idx != INVALID_NODE) {
-        const SelectionNode node = SelectionBuffers[nonuniformEXT(pc.SelectionNodesIndex)].Nodes[idx];
-        const uint write_idx = atomicAdd(ClickResults[nonuniformEXT(pc.ClickResultIndex)].Count, 1);
+        const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
+        const uint write_idx = atomicAdd(ClickResults[pc.ClickResultIndex].Count, 1);
         if (write_idx < MAX_CLICK_RESULTS) {
-            ClickResults[nonuniformEXT(pc.ClickResultIndex)].Hits[write_idx].Depth = node.Depth;
-            ClickResults[nonuniformEXT(pc.ClickResultIndex)].Hits[write_idx].ObjectId = node.ObjectId;
+            ClickResults[pc.ClickResultIndex].Hits[write_idx].Depth = node.Depth;
+            ClickResults[pc.ClickResultIndex].Hits[write_idx].ObjectId = node.ObjectId;
         }
         idx = node.Next;
     }
