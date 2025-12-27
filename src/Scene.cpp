@@ -498,8 +498,8 @@ struct MainPipeline {
             {{}, Format::Depth, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
             // Multisampled offscreen image.
             {{}, Format::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-            // Single-sampled resolve.
-            {{}, Format::Color, vk::SampleCountFlagBits::e1, {}, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal},
+            // Single-sampled resolve target. UNDEFINED + DONT_CARE = discard previous contents, let render pass handle transition.
+            {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
         const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
         const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -1621,23 +1621,10 @@ void Scene::RecordRenderCommandBuffer() {
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
-    const auto &main = Pipelines->Main;
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
-        vk::ImageMemoryBarrier{
-            {}, // srcAccessMask
-            {}, // dstAccessMask
-            {}, // oldLayout
-            vk::ImageLayout::eColorAttachmentOptimal, // newLayout
-            {}, // srcQueueFamilyIndex
-            {}, // dstQueueFamilyIndex
-            *main.Resources->ResolveImage.Image,
-            ColorSubresourceRange
-        }
-    );
+    // No external barrier needed - render pass handles UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
+    // via initialLayout=UNDEFINED + loadOp=DONT_CARE on the resolve attachment.
 
+    const auto &main = Pipelines->Main;
     const auto active_entity = FindActiveEntity(R);
     const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
     uint32_t active_object_id = 0;
@@ -1645,9 +1632,7 @@ void Scene::RecordRenderCommandBuffer() {
         active_object_id = R.get<RenderInstance>(active_entity).ObjectId;
     }
 
-    const auto make_pc = [this](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
-        if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
-        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+    const auto make_pc = [](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
         const uint32_t vertex_count = static_cast<uint32_t>(render_buffers.Vertices.UsedSize / sizeof(Vertex3D));
         return DrawPushConstants{
             render_buffers.VertexSlot,
@@ -1732,8 +1717,6 @@ void Scene::RecordRenderCommandBuffer() {
             const auto &pipeline = main.Renderer.Bind(cb, fill_pipeline);
             for (auto [_, mesh_buffers, models, face_ids, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshFaceIdBuffer, MeshElementStateBuffers>().each()) {
-                if (face_ids.Slot == InvalidSlot) UpdateFaceIdBufferBindless(face_ids);
-                if (state_buffers.Faces.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Faces);
                 auto pc = make_pc(mesh_buffers.Faces, models);
                 pc.ObjectIdSlot = face_ids.Slot;
                 pc.ElementStateSlot = state_buffers.Faces.Slot;
@@ -1747,7 +1730,6 @@ void Scene::RecordRenderCommandBuffer() {
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
                 if (show_wireframe || selected_mesh_entities.contains(entity)) {
-                    if (state_buffers.Edges.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Edges);
                     auto pc = make_pc(mesh_buffers.Edges, models);
                     pc.ElementStateSlot = state_buffers.Edges.Slot;
                     Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
@@ -1764,7 +1746,6 @@ void Scene::RecordRenderCommandBuffer() {
                 const bool draw_selected = is_edit_mode && EditMode == Element::Vertex && selected_mesh_entities.contains(entity);
                 const bool draw_highlighted = InteractionMode == InteractionMode::Excite && !highlighted.Vertices.empty();
                 if (!draw_selected && !draw_highlighted) continue;
-                if (state_buffers.Vertices.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Vertices);
                 auto pc = make_pc(mesh_buffers.Vertices, models);
                 pc.ElementStateSlot = state_buffers.Vertices.Slot;
                 pc.PointFlags = InteractionMode == InteractionMode::Excite ? 1u : 0u;
@@ -2013,7 +1994,6 @@ void Scene::RenderSelectionPass() {
             if (instance_count == 0) continue;
 
             auto &render_buffers = mesh_buffers.Faces;
-            if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
             const DrawPushConstants pc{
                 render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, models.ObjectIdSlot,
                 SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0,
@@ -2121,14 +2101,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             auto &face_ids = R.get<MeshFaceIdBuffer>(range.MeshEntity);
 
             auto &render_buffers = SelectionRenderBuffersForElement(mesh_buffers, element);
-            uint32_t element_slot = element == Element::Face ? face_ids.Slot : InvalidSlot;
-
-            if (render_buffers.VertexSlot == InvalidSlot || render_buffers.IndexSlot == InvalidSlot) UpdateRenderBufferBindless(render_buffers);
-            if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
-            if (element == Element::Face && element_slot == InvalidSlot) {
-                UpdateFaceIdBufferBindless(face_ids);
-                element_slot = face_ids.Slot;
-            }
+            const uint32_t element_slot = element == Element::Face ? face_ids.Slot : InvalidSlot;
 
             const DrawPushConstants pc{
                 render_buffers.VertexSlot,
@@ -2415,6 +2388,34 @@ void Scene::ReleaseFaceIdBufferBindless(MeshFaceIdBuffer &buffers) {
     }
 }
 
+void Scene::PrepareBindlessDescriptors() {
+    // Ensure all render resources have valid bindless slots before command buffer recording.
+    for (auto [_, mesh_buffers, models, face_ids, state_buffers] :
+         R.view<MeshBuffers, ModelsBuffer, MeshFaceIdBuffer, MeshElementStateBuffers>().each()) {
+        if (mesh_buffers.Faces.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(mesh_buffers.Faces);
+        if (mesh_buffers.Edges.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(mesh_buffers.Edges);
+        if (mesh_buffers.Vertices.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(mesh_buffers.Vertices);
+        for (auto &[_, buffers] : mesh_buffers.NormalIndicators) {
+            if (buffers.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(buffers);
+        }
+        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+        if (face_ids.Slot == InvalidSlot) UpdateFaceIdBufferBindless(face_ids);
+
+        if (state_buffers.Faces.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Faces);
+        if (state_buffers.Edges.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Edges);
+        if (state_buffers.Vertices.Slot == InvalidSlot) UpdateElementStateBufferBindless(state_buffers.Vertices);
+    }
+    // BVH and bounding box buffers (separate components)
+    for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
+        if (bvh_boxes.Buffers.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(bvh_boxes.Buffers);
+        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+    }
+    for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
+        if (bounding_boxes.Buffers.VertexSlot == InvalidSlot) UpdateRenderBufferBindless(bounding_boxes.Buffers);
+        if (models.Slot == InvalidSlot) UpdateModelBufferBindless(models);
+    }
+}
+
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
 
@@ -2633,8 +2634,6 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     Silhouette.SetExtent(extent, Device, PhysicalDevice);
     SilhouetteEdge.SetExtent(extent, Device, PhysicalDevice);
     SelectionFragment.SetExtent(extent, Device, PhysicalDevice);
-
-    // Using bindless for samplers; no per-descriptor updates needed.
 };
 
 bool Scene::RenderViewport() {
@@ -2668,6 +2667,7 @@ bool Scene::RenderViewport() {
 
     transfer_cb.end();
 
+    PrepareBindlessDescriptors();
     RecordRenderCommandBuffer();
 
     // Submit transfer and render commands together

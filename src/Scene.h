@@ -177,6 +177,7 @@ struct Scene {
     void ReleaseModelBufferBindless(ModelsBuffer &);
     void ReleaseElementStateBufferBindless(ElementStateBuffer &);
     void ReleaseFaceIdBufferBindless(MeshFaceIdBuffer &);
+    void PrepareBindlessDescriptors();
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
 
