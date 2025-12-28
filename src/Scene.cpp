@@ -1995,26 +1995,6 @@ struct EntityIntersection {
     vec3 Position;
 };
 
-template<typename... FilterTags>
-std::vector<EntityIntersection> IntersectVisible(const entt::registry &r, const ray &world_ray) {
-    std::vector<EntityIntersection> results;
-    const auto compute_intersection = [&](entt::entity e, const WorldMatrix &world_matrix) {
-        const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
-        const auto &bvh = r.get<const BVH>(mesh_entity);
-        const auto &mesh = r.get<const Mesh>(mesh_entity);
-        const auto local_ray = WorldToLocal(world_ray, world_matrix.MInv);
-        if (auto intersection = MeshIntersection::Intersect(bvh, mesh, local_ray)) {
-            results.emplace_back(e, *intersection, local_ray(intersection->Distance));
-        }
-    };
-
-    for (const auto &[e, world_matrix] : r.view<const WorldMatrix, const Visible, FilterTags...>().each()) {
-        compute_intersection(e, world_matrix);
-    }
-    std::ranges::sort(results, {}, [](const auto &result) { return result.Intersection.Distance; });
-    return results;
-}
-
 void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
     const auto &g = *GImGui;
     ImVec2 mouse_delta{0, 0};
@@ -2697,17 +2677,17 @@ void Scene::Interact() {
     const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)};
     if (InteractionMode == InteractionMode::Edit) {
         if (EditMode != Element::None) {
-            const auto objects = RunClickSelect(mouse_px);
-            const auto hit_it = find_if(objects, [&](auto e) { return R.all_of<Selected>(e); });
+            const auto hit_entities = RunClickSelect(mouse_px);
+            const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
             const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-            if (hit_it == objects.end() || !toggle) {
+            if (hit_it == hit_entities.end() || !toggle) {
                 for (const auto [e, selection] : R.view<MeshSelection>().each()) {
                     if (selection.Handles.empty()) continue;
                     R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.Element = Element::None; });
                     UpdateRenderBuffers(e);
                 }
             }
-            if (hit_it != objects.end()) {
+            if (hit_it != hit_entities.end()) {
                 const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
                 if (const auto element = RunClickSelectElement(mesh_entity, EditMode, mouse_px)) {
                     SelectElement(mesh_entity, *element, toggle);
@@ -2715,12 +2695,13 @@ void Scene::Interact() {
             }
         }
     } else if (InteractionMode == InteractionMode::Object) {
-        const auto objects = RunClickSelect(mouse_px);
+        const auto hit_entities = RunClickSelect(mouse_px);
+        // Cycle through hit entities.
         entt::entity intersected = entt::null;
-        if (!objects.empty()) {
-            auto it = find(objects, active_entity);
-            if (it != objects.end()) ++it;
-            if (it == objects.end()) it = objects.begin();
+        if (!hit_entities.empty()) {
+            auto it = find(hit_entities, active_entity);
+            if (it != hit_entities.end()) ++it;
+            if (it == hit_entities.end()) it = hit_entities.begin();
             intersected = *it;
         }
 
@@ -2738,23 +2719,26 @@ void Scene::Interact() {
         }
     } else if (InteractionMode == InteractionMode::Excite) {
         // Excite the nearest entity if it's excitable.
-        if (const auto nearest = IntersectVisible<>(R, mouse_ray_ws); !nearest.empty()) {
-            const auto &hit = nearest.front();
-            if (const auto *excitable = R.try_get<Excitable>(hit.Entity)) {
-                // Find the nearest excitable vertex.
-                std::optional<uint> nearest_excite_vertex;
-                float min_dist_sq = std::numeric_limits<float>::max();
-                const auto &mesh = R.get<Mesh>(R.get<MeshInstance>(hit.Entity).MeshEntity);
-                const auto p = hit.Position;
-                for (uint excite_vertex : excitable->ExcitableVertices) {
-                    const auto diff = p - mesh.GetPosition(VH(excite_vertex));
-                    if (float dist_sq = glm::dot(diff, diff); dist_sq < min_dist_sq) {
-                        min_dist_sq = dist_sq;
-                        nearest_excite_vertex = excite_vertex;
+        if (const auto hit_entities = RunClickSelect(mouse_px); !hit_entities.empty()) {
+            if (const auto hit_entity = hit_entities.front(); const auto *excitable = R.try_get<Excitable>(hit_entity)) {
+                const auto mesh_entity = R.get<MeshInstance>(hit_entity).MeshEntity;
+                const auto &mesh = R.get<const Mesh>(mesh_entity);
+                const auto local_ray = WorldToLocal(mouse_ray_ws, R.get<WorldMatrix>(hit_entity).MInv);
+                if (const auto intersection = MeshIntersection::Intersect(R.get<const BVH>(mesh_entity), mesh, local_ray)) {
+                    // Find the nearest excitable vertex.
+                    std::optional<uint> nearest_excite_vertex;
+                    float min_dist_sq = std::numeric_limits<float>::max();
+                    const auto p = local_ray(intersection->Distance);
+                    for (uint excite_vertex : excitable->ExcitableVertices) {
+                        const auto diff = p - mesh.GetPosition(VH(excite_vertex));
+                        if (float dist_sq = glm::dot(diff, diff); dist_sq < min_dist_sq) {
+                            min_dist_sq = dist_sq;
+                            nearest_excite_vertex = excite_vertex;
+                        }
                     }
-                }
-                if (nearest_excite_vertex) {
-                    R.emplace<ExcitedVertex>(hit.Entity, *nearest_excite_vertex, 1.f);
+                    if (nearest_excite_vertex) {
+                        R.emplace<ExcitedVertex>(hit_entity, *nearest_excite_vertex, 1.f);
+                    }
                 }
             }
         }
@@ -2808,9 +2792,6 @@ bool Scene::RenderViewport() {
     submit.setCommandBuffers(command_buffers);
     Vk.Queue.submit(submit, *RenderFence);
     WaitFor(*RenderFence, Vk.Device);
-
-    // Read back selection node count for dispatch sizing (host-visible buffer).
-    // No copy needed; buffer is host-visible and GPU work is done by this point.
 
     UniqueBuffers->Ctx.Reclaimer.Reclaim();
     // Leave transfer_cb recording for next frame's staging.
