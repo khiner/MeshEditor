@@ -119,6 +119,18 @@ struct PipelineRenderer {
 };
 
 namespace {
+struct Timer {
+    std::string_view Name;
+    std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
+
+    Timer(const std::string_view name) : Name{name} {}
+    ~Timer() {
+        const auto end = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
+        std::println("{}: ms={:.3f}", Name, ms);
+    }
+};
+
 std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
 ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t count) {
     auto states = MakeElementStates(count);
@@ -369,7 +381,7 @@ struct SceneUniqueBuffers {
 
     SceneUniqueBuffers(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandPool command_pool)
         : Ctx{pd, d, instance, command_pool},
-          SceneUBO{Ctx, sizeof(SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer},
+          SceneUBO{Ctx, sizeof(::SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer},
           SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer},
           SelectionCounterBuffer{*Ctx.Allocator, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ClickResultBuffer{*Ctx.Allocator, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
@@ -1040,7 +1052,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     }
 }
 
-Scene::~Scene() = default;
+Scene::~Scene() {
+    WaitForRender();
+}
 
 void Scene::LoadIcons(vk::Device device) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
@@ -1787,6 +1801,7 @@ void Scene::RecordRenderCommandBuffer() {
 
 void Scene::InvalidateCommandBuffer() {
     CommandBufferDirty = true;
+    NeedsRender = true;
 }
 
 void Scene::UpdateEdgeColors() {
@@ -1813,7 +1828,17 @@ void Scene::UpdateSceneUBO() {
         .HighlightedColor = MeshRender::HighlightedColor
     };
     UniqueBuffers->SceneUBO.Update(as_bytes(scene_ubo));
-    InvalidateCommandBuffer();
+    NeedsRender = true;
+}
+
+void Scene::WaitForRender() {
+    if (!RenderInFlight) return;
+
+    const Timer timer{"Wait for render"};
+    WaitFor(*RenderFence, Vk.Device);
+    RenderInFlight = false;
+    UniqueBuffers->Ctx.Reclaimer.Reclaim();
+    UniqueBuffers->Ctx.TransferCb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 }
 
 void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable) {
@@ -1962,18 +1987,6 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 }
 
 } // namespace
-
-struct Timer {
-    std::string_view Name;
-    std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
-
-    Timer(const std::string_view name) : Name{name} {}
-    ~Timer() {
-        const auto end = std::chrono::steady_clock::now();
-        const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
-        std::println("{}: ms={:.3f}", Name, ms);
-    }
-};
 
 void Scene::RenderSelectionPass() {
     const Timer timer{"RenderSelectionPass"};
@@ -2392,6 +2405,7 @@ void Scene::PrepareDescriptors() {
 }
 
 void Scene::Interact() {
+    WaitForRender(); // Previous frame's render must be done before we modify resources.
     if (Extent.width == 0 || Extent.height == 0) return;
 
     const auto active_entity = FindActiveEntity(R);
@@ -2614,10 +2628,9 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 bool Scene::RenderViewport() {
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
-    if (!extent_changed && !CommandBufferDirty) return false;
+    if (!extent_changed && !CommandBufferDirty && !NeedsRender) return false;
 
     const Timer timer{"RenderViewport"};
-    CommandBufferDirty = false;
 
     if (extent_changed) {
         Extent = ToExtent(content_region);
@@ -2631,11 +2644,11 @@ bool Scene::RenderViewport() {
     // transfer_cb is kept recording between frames by BufferContext and our end-of-frame begin().
     // Ensure buffer writes (staging copies) are visible to shader reads.
     const vk::MemoryBarrier buffer_barrier{
-        vk::AccessFlagBits::eTransferWrite,
+        vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eHostWrite,
         vk::AccessFlagBits::eShaderRead
     };
     transfer_cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eHost,
         vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
         {}, buffer_barrier, {}, {}
     );
@@ -2643,21 +2656,19 @@ bool Scene::RenderViewport() {
     transfer_cb.end();
 
     PrepareDescriptors();
-    RecordRenderCommandBuffer();
+    if (CommandBufferDirty || extent_changed) {
+        RecordRenderCommandBuffer();
+        CommandBufferDirty = false;
+    }
 
     // Submit transfer and render commands together
     const std::array command_buffers{transfer_cb, *RenderCommandBuffer};
     vk::SubmitInfo submit;
     submit.setCommandBuffers(command_buffers);
     Vk.Queue.submit(submit, *RenderFence);
-    WaitFor(*RenderFence, Vk.Device);
 
-    // Read back selection node count for dispatch sizing (host-visible buffer).
-    // No copy needed; buffer is host-visible and GPU work is done by this point.
-
-    UniqueBuffers->Ctx.Reclaimer.Reclaim();
-    // Leave transfer_cb recording for next frame's staging.
-    transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    RenderInFlight = true;
+    NeedsRender = false;
 
     return extent_changed;
 }

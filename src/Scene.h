@@ -179,6 +179,7 @@ struct Scene {
     void PrepareDescriptors();
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer();
+    void WaitForRender();
 
     void OnCreateSelected(entt::registry &, entt::entity);
     void OnDestroySelected(entt::registry &, entt::entity);
@@ -265,8 +266,10 @@ private:
     static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
     std::unordered_set<he::Element> ShownNormalElements{};
 
-    bool CommandBufferDirty{false};
-    bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
+    bool CommandBufferDirty{false}; // Command buffer needs re-recording (scene structure changed)
+    bool NeedsRender{false}; // Need to submit render (UBO or other data changed)
+    bool RenderInFlight{false}; // Render command buffer is currently submitted
+    bool SelectionStale{true}; // Selection fragment data no longer matches current scene
 
     struct ElementRange {
         entt::entity MeshEntity;
