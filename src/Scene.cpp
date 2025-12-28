@@ -31,7 +31,7 @@
 #include <unordered_map>
 #include <variant>
 
-using std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
+using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::iota, std::views::take, std::views::transform;
 
 using namespace he;
@@ -80,6 +80,11 @@ enum class ShaderPipelineType {
     SelectionElementFace,
     SelectionElementEdge,
     SelectionElementVertex,
+    SelectionElementFaceXRay,
+    SelectionElementEdgeXRay,
+    SelectionElementVertexXRay,
+    SelectionFragmentXRay,
+    SelectionDepthOnly,
     SelectionFragment,
     DebugNormals,
 };
@@ -318,10 +323,13 @@ BindlessConfig MakeBindlessConfig(vk::PhysicalDevice pd) {
 }
 
 struct SelectionNode {
-    uint32_t ObjectId;
+    glm::uvec2 Pixel;
     float Depth;
+    uint32_t ObjectId;
     uint32_t Next;
+    uint32_t Padding0;
 };
+static_assert(sizeof(SelectionNode) == 24, "SelectionNode must match std430 layout.");
 
 struct SelectionCounters {
     uint32_t Count;
@@ -338,9 +346,24 @@ struct ClickResult {
     std::array<ClickHit, 64> Hits;
 };
 
+struct ClickElementCandidate {
+    uint32_t ObjectId;
+    float Depth;
+    uint32_t DistanceSq;
+    uint32_t Padding;
+};
+static_assert(sizeof(ClickElementCandidate) == 16, "ClickElementCandidate must match std430 layout.");
+
 struct ClickSelectPushConstants {
     glm::uvec2 TargetPx;
     uint32_t HeadImageIndex;
+    uint32_t SelectionNodesIndex;
+    uint32_t ClickResultIndex;
+};
+
+struct ClickSelectElementPushConstants {
+    glm::uvec2 TargetPx;
+    uint32_t NodeCount;
     uint32_t SelectionNodesIndex;
     uint32_t ClickResultIndex;
 };
@@ -366,6 +389,8 @@ struct SceneUniqueBuffers {
     static constexpr uint32_t MaxSelectionNodes = 4'000'000; // Matches prior fragment cap
     static constexpr uint32_t MaxSelectableObjects = MaxSelectionNodes;
     static constexpr uint32_t BoxSelectBitsetWords = (MaxSelectableObjects + 31) / 32;
+    static constexpr uint32_t ClickElementGroupSize = 256;
+    static constexpr uint32_t MaxClickElementGroups = (MaxSelectionNodes + ClickElementGroupSize - 1) / ClickElementGroupSize;
 
     SceneUniqueBuffers(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandPool command_pool)
         : Ctx{pd, d, instance, command_pool},
@@ -373,6 +398,12 @@ struct SceneUniqueBuffers {
           SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer},
           SelectionCounterBuffer{*Ctx.Allocator, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ClickResultBuffer{*Ctx.Allocator, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          ClickElementResultBuffer{
+              *Ctx.Allocator,
+              MaxClickElementGroups * sizeof(ClickElementCandidate),
+              mvk::MemoryUsage::CpuToGpu,
+              vk::BufferUsageFlagBits::eStorageBuffer
+          },
           BoxSelectBitsetBuffer{*Ctx.Allocator, BoxSelectBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {
     }
 
@@ -402,6 +433,7 @@ struct SceneUniqueBuffers {
     mvk::UniqueBuffers SelectionNodeBuffer;
     mvk::UniqueBuffer SelectionCounterBuffer;
     mvk::UniqueBuffer ClickResultBuffer;
+    mvk::UniqueBuffer ClickElementResultBuffer;
     mvk::UniqueBuffer BoxSelectBitsetBuffer;
 };
 
@@ -818,6 +850,15 @@ struct SelectionFragmentPipeline {
         const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
+            SPT::SelectionDepthOnly,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "DepthOnly.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+                {}, CreateDepthStencil(), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
             SPT::SelectionElementFace,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
@@ -827,12 +868,30 @@ struct SelectionFragmentPipeline {
             )
         );
         pipelines.emplace(
+            SPT::SelectionElementFaceXRay,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
             SPT::SelectionElementEdge,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-                {}, CreateDepthStencil(), draw_pc // No color attachment
+                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionElementEdgeXRay,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
+                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
             )
         );
         pipelines.emplace(
@@ -841,7 +900,16 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                {}, CreateDepthStencil(), draw_pc // No color attachment
+                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionElementVertexXRay,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
+                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
             )
         );
         pipelines.emplace(
@@ -851,6 +919,15 @@ struct SelectionFragmentPipeline {
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
                 {}, CreateDepthStencil(), draw_pc // No color attachment
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionFragmentXRay,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
             )
         );
         return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
@@ -919,6 +996,12 @@ struct ScenePipelines {
               selection_layout,
               selection_set
           },
+          ClickSelectElement{
+              d, Shaders{{{ShaderType::eCompute, "ClickSelectElement.comp"}}},
+              vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectElementPushConstants)},
+              selection_layout,
+              selection_set
+          },
           BoxSelect{
               d, Shaders{{{ShaderType::eCompute, "BoxSelect.comp"}}},
               vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(BoxSelectPushConstants)},
@@ -935,6 +1018,7 @@ struct ScenePipelines {
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
     ComputePipeline ClickSelect;
+    ComputePipeline ClickSelectElement;
     ComputePipeline BoxSelect;
 
     void SetExtent(vk::Extent2D);
@@ -945,6 +1029,7 @@ struct ScenePipelines {
         SilhouetteEdge.Renderer.CompileShaders();
         SelectionFragment.Renderer.CompileShaders();
         ClickSelect.Compile();
+        ClickSelectElement.Compile();
         BoxSelect.Compile();
     }
 };
@@ -956,6 +1041,7 @@ struct Scene::SelectionSlotHandles {
           SelectionNodes(slots.Allocate(SlotType::Buffer)),
           SelectionCounter(slots.Allocate(SlotType::Buffer)),
           ClickResult(slots.Allocate(SlotType::Buffer)),
+          ClickElementResult(slots.Allocate(SlotType::Buffer)),
           BoxResult(slots.Allocate(SlotType::Buffer)),
           ObjectIdSampler(slots.Allocate(SlotType::Sampler)),
           DepthSampler(slots.Allocate(SlotType::Sampler)),
@@ -966,6 +1052,7 @@ struct Scene::SelectionSlotHandles {
         Slots.Release(SlotType::Buffer, SelectionNodes);
         Slots.Release(SlotType::Buffer, SelectionCounter);
         Slots.Release(SlotType::Buffer, ClickResult);
+        Slots.Release(SlotType::Buffer, ClickElementResult);
         Slots.Release(SlotType::Buffer, BoxResult);
         Slots.Release(SlotType::Sampler, ObjectIdSampler);
         Slots.Release(SlotType::Sampler, DepthSampler);
@@ -973,7 +1060,7 @@ struct Scene::SelectionSlotHandles {
     }
 
     DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionNodes, SelectionCounter, ClickResult, BoxResult, ObjectIdSampler, DepthSampler, SilhouetteSampler;
+    uint32_t HeadImage, SelectionNodes, SelectionCounter, ClickResult, ClickElementResult, BoxResult, ObjectIdSampler, DepthSampler, SilhouetteSampler;
 };
 
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
@@ -1457,13 +1544,10 @@ void Scene::Destroy(entt::entity e) {
 
     // If this was the last instance, destroy the mesh
     if (R.valid(mesh_entity)) {
-        bool has_instances = false;
-        for (const auto [_, mi] : R.view<MeshInstance>().each()) {
-            if (mi.MeshEntity == mesh_entity) {
-                has_instances = true;
-                break;
-            }
-        }
+        const auto has_instances = any_of(
+            R.view<MeshInstance>().each(),
+            [mesh_entity](const auto &entry) { return std::get<1>(entry).MeshEntity == mesh_entity; }
+        );
         if (!has_instances) R.destroy(mesh_entity);
     }
 
@@ -1785,10 +1869,6 @@ void Scene::RecordRenderCommandBuffer() {
     cb.end();
 }
 
-void Scene::InvalidateCommandBuffer() {
-    CommandBufferDirty = true;
-}
-
 void Scene::UpdateEdgeColors() {
     MeshRender::EdgeColor = ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
     UpdateSceneUBO();
@@ -1828,7 +1908,6 @@ void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable
     }
 }
 
-// todo selection overlays for _only selected instances_ (currently all instances of selected meshes)
 void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
     const auto &mesh = R.get<const Mesh>(mesh_entity);
@@ -1977,9 +2056,10 @@ struct Timer {
 
 void Scene::RenderSelectionPass() {
     const Timer timer{"RenderSelectionPass"};
+    const bool xray_selection = SelectionXRay || ViewportShading == ViewportShadingMode::Wireframe;
 
     RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
-        const auto &pipeline = renderer.Bind(cb, SPT::SelectionFragment);
+        const auto &pipeline = renderer.Bind(cb, xray_selection ? SPT::SelectionFragmentXRay : SPT::SelectionFragment);
         for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
             if (instance_count == 0) continue;
@@ -2066,10 +2146,10 @@ uint32_t GetElementCount(const Mesh &mesh, Element element) {
     return 0;
 }
 
-SPT SelectionPipelineForElement(Element element) {
-    if (element == Element::Vertex) return SPT::SelectionElementVertex;
-    if (element == Element::Edge) return SPT::SelectionElementEdge;
-    return SPT::SelectionElementFace;
+SPT SelectionPipelineForElement(Element element, bool xray) {
+    if (element == Element::Vertex) return xray ? SPT::SelectionElementVertexXRay : SPT::SelectionElementVertex;
+    if (element == Element::Edge) return xray ? SPT::SelectionElementEdgeXRay : SPT::SelectionElementEdge;
+    return xray ? SPT::SelectionElementFaceXRay : SPT::SelectionElementFace;
 }
 
 RenderBuffers &SelectionRenderBuffersForElement(MeshBuffers &mesh_buffers, Element element) {
@@ -2083,8 +2163,35 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
     if (ranges.empty() || element == Element::None) return;
 
     const Timer timer{"RenderEditSelectionPass"};
+    const bool xray_selection = SelectionXRay || ViewportShading == ViewportShadingMode::Wireframe;
+    const bool depth_occlusion = !xray_selection && (element == Element::Vertex || element == Element::Edge);
     RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
-        const auto &pipeline = renderer.Bind(cb, SelectionPipelineForElement(element));
+        if (depth_occlusion) {
+            const auto &depth_pipeline = renderer.Bind(cb, SPT::SelectionDepthOnly);
+            for (const auto &range : ranges) {
+                auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
+                auto &models = R.get<ModelsBuffer>(range.MeshEntity);
+                const auto &render_buffers = mesh_buffers.Faces;
+                const DrawPushConstants pc{
+                    render_buffers.VertexSlot,
+                    render_buffers.IndexSlot,
+                    models.Slot,
+                    0,
+                    InvalidSlot,
+                    InvalidSlot,
+                    0,
+                    0,
+                    0,
+                    InvalidSlot,
+                    0,
+                    0,
+                    vec4{0, 0, 0, 0}
+                };
+                Draw(cb, depth_pipeline, render_buffers, models, pc);
+            }
+        }
+
+        const auto &pipeline = renderer.Bind(cb, SelectionPipelineForElement(element, xray_selection));
 
         for (const auto &range : ranges) {
             auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
@@ -2166,6 +2273,56 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
             | to<std::vector>();
     }
     return results;
+}
+
+std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, Element element, glm::uvec2 mouse_px) {
+    const auto &mesh = R.get<Mesh>(mesh_entity);
+    const uint32_t element_count = GetElementCount(mesh, element);
+    if (element_count == 0 || element == Element::None) return std::nullopt;
+
+    const ElementRange range{mesh_entity, 0, element_count};
+    RenderEditSelectionPass(std::span{&range, 1}, element);
+    if (!HasSelectionNodes(UniqueBuffers->SelectionCounterBuffer)) return std::nullopt;
+
+    const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
+    const uint32_t node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
+    if (node_count == 0) return std::nullopt;
+
+    const uint32_t group_count = (node_count + SceneUniqueBuffers::ClickElementGroupSize - 1) / SceneUniqueBuffers::ClickElementGroupSize;
+    if (group_count == 0) return std::nullopt;
+
+    auto cb = *ClickCommandBuffer;
+    const auto &compute = Pipelines->ClickSelectElement;
+    RunSelectionCompute(
+        cb, Vk.Queue, *TransferFence, Vk.Device, compute,
+        ClickSelectElementPushConstants{
+            .TargetPx = mouse_px,
+            .NodeCount = node_count,
+            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+            .ClickResultIndex = SelectionHandles->ClickElementResult,
+        },
+        [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); }
+    );
+
+    const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(UniqueBuffers->ClickElementResultBuffer.GetData().data());
+    ClickElementCandidate best{
+        .ObjectId = 0,
+        .Depth = 1.0f,
+        .DistanceSq = std::numeric_limits<uint32_t>::max(),
+        .Padding = 0
+    };
+
+    for (uint32_t i = 0; i < group_count; ++i) {
+        const auto &candidate = candidates[i];
+        if (candidate.ObjectId == 0) continue;
+        if (candidate.DistanceSq < best.DistanceSq ||
+            (candidate.DistanceSq == best.DistanceSq && candidate.Depth < best.Depth)) {
+            best = candidate;
+        }
+    }
+
+    if (best.ObjectId == 0 || best.ObjectId > element_count) return std::nullopt;
+    return AnyHandle{element, best.ObjectId - 1};
 }
 
 // Returns entities hit at mouse_px, sorted by depth (near-to-far), with duplicates removed.
@@ -2268,6 +2425,11 @@ void Scene::UpdateSelectionDescriptors() {
     const auto selection_nodes = UniqueBuffers->SelectionNodeBuffer.GetDescriptor();
     const auto selection_counter = vk::DescriptorBufferInfo{*UniqueBuffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
     const auto click_result = vk::DescriptorBufferInfo{*UniqueBuffers->ClickResultBuffer, 0, sizeof(ClickResult)};
+    const auto click_element_result = vk::DescriptorBufferInfo{
+        *UniqueBuffers->ClickElementResultBuffer,
+        0,
+        SceneUniqueBuffers::MaxClickElementGroups * sizeof(ClickElementCandidate)
+    };
     const auto box_result = UniqueBuffers->GetBoxSelectBitsetDescriptor();
     const auto scene_ubo = UniqueBuffers->SceneUBO.GetDescriptor();
 
@@ -2275,6 +2437,7 @@ void Scene::UpdateSelectionDescriptors() {
     writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionNodes, selection_nodes));
     writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionCounter, selection_counter));
     writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickResult, click_result));
+    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickElementResult, click_element_result));
     writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.BoxResult, box_result));
     // Samplers
     const auto &sil = Pipelines->Silhouette;
@@ -2529,36 +2692,30 @@ void Scene::Interact() {
     const auto size = GetContentRegionAvail();
     const auto mouse_pos = (GetMousePos() - GetCursorScreenPos()) / size;
     const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
+    const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
+    // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
+    const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)};
     if (InteractionMode == InteractionMode::Edit) {
         if (EditMode != Element::None) {
-            const bool shift_down = IsKeyDown(ImGuiMod_Shift);
-            const bool ctrl_down = IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-            const bool toggle = shift_down || ctrl_down;
-            if (const auto intersections = IntersectVisible<const Selected>(R, mouse_ray_ws); !intersections.empty()) {
-                const auto &hit = intersections.front();
-                const auto &world_matrix = R.get<WorldMatrix>(hit.Entity);
-                const auto mesh_entity = R.get<MeshInstance>(hit.Entity).MeshEntity;
-                if (!toggle) {
-                    for (const auto [e, selection] : R.view<MeshSelection>().each()) {
-                        if (selection.Handles.empty()) continue;
-                        R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.Element = Element::None; });
-                        UpdateRenderBuffers(e);
-                    }
+            const auto objects = RunClickSelect(mouse_px);
+            const auto hit_it = find_if(objects, [&](auto e) { return R.all_of<Selected>(e); });
+            const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
+            if (hit_it == objects.end() || !toggle) {
+                for (const auto [e, selection] : R.view<MeshSelection>().each()) {
+                    if (selection.Handles.empty()) continue;
+                    R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.Element = Element::None; });
+                    UpdateRenderBuffers(e);
                 }
-                const auto &bvh = R.get<BVH>(mesh_entity);
-                const auto &mesh = R.get<Mesh>(mesh_entity);
-                const auto mouse_ray = WorldToLocal(mouse_ray_ws, world_matrix.MInv);
-
-                using namespace MeshIntersection;
-                if (EditMode == Element::Vertex) SelectElement(mesh_entity, FindNearestVertex(bvh, mesh, mouse_ray), toggle);
-                else if (EditMode == Element::Edge) SelectElement(mesh_entity, FindNearestEdge(bvh, mesh, mouse_ray), toggle);
-                else if (EditMode == Element::Face) SelectElement(mesh_entity, FindNearestIntersectingFace(bvh, mesh, mouse_ray), toggle);
+            }
+            if (hit_it != objects.end()) {
+                const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
+                if (const auto element = RunClickSelectElement(mesh_entity, EditMode, mouse_px)) {
+                    SelectElement(mesh_entity, *element, toggle);
+                }
             }
         }
     } else if (InteractionMode == InteractionMode::Object) {
-        const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
-        // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
-        const auto objects = RunClickSelect({uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)});
+        const auto objects = RunClickSelect(mouse_px);
         entt::entity intersected = entt::null;
         if (!objects.empty()) {
             auto it = find(objects, active_entity);
@@ -3061,6 +3218,13 @@ void Scene::RenderControls() {
                     interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode, int(mode));
                 }
                 if (interaction_mode_changed) SetInteractionMode(::InteractionMode(interaction_mode));
+                const bool wireframe_xray = ViewportShading == ViewportShadingMode::Wireframe;
+                bool xray_selection = SelectionXRay;
+                if (Checkbox("X-ray selection", &xray_selection)) SelectionXRay = xray_selection;
+                if (wireframe_xray) {
+                    SameLine();
+                    TextDisabled("(wireframe)");
+                }
                 if (InteractionMode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");

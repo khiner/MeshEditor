@@ -5,8 +5,9 @@
 #include "Bindless.glsl"
 
 struct SelectionNode {
-    uint ObjectId;
+    uvec2 Pixel;
     float Depth;
+    uint ObjectId;
     uint Next;
 };
 
@@ -25,6 +26,8 @@ layout(location = 0) flat in uint InstanceIndex;
 
 const uint INVALID_NODE = 0xffffffffu;
 
+layout(early_fragment_tests) in;
+
 void main() {
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
     // when using .length() or image atomics, even when the index is uniform.
@@ -39,8 +42,9 @@ void main() {
     }
 
     const uint objectId = ObjectIdBuffers[pc.ObjectIdSlot].Ids[pc.FirstInstance + InstanceIndex];
-    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = objectId;
+    SelectionBuffers[nodes_index].Nodes[idx].Pixel = uvec2(gl_FragCoord.xy);
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
+    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = objectId;
 
     const ivec2 coord = ivec2(gl_FragCoord.xy);
     const uint prev = imageAtomicExchange(HeadImages[head_index], coord, idx);

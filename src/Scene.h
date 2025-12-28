@@ -178,7 +178,7 @@ struct Scene {
     void ReleaseFaceIdBuffer(MeshFaceIdBuffer &);
     void PrepareDescriptors();
     void RecordRenderCommandBuffer();
-    void InvalidateCommandBuffer();
+    void InvalidateCommandBuffer() { CommandBufferDirty = true; }
 
     void OnCreateSelected(entt::registry &, entt::entity);
     void OnDestroySelected(entt::registry &, entt::entity);
@@ -245,6 +245,7 @@ private:
                                Box };
     SelectionMode SelectionMode{SelectionMode::Click};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
+    bool SelectionXRay{false};
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;
@@ -284,6 +285,7 @@ private:
     void RenderSelectionPassWith(const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn);
     void RenderEditSelectionPass(std::span<const ElementRange> ranges, he::Element element);
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
+    std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

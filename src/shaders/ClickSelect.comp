@@ -14,8 +14,9 @@ layout(push_constant) uniform PC {
 } pc;
 
 struct SelectionNode {
-    uint ObjectId;
+    uvec2 Pixel;
     float Depth;
+    uint ObjectId;
     uint Next;
 };
 

@@ -1,0 +1,86 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+// Bindless layout (set 0):
+// binding 6: storage buffers (SelectionNodes, ClickElementResult) via indices
+#define GROUP_SIZE 256
+layout(local_size_x = GROUP_SIZE) in;
+
+layout(push_constant) uniform PC {
+    uvec2 TargetPx;
+    uint NodeCount;
+    uint SelectionNodesIndex;
+    uint ClickResultIndex;
+} pc;
+
+struct SelectionNode {
+    uvec2 Pixel;
+    float Depth;
+    uint ObjectId;
+    uint Next;
+};
+
+struct ClickElementCandidate {
+    uint ObjectId;
+    float Depth;
+    uint DistanceSq;
+    uint Padding;
+};
+
+layout(set = 0, binding = 6, std430) buffer SelectionNodes {
+    SelectionNode Nodes[];
+} SelectionBuffers[];
+
+layout(set = 0, binding = 6, std430) buffer ClickElementResult {
+    ClickElementCandidate Candidates[];
+} ClickResults[];
+
+shared ClickElementCandidate SharedCandidates[GROUP_SIZE];
+
+bool IsBetter(ClickElementCandidate a, ClickElementCandidate b) {
+    if (a.ObjectId == 0u) return false;
+    if (b.ObjectId == 0u) return true;
+    if (a.DistanceSq < b.DistanceSq) return true;
+    if (a.DistanceSq > b.DistanceSq) return false;
+    return a.Depth < b.Depth;
+}
+
+void main() {
+    const uint idx = gl_GlobalInvocationID.x;
+    const uint local = gl_LocalInvocationID.x;
+
+    ClickElementCandidate best;
+    best.ObjectId = 0u;
+    best.Depth = 1.0;
+    best.DistanceSq = 0xffffffffu;
+    best.Padding = 0u;
+
+    if (idx < pc.NodeCount) {
+        const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
+        if (node.ObjectId != 0u) {
+            const int dx = int(node.Pixel.x) - int(pc.TargetPx.x);
+            const int dy = int(node.Pixel.y) - int(pc.TargetPx.y);
+            best.ObjectId = node.ObjectId;
+            best.Depth = node.Depth;
+            best.DistanceSq = uint(dx * dx + dy * dy);
+        }
+    }
+
+    SharedCandidates[local] = best;
+    barrier();
+
+    for (uint offset = GROUP_SIZE / 2; offset > 0; offset >>= 1) {
+        if (local < offset) {
+            const ClickElementCandidate other = SharedCandidates[local + offset];
+            const ClickElementCandidate current = SharedCandidates[local];
+            if (IsBetter(other, current)) {
+                SharedCandidates[local] = other;
+            }
+        }
+        barrier();
+    }
+
+    if (local == 0) {
+        ClickResults[pc.ClickResultIndex].Candidates[gl_WorkGroupID.x] = SharedCandidates[0];
+    }
+}
