@@ -759,10 +759,8 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, entt::ent
         };
 
     while (!DspGenerator) {}
-    DspGenerator->SetMessage("Generating tetrahedral mesh...");
     const auto tets = GenerateTets(mesh, R.get<Scale>(e).Value, {.PreserveSurface = true, .Quality = info.QualityTets});
 
-    DspGenerator->SetMessage("Generating modal model...");
     const auto *sample_object = R.try_get<const SampleSoundObject>(e);
     auto fundamental = sample_object ? std::optional{GetPeakFrequencies(ComputeFft(sample_object->GetFrames()), 10).front()} : std::nullopt;
     if (fundamental && *fundamental > 10'000) fundamental = std::nullopt; // Arbitrary high frequency limit.

@@ -26,8 +26,8 @@ struct Worker {
             const auto ws = GetWindowSize();
             const float spinner_size = std::min(ws.x, ws.y) / 2;
             const ImVec2 spinner_pos = (ws - ImVec2{spinner_size, spinner_size}) / 2;
-            SetCursorPos({(ws.x - CalcTextSize(Message.data()).x) / 2, spinner_pos.y - GetTextLineHeight()});
-            TextUnformatted(Message.data());
+            SetCursorPos({(ws.x - CalcTextSize(Title.data()).x) / 2, spinner_pos.y - GetTextLineHeight()});
+            TextUnformatted(Title.data());
             Spacing();
             Spacing();
             SetCursorPosX(spinner_pos.x);
@@ -43,9 +43,7 @@ struct Worker {
         return {};
     }
 
-    void SetMessage(std::string message) { Message = std::move(message); }
-
 private:
-    std::string Title, Message;
+    std::string Title;
     std::future<Result> ResultFuture;
 };
