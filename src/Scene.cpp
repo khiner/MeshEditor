@@ -950,36 +950,30 @@ struct ScenePipelines {
 };
 
 struct Scene::SelectionSlotHandles {
-    explicit SelectionSlotHandles(DescriptorSlots &slots) {
-        HeadImage = slots.Allocate(SlotType::Image);
-        SelectionNodes = slots.Allocate(SlotType::Buffer);
-        SelectionCounter = slots.Allocate(SlotType::Buffer);
-        ClickResult = slots.Allocate(SlotType::Buffer);
-        BoxResult = slots.Allocate(SlotType::Buffer);
-        ObjectIdSampler = slots.Allocate(SlotType::Sampler);
-        DepthSampler = slots.Allocate(SlotType::Sampler);
-        SilhouetteSampler = slots.Allocate(SlotType::Sampler);
+    explicit SelectionSlotHandles(DescriptorSlots &slots)
+        : Slots(slots),
+          HeadImage(slots.Allocate(SlotType::Image)),
+          SelectionNodes(slots.Allocate(SlotType::Buffer)),
+          SelectionCounter(slots.Allocate(SlotType::Buffer)),
+          ClickResult(slots.Allocate(SlotType::Buffer)),
+          BoxResult(slots.Allocate(SlotType::Buffer)),
+          ObjectIdSampler(slots.Allocate(SlotType::Sampler)),
+          DepthSampler(slots.Allocate(SlotType::Sampler)),
+          SilhouetteSampler(slots.Allocate(SlotType::Sampler)) {}
+
+    ~SelectionSlotHandles() {
+        Slots.Release(SlotType::Image, HeadImage);
+        Slots.Release(SlotType::Buffer, SelectionNodes);
+        Slots.Release(SlotType::Buffer, SelectionCounter);
+        Slots.Release(SlotType::Buffer, ClickResult);
+        Slots.Release(SlotType::Buffer, BoxResult);
+        Slots.Release(SlotType::Sampler, ObjectIdSampler);
+        Slots.Release(SlotType::Sampler, DepthSampler);
+        Slots.Release(SlotType::Sampler, SilhouetteSampler);
     }
 
-    uint32_t HeadImage{InvalidSlot};
-    uint32_t SelectionNodes{InvalidSlot};
-    uint32_t SelectionCounter{InvalidSlot};
-    uint32_t ClickResult{InvalidSlot};
-    uint32_t BoxResult{InvalidSlot};
-    uint32_t ObjectIdSampler{InvalidSlot};
-    uint32_t DepthSampler{InvalidSlot};
-    uint32_t SilhouetteSampler{InvalidSlot};
-
-    void Release(DescriptorSlots &slots) {
-        if (HeadImage != InvalidSlot) slots.Release(SlotType::Image, HeadImage);
-        if (SelectionNodes != InvalidSlot) slots.Release(SlotType::Buffer, SelectionNodes);
-        if (SelectionCounter != InvalidSlot) slots.Release(SlotType::Buffer, SelectionCounter);
-        if (ClickResult != InvalidSlot) slots.Release(SlotType::Buffer, ClickResult);
-        if (BoxResult != InvalidSlot) slots.Release(SlotType::Buffer, BoxResult);
-        if (ObjectIdSampler != InvalidSlot) slots.Release(SlotType::Sampler, ObjectIdSampler);
-        if (DepthSampler != InvalidSlot) slots.Release(SlotType::Sampler, DepthSampler);
-        if (SilhouetteSampler != InvalidSlot) slots.Release(SlotType::Sampler, SilhouetteSampler);
-    }
+    DescriptorSlots &Slots;
+    uint32_t HeadImage, SelectionNodes, SelectionCounter, ClickResult, BoxResult, ObjectIdSampler, DepthSampler, SilhouetteSampler;
 };
 
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
@@ -1046,9 +1040,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     }
 }
 
-Scene::~Scene() {
-    if (Slots && SelectionHandles) SelectionHandles->Release(*Slots);
-}
+Scene::~Scene() = default;
 
 void Scene::LoadIcons(vk::Device device) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
