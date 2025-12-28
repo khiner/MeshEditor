@@ -104,14 +104,12 @@ inline vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
 
 constexpr vec4 ActiveColor{1, 1, 1, 1};
 constexpr vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select
-constexpr vec4 HighlightedColor{0, 0.647, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Bevel
 constexpr vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal
 constexpr vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
 constexpr vec4 UnselectedVertexEditColor{0, 0, 0, 1}; // Unselected vertex in edit mode
 constexpr float NormalIndicatorLengthScale{0.25};
 constexpr uint32_t ElementStateSelected{1u << 0};
 constexpr uint32_t ElementStateActive{1u << 1};
-constexpr uint32_t ElementStateHighlighted{1u << 2};
 
 // Create vertices for faces (with optional smooth/flat shading) or edges
 std::vector<Vertex3D> CreateFaceVertices(

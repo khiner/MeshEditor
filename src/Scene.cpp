@@ -65,7 +65,6 @@ struct SceneUBO {
     vec4 VertexUnselectedColor{0, 0, 0, 0};
     vec4 SelectedColor{0, 0, 0, 0};
     vec4 ActiveColor{0, 0, 0, 0};
-    vec4 HighlightedColor{0, 0, 0, 0};
 };
 
 enum class ShaderPipelineType {
@@ -143,11 +142,6 @@ struct MeshSelection {
     Element Element{Element::None};
     std::vector<uint32_t> Handles;
     std::optional<uint32_t> ActiveHandle; // Most recently selected element (always in Handles if set)
-};
-
-// Component: Vertices highlighted for rendering (in addition to selected elements)
-struct MeshHighlightedVertices {
-    std::unordered_set<VH> Vertices;
 };
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
@@ -1081,7 +1075,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
-
     R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
     R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
     R.on_destroy<Excitable>().connect<&Scene::OnDestroyExcitable>(*this);
@@ -1161,10 +1154,10 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
 void Scene::OnCreateExcitable(entt::registry &r, entt::entity e) {
     InteractionModes.insert(InteractionMode::Excite);
     SetInteractionMode(InteractionMode::Excite);
-    UpdateHighlightedVertices(r.get<MeshInstance>(e).MeshEntity, r.get<Excitable>(e));
+    UpdateRenderBuffers(r.get<MeshInstance>(e).MeshEntity);
 }
 void Scene::OnUpdateExcitable(entt::registry &r, entt::entity e) {
-    UpdateHighlightedVertices(r.get<MeshInstance>(e).MeshEntity, r.get<Excitable>(e));
+    UpdateRenderBuffers(r.get<MeshInstance>(e).MeshEntity);
 }
 void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
     // The last excitable entity is being destroyed.
@@ -1172,9 +1165,9 @@ void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
         if (InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
         InteractionModes.erase(InteractionMode::Excite);
     }
-
-    static constexpr Excitable EmptyExcitable{};
-    UpdateHighlightedVertices(e, EmptyExcitable);
+    if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
+        UpdateRenderBuffers(mesh_instance->MeshEntity);
+    }
 }
 
 void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
@@ -1203,9 +1196,16 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
          },
          .Select = MeshCreateInfo::SelectBehavior::None}
     );
+    UpdateRenderBuffers(mesh_entity);
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
-    Destroy(r.get<ExcitedVertex>(e).IndicatorEntity);
+    const auto indicator = r.get<ExcitedVertex>(e).IndicatorEntity;
+    if (indicator != entt::null) {
+        Destroy(indicator);
+    }
+    if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
+        UpdateRenderBuffers(mesh_instance->MeshEntity);
+    }
 }
 
 void Scene::OnDestroyMeshBuffers(entt::registry &r, entt::entity e) {
@@ -1331,7 +1331,6 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
         R.emplace<MeshSelection>(mesh_entity);
-        R.emplace<MeshHighlightedVertices>(mesh_entity);
         R.emplace<ModelsBuffer>(
             mesh_entity,
             mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer},
@@ -1560,8 +1559,8 @@ void Scene::SetInteractionMode(::InteractionMode mode) {
     InteractionMode = mode;
     for (const auto &entity : R.view<Mesh>()) UpdateRenderBuffers(entity);
     const auto e = FindActiveEntity(R);
-    if (auto excitable = R.try_get<Excitable>(e)) {
-        UpdateHighlightedVertices(e, *excitable);
+    if (e != entt::null && R.all_of<Excitable>(e)) {
+        UpdateRenderBuffers(R.get<MeshInstance>(e).MeshEntity);
     }
 }
 void Scene::SetEditMode(Element mode) {
@@ -1604,26 +1603,43 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         std::unordered_set<FH> selected_faces;
         const auto &selection = R.get<MeshSelection>(e);
         const bool edit_mode = InteractionMode == InteractionMode::Edit;
-        const auto element = edit_mode && selection.Element == EditMode ? selection.Element : Element::None;
-        if (element == Element::Vertex) {
-            for (auto h : selection.Handles) {
-                selected_vertices.emplace(h);
+        const bool excite_mode = InteractionMode == InteractionMode::Excite;
+        Element element = Element::None;
+        std::optional<uint32_t> active_handle;
+        if (excite_mode) {
+            element = Element::Vertex;
+            for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
+                if (mi.MeshEntity != e) continue;
+                for (const auto vertex : excitable.ExcitableVertices) {
+                    selected_vertices.emplace(VH(vertex));
+                }
+                if (R.all_of<ExcitedVertex>(entity)) {
+                    active_handle = R.get<ExcitedVertex>(entity).Vertex;
+                }
+                break;
             }
-        } else if (element == Element::Edge) {
-            for (auto h : selection.Handles) {
-                selected_edges.emplace(h);
+        } else if (edit_mode && selection.Element == EditMode) {
+            element = selection.Element;
+            if (element == Element::Vertex) {
+                for (auto h : selection.Handles) {
+                    selected_vertices.emplace(h);
+                }
+            } else if (element == Element::Edge) {
+                for (auto h : selection.Handles) {
+                    selected_edges.emplace(h);
+                }
+            } else if (element == Element::Face) {
+                for (auto h : selection.Handles) {
+                    selected_faces.emplace(h);
+                    for (const auto heh : mesh->fh_range(FH{h})) selected_edges.emplace(mesh->GetEdge(heh));
+                }
             }
-        } else if (element == Element::Face) {
-            for (auto h : selection.Handles) {
-                selected_faces.emplace(h);
-                for (const auto heh : mesh->fh_range(FH{h})) selected_edges.emplace(mesh->GetEdge(heh));
-            }
+            active_handle = selection.ActiveHandle;
         }
 
         auto face_states = MakeElementStates(mesh->FaceCount());
         auto edge_states = MakeElementStates(mesh->EdgeCount() * 2);
         auto vertex_states = MakeElementStates(mesh->VertexCount());
-        const auto active_handle = element == selection.Element ? selection.ActiveHandle : std::nullopt;
         if (element == Element::Face) {
             for (const auto fh : selected_faces) face_states[*fh] |= MeshRender::ElementStateSelected;
             if (active_handle) face_states[*active_handle] |= MeshRender::ElementStateActive;
@@ -1658,8 +1674,6 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
             for (const auto vh : selected_vertices) vertex_states[*vh] |= MeshRender::ElementStateSelected;
             if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
         }
-
-        for (const auto vh : R.get<MeshHighlightedVertices>(e).Vertices) vertex_states[*vh] |= MeshRender::ElementStateHighlighted;
 
         auto &states = R.get<MeshElementStateBuffers>(e);
         states.Faces.Buffer.Update(as_bytes(face_states));
@@ -1784,8 +1798,15 @@ void Scene::RecordRenderCommandBuffer() {
         for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) selected_mesh_entities.emplace(mi.MeshEntity);
 
         const bool is_edit_mode = InteractionMode == InteractionMode::Edit;
+        const bool is_excite_mode = InteractionMode == InteractionMode::Excite;
         const bool show_solid = ViewportShading == ViewportShadingMode::Solid;
         const bool show_wireframe = ViewportShading == ViewportShadingMode::Wireframe;
+        if (is_excite_mode) {
+            for (const auto [_, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
+                (void)excitable;
+                selected_mesh_entities.emplace(mi.MeshEntity);
+            }
+        }
 
         // Solid faces
         if (show_solid) {
@@ -1799,8 +1820,8 @@ void Scene::RecordRenderCommandBuffer() {
             }
         }
 
-        // Wireframe edges (wireframe mode or overlay for selected meshes in edit mode)
-        if (show_wireframe || is_edit_mode) {
+        // Wireframe edges (wireframe mode or overlay for selected/excitable meshes in edit/excite mode)
+        if (show_wireframe || is_edit_mode || is_excite_mode) {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Line);
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
@@ -1812,18 +1833,17 @@ void Scene::RecordRenderCommandBuffer() {
             }
         }
 
-        // Vertex points (selected meshes in vertex edit mode, or highlighted vertices in excite mode)
-        const bool show_vertex_points = (is_edit_mode && EditMode == Element::Vertex) || InteractionMode == InteractionMode::Excite;
+        // Vertex points (selected meshes in vertex edit mode, or excitable meshes in excite mode)
+        const bool show_vertex_points = (is_edit_mode && EditMode == Element::Vertex) || is_excite_mode;
         if (show_vertex_points) {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Point);
-            for (auto [entity, mesh_buffers, models, state_buffers, highlighted] :
-                 R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers, MeshHighlightedVertices>().each()) {
+            for (auto [entity, mesh_buffers, models, state_buffers] :
+                 R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
                 const bool draw_selected = is_edit_mode && EditMode == Element::Vertex && selected_mesh_entities.contains(entity);
-                const bool draw_highlighted = InteractionMode == InteractionMode::Excite && !highlighted.Vertices.empty();
-                if (!draw_selected && !draw_highlighted) continue;
+                const bool draw_excite = is_excite_mode && selected_mesh_entities.contains(entity);
+                if (!draw_selected && !draw_excite) continue;
                 auto pc = make_pc(mesh_buffers.Vertices, models);
                 pc.ElementStateSlot = state_buffers.Vertices.Slot;
-                pc.PointFlags = InteractionMode == InteractionMode::Excite ? 1u : 0u;
                 Draw(cb, pipeline, mesh_buffers.Vertices, models, pc);
             }
         }
@@ -1889,23 +1909,10 @@ void Scene::UpdateSceneUBO() {
         .EdgeColor = MeshRender::EdgeColor,
         .VertexUnselectedColor = MeshRender::UnselectedVertexEditColor,
         .SelectedColor = MeshRender::SelectedColor,
-        .ActiveColor = MeshRender::ActiveColor,
-        .HighlightedColor = MeshRender::HighlightedColor
+        .ActiveColor = MeshRender::ActiveColor
     };
     UniqueBuffers->SceneUBO.Update(as_bytes(scene_ubo));
     InvalidateCommandBuffer();
-}
-
-void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable) {
-    if (auto *highlighted = R.try_get<MeshHighlightedVertices>(e)) {
-        highlighted->Vertices.clear();
-        if (InteractionMode == InteractionMode::Excite) {
-            for (const auto vertex : excitable.ExcitableVertices) {
-                highlighted->Vertices.emplace(VH(vertex));
-            }
-        }
-        UpdateRenderBuffers(e);
-    }
 }
 
 void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
@@ -2573,7 +2580,7 @@ void Scene::Interact() {
 
     // Handle mouse input.
     if (!IsMouseDown(ImGuiMouseButton_Left)) {
-        R.remove<ExcitedVertex>(active_entity);
+        R.clear<ExcitedVertex>();
     }
     if (TransformGizmo::IsUsing()) {
         // TransformGizmo overrides this mouse cursor during some actions - this is a default.
@@ -2737,6 +2744,7 @@ void Scene::Interact() {
                         }
                     }
                     if (nearest_excite_vertex) {
+                        R.remove<ExcitedVertex>(hit_entity);
                         R.emplace<ExcitedVertex>(hit_entity, *nearest_excite_vertex, 1.f);
                     }
                 }

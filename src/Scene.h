@@ -182,7 +182,6 @@ struct Scene {
 
     void OnCreateSelected(entt::registry &, entt::entity);
     void OnDestroySelected(entt::registry &, entt::entity);
-
     void OnCreateExcitable(entt::registry &, entt::entity);
     void OnUpdateExcitable(entt::registry &, entt::entity);
     void OnDestroyExcitable(entt::registry &, entt::entity);
@@ -293,6 +292,5 @@ private:
     // VK buffer update methods
     void UpdateSceneUBO();
     void UpdateEdgeColors();
-    void UpdateHighlightedVertices(entt::entity, const Excitable &);
     void UpdateEntitySelectionOverlays(entt::entity);
 };

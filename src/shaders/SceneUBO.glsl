@@ -15,5 +15,4 @@ layout(set = 0, binding = 0) uniform SceneUBO {
     vec4 VertexUnselectedColor;
     vec4 SelectedColor;
     vec4 ActiveColor;
-    vec4 HighlightedColor;
 } Scene;

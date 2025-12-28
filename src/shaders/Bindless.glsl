@@ -40,7 +40,6 @@ layout(set = 0, binding = 7, scalar) readonly buffer ObjectIdBuffer {
 const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
-const uint STATE_HIGHLIGHTED = 1u << 2;
 
 layout(push_constant) uniform PushConstants {
     uint VertexSlot;

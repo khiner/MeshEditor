@@ -584,8 +584,10 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
             (model == SoundObjectModel::Modal && (!recording || recording->Complete()));
         if (!can_excite) BeginDisabled();
         Button("Excite");
-        if (IsItemActivated()) R.emplace<ExcitedVertex>(e, excitable->SelectedVertex(), 1.f);
-        else if (IsItemDeactivated()) R.remove<ExcitedVertex>(e);
+        if (IsItemActivated()) {
+            R.remove<ExcitedVertex>(e);
+            R.emplace<ExcitedVertex>(e, excitable->SelectedVertex(), 1.f);
+        } else if (IsItemDeactivated()) R.remove<ExcitedVertex>(e);
         if (!can_excite) EndDisabled();
     }
 

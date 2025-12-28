@@ -19,22 +19,11 @@ void main() {
     }
     const bool is_selected = (state & STATE_SELECTED) != 0u;
     const bool is_active = (state & STATE_ACTIVE) != 0u;
-    const bool is_highlighted = (state & STATE_HIGHLIGHTED) != 0u;
-    const bool highlight_only = (pc.PointFlags & 1u) != 0u;
-    if (highlight_only && !is_highlighted) {
-        WorldNormal = vec3(0);
-        WorldPosition = vec3(0);
-        Color = vec4(0);
-        gl_Position = vec4(2, 2, 2, 1); // Off-screen
-        return;
-    }
-
     WorldNormal = mat3(world.MInv) * vert.Normal;
     WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
     Color = is_active ? Scene.ActiveColor :
         is_selected  ? Scene.SelectedColor :
-        is_highlighted ? Scene.HighlightedColor :
-                         Scene.VertexUnselectedColor;
+                       Scene.VertexUnselectedColor;
     gl_Position = Scene.Proj * Scene.View * world.M * vec4(vert.Position, 1.0);
     gl_PointSize = 6.0;
 }
