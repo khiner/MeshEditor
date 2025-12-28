@@ -168,10 +168,10 @@ struct Scene {
 
     void UpdateRenderBuffers(entt::entity);
     void UpdateSelectionDescriptors();
-    void UpdateRenderBuffer(RenderBuffers &);
-    void UpdateModelBuffer(ModelsBuffer &);
-    void UpdateElementStateBuffer(ElementStateBuffer &);
-    void UpdateFaceIdBuffer(MeshFaceIdBuffer &);
+    void EnsureRenderBufferSlot(RenderBuffers &);
+    void EnsureModelBufferSlot(ModelsBuffer &);
+    void EnsureElementStateBufferSlot(ElementStateBuffer &);
+    void EnsureFaceIdBufferSlot(MeshFaceIdBuffer &);
     void ReleaseRenderBuffer(RenderBuffers &);
     void ReleaseModelBuffer(ModelsBuffer &);
     void ReleaseElementStateBuffer(ElementStateBuffer &);
