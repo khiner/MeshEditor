@@ -178,7 +178,7 @@ struct Scene {
     void ReleaseFaceIdBuffer(MeshFaceIdBuffer &);
     void PrepareDescriptors();
     void RecordRenderCommandBuffer();
-    void InvalidateCommandBuffer();
+    void InvalidateCommandBuffer() { CommandBufferDirty = true; }
 
     void OnCreateSelected(entt::registry &, entt::entity);
     void OnDestroySelected(entt::registry &, entt::entity);

@@ -1785,10 +1785,6 @@ void Scene::RecordRenderCommandBuffer() {
     cb.end();
 }
 
-void Scene::InvalidateCommandBuffer() {
-    CommandBufferDirty = true;
-}
-
 void Scene::UpdateEdgeColors() {
     MeshRender::EdgeColor = ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
     UpdateSceneUBO();
@@ -1828,7 +1824,6 @@ void Scene::UpdateHighlightedVertices(entt::entity e, const Excitable &excitable
     }
 }
 
-// todo selection overlays for _only selected instances_ (currently all instances of selected meshes)
 void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
     const auto &mesh = R.get<const Mesh>(mesh_entity);
