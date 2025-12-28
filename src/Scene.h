@@ -285,6 +285,7 @@ private:
     void RenderEditSelectionPass(std::span<const ElementRange> ranges, he::Element element);
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
     std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);
+    std::optional<uint32_t> RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

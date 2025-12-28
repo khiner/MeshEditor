@@ -10,7 +10,6 @@
 #include "Shader.h"
 #include "SvgResource.h"
 #include "mesh/Arrow.h"
-#include "mesh/MeshIntersection.h"
 #include "mesh/MeshRender.h"
 #include "mesh/Primitives.h"
 
@@ -93,16 +92,16 @@ struct DrawPushConstants {
     uint32_t VertexSlot;
     uint32_t IndexSlot;
     uint32_t ModelSlot;
-    uint32_t FirstInstance;
-    uint32_t ObjectIdSlot; // Slot for per-instance ObjectId buffer (InvalidSlot if unused)
-    uint32_t VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
-    uint32_t SelectionNodesSlot;
-    uint32_t SelectionCounterSlot;
-    uint32_t ElementIdOffset;
-    uint32_t ElementStateSlot;
-    uint32_t PointFlags;
-    uint32_t Padding0;
-    vec4 LineColor;
+    uint32_t FirstInstance{0};
+    uint32_t ObjectIdSlot{InvalidSlot};
+    uint32_t VertexCountOrHeadImageSlot{0};
+    uint32_t SelectionNodesSlot{0};
+    uint32_t SelectionCounterSlot{0};
+    uint32_t ElementIdOffset{0};
+    uint32_t ElementStateSlot{InvalidSlot};
+    uint32_t PointFlags{0};
+    uint32_t Padding0{0};
+    vec4 LineColor{0};
 };
 static_assert(sizeof(DrawPushConstants) % 16 == 0, "DrawPushConstants must be 16-byte aligned.");
 
@@ -1988,20 +1987,6 @@ constexpr std::string Capitalize(std::string_view str) {
     return result;
 }
 
-// We already cache the transpose of the inverse transform for all models,
-// so save some compute by using that.
-ray WorldToLocal(const ray &r, const mat4 &world_inv_transp) {
-    const auto world_inv = glm::transpose(world_inv_transp);
-    return {{world_inv * vec4{r.o, 1}}, glm::normalize(vec3{world_inv * vec4{r.d, 0}})};
-}
-
-// Nearest intersection across all meshes.
-struct EntityIntersection {
-    entt::entity Entity;
-    Intersection Intersection;
-    vec3 Position;
-};
-
 void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
     const auto &g = *GImGui;
     ImVec2 mouse_delta{0, 0};
@@ -2054,8 +2039,7 @@ void Scene::RenderSelectionPass() {
             auto &render_buffers = mesh_buffers.Faces;
             const DrawPushConstants pc{
                 render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, models.ObjectIdSlot,
-                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0,
-                InvalidSlot, 0, 0, vec4{0, 0, 0, 0}
+                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter
             };
             Draw(cb, pipeline, render_buffers, models, pc);
         }
@@ -2144,6 +2128,47 @@ RenderBuffers &SelectionRenderBuffersForElement(MeshBuffers &mesh_buffers, Eleme
     if (element == Element::Edge) return mesh_buffers.Edges;
     return mesh_buffers.Faces;
 }
+
+// After rendering elements to selection buffer, dispatch compute shader to find the nearest element to mouse_px.
+// Returns 0-based element index, or nullopt if no element found.
+std::optional<uint32_t> FindNearestSelectionElement(
+    const SceneUniqueBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
+    vk::Queue queue, vk::Fence fence, vk::Device device,
+    uint32_t selection_nodes_slot, uint32_t click_result_slot, glm::uvec2 mouse_px, uint32_t max_element_id
+) {
+    if (!HasSelectionNodes(buffers.SelectionCounterBuffer)) return std::nullopt;
+
+    const auto *counters = reinterpret_cast<const SelectionCounters *>(buffers.SelectionCounterBuffer.GetData().data());
+    const uint32_t node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
+    if (node_count == 0) return std::nullopt;
+
+    const uint32_t group_count = (node_count + SceneUniqueBuffers::ClickElementGroupSize - 1) / SceneUniqueBuffers::ClickElementGroupSize;
+    if (group_count == 0) return std::nullopt;
+
+    RunSelectionCompute(
+        cb, queue, fence, device, compute,
+        ClickSelectElementPushConstants{
+            .TargetPx = mouse_px,
+            .NodeCount = node_count,
+            .SelectionNodesIndex = selection_nodes_slot,
+            .ClickResultIndex = click_result_slot,
+        },
+        [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); }
+    );
+
+    const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(buffers.ClickElementResultBuffer.GetData().data());
+    ClickElementCandidate best{.ObjectId = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max(), .Padding = 0};
+    for (uint32_t i = 0; i < group_count; ++i) {
+        const auto &candidate = candidates[i];
+        if (candidate.ObjectId == 0) continue;
+        if (candidate.DistanceSq < best.DistanceSq || (candidate.DistanceSq == best.DistanceSq && candidate.Depth < best.Depth)) {
+            best = candidate;
+        }
+    }
+
+    if (best.ObjectId == 0 || best.ObjectId > max_element_id) return std::nullopt;
+    return best.ObjectId - 1;
+}
 } // namespace
 
 void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element) {
@@ -2158,50 +2183,19 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             for (const auto &range : ranges) {
                 auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
                 auto &models = R.get<ModelsBuffer>(range.MeshEntity);
-                const auto &render_buffers = mesh_buffers.Faces;
-                const DrawPushConstants pc{
-                    render_buffers.VertexSlot,
-                    render_buffers.IndexSlot,
-                    models.Slot,
-                    0,
-                    InvalidSlot,
-                    InvalidSlot,
-                    0,
-                    0,
-                    0,
-                    InvalidSlot,
-                    0,
-                    0,
-                    vec4{0, 0, 0, 0}
-                };
-                Draw(cb, depth_pipeline, render_buffers, models, pc);
+                Draw(cb, depth_pipeline, mesh_buffers.Faces, models, {mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot});
             }
         }
 
         const auto &pipeline = renderer.Bind(cb, SelectionPipelineForElement(element, xray_selection));
-
         for (const auto &range : ranges) {
             auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
             auto &models = R.get<ModelsBuffer>(range.MeshEntity);
-            auto &face_ids = R.get<MeshFaceIdBuffer>(range.MeshEntity);
-
             auto &render_buffers = SelectionRenderBuffersForElement(mesh_buffers, element);
-            const uint32_t element_slot = element == Element::Face ? face_ids.Slot : InvalidSlot;
-
+            const uint32_t element_slot = element == Element::Face ? R.get<MeshFaceIdBuffer>(range.MeshEntity).Slot : InvalidSlot;
             const DrawPushConstants pc{
-                render_buffers.VertexSlot,
-                render_buffers.IndexSlot,
-                models.Slot,
-                0,
-                element_slot,
-                SelectionHandles->HeadImage,
-                SelectionHandles->SelectionNodes,
-                SelectionHandles->SelectionCounter,
-                range.Offset,
-                InvalidSlot,
-                0,
-                0,
-                vec4{0, 0, 0, 0}
+                render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, element_slot,
+                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, range.Offset
             };
             Draw(cb, pipeline, render_buffers, models, pc);
         }
@@ -2269,47 +2263,48 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
 
     const ElementRange range{mesh_entity, 0, element_count};
     RenderEditSelectionPass(std::span{&range, 1}, element);
-    if (!HasSelectionNodes(UniqueBuffers->SelectionCounterBuffer)) return std::nullopt;
-
-    const auto *counters = reinterpret_cast<const SelectionCounters *>(UniqueBuffers->SelectionCounterBuffer.GetData().data());
-    const uint32_t node_count = std::min<uint32_t>(counters->Count, SceneUniqueBuffers::MaxSelectionNodes);
-    if (node_count == 0) return std::nullopt;
-
-    const uint32_t group_count = (node_count + SceneUniqueBuffers::ClickElementGroupSize - 1) / SceneUniqueBuffers::ClickElementGroupSize;
-    if (group_count == 0) return std::nullopt;
-
-    auto cb = *ClickCommandBuffer;
-    const auto &compute = Pipelines->ClickSelectElement;
-    RunSelectionCompute(
-        cb, Vk.Queue, *TransferFence, Vk.Device, compute,
-        ClickSelectElementPushConstants{
-            .TargetPx = mouse_px,
-            .NodeCount = node_count,
-            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
-            .ClickResultIndex = SelectionHandles->ClickElementResult,
-        },
-        [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); }
-    );
-
-    const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(UniqueBuffers->ClickElementResultBuffer.GetData().data());
-    ClickElementCandidate best{
-        .ObjectId = 0,
-        .Depth = 1.0f,
-        .DistanceSq = std::numeric_limits<uint32_t>::max(),
-        .Padding = 0
-    };
-
-    for (uint32_t i = 0; i < group_count; ++i) {
-        const auto &candidate = candidates[i];
-        if (candidate.ObjectId == 0) continue;
-        if (candidate.DistanceSq < best.DistanceSq ||
-            (candidate.DistanceSq == best.DistanceSq && candidate.Depth < best.Depth)) {
-            best = candidate;
-        }
+    if (const auto index = FindNearestSelectionElement(
+            *UniqueBuffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
+            Vk.Queue, *TransferFence, Vk.Device,
+            SelectionHandles->SelectionNodes, SelectionHandles->ClickElementResult, mouse_px, element_count
+        )) {
+        return AnyHandle{element, *index};
     }
+    return std::nullopt;
+}
 
-    if (best.ObjectId == 0 || best.ObjectId > element_count) return std::nullopt;
-    return AnyHandle{element, best.ObjectId - 1};
+std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px) {
+    if (!R.all_of<Excitable>(instance_entity)) return std::nullopt;
+
+    const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
+    const auto &mesh = R.get<Mesh>(mesh_entity);
+    const uint32_t vertex_count = mesh.VertexCount();
+    if (vertex_count == 0) return std::nullopt;
+
+    auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
+    auto &models = R.get<ModelsBuffer>(mesh_entity);
+    auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
+    const auto model_index = R.get<RenderInstance>(instance_entity).BufferIndex;
+
+    // Render vertices to selection buffer with depth occlusion.
+    // Pass ElementStateSlot so shader filters to only selected (excitable) vertices.
+    RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
+        // First pass: render faces to depth buffer for occlusion.
+        const auto &depth_pipeline = renderer.Bind(cb, SPT::SelectionDepthOnly);
+        DrawPushConstants pc{mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot};
+        Draw(cb, depth_pipeline, mesh_buffers.Faces, models, pc, model_index);
+
+        // Second pass: render vertices to selection buffer, filtered to selected (excitable) only.
+        const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);
+        pc = {mesh_buffers.Vertices.VertexSlot, mesh_buffers.Vertices.IndexSlot, models.Slot, 0, InvalidSlot, SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0, state_buffers.Vertices.Slot};
+        Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index);
+    });
+
+    return FindNearestSelectionElement(
+        *UniqueBuffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
+        Vk.Queue, *TransferFence, Vk.Device,
+        SelectionHandles->SelectionNodes, SelectionHandles->ClickElementResult, mouse_px, vertex_count
+    );
 }
 
 // Returns entities hit at mouse_px, sorted by depth (near-to-far), with duplicates removed.
@@ -2676,9 +2671,6 @@ void Scene::Interact() {
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
 
     // Handle mouse selection.
-    const auto size = GetContentRegionAvail();
-    const auto mouse_pos = (GetMousePos() - GetCursorScreenPos()) / size;
-    const auto mouse_ray_ws = Camera.NdcToWorldRay({2 * mouse_pos.x - 1, 1 - 2 * mouse_pos.y}, size.x / size.y);
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
     const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)};
@@ -2725,28 +2717,12 @@ void Scene::Interact() {
             Select(intersected);
         }
     } else if (InteractionMode == InteractionMode::Excite) {
-        // Excite the nearest entity if it's excitable.
+        // Excite the nearest excitable vertex using screen-space selection.
         if (const auto hit_entities = RunClickSelect(mouse_px); !hit_entities.empty()) {
-            if (const auto hit_entity = hit_entities.front(); const auto *excitable = R.try_get<Excitable>(hit_entity)) {
-                const auto mesh_entity = R.get<MeshInstance>(hit_entity).MeshEntity;
-                const auto &mesh = R.get<const Mesh>(mesh_entity);
-                const auto local_ray = WorldToLocal(mouse_ray_ws, R.get<WorldMatrix>(hit_entity).MInv);
-                if (const auto intersection = MeshIntersection::Intersect(R.get<const BVH>(mesh_entity), mesh, local_ray)) {
-                    // Find the nearest excitable vertex.
-                    std::optional<uint> nearest_excite_vertex;
-                    float min_dist_sq = std::numeric_limits<float>::max();
-                    const auto p = local_ray(intersection->Distance);
-                    for (uint excite_vertex : excitable->ExcitableVertices) {
-                        const auto diff = p - mesh.GetPosition(VH(excite_vertex));
-                        if (float dist_sq = glm::dot(diff, diff); dist_sq < min_dist_sq) {
-                            min_dist_sq = dist_sq;
-                            nearest_excite_vertex = excite_vertex;
-                        }
-                    }
-                    if (nearest_excite_vertex) {
-                        R.remove<ExcitedVertex>(hit_entity);
-                        R.emplace<ExcitedVertex>(hit_entity, *nearest_excite_vertex, 1.f);
-                    }
+            if (const auto hit_entity = hit_entities.front(); R.all_of<Excitable>(hit_entity)) {
+                if (const auto vertex = RunClickSelectExcitableVertex(hit_entity, mouse_px)) {
+                    R.remove<ExcitedVertex>(hit_entity);
+                    R.emplace<ExcitedVertex>(hit_entity, *vertex, 1.f);
                 }
             }
         }
