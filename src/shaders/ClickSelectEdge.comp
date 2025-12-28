@@ -1,0 +1,117 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+// Single workgroup iterates all edges
+layout(local_size_x = 1) in;
+
+#include "SceneUBO.glsl"
+
+struct Vertex {
+    vec3 Position;
+    vec3 Normal;
+};
+
+struct WorldMatrix {
+    mat4 M;
+    mat4 MInv;
+};
+
+layout(set = 0, binding = 3, scalar) readonly buffer VertexBuffer {
+    Vertex Vertices[];
+} VertexBuffers[];
+
+layout(set = 0, binding = 4, scalar) readonly buffer IndexBuffer {
+    uint Indices[];
+} IndexBuffers[];
+
+layout(set = 0, binding = 5, scalar) readonly buffer ModelBuffer {
+    WorldMatrix Models[];
+} ModelBuffers[];
+
+layout(push_constant) uniform PC {
+    vec2 ClickNdc;          // Click position in NDC (-1 to 1)
+    uint EdgeCount;         // Number of edges to check
+    uint VertexSlot;
+    uint IndexSlot;
+    uint ModelSlot;
+    uint DepthSamplerIndex;
+    uint ResultIndex;
+    uint XRay;              // If non-zero, ignore depth occlusion
+} pc;
+
+layout(set = 0, binding = 2) uniform sampler2D Samplers[];
+
+layout(set = 0, binding = 6, std430) buffer ClickElementResults {
+    float MinDistSq;
+    uint ElementIndex;  // 0 = no element found, otherwise 1-based index
+} Results[];
+
+// Returns squared distance from point p to line segment ab, and the interpolation parameter t
+float pointToSegmentDistSq(vec2 p, vec2 a, vec2 b, out float t) {
+    vec2 ab = b - a;
+    float abLenSq = dot(ab, ab);
+
+    if (abLenSq < 1e-10) {
+        t = 0.0;
+        return dot(p - a, p - a);
+    }
+
+    t = clamp(dot(p - a, ab) / abLenSq, 0.0, 1.0);
+    vec2 closest = a + t * ab;
+    return dot(p - closest, p - closest);
+}
+
+void main() {
+    float minDistSq = 1e30;
+    uint minIndex = 0;
+
+    mat4 viewProj = Scene.Proj * Scene.View;
+    WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[0];
+    mat4 mvp = viewProj * world.M;
+
+    for (uint i = 0; i < pc.EdgeCount; ++i) {
+        // Each edge has 2 vertices stored consecutively in the index buffer
+        uint idx0 = IndexBuffers[pc.IndexSlot].Indices[i * 2];
+        uint idx1 = IndexBuffers[pc.IndexSlot].Indices[i * 2 + 1];
+
+        vec3 pos0 = VertexBuffers[pc.VertexSlot].Vertices[idx0].Position;
+        vec3 pos1 = VertexBuffers[pc.VertexSlot].Vertices[idx1].Position;
+
+        vec4 clip0 = mvp * vec4(pos0, 1.0);
+        vec4 clip1 = mvp * vec4(pos1, 1.0);
+
+        // Skip edges with vertices behind camera
+        if (clip0.w <= 0.0 || clip1.w <= 0.0) continue;
+
+        vec3 ndc0 = clip0.xyz / clip0.w;
+        vec3 ndc1 = clip1.xyz / clip1.w;
+
+        // Compute distance to edge and get interpolation parameter
+        float t;
+        float distSq = pointToSegmentDistSq(pc.ClickNdc, ndc0.xy, ndc1.xy, t);
+
+        // Interpolate depth at closest point on edge
+        float depthAtClosest = mix(ndc0.z, ndc1.z, t);
+
+        // Check occlusion against depth buffer (unless X-ray mode)
+        bool visible = true;
+        if (pc.XRay == 0) {
+            vec2 closestNdc = mix(ndc0.xy, ndc1.xy, t);
+            vec2 uv = closestNdc * 0.5 + 0.5;
+
+            if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
+                float sceneDepth = texture(Samplers[pc.DepthSamplerIndex], uv).r;
+                visible = depthAtClosest <= sceneDepth + 0.001;
+            }
+        }
+
+        if (visible && distSq < minDistSq) {
+            minDistSq = distSq;
+            minIndex = i + 1; // 1-based edge index
+        }
+    }
+
+    Results[pc.ResultIndex].MinDistSq = minDistSq;
+    Results[pc.ResultIndex].ElementIndex = minIndex;
+}

@@ -284,6 +284,8 @@ private:
     void RenderSelectionPassWith(const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn);
     void RenderEditSelectionPass(std::span<const ElementRange> ranges, he::Element element);
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
+    // Returns 0 if no element found, otherwise 1-based element index
+    uint32_t RunClickSelectElement(const ElementRange &range, he::Element element, glm::vec2 click_ndc, bool x_ray = false);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

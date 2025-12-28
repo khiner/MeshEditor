@@ -1,0 +1,90 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+// Single workgroup iterates all vertices
+layout(local_size_x = 1) in;
+
+#include "SceneUBO.glsl"
+
+struct Vertex {
+    vec3 Position;
+    vec3 Normal;
+};
+
+struct WorldMatrix {
+    mat4 M;
+    mat4 MInv;
+};
+
+layout(set = 0, binding = 3, scalar) readonly buffer VertexBuffer {
+    Vertex Vertices[];
+} VertexBuffers[];
+
+layout(set = 0, binding = 4, scalar) readonly buffer IndexBuffer {
+    uint Indices[];
+} IndexBuffers[];
+
+layout(set = 0, binding = 5, scalar) readonly buffer ModelBuffer {
+    WorldMatrix Models[];
+} ModelBuffers[];
+
+layout(push_constant) uniform PC {
+    vec2 ClickNdc;          // Click position in NDC (-1 to 1)
+    uint VertexCount;       // Number of vertices to check
+    uint VertexSlot;
+    uint IndexSlot;
+    uint ModelSlot;
+    uint DepthSamplerIndex;
+    uint ResultIndex;
+    uint XRay;              // If non-zero, ignore depth occlusion
+} pc;
+
+layout(set = 0, binding = 2) uniform sampler2D Samplers[];
+
+layout(set = 0, binding = 6, std430) buffer ClickElementResults {
+    float MinDistSq;
+    uint ElementIndex;  // 0 = no element found, otherwise 1-based index
+} Results[];
+
+void main() {
+    float minDistSq = 1e30;
+    uint minIndex = 0;
+
+    mat4 viewProj = Scene.Proj * Scene.View;
+    WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[0];
+    mat4 mvp = viewProj * world.M;
+
+    for (uint i = 0; i < pc.VertexCount; ++i) {
+        uint idx = IndexBuffers[pc.IndexSlot].Indices[i];
+        vec3 pos = VertexBuffers[pc.VertexSlot].Vertices[idx].Position;
+
+        vec4 clip = mvp * vec4(pos, 1.0);
+        if (clip.w <= 0.0) continue; // Behind camera
+
+        vec3 ndc = clip.xyz / clip.w;
+
+        // Skip vertices outside NDC range
+        if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0) continue;
+        if (ndc.z < 0.0 || ndc.z > 1.0) continue;
+
+        // Check occlusion against depth buffer (unless X-ray mode)
+        bool visible = true;
+        if (pc.XRay == 0) {
+            vec2 uv = ndc.xy * 0.5 + 0.5;
+            float sceneDepth = texture(Samplers[pc.DepthSamplerIndex], uv).r;
+            visible = ndc.z <= sceneDepth + 0.001;
+        }
+
+        if (visible) {
+            float distSq = dot(ndc.xy - pc.ClickNdc, ndc.xy - pc.ClickNdc);
+            if (distSq < minDistSq) {
+                minDistSq = distSq;
+                minIndex = idx + 1; // 1-based
+            }
+        }
+    }
+
+    Results[pc.ResultIndex].MinDistSq = minDistSq;
+    Results[pc.ResultIndex].ElementIndex = minIndex;
+}
