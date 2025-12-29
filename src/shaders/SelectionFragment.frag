@@ -26,8 +26,6 @@ layout(location = 0) flat in uint InstanceIndex;
 
 const uint INVALID_NODE = 0xffffffffu;
 
-layout(early_fragment_tests) in;
-
 void main() {
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
     // when using .length() or image atomics, even when the index is uniform.

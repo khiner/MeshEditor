@@ -2412,10 +2412,10 @@ void Scene::UpdateSelectionDescriptors() {
 }
 
 void Scene::EnsureRenderBufferSlot(RenderBuffers &rb) {
-    if (!Slots || rb.VertexSlot != InvalidSlot) return;
+    if (!Slots) return;
 
-    rb.VertexSlot = Slots->Allocate(SlotType::VertexBuffer);
-    rb.IndexSlot = Slots->Allocate(SlotType::IndexBuffer);
+    if (rb.VertexSlot == InvalidSlot) rb.VertexSlot = Slots->Allocate(SlotType::VertexBuffer);
+    if (rb.IndexSlot == InvalidSlot) rb.IndexSlot = Slots->Allocate(SlotType::IndexBuffer);
     const std::array writes{
         Slots->MakeBufferWrite(SlotType::VertexBuffer, rb.VertexSlot, rb.Vertices.GetDescriptor()),
         Slots->MakeBufferWrite(SlotType::IndexBuffer, rb.IndexSlot, rb.Indices.GetDescriptor()),
@@ -2424,10 +2424,10 @@ void Scene::EnsureRenderBufferSlot(RenderBuffers &rb) {
 }
 
 void Scene::EnsureModelBufferSlot(ModelsBuffer &mb) {
-    if (!Slots || mb.Slot != InvalidSlot) return;
+    if (!Slots) return;
 
-    mb.Slot = Slots->Allocate(SlotType::ModelBuffer);
-    mb.ObjectIdSlot = Slots->Allocate(SlotType::ObjectIdBuffer);
+    if (mb.Slot == InvalidSlot) mb.Slot = Slots->Allocate(SlotType::ModelBuffer);
+    if (mb.ObjectIdSlot == InvalidSlot) mb.ObjectIdSlot = Slots->Allocate(SlotType::ObjectIdBuffer);
     const std::array writes{
         Slots->MakeBufferWrite(SlotType::ModelBuffer, mb.Slot, mb.Buffer.GetDescriptor()),
         Slots->MakeBufferWrite(SlotType::ObjectIdBuffer, mb.ObjectIdSlot, mb.ObjectIds.GetDescriptor())
@@ -2436,16 +2436,16 @@ void Scene::EnsureModelBufferSlot(ModelsBuffer &mb) {
 }
 
 void Scene::EnsureElementStateBufferSlot(ElementStateBuffer &buffer) {
-    if (!Slots || buffer.Slot != InvalidSlot) return;
+    if (!Slots) return;
 
-    buffer.Slot = Slots->Allocate(SlotType::Buffer);
+    if (buffer.Slot == InvalidSlot) buffer.Slot = Slots->Allocate(SlotType::Buffer);
     Vk.Device.updateDescriptorSets(Slots->MakeBufferWrite(SlotType::Buffer, buffer.Slot, buffer.Buffer.GetDescriptor()), {});
 }
 
 void Scene::EnsureFaceIdBufferSlot(MeshFaceIdBuffer &buffer) {
-    if (!Slots || buffer.Slot != InvalidSlot) return;
+    if (!Slots) return;
 
-    buffer.Slot = Slots->Allocate(SlotType::ObjectIdBuffer);
+    if (buffer.Slot == InvalidSlot) buffer.Slot = Slots->Allocate(SlotType::ObjectIdBuffer);
     Vk.Device.updateDescriptorSets(Slots->MakeBufferWrite(SlotType::ObjectIdBuffer, buffer.Slot, buffer.Faces.GetDescriptor()), {});
 }
 
