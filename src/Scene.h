@@ -243,7 +243,7 @@ private:
                                Box };
     SelectionMode SelectionMode{SelectionMode::Click};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
-    bool SelectionXRay{false};
+    bool SelectionXRay{false}; // Edit mode only. Whether to ignore occlusion when selecting elements.
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;

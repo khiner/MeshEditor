@@ -1351,7 +1351,10 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             // Fallthrough
         case MeshCreateInfo::SelectBehavior::None:
             // If this is the first mesh, set it active by default.
-            if (R.storage<Active>().empty()) R.emplace<Active>(instance_entity);
+            if (R.storage<Active>().empty()) {
+                R.emplace<Active>(instance_entity);
+                R.emplace<Selected>(instance_entity);
+            }
             break;
     }
 
@@ -1422,6 +1425,7 @@ void Scene::Duplicate() {
         if (R.all_of<Active>(e)) {
             R.remove<Active>(e);
             R.emplace<Active>(new_e);
+            R.emplace_or_replace<Selected>(new_e);
         }
         R.remove<Selected>(e);
     }
@@ -1435,6 +1439,7 @@ void Scene::DuplicateLinked() {
         if (R.all_of<Active>(e)) {
             R.remove<Active>(e);
             R.emplace<Active>(new_e);
+            R.emplace_or_replace<Selected>(new_e);
         }
         R.remove<Selected>(e);
     }
@@ -1673,17 +1678,6 @@ void Scene::RecordRenderCommandBuffer() {
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
-    // No external barrier needed - render pass handles UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
-    // via initialLayout=UNDEFINED + loadOp=DONT_CARE on the resolve attachment.
-
-    const auto &main = Pipelines->Main;
-    const auto active_entity = FindActiveEntity(R);
-    const bool render_silhouette = GetModelBufferIndex(R, active_entity) && InteractionMode == InteractionMode::Object;
-    uint32_t active_object_id = 0;
-    if (render_silhouette && active_entity != entt::null && R.all_of<Visible>(active_entity)) {
-        active_object_id = R.get<RenderInstance>(active_entity).ObjectId;
-    }
-
     const auto make_pc = [](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
         const uint32_t vertex_count = static_cast<uint32_t>(render_buffers.Vertices.UsedSize / sizeof(Vertex3D));
         return DrawPushConstants{
@@ -1716,13 +1710,13 @@ void Scene::RecordRenderCommandBuffer() {
         }
     };
 
+    const bool render_silhouette = !R.view<Selected>().empty() && InteractionMode == InteractionMode::Object;
     // Pass 1: Silhouette depth/object rendering (selected meshes only, for visual outline)
     if (render_silhouette) {
         const auto &silhouette = Pipelines->Silhouette;
         static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-
         render_meshes_with_ids(silhouette.Renderer, SPT::SilhouetteDepthObject);
         cb.endRenderPass();
 
@@ -1740,6 +1734,7 @@ void Scene::RecordRenderCommandBuffer() {
         cb.endRenderPass();
     }
 
+    const auto &main = Pipelines->Main;
     // Main rendering pass
     {
         const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}};
@@ -1815,6 +1810,10 @@ void Scene::RecordRenderCommandBuffer() {
     // Silhouette edge color (rendered ontop of meshes)
     if (render_silhouette) {
         const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
+        const auto active_entity = FindActiveEntity(R);
+        const auto active_object_id = active_entity != entt::null && R.all_of<Visible>(active_entity) ?
+            R.get<RenderInstance>(active_entity).ObjectId :
+            0;
         struct SilhouetteEdgeColorPushConstants {
             uint32_t Manipulating;
             uint32_t ObjectSamplerIndex;
@@ -1978,10 +1977,10 @@ struct Timer {
 
 void Scene::RenderSelectionPass() {
     const Timer timer{"RenderSelectionPass"};
-    const bool xray_selection = SelectionXRay || ViewportShading == ViewportShadingMode::Wireframe;
 
+    // Object selection never uses depth testing - we want all visible pixels regardless of occlusion
     RenderSelectionPassWith(false, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
-        const auto &pipeline = renderer.Bind(cb, xray_selection ? SPT::SelectionFragmentXRay : SPT::SelectionFragment);
+        const auto &pipeline = renderer.Bind(cb, SPT::SelectionFragmentXRay);
         for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
             if (instance_count == 0) continue;
@@ -2010,10 +2009,10 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
         const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
         auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
         auto &models = R.get<ModelsBuffer>(mesh_entity);
-        const auto model_index = GetModelBufferIndex(R, e);
-        if (!model_index) continue;
-        DrawPushConstants pc{mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot, 0, models.ObjectIdSlot};
-        Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *model_index);
+        if (const auto model_index = GetModelBufferIndex(R, e)) {
+            DrawPushConstants pc{mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot, 0, models.ObjectIdSlot};
+            Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *model_index);
+        }
     }
     cb.endRenderPass();
 }
@@ -2304,7 +2303,6 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max) {
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
     if (SelectionStale) RenderSelectionPass();
-
     if (!HasSelectionNodes(UniqueBuffers->SelectionCounterBuffer)) return {};
 
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
@@ -2653,7 +2651,6 @@ void Scene::Interact() {
             if (it == hit_entities.end()) it = hit_entities.begin();
             intersected = *it;
         }
-
         if (intersected != entt::null && IsKeyDown(ImGuiMod_Shift)) {
             if (active_entity == intersected) {
                 ToggleSelected(intersected);
@@ -2706,10 +2703,7 @@ bool Scene::RenderViewport() {
     const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
     // transfer_cb is kept recording between frames by BufferContext and our end-of-frame begin().
     // Ensure buffer writes (staging copies) are visible to shader reads.
-    const vk::MemoryBarrier buffer_barrier{
-        vk::AccessFlagBits::eTransferWrite,
-        vk::AccessFlagBits::eShaderRead
-    };
+    const vk::MemoryBarrier buffer_barrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead};
     transfer_cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTransfer,
         vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
@@ -2829,7 +2823,7 @@ void Scene::RenderOverlay() {
         }
     }
 
-    if (const auto selected_view = R.view<Selected>(); !selected_view.empty()) {
+    if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) { // Transform gizmo
         // Transform all root selected entities (whose parent is not also selected) around their average position,
         // using the active entity's rotation/scale.
         // Non-root selected entities already follow their parent's transform.
@@ -2844,10 +2838,11 @@ void Scene::RenderOverlay() {
             }
             return false;
         };
+        const auto selected_view = R.view<const Selected>();
         auto root_selected = selected_view | filter([&](auto e) { return !is_parent_selected(e); });
         const auto root_count = distance(root_selected);
 
-        const auto active_transform = GetTransform(R, FindActiveEntity(R));
+        const auto active_transform = GetTransform(R, active_entity);
         const auto p = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
@@ -3135,8 +3130,9 @@ void Scene::RenderControls() {
                 }
                 if (interaction_mode_changed) SetInteractionMode(::InteractionMode(interaction_mode));
                 const bool wireframe_xray = ViewportShading == ViewportShadingMode::Wireframe;
-                bool xray_selection = SelectionXRay;
-                if (Checkbox("X-ray selection", &xray_selection)) SelectionXRay = xray_selection;
+                if (interaction_mode == int(InteractionMode::Edit)) {
+                    Checkbox("X-ray selection", &SelectionXRay);
+                }
                 if (wireframe_xray) {
                     SameLine();
                     TextDisabled("(wireframe)");
