@@ -1,5 +1,4 @@
 #version 450
-#extension GL_EXT_nonuniform_qualifier : require
 
 #define BINDLESS_NO_ELEMENT_STATE 1
 #include "Bindless.glsl"

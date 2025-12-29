@@ -1,6 +1,3 @@
-// Shared SceneUBO uniform block definition
-// Include this after declaring #version and #extension GL_EXT_nonuniform_qualifier
-
 layout(set = 0, binding = 0) uniform SceneUBO {
     mat4 View;
     mat4 Proj;

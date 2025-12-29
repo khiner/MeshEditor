@@ -1,5 +1,4 @@
 #version 450
-#extension GL_EXT_nonuniform_qualifier : require
 
 // Based on https://asliceofrendering.com/scene%20helper/2020/01/05/InfiniteGrid/
 
