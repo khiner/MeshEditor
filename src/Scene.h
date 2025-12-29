@@ -193,7 +193,6 @@ struct Scene {
     void OnDestroyMeshElementStateBuffers(entt::registry &, entt::entity);
     void OnDestroyFaceIdBuffer(entt::registry &, entt::entity);
     void OnDestroyBoundingBoxesBuffers(entt::registry &, entt::entity);
-    void OnDestroyBvhBoxesBuffers(entt::registry &, entt::entity);
 
     std::string DebugBufferHeapUsage() const;
 
@@ -261,7 +260,7 @@ private:
 
     bool ShowGrid{true};
     // Selected entity render settings
-    bool ShowBoundingBoxes{false}, ShowBvhBoxes{false};
+    bool ShowBoundingBoxes{false};
     static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
     std::unordered_set<he::Element> ShownNormalElements{};
 

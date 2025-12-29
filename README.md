@@ -15,16 +15,14 @@ General features:
 * Create/delete meshes and mesh instances
   - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
-* Select meshes or mesh elements (vertices, edges, or faces)
+* Select meshes or mesh elements (vertices, edges, or faces), with click or box-select, and optional x-ray mode (to ignore occlusion), in real-time with fast GPU acceleration
 * Flat/smooth/wireframe mesh rendering
-* Bounding Volume Hierarchy (BVH) ray intersection acceleration structure
-  - Used for mouse interactions - this is not a ray tracing renderer :)
 * Translate / rotate / (nonuniformly) scale meshes and instances with numeric inputs or a custom transform gizmo designed to look and behave just like Blender's
-* Simple camera + scene lighting model, roughly matching Blender visually
 * Edit camera with mouse wheel, numeric inputs, or with a custom orientation gizmo designed to look and behave just like Blender's
+* Simple camera + scene lighting model, roughly matching Blender visually
 * Edit lighting parameters
 * Render face/vertex normals as lines for debugging
-* Render bounding box / BVH wireframes for debugging
+* Render bounding box wireframes for debugging
 * Edge-detection-based silhouette outline of active mesh/instance, embedded into the scene with accurate per-pixel depth
 * Fast infinite grid with horizon fade
 
@@ -41,6 +39,7 @@ Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
 * Bindless rendering
 * Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
+* GPU-accelerated mouse interactions (no CPU acceleration structures like BVH)
 
 ### Physical audio modeling
 

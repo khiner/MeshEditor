@@ -14,7 +14,6 @@
 #include <unordered_set>
 #include <vector>
 
-struct BVH;
 struct WorldMatrix;
 
 // Submitted to shaders
@@ -63,9 +62,6 @@ struct RenderBuffers {
 };
 
 struct BoundingBoxesBuffers {
-    RenderBuffers Buffers;
-};
-struct BvhBoxesBuffers {
     RenderBuffers Buffers;
 };
 struct MeshBuffers {
@@ -131,7 +127,6 @@ std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, he::Element element
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, he::Element element);
 
 std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &mesh);
-MeshRenderBuffers CreateBvhBuffers(const BVH &bvh);
 
 BBox ComputeBoundingBox(const Mesh &mesh);
 

@@ -1,7 +1,6 @@
 #include "Scene.h"
 #include "Widgets.h" // imgui
 
-#include "BVH.h"
 #include "Bindless.h"
 #include "Entity.h"
 #include "Excitable.h"
@@ -1086,7 +1085,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.on_destroy<MeshElementStateBuffers>().connect<&Scene::OnDestroyMeshElementStateBuffers>(*this);
     R.on_destroy<MeshFaceIdBuffer>().connect<&Scene::OnDestroyFaceIdBuffer>(*this);
     R.on_destroy<BoundingBoxesBuffers>().connect<&Scene::OnDestroyBoundingBoxesBuffers>(*this);
-    R.on_destroy<BvhBoxesBuffers>().connect<&Scene::OnDestroyBvhBoxesBuffers>(*this);
 
     UpdateEdgeColors();
     UpdateSceneUBO();
@@ -1146,7 +1144,6 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
             buffers->NormalIndicators.clear();
         }
         r.remove<BoundingBoxesBuffers>(mesh_entity);
-        r.remove<BvhBoxesBuffers>(mesh_entity);
     }
 }
 
@@ -1182,7 +1179,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
 
     // Create vertex indicator arrow pointing at the excited vertex.
     const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
-    const float scale_factor = 0.1f * bbox.DiagonalLength();
+    const float scale_factor = 0.1f * glm::length(bbox.Max - bbox.Min);
     auto vertex_indicator_mesh = Arrow();
     vertex_indicator_mesh.SetColor({1, 0, 0, 1});
     excited_vertex.IndicatorEntity = AddMesh(
@@ -1234,10 +1231,6 @@ void Scene::OnDestroyFaceIdBuffer(entt::registry &r, entt::entity e) {
 
 void Scene::OnDestroyBoundingBoxesBuffers(entt::registry &r, entt::entity e) {
     if (auto *bbox = r.try_get<BoundingBoxesBuffers>(e)) ReleaseRenderBuffer(bbox->Buffers);
-}
-
-void Scene::OnDestroyBvhBoxesBuffers(entt::registry &r, entt::entity e) {
-    if (auto *bvh = r.try_get<BvhBoxesBuffers>(e)) ReleaseRenderBuffer(bvh->Buffers);
 }
 
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
@@ -1313,7 +1306,6 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     { // Mesh data
         const auto bbox = MeshRender::ComputeBoundingBox(mesh);
         R.emplace<BBox>(mesh_entity, bbox);
-        R.emplace<BVH>(mesh_entity, MeshRender::CreateFaceBoundingBoxes(mesh));
 
         auto face_buffers = UniqueBuffers->CreateRenderBuffers(
             MeshRender::CreateFaceVertices(mesh, SmoothShading),
@@ -1487,7 +1479,6 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     // Update components
     const auto bbox = MeshRender::ComputeBoundingBox(mesh);
     R.replace<BBox>(e, bbox);
-    R.replace<BVH>(e, BVH{MeshRender::CreateFaceBoundingBoxes(mesh)});
     R.replace<Mesh>(e, std::move(mesh));
 
     const auto &pm = R.get<Mesh>(e);
@@ -1869,11 +1860,6 @@ void Scene::RecordRenderCommandBuffer() {
                 Draw(cb, pipeline, buffers, models, pc);
             }
         }
-        for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
-            auto pc = make_pc(bvh_boxes.Buffers, models);
-            pc.LineColor = MeshRender::EdgeColor;
-            Draw(cb, pipeline, bvh_boxes.Buffers, models, pc);
-        }
         for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
             auto pc = make_pc(bounding_boxes.Buffers, models);
             pc.LineColor = MeshRender::EdgeColor;
@@ -1935,15 +1921,6 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
         R.emplace<BoundingBoxesBuffers>(mesh_entity, std::move(buffers));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         R.remove<BoundingBoxesBuffers>(mesh_entity);
-    }
-    if (ShowBvhBoxes && !R.all_of<BvhBoxesBuffers>(mesh_entity)) {
-        const auto &bvh = R.get<BVH>(mesh_entity);
-        auto bvh_buffers = MeshRender::CreateBvhBuffers(bvh);
-        auto buffers = UniqueBuffers->CreateRenderBuffers(std::move(bvh_buffers.Vertices), std::move(bvh_buffers.Indices));
-        EnsureRenderBufferSlot(buffers);
-        R.emplace<BvhBoxesBuffers>(mesh_entity, std::move(buffers));
-    } else if (!ShowBvhBoxes && R.all_of<BvhBoxesBuffers>(mesh_entity)) {
-        R.remove<BvhBoxesBuffers>(mesh_entity);
     }
 }
 
@@ -2525,10 +2502,6 @@ void Scene::PrepareDescriptors() {
         EnsureElementStateBufferSlot(state_buffers.Faces);
         EnsureElementStateBufferSlot(state_buffers.Edges);
         EnsureElementStateBufferSlot(state_buffers.Vertices);
-    }
-    for (auto [_, bvh_boxes, models] : R.view<BvhBoxesBuffers, ModelsBuffer>().each()) {
-        EnsureRenderBufferSlot(bvh_boxes.Buffers);
-        EnsureModelBufferSlot(models);
     }
     for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
         EnsureRenderBufferSlot(bounding_boxes.Buffers);
@@ -3311,8 +3284,6 @@ void Scene::RenderControls() {
                         changed = true;
                     }
                 }
-                if (Checkbox("BVH boxes", &ShowBvhBoxes)) changed = true;
-                SameLine();
                 if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) changed = true;
                 if (changed) {
                     for (auto selected_entity : R.view<Selected>()) {

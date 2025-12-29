@@ -1,10 +1,10 @@
 #include "MeshRender.h"
 
-#include "BVH.h"
 #include "WorldMatrix.h"
 
 #include <entt/entity/registry.hpp>
 
+#include <numeric>
 #include <ranges>
 
 using std::ranges::all_of;
@@ -26,22 +26,6 @@ std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &mesh) {
         boxes.emplace_back(std::move(box));
     }
     return boxes;
-}
-
-MeshRenderBuffers CreateBvhBuffers(const BVH &bvh) {
-    std::vector<BBox> boxes = bvh.CreateInternalBoxes();
-    std::vector<Vertex3D> vertices;
-    vertices.reserve(boxes.size() * 8);
-    std::vector<uint> indices;
-    indices.reserve(boxes.size() * BBox::EdgeIndices.size());
-    for (uint i = 0; i < boxes.size(); ++i) {
-        const auto &box = boxes[i];
-        for (auto &corner : box.Corners()) vertices.emplace_back(corner, vec3{});
-
-        const uint index_offset = i * 8;
-        for (const auto &index : BBox::EdgeIndices) indices.emplace_back(index_offset + index);
-    }
-    return {std::move(vertices), std::move(indices)};
 }
 
 std::vector<uint> CreateFaceIndices(const Mesh &mesh) {
