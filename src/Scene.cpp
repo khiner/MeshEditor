@@ -1869,7 +1869,7 @@ void Scene::UpdateSceneUBO() {
         .ActiveColor = MeshRender::ActiveColor
     };
     UniqueBuffers->SceneUBO.Update(as_bytes(scene_ubo));
-    InvalidateCommandBuffer();
+    RequestRender();
 }
 
 void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
@@ -2687,10 +2687,9 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 bool Scene::RenderViewport() {
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
-    if (!extent_changed && !CommandBufferDirty) return false;
+    if (!extent_changed && !CommandBufferDirty && !NeedsRender) return false;
 
     const Timer timer{"RenderViewport"};
-    CommandBufferDirty = false;
 
     if (extent_changed) {
         Extent = ToExtent(content_region);
@@ -2698,6 +2697,7 @@ bool Scene::RenderViewport() {
         Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
         Pipelines->SetExtent(Extent);
         UpdateSelectionDescriptors();
+        CommandBufferDirty = true;
     }
 
     const auto transfer_cb = *UniqueBuffers->Ctx.TransferCb;
@@ -2712,8 +2712,11 @@ bool Scene::RenderViewport() {
 
     transfer_cb.end();
 
-    PrepareDescriptors();
-    RecordRenderCommandBuffer();
+    if (CommandBufferDirty) {
+        PrepareDescriptors();
+        RecordRenderCommandBuffer();
+        CommandBufferDirty = false;
+    }
 
     // Submit transfer and render commands together
     const std::array command_buffers{transfer_cb, *RenderCommandBuffer};
@@ -2726,6 +2729,7 @@ bool Scene::RenderViewport() {
     // Leave transfer_cb recording for next frame's staging.
     transfer_cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
+    NeedsRender = false;
     return extent_changed;
 }
 

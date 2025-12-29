@@ -178,7 +178,8 @@ struct Scene {
     void ReleaseFaceIdBuffer(MeshFaceIdBuffer &);
     void PrepareDescriptors();
     void RecordRenderCommandBuffer();
-    void InvalidateCommandBuffer() { CommandBufferDirty = true; }
+    void InvalidateCommandBuffer() { CommandBufferDirty = NeedsRender = true; }
+    void RequestRender() { NeedsRender = true; }
 
     void OnCreateSelected(entt::registry &, entt::entity);
     void OnDestroySelected(entt::registry &, entt::entity);
@@ -264,7 +265,8 @@ private:
     static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
     std::unordered_set<he::Element> ShownNormalElements{};
 
-    bool CommandBufferDirty{false};
+    bool CommandBufferDirty{false}; // Render command buffer needs re-recording.
+    bool NeedsRender{false}; // Scene needs to be re-rendered (submit command buffers).
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
 
     struct ElementRange {
