@@ -280,7 +280,8 @@ private:
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max);
     void RenderSelectionPass(); // On-demand selection fragment rendering.
-    void RenderSelectionPassWith(const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn);
+    void RenderSilhouetteDepth(vk::CommandBuffer cb);
+    void RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn);
     void RenderEditSelectionPass(std::span<const ElementRange> ranges, he::Element element);
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
     std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);

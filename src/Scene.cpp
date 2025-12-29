@@ -81,7 +81,6 @@ enum class ShaderPipelineType {
     SelectionElementEdgeXRay,
     SelectionElementVertexXRay,
     SelectionFragmentXRay,
-    SelectionDepthOnly,
     SelectionFragment,
     DebugNormals,
 };
@@ -673,8 +672,8 @@ struct MainPipeline {
 struct SilhouettePipeline {
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
         const std::vector<vk::AttachmentDescription> attachments{
-            // We need to test and write depth since we want silhouette edges to respect mutual occlusion when multiple meshes are selected.
-            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+            // Store depth for reuse by element selection (mutual occlusion between selected meshes).
+            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
             // Single-sampled offscreen "image" of two channels: depth and object ID.
             {{}, Format::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
@@ -830,10 +829,10 @@ struct SilhouetteEdgePipeline {
 };
 
 struct SelectionFragmentPipeline {
+    // Render pass that loads depth from silhouette pass for element occlusion
     static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
         const std::vector<vk::AttachmentDescription> attachments{
-            // Only need depth for depth testing, don't need to store it
-            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal},
         };
         const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
         const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
@@ -842,21 +841,12 @@ struct SelectionFragmentPipeline {
         const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
-            SPT::SelectionDepthOnly,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "DepthOnly.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(), draw_pc // No color attachment
-            )
-        );
-        pipelines.emplace(
             SPT::SelectionElementFace,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(), draw_pc // No color attachment
+                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
             )
         );
         pipelines.emplace(
@@ -865,7 +855,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
+                {}, CreateDepthStencil(false, false), draw_pc
             )
         );
         pipelines.emplace(
@@ -874,7 +864,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc // No color attachment
+                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
             )
         );
         pipelines.emplace(
@@ -883,7 +873,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
+                {}, CreateDepthStencil(false, false), draw_pc
             )
         );
         pipelines.emplace(
@@ -892,7 +882,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc // No color attachment
+                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
             )
         );
         pipelines.emplace(
@@ -901,7 +891,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
+                {}, CreateDepthStencil(false, false), draw_pc
             )
         );
         pipelines.emplace(
@@ -910,7 +900,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(), draw_pc // No color attachment
+                {}, CreateDepthStencil(), draw_pc
             )
         );
         pipelines.emplace(
@@ -919,29 +909,15 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(false, false), draw_pc // No color attachment
+                {}, CreateDepthStencil(false, false), draw_pc
             )
         );
         return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
     }
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass)
-            : DepthImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Depth,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   vk::SampleCountFlagBits::e1,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
-              )},
-              HeadImage{mvk::CreateImage(
+        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::ImageView silhouette_depth_view)
+            : HeadImage{mvk::CreateImage(
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
@@ -954,17 +930,15 @@ struct SelectionFragmentPipeline {
                    vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst,
                    vk::SharingMode::eExclusive},
                   {{}, {}, vk::ImageViewType::e2D, Format::Uint, {}, ColorSubresourceRange}
-              )} {
-            const std::array image_views{*DepthImage.View};
-            Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
-        }
+              )},
+              Framebuffer{d.createFramebufferUnique({{}, render_pass, silhouette_depth_view, extent.width, extent.height, 1})} {}
 
-        mvk::ImageResource DepthImage, HeadImage;
+        mvk::ImageResource HeadImage;
         vk::UniqueFramebuffer Framebuffer;
     };
 
-    void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
-        Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
+    void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::ImageView silhouette_depth_view) {
+        Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass, silhouette_depth_view);
     }
 
     PipelineRenderer Renderer;
@@ -1014,7 +988,6 @@ struct ScenePipelines {
     ComputePipeline BoxSelect;
 
     void SetExtent(vk::Extent2D);
-    // These do _not_ re-submit the command buffer. Callers must do so manually if needed.
     void CompileShaders() {
         Main.Renderer.CompileShaders();
         Silhouette.Renderer.CompileShaders();
@@ -2007,7 +1980,7 @@ void Scene::RenderSelectionPass() {
     const Timer timer{"RenderSelectionPass"};
     const bool xray_selection = SelectionXRay || ViewportShading == ViewportShadingMode::Wireframe;
 
-    RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
+    RenderSelectionPassWith(false, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, xray_selection ? SPT::SelectionFragmentXRay : SPT::SelectionFragment);
         for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
@@ -2025,7 +1998,27 @@ void Scene::RenderSelectionPass() {
     SelectionStale = false;
 }
 
-void Scene::RenderSelectionPassWith(const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn) {
+void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
+    // Render selected meshes to silhouette depth buffer for element occlusion
+    const auto &silhouette = Pipelines->Silhouette;
+    static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
+    const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
+    cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+
+    const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
+    for (const auto e : R.view<Selected>()) {
+        const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+        auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
+        auto &models = R.get<ModelsBuffer>(mesh_entity);
+        const auto model_index = GetModelBufferIndex(R, e);
+        if (!model_index) continue;
+        DrawPushConstants pc{mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot, 0, models.ObjectIdSlot};
+        Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *model_index);
+    }
+    cb.endRenderPass();
+}
+
+void Scene::RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn) {
     auto cb = *ClickCommandBuffer;
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -2045,17 +2038,17 @@ void Scene::RenderSelectionPassWith(const std::function<void(vk::CommandBuffer, 
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    // Render to selection fragment list.
-    const auto &selection = Pipelines->SelectionFragment;
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
-    static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}};
-    const vk::Rect2D rect{{0, 0}, ToExtent2D(selection.Resources->DepthImage.Extent)};
-    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
 
+    if (render_depth) RenderSilhouetteDepth(cb);
+
+    const auto &selection = Pipelines->SelectionFragment;
+    const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines->Silhouette.Resources->DepthImage.Extent)};
+    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, {}}, vk::SubpassContents::eInline);
     draw_fn(cb, selection.Renderer);
-
     cb.endRenderPass();
+
     cb.end();
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
@@ -2153,17 +2146,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
 
     const Timer timer{"RenderEditSelectionPass"};
     const bool xray_selection = SelectionXRay || ViewportShading == ViewportShadingMode::Wireframe;
-    const bool depth_occlusion = !xray_selection && (element == Element::Vertex || element == Element::Edge);
-    RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
-        if (depth_occlusion) {
-            const auto &depth_pipeline = renderer.Bind(cb, SPT::SelectionDepthOnly);
-            for (const auto &range : ranges) {
-                auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
-                auto &models = R.get<ModelsBuffer>(range.MeshEntity);
-                Draw(cb, depth_pipeline, mesh_buffers.Faces, models, {mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot});
-            }
-        }
-
+    RenderSelectionPassWith(!xray_selection, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SelectionPipelineForElement(element, xray_selection));
         for (const auto &range : ranges) {
             auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
@@ -2265,15 +2248,9 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
 
     // Render vertices to selection buffer with depth occlusion.
     // Pass ElementStateSlot so shader filters to only selected (excitable) vertices.
-    RenderSelectionPassWith([&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
-        // First pass: render faces to depth buffer for occlusion.
-        const auto &depth_pipeline = renderer.Bind(cb, SPT::SelectionDepthOnly);
-        DrawPushConstants pc{mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot};
-        Draw(cb, depth_pipeline, mesh_buffers.Faces, models, pc, model_index);
-
-        // Second pass: render vertices to selection buffer, filtered to selected (excitable) only.
+    RenderSelectionPassWith(true, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);
-        pc = {mesh_buffers.Vertices.VertexSlot, mesh_buffers.Vertices.IndexSlot, models.Slot, 0, InvalidSlot, SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0, state_buffers.Vertices.Slot};
+        DrawPushConstants pc{mesh_buffers.Vertices.VertexSlot, mesh_buffers.Vertices.IndexSlot, models.Slot, 0, InvalidSlot, SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0, state_buffers.Vertices.Slot};
         Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index);
     });
 
@@ -2706,7 +2683,8 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     Main.SetExtent(extent, Device, PhysicalDevice, Samples);
     Silhouette.SetExtent(extent, Device, PhysicalDevice);
     SilhouetteEdge.SetExtent(extent, Device, PhysicalDevice);
-    SelectionFragment.SetExtent(extent, Device, PhysicalDevice);
+    // SelectionFragment uses silhouette's depth buffer for element occlusion
+    SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);
 };
 
 bool Scene::RenderViewport() {
