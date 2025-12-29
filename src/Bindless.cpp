@@ -75,9 +75,8 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config
     for (size_t i = 0; i < SlotTypeCount; ++i) {
         const auto type = static_cast<SlotType>(i);
         const uint32_t max = Config.Max(type);
-        const uint32_t start = (type == SlotType::Uniform) ? 1 : 0; // Reserve uniform slot 0 for scene UBO
-        FreeSlots[i].reserve(max - start);
-        for (uint32_t j = max; j-- > start;) FreeSlots[i].push_back(j);
+        FreeSlots[i].reserve(max);
+        for (uint32_t j = max; j-- > 0;) FreeSlots[i].push_back(j);
     }
 }
 

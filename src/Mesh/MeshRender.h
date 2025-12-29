@@ -1,6 +1,5 @@
 #pragma once
 
-#include "../Slots.h"
 #include "../Vulkan/UniqueBuffers.h"
 #include "BBox.h"
 #include "Mesh.h"
@@ -39,8 +38,6 @@ struct RenderInstance {
 struct ModelsBuffer {
     mvk::UniqueBuffers Buffer;
     mvk::UniqueBuffers ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
-    uint32_t Slot{InvalidSlot};
-    uint32_t ObjectIdSlot{InvalidSlot};
 };
 
 // Component for entities that render a mesh via instancing.
@@ -57,8 +54,6 @@ struct RenderBuffers {
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
     mvk::UniqueBuffers Vertices, Indices;
-    uint32_t VertexSlot{InvalidSlot};
-    uint32_t IndexSlot{InvalidSlot};
 };
 
 struct BoundingBoxesBuffers {
@@ -76,7 +71,6 @@ struct MeshBuffers {
 
 struct ElementStateBuffer {
     mvk::UniqueBuffers Buffer;
-    uint32_t Slot{InvalidSlot};
 };
 
 struct MeshElementStateBuffers {
@@ -85,7 +79,6 @@ struct MeshElementStateBuffers {
 
 struct MeshFaceIdBuffer {
     mvk::UniqueBuffers Faces;
-    uint32_t Slot{InvalidSlot};
 };
 
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).

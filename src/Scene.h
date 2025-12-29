@@ -25,10 +25,6 @@ struct Path {
     fs::path Value;
 };
 
-struct RenderBuffers;
-struct ModelsBuffer;
-struct ElementStateBuffer;
-struct MeshFaceIdBuffer;
 struct PipelineRenderer;
 
 struct World {
@@ -134,7 +130,7 @@ struct Scene {
 
     void Destroy(entt::entity);
 
-    void SetVisible(entt::entity, bool visible, bool buffer_reallocated = false);
+    void SetVisible(entt::entity, bool visible);
 
     entt::entity GetMeshEntity(entt::entity) const;
     entt::entity GetActiveMeshEntity() const;
@@ -168,14 +164,6 @@ struct Scene {
 
     void UpdateRenderBuffers(entt::entity);
     void UpdateSelectionDescriptors();
-    void EnsureRenderBufferSlot(RenderBuffers &, bool reallocated = false);
-    void EnsureModelBufferSlot(ModelsBuffer &, bool reallocated = false);
-    void EnsureElementStateBufferSlot(ElementStateBuffer &, bool reallocated = false);
-    void EnsureFaceIdBufferSlot(MeshFaceIdBuffer &, bool reallocated = false);
-    void ReleaseRenderBuffer(RenderBuffers &);
-    void ReleaseModelBuffer(ModelsBuffer &);
-    void ReleaseElementStateBuffer(ElementStateBuffer &);
-    void ReleaseFaceIdBuffer(MeshFaceIdBuffer &);
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer() { CommandBufferDirty = NeedsRender = true; }
     void RequestRender() { NeedsRender = true; }
@@ -188,11 +176,6 @@ struct Scene {
 
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
-    void OnDestroyMeshBuffers(entt::registry &, entt::entity);
-    void OnDestroyModelsBuffer(entt::registry &, entt::entity);
-    void OnDestroyMeshElementStateBuffers(entt::registry &, entt::entity);
-    void OnDestroyFaceIdBuffer(entt::registry &, entt::entity);
-    void OnDestroyBoundingBoxesBuffers(entt::registry &, entt::entity);
 
     std::string DebugBufferHeapUsage() const;
 
@@ -207,8 +190,6 @@ private:
 
     struct SelectionSlotHandles;
     std::unique_ptr<SelectionSlotHandles> SelectionHandles;
-
-    static constexpr uint32_t SceneUBOSlot{0};
 
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};

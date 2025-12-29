@@ -123,15 +123,10 @@ namespace {
 std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
 ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t count) {
     auto states = MakeElementStates(count);
-    return {mvk::UniqueBuffers{ctx, as_bytes(states), vk::BufferUsageFlagBits::eStorageBuffer}};
+    return {mvk::UniqueBuffers{ctx, as_bytes(states), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}};
 }
-bool ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
-    return buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
-}
-void EnsureElementStateBufferSlots(Scene &scene, MeshElementStateBuffers &buffers, bool faces = false, bool edges = false, bool vertices = false) {
-    scene.EnsureElementStateBufferSlot(buffers.Faces, faces);
-    scene.EnsureElementStateBufferSlot(buffers.Edges, edges);
-    scene.EnsureElementStateBufferSlot(buffers.Vertices, vertices);
+void ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
+    buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
 }
 } // namespace
 
@@ -383,10 +378,10 @@ struct SceneUniqueBuffers {
     static constexpr uint32_t ClickElementGroupSize = 256;
     static constexpr uint32_t MaxClickElementGroups = (MaxSelectionNodes + ClickElementGroupSize - 1) / ClickElementGroupSize;
 
-    SceneUniqueBuffers(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandPool command_pool)
-        : Ctx{pd, d, instance, command_pool},
-          SceneUBO{Ctx, sizeof(SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer},
-          SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer},
+    SceneUniqueBuffers(vk::PhysicalDevice pd, vk::Device d, VkInstance instance, vk::CommandPool command_pool, DescriptorSlots &slots)
+        : Ctx{pd, d, instance, command_pool, slots},
+          SceneUBO{Ctx, sizeof(SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::Uniform},
+          SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{*Ctx.Allocator, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ClickResultBuffer{*Ctx.Allocator, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ClickElementResultBuffer{
@@ -401,31 +396,25 @@ struct SceneUniqueBuffers {
     const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
     vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
-    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) const {
-        const auto vertex_usage = vk::BufferUsageFlagBits::eStorageBuffer;
-        const auto index_usage = vk::BufferUsageFlagBits::eStorageBuffer;
+    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
         return {
-            {Ctx, as_bytes(vertices), vertex_usage},
-            {Ctx, as_bytes(indices), index_usage}
+            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
+            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer}
         };
     }
     template<size_t N>
-    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) const {
-        const auto vertex_usage = vk::BufferUsageFlagBits::eStorageBuffer;
-        const auto index_usage = vk::BufferUsageFlagBits::eStorageBuffer;
+    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
         return {
-            {Ctx, as_bytes(vertices), vertex_usage},
-            {Ctx, as_bytes(indices), index_usage}
+            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
+            {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer}
         };
     }
 
     mvk::BufferContext Ctx;
     mvk::UniqueBuffers SceneUBO;
     mvk::UniqueBuffers SelectionNodeBuffer;
-    mvk::UniqueBuffer SelectionCounterBuffer;
-    mvk::UniqueBuffer ClickResultBuffer;
-    mvk::UniqueBuffer ClickElementResultBuffer;
-    mvk::UniqueBuffer BoxSelectBitsetBuffer;
+    // CPU readback buffers (host-visible)
+    mvk::UniqueBuffer SelectionCounterBuffer, ClickResultBuffer, ClickElementResultBuffer, BoxSelectBitsetBuffer;
 };
 
 mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
@@ -1003,7 +992,6 @@ struct Scene::SelectionSlotHandles {
     explicit SelectionSlotHandles(DescriptorSlots &slots)
         : Slots(slots),
           HeadImage(slots.Allocate(SlotType::Image)),
-          SelectionNodes(slots.Allocate(SlotType::Buffer)),
           SelectionCounter(slots.Allocate(SlotType::Buffer)),
           ClickResult(slots.Allocate(SlotType::Buffer)),
           ClickElementResult(slots.Allocate(SlotType::Buffer)),
@@ -1014,7 +1002,6 @@ struct Scene::SelectionSlotHandles {
 
     ~SelectionSlotHandles() {
         Slots.Release(SlotType::Image, HeadImage);
-        Slots.Release(SlotType::Buffer, SelectionNodes);
         Slots.Release(SlotType::Buffer, SelectionCounter);
         Slots.Release(SlotType::Buffer, ClickResult);
         Slots.Release(SlotType::Buffer, ClickElementResult);
@@ -1025,7 +1012,7 @@ struct Scene::SelectionSlotHandles {
     }
 
     DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionNodes, SelectionCounter, ClickResult, ClickElementResult, BoxResult, ObjectIdSampler, DepthSampler, SilhouetteSampler;
+    uint32_t HeadImage, SelectionCounter, ClickResult, ClickElementResult, BoxResult, ObjectIdSampler, DepthSampler, SilhouetteSampler;
 };
 
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
@@ -1042,7 +1029,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
           Vk.Device, Vk.PhysicalDevice,
           Slots->GetSetLayout(), Slots->GetSet()
       )},
-      UniqueBuffers{std::make_unique<SceneUniqueBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool)} {
+      UniqueBuffers{std::make_unique<SceneUniqueBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool, *Slots)} {
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
@@ -1052,12 +1039,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     R.on_construct<ExcitedVertex>().connect<&Scene::OnCreateExcitedVertex>(*this);
     R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
-
-    R.on_destroy<MeshBuffers>().connect<&Scene::OnDestroyMeshBuffers>(*this);
-    R.on_destroy<ModelsBuffer>().connect<&Scene::OnDestroyModelsBuffer>(*this);
-    R.on_destroy<MeshElementStateBuffers>().connect<&Scene::OnDestroyMeshElementStateBuffers>(*this);
-    R.on_destroy<MeshFaceIdBuffer>().connect<&Scene::OnDestroyFaceIdBuffer>(*this);
-    R.on_destroy<BoundingBoxesBuffers>().connect<&Scene::OnDestroyBoundingBoxesBuffers>(*this);
 
     UpdateEdgeColors();
     UpdateSceneUBO();
@@ -1113,7 +1094,6 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
         const auto mesh_entity = mesh_instance->MeshEntity;
         if (auto *buffers = r.try_get<MeshBuffers>(mesh_entity)) {
-            for (auto &[_, indicator] : buffers->NormalIndicators) ReleaseRenderBuffer(indicator);
             buffers->NormalIndicators.clear();
         }
         r.remove<BoundingBoxesBuffers>(mesh_entity);
@@ -1177,35 +1157,6 @@ void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
     }
 }
 
-void Scene::OnDestroyMeshBuffers(entt::registry &r, entt::entity e) {
-    if (auto *mesh_buffers = r.try_get<MeshBuffers>(e)) {
-        ReleaseRenderBuffer(mesh_buffers->Faces);
-        ReleaseRenderBuffer(mesh_buffers->Edges);
-        ReleaseRenderBuffer(mesh_buffers->Vertices);
-        for (auto &[_, buffers] : mesh_buffers->NormalIndicators) ReleaseRenderBuffer(buffers);
-    }
-}
-
-void Scene::OnDestroyModelsBuffer(entt::registry &r, entt::entity e) {
-    if (auto *models = r.try_get<ModelsBuffer>(e)) ReleaseModelBuffer(*models);
-}
-
-void Scene::OnDestroyMeshElementStateBuffers(entt::registry &r, entt::entity e) {
-    if (auto *buffers = r.try_get<MeshElementStateBuffers>(e)) {
-        ReleaseElementStateBuffer(buffers->Faces);
-        ReleaseElementStateBuffer(buffers->Edges);
-        ReleaseElementStateBuffer(buffers->Vertices);
-    }
-}
-
-void Scene::OnDestroyFaceIdBuffer(entt::registry &r, entt::entity e) {
-    if (auto *buffers = r.try_get<MeshFaceIdBuffer>(e)) ReleaseFaceIdBuffer(*buffers);
-}
-
-void Scene::OnDestroyBoundingBoxesBuffers(entt::registry &r, entt::entity e) {
-    if (auto *bbox = r.try_get<BoundingBoxesBuffers>(e)) ReleaseRenderBuffer(bbox->Buffers);
-}
-
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
 
 namespace {
@@ -1232,7 +1183,7 @@ void UpdateVisibleObjectIds(entt::registry &r) {
 }
 } // namespace
 
-void Scene::SetVisible(entt::entity entity, bool visible, bool buffer_reallocated) {
+void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<Visible>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
@@ -1269,7 +1220,6 @@ void Scene::SetVisible(entt::entity entity, bool visible, bool buffer_reallocate
             }
         }
     }
-    EnsureModelBufferSlot(models, buffer_reallocated);
     UpdateVisibleObjectIds(R);
     InvalidateCommandBuffer();
 }
@@ -1297,8 +1247,8 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
         R.emplace<MeshSelection>(mesh_entity);
         R.emplace<ModelsBuffer>(
             mesh_entity,
-            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer},
-            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer}
+            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
+            mvk::UniqueBuffers{UniqueBuffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer}
         );
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
         {
@@ -1315,19 +1265,12 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             const auto &mesh_ref = R.get<Mesh>(mesh_entity);
             R.emplace<MeshFaceIdBuffer>(
                 mesh_entity,
-                mvk::UniqueBuffers{UniqueBuffers->Ctx, as_bytes(MeshRender::CreateFaceElementIds(mesh_ref)), vk::BufferUsageFlagBits::eStorageBuffer}
+                mvk::UniqueBuffers{UniqueBuffers->Ctx, as_bytes(MeshRender::CreateFaceElementIds(mesh_ref)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer}
             );
         }
-        EnsureRenderBufferSlot(R.get<MeshBuffers>(mesh_entity).Faces);
-        EnsureRenderBufferSlot(R.get<MeshBuffers>(mesh_entity).Edges);
-        EnsureRenderBufferSlot(R.get<MeshBuffers>(mesh_entity).Vertices);
-        EnsureModelBufferSlot(R.get<ModelsBuffer>(mesh_entity));
-        EnsureFaceIdBufferSlot(R.get<MeshFaceIdBuffer>(mesh_entity));
         UpdateRenderBuffers(mesh_entity);
         if (ShowBoundingBoxes) {
-            auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices);
-            EnsureRenderBufferSlot(buffers);
-            R.emplace<BoundingBoxesBuffers>(mesh_entity, std::move(buffers));
+            R.emplace<BoundingBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices));
         }
     }
 
@@ -1337,9 +1280,9 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
     auto &models = R.get<ModelsBuffer>(mesh_entity);
-    bool reallocated = models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
-    reallocated |= models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
-    SetVisible(instance_entity, true, reallocated); // Always set visibility to true first, since this sets up the model buffer/indices.
+    models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
+    models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
+    SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
 
     switch (info.Select) {
@@ -1396,14 +1339,13 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
         R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
     }
     R.emplace<MeshInstance>(e_new, mesh_entity);
-    bool reallocated;
     {
         auto &models = R.get<ModelsBuffer>(mesh_entity);
-        reallocated = models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
-        reallocated |= models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
+        models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
+        models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
     }
     UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
-    SetVisible(e_new, !info || info->Visible, reallocated);
+    SetVisible(e_new, !info || info->Visible);
 
     if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
     else if (info->Select == MeshCreateInfo::SelectBehavior::Exclusive) Select(e_new);
@@ -1462,34 +1404,27 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 
     const auto &pm = R.get<Mesh>(e);
     auto &mesh_buffers = R.get<MeshBuffers>(e);
-    bool faces_realloc = mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
-    faces_realloc |= mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
-    bool edges_realloc = mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
-    edges_realloc |= mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
-    bool verts_realloc = mesh_buffers.Vertices.Vertices.Update(MeshRender::CreateVertexPoints(pm));
-    verts_realloc |= mesh_buffers.Vertices.Indices.Update(MeshRender::CreateVertexIndices(pm));
-    EnsureRenderBufferSlot(mesh_buffers.Faces, faces_realloc);
-    EnsureRenderBufferSlot(mesh_buffers.Edges, edges_realloc);
-    EnsureRenderBufferSlot(mesh_buffers.Vertices, verts_realloc);
+    mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
+    mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
+    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
+    mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
+    mesh_buffers.Vertices.Vertices.Update(MeshRender::CreateVertexPoints(pm));
+    mesh_buffers.Vertices.Indices.Update(MeshRender::CreateVertexIndices(pm));
     if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(e)) {
-        bool state_faces = ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
-        bool state_edges = ResetElementStateBuffer(state_buffers->Edges, pm.EdgeCount() * 2);
-        bool state_verts = ResetElementStateBuffer(state_buffers->Vertices, pm.VertexCount());
-        EnsureElementStateBufferSlots(*this, *state_buffers, state_faces, state_edges, state_verts);
+        ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
+        ResetElementStateBuffer(state_buffers->Edges, pm.EdgeCount() * 2);
+        ResetElementStateBuffer(state_buffers->Vertices, pm.VertexCount());
     }
     if (auto *face_ids = R.try_get<MeshFaceIdBuffer>(e)) {
-        bool realloc = face_ids->Faces.Update(as_bytes(MeshRender::CreateFaceElementIds(pm)));
-        EnsureFaceIdBufferSlot(*face_ids, realloc);
+        face_ids->Faces.Update(as_bytes(MeshRender::CreateFaceElementIds(pm)));
     }
 
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-        bool realloc = buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
-        realloc |= buffers.Indices.Update(MeshRender::CreateNormalIndices(pm, element));
-        EnsureRenderBufferSlot(buffers, realloc);
+        buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
+        buffers.Indices.Update(MeshRender::CreateNormalIndices(pm, element));
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) {
-        bool realloc = buffers->Buffers.Vertices.Update(CreateBoxVertices(bbox));
-        EnsureRenderBufferSlot(buffers->Buffers, realloc);
+        buffers->Buffers.Vertices.Update(CreateBoxVertices(bbox));
     }
     UpdateRenderBuffers(e);
 }
@@ -1646,10 +1581,9 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         }
 
         auto &states = R.get<MeshElementStateBuffers>(e);
-        bool faces_realloc = states.Faces.Buffer.Update(as_bytes(face_states));
-        bool edges_realloc = states.Edges.Buffer.Update(as_bytes(edge_states));
-        bool verts_realloc = states.Vertices.Buffer.Update(as_bytes(vertex_states));
-        EnsureElementStateBufferSlots(*this, states, faces_realloc, edges_realloc, verts_realloc);
+        states.Faces.Buffer.Update(as_bytes(face_states));
+        states.Edges.Buffer.Update(as_bytes(edge_states));
+        states.Vertices.Buffer.Update(as_bytes(vertex_states));
         InvalidateCommandBuffer();
     };
 }
@@ -1683,9 +1617,9 @@ void Scene::RecordRenderCommandBuffer() {
     const auto make_pc = [](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
         const uint32_t vertex_count = static_cast<uint32_t>(render_buffers.Vertices.UsedSize / sizeof(Vertex3D));
         return DrawPushConstants{
-            render_buffers.VertexSlot,
-            render_buffers.IndexSlot,
-            models.Slot,
+            render_buffers.Vertices.Slot,
+            render_buffers.Indices.Slot,
+            models.Buffer.Slot,
             first_instance,
             InvalidSlot, // ObjectIdSlot - unused for regular rendering
             vertex_count,
@@ -1707,7 +1641,7 @@ void Scene::RecordRenderCommandBuffer() {
             auto &models = R.get<ModelsBuffer>(mesh_entity);
 
             auto pc = make_pc(render_buffers, models);
-            pc.ObjectIdSlot = models.ObjectIdSlot;
+            pc.ObjectIdSlot = models.ObjectIds.Slot;
             Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, e));
         }
     };
@@ -1774,8 +1708,8 @@ void Scene::RecordRenderCommandBuffer() {
             for (auto [_, mesh_buffers, models, face_ids, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshFaceIdBuffer, MeshElementStateBuffers>().each()) {
                 auto pc = make_pc(mesh_buffers.Faces, models);
-                pc.ObjectIdSlot = face_ids.Slot;
-                pc.ElementStateSlot = state_buffers.Faces.Slot;
+                pc.ObjectIdSlot = face_ids.Faces.Slot;
+                pc.ElementStateSlot = state_buffers.Faces.Buffer.Slot;
                 Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
             }
         }
@@ -1787,7 +1721,7 @@ void Scene::RecordRenderCommandBuffer() {
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
                 if (show_wireframe || selected_mesh_entities.contains(entity)) {
                     auto pc = make_pc(mesh_buffers.Edges, models);
-                    pc.ElementStateSlot = state_buffers.Edges.Slot;
+                    pc.ElementStateSlot = state_buffers.Edges.Buffer.Slot;
                     Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
                 }
             }
@@ -1803,7 +1737,7 @@ void Scene::RecordRenderCommandBuffer() {
                 const bool draw_excite = is_excite_mode && selected_mesh_entities.contains(entity);
                 if (!draw_selected && !draw_excite) continue;
                 auto pc = make_pc(mesh_buffers.Vertices, models);
-                pc.ElementStateSlot = state_buffers.Vertices.Slot;
+                pc.ElementStateSlot = state_buffers.Vertices.Buffer.Slot;
                 Draw(cb, pipeline, mesh_buffers.Vertices, models, pc);
             }
         }
@@ -1880,19 +1814,14 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
     auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
     for (const auto element : NormalElements) {
         if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
-            auto buffers = UniqueBuffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element));
-            EnsureRenderBufferSlot(buffers);
-            mesh_buffers.NormalIndicators.emplace(element, std::move(buffers));
+            mesh_buffers.NormalIndicators.emplace(element, UniqueBuffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element)));
         } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
-            ReleaseRenderBuffer(mesh_buffers.NormalIndicators.at(element));
             mesh_buffers.NormalIndicators.erase(element);
         }
     }
     if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         const auto &bbox = R.get<BBox>(mesh_entity);
-        auto buffers = UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices);
-        EnsureRenderBufferSlot(buffers);
-        R.emplace<BoundingBoxesBuffers>(mesh_entity, std::move(buffers));
+        R.emplace<BoundingBoxesBuffers>(mesh_entity, UniqueBuffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         R.remove<BoundingBoxesBuffers>(mesh_entity);
     }
@@ -1989,8 +1918,8 @@ void Scene::RenderSelectionPass() {
 
             auto &render_buffers = mesh_buffers.Faces;
             const DrawPushConstants pc{
-                render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, models.ObjectIdSlot,
-                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter
+                render_buffers.Vertices.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, models.ObjectIds.Slot,
+                SelectionHandles->HeadImage, UniqueBuffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter
             };
             Draw(cb, pipeline, render_buffers, models, pc);
         }
@@ -2012,7 +1941,7 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
         auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
         auto &models = R.get<ModelsBuffer>(mesh_entity);
         if (const auto model_index = GetModelBufferIndex(R, e)) {
-            DrawPushConstants pc{mesh_buffers.Faces.VertexSlot, mesh_buffers.Faces.IndexSlot, models.Slot, 0, models.ObjectIdSlot};
+            DrawPushConstants pc{mesh_buffers.Faces.Vertices.Slot, mesh_buffers.Faces.Indices.Slot, models.Buffer.Slot, 0, models.ObjectIds.Slot};
             Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *model_index);
         }
     }
@@ -2153,10 +2082,10 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
             auto &models = R.get<ModelsBuffer>(range.MeshEntity);
             auto &render_buffers = SelectionRenderBuffersForElement(mesh_buffers, element);
-            const uint32_t element_slot = element == Element::Face ? R.get<MeshFaceIdBuffer>(range.MeshEntity).Slot : InvalidSlot;
+            const uint32_t element_slot = element == Element::Face ? R.get<MeshFaceIdBuffer>(range.MeshEntity).Faces.Slot : InvalidSlot;
             const DrawPushConstants pc{
-                render_buffers.VertexSlot, render_buffers.IndexSlot, models.Slot, 0, element_slot,
-                SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, range.Offset
+                render_buffers.Vertices.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, element_slot,
+                SelectionHandles->HeadImage, UniqueBuffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, range.Offset
             };
             Draw(cb, pipeline, render_buffers, models, pc);
         }
@@ -2195,7 +2124,7 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
             .BoxMax = box_max,
             .ObjectCount = element_count,
             .HeadImageIndex = SelectionHandles->HeadImage,
-            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+            .SelectionNodesIndex = UniqueBuffers->SelectionNodeBuffer.Slot,
             .BoxResultIndex = SelectionHandles->BoxResult,
         },
         [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
@@ -2227,7 +2156,7 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
     if (const auto index = FindNearestSelectionElement(
             *UniqueBuffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
             Vk.Queue, *TransferFence, Vk.Device,
-            SelectionHandles->SelectionNodes, SelectionHandles->ClickElementResult, mouse_px, element_count
+            UniqueBuffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, element_count
         )) {
         return AnyHandle{element, *index};
     }
@@ -2251,14 +2180,14 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
     // Pass ElementStateSlot so shader filters to only selected (excitable) vertices.
     RenderSelectionPassWith(true, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);
-        DrawPushConstants pc{mesh_buffers.Vertices.VertexSlot, mesh_buffers.Vertices.IndexSlot, models.Slot, 0, InvalidSlot, SelectionHandles->HeadImage, SelectionHandles->SelectionNodes, SelectionHandles->SelectionCounter, 0, state_buffers.Vertices.Slot};
+        DrawPushConstants pc{mesh_buffers.Vertices.Vertices.Slot, mesh_buffers.Vertices.Indices.Slot, models.Buffer.Slot, 0, InvalidSlot, SelectionHandles->HeadImage, UniqueBuffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, 0, state_buffers.Vertices.Buffer.Slot};
         Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index);
     });
 
     return FindNearestSelectionElement(
         *UniqueBuffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
         Vk.Queue, *TransferFence, Vk.Device,
-        SelectionHandles->SelectionNodes, SelectionHandles->ClickElementResult, mouse_px, vertex_count
+        UniqueBuffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, vertex_count
     );
 }
 
@@ -2275,7 +2204,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
         ClickSelectPushConstants{
             .TargetPx = mouse_px,
             .HeadImageIndex = SelectionHandles->HeadImage,
-            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+            .SelectionNodesIndex = UniqueBuffers->SelectionNodeBuffer.Slot,
             .ClickResultIndex = SelectionHandles->ClickResult,
         },
         [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }
@@ -2328,7 +2257,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
             .BoxMax = box_max,
             .ObjectCount = object_count,
             .HeadImageIndex = SelectionHandles->HeadImage,
-            .SelectionNodesIndex = SelectionHandles->SelectionNodes,
+            .SelectionNodesIndex = UniqueBuffers->SelectionNodeBuffer.Slot,
             .BoxResultIndex = SelectionHandles->BoxResult,
         },
         [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
@@ -2358,19 +2287,11 @@ void Scene::UpdateSelectionDescriptors() {
     };
     writes.push_back(alloc.MakeImageWrite(handles.HeadImage, head_image_info));
 
-    const auto selection_nodes = UniqueBuffers->SelectionNodeBuffer.GetDescriptor();
-    const auto selection_counter = vk::DescriptorBufferInfo{*UniqueBuffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
-    const auto click_result = vk::DescriptorBufferInfo{*UniqueBuffers->ClickResultBuffer, 0, sizeof(ClickResult)};
-    const auto click_element_result = vk::DescriptorBufferInfo{
-        *UniqueBuffers->ClickElementResultBuffer,
-        0,
-        SceneUniqueBuffers::MaxClickElementGroups * sizeof(ClickElementCandidate)
-    };
+    const vk::DescriptorBufferInfo selection_counter{*UniqueBuffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
+    const vk::DescriptorBufferInfo click_result{*UniqueBuffers->ClickResultBuffer, 0, sizeof(ClickResult)};
+    const vk::DescriptorBufferInfo click_element_result{*UniqueBuffers->ClickElementResultBuffer, 0, SceneUniqueBuffers::MaxClickElementGroups * sizeof(ClickElementCandidate)};
     const auto box_result = UniqueBuffers->GetBoxSelectBitsetDescriptor();
-    const auto scene_ubo = UniqueBuffers->SceneUBO.GetDescriptor();
 
-    writes.push_back(alloc.MakeUniformWrite(SceneUBOSlot, scene_ubo));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionNodes, selection_nodes));
     writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionCounter, selection_counter));
     writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickResult, click_result));
     writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickElementResult, click_element_result));
@@ -2386,84 +2307,6 @@ void Scene::UpdateSelectionDescriptors() {
     writes.push_back(alloc.MakeSamplerWrite(handles.SilhouetteSampler, silhouette_sampler));
 
     Vk.Device.updateDescriptorSets(writes, {});
-}
-
-void Scene::EnsureRenderBufferSlot(RenderBuffers &rb, bool reallocated) {
-    if (!Slots || (rb.VertexSlot != InvalidSlot && !reallocated)) return;
-
-    if (rb.VertexSlot == InvalidSlot) rb.VertexSlot = Slots->Allocate(SlotType::VertexBuffer);
-    if (rb.IndexSlot == InvalidSlot) rb.IndexSlot = Slots->Allocate(SlotType::IndexBuffer);
-    const std::array writes{
-        Slots->MakeBufferWrite(SlotType::VertexBuffer, rb.VertexSlot, rb.Vertices.GetDescriptor()),
-        Slots->MakeBufferWrite(SlotType::IndexBuffer, rb.IndexSlot, rb.Indices.GetDescriptor()),
-    };
-    Vk.Device.updateDescriptorSets(writes, {});
-}
-
-void Scene::EnsureModelBufferSlot(ModelsBuffer &mb, bool reallocated) {
-    if (!Slots || (mb.Slot != InvalidSlot && !reallocated)) return;
-
-    if (mb.Slot == InvalidSlot) mb.Slot = Slots->Allocate(SlotType::ModelBuffer);
-    if (mb.ObjectIdSlot == InvalidSlot) mb.ObjectIdSlot = Slots->Allocate(SlotType::ObjectIdBuffer);
-    const std::array writes{
-        Slots->MakeBufferWrite(SlotType::ModelBuffer, mb.Slot, mb.Buffer.GetDescriptor()),
-        Slots->MakeBufferWrite(SlotType::ObjectIdBuffer, mb.ObjectIdSlot, mb.ObjectIds.GetDescriptor())
-    };
-    Vk.Device.updateDescriptorSets(writes, {});
-}
-
-void Scene::EnsureElementStateBufferSlot(ElementStateBuffer &buffer, bool reallocated) {
-    if (!Slots || (buffer.Slot != InvalidSlot && !reallocated)) return;
-
-    if (buffer.Slot == InvalidSlot) buffer.Slot = Slots->Allocate(SlotType::Buffer);
-    Vk.Device.updateDescriptorSets(Slots->MakeBufferWrite(SlotType::Buffer, buffer.Slot, buffer.Buffer.GetDescriptor()), {});
-}
-
-void Scene::EnsureFaceIdBufferSlot(MeshFaceIdBuffer &buffer, bool reallocated) {
-    if (!Slots || (buffer.Slot != InvalidSlot && !reallocated)) return;
-
-    if (buffer.Slot == InvalidSlot) buffer.Slot = Slots->Allocate(SlotType::ObjectIdBuffer);
-    Vk.Device.updateDescriptorSets(Slots->MakeBufferWrite(SlotType::ObjectIdBuffer, buffer.Slot, buffer.Faces.GetDescriptor()), {});
-}
-
-void Scene::ReleaseRenderBuffer(RenderBuffers &rb) {
-    if (!Slots) return;
-    if (rb.VertexSlot != InvalidSlot) {
-        Slots->Release(SlotType::VertexBuffer, rb.VertexSlot);
-        rb.VertexSlot = InvalidSlot;
-    }
-    if (rb.IndexSlot != InvalidSlot) {
-        Slots->Release(SlotType::IndexBuffer, rb.IndexSlot);
-        rb.IndexSlot = InvalidSlot;
-    }
-}
-
-void Scene::ReleaseModelBuffer(ModelsBuffer &mb) {
-    if (!Slots) return;
-    if (mb.Slot != InvalidSlot) {
-        Slots->Release(SlotType::ModelBuffer, mb.Slot);
-        mb.Slot = InvalidSlot;
-    }
-    if (mb.ObjectIdSlot != InvalidSlot) {
-        Slots->Release(SlotType::ObjectIdBuffer, mb.ObjectIdSlot);
-        mb.ObjectIdSlot = InvalidSlot;
-    }
-}
-
-void Scene::ReleaseElementStateBuffer(ElementStateBuffer &buffer) {
-    if (!Slots) return;
-    if (buffer.Slot != InvalidSlot) {
-        Slots->Release(SlotType::Buffer, buffer.Slot);
-        buffer.Slot = InvalidSlot;
-    }
-}
-
-void Scene::ReleaseFaceIdBuffer(MeshFaceIdBuffer &buffers) {
-    if (!Slots) return;
-    if (buffers.Slot != InvalidSlot) {
-        Slots->Release(SlotType::ObjectIdBuffer, buffers.Slot);
-        buffers.Slot = InvalidSlot;
-    }
 }
 
 void Scene::Interact() {
