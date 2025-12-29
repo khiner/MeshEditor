@@ -17,12 +17,12 @@
 #include <vulkan/vulkan_to_string.hpp>
 
 #include <array>
+#include <exception>
 #include <format>
 #include <iostream>
 #include <numeric>
 #include <ranges>
 #include <stack>
-#include <stdexcept>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::to;
 
@@ -278,7 +278,7 @@ bool PushFont(FontFamily family) {
 } // namespace MeshEditor
 */
 
-int main(int, char **) {
+void run() {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
     }
@@ -362,10 +362,7 @@ int main(int, char **) {
         .UseDynamicRendering = false,
         .Allocator = nullptr,
         .CheckVkResultFn = [](VkResult res) {
-            if (res != 0) {
-                std::println("Vulkan error: {}", int(res));
-                throw std::runtime_error(std::format("Vulkan error: {}", int(res)));
-            }
+            if (res != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(res)));
         },
         .MinAllocationSize = {},
         .CustomShaderVertCreateInfo = {},
@@ -620,6 +617,22 @@ int main(int, char **) {
 
     SDL_DestroyWindow(window);
     SDL_Quit();
+}
 
+int main(int, char **) {
+    std::set_terminate([]() {
+        try {
+            if (auto eptr = std::current_exception()) {
+                std::rethrow_exception(eptr);
+            }
+        } catch (const std::exception &e) {
+            std::println(stderr, "{}", e.what());
+        } catch (...) {
+            std::println(stderr, "Unhandled unknown exception");
+        }
+        std::abort();
+    });
+
+    run();
     return 0;
 }
