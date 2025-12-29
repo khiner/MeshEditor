@@ -18,29 +18,31 @@ uint64_t NextPowerOfTwo(uint64_t x) {
     return x + 1;
 }
 
-void ReserveStaging(UniqueBuffers &buffers, vk::DeviceSize required_size);
-void ReserveDirect(UniqueBuffers &buffers, vk::DeviceSize required_size);
+bool ReserveStaging(UniqueBuffers &buffers, vk::DeviceSize required_size);
+bool ReserveDirect(UniqueBuffers &buffers, vk::DeviceSize required_size);
 
-void UpdateStaging(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
-    if (data.empty()) return;
+bool UpdateStaging(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
+    if (data.empty()) return false;
     const auto required_size = offset + data.size();
-    ReserveStaging(buffers, required_size);
+    const bool reallocated = ReserveStaging(buffers, required_size);
     buffers.UsedSize = std::max(buffers.UsedSize, required_size);
     buffers.HostBuffer->Write(data, offset);
     buffers.Ctx.TransferCb->copyBuffer(**buffers.HostBuffer, *buffers.DeviceBuffer, vk::BufferCopy{offset, offset, data.size()});
+    return reallocated;
 }
 
-void UpdateDirect(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
-    if (data.empty()) return;
+bool UpdateDirect(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
+    if (data.empty()) return false;
     const auto required_size = offset + data.size();
-    ReserveDirect(buffers, required_size);
+    const bool reallocated = ReserveDirect(buffers, required_size);
     buffers.UsedSize = std::max(buffers.UsedSize, required_size);
     assert(!buffers.HostBuffer && "Direct buffer unexpectedly requires staging.");
     buffers.DeviceBuffer.Write(data, offset);
+    return reallocated;
 }
 
-void ReserveStaging(UniqueBuffers &buffers, vk::DeviceSize required_size) {
-    if (required_size <= buffers.DeviceBuffer.GetAllocatedSize()) return;
+bool ReserveStaging(UniqueBuffers &buffers, vk::DeviceSize required_size) {
+    if (required_size <= buffers.DeviceBuffer.GetAllocatedSize()) return false;
 
     UniqueBuffers new_buffer(buffers.Ctx, NextPowerOfTwo(required_size), buffers.Usage);
     assert(new_buffer.HostBuffer && "Staging buffer unexpectedly missing.");
@@ -50,10 +52,11 @@ void ReserveStaging(UniqueBuffers &buffers, vk::DeviceSize required_size) {
         buffers.Ctx.TransferCb->copyBuffer(*buffers.DeviceBuffer, *new_buffer.DeviceBuffer, vk::BufferCopy{0, 0, buffers.UsedSize});
     }
     buffers = std::move(new_buffer);
+    return true;
 }
 
-void ReserveDirect(UniqueBuffers &buffers, vk::DeviceSize required_size) {
-    if (required_size <= buffers.DeviceBuffer.GetAllocatedSize()) return;
+bool ReserveDirect(UniqueBuffers &buffers, vk::DeviceSize required_size) {
+    if (required_size <= buffers.DeviceBuffer.GetAllocatedSize()) return false;
 
     UniqueBuffers new_buffer(buffers.Ctx, NextPowerOfTwo(required_size), buffers.Usage);
     assert(!new_buffer.HostBuffer && "Direct buffer lost host-visible mapping.");
@@ -62,6 +65,7 @@ void ReserveDirect(UniqueBuffers &buffers, vk::DeviceSize required_size) {
         new_buffer.UsedSize = buffers.UsedSize;
     }
     buffers = std::move(new_buffer);
+    return true;
 }
 
 void InsertStaging(UniqueBuffers &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
@@ -148,8 +152,8 @@ UniqueBuffers &UniqueBuffers::operator=(UniqueBuffers &&other) {
     return *this;
 }
 
-void UniqueBuffers::Update(std::span<const std::byte> data, vk::DeviceSize offset) { ImplOps.Update(*this, data, offset); }
-void UniqueBuffers::Reserve(vk::DeviceSize required_size) { ImplOps.Reserve(*this, required_size); }
+bool UniqueBuffers::Update(std::span<const std::byte> data, vk::DeviceSize offset) { return ImplOps.Update(*this, data, offset); }
+bool UniqueBuffers::Reserve(vk::DeviceSize required_size) { return ImplOps.Reserve(*this, required_size); }
 void UniqueBuffers::Insert(std::span<const std::byte> data, vk::DeviceSize offset) { ImplOps.Insert(*this, data, offset); }
 void UniqueBuffers::Erase(vk::DeviceSize offset, vk::DeviceSize size) { ImplOps.Erase(*this, offset, size); }
 } // namespace mvk

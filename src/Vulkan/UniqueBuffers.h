@@ -49,11 +49,13 @@ struct UniqueBuffers {
     UniqueBuffers &operator=(UniqueBuffers &&);
 
     // Updates the buffer with the given data, growing it if necessary.
-    void Update(std::span<const std::byte>, vk::DeviceSize offset = 0);
+    // Returns true if the buffer was reallocated.
+    bool Update(std::span<const std::byte>, vk::DeviceSize offset = 0);
 
     // Grows the buffer if it's not big enough (to the next power of 2).
-    void Reserve(vk::DeviceSize);
-    template<typename T> void Update(const std::vector<T> &data) { Update(as_bytes(data)); }
+    // Returns true if the buffer was reallocated.
+    bool Reserve(vk::DeviceSize);
+    template<typename T> bool Update(const std::vector<T> &data) { return Update(as_bytes(data)); }
     // Insert a region of a buffer by moving the data at or after the region to the end of the region and increasing the buffer size.
     // **Does nothing if the buffer doesn't have enough enough space allocated.**
     void Insert(std::span<const std::byte>, vk::DeviceSize offset);
@@ -71,8 +73,8 @@ struct UniqueBuffers {
 
 private:
     void Retire();
-    using UpdateFn = void (*)(UniqueBuffers &, std::span<const std::byte>, vk::DeviceSize);
-    using ReserveFn = void (*)(UniqueBuffers &, vk::DeviceSize);
+    using UpdateFn = bool (*)(UniqueBuffers &, std::span<const std::byte>, vk::DeviceSize);
+    using ReserveFn = bool (*)(UniqueBuffers &, vk::DeviceSize);
     using InsertFn = void (*)(UniqueBuffers &, std::span<const std::byte>, vk::DeviceSize);
     using EraseFn = void (*)(UniqueBuffers &, vk::DeviceSize, vk::DeviceSize);
 

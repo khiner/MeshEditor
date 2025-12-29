@@ -134,7 +134,7 @@ struct Scene {
 
     void Destroy(entt::entity);
 
-    void SetVisible(entt::entity, bool);
+    void SetVisible(entt::entity, bool visible, bool buffer_reallocated = false);
 
     entt::entity GetMeshEntity(entt::entity) const;
     entt::entity GetActiveMeshEntity() const;
@@ -168,15 +168,14 @@ struct Scene {
 
     void UpdateRenderBuffers(entt::entity);
     void UpdateSelectionDescriptors();
-    void EnsureRenderBufferSlot(RenderBuffers &);
-    void EnsureModelBufferSlot(ModelsBuffer &);
-    void EnsureElementStateBufferSlot(ElementStateBuffer &);
-    void EnsureFaceIdBufferSlot(MeshFaceIdBuffer &);
+    void EnsureRenderBufferSlot(RenderBuffers &, bool reallocated = false);
+    void EnsureModelBufferSlot(ModelsBuffer &, bool reallocated = false);
+    void EnsureElementStateBufferSlot(ElementStateBuffer &, bool reallocated = false);
+    void EnsureFaceIdBufferSlot(MeshFaceIdBuffer &, bool reallocated = false);
     void ReleaseRenderBuffer(RenderBuffers &);
     void ReleaseModelBuffer(ModelsBuffer &);
     void ReleaseElementStateBuffer(ElementStateBuffer &);
     void ReleaseFaceIdBuffer(MeshFaceIdBuffer &);
-    void PrepareDescriptors();
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer() { CommandBufferDirty = NeedsRender = true; }
     void RequestRender() { NeedsRender = true; }

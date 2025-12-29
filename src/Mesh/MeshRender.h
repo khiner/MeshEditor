@@ -80,9 +80,7 @@ struct ElementStateBuffer {
 };
 
 struct MeshElementStateBuffers {
-    ElementStateBuffer Faces;
-    ElementStateBuffer Edges; // Two entries per edge (one per endpoint).
-    ElementStateBuffer Vertices;
+    ElementStateBuffer Faces, Edges, Vertices;
 };
 
 struct MeshFaceIdBuffer {

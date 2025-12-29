@@ -125,13 +125,13 @@ ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t coun
     auto states = MakeElementStates(count);
     return {mvk::UniqueBuffers{ctx, as_bytes(states), vk::BufferUsageFlagBits::eStorageBuffer}};
 }
-void ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
-    buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
+bool ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
+    return buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
 }
-void EnsureElementStateBufferSlots(Scene &scene, MeshElementStateBuffers &buffers) {
-    scene.EnsureElementStateBufferSlot(buffers.Faces);
-    scene.EnsureElementStateBufferSlot(buffers.Edges);
-    scene.EnsureElementStateBufferSlot(buffers.Vertices);
+void EnsureElementStateBufferSlots(Scene &scene, MeshElementStateBuffers &buffers, bool faces = false, bool edges = false, bool vertices = false) {
+    scene.EnsureElementStateBufferSlot(buffers.Faces, faces);
+    scene.EnsureElementStateBufferSlot(buffers.Edges, edges);
+    scene.EnsureElementStateBufferSlot(buffers.Vertices, vertices);
 }
 } // namespace
 
@@ -1232,7 +1232,7 @@ void UpdateVisibleObjectIds(entt::registry &r) {
 }
 } // namespace
 
-void Scene::SetVisible(entt::entity entity, bool visible) {
+void Scene::SetVisible(entt::entity entity, bool visible, bool buffer_reallocated) {
     const bool already_visible = R.all_of<Visible>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
@@ -1269,7 +1269,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
             }
         }
     }
-    EnsureModelBufferSlot(models);
+    EnsureModelBufferSlot(models, buffer_reallocated);
     UpdateVisibleObjectIds(R);
     InvalidateCommandBuffer();
 }
@@ -1337,9 +1337,9 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
     auto &models = R.get<ModelsBuffer>(mesh_entity);
-    models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
-    models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
-    SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
+    bool reallocated = models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
+    reallocated |= models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
+    SetVisible(instance_entity, true, reallocated); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
 
     switch (info.Select) {
@@ -1396,13 +1396,14 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
         R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
     }
     R.emplace<MeshInstance>(e_new, mesh_entity);
+    bool reallocated;
     {
         auto &models = R.get<ModelsBuffer>(mesh_entity);
-        models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
-        models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
+        reallocated = models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
+        reallocated |= models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
     }
     UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
-    SetVisible(e_new, !info || info->Visible);
+    SetVisible(e_new, !info || info->Visible, reallocated);
 
     if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
     else if (info->Select == MeshCreateInfo::SelectBehavior::Exclusive) Select(e_new);
@@ -1461,33 +1462,34 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 
     const auto &pm = R.get<Mesh>(e);
     auto &mesh_buffers = R.get<MeshBuffers>(e);
-    mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
-    mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
-    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
-    mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
-    mesh_buffers.Vertices.Vertices.Update(MeshRender::CreateVertexPoints(pm));
-    mesh_buffers.Vertices.Indices.Update(MeshRender::CreateVertexIndices(pm));
-    EnsureRenderBufferSlot(mesh_buffers.Faces);
-    EnsureRenderBufferSlot(mesh_buffers.Edges);
-    EnsureRenderBufferSlot(mesh_buffers.Vertices);
+    bool faces_realloc = mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
+    faces_realloc |= mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
+    bool edges_realloc = mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
+    edges_realloc |= mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
+    bool verts_realloc = mesh_buffers.Vertices.Vertices.Update(MeshRender::CreateVertexPoints(pm));
+    verts_realloc |= mesh_buffers.Vertices.Indices.Update(MeshRender::CreateVertexIndices(pm));
+    EnsureRenderBufferSlot(mesh_buffers.Faces, faces_realloc);
+    EnsureRenderBufferSlot(mesh_buffers.Edges, edges_realloc);
+    EnsureRenderBufferSlot(mesh_buffers.Vertices, verts_realloc);
     if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(e)) {
-        ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
-        ResetElementStateBuffer(state_buffers->Edges, pm.EdgeCount() * 2);
-        ResetElementStateBuffer(state_buffers->Vertices, pm.VertexCount());
-        EnsureElementStateBufferSlots(*this, *state_buffers);
+        bool state_faces = ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
+        bool state_edges = ResetElementStateBuffer(state_buffers->Edges, pm.EdgeCount() * 2);
+        bool state_verts = ResetElementStateBuffer(state_buffers->Vertices, pm.VertexCount());
+        EnsureElementStateBufferSlots(*this, *state_buffers, state_faces, state_edges, state_verts);
     }
     if (auto *face_ids = R.try_get<MeshFaceIdBuffer>(e)) {
-        face_ids->Faces.Update(as_bytes(MeshRender::CreateFaceElementIds(pm)));
-        EnsureFaceIdBufferSlot(*face_ids);
+        bool realloc = face_ids->Faces.Update(as_bytes(MeshRender::CreateFaceElementIds(pm)));
+        EnsureFaceIdBufferSlot(*face_ids, realloc);
     }
 
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-        buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
-        buffers.Indices.Update(MeshRender::CreateNormalIndices(pm, element));
+        bool realloc = buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
+        realloc |= buffers.Indices.Update(MeshRender::CreateNormalIndices(pm, element));
+        EnsureRenderBufferSlot(buffers, realloc);
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) {
-        buffers->Buffers.Vertices.Update(CreateBoxVertices(bbox));
-        // Box indices are always the same.
+        bool realloc = buffers->Buffers.Vertices.Update(CreateBoxVertices(bbox));
+        EnsureRenderBufferSlot(buffers->Buffers, realloc);
     }
     UpdateRenderBuffers(e);
 }
@@ -1644,10 +1646,10 @@ void Scene::UpdateRenderBuffers(entt::entity e) {
         }
 
         auto &states = R.get<MeshElementStateBuffers>(e);
-        states.Faces.Buffer.Update(as_bytes(face_states));
-        states.Edges.Buffer.Update(as_bytes(edge_states));
-        states.Vertices.Buffer.Update(as_bytes(vertex_states));
-        EnsureElementStateBufferSlots(*this, states);
+        bool faces_realloc = states.Faces.Buffer.Update(as_bytes(face_states));
+        bool edges_realloc = states.Edges.Buffer.Update(as_bytes(edge_states));
+        bool verts_realloc = states.Vertices.Buffer.Update(as_bytes(vertex_states));
+        EnsureElementStateBufferSlots(*this, states, faces_realloc, edges_realloc, verts_realloc);
         InvalidateCommandBuffer();
     };
 }
@@ -2386,8 +2388,8 @@ void Scene::UpdateSelectionDescriptors() {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
-void Scene::EnsureRenderBufferSlot(RenderBuffers &rb) {
-    if (!Slots) return;
+void Scene::EnsureRenderBufferSlot(RenderBuffers &rb, bool reallocated) {
+    if (!Slots || (rb.VertexSlot != InvalidSlot && !reallocated)) return;
 
     if (rb.VertexSlot == InvalidSlot) rb.VertexSlot = Slots->Allocate(SlotType::VertexBuffer);
     if (rb.IndexSlot == InvalidSlot) rb.IndexSlot = Slots->Allocate(SlotType::IndexBuffer);
@@ -2398,8 +2400,8 @@ void Scene::EnsureRenderBufferSlot(RenderBuffers &rb) {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
-void Scene::EnsureModelBufferSlot(ModelsBuffer &mb) {
-    if (!Slots) return;
+void Scene::EnsureModelBufferSlot(ModelsBuffer &mb, bool reallocated) {
+    if (!Slots || (mb.Slot != InvalidSlot && !reallocated)) return;
 
     if (mb.Slot == InvalidSlot) mb.Slot = Slots->Allocate(SlotType::ModelBuffer);
     if (mb.ObjectIdSlot == InvalidSlot) mb.ObjectIdSlot = Slots->Allocate(SlotType::ObjectIdBuffer);
@@ -2410,15 +2412,15 @@ void Scene::EnsureModelBufferSlot(ModelsBuffer &mb) {
     Vk.Device.updateDescriptorSets(writes, {});
 }
 
-void Scene::EnsureElementStateBufferSlot(ElementStateBuffer &buffer) {
-    if (!Slots) return;
+void Scene::EnsureElementStateBufferSlot(ElementStateBuffer &buffer, bool reallocated) {
+    if (!Slots || (buffer.Slot != InvalidSlot && !reallocated)) return;
 
     if (buffer.Slot == InvalidSlot) buffer.Slot = Slots->Allocate(SlotType::Buffer);
     Vk.Device.updateDescriptorSets(Slots->MakeBufferWrite(SlotType::Buffer, buffer.Slot, buffer.Buffer.GetDescriptor()), {});
 }
 
-void Scene::EnsureFaceIdBufferSlot(MeshFaceIdBuffer &buffer) {
-    if (!Slots) return;
+void Scene::EnsureFaceIdBufferSlot(MeshFaceIdBuffer &buffer, bool reallocated) {
+    if (!Slots || (buffer.Slot != InvalidSlot && !reallocated)) return;
 
     if (buffer.Slot == InvalidSlot) buffer.Slot = Slots->Allocate(SlotType::ObjectIdBuffer);
     Vk.Device.updateDescriptorSets(Slots->MakeBufferWrite(SlotType::ObjectIdBuffer, buffer.Slot, buffer.Faces.GetDescriptor()), {});
@@ -2461,26 +2463,6 @@ void Scene::ReleaseFaceIdBuffer(MeshFaceIdBuffer &buffers) {
     if (buffers.Slot != InvalidSlot) {
         Slots->Release(SlotType::ObjectIdBuffer, buffers.Slot);
         buffers.Slot = InvalidSlot;
-    }
-}
-
-void Scene::PrepareDescriptors() {
-    // Ensure all render resources have valid descriptor slots before command buffer recording.
-    for (auto [_, mesh_buffers, models, face_ids, state_buffers] :
-         R.view<MeshBuffers, ModelsBuffer, MeshFaceIdBuffer, MeshElementStateBuffers>().each()) {
-        EnsureRenderBufferSlot(mesh_buffers.Faces);
-        EnsureRenderBufferSlot(mesh_buffers.Edges);
-        EnsureRenderBufferSlot(mesh_buffers.Vertices);
-        for (auto &[_, buffers] : mesh_buffers.NormalIndicators) EnsureRenderBufferSlot(buffers);
-        EnsureModelBufferSlot(models);
-        EnsureFaceIdBufferSlot(face_ids);
-        EnsureElementStateBufferSlot(state_buffers.Faces);
-        EnsureElementStateBufferSlot(state_buffers.Edges);
-        EnsureElementStateBufferSlot(state_buffers.Vertices);
-    }
-    for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-        EnsureRenderBufferSlot(bounding_boxes.Buffers);
-        EnsureModelBufferSlot(models);
     }
 }
 
@@ -2713,7 +2695,6 @@ bool Scene::RenderViewport() {
     transfer_cb.end();
 
     if (CommandBufferDirty) {
-        PrepareDescriptors();
         RecordRenderCommandBuffer();
         CommandBufferDirty = false;
     }
