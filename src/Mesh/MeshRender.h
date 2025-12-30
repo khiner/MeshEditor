@@ -21,11 +21,6 @@ struct Vertex3D {
     vec3 Normal;
 };
 
-struct MeshRenderBuffers {
-    std::vector<Vertex3D> Vertices;
-    std::vector<uint> Indices;
-};
-
 struct Visible {};
 
 struct RenderInstance {
@@ -43,7 +38,7 @@ struct ModelsBuffer {
 // Component for entities that render a mesh via instancing.
 // References an entity with Mesh+MeshBuffers+ModelsBuffer components.
 struct MeshInstance {
-    entt::entity MeshEntity{null_entity};
+    entt::entity MeshEntity;
 };
 
 struct RenderBuffers {
@@ -109,16 +104,16 @@ std::vector<Vertex3D> CreateEdgeVertices(
 std::vector<Vertex3D> CreateVertexPoints(
     const Mesh &mesh
 );
-std::vector<uint> CreateFaceIndices(const Mesh &mesh);
-std::vector<uint> CreateEdgeIndices(const Mesh &mesh);
-std::vector<uint> CreateVertexIndices(const Mesh &mesh);
-std::vector<uint32_t> CreateFaceElementIds(const Mesh &mesh);
+std::vector<uint> CreateFaceIndices(const Mesh &);
+std::vector<uint> CreateEdgeIndices(const Mesh &);
+std::vector<uint> CreateVertexIndices(const Mesh &);
+std::vector<uint32_t> CreateFaceElementIds(const Mesh &);
 
-std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, he::Element element);
-std::vector<uint> CreateNormalIndices(const Mesh &mesh, he::Element element);
+std::vector<Vertex3D> CreateNormalVertices(const Mesh &, he::Element);
+std::vector<uint> CreateNormalIndices(const Mesh &, he::Element);
 
-std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &mesh);
+std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &);
 
-BBox ComputeBoundingBox(const Mesh &mesh);
+BBox ComputeBoundingBox(const Mesh &);
 
 } // namespace MeshRender

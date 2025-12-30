@@ -29,12 +29,12 @@ struct BindlessConfig {
 };
 
 struct DescriptorSlots {
-    DescriptorSlots(vk::Device device, const BindlessConfig &config);
+    DescriptorSlots(vk::Device, const BindlessConfig &);
 
-    uint32_t Allocate(SlotType type);
-    void Release(SlotType type, uint32_t slot);
+    uint32_t Allocate(SlotType);
+    void Release(SlotType, uint32_t slot);
 
-    vk::WriteDescriptorSet MakeBufferWrite(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &) const;
+    vk::WriteDescriptorSet MakeBufferWrite(SlotType, uint32_t slot, const vk::DescriptorBufferInfo &) const;
     vk::WriteDescriptorSet MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;
     vk::WriteDescriptorSet MakeUniformWrite(uint32_t slot, const vk::DescriptorBufferInfo &) const;
     vk::WriteDescriptorSet MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;

@@ -128,6 +128,17 @@ ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t coun
 void ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
     buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
 }
+
+// Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
+std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt::registry &r) {
+    std::unordered_map<entt::entity, entt::entity> primaries;
+    const auto active = FindActiveEntity(r);
+    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
+        auto &primary = primaries[mi.MeshEntity];
+        if (primary == entt::entity{} || e == active) primary = e;
+    }
+    return primaries;
+}
 } // namespace
 
 struct MeshSelection {
@@ -407,7 +418,7 @@ struct SceneBuffer {
     mvk::BufferContext Ctx;
     mvk::Buffer SceneUBO;
     mvk::Buffer SelectionNodeBuffer;
-    // CPU readback buffers (host-visible, read via GetData())
+    // CPU readback buffers (host-visible)
     mvk::Buffer SelectionCounterBuffer, ClickResultBuffer, ClickElementResultBuffer, BoxSelectBitsetBuffer;
 };
 
@@ -431,7 +442,6 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     {
         // Write the bitmap into a temporary staging buffer.
         mvk::Buffer staging_buffer{Buffer->Ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
-
         // Transition the image layout to be ready for data transfer.
         cb.pipelineBarrier(
             vk::PipelineStageFlagBits::eTopOfPipe,
@@ -1103,7 +1113,6 @@ void Scene::OnUpdateExcitable(entt::registry &r, entt::entity e) {
     UpdateRenderBuffers(r.get<MeshInstance>(e).MeshEntity);
 }
 void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
-    // The last excitable entity is being destroyed.
     if (r.storage<Excitable>().size() == 1) {
         if (InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
         InteractionModes.erase(InteractionMode::Excite);
@@ -1627,27 +1636,42 @@ void Scene::RecordRenderCommandBuffer() {
         };
     };
 
-    auto render_meshes_with_ids = [&](const PipelineRenderer &renderer, SPT spt) {
-        const auto &pipeline = renderer.Bind(cb, spt);
-        for (const auto e : R.view<Selected>()) {
-            const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-            auto &render_buffers = R.get<MeshBuffers>(mesh_entity).Faces;
-            auto &models = R.get<ModelsBuffer>(mesh_entity);
+    // In Edit mode, only primary edit instance per selected mesh gets Edit visuals.
+    // Other selected instances render normally with silhouettes.
+    const bool is_edit_mode = InteractionMode == InteractionMode::Edit;
+    const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
+    std::unordered_set<entt::entity> silhouette_instances;
+    if (is_edit_mode) {
+        for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+            if (primary_edit_instances.at(mi.MeshEntity) != e) silhouette_instances.insert(e);
+        }
+    }
 
-            auto pc = make_pc(render_buffers, models);
+    auto render_silhouette_instances = [&](const PipelineRenderer &renderer, SPT spt) {
+        const auto &pipeline = renderer.Bind(cb, spt);
+        auto render = [&](entt::entity e) {
+            const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+            auto &buffers = R.get<MeshBuffers>(mesh_entity).Faces;
+            auto &models = R.get<ModelsBuffer>(mesh_entity);
+            auto pc = make_pc(buffers, models);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
-            Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, e));
+            Draw(cb, pipeline, buffers, models, pc, *GetModelBufferIndex(R, e));
+        };
+        if (is_edit_mode) {
+            for (const auto e : silhouette_instances) render(e);
+        } else {
+            for (const auto e : R.view<Selected>()) render(e);
         }
     };
 
-    const bool render_silhouette = !R.view<Selected>().empty() && InteractionMode == InteractionMode::Object;
-    // Pass 1: Silhouette depth/object rendering (selected meshes only, for visual outline)
-    if (render_silhouette) {
+    const bool render_silhouette = !R.view<Selected>().empty() &&
+        (InteractionMode == InteractionMode::Object || !silhouette_instances.empty());
+    if (render_silhouette) { // Silhouette depth/object pass
         const auto &silhouette = Pipelines->Silhouette;
         static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
-        render_meshes_with_ids(silhouette.Renderer, SPT::SilhouetteDepthObject);
+        render_silhouette_instances(silhouette.Renderer, SPT::SilhouetteDepthObject);
         cb.endRenderPass();
 
         const auto &silhouette_edge = Pipelines->SilhouetteEdge;
@@ -1682,57 +1706,65 @@ void Scene::RecordRenderCommandBuffer() {
 
     { // Meshes
         const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-        std::unordered_set<entt::entity> selected_mesh_entities;
-        for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) selected_mesh_entities.emplace(mi.MeshEntity);
-
-        const bool is_edit_mode = InteractionMode == InteractionMode::Edit;
         const bool is_excite_mode = InteractionMode == InteractionMode::Excite;
         const bool show_solid = ViewportShading == ViewportShadingMode::Solid;
         const bool show_wireframe = ViewportShading == ViewportShadingMode::Wireframe;
+
+        std::unordered_set<entt::entity> excitable_mesh_entities;
         if (is_excite_mode) {
-            for (const auto [_, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
-                (void)excitable;
-                selected_mesh_entities.emplace(mi.MeshEntity);
-            }
+            for (const auto [e, mi, excitable] : R.view<const MeshInstance, const Excitable>().each())
+                excitable_mesh_entities.emplace(mi.MeshEntity);
         }
 
         // Solid faces
         if (show_solid) {
             const auto &pipeline = main.Renderer.Bind(cb, fill_pipeline);
-            for (auto [_, mesh_buffers, models, face_ids, state_buffers] :
+            for (auto [entity, mesh_buffers, models, face_ids, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshFaceIdBuffer, MeshElementStateBuffers>().each()) {
                 auto pc = make_pc(mesh_buffers.Faces, models);
                 pc.ObjectIdSlot = face_ids.Faces.Slot;
-                pc.ElementStateSlot = state_buffers.Faces.Buffer.Slot;
-                Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
+                if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
+                    // Draw primary with element state first, then all without (depth LESS won't overwrite)
+                    pc.ElementStateSlot = state_buffers.Faces.Buffer.Slot;
+                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *GetModelBufferIndex(R, it->second));
+                    pc.ElementStateSlot = InvalidSlot;
+                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
+                } else {
+                    pc.ElementStateSlot = state_buffers.Faces.Buffer.Slot;
+                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
+                }
             }
         }
 
-        // Wireframe edges (wireframe mode or overlay for selected/excitable meshes in edit/excite mode)
+        // Wireframe edges
         if (show_wireframe || is_edit_mode || is_excite_mode) {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Line);
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
-                if (show_wireframe || selected_mesh_entities.contains(entity)) {
-                    auto pc = make_pc(mesh_buffers.Edges, models);
-                    pc.ElementStateSlot = state_buffers.Edges.Buffer.Slot;
+                auto pc = make_pc(mesh_buffers.Edges, models);
+                pc.ElementStateSlot = state_buffers.Edges.Buffer.Slot;
+                if (show_wireframe) {
+                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
+                } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
+                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc, *GetModelBufferIndex(R, it->second));
+                } else if (excitable_mesh_entities.contains(entity)) {
                     Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
                 }
             }
         }
 
-        // Vertex points (selected meshes in vertex edit mode, or excitable meshes in excite mode)
-        const bool show_vertex_points = (is_edit_mode && EditMode == Element::Vertex) || is_excite_mode;
-        if (show_vertex_points) {
+        // Vertex points
+        if ((is_edit_mode && EditMode == Element::Vertex) || is_excite_mode) {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Point);
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
-                const bool draw_selected = is_edit_mode && EditMode == Element::Vertex && selected_mesh_entities.contains(entity);
-                const bool draw_excite = is_excite_mode && selected_mesh_entities.contains(entity);
-                if (!draw_selected && !draw_excite) continue;
                 auto pc = make_pc(mesh_buffers.Vertices, models);
                 pc.ElementStateSlot = state_buffers.Vertices.Buffer.Slot;
-                Draw(cb, pipeline, mesh_buffers.Vertices, models, pc);
+                if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
+                    Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, *GetModelBufferIndex(R, it->second));
+                } else if (excitable_mesh_entities.contains(entity)) {
+                    Draw(cb, pipeline, mesh_buffers.Vertices, models, pc);
+                }
             }
         }
     }
@@ -1740,10 +1772,14 @@ void Scene::RecordRenderCommandBuffer() {
     // Silhouette edge color (rendered ontop of meshes)
     if (render_silhouette) {
         const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
-        const auto active_entity = FindActiveEntity(R);
-        const auto active_object_id = active_entity != entt::null && R.all_of<Visible>(active_entity) ?
-            R.get<RenderInstance>(active_entity).ObjectId :
-            0;
+        // In Edit mode, never show active silhouette - only selected (non-active) silhouettes
+        uint32_t active_object_id = 0;
+        if (!is_edit_mode) {
+            const auto active_entity = FindActiveEntity(R);
+            active_object_id = active_entity != entt::null && R.all_of<Visible>(active_entity) ?
+                R.get<RenderInstance>(active_entity).ObjectId :
+                0;
+        }
         struct SilhouetteEdgeColorPushConstants {
             uint32_t Manipulating;
             uint32_t ObjectSamplerIndex;
@@ -1903,6 +1939,10 @@ struct Timer {
 void Scene::RenderSelectionPass() {
     const Timer timer{"RenderSelectionPass"};
 
+    const auto primary_edit_instances = InteractionMode == InteractionMode::Edit ?
+        ComputePrimaryEditInstances(R) :
+        std::unordered_map<entt::entity, entt::entity>{};
+
     // Object selection never uses depth testing - we want all visible pixels regardless of occlusion
     RenderSelectionPassWith(false, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionFragmentXRay);
@@ -1915,7 +1955,11 @@ void Scene::RenderSelectionPass() {
                 render_buffers.Vertices.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, models.ObjectIds.Slot,
                 SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter
             };
-            Draw(cb, pipeline, render_buffers, models, pc);
+            if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
+                Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, it->second));
+            } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
+                Draw(cb, pipeline, render_buffers, models, pc);
+            }
         }
     });
 
@@ -2068,6 +2112,7 @@ std::optional<uint32_t> FindNearestSelectionElement(
 void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element) {
     if (ranges.empty() || element == Element::None) return;
 
+    const auto primary_edit_instances = ComputePrimaryEditInstances(R);
     const Timer timer{"RenderEditSelectionPass"};
     const bool xray_selection = SelectionXRay || ViewportShading == ViewportShadingMode::Wireframe;
     RenderSelectionPassWith(!xray_selection, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
@@ -2081,7 +2126,11 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                 render_buffers.Vertices.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, element_slot,
                 SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, range.Offset
             };
-            Draw(cb, pipeline, render_buffers, models, pc);
+            if (auto it = primary_edit_instances.find(range.MeshEntity); it != primary_edit_instances.end()) {
+                Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, it->second));
+            } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
+                Draw(cb, pipeline, render_buffers, models, pc);
+            }
         }
     });
 }
@@ -2169,9 +2218,6 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
     auto &models = R.get<ModelsBuffer>(mesh_entity);
     auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
     const auto model_index = R.get<RenderInstance>(instance_entity).BufferIndex;
-
-    // Render vertices to selection buffer with depth occlusion.
-    // Pass ElementStateSlot so shader filters to only selected (excitable) vertices.
     RenderSelectionPassWith(true, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);
         DrawPushConstants pc{mesh_buffers.Vertices.Vertices.Slot, mesh_buffers.Vertices.Indices.Slot, models.Buffer.Slot, 0, InvalidSlot, SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, 0, state_buffers.Vertices.Buffer.Slot};
@@ -2204,7 +2250,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
         [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }
     );
 
-    // Step 3: convert click hits to entities.
+    // Convert click hits to entities.
     const auto &result = Buffer->GetClickResult();
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
     auto hits = result.Hits //
@@ -2381,8 +2427,10 @@ void Scene::Interact() {
                 }
 
                 Timer timer{"BoxSelectElements (all)"};
-                std::unordered_set<entt::entity> mesh_entities;
-                for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) mesh_entities.emplace(mi.MeshEntity);
+                std::unordered_set<entt::entity> mesh_entities; // Mesh entities of selected instances
+                for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                    mesh_entities.insert(mi.MeshEntity);
+                }
                 std::vector<ElementRange> ranges;
                 ranges.reserve(mesh_entities.size());
                 uint32_t offset = 0;
@@ -2390,7 +2438,7 @@ void Scene::Interact() {
                     const auto &mesh = R.get<Mesh>(mesh_entity);
                     const uint32_t count = GetElementCount(mesh, EditMode);
                     if (count == 0) continue;
-                    ranges.emplace_back(mesh_entity, offset, count);
+                    ranges.push_back({mesh_entity, offset, count});
                     offset += count;
                 }
 
@@ -2499,7 +2547,6 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     Main.SetExtent(extent, Device, PhysicalDevice, Samples);
     Silhouette.SetExtent(extent, Device, PhysicalDevice);
     SilhouetteEdge.SetExtent(extent, Device, PhysicalDevice);
-    // SelectionFragment uses silhouette's depth buffer for element occlusion
     SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);
 };
 
@@ -2803,8 +2850,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     Indent();
 
     entt::entity activate_entity = entt::null, toggle_selected = entt::null;
-
-    // Scene graph hierarchy (for debugging/future Ctrl+P parenting feature)
     if (const auto *node = R.try_get<SceneNode>(active_entity)) {
         if (auto parent_entity = node->Parent; parent_entity != entt::null) {
             AlignTextToFramePadding();
