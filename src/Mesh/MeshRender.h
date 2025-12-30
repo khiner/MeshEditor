@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Vulkan/UniqueBuffers.h"
+#include "../Vulkan/Buffer.h"
 #include "BBox.h"
 #include "Mesh.h"
 #include "mesh/Handle.h"
@@ -36,8 +36,8 @@ struct RenderInstance {
 // Stored on mesh entities.
 // Holds the `WorldMatrix` of all instances of the mesh.
 struct ModelsBuffer {
-    mvk::UniqueBuffers Buffer;
-    mvk::UniqueBuffers ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
+    mvk::Buffer Buffer;
+    mvk::Buffer ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
 };
 
 // Component for entities that render a mesh via instancing.
@@ -47,13 +47,13 @@ struct MeshInstance {
 };
 
 struct RenderBuffers {
-    RenderBuffers(mvk::UniqueBuffers &&vertices, mvk::UniqueBuffers &&indices)
+    RenderBuffers(mvk::Buffer &&vertices, mvk::Buffer &&indices)
         : Vertices(std::move(vertices)), Indices(std::move(indices)) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
-    mvk::UniqueBuffers Vertices, Indices;
+    mvk::Buffer Vertices, Indices;
 };
 
 struct BoundingBoxesBuffers {
@@ -70,7 +70,7 @@ struct MeshBuffers {
 };
 
 struct ElementStateBuffer {
-    mvk::UniqueBuffers Buffer;
+    mvk::Buffer Buffer;
 };
 
 struct MeshElementStateBuffers {
@@ -78,7 +78,7 @@ struct MeshElementStateBuffers {
 };
 
 struct MeshFaceIdBuffer {
-    mvk::UniqueBuffers Faces;
+    mvk::Buffer Faces;
 };
 
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).

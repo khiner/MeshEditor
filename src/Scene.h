@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Camera.h"
-#include "Slots.h"
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "mesh/Handle.h"
@@ -97,7 +96,7 @@ inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice
 
 struct SvgResource;
 struct ScenePipelines;
-struct SceneUniqueBuffers;
+struct SceneBuffer;
 struct DescriptorSlots;
 
 struct SceneVulkanResources {
@@ -218,7 +217,7 @@ private:
     uint SilhouetteEdgeWidth{2};
 
     std::unique_ptr<ScenePipelines> Pipelines;
-    std::unique_ptr<SceneUniqueBuffers> UniqueBuffers;
+    std::unique_ptr<SceneBuffer> Buffer;
 
     enum class SelectionMode { Click,
                                Box };
