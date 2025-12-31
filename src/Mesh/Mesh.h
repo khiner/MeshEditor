@@ -1,13 +1,16 @@
 #pragma once
 
 #include "Handle.h"
-#include "numeric/vec3.h"
+#include "MeshData.h"
 #include "numeric/vec4.h"
 
-#include <filesystem>
-#include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
+
+using uint = uint32_t;
+
+struct MeshStore;
 
 // Half-edge polymesh data structure
 struct Mesh {
@@ -18,24 +21,25 @@ struct Mesh {
 
     static constexpr vec4 DefaultMeshColor{0.7, 0.7, 0.7, 1};
 
-    Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces);
+    Mesh(MeshStore &, uint32_t store_id, std::vector<std::vector<uint>> &&faces);
 
-    // obj/ply
-    static std::optional<Mesh> Load(const std::filesystem::path &);
+    Mesh(const Mesh &) = delete;
+    Mesh &operator=(const Mesh &) = delete;
+    Mesh(Mesh &&) noexcept;
+    Mesh &operator=(Mesh &&) noexcept;
+    ~Mesh();
 
-    uint VertexCount() const { return Positions.size(); }
+    uint VertexCount() const { return Vertices.size(); }
     uint EdgeCount() const { return Edges.size(); }
     uint FaceCount() const { return Faces.size(); }
     uint HalfEdgeCount() const { return Halfedges.size(); }
 
-    const vec3 &GetPosition(VH vh) const { return Positions[*vh]; }
-    const float *GetPositionData() const { return &Positions[0][0]; }
+    const vec3 &GetPosition(VH vh) const { return Vertices[*vh].Position; }
 
-    const vec3 &GetNormal(VH vh) const { return Normals[*vh]; }
+    const vec3 &GetNormal(VH vh) const { return Vertices[*vh].Normal; }
     const vec3 &GetNormal(FH fh) const { return Faces[*fh].Normal; }
 
-    vec4 GetColor() const { return Color; }
-    void SetColor(vec4 color) { Color = color; }
+    MeshData ToMeshData() const;
 
     // Halfedge navigation
     HH GetHalfedge(EH eh, uint i) const {
@@ -220,9 +224,11 @@ private:
         vec3 Normal{0};
     };
 
-    // Vertex data
-    std::vector<vec3> Positions;
-    std::vector<vec3> Normals;
+    // Vertex data (ranges stay stable until a mesh resizes its vertex count)
+    static constexpr uint32_t InvalidStoreId{~0u};
+    MeshStore *Store{};
+    uint32_t StoreId{InvalidStoreId};
+    std::span<const Vertex3D> Vertices;
     std::vector<HH> OutgoingHalfedges;
     std::vector<Halfedge> Halfedges;
     std::vector<EH> HalfedgeToEdge; // Separate mapping for better cache locality
@@ -233,6 +239,4 @@ private:
 
     void ComputeVertexNormals();
     void ComputeFaceNormals();
-
-    Mesh WithDeduplicatedVertices() const;
 };

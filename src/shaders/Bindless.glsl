@@ -51,6 +51,6 @@ layout(push_constant) uniform PushConstants {
     uint ElementIdOffset;
     uint ElementStateSlot;
     uint PointFlags;
-    uint Padding0;
+    uint VertexOffset;
     vec4 LineColor;
 } pc;

@@ -1,25 +1,18 @@
 #pragma once
 
-#include "../Vulkan/Buffer.h"
+#include "../Vulkan/Megabuffer.h"
 #include "BBox.h"
-#include "Mesh.h"
+#include "MeshData.h"
 #include "mesh/Handle.h"
-#include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
 #include <entt_fwd.h>
 
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 struct WorldMatrix;
-
-// Submitted to shaders
-struct Vertex3D {
-    vec3 Position;
-    vec3 Normal;
-};
+struct Mesh;
 
 struct Visible {};
 
@@ -42,18 +35,21 @@ struct MeshInstance {
 };
 
 struct RenderBuffers {
-    RenderBuffers(mvk::Buffer &&vertices, mvk::Buffer &&indices)
-        : Vertices(std::move(vertices)), Indices(std::move(indices)) {}
+    RenderBuffers(uint32_t vertex_range_id, mvk::Buffer &&indices)
+        : VertexRangeId(vertex_range_id), Indices(std::move(indices)) {}
     RenderBuffers(RenderBuffers &&) = default;
+    RenderBuffers &operator=(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
-    mvk::Buffer Vertices, Indices;
+    uint32_t VertexRangeId{InvalidSlot};
+    mvk::Buffer Indices;
 };
 
 struct BoundingBoxesBuffers {
     RenderBuffers Buffers;
 };
+
 struct MeshBuffers {
     MeshBuffers(RenderBuffers &&faces, RenderBuffers &&edges, RenderBuffers &&vertices)
         : Faces{std::move(faces)}, Edges{std::move(edges)}, Vertices{std::move(vertices)} {}
@@ -67,11 +63,9 @@ struct MeshBuffers {
 struct ElementStateBuffer {
     mvk::Buffer Buffer;
 };
-
 struct MeshElementStateBuffers {
     ElementStateBuffer Faces, Edges, Vertices;
 };
-
 struct MeshFaceIdBuffer {
     mvk::Buffer Faces;
 };
@@ -94,16 +88,9 @@ constexpr uint32_t ElementStateSelected{1u << 0};
 constexpr uint32_t ElementStateActive{1u << 1};
 
 // Create vertices for faces (with optional smooth/flat shading) or edges
-std::vector<Vertex3D> CreateFaceVertices(
-    const Mesh &mesh,
-    bool smooth_shading
-);
-std::vector<Vertex3D> CreateEdgeVertices(
-    const Mesh &mesh
-);
-std::vector<Vertex3D> CreateVertexPoints(
-    const Mesh &mesh
-);
+std::vector<Vertex3D> CreateFaceVertices(const Mesh &, bool smooth_shading);
+std::vector<Vertex3D> CreateEdgeVertices(const Mesh &);
+std::vector<Vertex3D> CreateVertexPoints(const Mesh &);
 std::vector<uint> CreateFaceIndices(const Mesh &);
 std::vector<uint> CreateEdgeIndices(const Mesh &);
 std::vector<uint> CreateVertexIndices(const Mesh &);
@@ -112,8 +99,49 @@ std::vector<uint32_t> CreateFaceElementIds(const Mesh &);
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &, he::Element);
 std::vector<uint> CreateNormalIndices(const Mesh &, he::Element);
 
-std::vector<BBox> CreateFaceBoundingBoxes(const Mesh &);
-
 BBox ComputeBoundingBox(const Mesh &);
 
 } // namespace MeshRender
+
+struct VertexMegabuffer {
+    explicit VertexMegabuffer(mvk::BufferContext &ctx)
+        : Storage(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer),
+          Buffer(Storage.Buffer) {}
+
+    uint32_t Allocate(std::span<const Vertex3D> vertices) {
+        uint32_t id = AcquireId();
+        Ranges[id] = Storage.Allocate(vertices);
+        return id;
+    }
+
+    void Update(uint32_t id, std::span<const Vertex3D> vertices) {
+        if (id == InvalidSlot) return;
+        Storage.Update(Ranges.at(id), vertices);
+    }
+
+    void Release(uint32_t id) {
+        if (id == InvalidSlot) return;
+        Storage.Release(Ranges.at(id));
+        Ranges[id] = {};
+        FreeIds.emplace_back(id);
+    }
+
+    BufferRange Get(uint32_t id) const { return Ranges.at(id); }
+
+    Megabuffer<Vertex3D> Storage;
+    mvk::Buffer &Buffer;
+
+private:
+    std::vector<BufferRange> Ranges;
+    std::vector<uint32_t> FreeIds;
+
+    uint32_t AcquireId() {
+        if (!FreeIds.empty()) {
+            const uint32_t id = FreeIds.back();
+            FreeIds.pop_back();
+            return id;
+        }
+        Ranges.emplace_back();
+        return static_cast<uint32_t>(Ranges.size() - 1);
+    }
+};

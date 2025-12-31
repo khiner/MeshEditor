@@ -8,7 +8,7 @@ layout(location = 2) out vec4 Color;
 
 void main() {
     const uint idx = IndexBuffers[pc.IndexSlot].Indices[gl_VertexIndex];
-    const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx];
+    const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx + pc.VertexOffset];
     const WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[pc.FirstInstance + gl_InstanceIndex];
 
     WorldNormal = mat3(world.MInv) * vert.Normal;

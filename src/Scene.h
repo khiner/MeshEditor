@@ -4,6 +4,7 @@
 #include "TransformGizmo.h"
 #include "Vulkan/Image.h"
 #include "mesh/Handle.h"
+#include "mesh/MeshStore.h"
 #include "numeric/vec2.h"
 #include "numeric/vec4.h"
 
@@ -107,7 +108,6 @@ struct SceneVulkanResources {
     vk::Queue Queue;
 };
 
-struct Mesh;
 struct Excitable;
 
 struct Scene {
@@ -119,12 +119,13 @@ struct Scene {
     World World{};
 
     entt::entity AddMesh(Mesh &&, MeshCreateInfo = {});
+    entt::entity AddMesh(MeshData &&, MeshCreateInfo = {});
     entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
 
-    void ReplaceMesh(entt::entity, Mesh &&);
+    void ReplaceMesh(entt::entity, MeshData &&);
     void ClearMeshes();
 
     void Destroy(entt::entity);
@@ -217,6 +218,7 @@ private:
 
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneBuffer> Buffer;
+    MeshStore Meshes;
 
     enum class SelectionMode { Click,
                                Box };

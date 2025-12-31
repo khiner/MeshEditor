@@ -8,14 +8,14 @@
 std::unique_ptr<tetgenio> GenerateTets(const Mesh &mesh, vec3 scale, TetGenOptions options) {
     static constexpr int TriVerts = 3;
     tetgenio in;
-    const float *vertices = mesh.GetPositionData();
     const auto triangle_indices = mesh.CreateTriangleIndices();
     in.numberofpoints = mesh.VertexCount();
     in.pointlist = new REAL[in.numberofpoints * TriVerts];
     for (uint i = 0; i < uint(in.numberofpoints); ++i) {
-        in.pointlist[i * TriVerts] = vertices[i * TriVerts] * scale.x;
-        in.pointlist[i * TriVerts + 1] = vertices[i * TriVerts + 1] * scale.y;
-        in.pointlist[i * TriVerts + 2] = vertices[i * TriVerts + 2] * scale.z;
+        const auto &p = mesh.GetPosition(Mesh::VH{i});
+        in.pointlist[i * TriVerts] = p.x * scale.x;
+        in.pointlist[i * TriVerts + 1] = p.y * scale.y;
+        in.pointlist[i * TriVerts + 2] = p.z * scale.z;
     }
     in.numberoffacets = triangle_indices.size() / TriVerts;
     in.facetlist = new tetgenio::facet[in.numberoffacets];

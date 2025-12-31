@@ -99,6 +99,8 @@ struct Buffer {
 
     vk::Buffer operator*() const;
     std::span<const std::byte> GetData() const;
+    std::span<const std::byte> GetMappedData() const;
+    std::span<std::byte> GetMappedData();
     vk::DeviceSize GetAllocatedSize() const;
     void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;

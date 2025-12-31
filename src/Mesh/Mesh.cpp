@@ -1,16 +1,13 @@
 #include "Mesh.h"
+#include "MeshStore.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
-#define TINYOBJLOADER_IMPLEMENTATION
-#include "tiny_obj_loader.h"
-#define TINYPLY_IMPLEMENTATION
-#include "tinyply.h"
 
 #include <algorithm>
 #include <cassert>
-#include <fstream>
 #include <ranges>
+#include <utility>
 
 using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
 
@@ -20,11 +17,10 @@ constexpr uint64_t MakeEdgeKey(uint from, uint to) {
 }
 } // namespace
 
-Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces) {
-    // Reserve and initialize vertex data
-    Positions = std::move(vertices);
-    Normals.resize(Positions.size());
-    OutgoingHalfedges.resize(Positions.size());
+Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &&faces)
+    : Store(&store), StoreId(store_id),
+      Vertices(store.GetVertices(store_id)) {
+    OutgoingHalfedges.resize(Vertices.size());
 
     std::unordered_map<uint64_t, HH> halfedge_map;
     for (const auto &face : faces) {
@@ -67,7 +63,37 @@ Mesh::Mesh(std::vector<vec3> &&vertices, std::vector<std::vector<uint>> &&faces)
     }
     ComputeFaceNormals();
     ComputeVertexNormals();
-    SetColor(DefaultMeshColor);
+}
+
+Mesh::Mesh(Mesh &&other) noexcept
+    : Store(std::exchange(other.Store, nullptr)),
+      StoreId(std::exchange(other.StoreId, InvalidStoreId)),
+      Vertices(std::exchange(other.Vertices, {})),
+      OutgoingHalfedges(std::move(other.OutgoingHalfedges)),
+      Halfedges(std::move(other.Halfedges)),
+      HalfedgeToEdge(std::move(other.HalfedgeToEdge)),
+      Edges(std::move(other.Edges)),
+      Faces(std::move(other.Faces)),
+      Color(other.Color) {}
+
+Mesh &Mesh::operator=(Mesh &&other) noexcept {
+    if (this != &other) {
+        if (Store && StoreId != InvalidStoreId) Store->Release(StoreId);
+        Store = std::exchange(other.Store, nullptr);
+        StoreId = std::exchange(other.StoreId, InvalidStoreId);
+        Vertices = std::exchange(other.Vertices, {});
+        OutgoingHalfedges = std::move(other.OutgoingHalfedges);
+        Halfedges = std::move(other.Halfedges);
+        HalfedgeToEdge = std::move(other.HalfedgeToEdge);
+        Edges = std::move(other.Edges);
+        Faces = std::move(other.Faces);
+        Color = other.Color;
+    }
+    return *this;
+}
+
+Mesh::~Mesh() {
+    if (Store && StoreId != InvalidStoreId) Store->Release(StoreId);
 }
 
 he::VH Mesh::GetFromVertex(HH hh) const {
@@ -89,7 +115,7 @@ vec3 Mesh::CalcFaceCentroid(FH fh) const {
     vec3 centroid{0};
     uint count{0};
     for (auto vh : fv_range(fh)) {
-        centroid += Positions[*vh];
+        centroid += Vertices[*vh].Position;
         count++;
     }
     return count > 0 ? centroid / static_cast<float>(count) : centroid;
@@ -100,44 +126,44 @@ float Mesh::CalcEdgeLength(HH hh) const {
     const auto from_v = GetFromVertex(hh);
     const auto to_v = Halfedges[*hh].Vertex;
     if (!from_v || !to_v) return 0;
-    return glm::length(Positions[*to_v] - Positions[*from_v]);
+    return glm::length(Vertices[*to_v].Position - Vertices[*from_v].Position);
 }
 
 void Mesh::ComputeFaceNormals() {
     for (uint fi = 0; fi < FaceCount(); ++fi) {
         auto it = cfv_iter(FH(fi));
-        const auto p0 = Positions[**it];
-        const auto p1 = Positions[**(++it)];
-        const auto p2 = Positions[**(++it)];
+        const auto p0 = Vertices[**it].Position;
+        const auto p1 = Vertices[**(++it)].Position;
+        const auto p2 = Vertices[**(++it)].Position;
         Faces[fi].Normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
     }
 }
 
 void Mesh::ComputeVertexNormals() {
     // Reset all vertex normals
-    for (auto &n : Normals) n = vec3{0};
+    auto vertices = Store->GetVerticesMutable(StoreId);
+    for (auto &v : vertices) v.Normal = vec3{0};
 
     // Accumulate face normals to vertices
     for (uint fi = 0; fi < FaceCount(); ++fi) {
         const auto &face_normal = Faces[fi].Normal;
         for (const auto vh : fv_range(FH(fi))) {
-            Normals[*vh] += face_normal;
+            vertices[*vh].Normal += face_normal;
         }
     }
 
     // Normalize
-    for (auto &n : Normals) n = glm::normalize(n);
+    for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
 }
 
 float Mesh::CalcFaceArea(FH fh) const {
     assert(*fh < FaceCount());
     float area{0};
     auto fv_it = cfv_iter(fh);
-    const auto p0 = Positions[**fv_it++];
-    for (vec3 p1 = Positions[**fv_it++], p2; fv_it; ++fv_it) {
-        p2 = Positions[**fv_it];
-        const auto cross_product = glm::cross(p1 - p0, p2 - p0);
-        area += glm::length(cross_product) * 0.5f;
+    const auto p0 = Vertices[**fv_it++].Position;
+    for (vec3 p1 = Vertices[**fv_it++].Position, p2; fv_it; ++fv_it) {
+        p2 = Vertices[**fv_it].Position;
+        area += glm::length(glm::cross(p1 - p0, p2 - p0)) * 0.5f;
         p1 = p2;
     }
     return area;
@@ -147,7 +173,7 @@ he::VH Mesh::FindNearestVertex(vec3 p) const {
     VH closest_vertex;
     float min_distance_sq = std::numeric_limits<float>::max();
     for (const auto vh : vertices()) {
-        const vec3 diff = Positions[*vh] - p;
+        const vec3 diff = Vertices[*vh].Position - p;
         if (const float distance_sq = glm::dot(diff, diff); distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;
             closest_vertex = vh;
@@ -212,144 +238,16 @@ std::vector<uint> Mesh::CreateEdgeIndices() const {
     return indices;
 }
 
-Mesh Mesh::WithDeduplicatedVertices() const {
-    struct VertexHash {
-        constexpr size_t operator()(const vec3 &p) const noexcept {
-            return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
-        }
-    };
-
-    std::vector<vec3> vertices;
-    vertices.reserve(VertexCount());
-    std::unordered_map<vec3, uint, VertexHash> index_by_vertex;
-    for (const auto vh : this->vertices()) {
-        const auto p = GetPosition(vh);
-        if (auto [it, inserted] = index_by_vertex.try_emplace(p, vertices.size()); inserted) {
-            vertices.emplace_back(p);
-        }
+MeshData Mesh::ToMeshData() const {
+    MeshData data;
+    data.Positions.reserve(Vertices.size());
+    for (const auto &v : Vertices) data.Positions.emplace_back(v.Position);
+    data.Faces.reserve(FaceCount());
+    for (const auto &fh : faces()) {
+        std::vector<uint> face;
+        face.reserve(GetValence(fh));
+        for (const auto &vh : fv_range(fh)) face.emplace_back(*vh);
+        data.Faces.emplace_back(std::move(face));
     }
-
-    std::vector<std::vector<uint>> faces;
-    faces.reserve(FaceCount());
-    for (const auto &fh : this->faces()) {
-        std::vector<uint> new_face;
-        new_face.reserve(GetValence(fh));
-        for (const auto &vh : fv_range(fh)) new_face.emplace_back(index_by_vertex.at(GetPosition(vh)));
-        faces.emplace_back(std::move(new_face));
-    }
-
-    return {std::move(vertices), std::move(faces)};
-}
-
-namespace {
-std::optional<Mesh> ReadObj(const std::filesystem::path &path) {
-    tinyobj::attrib_t attrib;
-    std::vector<tinyobj::shape_t> shapes;
-    std::vector<tinyobj::material_t> materials;
-    std::string warn, err;
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.string().c_str())) {
-        return {};
-    }
-
-    // Build vertices
-    std::vector<vec3> vertices;
-    vertices.reserve(attrib.vertices.size() / 3);
-    for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
-        vertices.emplace_back(attrib.vertices[i], attrib.vertices[i + 1], attrib.vertices[i + 2]);
-    }
-
-    // Build faces from all shapes
-    std::vector<std::vector<uint>> faces;
-    for (const auto &shape : shapes) {
-        size_t vi = 0;
-        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f) {
-            const auto fv = shape.mesh.num_face_vertices[f];
-            std::vector<uint> face_verts;
-            face_verts.reserve(fv);
-            for (size_t vi_f = 0; vi_f < fv; ++vi_f) {
-                face_verts.emplace_back(shape.mesh.indices[vi + vi_f].vertex_index);
-            }
-            faces.emplace_back(std::move(face_verts));
-            vi += fv;
-        }
-    }
-
-    return Mesh{std::move(vertices), std::move(faces)};
-}
-
-std::optional<Mesh> ReadPly(const std::filesystem::path &path) {
-    try {
-        std::ifstream file{path, std::ios::binary};
-        if (!file) return {};
-
-        tinyply::PlyFile ply_file;
-        ply_file.parse_header(file);
-
-        std::shared_ptr<tinyply::PlyData> vertices, faces;
-        try {
-            vertices = ply_file.request_properties_from_element("vertex", {"x", "y", "z"});
-        } catch (...) {
-            return {};
-        }
-        try {
-            faces = ply_file.request_properties_from_element("face", {"vertex_indices"}, 0);
-        } catch (...) {
-            // Try alternative face property name
-            try {
-                faces = ply_file.request_properties_from_element("face", {"vertex_index"}, 0);
-            } catch (...) {
-                return {};
-            }
-        }
-        ply_file.read(file);
-
-        // Build vertices
-        std::vector<vec3> vertex_list;
-        vertex_list.reserve(vertices->count);
-        auto AddVertices = [&](const auto *data) {
-            for (size_t i = 0; i < vertices->count; ++i) {
-                vertex_list.emplace_back(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]);
-            }
-        };
-        if (vertices->t == tinyply::Type::FLOAT32) AddVertices(reinterpret_cast<const float *>(vertices->buffer.get()));
-        else if (vertices->t == tinyply::Type::FLOAT64) AddVertices(reinterpret_cast<const double *>(vertices->buffer.get()));
-        else return {};
-
-        // Build faces (tinyply stores list properties as: count, index0, index1, ...)
-        const auto *face_data = reinterpret_cast<const uint8_t *>(faces->buffer.get());
-        const auto idx_size = faces->t == tinyply::Type::UINT32 || faces->t == tinyply::Type::INT32 ? 4 :
-            faces->t == tinyply::Type::UINT16 || faces->t == tinyply::Type::INT16                   ? 2 :
-                                                                                                      1;
-
-        size_t offset = 0;
-        std::vector<std::vector<uint>> face_list;
-        face_list.reserve(faces->count);
-        for (size_t f = 0; f < faces->count; ++f) {
-            const auto face_size = face_data[offset++];
-            std::vector<uint> face_verts;
-            face_verts.reserve(face_size);
-            for (uint8_t v = 0; v < face_size; ++v) {
-                const uint vi = idx_size == 4 ? *reinterpret_cast<const uint *>(&face_data[offset]) :
-                    idx_size == 2             ? *reinterpret_cast<const uint16_t *>(&face_data[offset]) :
-                                                face_data[offset];
-                offset += idx_size;
-                face_verts.emplace_back(vi);
-            }
-            face_list.emplace_back(std::move(face_verts));
-        }
-
-        return Mesh{std::move(vertex_list), std::move(face_list)};
-    } catch (...) {
-        return {};
-    }
-}
-} // namespace
-
-std::optional<Mesh> Mesh::Load(const std::filesystem::path &path) {
-    const auto ext = path.extension().string();
-    // Try obj as default, even if it's not .obj
-    auto mesh = ext == ".ply" || ext == ".PLY" ? ReadPly(path) : ReadObj(path);
-    if (!mesh) return {};
-    // Deduplicate even if not strictly triangle soup. Assumes this is a surface mesh.
-    return mesh->WithDeduplicatedVertices();
+    return data;
 }

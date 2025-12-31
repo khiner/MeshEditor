@@ -98,7 +98,7 @@ struct DrawPushConstants {
     uint32_t ElementIdOffset{0};
     uint32_t ElementStateSlot{InvalidSlot};
     uint32_t PointFlags{0};
-    uint32_t Padding0{0};
+    uint32_t VertexOffset{0};
     vec4 LineColor{0};
 };
 static_assert(sizeof(DrawPushConstants) % 16 == 0, "DrawPushConstants must be 16-byte aligned.");
@@ -403,6 +403,7 @@ struct SceneBuffer {
 
     SceneBuffer(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, vk::CommandPool command_pool, DescriptorSlots &slots)
         : Ctx{pd, d, instance, command_pool, slots},
+          VertexBuffer{Ctx},
           SceneUBO{Ctx, sizeof(SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::Uniform},
           SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
@@ -414,20 +415,32 @@ struct SceneBuffer {
     vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
+        const uint32_t vertex_range_id = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
         return {
-            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
+            vertex_range_id,
             {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer}
         };
     }
     template<size_t N>
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
+        const uint32_t vertex_range_id = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
         return {
-            {Ctx, as_bytes(vertices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
+            vertex_range_id,
             {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer}
         };
     }
 
+    void UpdateRenderVertices(RenderBuffers &buffers, std::vector<Vertex3D> &&vertices) {
+        VertexBuffer.Update(buffers.VertexRangeId, std::span<const Vertex3D>{vertices});
+    }
+
+    void ReleaseRenderVertices(RenderBuffers &buffers) {
+        VertexBuffer.Release(buffers.VertexRangeId);
+        buffers.VertexRangeId = InvalidSlot;
+    }
+
     mvk::BufferContext Ctx;
+    VertexMegabuffer VertexBuffer;
     mvk::Buffer SceneUBO;
     mvk::Buffer SelectionNodeBuffer;
     // CPU readback buffers (host-visible)
@@ -1046,6 +1059,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
           Slots->GetSetLayout(), Slots->GetSet()
       )},
       Buffer{std::make_unique<SceneBuffer>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *CommandPool, *Slots)} {
+    Meshes.Init(Buffer->Ctx);
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
@@ -1087,7 +1101,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     }
 }
 
-Scene::~Scene() = default;
+Scene::~Scene() {
+    R.clear<Mesh>();
+}
 
 void Scene::LoadIcons(vk::Device device) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
@@ -1110,7 +1126,13 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
         const auto mesh_entity = mesh_instance->MeshEntity;
         if (auto *buffers = r.try_get<MeshBuffers>(mesh_entity)) {
+            for (auto &[_, render_buffers] : buffers->NormalIndicators) {
+                Buffer->ReleaseRenderVertices(render_buffers);
+            }
             buffers->NormalIndicators.clear();
+        }
+        if (auto *bbox_buffers = r.try_get<BoundingBoxesBuffers>(mesh_entity)) {
+            Buffer->ReleaseRenderVertices(bbox_buffers->Buffers);
         }
         r.remove<BoundingBoxesBuffers>(mesh_entity);
     }
@@ -1148,8 +1170,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     // Create vertex indicator arrow pointing at the excited vertex.
     const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
     const float scale_factor = 0.1f * glm::length(bbox.Max - bbox.Min);
-    auto vertex_indicator_mesh = Arrow();
-    vertex_indicator_mesh.SetColor({1, 0, 0, 1});
+    auto vertex_indicator_mesh = Meshes.CreateMesh(Arrow());
     excited_vertex.IndicatorEntity = AddMesh(
         std::move(vertex_indicator_mesh),
         {.Name = "Excite vertex indicator",
@@ -1320,8 +1341,12 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     return instance_entity;
 }
 
+entt::entity Scene::AddMesh(MeshData &&data, MeshCreateInfo info) {
+    return AddMesh(Meshes.CreateMesh(std::move(data)), std::move(info));
+}
+
 entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
-    auto mesh = Mesh::Load(path);
+    auto mesh = Meshes.LoadMesh(path);
     if (!mesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
     const auto e = AddMesh(std::move(*mesh), std::move(info));
     R.emplace<Path>(e, path);
@@ -1331,7 +1356,7 @@ entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info) {
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = AddMesh(
-        Mesh{R.get<const Mesh>(mesh_entity)},
+        Meshes.CreateMesh(R.get<const Mesh>(mesh_entity).ToMeshData()),
         info.value_or(MeshCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
             .Transform = GetTransform(R, e),
@@ -1413,7 +1438,8 @@ void Scene::ClearMeshes() {
     InvalidateCommandBuffer();
 }
 
-void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
+void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
+    auto mesh = Meshes.CreateMesh(std::move(data));
     // Update components
     const auto bbox = MeshRender::ComputeBoundingBox(mesh);
     R.replace<BBox>(e, bbox);
@@ -1421,11 +1447,11 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
 
     const auto &pm = R.get<Mesh>(e);
     auto &mesh_buffers = R.get<MeshBuffers>(e);
-    mesh_buffers.Faces.Vertices.Update(MeshRender::CreateFaceVertices(pm, SmoothShading));
+    Buffer->UpdateRenderVertices(mesh_buffers.Faces, MeshRender::CreateFaceVertices(pm, SmoothShading));
     mesh_buffers.Faces.Indices.Update(MeshRender::CreateFaceIndices(pm));
-    mesh_buffers.Edges.Vertices.Update(MeshRender::CreateEdgeVertices(pm));
+    Buffer->UpdateRenderVertices(mesh_buffers.Edges, MeshRender::CreateEdgeVertices(pm));
     mesh_buffers.Edges.Indices.Update(MeshRender::CreateEdgeIndices(pm));
-    mesh_buffers.Vertices.Vertices.Update(MeshRender::CreateVertexPoints(pm));
+    Buffer->UpdateRenderVertices(mesh_buffers.Vertices, MeshRender::CreateVertexPoints(pm));
     mesh_buffers.Vertices.Indices.Update(MeshRender::CreateVertexIndices(pm));
     if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(e)) {
         ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
@@ -1437,11 +1463,11 @@ void Scene::ReplaceMesh(entt::entity e, Mesh &&mesh) {
     }
 
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-        buffers.Vertices.Update(MeshRender::CreateNormalVertices(pm, element));
+        Buffer->UpdateRenderVertices(buffers, MeshRender::CreateNormalVertices(pm, element));
         buffers.Indices.Update(MeshRender::CreateNormalIndices(pm, element));
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) {
-        buffers->Buffers.Vertices.Update(CreateBoxVertices(bbox));
+        Buffer->UpdateRenderVertices(buffers->Buffers, CreateBoxVertices(bbox));
     }
     UpdateRenderBuffers(e);
 }
@@ -1469,7 +1495,20 @@ void Scene::Destroy(entt::entity e) {
             R.view<MeshInstance>().each(),
             [mesh_entity](const auto &entry) { return std::get<1>(entry).MeshEntity == mesh_entity; }
         );
-        if (!has_instances) R.destroy(mesh_entity);
+        if (!has_instances) {
+            if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) {
+                Buffer->ReleaseRenderVertices(mesh_buffers->Faces);
+                Buffer->ReleaseRenderVertices(mesh_buffers->Edges);
+                Buffer->ReleaseRenderVertices(mesh_buffers->Vertices);
+                for (auto &[_, render_buffers] : mesh_buffers->NormalIndicators) {
+                    Buffer->ReleaseRenderVertices(render_buffers);
+                }
+            }
+            if (auto *bbox_buffers = R.try_get<BoundingBoxesBuffers>(mesh_entity)) {
+                Buffer->ReleaseRenderVertices(bbox_buffers->Buffers);
+            }
+            R.destroy(mesh_entity);
+        }
     }
 
     InvalidateCommandBuffer();
@@ -1631,21 +1670,21 @@ void Scene::RecordRenderCommandBuffer() {
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
 
-    const auto make_pc = [](RenderBuffers &render_buffers, ModelsBuffer &models, uint32_t first_instance = 0) {
-        const uint32_t vertex_count = static_cast<uint32_t>(render_buffers.Vertices.UsedSize / sizeof(Vertex3D));
+    const auto make_pc = [this](const RenderBuffers &render_buffers, const ModelsBuffer &models, uint32_t first_instance = 0) {
+        const auto range = Buffer->VertexBuffer.Get(render_buffers.VertexRangeId);
         return DrawPushConstants{
-            render_buffers.Vertices.Slot,
+            Buffer->VertexBuffer.Buffer.Slot,
             render_buffers.Indices.Slot,
             models.Buffer.Slot,
             first_instance,
             InvalidSlot, // ObjectIdSlot - unused for regular rendering
-            vertex_count,
+            range.Count,
             0, // SelectionNodesSlot
             0, // SelectionCounterSlot
             0, // ElementIdOffset
             InvalidSlot, // ElementStateSlot
             0, // PointFlags
-            0, // Padding0
+            range.Offset,
             vec4{0, 0, 0, 0} // LineColor
         };
     };
@@ -1860,6 +1899,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
         if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
             mesh_buffers.NormalIndicators.emplace(element, Buffer->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element)));
         } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
+            Buffer->ReleaseRenderVertices(mesh_buffers.NormalIndicators.at(element));
             mesh_buffers.NormalIndicators.erase(element);
         }
     }
@@ -1867,6 +1907,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
         const auto &bbox = R.get<BBox>(mesh_entity);
         R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffer->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
+        Buffer->ReleaseRenderVertices(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
         R.remove<BoundingBoxesBuffers>(mesh_entity);
     }
 }
@@ -1953,9 +1994,10 @@ void Scene::RenderSelectionPass() {
             if (instance_count == 0) continue;
 
             auto &render_buffers = mesh_buffers.Faces;
+            const auto range = Buffer->VertexBuffer.Get(render_buffers.VertexRangeId);
             const DrawPushConstants pc{
-                render_buffers.Vertices.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, models.ObjectIds.Slot,
-                SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter
+                Buffer->VertexBuffer.Buffer.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, models.ObjectIds.Slot,
+                SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, 0, InvalidSlot, 0, range.Offset
             };
             if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
                 Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, it->second));
@@ -1981,7 +2023,11 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
         auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
         auto &models = R.get<ModelsBuffer>(mesh_entity);
         if (const auto model_index = GetModelBufferIndex(R, e)) {
-            DrawPushConstants pc{mesh_buffers.Faces.Vertices.Slot, mesh_buffers.Faces.Indices.Slot, models.Buffer.Slot, 0, models.ObjectIds.Slot};
+            const auto range = Buffer->VertexBuffer.Get(mesh_buffers.Faces.VertexRangeId);
+            DrawPushConstants pc{
+                Buffer->VertexBuffer.Buffer.Slot, mesh_buffers.Faces.Indices.Slot, models.Buffer.Slot, 0, models.ObjectIds.Slot,
+                0, 0, 0, 0, InvalidSlot, 0, range.Offset
+            };
             Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *model_index);
         }
     }
@@ -2123,10 +2169,12 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             auto &mesh_buffers = R.get<MeshBuffers>(range.MeshEntity);
             auto &models = R.get<ModelsBuffer>(range.MeshEntity);
             auto &render_buffers = SelectionRenderBuffersForElement(mesh_buffers, element);
+            const auto vertex_range = Buffer->VertexBuffer.Get(render_buffers.VertexRangeId);
             const uint32_t element_slot = element == Element::Face ? R.get<MeshFaceIdBuffer>(range.MeshEntity).Faces.Slot : InvalidSlot;
             const DrawPushConstants pc{
-                render_buffers.Vertices.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, element_slot,
-                SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, range.Offset
+                Buffer->VertexBuffer.Buffer.Slot, render_buffers.Indices.Slot, models.Buffer.Slot, 0, element_slot,
+                SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, range.Offset,
+                InvalidSlot, 0, vertex_range.Offset
             };
             if (auto it = primary_edit_instances.find(range.MeshEntity); it != primary_edit_instances.end()) {
                 Draw(cb, pipeline, render_buffers, models, pc, *GetModelBufferIndex(R, it->second));
@@ -2222,7 +2270,12 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
     const auto model_index = R.get<RenderInstance>(instance_entity).BufferIndex;
     RenderSelectionPassWith(true, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);
-        DrawPushConstants pc{mesh_buffers.Vertices.Vertices.Slot, mesh_buffers.Vertices.Indices.Slot, models.Buffer.Slot, 0, InvalidSlot, SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, 0, state_buffers.Vertices.Buffer.Slot};
+        const auto range = Buffer->VertexBuffer.Get(mesh_buffers.Vertices.VertexRangeId);
+        DrawPushConstants pc{
+            Buffer->VertexBuffer.Buffer.Slot, mesh_buffers.Vertices.Indices.Slot, models.Buffer.Slot, 0, InvalidSlot,
+            SelectionHandles->HeadImage, Buffer->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, 0,
+            state_buffers.Vertices.Buffer.Slot, 0, range.Offset
+        };
         Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index);
     });
 
@@ -2782,7 +2835,7 @@ void Scene::RenderOverlay() {
 }
 
 namespace {
-std::optional<Mesh> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
+std::optional<MeshData> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
     const char *create_label = is_create ? "Add" : "Update";
     if (type == PrimitiveType::Rect) {
         static vec2 size{1, 1};

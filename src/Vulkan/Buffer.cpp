@@ -271,10 +271,12 @@ Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, vk::BufferUs
     : Buffer(ctx, data.size(), usage, slot_type) { Update(data); }
 
 Buffer::Buffer(BufferContext &ctx, vk::DeviceSize size, MemoryUsage mem, vk::BufferUsageFlags usage)
-    : Ctx(ctx), Usage(usage), DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, size, mem, usage)) {}
+    : Ctx(ctx), Usage(usage), DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, size, mem, usage)),
+      ImplOps{UpdateDirect, ReserveDirect, InsertDirect, EraseDirect} {}
 
 Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, MemoryUsage mem, vk::BufferUsageFlags usage)
-    : Ctx(ctx), Usage(usage), DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, data, mem, usage)) {}
+    : Ctx(ctx), Usage(usage), DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, data, mem, usage)),
+      ImplOps{UpdateDirect, ReserveDirect, InsertDirect, EraseDirect} {}
 
 Buffer::Buffer(Buffer &&other)
     : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize), Usage(other.Usage),
@@ -318,6 +320,14 @@ void Buffer::UpdateDescriptor() {
 bool Buffer::IsMapped() const { return DeviceBuffer && DeviceBuffer->IsMapped(); }
 vk::Buffer Buffer::operator*() const { return DeviceBuffer->Get(); }
 std::span<const std::byte> Buffer::GetData() const { return DeviceBuffer->GetData(); }
+std::span<const std::byte> Buffer::GetMappedData() const {
+    if (HostBuffer) return HostBuffer->GetData();
+    return DeviceBuffer->GetData();
+}
+std::span<std::byte> Buffer::GetMappedData() {
+    if (HostBuffer) return HostBuffer->GetMappedData();
+    return DeviceBuffer->GetMappedData();
+}
 vk::DeviceSize Buffer::GetAllocatedSize() const { return DeviceBuffer->GetAllocatedSize(); }
 void Buffer::Write(std::span<const std::byte> data, vk::DeviceSize offset) const { DeviceBuffer->Write(data, offset); }
 void Buffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const { DeviceBuffer->Move(from, to, size); }

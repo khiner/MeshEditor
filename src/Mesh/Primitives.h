@@ -1,17 +1,18 @@
 #pragma once
 
 #include "PrimitiveType.h"
-#include "mesh/Mesh.h"
+#include "mesh/MeshData.h"
 #include "numeric/vec2.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <ranges>
+#include <unordered_map>
 
-using std::ranges::iota_view;
-using std::ranges::to;
-using std::views::transform;
+using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
-inline Mesh Rect(vec2 half_extents = {0.5, 0.5}) {
+inline MeshData Rect(vec2 half_extents = {0.5, 0.5}) {
     const auto x = half_extents.x, y = half_extents.y;
     return {
         {{-x, -y, 0}, {x, -y, 0}, {x, y, 0}, {-x, y, 0}},
@@ -19,7 +20,7 @@ inline Mesh Rect(vec2 half_extents = {0.5, 0.5}) {
     };
 }
 
-inline Mesh Circle(float radius = 0.5, uint n = 32) {
+inline MeshData Circle(float radius = 0.5, uint n = 32) {
     std::vector<vec3> vertices =
         iota_view{0u, n} |
         transform([radius, n](uint i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
@@ -32,7 +33,7 @@ inline Mesh Circle(float radius = 0.5, uint n = 32) {
     };
 }
 
-inline Mesh Cuboid(vec3 half_extents = {0.5, 0.5, 0.5}) {
+inline MeshData Cuboid(vec3 half_extents = {0.5, 0.5, 0.5}) {
     const auto x = half_extents.x, y = half_extents.y, z = half_extents.z;
     return {
         {
@@ -56,7 +57,7 @@ inline Mesh Cuboid(vec3 half_extents = {0.5, 0.5, 0.5}) {
     };
 }
 
-inline Mesh IcoSphere(float radius = 0.5, uint recursion_level = 3) {
+inline MeshData IcoSphere(float radius = 0.5, uint recursion_level = 3) {
     static const float t = (1.f + sqrt(5.f)) / 2.f;
     // clang-format off
     std::vector<vec3> vertices{
@@ -102,7 +103,7 @@ inline Mesh IcoSphere(float radius = 0.5, uint recursion_level = 3) {
     return {std::move(vertices), std::move(indices)};
 }
 
-inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16) {
+inline MeshData UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16) {
     std::vector<vec3> vertices;
     vertices.reserve(2 + n_slices * (n_stacks - 2)); // +/- 2 for the poles
     vertices.emplace_back(0, radius, 0); // Top pole
@@ -145,7 +146,7 @@ inline Mesh UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16)
     return {std::move(vertices), std::move(indices)};
 }
 
-inline Mesh Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_major = 32, uint n_minor = 16) {
+inline MeshData Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_major = 32, uint n_minor = 16) {
     std::vector<vec3> vertices;
     vertices.reserve(n_major * n_minor);
     for (uint i = 0; i < n_major; ++i) {
@@ -174,7 +175,7 @@ inline Mesh Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_maj
     return {std::move(vertices), std::move(indices)};
 }
 
-inline Mesh Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
+inline MeshData Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
     std::vector<vec3> vertices(2 * slices);
     for (uint i = 0; i < slices; i++) {
         const float a = 2.f * i / slices;
@@ -203,7 +204,7 @@ inline Mesh Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
     return {std::move(vertices), std::move(faces)};
 }
 
-inline Mesh Cone(float radius = 0.5, float height = 1, uint slices = 32) {
+inline MeshData Cone(float radius = 0.5, float height = 1, uint slices = 32) {
     std::vector<vec3> vertices = // Base
         iota_view{0u, slices} | transform([&](uint i) {
             return vec3{radius * __cospi(2.f * i / slices), -height / 2, radius * __sinpi(2.f * i / slices)};
@@ -233,7 +234,7 @@ constexpr std::string ToString(PrimitiveType type) {
     }
 }
 
-inline Mesh CreateDefaultPrimitive(PrimitiveType type) {
+inline MeshData CreateDefaultPrimitive(PrimitiveType type) {
     switch (type) {
         case PrimitiveType::Rect: return Rect();
         case PrimitiveType::Cube: return Cuboid();

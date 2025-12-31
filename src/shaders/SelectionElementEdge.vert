@@ -7,7 +7,7 @@ layout(location = 0) flat out uint ElementId;
 
 void main() {
     const uint idx = IndexBuffers[pc.IndexSlot].Indices[gl_VertexIndex];
-    const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx];
+    const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx + pc.VertexOffset];
     const WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[pc.FirstInstance + gl_InstanceIndex];
 
     ElementId = pc.ElementIdOffset + idx / 2 + 1;
