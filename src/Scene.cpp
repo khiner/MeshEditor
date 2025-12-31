@@ -1296,10 +1296,10 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
             R.emplace<Selected>(instance_entity);
             // Fallthrough
         case MeshCreateInfo::SelectBehavior::None:
-            // If this is the first mesh, set it active by default.
+            // If no mesh is active yet, activate the new one.
             if (R.storage<Active>().empty()) {
                 R.emplace<Active>(instance_entity);
-                R.emplace<Selected>(instance_entity);
+                R.emplace_or_replace<Selected>(instance_entity);
             }
             break;
     }
@@ -2676,7 +2676,7 @@ void Scene::RenderOverlay() {
         SetCursorScreenPos(saved_cursor_pos);
     }
 
-    if (!R.storage<Active>().empty()) { // Draw center-dot for active/selected entities
+    if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto size = ToGlm(GetContentRegionAvail());
         const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
         for (const auto [e, wm] : R.view<const WorldMatrix, const Visible>().each()) {
@@ -2692,7 +2692,7 @@ void Scene::RenderOverlay() {
         }
     }
 
-    if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) { // Transform gizmo
+    if (const auto selected_view = R.view<const Selected>(); !selected_view.empty()) { // Transform gizmo
         // Transform all root selected entities (whose parent is not also selected) around their average position,
         // using the active entity's rotation/scale.
         // Non-root selected entities already follow their parent's transform.
@@ -2707,11 +2707,12 @@ void Scene::RenderOverlay() {
             }
             return false;
         };
-        const auto selected_view = R.view<const Selected>();
+
         auto root_selected = selected_view | filter([&](auto e) { return !is_parent_selected(e); });
         const auto root_count = distance(root_selected);
 
-        const auto active_transform = GetTransform(R, active_entity);
+        const auto active_entity = FindActiveEntity(R);
+        const auto active_transform = active_entity != entt::null ? GetTransform(R, active_entity) : Transform{};
         const auto p = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
