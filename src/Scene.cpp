@@ -2494,7 +2494,7 @@ void Scene::Interact() {
             const auto hit_entities = RunClickSelect(mouse_px);
             const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
             const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-            if (hit_it == hit_entities.end() || !toggle) {
+            if (!toggle) {
                 for (const auto [e, selection] : R.view<MeshSelection>().each()) {
                     if (selection.Handles.empty()) continue;
                     R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.Element = Element::None; });
@@ -2527,7 +2527,7 @@ void Scene::Interact() {
                 R.emplace_or_replace<Selected>(intersected);
                 InvalidateCommandBuffer();
             }
-        } else {
+        } else if (intersected != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
             Select(intersected);
         }
     } else if (InteractionMode == InteractionMode::Excite) {
