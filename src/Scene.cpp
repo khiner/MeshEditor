@@ -2679,10 +2679,10 @@ void Scene::RenderOverlay() {
     if (!R.storage<Active>().empty()) { // Draw center-dot for active/selected entities
         const auto size = ToGlm(GetContentRegionAvail());
         const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
-        for (const auto [e, p] : R.view<const Position, const Visible>().each()) {
+        for (const auto [e, wm] : R.view<const WorldMatrix, const Visible>().each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
 
-            const auto p_cs = vp * vec4{p.Value, 1}; // World to clip space
+            const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
             const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
             const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
