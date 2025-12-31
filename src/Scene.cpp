@@ -120,6 +120,18 @@ struct PipelineRenderer {
 };
 
 namespace {
+struct Timer {
+    std::string_view Name;
+    std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
+
+    Timer(const std::string_view name) : Name{name} {}
+    ~Timer() {
+        const auto end = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
+        std::println("{}: ms={:.3f}", Name, ms);
+    }
+};
+
 std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
 ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t count) {
     auto states = MakeElementStates(count);
@@ -1364,6 +1376,7 @@ void Scene::Delete() {
 }
 
 void Scene::Duplicate() {
+    const Timer timer{"Duplicate"};
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Selected>()) entities.emplace_back(e);
     for (const auto e : entities) {
@@ -1378,6 +1391,7 @@ void Scene::Duplicate() {
     StartScreenTransform = TransformGizmo::TransformType::Translate;
 }
 void Scene::DuplicateLinked() {
+    const Timer timer{"DuplicateLinked"};
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Selected>()) entities.emplace_back(e);
     for (const auto e : entities) {
@@ -1923,18 +1937,6 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 }
 
 } // namespace
-
-struct Timer {
-    std::string_view Name;
-    std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
-
-    Timer(const std::string_view name) : Name{name} {}
-    ~Timer() {
-        const auto end = std::chrono::steady_clock::now();
-        const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
-        std::println("{}: ms={:.3f}", Name, ms);
-    }
-};
 
 void Scene::RenderSelectionPass() {
     const Timer timer{"RenderSelectionPass"};
