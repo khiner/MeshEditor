@@ -7,6 +7,7 @@
 #include <array>
 #include <memory>
 #include <span>
+#include <unordered_set>
 #include <vector>
 
 // Forwards to avoid including `vk_mem_alloc.h`.
@@ -39,7 +40,16 @@ struct BufferContext {
     BufferContext(vk::PhysicalDevice, vk::Device, vk::Instance, vk::CommandPool, DescriptorSlots &);
     ~BufferContext();
 
-    void ReclaimRetiredBuffers(); // Safely destroys buffers that are no longer in flight.
+    void ReclaimRetiredBuffers();
+
+    std::vector<vk::WriteDescriptorSet> GetPendingDescriptorUpdates();
+    void AddPendingDescriptorUpdate(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &info) {
+        CancelDescriptorUpdate(type, slot);
+        PendingDescriptorUpdates.emplace(type, slot, info);
+    }
+    void CancelDescriptorUpdate(SlotType, uint32_t);
+    void ClearPendingDescriptorUpdates() { PendingDescriptorUpdates.clear(); }
+
     std::string DebugHeapUsage() const;
 
     vk::PhysicalDevice PhysicalDevice;
@@ -48,6 +58,22 @@ struct BufferContext {
     vk::UniqueCommandBuffer TransferCb;
     std::unique_ptr<DeferredBufferReclaimer> Reclaimer;
     DescriptorSlots &Slots;
+
+private:
+    struct PendingDescriptorUpdate {
+        SlotType Type;
+        uint32_t Slot;
+        vk::DescriptorBufferInfo Info;
+
+        bool operator==(const auto &other) const noexcept { return Type == other.Type && Slot == other.Slot; }
+    };
+    struct PendingDescriptorUpdateHash {
+        size_t operator()(const PendingDescriptorUpdate &pending) const noexcept {
+            const auto type = static_cast<uint64_t>(std::to_underlying(pending.Type));
+            return std::hash<uint64_t>{}((type << 32) | static_cast<uint64_t>(pending.Slot));
+        }
+    };
+    std::unordered_set<PendingDescriptorUpdate, PendingDescriptorUpdateHash> PendingDescriptorUpdates;
 };
 
 // Vulkan buffer with optional host staging and descriptor slot management.

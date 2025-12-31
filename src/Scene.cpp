@@ -2313,42 +2313,6 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
         transform([&](uint32_t i) { return visible_entities[i]; }) | to<std::vector>();
 }
 
-void Scene::UpdateSelectionDescriptors() {
-    if (!Pipelines || !Pipelines->SelectionFragment.Resources) return;
-
-    auto &handles = *SelectionHandles;
-    auto &alloc = *Slots;
-    std::vector<vk::WriteDescriptorSet> writes;
-
-    const auto head_image_info = vk::DescriptorImageInfo{
-        nullptr,
-        *Pipelines->SelectionFragment.Resources->HeadImage.View,
-        vk::ImageLayout::eGeneral
-    };
-    writes.push_back(alloc.MakeImageWrite(handles.HeadImage, head_image_info));
-
-    const vk::DescriptorBufferInfo selection_counter{*Buffer->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
-    const vk::DescriptorBufferInfo click_result{*Buffer->ClickResultBuffer, 0, sizeof(ClickResult)};
-    const vk::DescriptorBufferInfo click_element_result{*Buffer->ClickElementResultBuffer, 0, SceneBuffer::MaxClickElementGroups * sizeof(ClickElementCandidate)};
-    const auto box_result = Buffer->GetBoxSelectBitsetDescriptor();
-
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.SelectionCounter, selection_counter));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickResult, click_result));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.ClickElementResult, click_element_result));
-    writes.push_back(alloc.MakeBufferWrite(SlotType::Buffer, handles.BoxResult, box_result));
-    // Samplers
-    const auto &sil = Pipelines->Silhouette;
-    const auto &sil_edge = Pipelines->SilhouetteEdge;
-    const auto object_id_sampler = vk::DescriptorImageInfo{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-    const auto depth_sampler = vk::DescriptorImageInfo{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
-    const auto silhouette_sampler = vk::DescriptorImageInfo{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-    writes.push_back(alloc.MakeSamplerWrite(handles.ObjectIdSampler, object_id_sampler));
-    writes.push_back(alloc.MakeSamplerWrite(handles.DepthSampler, depth_sampler));
-    writes.push_back(alloc.MakeSamplerWrite(handles.SilhouetteSampler, silhouette_sampler));
-
-    Vk.Device.updateDescriptorSets(writes, {});
-}
-
 void Scene::Interact() {
     if (Extent.width == 0 || Extent.height == 0) return;
 
@@ -2551,18 +2515,51 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 };
 
 bool Scene::RenderViewport() {
+    if (auto descriptor_updates = Buffer->Ctx.GetPendingDescriptorUpdates(); !descriptor_updates.empty()) {
+        const Timer timer{"RenderViewport->UpdateBufferDescriptorSets"};
+        Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
+        Buffer->Ctx.ClearPendingDescriptorUpdates();
+    }
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty && !NeedsRender) return false;
 
     const Timer timer{"RenderViewport"};
-
     if (extent_changed) {
         Extent = ToExtent(content_region);
         UpdateSceneUBO();
         Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
         Pipelines->SetExtent(Extent);
-        UpdateSelectionDescriptors();
+        {
+            const Timer timer{"RenderViewport->UpdateSelectionDescriptorSets"};
+            const auto head_image_info = vk::DescriptorImageInfo{
+                nullptr,
+                *Pipelines->SelectionFragment.Resources->HeadImage.View,
+                vk::ImageLayout::eGeneral
+            };
+            const vk::DescriptorBufferInfo selection_counter{*Buffer->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
+            const vk::DescriptorBufferInfo click_result{*Buffer->ClickResultBuffer, 0, sizeof(ClickResult)};
+            const vk::DescriptorBufferInfo click_element_result{*Buffer->ClickElementResultBuffer, 0, SceneBuffer::MaxClickElementGroups * sizeof(ClickElementCandidate)};
+            const auto &sil = Pipelines->Silhouette;
+            const auto &sil_edge = Pipelines->SilhouetteEdge;
+            const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+            const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+            const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
+            const auto box_result = Buffer->GetBoxSelectBitsetDescriptor();
+            Vk.Device.updateDescriptorSets(
+                {
+                    Slots->MakeImageWrite(SelectionHandles->HeadImage, head_image_info),
+                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->SelectionCounter, selection_counter),
+                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->ClickResult, click_result),
+                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->ClickElementResult, click_element_result),
+                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->BoxResult, box_result),
+                    Slots->MakeSamplerWrite(SelectionHandles->ObjectIdSampler, object_id_sampler),
+                    Slots->MakeSamplerWrite(SelectionHandles->DepthSampler, depth_sampler),
+                    Slots->MakeSamplerWrite(SelectionHandles->SilhouetteSampler, silhouette_sampler),
+                },
+                {}
+            );
+        }
         CommandBufferDirty = true;
     }
 
@@ -2575,7 +2572,6 @@ bool Scene::RenderViewport() {
         vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
         {}, buffer_barrier, {}, {}
     );
-
     transfer_cb.end();
 
     if (CommandBufferDirty) {

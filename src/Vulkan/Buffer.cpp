@@ -4,8 +4,12 @@
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
+#include <algorithm>
 #include <cassert>
 #include <print>
+#include <ranges>
+
+using std::views::transform, std::ranges::to;
 
 namespace mvk {
 namespace {
@@ -159,6 +163,14 @@ std::string BufferContext::DebugHeapUsage() const {
     return result;
 }
 
+std::vector<vk::WriteDescriptorSet> BufferContext::GetPendingDescriptorUpdates() {
+    return PendingDescriptorUpdates | transform([&](const auto &pending) { return Slots.MakeBufferWrite(pending.Type, pending.Slot, pending.Info); }) | to<std::vector>();
+}
+
+void BufferContext::CancelDescriptorUpdate(SlotType type, uint32_t slot) {
+    PendingDescriptorUpdates.erase(PendingDescriptorUpdate{type, slot, {}});
+}
+
 namespace {
 bool ReserveStaging(Buffer &buffers, vk::DeviceSize required_size);
 bool ReserveDirect(Buffer &buffers, vk::DeviceSize required_size);
@@ -295,10 +307,12 @@ Buffer::~Buffer() {
 void Buffer::Retire() {
     if (HostBuffer) { Ctx.Reclaimer->Retire(std::move(HostBuffer)); }
     if (DeviceBuffer) { Ctx.Reclaimer->Retire(std::move(DeviceBuffer)); }
+    if (Slot != InvalidSlot) { Ctx.CancelDescriptorUpdate(Type, Slot); }
 }
 
 void Buffer::UpdateDescriptor() {
-    Ctx.Device.updateDescriptorSets(Ctx.Slots.MakeBufferWrite(Type, Slot, GetDescriptor()), {});
+    if (Slot == InvalidSlot) return;
+    Ctx.AddPendingDescriptorUpdate(Type, Slot, GetDescriptor());
 }
 
 bool Buffer::IsMapped() const { return DeviceBuffer && DeviceBuffer->IsMapped(); }

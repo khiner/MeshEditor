@@ -162,7 +162,6 @@ struct Scene {
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
     void UpdateRenderBuffers(entt::entity);
-    void UpdateSelectionDescriptors();
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer() { CommandBufferDirty = NeedsRender = true; }
     void RequestRender() { NeedsRender = true; }
