@@ -14,57 +14,15 @@ using namespace he;
 
 namespace MeshRender {
 
-std::vector<uint> CreateFaceIndices(const Mesh &mesh) { return mesh.CreateTriangulatedFaceIndices(); }
+std::vector<uint> CreateFaceIndices(const Mesh &mesh) { return mesh.CreateTriangleIndices(); }
 std::vector<uint> CreateEdgeIndices(const Mesh &mesh) { return mesh.CreateEdgeIndices(); }
 
 std::vector<uint> CreateVertexIndices(const Mesh &mesh) { return iota(0u, mesh.VertexCount()) | to<std::vector<uint>>(); }
-
-std::vector<uint32_t> CreateFaceElementIds(const Mesh &mesh) {
-    std::vector<uint32_t> ids;
-    ids.reserve(mesh.FaceCount() * 3);
-    for (const auto fh : mesh.faces()) {
-        ids.insert(ids.end(), mesh.GetValence(fh), *fh + 1);
-    }
-    return ids;
-}
 
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     if (element == Element::None || element == Element::Edge) return {};
     const auto n = element == Element::Face ? mesh.FaceCount() : mesh.VertexCount();
     return iota(0u, n * 2) | to<std::vector<uint>>();
-}
-
-std::vector<Vertex3D> CreateFaceVertices(const Mesh &mesh, bool smooth_shading) {
-    std::vector<Vertex3D> vertices;
-    vertices.reserve(mesh.FaceCount() * 3);
-    for (const auto fh : mesh.faces()) {
-        for (const auto vh : mesh.fv_range(fh)) {
-            vertices.emplace_back(mesh.GetPosition(vh), smooth_shading ? mesh.GetNormal(vh) : mesh.GetNormal(fh));
-        }
-    }
-    return vertices;
-}
-
-std::vector<Vertex3D> CreateEdgeVertices(const Mesh &mesh) {
-    std::vector<Vertex3D> vertices;
-    vertices.reserve(mesh.EdgeCount() * 2);
-    for (const auto eh : mesh.edges()) {
-        const auto heh = mesh.GetHalfedge(eh, 0);
-        const auto v_from = mesh.GetFromVertex(heh);
-        const auto v_to = mesh.GetToVertex(heh);
-        vertices.emplace_back(mesh.GetPosition(v_from), mesh.GetNormal(v_from));
-        vertices.emplace_back(mesh.GetPosition(v_to), mesh.GetNormal(v_to));
-    }
-    return vertices;
-}
-
-std::vector<Vertex3D> CreateVertexPoints(const Mesh &mesh) {
-    std::vector<Vertex3D> vertices;
-    vertices.reserve(mesh.VertexCount());
-    for (const auto vh : mesh.vertices()) {
-        vertices.emplace_back(mesh.GetPosition(vh), mesh.GetNormal(vh));
-    }
-    return vertices;
 }
 
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {

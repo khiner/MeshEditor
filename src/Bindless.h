@@ -23,7 +23,8 @@ struct BindlessConfig {
             case SlotType::VertexBuffer:
             case SlotType::IndexBuffer:
             case SlotType::ModelBuffer:
-            case SlotType::ObjectIdBuffer: return MaxBuffers;
+            case SlotType::ObjectIdBuffer:
+            case SlotType::FaceNormalBuffer: return MaxBuffers;
         }
     }
 };

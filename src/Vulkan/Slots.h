@@ -12,6 +12,7 @@ enum class SlotType : uint8_t {
     VertexBuffer,
     IndexBuffer,
     ModelBuffer,
-    ObjectIdBuffer
+    ObjectIdBuffer,
+    FaceNormalBuffer
 };
-constexpr uint8_t SlotTypeCount{8};
+constexpr uint8_t SlotTypeCount{9};

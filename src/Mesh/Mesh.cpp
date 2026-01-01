@@ -19,7 +19,8 @@ constexpr uint64_t MakeEdgeKey(uint from, uint to) {
 
 Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &&faces)
     : Store(&store), StoreId(store_id),
-      Vertices(store.GetVertices(store_id)) {
+      Vertices(store.GetVertices(store_id)),
+      FaceNormals(store.GetFaceNormals(store_id)) {
     OutgoingHalfedges.resize(Vertices.size());
 
     std::unordered_map<uint64_t, HH> halfedge_map;
@@ -28,7 +29,7 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
 
         const auto fi = Faces.size();
         const auto start_he_i = Halfedges.size();
-        Faces.emplace_back(HH(start_he_i), vec3{0});
+        Faces.emplace_back(HH(start_he_i));
 
         // Create halfedges, find opposites, and create edges
         for (size_t i = 0; i < face.size(); ++i) {
@@ -69,6 +70,7 @@ Mesh::Mesh(Mesh &&other) noexcept
     : Store(std::exchange(other.Store, nullptr)),
       StoreId(std::exchange(other.StoreId, InvalidStoreId)),
       Vertices(std::exchange(other.Vertices, {})),
+      FaceNormals(std::exchange(other.FaceNormals, {})),
       OutgoingHalfedges(std::move(other.OutgoingHalfedges)),
       Halfedges(std::move(other.Halfedges)),
       HalfedgeToEdge(std::move(other.HalfedgeToEdge)),
@@ -82,6 +84,7 @@ Mesh &Mesh::operator=(Mesh &&other) noexcept {
         Store = std::exchange(other.Store, nullptr);
         StoreId = std::exchange(other.StoreId, InvalidStoreId);
         Vertices = std::exchange(other.Vertices, {});
+        FaceNormals = std::exchange(other.FaceNormals, {});
         OutgoingHalfedges = std::move(other.OutgoingHalfedges);
         Halfedges = std::move(other.Halfedges);
         HalfedgeToEdge = std::move(other.HalfedgeToEdge);
@@ -130,13 +133,15 @@ float Mesh::CalcEdgeLength(HH hh) const {
 }
 
 void Mesh::ComputeFaceNormals() {
+    auto face_normals = Store->GetFaceNormalsMutable(StoreId);
     for (uint fi = 0; fi < FaceCount(); ++fi) {
         auto it = cfv_iter(FH(fi));
         const auto p0 = Vertices[**it].Position;
         const auto p1 = Vertices[**(++it)].Position;
         const auto p2 = Vertices[**(++it)].Position;
-        Faces[fi].Normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+        face_normals[fi] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
     }
+    Store->FlushFaceNormals(StoreId);
 }
 
 void Mesh::ComputeVertexNormals() {
@@ -146,7 +151,7 @@ void Mesh::ComputeVertexNormals() {
 
     // Accumulate face normals to vertices
     for (uint fi = 0; fi < FaceCount(); ++fi) {
-        const auto &face_normal = Faces[fi].Normal;
+        const auto &face_normal = FaceNormals[fi];
         for (const auto vh : fv_range(FH(fi))) {
             vertices[*vh].Normal += face_normal;
         }
@@ -154,6 +159,7 @@ void Mesh::ComputeVertexNormals() {
 
     // Normalize
     for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
+    Store->FlushVertices(StoreId);
 }
 
 float Mesh::CalcFaceArea(FH fh) const {
@@ -232,8 +238,16 @@ std::vector<uint> Mesh::CreateEdgeIndices() const {
     std::vector<uint> indices;
     indices.reserve(EdgeCount() * 2);
     for (uint ei = 0; ei < EdgeCount(); ++ei) {
-        indices.emplace_back(2 * ei);
-        indices.emplace_back(2 * ei + 1);
+        const auto heh = GetHalfedge(EH{ei}, 0);
+        const auto v_from = GetFromVertex(heh);
+        const auto v_to = GetToVertex(heh);
+        if (!v_from || !v_to) {
+            indices.emplace_back(0);
+            indices.emplace_back(0);
+            continue;
+        }
+        indices.emplace_back(*v_from);
+        indices.emplace_back(*v_to);
     }
     return indices;
 }

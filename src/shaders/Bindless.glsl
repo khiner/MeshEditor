@@ -35,6 +35,10 @@ layout(set = 0, binding = 7, scalar) readonly buffer ObjectIdBuffer {
     uint Ids[];
 } ObjectIdBuffers[];
 
+layout(set = 0, binding = 8, scalar) readonly buffer FaceNormalBuffer {
+    vec3 Normals[];
+} FaceNormalBuffers[];
+
 const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
@@ -45,12 +49,16 @@ layout(push_constant) uniform PushConstants {
     uint ModelSlot;
     uint FirstInstance;
     uint ObjectIdSlot; // Slot for per-instance ObjectId buffer (INVALID_SLOT if unused)
+    uint FaceNormalSlot;
+    uint FaceIdOffset;
+    uint FaceNormalOffset;
     uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
     uint SelectionNodesSlot;
     uint SelectionCounterSlot;
     uint ElementIdOffset;
     uint ElementStateSlot;
-    uint PointFlags;
     uint VertexOffset;
+    uint Pad0;
+    uint Pad1;
     vec4 LineColor;
 } pc;

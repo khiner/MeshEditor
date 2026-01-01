@@ -135,19 +135,38 @@ MeshData DeduplicateVertices(const MeshData &mesh) {
 
     return deduped;
 }
+
+std::vector<uint32_t> CreateFaceElementIds(const MeshData &mesh) {
+    std::vector<uint32_t> ids;
+    ids.reserve(mesh.Faces.size() * 3);
+    for (uint32_t fi = 0; fi < mesh.Faces.size(); ++fi) {
+        const auto valence = static_cast<uint32_t>(mesh.Faces[fi].size());
+        if (valence < 3) continue;
+        for (uint32_t i = 0; i < valence - 2; ++i) {
+            ids.insert(ids.end(), 3, fi + 1);
+        }
+    }
+    return ids;
+}
 } // namespace
 
 void MeshStore::Init(mvk::BufferContext &ctx) {
-    VerticesBuffer = std::make_unique<Megabuffer<Vertex3D>>(ctx, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer);
+    VerticesBuffer = std::make_unique<Megabuffer<Vertex3D>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer);
+    FaceIdBuffer = std::make_unique<Megabuffer<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer);
+    FaceNormalBuffer = std::make_unique<Megabuffer<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer);
 }
 
 Mesh MeshStore::CreateMesh(MeshData &&data) {
-    assert(VerticesBuffer && "MeshStore not initialized with buffer context.");
+    assert(VerticesBuffer && FaceIdBuffer && FaceNormalBuffer && "MeshStore not initialized with buffer context.");
     const uint32_t id = AcquireId();
     auto &entry = Entries[id];
     entry.Alive = true;
     auto vertices = data.Positions | transform([](const vec3 &position) { return Vertex3D{position, {}}; }) | to<std::vector<Vertex3D>>();
     entry.Vertices = VerticesBuffer->Allocate(vertices);
+    const auto face_ids = CreateFaceElementIds(data);
+    entry.FaceIds = FaceIdBuffer->Allocate(face_ids);
+    std::vector<vec3> face_normals(data.Faces.size());
+    entry.FaceNormals = FaceNormalBuffer->Allocate(face_normals);
     return Mesh{*this, id, std::move(data.Faces)};
 }
 
@@ -164,9 +183,46 @@ std::span<const Vertex3D> MeshStore::GetVertices(uint32_t id) const {
     return VerticesBuffer->Get(Entries.at(id).Vertices);
 }
 
+std::span<const vec3> MeshStore::GetFaceNormals(uint32_t id) const {
+    assert(FaceNormalBuffer && "MeshStore not initialized with buffer context.");
+    return FaceNormalBuffer->Get(Entries.at(id).FaceNormals);
+}
+
+MeshStore::Range MeshStore::GetVerticesRange(uint32_t id) const {
+    return Entries.at(id).Vertices;
+}
+
+uint32_t MeshStore::GetVerticesSlot() const {
+    assert(VerticesBuffer && "MeshStore not initialized with buffer context.");
+    return VerticesBuffer->Buffer.Slot;
+}
+
+MeshStore::Range MeshStore::GetFaceIdRange(uint32_t id) const {
+    return Entries.at(id).FaceIds;
+}
+
+MeshStore::Range MeshStore::GetFaceNormalRange(uint32_t id) const {
+    return Entries.at(id).FaceNormals;
+}
+
+uint32_t MeshStore::GetFaceIdSlot() const {
+    assert(FaceIdBuffer && "MeshStore not initialized with buffer context.");
+    return FaceIdBuffer->Buffer.Slot;
+}
+
+uint32_t MeshStore::GetFaceNormalSlot() const {
+    assert(FaceNormalBuffer && "MeshStore not initialized with buffer context.");
+    return FaceNormalBuffer->Buffer.Slot;
+}
+
 std::span<Vertex3D> MeshStore::GetVerticesMutable(uint32_t id) {
     assert(VerticesBuffer && "MeshStore not initialized with buffer context.");
     return VerticesBuffer->GetMutable(Entries.at(id).Vertices);
+}
+
+std::span<vec3> MeshStore::GetFaceNormalsMutable(uint32_t id) {
+    assert(FaceNormalBuffer && "MeshStore not initialized with buffer context.");
+    return FaceNormalBuffer->GetMutable(Entries.at(id).FaceNormals);
 }
 
 void MeshStore::UpdateVertices(uint32_t id, std::span<const Vertex3D> vertices) {
@@ -174,11 +230,23 @@ void MeshStore::UpdateVertices(uint32_t id, std::span<const Vertex3D> vertices) 
     VerticesBuffer->Update(Entries.at(id).Vertices, vertices);
 }
 
+void MeshStore::FlushVertices(uint32_t id) {
+    assert(VerticesBuffer && "MeshStore not initialized with buffer context.");
+    VerticesBuffer->Flush(Entries.at(id).Vertices);
+}
+
+void MeshStore::FlushFaceNormals(uint32_t id) {
+    assert(FaceNormalBuffer && "MeshStore not initialized with buffer context.");
+    FaceNormalBuffer->Flush(Entries.at(id).FaceNormals);
+}
+
 void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;
-    assert(VerticesBuffer && "MeshStore not initialized with buffer context.");
+    assert(VerticesBuffer && FaceIdBuffer && FaceNormalBuffer && "MeshStore not initialized with buffer context.");
     auto &entry = Entries[id];
     VerticesBuffer->Release(entry.Vertices);
+    FaceIdBuffer->Release(entry.FaceIds);
+    FaceNormalBuffer->Release(entry.FaceNormals);
     entry = {};
     FreeIds.emplace_back(id);
 }

@@ -19,6 +19,8 @@ struct MeshStore {
     using Range = BufferRange;
     struct Entry {
         Range Vertices;
+        Range FaceIds;
+        Range FaceNormals;
         bool Alive{false};
     };
 
@@ -28,6 +30,16 @@ struct MeshStore {
     std::span<const Vertex3D> GetVertices(uint32_t id) const;
     std::span<Vertex3D> GetVerticesMutable(uint32_t id);
     void UpdateVertices(uint32_t id, std::span<const Vertex3D> vertices);
+    void FlushVertices(uint32_t id);
+    std::span<const vec3> GetFaceNormals(uint32_t id) const;
+    std::span<vec3> GetFaceNormalsMutable(uint32_t id);
+    void FlushFaceNormals(uint32_t id);
+    Range GetVerticesRange(uint32_t id) const;
+    uint32_t GetVerticesSlot() const;
+    Range GetFaceIdRange(uint32_t id) const;
+    Range GetFaceNormalRange(uint32_t id) const;
+    uint32_t GetFaceIdSlot() const;
+    uint32_t GetFaceNormalSlot() const;
     void Release(uint32_t id);
 
 private:
@@ -37,4 +49,6 @@ private:
     std::vector<Entry> Entries;
     std::vector<uint32_t> FreeIds;
     std::unique_ptr<Megabuffer<Vertex3D>> VerticesBuffer;
+    std::unique_ptr<Megabuffer<uint32_t>> FaceIdBuffer;
+    std::unique_ptr<Megabuffer<vec3>> FaceNormalBuffer;
 };

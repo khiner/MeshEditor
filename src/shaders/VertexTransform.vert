@@ -11,18 +11,27 @@ void main() {
     const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx + pc.VertexOffset];
     const WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[pc.FirstInstance + gl_InstanceIndex];
 
-    WorldNormal = mat3(world.MInv) * vert.Normal;
-    WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
     uint state = 0u;
+    uint face_id = 0u;
+    vec3 normal = vert.Normal;
+    if (pc.ObjectIdSlot != INVALID_SLOT) {
+        face_id = ObjectIdBuffers[pc.ObjectIdSlot].Ids[gl_VertexIndex + pc.FaceIdOffset];
+        if (pc.FaceNormalSlot != INVALID_SLOT && face_id != 0u) {
+            normal = FaceNormalBuffers[pc.FaceNormalSlot].Normals[pc.FaceNormalOffset + face_id - 1u];
+        }
+        if (pc.ElementStateSlot != INVALID_SLOT && face_id != 0u) {
+            state = ElementStateBuffers[pc.ElementStateSlot].States[face_id - 1u];
+        }
+    } else if (pc.ElementStateSlot != INVALID_SLOT) {
+        state = ElementStateBuffers[pc.ElementStateSlot].States[gl_VertexIndex];
+    }
+
+    WorldNormal = mat3(world.MInv) * normal;
+    WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
     vec4 base_color = pc.LineColor;
     if (pc.ObjectIdSlot != INVALID_SLOT) {
-        const uint element_id = ObjectIdBuffers[pc.ObjectIdSlot].Ids[idx];
-        if (pc.ElementStateSlot != INVALID_SLOT && element_id != 0u) {
-            state = ElementStateBuffers[pc.ElementStateSlot].States[element_id - 1u];
-        }
         base_color = Scene.BaseColor;
     } else if (pc.ElementStateSlot != INVALID_SLOT) {
-        state = ElementStateBuffers[pc.ElementStateSlot].States[idx];
         base_color = Scene.EdgeColor;
     }
     const bool is_selected = (state & STATE_SELECTED) != 0u;

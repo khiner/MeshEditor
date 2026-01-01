@@ -331,6 +331,10 @@ std::span<std::byte> Buffer::GetMappedData() {
 vk::DeviceSize Buffer::GetAllocatedSize() const { return DeviceBuffer->GetAllocatedSize(); }
 void Buffer::Write(std::span<const std::byte> data, vk::DeviceSize offset) const { DeviceBuffer->Write(data, offset); }
 void Buffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const { DeviceBuffer->Move(from, to, size); }
+void Buffer::Flush(vk::DeviceSize offset, vk::DeviceSize size) const {
+    if (!HostBuffer || size == 0) return;
+    Ctx.TransferCb->copyBuffer(HostBuffer->Get(), DeviceBuffer->Get(), vk::BufferCopy{offset, offset, size});
+}
 
 void Buffer::Update(std::span<const std::byte> data, vk::DeviceSize offset) {
     if (ImplOps.Update && ImplOps.Update(*this, data, offset)) UpdateDescriptor();

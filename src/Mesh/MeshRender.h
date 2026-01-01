@@ -37,12 +37,17 @@ struct MeshInstance {
 struct RenderBuffers {
     RenderBuffers(uint32_t vertex_range_id, mvk::Buffer &&indices)
         : VertexRangeId(vertex_range_id), Indices(std::move(indices)) {}
+    RenderBuffers(uint32_t vertex_slot, uint32_t vertex_offset, uint32_t vertex_count, mvk::Buffer &&indices)
+        : VertexSlot(vertex_slot), VertexOffset(vertex_offset), VertexCount(vertex_count), Indices(std::move(indices)) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers &operator=(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
     uint32_t VertexRangeId{InvalidSlot};
+    uint32_t VertexSlot{InvalidSlot};
+    uint32_t VertexOffset{0};
+    uint32_t VertexCount{0};
     mvk::Buffer Indices;
 };
 
@@ -66,10 +71,6 @@ struct ElementStateBuffer {
 struct MeshElementStateBuffers {
     ElementStateBuffer Faces, Edges, Vertices;
 };
-struct MeshFaceIdBuffer {
-    mvk::Buffer Faces;
-};
-
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity);
 void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
@@ -87,15 +88,9 @@ constexpr float NormalIndicatorLengthScale{0.25};
 constexpr uint32_t ElementStateSelected{1u << 0};
 constexpr uint32_t ElementStateActive{1u << 1};
 
-// Create vertices for faces (with optional smooth/flat shading) or edges
-std::vector<Vertex3D> CreateFaceVertices(const Mesh &, bool smooth_shading);
-std::vector<Vertex3D> CreateEdgeVertices(const Mesh &);
-std::vector<Vertex3D> CreateVertexPoints(const Mesh &);
 std::vector<uint> CreateFaceIndices(const Mesh &);
 std::vector<uint> CreateEdgeIndices(const Mesh &);
 std::vector<uint> CreateVertexIndices(const Mesh &);
-std::vector<uint32_t> CreateFaceElementIds(const Mesh &);
-
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &, he::Element);
 std::vector<uint> CreateNormalIndices(const Mesh &, he::Element);
 

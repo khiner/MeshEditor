@@ -104,6 +104,7 @@ struct Buffer {
     vk::DeviceSize GetAllocatedSize() const;
     void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
+    void Flush(vk::DeviceSize offset, vk::DeviceSize size) const;
     vk::DescriptorBufferInfo GetDescriptor() const { return {operator*(), 0, vk::WholeSize}; }
 
     BufferContext &Ctx;

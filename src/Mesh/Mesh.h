@@ -37,7 +37,9 @@ struct Mesh {
     const vec3 &GetPosition(VH vh) const { return Vertices[*vh].Position; }
 
     const vec3 &GetNormal(VH vh) const { return Vertices[*vh].Normal; }
-    const vec3 &GetNormal(FH fh) const { return Faces[*fh].Normal; }
+    const vec3 &GetNormal(FH fh) const { return FaceNormals[*fh]; }
+
+    uint32_t GetStoreId() const { return StoreId; }
 
     MeshData ToMeshData() const;
 
@@ -221,7 +223,6 @@ private:
 
     struct Face {
         HH Halfedge; // One of the boundary halfedges
-        vec3 Normal{0};
     };
 
     // Vertex data (ranges stay stable until a mesh resizes its vertex count)
@@ -229,6 +230,7 @@ private:
     MeshStore *Store{};
     uint32_t StoreId{InvalidStoreId};
     std::span<const Vertex3D> Vertices;
+    std::span<const vec3> FaceNormals;
     std::vector<HH> OutgoingHalfedges;
     std::vector<Halfedge> Halfedges;
     std::vector<EH> HalfedgeToEdge; // Separate mapping for better cache locality

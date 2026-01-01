@@ -10,7 +10,7 @@ void main() {
     const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx + pc.VertexOffset];
     const WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[pc.FirstInstance + gl_InstanceIndex];
 
-    const uint face_id = ObjectIdBuffers[pc.ObjectIdSlot].Ids[idx];
+    const uint face_id = ObjectIdBuffers[pc.ObjectIdSlot].Ids[gl_VertexIndex + pc.FaceIdOffset];
     ElementId = pc.ElementIdOffset + face_id;
     gl_Position = Scene.Proj * Scene.View * world.M * vec4(vert.Position, 1.0);
 }
