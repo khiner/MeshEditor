@@ -76,8 +76,17 @@ struct Megabuffer {
     explicit Megabuffer(mvk::BufferContext &ctx, mvk::MemoryUsage mem, vk::BufferUsageFlags usage = {})
         : Buffer(ctx, 1, mem, usage) {}
 
+    BufferRange Allocate(uint32_t count) {
+        const auto range = Allocator.Allocate(count);
+        if (range.Count == 0) return range;
+        const auto required_size = ByteOffset(range.Offset + range.Count);
+        Buffer.Reserve(required_size);
+        Buffer.UsedSize = std::max(Buffer.UsedSize, required_size);
+        return range;
+    }
+
     BufferRange Allocate(std::span<const T> values) {
-        const auto range = Allocator.Allocate(static_cast<uint32_t>(values.size()));
+        const auto range = Allocate(static_cast<uint32_t>(values.size()));
         WriteRange(range.Offset, values);
         return range;
     }

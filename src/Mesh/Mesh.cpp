@@ -62,8 +62,6 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
             }
         }
     }
-    ComputeFaceNormals();
-    ComputeVertexNormals();
 }
 
 Mesh::Mesh(Mesh &&other) noexcept
@@ -130,36 +128,6 @@ float Mesh::CalcEdgeLength(HH hh) const {
     const auto to_v = Halfedges[*hh].Vertex;
     if (!from_v || !to_v) return 0;
     return glm::length(Vertices[*to_v].Position - Vertices[*from_v].Position);
-}
-
-void Mesh::ComputeFaceNormals() {
-    auto face_normals = Store->GetFaceNormalsMutable(StoreId);
-    for (uint fi = 0; fi < FaceCount(); ++fi) {
-        auto it = cfv_iter(FH(fi));
-        const auto p0 = Vertices[**it].Position;
-        const auto p1 = Vertices[**(++it)].Position;
-        const auto p2 = Vertices[**(++it)].Position;
-        face_normals[fi] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
-    }
-    Store->FlushFaceNormals(StoreId);
-}
-
-void Mesh::ComputeVertexNormals() {
-    // Reset all vertex normals
-    auto vertices = Store->GetVerticesMutable(StoreId);
-    for (auto &v : vertices) v.Normal = vec3{0};
-
-    // Accumulate face normals to vertices
-    for (uint fi = 0; fi < FaceCount(); ++fi) {
-        const auto &face_normal = FaceNormals[fi];
-        for (const auto vh : fv_range(FH(fi))) {
-            vertices[*vh].Normal += face_normal;
-        }
-    }
-
-    // Normalize
-    for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
-    Store->FlushVertices(StoreId);
 }
 
 float Mesh::CalcFaceArea(FH fh) const {
@@ -250,18 +218,4 @@ std::vector<uint> Mesh::CreateEdgeIndices() const {
         indices.emplace_back(*v_to);
     }
     return indices;
-}
-
-MeshData Mesh::ToMeshData() const {
-    MeshData data;
-    data.Positions.reserve(Vertices.size());
-    for (const auto &v : Vertices) data.Positions.emplace_back(v.Position);
-    data.Faces.reserve(FaceCount());
-    for (const auto &fh : faces()) {
-        std::vector<uint> face;
-        face.reserve(GetValence(fh));
-        for (const auto &vh : fv_range(fh)) face.emplace_back(*vh);
-        data.Faces.emplace_back(std::move(face));
-    }
-    return data;
 }

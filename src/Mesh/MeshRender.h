@@ -35,8 +35,8 @@ struct MeshInstance {
 };
 
 struct RenderBuffers {
-    RenderBuffers(uint32_t vertex_range_id, mvk::Buffer &&indices)
-        : VertexRangeId(vertex_range_id), Indices(std::move(indices)) {}
+    RenderBuffers(BufferRange vertex_range, mvk::Buffer &&indices)
+        : VertexRange(vertex_range), Indices(std::move(indices)) {}
     RenderBuffers(uint32_t vertex_slot, uint32_t vertex_offset, uint32_t vertex_count, mvk::Buffer &&indices)
         : VertexSlot(vertex_slot), VertexOffset(vertex_offset), VertexCount(vertex_count), Indices(std::move(indices)) {}
     RenderBuffers(RenderBuffers &&) = default;
@@ -44,11 +44,13 @@ struct RenderBuffers {
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
-    uint32_t VertexRangeId{InvalidSlot};
+    BufferRange VertexRange{};
     uint32_t VertexSlot{InvalidSlot};
     uint32_t VertexOffset{0};
     uint32_t VertexCount{0};
     mvk::Buffer Indices;
+
+    bool OwnsVertexRange() const { return VertexSlot == InvalidSlot && VertexRange.Count != 0; }
 };
 
 struct BoundingBoxesBuffers {
@@ -97,46 +99,3 @@ std::vector<uint> CreateNormalIndices(const Mesh &, he::Element);
 BBox ComputeBoundingBox(const Mesh &);
 
 } // namespace MeshRender
-
-struct VertexMegabuffer {
-    explicit VertexMegabuffer(mvk::BufferContext &ctx)
-        : Storage(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer),
-          Buffer(Storage.Buffer) {}
-
-    uint32_t Allocate(std::span<const Vertex3D> vertices) {
-        uint32_t id = AcquireId();
-        Ranges[id] = Storage.Allocate(vertices);
-        return id;
-    }
-
-    void Update(uint32_t id, std::span<const Vertex3D> vertices) {
-        if (id == InvalidSlot) return;
-        Storage.Update(Ranges.at(id), vertices);
-    }
-
-    void Release(uint32_t id) {
-        if (id == InvalidSlot) return;
-        Storage.Release(Ranges.at(id));
-        Ranges[id] = {};
-        FreeIds.emplace_back(id);
-    }
-
-    BufferRange Get(uint32_t id) const { return Ranges.at(id); }
-
-    Megabuffer<Vertex3D> Storage;
-    mvk::Buffer &Buffer;
-
-private:
-    std::vector<BufferRange> Ranges;
-    std::vector<uint32_t> FreeIds;
-
-    uint32_t AcquireId() {
-        if (!FreeIds.empty()) {
-            const uint32_t id = FreeIds.back();
-            FreeIds.pop_back();
-            return id;
-        }
-        Ranges.emplace_back();
-        return static_cast<uint32_t>(Ranges.size() - 1);
-    }
-};

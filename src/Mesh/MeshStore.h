@@ -10,6 +10,7 @@
 #include <optional>
 #include <span>
 
+// Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     MeshStore() = default;
     explicit MeshStore(mvk::BufferContext &ctx) { Init(ctx); }
@@ -25,6 +26,7 @@ struct MeshStore {
     };
 
     Mesh CreateMesh(MeshData &&);
+    Mesh CloneMesh(const Mesh &);
     std::optional<Mesh> LoadMesh(const std::filesystem::path &);
 
     std::span<const Vertex3D> GetVertices(uint32_t id) const;

@@ -41,8 +41,6 @@ struct Mesh {
 
     uint32_t GetStoreId() const { return StoreId; }
 
-    MeshData ToMeshData() const;
-
     // Halfedge navigation
     HH GetHalfedge(EH eh, uint i) const {
         const auto h0 = Edges[*eh];
@@ -238,7 +236,4 @@ private:
     std::vector<Face> Faces;
 
     vec4 Color{DefaultMeshColor};
-
-    void ComputeVertexNormals();
-    void ComputeFaceNormals();
 };

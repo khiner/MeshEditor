@@ -398,6 +398,7 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 }
 } // namespace
 
+// Owns render-only/generated data (e.g., SceneUBO/indicators/overlays/selection fragments) separate from mesh storage.
 struct SceneBuffer {
     struct VertexBinding {
         uint32_t Slot{InvalidSlot};
@@ -412,7 +413,7 @@ struct SceneBuffer {
 
     SceneBuffer(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, vk::CommandPool command_pool, DescriptorSlots &slots)
         : Ctx{pd, d, instance, command_pool, slots},
-          VertexBuffer{Ctx},
+          VertexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
           SceneUBO{Ctx, sizeof(SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::Uniform},
           SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
@@ -424,9 +425,9 @@ struct SceneBuffer {
     vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices) {
-        const uint32_t vertex_range_id = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
+        const auto vertex_range = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
         return {
-            vertex_range_id,
+            vertex_range,
             {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer}
         };
     }
@@ -440,34 +441,33 @@ struct SceneBuffer {
     }
     template<size_t N>
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices) {
-        const uint32_t vertex_range_id = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
+        const auto vertex_range = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
         return {
-            vertex_range_id,
+            vertex_range,
             {Ctx, as_bytes(indices), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer}
         };
     }
 
     void UpdateRenderVertices(RenderBuffers &buffers, std::vector<Vertex3D> &&vertices) {
-        if (buffers.VertexRangeId == InvalidSlot) return;
-        VertexBuffer.Update(buffers.VertexRangeId, std::span<const Vertex3D>{vertices});
+        if (!buffers.OwnsVertexRange()) return;
+        VertexBuffer.Update(buffers.VertexRange, std::span<const Vertex3D>{vertices});
     }
 
     void ReleaseRenderVertices(RenderBuffers &buffers) {
-        if (buffers.VertexRangeId == InvalidSlot) return;
-        VertexBuffer.Release(buffers.VertexRangeId);
-        buffers.VertexRangeId = InvalidSlot;
+        if (!buffers.OwnsVertexRange()) return;
+        VertexBuffer.Release(buffers.VertexRange);
+        buffers.VertexRange = {};
     }
 
     VertexBinding ResolveBinding(const RenderBuffers &buffers) const {
-        if (buffers.VertexRangeId != InvalidSlot) {
-            const auto range = VertexBuffer.Get(buffers.VertexRangeId);
-            return {VertexBuffer.Buffer.Slot, range.Offset, range.Count};
+        if (buffers.OwnsVertexRange()) {
+            return {VertexBuffer.Buffer.Slot, buffers.VertexRange.Offset, buffers.VertexRange.Count};
         }
         return {buffers.VertexSlot, buffers.VertexOffset, buffers.VertexCount};
     }
 
     mvk::BufferContext Ctx;
-    VertexMegabuffer VertexBuffer;
+    Megabuffer<Vertex3D> VertexBuffer;
     mvk::Buffer SceneUBO;
     mvk::Buffer SelectionNodeBuffer;
     // CPU readback buffers (host-visible)
@@ -1367,7 +1367,7 @@ entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info) {
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = AddMesh(
-        Meshes.CreateMesh(R.get<const Mesh>(mesh_entity).ToMeshData()),
+        Meshes.CloneMesh(R.get<const Mesh>(mesh_entity)),
         info.value_or(MeshCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
             .Transform = GetTransform(R, e),
@@ -1462,7 +1462,7 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     const auto vertex_slot = Meshes.GetVerticesSlot();
     const auto reset_buffers = [&](RenderBuffers &buffers, const std::vector<uint> &indices) {
         Buffer->ReleaseRenderVertices(buffers);
-        buffers.VertexRangeId = InvalidSlot;
+        buffers.VertexRange = {};
         buffers.VertexSlot = vertex_slot;
         buffers.VertexOffset = vertex_range.Offset;
         buffers.VertexCount = vertex_range.Count;
