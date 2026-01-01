@@ -35,11 +35,18 @@ struct MeshInstance {
     entt::entity MeshEntity;
 };
 
+enum class IndexKind {
+    Face,
+    Edge,
+    Vertex
+};
+
 struct RenderBuffers {
-    RenderBuffers(BufferRange vertex_range, mvk::Buffer &&indices)
-        : VertexRange(vertex_range), Indices(std::move(indices)) {}
-    RenderBuffers(uint32_t vertex_slot, uint32_t vertex_offset, uint32_t vertex_count, mvk::Buffer &&indices)
-        : VertexSlot(vertex_slot), VertexOffset(vertex_offset), VertexCount(vertex_count), Indices(std::move(indices)) {}
+    RenderBuffers(BufferRange vertex_range, BufferRange index_range, uint32_t index_slot, IndexKind index_type)
+        : VertexRange(vertex_range), IndexRange(index_range), IndexSlot(index_slot), IndexType(index_type) {}
+    RenderBuffers(uint32_t vertex_slot, uint32_t vertex_offset, uint32_t vertex_count, BufferRange index_range, uint32_t index_slot, IndexKind index_type)
+        : VertexSlot(vertex_slot), VertexOffset(vertex_offset), VertexCount(vertex_count),
+          IndexRange(index_range), IndexSlot(index_slot), IndexType(index_type) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers &operator=(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
@@ -47,9 +54,11 @@ struct RenderBuffers {
 
     BufferRange VertexRange{};
     uint32_t VertexSlot{InvalidSlot};
-    uint32_t VertexOffset{0};
-    uint32_t VertexCount{0};
-    mvk::Buffer Indices;
+    uint32_t VertexOffset{0}, VertexCount{0};
+
+    BufferRange IndexRange{};
+    uint32_t IndexSlot{InvalidSlot};
+    IndexKind IndexType{IndexKind::Face};
 
     bool OwnsVertexRange() const { return VertexSlot == InvalidSlot && VertexRange.Count != 0; }
 };

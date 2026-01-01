@@ -46,6 +46,7 @@ const uint STATE_ACTIVE = 1u << 1;
 layout(push_constant) uniform PushConstants {
     uint VertexSlot;
     uint IndexSlot;
+    uint IndexOffset;
     uint ModelSlot;
     uint FirstInstance;
     uint ObjectIdSlot; // Slot for per-instance ObjectId buffer (INVALID_SLOT if unused)
@@ -59,6 +60,5 @@ layout(push_constant) uniform PushConstants {
     uint ElementStateSlot;
     uint VertexOffset;
     uint Pad0;
-    uint Pad1;
     vec4 LineColor;
 } pc;
