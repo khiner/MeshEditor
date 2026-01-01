@@ -64,6 +64,17 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
     }
 }
 
+Mesh::Mesh(MeshStore &store, uint32_t store_id, const Mesh &src)
+    : Store(&store), StoreId(store_id),
+      Vertices(store.GetVertices(store_id)),
+      FaceNormals(store.GetFaceNormals(store_id)),
+      OutgoingHalfedges(src.OutgoingHalfedges),
+      Halfedges(src.Halfedges),
+      HalfedgeToEdge(src.HalfedgeToEdge),
+      Edges(src.Edges),
+      Faces(src.Faces),
+      Color(src.Color) {}
+
 Mesh::Mesh(Mesh &&other) noexcept
     : Store(std::exchange(other.Store, nullptr)),
       StoreId(std::exchange(other.StoreId, InvalidStoreId)),

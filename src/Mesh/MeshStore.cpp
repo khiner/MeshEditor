@@ -209,23 +209,14 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     auto dst_vertices = VerticesBuffer->GetMutable(entry.Vertices);
     std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
 
-    std::vector<std::vector<uint>> faces;
-    faces.reserve(mesh.FaceCount());
-    for (const auto &fh : mesh.faces()) {
-        std::vector<uint> face;
-        face.reserve(mesh.GetValence(fh));
-        for (const auto &vh : mesh.fv_range(fh)) face.emplace_back(*vh);
-        faces.emplace_back(std::move(face));
-    }
-
-    const auto face_ids = CreateFaceElementIds(faces);
-    entry.FaceIds = FaceIdBuffer->Allocate(face_ids);
-    entry.FaceNormals = FaceNormalBuffer->Allocate(static_cast<uint32_t>(faces.size()));
+    const auto src_face_ids = FaceIdBuffer->Get(Entries.at(mesh.GetStoreId()).FaceIds);
+    entry.FaceIds = FaceIdBuffer->Allocate(src_face_ids);
+    entry.FaceNormals = FaceNormalBuffer->Allocate(static_cast<uint32_t>(mesh.FaceCount()));
     const auto src_face_normals = GetFaceNormals(mesh.GetStoreId());
     auto dst_face_normals = FaceNormalBuffer->GetMutable(entry.FaceNormals);
     std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
 
-    Mesh clone{*this, id, std::move(faces)};
+    Mesh clone{*this, id, mesh};
     return clone;
 }
 

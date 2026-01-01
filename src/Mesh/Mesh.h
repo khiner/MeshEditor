@@ -22,6 +22,7 @@ struct Mesh {
     static constexpr vec4 DefaultMeshColor{0.7, 0.7, 0.7, 1};
 
     Mesh(MeshStore &, uint32_t store_id, std::vector<std::vector<uint>> &&faces);
+    Mesh(MeshStore &, uint32_t store_id, const Mesh &src);
 
     Mesh(const Mesh &) = delete;
     Mesh &operator=(const Mesh &) = delete;
