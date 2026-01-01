@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Vulkan/BufferArena.h"
+#include "../vulkan/BufferArena.h"
 #include "Mesh.h"
 #include "MeshData.h"
 

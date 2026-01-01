@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Vulkan/Image.h"
+#include "vulkan/Image.h"
 
 #include <filesystem>
 #include <memory>

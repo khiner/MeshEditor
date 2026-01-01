@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Vulkan/Slots.h"
+#include "vulkan/Slots.h"
 
 #include <vulkan/vulkan.hpp>
 

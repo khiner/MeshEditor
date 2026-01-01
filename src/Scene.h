@@ -2,11 +2,11 @@
 
 #include "Camera.h"
 #include "TransformGizmo.h"
-#include "Vulkan/Image.h"
 #include "mesh/Handle.h"
 #include "mesh/MeshStore.h"
 #include "numeric/vec2.h"
 #include "numeric/vec4.h"
+#include "vulkan/Image.h"
 
 #include "entt_fwd.h"
 
