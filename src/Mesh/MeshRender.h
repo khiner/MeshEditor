@@ -41,26 +41,27 @@ enum class IndexKind {
     Vertex
 };
 
+struct BufferBinding {
+    BufferBinding(BufferRange range, uint32_t slot = InvalidSlot) : Range{range}, Slot{slot} {}
+
+    bool OwnsRange() const { return Slot == InvalidSlot && Range.Count != 0; }
+
+    BufferRange Range{};
+    uint32_t Slot{InvalidSlot};
+};
+
 struct RenderBuffers {
     RenderBuffers(BufferRange vertex_range, BufferRange index_range, uint32_t index_slot, IndexKind index_type)
-        : VertexRange(vertex_range), IndexRange(index_range), IndexSlot(index_slot), IndexType(index_type) {}
+        : Vertices(vertex_range), Indices(index_range, index_slot), IndexType(index_type) {}
     RenderBuffers(uint32_t vertex_slot, uint32_t vertex_offset, uint32_t vertex_count, BufferRange index_range, uint32_t index_slot, IndexKind index_type)
-        : VertexSlot(vertex_slot), VertexOffset(vertex_offset), VertexCount(vertex_count),
-          IndexRange(index_range), IndexSlot(index_slot), IndexType(index_type) {}
+        : Vertices({vertex_offset, vertex_count}, vertex_slot), Indices(index_range, index_slot), IndexType(index_type) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers &operator=(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
-    BufferRange VertexRange{};
-    uint32_t VertexSlot{InvalidSlot};
-    uint32_t VertexOffset{0}, VertexCount{0};
-
-    BufferRange IndexRange{};
-    uint32_t IndexSlot{InvalidSlot};
-    IndexKind IndexType{IndexKind::Face};
-
-    bool OwnsVertexRange() const { return VertexSlot == InvalidSlot && VertexRange.Count != 0; }
+    BufferBinding Vertices, Indices;
+    IndexKind IndexType;
 };
 
 struct BoundingBoxesBuffers {

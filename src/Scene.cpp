@@ -447,31 +447,31 @@ struct SceneBuffer {
     }
 
     void UpdateRenderVertices(RenderBuffers &buffers, std::vector<Vertex3D> &&vertices) {
-        if (!buffers.OwnsVertexRange()) return;
-        VertexBuffer.Update(buffers.VertexRange, std::span<const Vertex3D>{vertices});
+        if (!buffers.Vertices.OwnsRange()) return;
+        VertexBuffer.Update(buffers.Vertices.Range, std::span<const Vertex3D>{vertices});
     }
 
     void ReleaseRenderVertices(RenderBuffers &buffers) {
-        if (!buffers.OwnsVertexRange()) return;
-        VertexBuffer.Release(buffers.VertexRange);
-        buffers.VertexRange = {};
+        if (!buffers.Vertices.OwnsRange()) return;
+        VertexBuffer.Release(buffers.Vertices.Range);
+        buffers.Vertices.Range = {};
     }
 
     void UpdateRenderIndices(RenderBuffers &buffers, std::span<const uint32_t> indices) {
-        GetIndexBuffer(buffers.IndexType).Update(buffers.IndexRange, indices);
+        GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, indices);
     }
 
     void ReleaseRenderIndices(RenderBuffers &buffers) {
-        if (buffers.IndexRange.Count == 0) return;
-        GetIndexBuffer(buffers.IndexType).Release(buffers.IndexRange);
-        buffers.IndexRange = {};
+        if (buffers.Indices.Range.Count == 0) return;
+        GetIndexBuffer(buffers.IndexType).Release(buffers.Indices.Range);
+        buffers.Indices.Range = {};
     }
 
     VertexBinding ResolveBinding(const RenderBuffers &buffers) const {
-        if (buffers.OwnsVertexRange()) {
-            return {VertexBuffer.Buffer.Slot, buffers.VertexRange.Offset, buffers.VertexRange.Count};
+        if (buffers.Vertices.OwnsRange()) {
+            return {VertexBuffer.Buffer.Slot, buffers.Vertices.Range.Offset, buffers.Vertices.Range.Count};
         }
-        return {buffers.VertexSlot, buffers.VertexOffset, buffers.VertexCount};
+        return {buffers.Vertices.Slot, buffers.Vertices.Range.Offset, buffers.Vertices.Range.Count};
     }
 
     BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
@@ -1483,10 +1483,7 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     const auto vertex_slot = Meshes.GetVerticesSlot();
     const auto reset_buffers = [&](RenderBuffers &buffers, const std::vector<uint> &indices) {
         Buffer->ReleaseRenderVertices(buffers);
-        buffers.VertexRange = {};
-        buffers.VertexSlot = vertex_slot;
-        buffers.VertexOffset = vertex_range.Offset;
-        buffers.VertexCount = vertex_range.Count;
+        buffers.Vertices = BufferBinding(vertex_range, vertex_slot);
         Buffer->UpdateRenderIndices(buffers, indices);
     };
     const auto face_indices = MeshRender::CreateFaceIndices(pm);
@@ -1702,7 +1699,7 @@ void Draw(
     pc.FirstInstance = model_index.value_or(0);
     const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
     cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants), &pc);
-    cb.draw(render_buffers.IndexRange.Count, instance_count, 0, 0);
+    cb.draw(render_buffers.Indices.Range.Count, instance_count, 0, 0);
 }
 
 DrawPushConstants MakeDrawPc(const SceneBuffer::VertexBinding &binding, uint32_t index_slot, uint32_t index_offset, uint32_t model_slot) {
@@ -1721,8 +1718,8 @@ void Scene::RecordRenderCommandBuffer() {
         const auto binding = Buffer->ResolveBinding(render_buffers);
         return DrawPushConstants{
             binding.Slot,
-            render_buffers.IndexSlot,
-            render_buffers.IndexRange.Offset,
+            render_buffers.Indices.Slot,
+            render_buffers.Indices.Range.Offset,
             models.Buffer.Slot,
             first_instance,
             InvalidSlot, // ObjectIdSlot - unused for regular rendering
@@ -2057,7 +2054,7 @@ void Scene::RenderSelectionPass() {
 
             auto &render_buffers = mesh_buffers.Faces;
             const auto binding = Buffer->ResolveBinding(render_buffers);
-            auto pc = MakeDrawPc(binding, render_buffers.IndexSlot, render_buffers.IndexRange.Offset, models.Buffer.Slot);
+            auto pc = MakeDrawPc(binding, render_buffers.Indices.Slot, render_buffers.Indices.Range.Offset, models.Buffer.Slot);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
             pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage;
             pc.SelectionNodesSlot = Buffer->SelectionNodeBuffer.Slot;
@@ -2087,7 +2084,7 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
         auto &models = R.get<ModelsBuffer>(mesh_entity);
         if (const auto model_index = GetModelBufferIndex(R, e)) {
             const auto binding = Buffer->ResolveBinding(mesh_buffers.Faces);
-            auto pc = MakeDrawPc(binding, mesh_buffers.Faces.IndexSlot, mesh_buffers.Faces.IndexRange.Offset, models.Buffer.Slot);
+            auto pc = MakeDrawPc(binding, mesh_buffers.Faces.Indices.Slot, mesh_buffers.Faces.Indices.Range.Offset, models.Buffer.Slot);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
             Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *model_index);
         }
@@ -2234,7 +2231,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             const auto binding = Buffer->ResolveBinding(render_buffers);
             const uint32_t element_slot = element == Element::Face ? Meshes.GetFaceIdSlot() : InvalidSlot;
             const uint32_t face_id_offset = element == Element::Face ? Meshes.GetFaceIdRange(mesh.GetStoreId()).Offset : 0;
-            auto pc = MakeDrawPc(binding, render_buffers.IndexSlot, render_buffers.IndexRange.Offset, models.Buffer.Slot);
+            auto pc = MakeDrawPc(binding, render_buffers.Indices.Slot, render_buffers.Indices.Range.Offset, models.Buffer.Slot);
             pc.ObjectIdSlot = element_slot;
             pc.FaceIdOffset = face_id_offset;
             pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage;
@@ -2336,7 +2333,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
     RenderSelectionPassWith(true, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);
         const auto binding = Buffer->ResolveBinding(mesh_buffers.Vertices);
-        auto pc = MakeDrawPc(binding, mesh_buffers.Vertices.IndexSlot, mesh_buffers.Vertices.IndexRange.Offset, models.Buffer.Slot);
+        auto pc = MakeDrawPc(binding, mesh_buffers.Vertices.Indices.Slot, mesh_buffers.Vertices.Indices.Range.Offset, models.Buffer.Slot);
         pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage;
         pc.SelectionNodesSlot = Buffer->SelectionNodeBuffer.Slot;
         pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
