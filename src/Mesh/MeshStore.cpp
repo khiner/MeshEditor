@@ -152,9 +152,9 @@ std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_
 } // namespace
 
 void MeshStore::Init(mvk::BufferContext &ctx) {
-    VerticesBuffer = std::make_unique<Megabuffer<Vertex3D>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer);
-    FaceIdBuffer = std::make_unique<Megabuffer<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer);
-    FaceNormalBuffer = std::make_unique<Megabuffer<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer);
+    VerticesBuffer = std::make_unique<BufferArena<Vertex3D>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer);
+    FaceIdBuffer = std::make_unique<BufferArena<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer);
+    FaceNormalBuffer = std::make_unique<BufferArena<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer);
 }
 
 Mesh MeshStore::CreateMesh(MeshData &&data) {

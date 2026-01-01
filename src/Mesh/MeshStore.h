@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Vulkan/Megabuffer.h"
+#include "../Vulkan/BufferArena.h"
 #include "Mesh.h"
 #include "MeshData.h"
 
@@ -49,7 +49,7 @@ private:
     uint32_t AcquireId();
     std::vector<Entry> Entries;
     std::vector<uint32_t> FreeIds;
-    std::unique_ptr<Megabuffer<Vertex3D>> VerticesBuffer;
-    std::unique_ptr<Megabuffer<uint32_t>> FaceIdBuffer;
-    std::unique_ptr<Megabuffer<vec3>> FaceNormalBuffer;
+    std::unique_ptr<BufferArena<Vertex3D>> VerticesBuffer;
+    std::unique_ptr<BufferArena<uint32_t>> FaceIdBuffer;
+    std::unique_ptr<BufferArena<vec3>> FaceNormalBuffer;
 };

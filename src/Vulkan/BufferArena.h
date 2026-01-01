@@ -18,9 +18,7 @@ struct RangeAllocator {
         auto it = std::ranges::min_element(
             FreeBlocks,
             {},
-            [count](const BufferRange &block) {
-                return block.Count < count ? std::numeric_limits<uint32_t>::max() : block.Count;
-            }
+            [count](const auto &block) { return block.Count < count ? std::numeric_limits<uint32_t>::max() : block.Count; }
         );
         if (it != FreeBlocks.end() && it->Count >= count) {
             auto &block = *it;
@@ -41,14 +39,14 @@ struct RangeAllocator {
 
     void Free(BufferRange range) {
         if (range.Count == 0) return;
+
         auto it = std::lower_bound(
             FreeBlocks.begin(),
             FreeBlocks.end(),
             range.Offset,
             [](const BufferRange &block, uint32_t offset) { return block.Offset < offset; }
         );
-        uint32_t start = range.Offset;
-        uint32_t end = range.Offset + range.Count;
+        uint32_t start = range.Offset, end = start + range.Count;
         if (it != FreeBlocks.begin()) {
             auto &prev = *(it - 1);
             if (prev.Offset + prev.Count == start) {
@@ -69,16 +67,16 @@ private:
 };
 
 template<typename T>
-struct Megabuffer {
-    explicit Megabuffer(mvk::BufferContext &ctx, vk::BufferUsageFlags usage, SlotType slot_type)
+struct BufferArena {
+    BufferArena(mvk::BufferContext &ctx, vk::BufferUsageFlags usage, SlotType slot_type)
         : Buffer(ctx, 1, usage, slot_type) {}
-
-    explicit Megabuffer(mvk::BufferContext &ctx, mvk::MemoryUsage mem, vk::BufferUsageFlags usage = {})
+    BufferArena(mvk::BufferContext &ctx, mvk::MemoryUsage mem, vk::BufferUsageFlags usage = {})
         : Buffer(ctx, 1, mem, usage) {}
 
     BufferRange Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
         if (range.Count == 0) return range;
+
         const auto required_size = ByteOffset(range.Offset + range.Count);
         Buffer.Reserve(required_size);
         Buffer.UsedSize = std::max(Buffer.UsedSize, required_size);
@@ -124,8 +122,7 @@ private:
     static auto RangeBytes(auto bytes, BufferRange range) {
         const auto start = ByteOffset(range.Offset);
         const auto count_bytes = static_cast<vk::DeviceSize>(range.Count) * sizeof(T);
-        if (start + count_bytes > bytes.size()) return bytes.subspan(0, 0);
-        return bytes.subspan(start, count_bytes);
+        return start + count_bytes > bytes.size() ? bytes.subspan(0, 0) : bytes.subspan(start, count_bytes);
     }
 
     template<typename U>

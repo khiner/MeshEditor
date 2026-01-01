@@ -458,14 +458,12 @@ struct SceneBuffer {
     }
 
     void UpdateRenderIndices(RenderBuffers &buffers, std::span<const uint32_t> indices) {
-        auto &index_buffer = GetIndexBuffer(buffers.IndexType);
-        index_buffer.Update(buffers.IndexRange, indices);
+        GetIndexBuffer(buffers.IndexType).Update(buffers.IndexRange, indices);
     }
 
     void ReleaseRenderIndices(RenderBuffers &buffers) {
         if (buffers.IndexRange.Count == 0) return;
-        auto &index_buffer = GetIndexBuffer(buffers.IndexType);
-        index_buffer.Release(buffers.IndexRange);
+        GetIndexBuffer(buffers.IndexType).Release(buffers.IndexRange);
         buffers.IndexRange = {};
     }
 
@@ -476,7 +474,7 @@ struct SceneBuffer {
         return {buffers.VertexSlot, buffers.VertexOffset, buffers.VertexCount};
     }
 
-    Megabuffer<uint32_t> &GetIndexBuffer(IndexKind kind) {
+    BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
         switch (kind) {
             case IndexKind::Face: return FaceIndexBuffer;
             case IndexKind::Edge: return EdgeIndexBuffer;
@@ -485,8 +483,8 @@ struct SceneBuffer {
     }
 
     mvk::BufferContext Ctx;
-    Megabuffer<Vertex3D> VertexBuffer;
-    Megabuffer<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
+    BufferArena<Vertex3D> VertexBuffer;
+    BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
     mvk::Buffer SceneUBO;
     mvk::Buffer SelectionNodeBuffer;
     // CPU readback buffers (host-visible)
@@ -1261,8 +1259,7 @@ void UpdateVisibleObjectIds(entt::registry &r) {
     }
 
     for (auto &[mesh_entity, ids] : ids_by_mesh) {
-        auto &models = r.get<ModelsBuffer>(mesh_entity);
-        models.ObjectIds.Update(as_bytes(ids));
+        r.get<ModelsBuffer>(mesh_entity).ObjectIds.Update(as_bytes(ids));
     }
 }
 } // namespace
