@@ -62,7 +62,7 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Vertex buffers
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Index buffers
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Model buffers
-        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // General buffers
+        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // General buffers (selection nodes, counters, click/box results, element state buffers)
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Object ID buffers
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind // Face normal buffers
     };
@@ -82,15 +82,13 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, Config.MaxBuffers * 6},
     };
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
-
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
 
     // Initialize free slot lists
     for (size_t i = 0; i < SlotTypeCount; ++i) {
-        const auto type = static_cast<SlotType>(i);
-        const uint32_t max = Config.Max(type);
+        const uint32_t max = Config.Max(static_cast<SlotType>(i));
         FreeSlots[i].reserve(max);
-        for (uint32_t j = max; j-- > 0;) FreeSlots[i].push_back(j);
+        for (uint32_t j = max; j-- > 0;) FreeSlots[i].emplace_back(j);
     }
 }
 
@@ -106,11 +104,10 @@ uint32_t DescriptorSlots::Allocate(SlotType type) {
 
 void DescriptorSlots::Release(SlotType type, uint32_t slot) {
     const auto idx = static_cast<size_t>(type);
-    const uint32_t max = Config.Max(type);
-    if (slot >= max) {
+    if (const uint32_t max = Config.Max(type); slot >= max) {
         throw std::runtime_error(std::format("Bindless {} slot {} is out of range (max {}).", SlotTypeNames[idx], slot, max));
     }
-    FreeSlots[idx].push_back(slot);
+    FreeSlots[idx].emplace_back(slot);
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &info) const {

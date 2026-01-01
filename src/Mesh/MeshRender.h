@@ -3,6 +3,7 @@
 #include "../Vulkan/Megabuffer.h"
 #include "BBox.h"
 #include "MeshData.h"
+#include "Vertex3D.h"
 #include "mesh/Handle.h"
 #include "numeric/vec4.h"
 

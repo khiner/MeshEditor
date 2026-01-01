@@ -1,9 +1,8 @@
 #pragma once
 
+#include "../Vulkan/Megabuffer.h"
 #include "Mesh.h"
 #include "MeshData.h"
-
-#include "../Vulkan/Megabuffer.h"
 
 #include <filesystem>
 #include <memory>

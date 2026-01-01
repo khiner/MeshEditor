@@ -405,7 +405,7 @@ struct SceneBuffer {
         uint32_t Offset{0};
         uint32_t Count{0};
     };
-    static constexpr uint32_t MaxSelectionNodes = 4'000'000; // Matches prior fragment cap
+    static constexpr uint32_t MaxSelectionNodes = 4'000'000;
     static constexpr uint32_t MaxSelectableObjects = MaxSelectionNodes;
     static constexpr uint32_t BoxSelectBitsetWords = (MaxSelectableObjects + 31) / 32;
     static constexpr uint32_t ClickElementGroupSize = 256;
@@ -2353,7 +2353,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     std::unordered_set<uint32_t> seen_object_ids;
     for (const auto &[_, object_id] : hits) {
         if (seen_object_ids.insert(object_id).second) {
-            entities.push_back(visible_entities[object_id - 1]);
+            entities.emplace_back(visible_entities[object_id - 1]);
         }
     }
     return entities;
@@ -2479,7 +2479,7 @@ void Scene::Interact() {
                 }
 
                 Timer timer{"BoxSelectElements (all)"};
-                std::unordered_set<entt::entity> mesh_entities; // Mesh entities of selected instances
+                std::unordered_set<entt::entity> mesh_entities; // Meshs of selected instances
                 for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
                     mesh_entities.insert(mi.MeshEntity);
                 }
@@ -2487,11 +2487,10 @@ void Scene::Interact() {
                 ranges.reserve(mesh_entities.size());
                 uint32_t offset = 0;
                 for (const auto mesh_entity : mesh_entities) {
-                    const auto &mesh = R.get<Mesh>(mesh_entity);
-                    const uint32_t count = GetElementCount(mesh, EditMode);
-                    if (count == 0) continue;
-                    ranges.push_back({mesh_entity, offset, count});
-                    offset += count;
+                    if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), EditMode); count > 0) {
+                        ranges.emplace_back(mesh_entity, offset, count);
+                        offset += count;
+                    }
                 }
 
                 auto results = RunBoxSelectElements(ranges, EditMode, box_min_px, box_max_px);

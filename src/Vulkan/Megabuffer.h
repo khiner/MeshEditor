@@ -114,11 +114,7 @@ struct Megabuffer {
     mvk::Buffer Buffer;
 
 private:
-    RangeAllocator Allocator;
-
-    static vk::DeviceSize ByteOffset(uint32_t offset) {
-        return static_cast<vk::DeviceSize>(offset) * sizeof(T);
-    }
+    static constexpr auto ByteOffset(uint32_t offset) { return static_cast<vk::DeviceSize>(offset) * sizeof(T); }
 
     void WriteRange(uint32_t offset, std::span<const T> values) {
         if (values.empty()) return;
@@ -147,4 +143,6 @@ private:
         }
         return {};
     }
+
+    RangeAllocator Allocator;
 };

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Handle.h"
-#include "MeshData.h"
+#include "Vertex3D.h"
 #include "numeric/vec4.h"
 
 #include <span>
@@ -232,8 +232,8 @@ private:
     std::span<const vec3> FaceNormals;
     std::vector<HH> OutgoingHalfedges;
     std::vector<Halfedge> Halfedges;
-    std::vector<EH> HalfedgeToEdge; // Separate mapping for better cache locality
-    std::vector<HH> Edges; // Maps edge index to one of its halfedges (index 0)
+    std::vector<EH> HalfedgeToEdge;
+    std::vector<HH> Edges; // Maps edge index to its halfedge at index 0
     std::vector<Face> Faces;
 
     vec4 Color{DefaultMeshColor};
