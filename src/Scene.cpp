@@ -8,6 +8,7 @@
 #include "SceneTree.h"
 #include "Shader.h"
 #include "SvgResource.h"
+#include "Timer.h"
 #include "mesh/Arrow.h"
 #include "mesh/MeshRender.h"
 #include "mesh/Primitives.h"
@@ -20,11 +21,9 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <format>
 #include <limits>
-#include <print>
 #include <ranges>
 #include <unordered_map>
 #include <variant>
@@ -124,18 +123,6 @@ struct PipelineRenderer {
 };
 
 namespace {
-struct Timer {
-    std::string_view Name;
-    std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
-
-    Timer(const std::string_view name) : Name{name} {}
-    ~Timer() {
-        const auto end = std::chrono::steady_clock::now();
-        const double ms = std::chrono::duration<double, std::milli>(end - Start).count();
-        std::println("{}: ms={:.3f}", Name, ms);
-    }
-};
-
 std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
 ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t count) {
     auto states = MakeElementStates(count);
@@ -2105,6 +2092,7 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
 }
 
 void Scene::RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn) {
+    const Timer timer{"RenderSelectionPassWith"};
     auto cb = *ClickCommandBuffer;
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -2144,6 +2132,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<void(
 
 namespace {
 void RunSelectionCompute(vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device, const auto &compute, const auto &pc, auto &&dispatch) {
+    const Timer timer{"RunSelectionCompute"};
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
@@ -2252,12 +2241,12 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
 }
 
 std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, glm::uvec2 box_min, glm::uvec2 box_max) {
+    if (ranges.empty() || element == Element::None) return {};
+
     std::vector<std::vector<uint32_t>> results(ranges.size());
-    if (ranges.empty() || element == Element::None) return results;
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return results;
 
     const Timer timer{"RunBoxSelectElements"};
-
     RenderEditSelectionPass(ranges, element);
     if (!HasSelectionNodes(Buffers->SelectionCounterBuffer)) return results;
 
@@ -2310,6 +2299,7 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
     const uint32_t element_count = GetElementCount(mesh, element);
     if (element_count == 0 || element == Element::None) return {};
 
+    const Timer timer{"RunClickSelectElement"};
     const ElementRange range{mesh_entity, 0, element_count};
     RenderEditSelectionPass(std::span{&range, 1}, element);
     if (const auto index = FindNearestSelectionElement(
@@ -2325,6 +2315,7 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
 std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px) {
     if (!R.all_of<Excitable>(instance_entity)) return {};
 
+    const Timer timer{"RunClickSelectExcitableVertex"};
     const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
     const auto &mesh = R.get<Mesh>(mesh_entity);
     const uint32_t vertex_count = mesh.VertexCount();
@@ -2356,6 +2347,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     if (SelectionStale) RenderSelectionPass();
     if (!HasSelectionNodes(Buffers->SelectionCounterBuffer)) return {};
 
+    const Timer timer{"RunClickSelect"};
     Buffers->ClickResultBuffer.Write(as_bytes(ClickResult{}));
     auto cb = *ClickCommandBuffer;
     const auto &compute = Pipelines->ClickSelect;
@@ -2396,6 +2388,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
     if (SelectionStale) RenderSelectionPass();
     if (!HasSelectionNodes(Buffers->SelectionCounterBuffer)) return {};
 
+    const Timer timer{"RunBoxSelect"};
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
     const auto object_count = static_cast<uint32_t>(visible_entities.size());
     if (object_count == 0) return {};
