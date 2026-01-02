@@ -495,14 +495,13 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
     );
 
-    const auto cb = *TransferCommandBuffer;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    auto cb = std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     {
         // Write the bitmap into a temporary staging buffer.
         mvk::Buffer staging_buffer{Buffers->Ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
         // Transition the image layout to be ready for data transfer.
-        cb.pipelineBarrier(
+        cb->pipelineBarrier(
             vk::PipelineStageFlagBits::eTopOfPipe,
             vk::PipelineStageFlagBits::eTransfer,
             {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
@@ -519,7 +518,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         );
 
         // Copy buffer to image.
-        cb.copyBufferToImage(
+        cb->copyBufferToImage(
             *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
             vk::BufferImageCopy{
                 0, // bufferOffset
@@ -532,7 +531,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
         );
 
         // Transition the image layout to be ready for shader sampling.
-        cb.pipelineBarrier(
+        cb->pipelineBarrier(
             vk::PipelineStageFlagBits::eTransfer,
             vk::PipelineStageFlagBits::eFragmentShader,
             {}, {}, {},
@@ -547,12 +546,12 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
                 ColorSubresourceRange // subresourceRange
             }
         );
-        cb.end();
+        cb->end();
 
         vk::SubmitInfo submit;
-        submit.setCommandBuffers(cb);
-        Vk.Queue.submit(submit, *TransferFence);
-        WaitFor(*TransferFence, Vk.Device);
+        submit.setCommandBuffers(*cb);
+        Vk.Queue.submit(submit, *OneShotFence);
+        WaitFor(*OneShotFence, Vk.Device);
     } // staging buffer is destroyed here
 
     Buffers->Ctx.ReclaimRetiredBuffers();
@@ -1082,9 +1081,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       R{r},
       CommandPool{Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})},
       RenderCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
+#ifdef MVK_FORCE_STAGED_TRANSFERS
       TransferCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
+#endif
       RenderFence{Vk.Device.createFenceUnique({})},
-      TransferFence{Vk.Device.createFenceUnique({})},
+      OneShotFence{Vk.Device.createFenceUnique({})},
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
       Slots{std::make_unique<DescriptorSlots>(Vk.Device, MakeBindlessConfig(Vk.PhysicalDevice))},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
@@ -1906,6 +1907,32 @@ void Scene::RecordRenderCommandBuffer() {
     cb.end();
 }
 
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+void Scene::RecordTransferCommandBuffer() {
+    const Timer timer{"RecordTransferCommandBuffer"};
+    TransferCommandBuffer->reset({});
+    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    if (auto deferred_copies = Buffers->Ctx.TakeDeferredCopies(); !deferred_copies.empty()) {
+        for (const auto &[buffers, ranges] : deferred_copies) {
+            auto regions = ranges | transform([](const auto &r) {
+                               const auto &[start, end] = r;
+                               return vk::BufferCopy{start, start, end - start};
+                           }) |
+                to<std::vector>();
+            TransferCommandBuffer->copyBuffer(buffers.Src, buffers.Dst, regions);
+        }
+        // Ensure buffer writes (staging copies) are visible to shader reads.
+        const vk::MemoryBarrier buffer_barrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead};
+        TransferCommandBuffer->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
+            {}, buffer_barrier, {}, {}
+        );
+    }
+    TransferCommandBuffer->end();
+}
+#endif
+
 void Scene::UpdateEdgeColors() {
     MeshRender::EdgeColor = ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
     UpdateSceneUBO();
@@ -2111,8 +2138,8 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<void(
     cb.end();
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
-    Vk.Queue.submit(submit, *TransferFence);
-    WaitFor(*TransferFence, Vk.Device);
+    Vk.Queue.submit(submit, *OneShotFence);
+    WaitFor(*OneShotFence, Vk.Device);
 }
 
 namespace {
@@ -2250,7 +2277,7 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     const uint32_t group_count_x = (box_max.x - box_min.x + 15) / 16;
     const uint32_t group_count_y = (box_max.y - box_min.y + 15) / 16;
     RunSelectionCompute(
-        cb, Vk.Queue, *TransferFence, Vk.Device, Pipelines->BoxSelect,
+        cb, Vk.Queue, *OneShotFence, Vk.Device, Pipelines->BoxSelect,
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
@@ -2287,7 +2314,7 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
     RenderEditSelectionPass(std::span{&range, 1}, element);
     if (const auto index = FindNearestSelectionElement(
             *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
-            Vk.Queue, *TransferFence, Vk.Device,
+            Vk.Queue, *OneShotFence, Vk.Device,
             Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, element_count
         )) {
         return AnyHandle{element, *index};
@@ -2319,7 +2346,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
 
     return FindNearestSelectionElement(
         *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
-        Vk.Queue, *TransferFence, Vk.Device,
+        Vk.Queue, *OneShotFence, Vk.Device,
         Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, vertex_count
     );
 }
@@ -2333,7 +2360,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     auto cb = *ClickCommandBuffer;
     const auto &compute = Pipelines->ClickSelect;
     RunSelectionCompute(
-        cb, Vk.Queue, *TransferFence, Vk.Device, compute,
+        cb, Vk.Queue, *OneShotFence, Vk.Device, compute,
         ClickSelectPushConstants{
             .TargetPx = mouse_px,
             .HeadImageIndex = SelectionHandles->HeadImage,
@@ -2384,7 +2411,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
     const uint32_t group_count_x = (box_max.x - box_min.x + 15) / 16;
     const uint32_t group_count_y = (box_max.y - box_min.y + 15) / 16;
     RunSelectionCompute(
-        cb, Vk.Queue, *TransferFence, Vk.Device, compute,
+        cb, Vk.Queue, *OneShotFence, Vk.Device, compute,
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
@@ -2655,41 +2682,22 @@ bool Scene::RenderViewport() {
         CommandBufferDirty = true;
     }
 
-    TransferCommandBuffer->reset({});
-    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    if (auto deferred_copies = Buffers->Ctx.TakeDeferredCopies(); !deferred_copies.empty()) {
-        const Timer timer{"RenderViewport->FlushStagedBufferCopies"};
-        for (const auto &[buffers, ranges] : deferred_copies) {
-            auto regions = ranges | transform([](const auto &r) {
-                               const auto &[start, end] = r;
-                               return vk::BufferCopy{start, start, end - start};
-                           }) |
-                to<std::vector>();
-            TransferCommandBuffer->copyBuffer(buffers.Src, buffers.Dst, regions);
-        }
-    }
+    RecordTransferCommandBuffer();
 #endif
-
-    // Ensure buffer writes (staging copies) are visible to shader reads.
-    const vk::MemoryBarrier buffer_barrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead};
-    TransferCommandBuffer->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer,
-        vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
-        {}, buffer_barrier, {}, {}
-    );
-    TransferCommandBuffer->end();
 
     if (CommandBufferDirty) {
         RecordRenderCommandBuffer();
         CommandBufferDirty = false;
     }
 
-    // Submit transfer and render commands together
-    const std::array command_buffers{*TransferCommandBuffer, *RenderCommandBuffer};
     vk::SubmitInfo submit;
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    const std::array command_buffers{*TransferCommandBuffer, *RenderCommandBuffer};
     submit.setCommandBuffers(command_buffers);
+#else
+    submit.setCommandBuffers(*RenderCommandBuffer);
+#endif
     Vk.Queue.submit(submit, *RenderFence);
     {
         const Timer timer{"RenderViewport->WaitForGPU"};

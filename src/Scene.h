@@ -163,6 +163,9 @@ struct Scene {
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
     void UpdateRenderBuffers(entt::entity);
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    void RecordTransferCommandBuffer();
+#endif
     void RecordRenderCommandBuffer();
     void InvalidateCommandBuffer() { CommandBufferDirty = NeedsRender = true; }
     void RequestRender() { NeedsRender = true; }
@@ -182,8 +185,12 @@ private:
     SceneVulkanResources Vk;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
-    vk::UniqueCommandBuffer RenderCommandBuffer, TransferCommandBuffer;
-    vk::UniqueFence RenderFence, TransferFence;
+    vk::UniqueCommandBuffer RenderCommandBuffer;
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    vk::UniqueCommandBuffer TransferCommandBuffer;
+#endif
+    vk::UniqueFence RenderFence;
+    vk::UniqueFence OneShotFence; // For short-lived transfers (e.g. selection passes and image uploads)
     vk::UniqueCommandBuffer ClickCommandBuffer;
     std::unique_ptr<DescriptorSlots> Slots;
 
