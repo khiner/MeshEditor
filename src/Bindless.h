@@ -33,9 +33,9 @@ struct DescriptorSlots {
     DescriptorSlots(vk::Device, const BindlessConfig &);
 
     uint32_t Allocate(SlotType);
-    void Release(SlotType, uint32_t slot);
+    void Release(TypedSlot);
 
-    vk::WriteDescriptorSet MakeBufferWrite(SlotType, uint32_t slot, const vk::DescriptorBufferInfo &) const;
+    vk::WriteDescriptorSet MakeBufferWrite(TypedSlot, const vk::DescriptorBufferInfo &) const;
     vk::WriteDescriptorSet MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;
     vk::WriteDescriptorSet MakeUniformWrite(uint32_t slot, const vk::DescriptorBufferInfo &) const;
     vk::WriteDescriptorSet MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;

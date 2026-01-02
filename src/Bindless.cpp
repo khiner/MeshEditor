@@ -102,17 +102,17 @@ uint32_t DescriptorSlots::Allocate(SlotType type) {
     return slot;
 }
 
-void DescriptorSlots::Release(SlotType type, uint32_t slot) {
-    const auto idx = static_cast<size_t>(type);
-    if (const uint32_t max = Config.Max(type); slot >= max) {
-        throw std::runtime_error(std::format("Bindless {} slot {} is out of range (max {}).", SlotTypeNames[idx], slot, max));
+void DescriptorSlots::Release(TypedSlot slot) {
+    const auto idx = static_cast<size_t>(slot.Type);
+    if (const uint32_t max = Config.Max(slot.Type); slot.Slot >= max) {
+        throw std::runtime_error(std::format("Bindless {} slot {} is out of range (max {}).", SlotTypeNames[idx], slot.Slot, max));
     }
-    FreeSlots[idx].emplace_back(slot);
+    FreeSlots[idx].emplace_back(slot.Slot);
 }
 
-vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &info) const {
-    const auto idx = static_cast<size_t>(type);
-    return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], nullptr, &info};
+vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
+    const auto idx = static_cast<size_t>(slot.Type);
+    return {GetSet(), SlotTypeBindings[idx], slot.Slot, 1, SlotTypeDescriptors[idx], nullptr, &info};
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {

@@ -42,10 +42,10 @@ struct BufferContext {
     void ReclaimRetiredBuffers();
 
     std::vector<vk::WriteDescriptorSet> GetPendingDescriptorUpdates();
-    void AddPendingDescriptorUpdate(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &info) {
-        PendingDescriptorUpdates.insert_or_assign({type, slot}, info);
+    void AddPendingDescriptorUpdate(TypedSlot slot, const vk::DescriptorBufferInfo &info) {
+        PendingDescriptorUpdates.insert_or_assign(slot, info);
     }
-    void CancelDescriptorUpdate(SlotType type, uint32_t slot) { PendingDescriptorUpdates.erase({type, slot}); }
+    void CancelDescriptorUpdate(TypedSlot slot) { PendingDescriptorUpdates.erase(slot); }
     void ClearPendingDescriptorUpdates() { PendingDescriptorUpdates.clear(); }
 
     std::string DebugHeapUsage() const;
@@ -58,11 +58,6 @@ struct BufferContext {
     DescriptorSlots &Slots;
 
 private:
-    struct TypedSlot {
-        SlotType Type;
-        uint32_t Slot;
-        bool operator==(const auto &other) const noexcept { return Type == other.Type && Slot == other.Slot; }
-    };
     struct TypedSlotHash {
         size_t operator()(const TypedSlot &key) const noexcept {
             const auto type = static_cast<uint64_t>(std::to_underlying(key.Type));

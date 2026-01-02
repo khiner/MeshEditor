@@ -116,9 +116,6 @@ struct VmaBuffer {
     VkMemoryPropertyFlags MemoryProps{};
 };
 
-struct DeferredBufferReclaimer {
-};
-
 BufferContext::BufferContext(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, vk::CommandPool command_pool, DescriptorSlots &slots)
     : PhysicalDevice(pd), Device(d),
       TransferCb(std::move(d.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front())),
@@ -159,7 +156,7 @@ std::string BufferContext::DebugHeapUsage() const {
 
 std::vector<vk::WriteDescriptorSet> BufferContext::GetPendingDescriptorUpdates() {
     return PendingDescriptorUpdates |
-        transform([&](const auto &pending) { return Slots.MakeBufferWrite(pending.first.Type, pending.first.Slot, pending.second); }) |
+        transform([&](const auto &pending) { return Slots.MakeBufferWrite(pending.first, pending.second); }) |
         to<std::vector>();
 }
 
@@ -273,7 +270,7 @@ Buffer::Buffer(Buffer &&other)
 Buffer &Buffer::operator=(Buffer &&other) {
     if (this != &other) {
         Retire();
-        if (Slot != InvalidSlot) Ctx.Slots.Release(Type, Slot);
+        if (Slot != InvalidSlot) Ctx.Slots.Release({Type, Slot});
         Slot = other.Slot;
         UsedSize = other.UsedSize;
         Usage = other.Usage;
@@ -288,18 +285,18 @@ Buffer &Buffer::operator=(Buffer &&other) {
 
 Buffer::~Buffer() {
     Retire();
-    if (Slot != InvalidSlot) Ctx.Slots.Release(Type, Slot);
+    if (Slot != InvalidSlot) Ctx.Slots.Release({Type, Slot});
 }
 
 void Buffer::Retire() {
     if (HostBuffer) { Ctx.Retired.emplace_back(std::move(HostBuffer)); }
     if (DeviceBuffer) { Ctx.Retired.emplace_back(std::move(DeviceBuffer)); }
-    if (Slot != InvalidSlot) { Ctx.CancelDescriptorUpdate(Type, Slot); }
+    if (Slot != InvalidSlot) { Ctx.CancelDescriptorUpdate({Type, Slot}); }
 }
 
 void Buffer::UpdateDescriptor() {
     if (Slot == InvalidSlot) return;
-    Ctx.AddPendingDescriptorUpdate(Type, Slot, GetDescriptor());
+    Ctx.AddPendingDescriptorUpdate({Type, Slot}, GetDescriptor());
 }
 
 bool Buffer::IsMapped() const { return DeviceBuffer && DeviceBuffer->IsMapped(); }

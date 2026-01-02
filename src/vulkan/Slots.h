@@ -16,3 +16,9 @@ enum class SlotType : uint8_t {
     FaceNormalBuffer
 };
 constexpr uint8_t SlotTypeCount{9};
+
+struct TypedSlot {
+    SlotType Type;
+    uint32_t Slot;
+    bool operator==(const TypedSlot &) const = default;
+};

@@ -1074,14 +1074,14 @@ struct Scene::SelectionSlotHandles {
           SilhouetteSampler(slots.Allocate(SlotType::Sampler)) {}
 
     ~SelectionSlotHandles() {
-        Slots.Release(SlotType::Image, HeadImage);
-        Slots.Release(SlotType::Buffer, SelectionCounter);
-        Slots.Release(SlotType::Buffer, ClickResult);
-        Slots.Release(SlotType::Buffer, ClickElementResult);
-        Slots.Release(SlotType::Buffer, BoxResult);
-        Slots.Release(SlotType::Sampler, ObjectIdSampler);
-        Slots.Release(SlotType::Sampler, DepthSampler);
-        Slots.Release(SlotType::Sampler, SilhouetteSampler);
+        Slots.Release({SlotType::Image, HeadImage});
+        Slots.Release({SlotType::Buffer, SelectionCounter});
+        Slots.Release({SlotType::Buffer, ClickResult});
+        Slots.Release({SlotType::Buffer, ClickElementResult});
+        Slots.Release({SlotType::Buffer, BoxResult});
+        Slots.Release({SlotType::Sampler, ObjectIdSampler});
+        Slots.Release({SlotType::Sampler, DepthSampler});
+        Slots.Release({SlotType::Sampler, SilhouetteSampler});
     }
 
     DescriptorSlots &Slots;
@@ -2665,10 +2665,10 @@ bool Scene::RenderViewport() {
             Vk.Device.updateDescriptorSets(
                 {
                     Slots->MakeImageWrite(SelectionHandles->HeadImage, head_image_info),
-                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->SelectionCounter, selection_counter),
-                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->ClickResult, click_result),
-                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->ClickElementResult, click_element_result),
-                    Slots->MakeBufferWrite(SlotType::Buffer, SelectionHandles->BoxResult, box_result),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->SelectionCounter}, selection_counter),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ClickResult}, click_result),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ClickElementResult}, click_element_result),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->BoxResult}, box_result),
                     Slots->MakeSamplerWrite(SelectionHandles->ObjectIdSampler, object_id_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->DepthSampler, depth_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->SilhouetteSampler, silhouette_sampler),
