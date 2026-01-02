@@ -169,6 +169,35 @@ std::vector<vk::WriteDescriptorSet> BufferContext::GetPendingDescriptorUpdates()
         to<std::vector>();
 }
 
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+// Queues a staged buffer copy, merging with any overlapping/adjacent pending ranges.
+void BufferContext::AddPendingBufferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size) {
+    if (size == 0) return;
+
+    auto &ranges = PendingBufferCopies[{src, dst}];
+    auto end = offset + size;
+    // Find first range starting after our offset - previous range may overlap
+    auto it = ranges.upper_bound(offset);
+    if (it != ranges.begin()) {
+        if (auto prev = std::prev(it); prev->second >= offset) {
+            offset = prev->first;
+            end = std::max(end, prev->second);
+            it = ranges.erase(prev);
+        }
+    }
+    // Merge with any subsequent overlapping/adjacent ranges
+    while (it != ranges.end() && it->first <= end) {
+        end = std::max(end, it->second);
+        it = ranges.erase(it);
+    }
+    ranges.emplace(offset, end);
+}
+
+void BufferContext::CancelPendingCopies(vk::Buffer src, vk::Buffer dst) {
+    PendingBufferCopies.erase({src, dst});
+}
+#endif
+
 Buffer::Buffer(BufferContext &ctx, vk::DeviceSize size, vk::BufferUsageFlags usage, SlotType slot_type)
     : Ctx(ctx), Slot(ctx.Slots.Allocate(slot_type)), Usage(usage),
       DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, size, MemoryUsage::GpuOnly, usage | vk::BufferUsageFlagBits::eTransferDst)),
@@ -223,10 +252,13 @@ Buffer::~Buffer() {
 }
 
 void Buffer::Retire() {
+    if (!DeviceBuffer) return; // Already moved-from
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    if (HostBuffer) Ctx.Retired.emplace_back(std::move(HostBuffer));
+    if (!HostBuffer) return;
+    Ctx.CancelPendingCopies(HostBuffer->Get(), DeviceBuffer->Get());
+    Ctx.Retired.emplace_back(std::move(HostBuffer));
 #endif
-    if (DeviceBuffer) Ctx.Retired.emplace_back(std::move(DeviceBuffer));
+    Ctx.Retired.emplace_back(std::move(DeviceBuffer));
     if (Slot != InvalidSlot) Ctx.CancelDescriptorUpdate({Type, Slot});
 }
 
@@ -241,7 +273,7 @@ vk::DeviceSize Buffer::GetAllocatedSize() const { return DeviceBuffer->GetAlloca
 
 std::span<const std::byte> Buffer::GetMappedData() const {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    return HostBuffer ? HostBuffer->GetData() : DeviceBuffer->GetData();
+    return HostBuffer->GetData();
 #else
     return DeviceBuffer->GetData();
 #endif
@@ -249,7 +281,7 @@ std::span<const std::byte> Buffer::GetMappedData() const {
 
 std::span<std::byte> Buffer::GetMappedData() {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    return HostBuffer ? HostBuffer->GetMappedData() : DeviceBuffer->GetMappedData();
+    return HostBuffer->GetMappedData();
 #else
     return DeviceBuffer->GetMappedData();
 #endif
@@ -258,11 +290,12 @@ std::span<std::byte> Buffer::GetMappedData() {
 void Buffer::Write(std::span<const std::byte> data, vk::DeviceSize offset) const { DeviceBuffer->Write(data, offset); }
 void Buffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const { DeviceBuffer->Move(from, to, size); }
 
-void Buffer::Flush([[maybe_unused]] vk::DeviceSize offset, [[maybe_unused]] vk::DeviceSize size) const {
+std::span<std::byte> Buffer::GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    if (HostBuffer && size > 0) {
-        Ctx.TransferCb->copyBuffer(HostBuffer->Get(), DeviceBuffer->Get(), vk::BufferCopy{offset, offset, size});
-    }
+    Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, size);
+    return HostBuffer->GetMappedData().subspan(offset, size);
+#else
+    return DeviceBuffer->GetMappedData().subspan(offset, size);
 #endif
 }
 
@@ -274,8 +307,9 @@ void Buffer::Reserve(vk::DeviceSize required_size) {
     auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::GpuOnly, Usage | vk::BufferUsageFlagBits::eTransferDst);
     if (UsedSize > 0) {
         new_host->Write(HostBuffer->GetData());
-        Ctx.TransferCb->copyBuffer(new_host->Get(), new_device->Get(), vk::BufferCopy{0, 0, UsedSize});
+        Ctx.AddPendingBufferCopy(new_host->Get(), new_device->Get(), 0, UsedSize);
     }
+    Ctx.CancelPendingCopies(HostBuffer->Get(), DeviceBuffer->Get());
     Ctx.Retired.emplace_back(std::move(HostBuffer));
     Ctx.Retired.emplace_back(std::move(DeviceBuffer));
     HostBuffer = std::move(new_host);
@@ -297,9 +331,7 @@ void Buffer::Update(std::span<const std::byte> data, vk::DeviceSize offset) {
     UsedSize = std::max(UsedSize, required_size);
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     HostBuffer->Write(data, offset);
-    if (data.size() > 0) {
-        Ctx.TransferCb->copyBuffer(HostBuffer->Get(), DeviceBuffer->Get(), vk::BufferCopy{offset, offset, data.size()});
-    }
+    Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, data.size());
 #else
     DeviceBuffer->Write(data, offset);
 #endif
@@ -312,9 +344,7 @@ void Buffer::Insert(std::span<const std::byte> data, vk::DeviceSize offset) {
     if (offset < UsedSize) HostBuffer->Move(offset, offset + data.size(), UsedSize - offset);
     HostBuffer->Write(data, offset);
     UsedSize += data.size();
-    if (UsedSize > offset) {
-        Ctx.TransferCb->copyBuffer(HostBuffer->Get(), DeviceBuffer->Get(), vk::BufferCopy{offset, offset, UsedSize - offset});
-    }
+    Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, UsedSize - offset);
 #else
     if (offset < UsedSize) DeviceBuffer->Move(offset, offset + data.size(), UsedSize - offset);
     DeviceBuffer->Write(data, offset);
@@ -328,7 +358,7 @@ void Buffer::Erase(vk::DeviceSize offset, vk::DeviceSize size) {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     if (move_size > 0) {
         HostBuffer->Move(offset + size, offset, move_size);
-        Ctx.TransferCb->copyBuffer(HostBuffer->Get(), DeviceBuffer->Get(), vk::BufferCopy{offset, offset, move_size});
+        Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, move_size);
     }
 #else
     if (move_size > 0) DeviceBuffer->Move(offset + size, offset, move_size);

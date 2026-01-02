@@ -180,7 +180,6 @@ Mesh MeshStore::CreateMesh(MeshData &&data) {
             const auto p2 = mesh.GetPosition(*++it);
             face_normals[fi] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
         }
-        FlushFaceNormals(mesh.GetStoreId());
     }
     {
         auto vertices = GetVerticesMutable(mesh.GetStoreId());
@@ -194,7 +193,6 @@ Mesh MeshStore::CreateMesh(MeshData &&data) {
         }
 
         for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
-        FlushVertices(mesh.GetStoreId());
     }
     return mesh;
 }
@@ -208,7 +206,6 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(src_vertices.size()));
     auto dst_vertices = VerticesBuffer->GetMutable(entry.Vertices);
     std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
-    FlushVertices(id);
 
     const auto src_face_ids = FaceIdBuffer->Get(Entries.at(mesh.GetStoreId()).FaceIds);
     entry.FaceIds = FaceIdBuffer->Allocate(src_face_ids);
@@ -216,7 +213,6 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     const auto src_face_normals = GetFaceNormals(mesh.GetStoreId());
     auto dst_face_normals = FaceNormalBuffer->GetMutable(entry.FaceNormals);
     std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
-    FlushFaceNormals(id);
 
     Mesh clone{*this, id, mesh};
     return clone;
@@ -242,8 +238,6 @@ std::span<Vertex3D> MeshStore::GetVerticesMutable(uint32_t id) { return Vertices
 std::span<vec3> MeshStore::GetFaceNormalsMutable(uint32_t id) { return FaceNormalBuffer->GetMutable(Entries.at(id).FaceNormals); }
 
 void MeshStore::UpdateVertices(uint32_t id, std::span<const Vertex3D> vertices) { VerticesBuffer->Update(Entries.at(id).Vertices, vertices); }
-void MeshStore::FlushVertices(uint32_t id) { VerticesBuffer->Flush(Entries.at(id).Vertices); }
-void MeshStore::FlushFaceNormals(uint32_t id) { FaceNormalBuffer->Flush(Entries.at(id).FaceNormals); }
 
 void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;

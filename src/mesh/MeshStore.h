@@ -31,10 +31,8 @@ struct MeshStore {
     std::span<const Vertex3D> GetVertices(uint32_t id) const;
     std::span<Vertex3D> GetVerticesMutable(uint32_t id);
     void UpdateVertices(uint32_t id, std::span<const Vertex3D> vertices);
-    void FlushVertices(uint32_t id);
     std::span<const vec3> GetFaceNormals(uint32_t id) const;
     std::span<vec3> GetFaceNormalsMutable(uint32_t id);
-    void FlushFaceNormals(uint32_t id);
     Range GetVerticesRange(uint32_t id) const;
     uint32_t GetVerticesSlot() const;
     Range GetFaceIdRange(uint32_t id) const;

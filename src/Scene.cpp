@@ -2636,6 +2636,20 @@ bool Scene::RenderViewport() {
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
         Buffer->Ctx.ClearPendingDescriptorUpdates();
     }
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    if (auto pending_copies = Buffer->Ctx.TakePendingBufferCopies(); !pending_copies.empty()) {
+        const Timer timer{"RenderViewport->FlushStagedBufferCopies"};
+        const auto transfer_cb = *Buffer->Ctx.TransferCb;
+        for (const auto &[buffers, ranges] : pending_copies) {
+            auto regions = ranges | transform([](const auto &r) {
+                               const auto &[start, end] = r;
+                               return vk::BufferCopy{start, start, end - start};
+                           }) |
+                to<std::vector>();
+            transfer_cb.copyBuffer(buffers.Src, buffers.Dst, regions);
+        }
+    }
+#endif
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty && !NeedsRender) return false;
@@ -2700,7 +2714,10 @@ bool Scene::RenderViewport() {
     vk::SubmitInfo submit;
     submit.setCommandBuffers(command_buffers);
     Vk.Queue.submit(submit, *RenderFence);
-    WaitFor(*RenderFence, Vk.Device);
+    {
+        const Timer timer{"RenderViewport->WaitForGPU"};
+        WaitFor(*RenderFence, Vk.Device);
+    }
 
     Buffer->Ctx.ReclaimRetiredBuffers();
     // Leave transfer_cb recording for next frame's staging.

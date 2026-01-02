@@ -101,13 +101,12 @@ struct BufferArena {
     }
 
     void Release(BufferRange range) { Allocator.Free(range); }
-    void Flush(BufferRange range) {
-        if (range.Count == 0) return;
-        Buffer.Flush(ByteOffset(range.Offset), static_cast<vk::DeviceSize>(range.Count) * sizeof(T));
-    }
 
     std::span<const T> Get(BufferRange range) const { return SpanFromBytes<const T>(range); }
-    std::span<T> GetMutable(BufferRange range) { return SpanFromBytes<T>(range); }
+    std::span<T> GetMutable(BufferRange range) {
+        auto bytes = Buffer.GetMutableRange(ByteOffset(range.Offset), static_cast<vk::DeviceSize>(range.Count) * sizeof(T));
+        return {reinterpret_cast<T *>(bytes.data()), range.Count};
+    }
 
     mvk::Buffer Buffer;
 

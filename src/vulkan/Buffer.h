@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include <array>
+#include <map>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -34,6 +35,21 @@ enum class MemoryUsage {
     GpuToCpu
 };
 
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+struct BufferPair {
+    vk::Buffer Src, Dst;
+    bool operator==(const BufferPair &) const = default;
+};
+struct BufferPairHash {
+    size_t operator()(const BufferPair &p) const noexcept {
+        return std::hash<void *>{}(static_cast<VkBuffer>(p.Src)) ^
+            (std::hash<void *>{}(static_cast<VkBuffer>(p.Dst)) << 1);
+    }
+};
+// Maps start offset -> end offset, automatically sorted and merged on insert
+using CopyRanges = std::map<vk::DeviceSize, vk::DeviceSize>;
+#endif
+
 struct VmaBuffer;
 struct BufferContext {
     BufferContext(vk::PhysicalDevice, vk::Device, vk::Instance, vk::CommandPool, DescriptorSlots &);
@@ -47,6 +63,12 @@ struct BufferContext {
     }
     void CancelDescriptorUpdate(TypedSlot slot) { PendingDescriptorUpdates.erase(slot); }
     void ClearPendingDescriptorUpdates() { PendingDescriptorUpdates.clear(); }
+
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    void AddPendingBufferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size);
+    void CancelPendingCopies(vk::Buffer src, vk::Buffer dst);
+    auto TakePendingBufferCopies() { return std::exchange(PendingBufferCopies, {}); }
+#endif
 
     std::string DebugHeapUsage() const;
 
@@ -65,6 +87,9 @@ private:
         }
     };
     std::unordered_map<TypedSlot, vk::DescriptorBufferInfo, TypedSlotHash> PendingDescriptorUpdates;
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    std::unordered_map<BufferPair, CopyRanges, BufferPairHash> PendingBufferCopies;
+#endif
 };
 
 // Vulkan buffer with descriptor slot management.
@@ -97,7 +122,7 @@ struct Buffer {
     vk::DeviceSize GetAllocatedSize() const;
     void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
-    void Flush(vk::DeviceSize offset, vk::DeviceSize size) const;
+    std::span<std::byte> GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size);
     vk::DescriptorBufferInfo GetDescriptor() const { return {operator*(), 0, vk::WholeSize}; }
 
     BufferContext &Ctx;
