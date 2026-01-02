@@ -208,6 +208,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(src_vertices.size()));
     auto dst_vertices = VerticesBuffer->GetMutable(entry.Vertices);
     std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
+    FlushVertices(id);
 
     const auto src_face_ids = FaceIdBuffer->Get(Entries.at(mesh.GetStoreId()).FaceIds);
     entry.FaceIds = FaceIdBuffer->Allocate(src_face_ids);
@@ -215,6 +216,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     const auto src_face_normals = GetFaceNormals(mesh.GetStoreId());
     auto dst_face_normals = FaceNormalBuffer->GetMutable(entry.FaceNormals);
     std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
+    FlushFaceNormals(id);
 
     Mesh clone{*this, id, mesh};
     return clone;

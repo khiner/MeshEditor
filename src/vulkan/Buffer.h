@@ -53,7 +53,7 @@ struct BufferContext {
     vk::PhysicalDevice PhysicalDevice;
     vk::Device Device;
     VmaAllocator Vma;
-    vk::UniqueCommandBuffer TransferCb;
+    vk::UniqueCommandBuffer TransferCb; // Used for image uploads and staged buffer transfers
     std::vector<std::unique_ptr<VmaBuffer>> Retired;
     DescriptorSlots &Slots;
 
@@ -67,9 +67,11 @@ private:
     std::unordered_map<TypedSlot, vk::DescriptorBufferInfo, TypedSlotHash> PendingDescriptorUpdates;
 };
 
-// Vulkan buffer with optional host staging and descriptor slot management.
+// Vulkan buffer with descriptor slot management.
+// By default, assumes direct-mapped memory (unified memory architectures like Apple Silicon).
+// Define MVK_FORCE_STAGED_TRANSFERS to use explicit staging buffers (for discrete GPUs or testing).
 struct Buffer {
-    // Slotted buffer (GpuOnly + staging, with descriptor slot management)
+    // Slotted buffer (GpuOnly, with descriptor slot management)
     Buffer(BufferContext &, vk::DeviceSize, vk::BufferUsageFlags, SlotType);
     Buffer(BufferContext &, std::span<const std::byte>, vk::BufferUsageFlags, SlotType);
     // Raw buffer (no slot, direct memory access)
@@ -102,27 +104,15 @@ struct Buffer {
     uint32_t Slot{InvalidSlot};
     vk::DeviceSize UsedSize{0};
     vk::BufferUsageFlags Usage{};
-
     std::unique_ptr<VmaBuffer> DeviceBuffer;
+#ifdef MVK_FORCE_STAGED_TRANSFERS
     std::unique_ptr<VmaBuffer> HostBuffer;
+#endif
 
 private:
     void Retire();
     void UpdateDescriptor();
-    bool IsMapped() const;
-
-    using UpdateFn = bool (*)(Buffer &, std::span<const std::byte>, vk::DeviceSize);
-    using ReserveFn = bool (*)(Buffer &, vk::DeviceSize);
-    using InsertFn = void (*)(Buffer &, std::span<const std::byte>, vk::DeviceSize);
-    using EraseFn = void (*)(Buffer &, vk::DeviceSize, vk::DeviceSize);
-    struct Impl {
-        UpdateFn Update;
-        ReserveFn Reserve;
-        InsertFn Insert;
-        EraseFn Erase;
-    };
 
     SlotType Type;
-    Impl ImplOps;
 };
 } // namespace mvk

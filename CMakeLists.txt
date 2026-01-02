@@ -112,6 +112,13 @@ elseif(CMAKE_BUILD_TYPE MATCHES Release)
     target_compile_definitions(${PROJECT_NAME} PRIVATE RELEASE_BUILD)
 endif()
 
+# Use staging buffers for CPU->GPU transfers instead of direct-mapped memory.
+# Enable this for discrete GPUs or to test the staged transfer code path.
+option(MVK_FORCE_STAGED_TRANSFERS "Force staging buffer transfers (for discrete GPUs or testing)" OFF)
+if(MVK_FORCE_STAGED_TRANSFERS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MVK_FORCE_STAGED_TRANSFERS)
+endif()
+
 # Disable lib warnings
 # staticlib is faustlib (can't use alias target)
 foreach(target IN LISTS disable_warning_targets)

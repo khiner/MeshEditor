@@ -37,9 +37,10 @@ Audio-specific features:
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
-* Bindless rendering
+* Bindless rendering with vertex data arenas shared across all meshes
 * Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
 * GPU-accelerated mouse interactions (no CPU acceleration structures like BVH)
+* Half-edge iterators for mesh topology operations
 
 ### Physical audio modeling
 
@@ -132,6 +133,14 @@ $ cd build && ./MeshEditor
 
 
 ## Development
+
+### Build options
+
+**Staged buffer transfers**: By default, the app assumes unified memory (direct-mapped GPU memory), which works on Apple Silicon and other unified memory architectures.
+For discrete GPUs, enable staged transfers:
+```shell
+$ cmake -B build -DMVK_FORCE_STAGED_TRANSFERS=ON .
+```
 
 ### Update submodules
 
