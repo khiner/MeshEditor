@@ -15,46 +15,30 @@ struct RangeAllocator {
     BufferRange Allocate(uint32_t count) {
         if (count == 0) return {};
 
-        auto it = std::ranges::min_element(
-            FreeBlocks,
-            {},
-            [count](const auto &block) { return block.Count < count ? std::numeric_limits<uint32_t>::max() : block.Count; }
-        );
+        auto it = std::ranges::min_element(FreeBlocks, {}, [count](const auto &b) {
+            return b.Count >= count ? b.Count : std::numeric_limits<uint32_t>::max();
+        });
         if (it != FreeBlocks.end() && it->Count >= count) {
-            auto &block = *it;
-            const uint32_t offset = block.Offset;
-            if (block.Count == count) {
-                FreeBlocks.erase(it);
-            } else {
-                block.Offset += count;
-                block.Count -= count;
-            }
+            uint32_t offset = it->Offset;
+            if (it->Count == count) FreeBlocks.erase(it);
+            else *it = {it->Offset + count, it->Count - count};
             return {offset, count};
         }
-
-        const uint32_t offset = EndOffset;
-        EndOffset += count;
-        return {offset, count};
+        return {std::exchange(EndOffset, EndOffset + count), count};
     }
 
     void Free(BufferRange range) {
         if (range.Count == 0) return;
 
-        auto it = std::lower_bound(
-            FreeBlocks.begin(),
-            FreeBlocks.end(),
-            range.Offset,
-            [](const BufferRange &block, uint32_t offset) { return block.Offset < offset; }
-        );
-        uint32_t start = range.Offset, end = start + range.Count;
+        auto it = std::ranges::lower_bound(FreeBlocks, range.Offset, {}, &BufferRange::Offset);
+        auto start = range.Offset, end = start + range.Count;
         if (it != FreeBlocks.begin()) {
-            auto &prev = *(it - 1);
-            if (prev.Offset + prev.Count == start) {
-                start = prev.Offset;
-                it = FreeBlocks.erase(it - 1);
+            if (auto prev = std::prev(it); prev->Offset + prev->Count == start) {
+                start = prev->Offset;
+                it = FreeBlocks.erase(prev);
             }
         }
-        while (it != FreeBlocks.end() && end == it->Offset) {
+        if (it != FreeBlocks.end() && end == it->Offset) {
             end = it->Offset + it->Count;
             it = FreeBlocks.erase(it);
         }
@@ -122,14 +106,6 @@ private:
         const auto start = ByteOffset(range.Offset);
         const auto count_bytes = static_cast<vk::DeviceSize>(range.Count) * sizeof(T);
         return start + count_bytes > bytes.size() ? bytes.subspan(0, 0) : bytes.subspan(start, count_bytes);
-    }
-
-    template<typename U>
-    std::span<U> SpanFromBytes(BufferRange range) {
-        if (auto bytes = RangeBytes(Buffer.GetMappedData(), range); !bytes.empty()) {
-            return {reinterpret_cast<U *>(bytes.data()), range.Count};
-        }
-        return {};
     }
 
     template<typename U>

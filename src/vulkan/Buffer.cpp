@@ -105,6 +105,7 @@ struct VmaBuffer {
             (MemoryProps & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
+
     void Write(std::span<const std::byte> src, vk::DeviceSize offset = 0) const {
         if (src.empty() || offset >= GetAllocatedSize()) return;
         std::copy(src.begin(), src.end(), GetMappedData().subspan(offset).data());
