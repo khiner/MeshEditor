@@ -214,7 +214,7 @@ private:
     };
 
     Colors Colors;
-    uint SilhouetteEdgeWidth{2};
+    uint SilhouetteEdgeWidth{1};
 
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneBuffers> Buffers;
