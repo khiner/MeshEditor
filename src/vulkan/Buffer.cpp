@@ -55,7 +55,7 @@ void LoggingVmaFree(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDevice
 
 std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevice pd) {
     VkPhysicalDeviceMemoryProperties memory_props;
-    vkGetPhysicalDeviceMemoryProperties(static_cast<VkPhysicalDevice>(pd), &memory_props);
+    vkGetPhysicalDeviceMemoryProperties(pd, &memory_props);
     std::vector<VmaBudget> budgets(memory_props.memoryHeapCount);
     vmaGetHeapBudgets(allocator, budgets.data());
     return budgets;
@@ -124,13 +124,11 @@ struct VmaBuffer {
     VkMemoryPropertyFlags MemoryProps{};
 };
 
-BufferContext::BufferContext(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, vk::CommandPool command_pool, DescriptorSlots &slots)
-    : PhysicalDevice(pd), Device(d),
-      TransferCb(std::move(d.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front())),
-      Slots(slots) {
+BufferContext::BufferContext(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
+    : PhysicalDevice(pd), Slots(slots) {
     VmaAllocatorCreateInfo create_info{};
     create_info.physicalDevice = PhysicalDevice;
-    create_info.device = Device;
+    create_info.device = d;
     create_info.instance = instance;
 #ifndef RELEASE_BUILD
     VmaDeviceMemoryCallbacks memory_callbacks{LoggingVmaAllocate, LoggingVmaFree, nullptr};
@@ -139,11 +137,9 @@ BufferContext::BufferContext(vk::PhysicalDevice pd, vk::Device d, vk::Instance i
     if (vmaCreateAllocator(&create_info, &Vma) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create VMA allocator.");
     }
-    TransferCb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 }
 
 BufferContext::~BufferContext() {
-    TransferCb->end();
     Retired.clear();
     vmaDestroyAllocator(Vma);
 }

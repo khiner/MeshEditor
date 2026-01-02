@@ -97,7 +97,7 @@ inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice
 
 struct SvgResource;
 struct ScenePipelines;
-struct SceneBuffer;
+struct SceneBuffers;
 struct DescriptorSlots;
 
 struct SceneVulkanResources {
@@ -182,7 +182,7 @@ private:
     SceneVulkanResources Vk;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
-    vk::UniqueCommandBuffer RenderCommandBuffer;
+    vk::UniqueCommandBuffer RenderCommandBuffer, TransferCommandBuffer;
     vk::UniqueFence RenderFence, TransferFence;
     vk::UniqueCommandBuffer ClickCommandBuffer;
     std::unique_ptr<DescriptorSlots> Slots;
@@ -217,7 +217,7 @@ private:
     uint SilhouetteEdgeWidth{2};
 
     std::unique_ptr<ScenePipelines> Pipelines;
-    std::unique_ptr<SceneBuffer> Buffer;
+    std::unique_ptr<SceneBuffers> Buffers;
     MeshStore Meshes;
 
     enum class SelectionMode { Click,

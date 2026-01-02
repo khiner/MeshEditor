@@ -52,7 +52,7 @@ using CopyRanges = std::map<vk::DeviceSize, vk::DeviceSize>;
 
 struct VmaBuffer;
 struct BufferContext {
-    BufferContext(vk::PhysicalDevice, vk::Device, vk::Instance, vk::CommandPool, DescriptorSlots &);
+    BufferContext(vk::PhysicalDevice, vk::Device, vk::Instance, DescriptorSlots &);
     ~BufferContext();
 
     void ReclaimRetiredBuffers();
@@ -71,9 +71,7 @@ struct BufferContext {
     std::string DebugHeapUsage() const;
 
     vk::PhysicalDevice PhysicalDevice;
-    vk::Device Device;
     VmaAllocator Vma;
-    vk::UniqueCommandBuffer TransferCb; // Used for image uploads and staged buffer transfers
     std::vector<std::unique_ptr<VmaBuffer>> Retired;
     DescriptorSlots &Slots;
 
