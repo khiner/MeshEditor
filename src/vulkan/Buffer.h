@@ -7,7 +7,7 @@
 #include <array>
 #include <memory>
 #include <span>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 // Forwards to avoid including `vk_mem_alloc.h`.
@@ -26,8 +26,6 @@ constexpr std::span<const std::byte> as_bytes(const T &v) { return {reinterpret_
 struct DescriptorSlots;
 
 namespace mvk {
-struct DeferredBufferReclaimer;
-
 enum class MemoryUsage {
     Unknown,
     CpuOnly,
@@ -36,6 +34,7 @@ enum class MemoryUsage {
     GpuToCpu
 };
 
+struct VmaBuffer;
 struct BufferContext {
     BufferContext(vk::PhysicalDevice, vk::Device, vk::Instance, vk::CommandPool, DescriptorSlots &);
     ~BufferContext();
@@ -44,10 +43,9 @@ struct BufferContext {
 
     std::vector<vk::WriteDescriptorSet> GetPendingDescriptorUpdates();
     void AddPendingDescriptorUpdate(SlotType type, uint32_t slot, const vk::DescriptorBufferInfo &info) {
-        CancelDescriptorUpdate(type, slot);
-        PendingDescriptorUpdates.emplace(type, slot, info);
+        PendingDescriptorUpdates.insert_or_assign({type, slot}, info);
     }
-    void CancelDescriptorUpdate(SlotType, uint32_t);
+    void CancelDescriptorUpdate(SlotType type, uint32_t slot) { PendingDescriptorUpdates.erase({type, slot}); }
     void ClearPendingDescriptorUpdates() { PendingDescriptorUpdates.clear(); }
 
     std::string DebugHeapUsage() const;
@@ -56,24 +54,22 @@ struct BufferContext {
     vk::Device Device;
     VmaAllocator Vma;
     vk::UniqueCommandBuffer TransferCb;
-    std::unique_ptr<DeferredBufferReclaimer> Reclaimer;
+    std::vector<std::unique_ptr<VmaBuffer>> Retired;
     DescriptorSlots &Slots;
 
 private:
-    struct PendingDescriptorUpdate {
+    struct TypedSlot {
         SlotType Type;
         uint32_t Slot;
-        vk::DescriptorBufferInfo Info;
-
         bool operator==(const auto &other) const noexcept { return Type == other.Type && Slot == other.Slot; }
     };
-    struct PendingDescriptorUpdateHash {
-        size_t operator()(const PendingDescriptorUpdate &pending) const noexcept {
-            const auto type = static_cast<uint64_t>(std::to_underlying(pending.Type));
-            return std::hash<uint64_t>{}((type << 32) | static_cast<uint64_t>(pending.Slot));
+    struct TypedSlotHash {
+        size_t operator()(const TypedSlot &key) const noexcept {
+            const auto type = static_cast<uint64_t>(std::to_underlying(key.Type));
+            return std::hash<uint64_t>{}((type << 32) | static_cast<uint64_t>(key.Slot));
         }
     };
-    std::unordered_set<PendingDescriptorUpdate, PendingDescriptorUpdateHash> PendingDescriptorUpdates;
+    std::unordered_map<TypedSlot, vk::DescriptorBufferInfo, TypedSlotHash> PendingDescriptorUpdates;
 };
 
 // Vulkan buffer with optional host staging and descriptor slot management.
@@ -112,7 +108,6 @@ struct Buffer {
     vk::DeviceSize UsedSize{0};
     vk::BufferUsageFlags Usage{};
 
-    struct VmaBuffer;
     std::unique_ptr<VmaBuffer> DeviceBuffer;
     std::unique_ptr<VmaBuffer> HostBuffer;
 

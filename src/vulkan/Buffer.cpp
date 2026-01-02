@@ -62,7 +62,7 @@ std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevi
 }
 } // namespace
 
-struct Buffer::VmaBuffer {
+struct VmaBuffer {
     VmaBuffer(VmaAllocator vma, vk::DeviceSize size, MemoryUsage memory_usage, vk::BufferUsageFlags usage) : Vma(vma) {
         VmaAllocationCreateInfo aci{};
         aci.usage = ToVmaMemoryUsage(memory_usage);
@@ -117,17 +117,11 @@ struct Buffer::VmaBuffer {
 };
 
 struct DeferredBufferReclaimer {
-    void Retire(std::unique_ptr<Buffer::VmaBuffer> buffer) { Retired.emplace_back(std::move(buffer)); }
-    void Reclaim() { Retired.clear(); }
-
-private:
-    std::vector<std::unique_ptr<Buffer::VmaBuffer>> Retired;
 };
 
 BufferContext::BufferContext(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, vk::CommandPool command_pool, DescriptorSlots &slots)
     : PhysicalDevice(pd), Device(d),
       TransferCb(std::move(d.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front())),
-      Reclaimer(std::make_unique<DeferredBufferReclaimer>()),
       Slots(slots) {
     VmaAllocatorCreateInfo create_info{};
     create_info.physicalDevice = PhysicalDevice;
@@ -144,11 +138,11 @@ BufferContext::BufferContext(vk::PhysicalDevice pd, vk::Device d, vk::Instance i
 }
 BufferContext::~BufferContext() {
     TransferCb->end();
-    Reclaimer->Reclaim();
+    Retired.clear();
     vmaDestroyAllocator(Vma);
 }
 
-void BufferContext::ReclaimRetiredBuffers() { Reclaimer->Reclaim(); }
+void BufferContext::ReclaimRetiredBuffers() { Retired.clear(); }
 std::string BufferContext::DebugHeapUsage() const {
     const auto budgets = QueryHeapBudgets(Vma, PhysicalDevice);
     std::string result;
@@ -164,16 +158,38 @@ std::string BufferContext::DebugHeapUsage() const {
 }
 
 std::vector<vk::WriteDescriptorSet> BufferContext::GetPendingDescriptorUpdates() {
-    return PendingDescriptorUpdates | transform([&](const auto &pending) { return Slots.MakeBufferWrite(pending.Type, pending.Slot, pending.Info); }) | to<std::vector>();
-}
-
-void BufferContext::CancelDescriptorUpdate(SlotType type, uint32_t slot) {
-    PendingDescriptorUpdates.erase(PendingDescriptorUpdate{type, slot, {}});
+    return PendingDescriptorUpdates |
+        transform([&](const auto &pending) { return Slots.MakeBufferWrite(pending.first.Type, pending.first.Slot, pending.second); }) |
+        to<std::vector>();
 }
 
 namespace {
-bool ReserveStaging(Buffer &buffers, vk::DeviceSize required_size);
-bool ReserveDirect(Buffer &buffers, vk::DeviceSize required_size);
+bool ReserveStaging(Buffer &buffers, vk::DeviceSize required_size) {
+    if (required_size <= buffers.DeviceBuffer->GetAllocatedSize()) return false;
+    const auto new_size = NextPowerOfTwo(required_size);
+    auto new_host = std::make_unique<VmaBuffer>(buffers.Ctx.Vma, new_size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
+    auto new_device = std::make_unique<VmaBuffer>(buffers.Ctx.Vma, new_size, MemoryUsage::GpuOnly, buffers.Usage | vk::BufferUsageFlagBits::eTransferDst);
+    if (buffers.UsedSize > 0) {
+        new_host->Write(buffers.HostBuffer->GetData());
+        buffers.Ctx.TransferCb->copyBuffer(buffers.DeviceBuffer->Get(), new_device->Get(), {0, 0, buffers.UsedSize});
+    }
+    buffers.Ctx.Retired.emplace_back(std::move(buffers.HostBuffer));
+    buffers.Ctx.Retired.emplace_back(std::move(buffers.DeviceBuffer));
+    buffers.HostBuffer = std::move(new_host);
+    buffers.DeviceBuffer = std::move(new_device);
+    return true;
+}
+bool ReserveDirect(Buffer &buffers, vk::DeviceSize required_size) {
+    if (required_size <= buffers.DeviceBuffer->GetAllocatedSize()) return false;
+    const auto new_size = NextPowerOfTwo(required_size);
+    auto new_device = std::make_unique<VmaBuffer>(buffers.Ctx.Vma, new_size, MemoryUsage::GpuOnly, buffers.Usage | vk::BufferUsageFlagBits::eTransferDst);
+    if (buffers.UsedSize > 0) {
+        new_device->Write(buffers.DeviceBuffer->GetData());
+    }
+    buffers.Ctx.Retired.emplace_back(std::move(buffers.DeviceBuffer));
+    buffers.DeviceBuffer = std::move(new_device);
+    return true;
+}
 
 bool UpdateStaging(Buffer &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
     if (data.empty()) return false;
@@ -184,7 +200,6 @@ bool UpdateStaging(Buffer &buffers, std::span<const std::byte> data, vk::DeviceS
     buffers.Ctx.TransferCb->copyBuffer(buffers.HostBuffer->Get(), buffers.DeviceBuffer->Get(), vk::BufferCopy{offset, offset, data.size()});
     return reallocated;
 }
-
 bool UpdateDirect(Buffer &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
     if (data.empty()) return false;
     const auto required_size = offset + data.size();
@@ -195,42 +210,13 @@ bool UpdateDirect(Buffer &buffers, std::span<const std::byte> data, vk::DeviceSi
     return reallocated;
 }
 
-bool ReserveStaging(Buffer &buffers, vk::DeviceSize required_size) {
-    if (required_size <= buffers.DeviceBuffer->GetAllocatedSize()) return false;
-    const auto new_size = NextPowerOfTwo(required_size);
-    auto new_host = std::make_unique<Buffer::VmaBuffer>(buffers.Ctx.Vma, new_size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
-    auto new_device = std::make_unique<Buffer::VmaBuffer>(buffers.Ctx.Vma, new_size, MemoryUsage::GpuOnly, buffers.Usage | vk::BufferUsageFlagBits::eTransferDst);
-    if (buffers.UsedSize > 0) {
-        new_host->Write(buffers.HostBuffer->GetData());
-        buffers.Ctx.TransferCb->copyBuffer(buffers.DeviceBuffer->Get(), new_device->Get(), vk::BufferCopy{0, 0, buffers.UsedSize});
-    }
-    buffers.Ctx.Reclaimer->Retire(std::move(buffers.HostBuffer));
-    buffers.Ctx.Reclaimer->Retire(std::move(buffers.DeviceBuffer));
-    buffers.HostBuffer = std::move(new_host);
-    buffers.DeviceBuffer = std::move(new_device);
-    return true;
-}
-
-bool ReserveDirect(Buffer &buffers, vk::DeviceSize required_size) {
-    if (required_size <= buffers.DeviceBuffer->GetAllocatedSize()) return false;
-    const auto new_size = NextPowerOfTwo(required_size);
-    auto new_device = std::make_unique<Buffer::VmaBuffer>(buffers.Ctx.Vma, new_size, MemoryUsage::GpuOnly, buffers.Usage | vk::BufferUsageFlagBits::eTransferDst);
-    if (buffers.UsedSize > 0) {
-        new_device->Write(buffers.DeviceBuffer->GetData());
-    }
-    buffers.Ctx.Reclaimer->Retire(std::move(buffers.DeviceBuffer));
-    buffers.DeviceBuffer = std::move(new_device);
-    return true;
-}
-
 void InsertStaging(Buffer &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
     if (data.empty() || buffers.UsedSize + data.size() > buffers.DeviceBuffer->GetAllocatedSize()) return;
     if (offset < buffers.UsedSize) buffers.HostBuffer->Move(offset, offset + data.size(), buffers.UsedSize - offset);
     buffers.HostBuffer->Write(data, offset);
     buffers.UsedSize += data.size();
-    buffers.Ctx.TransferCb->copyBuffer(buffers.HostBuffer->Get(), buffers.DeviceBuffer->Get(), vk::BufferCopy{offset, offset, buffers.UsedSize - offset});
+    buffers.Ctx.TransferCb->copyBuffer(buffers.HostBuffer->Get(), buffers.DeviceBuffer->Get(), {offset, offset, buffers.UsedSize - offset});
 }
-
 void InsertDirect(Buffer &buffers, std::span<const std::byte> data, vk::DeviceSize offset) {
     if (data.empty() || buffers.UsedSize + data.size() > buffers.DeviceBuffer->GetAllocatedSize()) return;
     if (offset < buffers.UsedSize) buffers.DeviceBuffer->Move(offset, offset + data.size(), buffers.UsedSize - offset);
@@ -242,11 +228,10 @@ void EraseStaging(Buffer &buffers, vk::DeviceSize offset, vk::DeviceSize size) {
     if (size == 0 || offset + size > buffers.UsedSize) return;
     if (const auto move_size = buffers.UsedSize - (offset + size); move_size > 0) {
         buffers.HostBuffer->Move(offset + size, offset, move_size);
-        buffers.Ctx.TransferCb->copyBuffer(buffers.HostBuffer->Get(), buffers.DeviceBuffer->Get(), vk::BufferCopy{offset, offset, move_size});
+        buffers.Ctx.TransferCb->copyBuffer(buffers.HostBuffer->Get(), buffers.DeviceBuffer->Get(), {offset, offset, move_size});
     }
     buffers.UsedSize -= size;
 }
-
 void EraseDirect(Buffer &buffers, vk::DeviceSize offset, vk::DeviceSize size) {
     if (size == 0 || offset + size > buffers.UsedSize) return;
     if (const auto move_size = buffers.UsedSize - (offset + size); move_size > 0) {
@@ -307,8 +292,8 @@ Buffer::~Buffer() {
 }
 
 void Buffer::Retire() {
-    if (HostBuffer) { Ctx.Reclaimer->Retire(std::move(HostBuffer)); }
-    if (DeviceBuffer) { Ctx.Reclaimer->Retire(std::move(DeviceBuffer)); }
+    if (HostBuffer) { Ctx.Retired.emplace_back(std::move(HostBuffer)); }
+    if (DeviceBuffer) { Ctx.Retired.emplace_back(std::move(DeviceBuffer)); }
     if (Slot != InvalidSlot) { Ctx.CancelDescriptorUpdate(Type, Slot); }
 }
 
@@ -333,7 +318,7 @@ void Buffer::Write(std::span<const std::byte> data, vk::DeviceSize offset) const
 void Buffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const { DeviceBuffer->Move(from, to, size); }
 void Buffer::Flush(vk::DeviceSize offset, vk::DeviceSize size) const {
     if (!HostBuffer || size == 0) return;
-    Ctx.TransferCb->copyBuffer(HostBuffer->Get(), DeviceBuffer->Get(), vk::BufferCopy{offset, offset, size});
+    Ctx.TransferCb->copyBuffer(HostBuffer->Get(), DeviceBuffer->Get(), {offset, offset, size});
 }
 
 void Buffer::Update(std::span<const std::byte> data, vk::DeviceSize offset) {
