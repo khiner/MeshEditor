@@ -164,18 +164,16 @@ std::string BufferContext::DebugHeapUsage() const {
     return result;
 }
 
-std::vector<vk::WriteDescriptorSet> BufferContext::GetPendingDescriptorUpdates() {
-    return PendingDescriptorUpdates |
-        transform([&](const auto &pending) { return Slots.MakeBufferWrite(pending.first, pending.second); }) |
-        to<std::vector>();
+std::vector<vk::WriteDescriptorSet> BufferContext::GetDeferredDescriptorUpdates() {
+    return DeferredDescriptorUpdates | transform([&](const auto &kv) { return Slots.MakeBufferWrite(kv.first, kv.second); }) | to<std::vector>();
 }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-// Queues a staged buffer copy, merging with any overlapping/adjacent pending ranges.
-void BufferContext::AddPendingBufferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size) {
+// Merges into any overlapping/adjacent deferred copy ranges.
+void BufferContext::DeferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size) {
     if (size == 0) return;
 
-    auto &ranges = PendingBufferCopies[{src, dst}];
+    auto &ranges = DeferredBufferCopies[{src, dst}];
     auto end = offset + size;
     // Find first range starting after our offset - previous range may overlap
     auto it = ranges.upper_bound(offset);
@@ -194,8 +192,8 @@ void BufferContext::AddPendingBufferCopy(vk::Buffer src, vk::Buffer dst, vk::Dev
     ranges.emplace(offset, end);
 }
 
-void BufferContext::CancelPendingCopies(vk::Buffer src, vk::Buffer dst) {
-    PendingBufferCopies.erase({src, dst});
+void BufferContext::CancelDeferredCopies(vk::Buffer src, vk::Buffer dst) {
+    DeferredBufferCopies.erase({src, dst});
 }
 #endif
 
@@ -256,16 +254,16 @@ void Buffer::Retire() {
     if (!DeviceBuffer) return; // Already moved-from
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     if (!HostBuffer) return;
-    Ctx.CancelPendingCopies(HostBuffer->Get(), DeviceBuffer->Get());
+    Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
     Ctx.Retired.emplace_back(std::move(HostBuffer));
 #endif
     Ctx.Retired.emplace_back(std::move(DeviceBuffer));
-    if (Slot != InvalidSlot) Ctx.CancelDescriptorUpdate({Type, Slot});
+    if (Slot != InvalidSlot) Ctx.CancelDeferredDescriptorUpdate({Type, Slot});
 }
 
 void Buffer::UpdateDescriptor() {
     if (Slot == InvalidSlot) return;
-    Ctx.AddPendingDescriptorUpdate({Type, Slot}, GetDescriptor());
+    Ctx.DeferDescriptorUpdate({Type, Slot}, GetDescriptor());
 }
 
 vk::Buffer Buffer::operator*() const { return DeviceBuffer->Get(); }
@@ -293,7 +291,8 @@ void Buffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) c
 
 std::span<std::byte> Buffer::GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, size);
+    // Assume the whole range is modified and schedule a copy
+    Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, size);
     return HostBuffer->GetMappedData().subspan(offset, size);
 #else
     return DeviceBuffer->GetMappedData().subspan(offset, size);
@@ -308,9 +307,9 @@ void Buffer::Reserve(vk::DeviceSize required_size) {
     auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::GpuOnly, Usage | vk::BufferUsageFlagBits::eTransferDst);
     if (UsedSize > 0) {
         new_host->Write(HostBuffer->GetData());
-        Ctx.AddPendingBufferCopy(new_host->Get(), new_device->Get(), 0, UsedSize);
+        Ctx.DeferCopy(new_host->Get(), new_device->Get(), 0, UsedSize);
     }
-    Ctx.CancelPendingCopies(HostBuffer->Get(), DeviceBuffer->Get());
+    Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
     Ctx.Retired.emplace_back(std::move(HostBuffer));
     Ctx.Retired.emplace_back(std::move(DeviceBuffer));
     HostBuffer = std::move(new_host);
@@ -332,7 +331,7 @@ void Buffer::Update(std::span<const std::byte> data, vk::DeviceSize offset) {
     UsedSize = std::max(UsedSize, required_size);
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     HostBuffer->Write(data, offset);
-    Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, data.size());
+    Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, data.size());
 #else
     DeviceBuffer->Write(data, offset);
 #endif
@@ -345,7 +344,7 @@ void Buffer::Insert(std::span<const std::byte> data, vk::DeviceSize offset) {
     if (offset < UsedSize) HostBuffer->Move(offset, offset + data.size(), UsedSize - offset);
     HostBuffer->Write(data, offset);
     UsedSize += data.size();
-    Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, UsedSize - offset);
+    Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, UsedSize - offset);
 #else
     if (offset < UsedSize) DeviceBuffer->Move(offset, offset + data.size(), UsedSize - offset);
     DeviceBuffer->Write(data, offset);
@@ -359,7 +358,7 @@ void Buffer::Erase(vk::DeviceSize offset, vk::DeviceSize size) {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     if (move_size > 0) {
         HostBuffer->Move(offset + size, offset, move_size);
-        Ctx.AddPendingBufferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, move_size);
+        Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, move_size);
     }
 #else
     if (move_size > 0) DeviceBuffer->Move(offset + size, offset, move_size);

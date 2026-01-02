@@ -228,10 +228,10 @@ std::optional<Mesh> MeshStore::LoadMesh(const std::filesystem::path &path) {
 
 std::span<const Vertex3D> MeshStore::GetVertices(uint32_t id) const { return VerticesBuffer->Get(Entries.at(id).Vertices); }
 std::span<const vec3> MeshStore::GetFaceNormals(uint32_t id) const { return FaceNormalBuffer->Get(Entries.at(id).FaceNormals); }
-MeshStore::Range MeshStore::GetVerticesRange(uint32_t id) const { return Entries.at(id).Vertices; }
+BufferRange MeshStore::GetVerticesRange(uint32_t id) const { return Entries.at(id).Vertices; }
 uint32_t MeshStore::GetVerticesSlot() const { return VerticesBuffer->Buffer.Slot; }
-MeshStore::Range MeshStore::GetFaceIdRange(uint32_t id) const { return Entries.at(id).FaceIds; }
-MeshStore::Range MeshStore::GetFaceNormalRange(uint32_t id) const { return Entries.at(id).FaceNormals; }
+BufferRange MeshStore::GetFaceIdRange(uint32_t id) const { return Entries.at(id).FaceIds; }
+BufferRange MeshStore::GetFaceNormalRange(uint32_t id) const { return Entries.at(id).FaceNormals; }
 uint32_t MeshStore::GetFaceIdSlot() const { return FaceIdBuffer->Buffer.Slot; }
 uint32_t MeshStore::GetFaceNormalSlot() const { return FaceNormalBuffer->Buffer.Slot; }
 std::span<Vertex3D> MeshStore::GetVerticesMutable(uint32_t id) { return VerticesBuffer->GetMutable(Entries.at(id).Vertices); }

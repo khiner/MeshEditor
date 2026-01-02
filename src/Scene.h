@@ -264,7 +264,7 @@ private:
     void RenderSelectionPass(); // On-demand selection fragment rendering.
     void RenderSilhouetteDepth(vk::CommandBuffer cb);
     void RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn);
-    void RenderEditSelectionPass(std::span<const ElementRange> ranges, he::Element element);
+    void RenderEditSelectionPass(std::span<const ElementRange>, he::Element);
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
     std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);
     std::optional<uint32_t> RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px);

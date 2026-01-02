@@ -16,11 +16,10 @@ struct MeshStore {
 
     void Init(mvk::BufferContext &ctx);
 
-    using Range = BufferRange;
     struct Entry {
-        Range Vertices;
-        Range FaceIds;
-        Range FaceNormals;
+        BufferRange Vertices;
+        BufferRange FaceIds;
+        BufferRange FaceNormals;
         bool Alive{false};
     };
 
@@ -33,10 +32,10 @@ struct MeshStore {
     void UpdateVertices(uint32_t id, std::span<const Vertex3D> vertices);
     std::span<const vec3> GetFaceNormals(uint32_t id) const;
     std::span<vec3> GetFaceNormalsMutable(uint32_t id);
-    Range GetVerticesRange(uint32_t id) const;
+    BufferRange GetVerticesRange(uint32_t id) const;
     uint32_t GetVerticesSlot() const;
-    Range GetFaceIdRange(uint32_t id) const;
-    Range GetFaceNormalRange(uint32_t id) const;
+    BufferRange GetFaceIdRange(uint32_t id) const;
+    BufferRange GetFaceNormalRange(uint32_t id) const;
     uint32_t GetFaceIdSlot() const;
     uint32_t GetFaceNormalSlot() const;
     void Release(uint32_t id);

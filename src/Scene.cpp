@@ -428,27 +428,27 @@ struct SceneBuffer {
     vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices, IndexKind index_kind) {
-        const auto vertex_range = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
+        const auto vertex_range = VertexBuffer.Allocate(vertices);
         auto &index_buffer = GetIndexBuffer(index_kind);
-        const auto index_range = index_buffer.Allocate(std::span<const uint>{indices});
-        return {vertex_range, index_range, index_buffer.Buffer.Slot, index_kind};
+        const auto index_range = index_buffer.Allocate(indices);
+        return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
     }
-    RenderBuffers CreateRenderBuffers(uint32_t vertex_slot, uint32_t vertex_offset, uint32_t vertex_count, std::vector<uint> &&indices, IndexKind index_kind) {
+    RenderBuffers CreateRenderBuffers(SlottedBufferRange vertex_range, std::vector<uint> &&indices, IndexKind index_kind) {
         auto &index_buffer = GetIndexBuffer(index_kind);
-        const auto index_range = index_buffer.Allocate(std::span<const uint>{indices});
-        return {vertex_slot, vertex_offset, vertex_count, index_range, index_buffer.Buffer.Slot, index_kind};
+        const auto index_range = index_buffer.Allocate(indices);
+        return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
     }
     template<size_t N>
     RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices, IndexKind index_kind) {
-        const auto vertex_range = VertexBuffer.Allocate(std::span<const Vertex3D>{vertices});
+        const auto vertex_range = VertexBuffer.Allocate(vertices);
         auto &index_buffer = GetIndexBuffer(index_kind);
-        const auto index_range = index_buffer.Allocate(std::span<const uint>{indices});
-        return {vertex_range, index_range, index_buffer.Buffer.Slot, index_kind};
+        const auto index_range = index_buffer.Allocate(indices);
+        return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
     }
 
     void UpdateRenderVertices(RenderBuffers &buffers, std::vector<Vertex3D> &&vertices) {
         if (!buffers.Vertices.OwnsRange()) return;
-        VertexBuffer.Update(buffers.Vertices.Range, std::span<const Vertex3D>{vertices});
+        VertexBuffer.Update(buffers.Vertices.Range, vertices);
     }
 
     void ReleaseRenderVertices(RenderBuffers &buffers) {
@@ -1313,9 +1313,9 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
 
         const auto vertex_range = Meshes.GetVerticesRange(mesh.GetStoreId());
         const auto vertex_slot = Meshes.GetVerticesSlot();
-        auto face_buffers = Buffer->CreateRenderBuffers(vertex_slot, vertex_range.Offset, vertex_range.Count, MeshRender::CreateFaceIndices(mesh), IndexKind::Face);
-        auto edge_buffers = Buffer->CreateRenderBuffers(vertex_slot, vertex_range.Offset, vertex_range.Count, MeshRender::CreateEdgeIndices(mesh), IndexKind::Edge);
-        auto vertex_buffers = Buffer->CreateRenderBuffers(vertex_slot, vertex_range.Offset, vertex_range.Count, MeshRender::CreateVertexIndices(mesh), IndexKind::Vertex);
+        auto face_buffers = Buffer->CreateRenderBuffers({vertex_range, vertex_slot}, MeshRender::CreateFaceIndices(mesh), IndexKind::Face);
+        auto edge_buffers = Buffer->CreateRenderBuffers({vertex_range, vertex_slot}, MeshRender::CreateEdgeIndices(mesh), IndexKind::Edge);
+        auto vertex_buffers = Buffer->CreateRenderBuffers({vertex_range, vertex_slot}, MeshRender::CreateVertexIndices(mesh), IndexKind::Vertex);
 
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
         R.emplace<MeshSelection>(mesh_entity);
@@ -1483,7 +1483,7 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     const auto vertex_slot = Meshes.GetVerticesSlot();
     const auto reset_buffers = [&](RenderBuffers &buffers, const std::vector<uint> &indices) {
         Buffer->ReleaseRenderVertices(buffers);
-        buffers.Vertices = BufferBinding(vertex_range, vertex_slot);
+        buffers.Vertices = {vertex_range, vertex_slot};
         Buffer->UpdateRenderIndices(buffers, indices);
     };
     const auto face_indices = MeshRender::CreateFaceIndices(pm);
@@ -2631,16 +2631,16 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 };
 
 bool Scene::RenderViewport() {
-    if (auto descriptor_updates = Buffer->Ctx.GetPendingDescriptorUpdates(); !descriptor_updates.empty()) {
+    if (auto descriptor_updates = Buffer->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
         const Timer timer{"RenderViewport->UpdateBufferDescriptorSets"};
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-        Buffer->Ctx.ClearPendingDescriptorUpdates();
+        Buffer->Ctx.ClearDeferredDescriptorUpdates();
     }
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    if (auto pending_copies = Buffer->Ctx.TakePendingBufferCopies(); !pending_copies.empty()) {
+    if (auto deferred_copies = Buffer->Ctx.TakeDeferredCopies(); !deferred_copies.empty()) {
         const Timer timer{"RenderViewport->FlushStagedBufferCopies"};
         const auto transfer_cb = *Buffer->Ctx.TransferCb;
-        for (const auto &[buffers, ranges] : pending_copies) {
+        for (const auto &[buffers, ranges] : deferred_copies) {
             auto regions = ranges | transform([](const auto &r) {
                                const auto &[start, end] = r;
                                return vk::BufferCopy{start, start, end - start};

@@ -57,17 +57,15 @@ struct BufferContext {
 
     void ReclaimRetiredBuffers();
 
-    std::vector<vk::WriteDescriptorSet> GetPendingDescriptorUpdates();
-    void AddPendingDescriptorUpdate(TypedSlot slot, const vk::DescriptorBufferInfo &info) {
-        PendingDescriptorUpdates.insert_or_assign(slot, info);
-    }
-    void CancelDescriptorUpdate(TypedSlot slot) { PendingDescriptorUpdates.erase(slot); }
-    void ClearPendingDescriptorUpdates() { PendingDescriptorUpdates.clear(); }
+    std::vector<vk::WriteDescriptorSet> GetDeferredDescriptorUpdates();
+    void DeferDescriptorUpdate(TypedSlot slot, const vk::DescriptorBufferInfo &info) { DeferredDescriptorUpdates.insert_or_assign(slot, info); }
+    void CancelDeferredDescriptorUpdate(TypedSlot slot) { DeferredDescriptorUpdates.erase(slot); }
+    void ClearDeferredDescriptorUpdates() { DeferredDescriptorUpdates.clear(); }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    void AddPendingBufferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size);
-    void CancelPendingCopies(vk::Buffer src, vk::Buffer dst);
-    auto TakePendingBufferCopies() { return std::exchange(PendingBufferCopies, {}); }
+    void DeferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size);
+    void CancelDeferredCopies(vk::Buffer src, vk::Buffer dst);
+    auto TakeDeferredCopies() { return std::exchange(DeferredBufferCopies, {}); }
 #endif
 
     std::string DebugHeapUsage() const;
@@ -86,9 +84,9 @@ private:
             return std::hash<uint64_t>{}((type << 32) | static_cast<uint64_t>(key.Slot));
         }
     };
-    std::unordered_map<TypedSlot, vk::DescriptorBufferInfo, TypedSlotHash> PendingDescriptorUpdates;
+    std::unordered_map<TypedSlot, vk::DescriptorBufferInfo, TypedSlotHash> DeferredDescriptorUpdates;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    std::unordered_map<BufferPair, CopyRanges, BufferPairHash> PendingBufferCopies;
+    std::unordered_map<BufferPair, CopyRanges, BufferPairHash> DeferredBufferCopies;
 #endif
 };
 

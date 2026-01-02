@@ -41,26 +41,24 @@ enum class IndexKind {
     Vertex
 };
 
-struct BufferBinding {
-    BufferBinding(BufferRange range, uint32_t slot = InvalidSlot) : Range{range}, Slot{slot} {}
-
+struct SlottedBufferRange {
     bool OwnsRange() const { return Slot == InvalidSlot && Range.Count != 0; }
 
-    BufferRange Range{};
+    BufferRange Range;
     uint32_t Slot{InvalidSlot};
 };
 
 struct RenderBuffers {
-    RenderBuffers(BufferRange vertex_range, BufferRange index_range, uint32_t index_slot, IndexKind index_type)
-        : Vertices(vertex_range), Indices(index_range, index_slot), IndexType(index_type) {}
-    RenderBuffers(uint32_t vertex_slot, uint32_t vertex_offset, uint32_t vertex_count, BufferRange index_range, uint32_t index_slot, IndexKind index_type)
-        : Vertices({vertex_offset, vertex_count}, vertex_slot), Indices(index_range, index_slot), IndexType(index_type) {}
+    RenderBuffers(BufferRange vertices, SlottedBufferRange indices, IndexKind index_type)
+        : Vertices(vertices), Indices(indices), IndexType(index_type) {}
+    RenderBuffers(SlottedBufferRange vertices, SlottedBufferRange indices, IndexKind index_type)
+        : Vertices(vertices), Indices(indices), IndexType(index_type) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers &operator=(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
-    BufferBinding Vertices, Indices;
+    SlottedBufferRange Vertices, Indices;
     IndexKind IndexType;
 };
 
