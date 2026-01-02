@@ -496,6 +496,8 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     );
 
     const auto cb = *TransferCommandBuffer;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     {
         // Write the bitmap into a temporary staging buffer.
         mvk::Buffer staging_buffer{Buffers->Ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
@@ -554,7 +556,6 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     } // staging buffer is destroyed here
 
     Buffers->Ctx.ReclaimRetiredBuffers();
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     return image;
 }
@@ -1092,7 +1093,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
           Slots->GetSetLayout(), Slots->GetSet()
       )},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)} {
-    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     Meshes.Init(Buffers->Ctx);
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
@@ -1137,7 +1137,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
 Scene::~Scene() {
     R.clear<Mesh>();
-    TransferCommandBuffer->end();
 }
 
 void Scene::LoadIcons(vk::Device device) {
@@ -2613,19 +2612,6 @@ bool Scene::RenderViewport() {
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    if (auto deferred_copies = Buffers->Ctx.TakeDeferredCopies(); !deferred_copies.empty()) {
-        const Timer timer{"RenderViewport->FlushStagedBufferCopies"};
-        for (const auto &[buffers, ranges] : deferred_copies) {
-            auto regions = ranges | transform([](const auto &r) {
-                               const auto &[start, end] = r;
-                               return vk::BufferCopy{start, start, end - start};
-                           }) |
-                to<std::vector>();
-            TransferCommandBuffer->copyBuffer(buffers.Src, buffers.Dst, regions);
-        }
-    }
-#endif
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty && !NeedsRender) return false;
@@ -2669,7 +2655,23 @@ bool Scene::RenderViewport() {
         CommandBufferDirty = true;
     }
 
-    // TransferCommandBuffer is kept recording between frames by BufferContext and our end-of-frame begin().
+    TransferCommandBuffer->reset({});
+    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    if (auto deferred_copies = Buffers->Ctx.TakeDeferredCopies(); !deferred_copies.empty()) {
+        const Timer timer{"RenderViewport->FlushStagedBufferCopies"};
+        for (const auto &[buffers, ranges] : deferred_copies) {
+            auto regions = ranges | transform([](const auto &r) {
+                               const auto &[start, end] = r;
+                               return vk::BufferCopy{start, start, end - start};
+                           }) |
+                to<std::vector>();
+            TransferCommandBuffer->copyBuffer(buffers.Src, buffers.Dst, regions);
+        }
+    }
+#endif
+
     // Ensure buffer writes (staging copies) are visible to shader reads.
     const vk::MemoryBarrier buffer_barrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead};
     TransferCommandBuffer->pipelineBarrier(
@@ -2695,8 +2697,6 @@ bool Scene::RenderViewport() {
     }
 
     Buffers->Ctx.ReclaimRetiredBuffers();
-    // Leave TransferCommandBuffer recording for next frame's staging.
-    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     NeedsRender = false;
     return extent_changed;
