@@ -191,6 +191,7 @@ private:
 #endif
     vk::UniqueFence RenderFence;
     vk::UniqueFence OneShotFence; // For short-lived transfers (e.g. selection passes and image uploads)
+    vk::UniqueSemaphore SelectionReadySemaphore; // Signals selection buffers ready for compute.
     vk::UniqueCommandBuffer ClickCommandBuffer;
     std::unique_ptr<DescriptorSlots> Slots;
 
@@ -268,10 +269,10 @@ private:
 
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max);
-    void RenderSelectionPass(); // On-demand selection fragment rendering.
+    void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
     void RenderSilhouetteDepth(vk::CommandBuffer cb);
-    void RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn);
-    void RenderEditSelectionPass(std::span<const ElementRange>, he::Element);
+    void RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn, vk::Semaphore signal_semaphore = {});
+    void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
     std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);
     std::optional<uint32_t> RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px);

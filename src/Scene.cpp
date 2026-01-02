@@ -1073,6 +1073,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 #endif
       RenderFence{Vk.Device.createFenceUnique({})},
       OneShotFence{Vk.Device.createFenceUnique({})},
+      SelectionReadySemaphore{Vk.Device.createSemaphoreUnique({})},
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
       Slots{std::make_unique<DescriptorSlots>(Vk.Device, MakeBindlessConfig(Vk.PhysicalDevice))},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
@@ -2040,7 +2041,7 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 
 } // namespace
 
-void Scene::RenderSelectionPass() {
+void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
 
     const auto primary_edit_instances = InteractionMode == InteractionMode::Edit ?
@@ -2064,8 +2065,7 @@ void Scene::RenderSelectionPass() {
             } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
                 Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
             }
-        }
-    });
+        } }, signal_semaphore);
 
     SelectionStale = false;
 }
@@ -2091,7 +2091,7 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
     cb.endRenderPass();
 }
 
-void Scene::RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn) {
+void Scene::RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn, vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPassWith"};
     auto cb = *ClickCommandBuffer;
     cb.reset({});
@@ -2126,12 +2126,16 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<void(
     cb.end();
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
+    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
     Vk.Queue.submit(submit, *OneShotFence);
     WaitFor(*OneShotFence, Vk.Device);
 }
 
 namespace {
-void RunSelectionCompute(vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device, const auto &compute, const auto &pc, auto &&dispatch) {
+void RunSelectionCompute(
+    vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device,
+    const auto &compute, const auto &pc, auto &&dispatch, vk::Semaphore wait_semaphore = {}
+) {
     const Timer timer{"RunSelectionCompute"};
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -2144,15 +2148,16 @@ void RunSelectionCompute(vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence,
     const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
     cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
     cb.end();
+
     vk::SubmitInfo submit;
     submit.setCommandBuffers(cb);
+    static constexpr vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eComputeShader};
+    if (wait_semaphore) {
+        submit.setWaitSemaphores(wait_semaphore);
+        submit.setWaitDstStageMask(wait_stage);
+    }
     queue.submit(submit, fence);
     WaitFor(fence, device);
-}
-
-bool HasSelectionNodes(const mvk::Buffer &counter_buffer) {
-    const auto *counters = reinterpret_cast<const SelectionCounters *>(counter_buffer.GetData().data());
-    return std::min<uint32_t>(counters->Count, SceneBuffers::MaxSelectionNodes) != 0;
 }
 
 uint32_t GetElementCount(const Mesh &mesh, Element element) {
@@ -2173,25 +2178,29 @@ SPT SelectionPipelineForElement(Element element, bool xray) {
 std::optional<uint32_t> FindNearestSelectionElement(
     const SceneBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
     vk::Queue queue, vk::Fence fence, vk::Device device,
-    uint32_t selection_nodes_slot, uint32_t click_result_slot, glm::uvec2 mouse_px, uint32_t max_element_id
+    uint32_t selection_nodes_slot, uint32_t click_result_slot, glm::uvec2 mouse_px, uint32_t max_element_id,
+    vk::Semaphore wait_semaphore
 ) {
-    if (!HasSelectionNodes(buffers.SelectionCounterBuffer)) return {};
-
     const auto *counters = reinterpret_cast<const SelectionCounters *>(buffers.SelectionCounterBuffer.GetData().data());
     const uint32_t node_count = std::min<uint32_t>(counters->Count, SceneBuffers::MaxSelectionNodes);
-    if (node_count == 0) return {};
     const uint32_t group_count = (node_count + SceneBuffers::ClickElementGroupSize - 1) / SceneBuffers::ClickElementGroupSize;
-    if (group_count == 0) return {};
+    if (group_count == 0) {
+        if (wait_semaphore) {
+            RunSelectionCompute(
+                cb, queue, fence, device, compute,
+                ClickSelectElementPushConstants{.TargetPx = mouse_px, .NodeCount = node_count, .SelectionNodesIndex = selection_nodes_slot, .ClickResultIndex = click_result_slot},
+                [](vk::CommandBuffer) {},
+                wait_semaphore
+            );
+        }
+        return {};
+    }
 
     RunSelectionCompute(
         cb, queue, fence, device, compute,
-        ClickSelectElementPushConstants{
-            .TargetPx = mouse_px,
-            .NodeCount = node_count,
-            .SelectionNodesIndex = selection_nodes_slot,
-            .ClickResultIndex = click_result_slot,
-        },
-        [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); }
+        ClickSelectElementPushConstants{.TargetPx = mouse_px, .NodeCount = node_count, .SelectionNodesIndex = selection_nodes_slot, .ClickResultIndex = click_result_slot},
+        [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); },
+        wait_semaphore
     );
 
     const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(buffers.ClickElementResultBuffer.GetData().data());
@@ -2209,7 +2218,7 @@ std::optional<uint32_t> FindNearestSelectionElement(
 }
 } // namespace
 
-void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element) {
+void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element, vk::Semaphore signal_semaphore) {
     if (ranges.empty() || element == Element::None) return;
 
     const auto primary_edit_instances = ComputePrimaryEditInstances(R);
@@ -2236,8 +2245,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
                 Draw(cb, pipeline, buffers, models, pc);
             }
-        }
-    });
+        } }, signal_semaphore);
 }
 
 std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, glm::uvec2 box_min, glm::uvec2 box_max) {
@@ -2247,9 +2255,6 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return results;
 
     const Timer timer{"RunBoxSelectElements"};
-    RenderEditSelectionPass(ranges, element);
-    if (!HasSelectionNodes(Buffers->SelectionCounterBuffer)) return results;
-
     const auto element_count = fold_left(
         ranges, uint32_t{0},
         [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); }
@@ -2258,6 +2263,8 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
 
     const uint32_t bitset_words = (element_count + 31) / 32;
     if (bitset_words > BoxSelectZeroBits.size()) return results;
+
+    RenderEditSelectionPass(ranges, element, *SelectionReadySemaphore);
 
     const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
     Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
@@ -2277,7 +2284,8 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
         },
         [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
             dispatch_cb.dispatch(group_count_x, group_count_y, 1);
-        }
+        },
+        *SelectionReadySemaphore
     );
 
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
@@ -2301,11 +2309,12 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
 
     const Timer timer{"RunClickSelectElement"};
     const ElementRange range{mesh_entity, 0, element_count};
-    RenderEditSelectionPass(std::span{&range, 1}, element);
+    RenderEditSelectionPass(std::span{&range, 1}, element, *SelectionReadySemaphore);
     if (const auto index = FindNearestSelectionElement(
             *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
             Vk.Queue, *OneShotFence, Vk.Device,
-            Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, element_count
+            Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, element_count,
+            *SelectionReadySemaphore
         )) {
         return AnyHandle{element, *index};
     }
@@ -2332,20 +2341,20 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         pc.SelectionNodesSlot = Buffers->SelectionNodeBuffer.Slot;
         pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
         pc.ElementStateSlot = state_buffers.Vertices.Buffer.Slot;
-        Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index);
-    });
+        Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index); }, *SelectionReadySemaphore);
 
     return FindNearestSelectionElement(
         *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
         Vk.Queue, *OneShotFence, Vk.Device,
-        Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, vertex_count
+        Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, vertex_count,
+        *SelectionReadySemaphore
     );
 }
 
 // Returns entities hit at mouse_px, sorted by depth (near-to-far), with duplicates removed.
 std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
-    if (SelectionStale) RenderSelectionPass();
-    if (!HasSelectionNodes(Buffers->SelectionCounterBuffer)) return {};
+    const bool selection_rendered = SelectionStale;
+    if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
 
     const Timer timer{"RunClickSelect"};
     Buffers->ClickResultBuffer.Write(as_bytes(ClickResult{}));
@@ -2359,7 +2368,8 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .ClickResultIndex = SelectionHandles->ClickResult,
         },
-        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }
+        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); },
+        selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{}
     );
 
     // Convert click hits to entities.
@@ -2385,16 +2395,17 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 
 std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max) {
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
-    if (SelectionStale) RenderSelectionPass();
-    if (!HasSelectionNodes(Buffers->SelectionCounterBuffer)) return {};
 
-    const Timer timer{"RunBoxSelect"};
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
     const auto object_count = static_cast<uint32_t>(visible_entities.size());
     if (object_count == 0) return {};
 
     const uint32_t bitset_words = (object_count + 31) / 32;
     if (bitset_words > BoxSelectZeroBits.size()) return {};
+
+    const Timer timer{"RunBoxSelect"};
+    const bool selection_rendered = SelectionStale;
+    if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
 
     const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
     Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
@@ -2413,9 +2424,8 @@ std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .BoxResultIndex = SelectionHandles->BoxResult,
         },
-        [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
-            dispatch_cb.dispatch(group_count_x, group_count_y, 1);
-        }
+        [group_count_x, group_count_y](auto dispatch_cb) { dispatch_cb.dispatch(group_count_x, group_count_y, 1); },
+        selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{}
     );
 
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
