@@ -67,18 +67,20 @@ struct BoundingBoxesBuffers {
 };
 
 struct MeshBuffers {
-    MeshBuffers(RenderBuffers &&faces, RenderBuffers &&edges, RenderBuffers &&vertices)
-        : Faces{std::move(faces)}, Edges{std::move(edges)}, Vertices{std::move(vertices)} {}
+    MeshBuffers(SlottedBufferRange vertices, SlottedBufferRange face_indices, SlottedBufferRange edge_indices, SlottedBufferRange vertex_indices)
+        : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
     MeshBuffers(const MeshBuffers &) = delete;
     MeshBuffers &operator=(const MeshBuffers &) = delete;
 
-    RenderBuffers Faces, Edges, Vertices;
+    SlottedBufferRange Vertices;
+    SlottedBufferRange FaceIndices, EdgeIndices, VertexIndices;
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
 struct MeshElementStateBuffers {
     mvk::Buffer Faces, Edges, Vertices;
 };
+
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity);
 void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);

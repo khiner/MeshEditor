@@ -421,11 +421,27 @@ struct SceneBuffers {
         return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
     }
 
+    SlottedBufferRange CreateIndices(std::vector<uint> &&indices, IndexKind index_kind) {
+        auto &index_buffer = GetIndexBuffer(index_kind);
+        return {index_buffer.Allocate(indices), index_buffer.Buffer.Slot};
+    }
+
     void Release(RenderBuffers &buffers) {
         VertexBuffer.Release(buffers.Vertices.Range);
         buffers.Vertices.Range = {};
         GetIndexBuffer(buffers.IndexType).Release(buffers.Indices.Range);
         buffers.Indices.Range = {};
+    }
+
+    void Release(MeshBuffers &buffers) {
+        FaceIndexBuffer.Release(buffers.FaceIndices.Range);
+        buffers.FaceIndices.Range = {};
+        EdgeIndexBuffer.Release(buffers.EdgeIndices.Range);
+        buffers.EdgeIndices.Range = {};
+        VertexIndexBuffer.Release(buffers.VertexIndices.Range);
+        buffers.VertexIndices.Range = {};
+        for (auto &[_, rb] : buffers.NormalIndicators) Release(rb);
+        buffers.NormalIndicators.clear();
     }
 
     BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
@@ -1283,11 +1299,10 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto mesh_entity = R.create();
     { // Mesh data
-        const auto vertex_range = Meshes.GetVerticesRange(mesh.GetStoreId());
-        const auto vertex_slot = Meshes.GetVerticesSlot();
-        auto face_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, mesh.CreateTriangleIndices(), IndexKind::Face);
-        auto edge_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, mesh.CreateEdgeIndices(), IndexKind::Edge);
-        auto vertex_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, MeshRender::CreateVertexIndices(mesh), IndexKind::Vertex);
+        SlottedBufferRange vertices{Meshes.GetVerticesRange(mesh.GetStoreId()), Meshes.GetVerticesSlot()};
+        auto face_indices = Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face);
+        auto edge_indices = Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge);
+        auto vertex_indices = Buffers->CreateIndices(MeshRender::CreateVertexIndices(mesh), IndexKind::Vertex);
 
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
         R.emplace<ModelsBuffer>(
@@ -1295,7 +1310,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
             mvk::Buffer{Buffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
             mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer}
         );
-        R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
+        R.emplace<MeshBuffers>(mesh_entity, vertices, face_indices, edge_indices, vertex_indices);
         R.emplace<MeshSelection>(mesh_entity);
         if (ShowBoundingBoxes) {
             R.emplace<BoundingBoxesBuffers>(
@@ -1470,12 +1485,7 @@ void Scene::Destroy(entt::entity e) {
             [mesh_entity](const auto &entry) { return std::get<1>(entry).MeshEntity == mesh_entity; }
         );
         if (!has_instances) {
-            if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) {
-                Buffers->Release(mesh_buffers->Faces);
-                Buffers->Release(mesh_buffers->Edges);
-                Buffers->Release(mesh_buffers->Vertices);
-                for (auto &[_, buffers] : mesh_buffers->NormalIndicators) Buffers->Release(buffers);
-            }
+            if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
             if (auto *buffers = R.try_get<BoundingBoxesBuffers>(mesh_entity)) Buffers->Release(buffers->Buffers);
             R.destroy(mesh_entity);
         }
@@ -1612,35 +1622,46 @@ namespace {
 
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.
 void Draw(
-    vk::CommandBuffer cb, const ShaderPipeline &pipeline, const RenderBuffers &buffers, const ModelsBuffer &models,
+    vk::CommandBuffer cb, const ShaderPipeline &pipeline, uint index_count, const ModelsBuffer &models,
     DrawPushConstants pc, std::optional<uint> model_index = {}
 ) {
     pc.FirstInstance = model_index.value_or(0);
     const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
     cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPushConstants), &pc);
-    cb.draw(buffers.Indices.Range.Count, instance_count, 0, 0);
+    cb.draw(index_count, instance_count, 0, 0);
 }
 
-DrawPushConstants MakeDrawPc(const RenderBuffers &rb, const ModelsBuffer &mb) {
+void Draw(
+    vk::CommandBuffer cb, const ShaderPipeline &pipeline, const SlottedBufferRange &indices, const ModelsBuffer &models,
+    DrawPushConstants pc, std::optional<uint> model_index = {}
+) {
+    Draw(cb, pipeline, indices.Range.Count, models, pc, model_index);
+}
+
+DrawPushConstants MakeDrawPc(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
     return {
-        .VertexSlot = rb.Vertices.Slot,
-        .IndexSlot = rb.Indices.Slot,
-        .IndexOffset = rb.Indices.Range.Offset,
+        .VertexSlot = vertices.Slot,
+        .IndexSlot = indices.Slot,
+        .IndexOffset = indices.Range.Offset,
         .ModelSlot = mb.Buffer.Slot,
         .FirstInstance = 0,
         .ObjectIdSlot = InvalidSlot,
         .FaceNormalSlot = InvalidSlot,
         .FaceIdOffset = 0,
         .FaceNormalOffset = 0,
-        .VertexCountOrHeadImageSlot = rb.Vertices.Range.Count,
+        .VertexCountOrHeadImageSlot = vertices.Range.Count,
         .SelectionNodesSlot = 0,
         .SelectionCounterSlot = 0,
         .ElementIdOffset = 0,
         .ElementStateSlot = InvalidSlot,
-        .VertexOffset = rb.Vertices.Range.Offset,
+        .VertexOffset = vertices.Range.Offset,
         .Pad0 = 0,
         .LineColor = vec4{0, 0, 0, 0},
     };
+}
+
+DrawPushConstants MakeDrawPc(const RenderBuffers &rb, const ModelsBuffer &mb) {
+    return MakeDrawPc(rb.Vertices, rb.Indices, mb);
 }
 } // namespace
 
@@ -1666,11 +1687,11 @@ void Scene::RecordRenderCommandBuffer() {
         const auto &pipeline = renderer.Bind(cb, spt);
         auto render = [&](entt::entity e) {
             const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-            auto &buffers = R.get<MeshBuffers>(mesh_entity).Faces;
+            auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
             auto &models = R.get<ModelsBuffer>(mesh_entity);
-            auto pc = MakeDrawPc(buffers, models);
+            auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
-            Draw(cb, pipeline, buffers, models, pc, R.get<RenderInstance>(e).BufferIndex);
+            Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc, R.get<RenderInstance>(e).BufferIndex);
         };
         if (is_edit_mode) {
             for (const auto e : silhouette_instances) render(e);
@@ -1736,7 +1757,7 @@ void Scene::RecordRenderCommandBuffer() {
             const auto &pipeline = main.Renderer.Bind(cb, fill_pipeline);
             for (auto [entity, mesh_buffers, models, mesh, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, Mesh, MeshElementStateBuffers>().each()) {
-                auto pc = MakeDrawPc(mesh_buffers.Faces, models);
+                auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
                 const auto face_id_range = Meshes.GetFaceIdRange(mesh.GetStoreId());
                 const auto face_normal_range = Meshes.GetFaceNormalRange(mesh.GetStoreId());
                 pc.ObjectIdSlot = Meshes.GetFaceIdSlot();
@@ -1746,12 +1767,12 @@ void Scene::RecordRenderCommandBuffer() {
                 if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                     // Draw primary with element state first, then all without (depth LESS won't overwrite)
                     pc.ElementStateSlot = state_buffers.Faces.Slot;
-                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
+                    Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
                     pc.ElementStateSlot = InvalidSlot;
-                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
+                    Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc);
                 } else {
                     pc.ElementStateSlot = state_buffers.Faces.Slot;
-                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
+                    Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc);
                 }
             }
         }
@@ -1761,14 +1782,14 @@ void Scene::RecordRenderCommandBuffer() {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Line);
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
-                auto pc = MakeDrawPc(mesh_buffers.Edges, models);
+                auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
                 pc.ElementStateSlot = state_buffers.Edges.Slot;
                 if (show_wireframe) {
-                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
+                    Draw(cb, pipeline, mesh_buffers.EdgeIndices, models, pc);
                 } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
+                    Draw(cb, pipeline, mesh_buffers.EdgeIndices, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
                 } else if (excitable_mesh_entities.contains(entity)) {
-                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
+                    Draw(cb, pipeline, mesh_buffers.EdgeIndices, models, pc);
                 }
             }
         }
@@ -1778,12 +1799,12 @@ void Scene::RecordRenderCommandBuffer() {
             const auto &pipeline = main.Renderer.Bind(cb, SPT::Point);
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
-                auto pc = MakeDrawPc(mesh_buffers.Vertices, models);
+                auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
                 pc.ElementStateSlot = state_buffers.Vertices.Slot;
                 if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-                    Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
+                    Draw(cb, pipeline, mesh_buffers.VertexIndices, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
                 } else if (excitable_mesh_entities.contains(entity)) {
-                    Draw(cb, pipeline, mesh_buffers.Vertices, models, pc);
+                    Draw(cb, pipeline, mesh_buffers.VertexIndices, models, pc);
                 }
             }
         }
@@ -1817,14 +1838,14 @@ void Scene::RecordRenderCommandBuffer() {
                 auto pc = MakeDrawPc(buffers, models);
                 pc.VertexSlot = vertex_slot;
                 pc.LineColor = element == Element::Face ? MeshRender::FaceNormalIndicatorColor : MeshRender::VertexNormalIndicatorColor;
-                Draw(cb, pipeline, buffers, models, pc);
+                Draw(cb, pipeline, buffers.Indices, models, pc);
             }
         }
         for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
             auto pc = MakeDrawPc(bounding_boxes.Buffers, models);
             pc.VertexSlot = vertex_slot;
             pc.LineColor = MeshRender::EdgeColor;
-            Draw(cb, pipeline, bounding_boxes.Buffers, models, pc);
+            Draw(cb, pipeline, bounding_boxes.Buffers.Indices, models, pc);
         }
     }
 
@@ -1985,15 +2006,15 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
             const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
             if (instance_count == 0) continue;
 
-            auto pc = MakeDrawPc(mesh_buffers.Faces, models);
+            auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
             pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage;
             pc.SelectionNodesSlot = Buffers->SelectionNodeBuffer.Slot;
             pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
             if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
-                Draw(cb, pipeline, mesh_buffers.Faces, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
+                Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
             } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
-                Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
+                Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc);
             }
         } }, signal_semaphore);
 
@@ -2013,9 +2034,9 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
         auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
         auto &models = R.get<ModelsBuffer>(mesh_entity);
         if (const auto model_index = GetModelBufferIndex(R, e)) {
-            auto pc = MakeDrawPc(mesh_buffers.Faces, models);
+            auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
-            Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *model_index);
+            Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc, *model_index);
         }
     }
     cb.endRenderPass();
@@ -2160,10 +2181,10 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             auto &mesh_buffers = R.get<MeshBuffers>(r.MeshEntity);
             auto &models = R.get<ModelsBuffer>(r.MeshEntity);
             const auto &mesh = R.get<Mesh>(r.MeshEntity);
-            auto &buffers = element == Element::Vertex ? mesh_buffers.Vertices :
-                element == Element::Edge               ? mesh_buffers.Edges :
-                                                         mesh_buffers.Faces;
-            auto pc = MakeDrawPc(buffers, models);
+            const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
+                element == Element::Edge                     ? mesh_buffers.EdgeIndices :
+                                                               mesh_buffers.FaceIndices;
+            auto pc = MakeDrawPc(mesh_buffers.Vertices, indices, models);
             pc.ObjectIdSlot = element == Element::Face ? Meshes.GetFaceIdSlot() : InvalidSlot;
             pc.FaceIdOffset = element == Element::Face ? Meshes.GetFaceIdRange(mesh.GetStoreId()).Offset : 0;
             pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage;
@@ -2171,9 +2192,9 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
             pc.ElementIdOffset = r.Offset;
             if (auto it = primary_edit_instances.find(r.MeshEntity); it != primary_edit_instances.end()) {
-                Draw(cb, pipeline, buffers, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
+                Draw(cb, pipeline, indices, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
             } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
-                Draw(cb, pipeline, buffers, models, pc);
+                Draw(cb, pipeline, indices, models, pc);
             }
         } }, signal_semaphore);
 }
@@ -2267,12 +2288,12 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
     const auto model_index = R.get<RenderInstance>(instance_entity).BufferIndex;
     RenderSelectionPassWith(true, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);
-        auto pc = MakeDrawPc(mesh_buffers.Vertices, models);
+        auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
         pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage;
         pc.SelectionNodesSlot = Buffers->SelectionNodeBuffer.Slot;
         pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
         pc.ElementStateSlot = state_buffers.Vertices.Slot;
-        Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index); }, *SelectionReadySemaphore);
+        Draw(cb, pipeline, mesh_buffers.VertexIndices, models, pc, model_index); }, *SelectionReadySemaphore);
 
     return FindNearestSelectionElement(
         *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
