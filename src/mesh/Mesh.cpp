@@ -18,9 +18,7 @@ constexpr uint64_t MakeEdgeKey(uint from, uint to) {
 } // namespace
 
 Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &&faces)
-    : Store(&store), StoreId(store_id),
-      Vertices(store.GetVertices(store_id)),
-      FaceNormals(store.GetFaceNormals(store_id)) {
+    : Store(&store), StoreId(store_id), Vertices(store.GetVertices(store_id)), FaceNormals(store.GetFaceNormals(store_id)) {
     OutgoingHalfedges.resize(Vertices.size());
 
     std::unordered_map<uint64_t, HH> halfedge_map;

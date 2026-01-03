@@ -1124,7 +1124,7 @@ void Scene::LoadIcons(vk::Device device) {
 }
 
 void Scene::OnCreateSelected(entt::registry &, entt::entity e) {
-    UpdateEntitySelectionOverlays(e);
+    UpdateEntitySelectionOverlays(R.get<MeshInstance>(e).MeshEntity);
 }
 void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
@@ -1433,27 +1433,16 @@ void Scene::ClearMeshes() {
     InvalidateCommandBuffer();
 }
 
-void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
-    auto mesh = Meshes.CreateMesh(std::move(data));
-    const auto vertex_range = Meshes.GetVerticesRange(mesh.GetStoreId());
-    const auto vertex_slot = Meshes.GetVerticesSlot();
-    const auto reset_buffers = [&](auto &buffers, auto &&indices) {
-        Buffers->VertexBuffer.Release(buffers.Vertices.Range);
-        buffers.Vertices = {vertex_range, vertex_slot};
-        Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, indices);
-    };
-    auto &mesh_buffers = R.get<MeshBuffers>(e);
-    reset_buffers(mesh_buffers.Faces, mesh.CreateTriangleIndices());
-    reset_buffers(mesh_buffers.Edges, mesh.CreateEdgeIndices());
-    reset_buffers(mesh_buffers.Vertices, MeshRender::CreateVertexIndices(mesh));
-    for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
+void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
+    const auto &mesh = R.get<const Mesh>(e);
+    Meshes.SetPositions(mesh, positions);
+    for (auto &[element, buffers] : R.get<MeshBuffers>(e).NormalIndicators) {
         Buffers->VertexBuffer.Update(buffers.Vertices.Range, MeshRender::CreateNormalVertices(mesh, element));
         Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, MeshRender::CreateNormalIndices(mesh, element));
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) { // todo manage in listeners
         Buffers->VertexBuffer.Update(buffers->Buffers.Vertices.Range, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
     }
-    R.replace<Mesh>(e, std::move(mesh));
     UpdateMeshElementStateBuffers(e);
 }
 
@@ -1898,8 +1887,7 @@ void Scene::UpdateSceneUBO() {
     RequestRender();
 }
 
-void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
-    const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
+void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
     const auto &mesh = R.get<const Mesh>(mesh_entity);
     auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
     for (const auto element : NormalElements) {
@@ -3023,7 +3011,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
         if (CollapsingHeader("Update primitive")) {
             if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
-                ReplaceMesh(active_mesh_entity, std::move(*new_mesh));
+                SetMeshPositions(active_mesh_entity, new_mesh->Positions);
                 InvalidateCommandBuffer();
             }
         }
@@ -3187,7 +3175,7 @@ void Scene::RenderControls() {
                 if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) changed = true;
                 if (changed) {
                     for (auto selected_entity : R.view<Selected>()) {
-                        UpdateEntitySelectionOverlays(selected_entity);
+                        UpdateEntitySelectionOverlays(R.get<MeshInstance>(selected_entity).MeshEntity);
                     }
                     InvalidateCommandBuffer();
                 }

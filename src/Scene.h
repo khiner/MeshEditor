@@ -126,7 +126,7 @@ struct Scene {
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
 
-    void ReplaceMesh(entt::entity, MeshData &&);
+    void SetMeshPositions(entt::entity, std::span<const vec3>);
     void ClearMeshes();
 
     void Destroy(entt::entity);
@@ -284,5 +284,5 @@ private:
     // VK buffer update methods
     void UpdateSceneUBO();
     void UpdateEdgeColors();
-    void UpdateEntitySelectionOverlays(entt::entity);
+    void UpdateEntitySelectionOverlays(entt::entity mesh_entity);
 };

@@ -148,7 +148,6 @@ std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_
     }
     return ids;
 }
-
 } // namespace
 
 void MeshStore::Init(mvk::BufferContext &ctx) {
@@ -156,23 +155,10 @@ void MeshStore::Init(mvk::BufferContext &ctx) {
     FaceIdBuffer = std::make_unique<BufferArena<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer);
     FaceNormalBuffer = std::make_unique<BufferArena<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer);
 }
-
-Mesh MeshStore::CreateMesh(MeshData &&data) {
-    const uint32_t id = AcquireId();
-    auto &entry = Entries[id];
-    entry.Alive = true;
-    entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(data.Positions.size()));
-    auto vertex_span = VerticesBuffer->GetMutable(entry.Vertices);
-    for (size_t i = 0; i < data.Positions.size(); ++i) {
-        vertex_span[i].Position = data.Positions[i];
-        vertex_span[i].Normal = vec3{0};
-    }
-    const auto face_ids = CreateFaceElementIds(data.Faces);
-    entry.FaceIds = FaceIdBuffer->Allocate(face_ids);
-    entry.FaceNormals = FaceNormalBuffer->Allocate(static_cast<uint32_t>(data.Faces.size()));
-    Mesh mesh{*this, id, std::move(data.Faces)};
+void MeshStore::UpdateNormals(const Mesh &mesh) {
+    const auto id = mesh.GetStoreId();
     {
-        auto face_normals = GetFaceNormalsMutable(mesh.GetStoreId());
+        auto face_normals = GetFaceNormals(id);
         for (uint fi = 0; fi < mesh.FaceCount(); ++fi) {
             auto it = mesh.cfv_iter(Mesh::FH(fi));
             const auto p0 = mesh.GetPosition(*it);
@@ -182,18 +168,26 @@ Mesh MeshStore::CreateMesh(MeshData &&data) {
         }
     }
     {
-        auto vertices = GetVerticesMutable(mesh.GetStoreId());
+        auto vertices = GetVertices(id);
         for (auto &v : vertices) v.Normal = vec3{0};
-
         for (uint fi = 0; fi < mesh.FaceCount(); ++fi) {
             const auto &face_normal = mesh.GetNormal(Mesh::FH(fi));
-            for (const auto vh : mesh.fv_range(Mesh::FH(fi))) {
-                vertices[*vh].Normal += face_normal;
-            }
+            for (const auto vh : mesh.fv_range(Mesh::FH(fi))) vertices[*vh].Normal += face_normal;
         }
-
         for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
     }
+}
+Mesh MeshStore::CreateMesh(MeshData &&data) {
+    const uint32_t id = AcquireId();
+    auto &entry = Entries[id];
+    entry.Alive = true;
+    entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(data.Positions.size()));
+    auto vertex_span = VerticesBuffer->GetMutable(entry.Vertices);
+    for (size_t i = 0; i < data.Positions.size(); ++i) vertex_span[i].Position = data.Positions[i];
+    entry.FaceIds = FaceIdBuffer->Allocate(CreateFaceElementIds(data.Faces));
+    entry.FaceNormals = FaceNormalBuffer->Allocate(static_cast<uint32_t>(data.Faces.size()));
+    Mesh mesh{*this, id, std::move(data.Faces)};
+    UpdateNormals(mesh);
     return mesh;
 }
 
@@ -201,21 +195,21 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     const uint32_t id = AcquireId();
     auto &entry = Entries[id];
     entry.Alive = true;
-
-    const auto src_vertices = GetVertices(mesh.GetStoreId());
-    entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(src_vertices.size()));
-    auto dst_vertices = VerticesBuffer->GetMutable(entry.Vertices);
-    std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
-
-    const auto src_face_ids = FaceIdBuffer->Get(Entries.at(mesh.GetStoreId()).FaceIds);
-    entry.FaceIds = FaceIdBuffer->Allocate(src_face_ids);
-    entry.FaceNormals = FaceNormalBuffer->Allocate(static_cast<uint32_t>(mesh.FaceCount()));
-    const auto src_face_normals = GetFaceNormals(mesh.GetStoreId());
-    auto dst_face_normals = FaceNormalBuffer->GetMutable(entry.FaceNormals);
-    std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
-
-    Mesh clone{*this, id, mesh};
-    return clone;
+    {
+        const auto src_vertices = GetVertices(mesh.GetStoreId());
+        entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(src_vertices.size()));
+        auto dst_vertices = VerticesBuffer->GetMutable(entry.Vertices);
+        std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
+    }
+    {
+        const auto src_face_ids = FaceIdBuffer->Get(Entries.at(mesh.GetStoreId()).FaceIds);
+        entry.FaceIds = FaceIdBuffer->Allocate(src_face_ids);
+        entry.FaceNormals = FaceNormalBuffer->Allocate(static_cast<uint32_t>(mesh.FaceCount()));
+        const auto src_face_normals = GetFaceNormals(mesh.GetStoreId());
+        auto dst_face_normals = FaceNormalBuffer->GetMutable(entry.FaceNormals);
+        std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
+    }
+    return {*this, id, mesh};
 }
 
 std::optional<Mesh> MeshStore::LoadMesh(const std::filesystem::path &path) {
@@ -227,17 +221,23 @@ std::optional<Mesh> MeshStore::LoadMesh(const std::filesystem::path &path) {
 }
 
 std::span<const Vertex3D> MeshStore::GetVertices(uint32_t id) const { return VerticesBuffer->Get(Entries.at(id).Vertices); }
-std::span<const vec3> MeshStore::GetFaceNormals(uint32_t id) const { return FaceNormalBuffer->Get(Entries.at(id).FaceNormals); }
+std::span<Vertex3D> MeshStore::GetVertices(uint32_t id) { return VerticesBuffer->GetMutable(Entries.at(id).Vertices); }
 BufferRange MeshStore::GetVerticesRange(uint32_t id) const { return Entries.at(id).Vertices; }
 uint32_t MeshStore::GetVerticesSlot() const { return VerticesBuffer->Buffer.Slot; }
-BufferRange MeshStore::GetFaceIdRange(uint32_t id) const { return Entries.at(id).FaceIds; }
-BufferRange MeshStore::GetFaceNormalRange(uint32_t id) const { return Entries.at(id).FaceNormals; }
-uint32_t MeshStore::GetFaceIdSlot() const { return FaceIdBuffer->Buffer.Slot; }
-uint32_t MeshStore::GetFaceNormalSlot() const { return FaceNormalBuffer->Buffer.Slot; }
-std::span<Vertex3D> MeshStore::GetVerticesMutable(uint32_t id) { return VerticesBuffer->GetMutable(Entries.at(id).Vertices); }
-std::span<vec3> MeshStore::GetFaceNormalsMutable(uint32_t id) { return FaceNormalBuffer->GetMutable(Entries.at(id).FaceNormals); }
 
-void MeshStore::UpdateVertices(uint32_t id, std::span<const Vertex3D> vertices) { VerticesBuffer->Update(Entries.at(id).Vertices, vertices); }
+std::span<const vec3> MeshStore::GetFaceNormals(uint32_t id) const { return FaceNormalBuffer->Get(Entries.at(id).FaceNormals); }
+std::span<vec3> MeshStore::GetFaceNormals(uint32_t id) { return FaceNormalBuffer->GetMutable(Entries.at(id).FaceNormals); }
+BufferRange MeshStore::GetFaceIdRange(uint32_t id) const { return Entries.at(id).FaceIds; }
+uint32_t MeshStore::GetFaceIdSlot() const { return FaceIdBuffer->Buffer.Slot; }
+
+BufferRange MeshStore::GetFaceNormalRange(uint32_t id) const { return Entries.at(id).FaceNormals; }
+uint32_t MeshStore::GetFaceNormalSlot() const { return FaceNormalBuffer->Buffer.Slot; }
+
+void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) {
+    auto vertex_span = VerticesBuffer->GetMutable(Entries.at(mesh.GetStoreId()).Vertices);
+    for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
+    UpdateNormals(mesh);
+}
 
 void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;
