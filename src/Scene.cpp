@@ -402,33 +402,17 @@ struct SceneBuffers {
     const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
     vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
-    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, std::vector<uint> &&indices, IndexKind index_kind) {
-        const auto vertex_range = VertexBuffer.Allocate(vertices);
-        auto &index_buffer = GetIndexBuffer(index_kind);
-        const auto index_range = index_buffer.Allocate(indices);
-        return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
-    }
-    RenderBuffers CreateRenderBuffers(SlottedBufferRange vertex_range, std::vector<uint> &&indices, IndexKind index_kind) {
-        auto &index_buffer = GetIndexBuffer(index_kind);
-        const auto index_range = index_buffer.Allocate(indices);
-        return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
-    }
-    template<size_t N>
-    RenderBuffers CreateRenderBuffers(std::vector<Vertex3D> &&vertices, const std::array<uint, N> &indices, IndexKind index_kind) {
-        const auto vertex_range = VertexBuffer.Allocate(vertices);
-        auto &index_buffer = GetIndexBuffer(index_kind);
-        const auto index_range = index_buffer.Allocate(indices);
-        return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
-    }
-
-    SlottedBufferRange CreateIndices(std::vector<uint> &&indices, IndexKind index_kind) {
+    SlottedBufferRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
         auto &index_buffer = GetIndexBuffer(index_kind);
         return {index_buffer.Allocate(indices), index_buffer.Buffer.Slot};
     }
+    RenderBuffers CreateRenderBuffers(std::span<const Vertex3D> vertices, std::span<const uint> indices, IndexKind index_kind) {
+        return {VertexBuffer.Allocate(vertices), CreateIndices(indices, index_kind), index_kind};
+    }
 
     void Release(RenderBuffers &buffers) {
-        VertexBuffer.Release(buffers.Vertices.Range);
-        buffers.Vertices.Range = {};
+        VertexBuffer.Release(buffers.Vertices);
+        buffers.Vertices = {};
         GetIndexBuffer(buffers.IndexType).Release(buffers.Indices.Range);
         buffers.Indices.Range = {};
     }
@@ -1452,11 +1436,11 @@ void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
     const auto &mesh = R.get<const Mesh>(e);
     Meshes.SetPositions(mesh, positions);
     for (auto &[element, buffers] : R.get<MeshBuffers>(e).NormalIndicators) {
-        Buffers->VertexBuffer.Update(buffers.Vertices.Range, MeshRender::CreateNormalVertices(mesh, element));
+        Buffers->VertexBuffer.Update(buffers.Vertices, MeshRender::CreateNormalVertices(mesh, element));
         Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, MeshRender::CreateNormalIndices(mesh, element));
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) { // todo manage in listeners
-        Buffers->VertexBuffer.Update(buffers->Buffers.Vertices.Range, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
+        Buffers->VertexBuffer.Update(buffers->Buffers.Vertices, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
     }
     UpdateMeshElementStateBuffers(e);
 }
@@ -1638,30 +1622,32 @@ void Draw(
     Draw(cb, pipeline, indices.Range.Count, models, pc, model_index);
 }
 
-DrawPushConstants MakeDrawPc(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
+DrawPushConstants MakeDrawPc(uint32_t vertex_slot, BufferRange vertices, const SlottedBufferRange &indices, uint32_t model_slot) {
     return {
-        .VertexSlot = vertices.Slot,
+        .VertexSlot = vertex_slot,
         .IndexSlot = indices.Slot,
         .IndexOffset = indices.Range.Offset,
-        .ModelSlot = mb.Buffer.Slot,
+        .ModelSlot = model_slot,
         .FirstInstance = 0,
         .ObjectIdSlot = InvalidSlot,
         .FaceNormalSlot = InvalidSlot,
         .FaceIdOffset = 0,
         .FaceNormalOffset = 0,
-        .VertexCountOrHeadImageSlot = vertices.Range.Count,
+        .VertexCountOrHeadImageSlot = vertices.Count,
         .SelectionNodesSlot = 0,
         .SelectionCounterSlot = 0,
         .ElementIdOffset = 0,
         .ElementStateSlot = InvalidSlot,
-        .VertexOffset = vertices.Range.Offset,
+        .VertexOffset = vertices.Offset,
         .Pad0 = 0,
         .LineColor = vec4{0, 0, 0, 0},
     };
 }
-
-DrawPushConstants MakeDrawPc(const RenderBuffers &rb, const ModelsBuffer &mb) {
-    return MakeDrawPc(rb.Vertices, rb.Indices, mb);
+DrawPushConstants MakeDrawPc(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
+    return MakeDrawPc(vertices.Slot, vertices.Range, indices, mb.Buffer.Slot);
+}
+DrawPushConstants MakeDrawPc(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {
+    return MakeDrawPc(vertex_slot, rb.Vertices, rb.Indices, mb.Buffer.Slot);
 }
 } // namespace
 
@@ -1835,15 +1821,13 @@ void Scene::RecordRenderCommandBuffer() {
         const auto vertex_slot = Buffers->VertexBuffer.Buffer.Slot;
         for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-                auto pc = MakeDrawPc(buffers, models);
-                pc.VertexSlot = vertex_slot;
+                auto pc = MakeDrawPc(buffers, vertex_slot, models);
                 pc.LineColor = element == Element::Face ? MeshRender::FaceNormalIndicatorColor : MeshRender::VertexNormalIndicatorColor;
                 Draw(cb, pipeline, buffers.Indices, models, pc);
             }
         }
         for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-            auto pc = MakeDrawPc(bounding_boxes.Buffers, models);
-            pc.VertexSlot = vertex_slot;
+            auto pc = MakeDrawPc(bounding_boxes.Buffers, vertex_slot, models);
             pc.LineColor = MeshRender::EdgeColor;
             Draw(cb, pipeline, bounding_boxes.Buffers.Indices, models, pc);
         }

@@ -42,23 +42,20 @@ enum class IndexKind {
 };
 
 struct SlottedBufferRange {
-    bool OwnsRange() const { return Slot == InvalidSlot && Range.Count != 0; }
-
     BufferRange Range;
-    uint32_t Slot{InvalidSlot};
+    uint32_t Slot;
 };
 
 struct RenderBuffers {
     RenderBuffers(BufferRange vertices, SlottedBufferRange indices, IndexKind index_type)
-        : Vertices(vertices), Indices(indices), IndexType(index_type) {}
-    RenderBuffers(SlottedBufferRange vertices, SlottedBufferRange indices, IndexKind index_type)
         : Vertices(vertices), Indices(indices), IndexType(index_type) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers &operator=(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
-    SlottedBufferRange Vertices, Indices;
+    BufferRange Vertices;
+    SlottedBufferRange Indices;
     IndexKind IndexType;
 };
 
