@@ -1184,12 +1184,12 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     // Orient the camera towards the excited vertex.
     const auto vh = VH(excited_vertex.Vertex);
     const auto &mesh = r.get<Mesh>(mesh_entity);
-    const auto &bbox = r.get<BBox>(mesh_entity);
     const auto &transform = r.get<WorldMatrix>(e).M;
     const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
     Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
 
     // Create vertex indicator arrow pointing at the excited vertex.
+    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
     const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
     const float scale_factor = 0.1f * glm::length(bbox.Max - bbox.Min);
     const auto [_, indicator_entity] = AddMesh(
@@ -1283,9 +1283,6 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto mesh_entity = R.create();
     { // Mesh data
-        const auto bbox = MeshRender::ComputeBoundingBox(mesh);
-        R.emplace<BBox>(mesh_entity, bbox);
-
         const auto vertex_range = Meshes.GetVerticesRange(mesh.GetStoreId());
         const auto vertex_slot = Meshes.GetVerticesSlot();
         auto face_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, mesh.CreateTriangleIndices(), IndexKind::Face);
@@ -1303,7 +1300,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
         if (ShowBoundingBoxes) {
             R.emplace<BoundingBoxesBuffers>(
                 mesh_entity,
-                Buffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices, IndexKind::Edge)
+                Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge)
             );
         }
     }
@@ -1453,10 +1450,8 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
         Buffers->VertexBuffer.Update(buffers.Vertices.Range, MeshRender::CreateNormalVertices(mesh, element));
         Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, MeshRender::CreateNormalIndices(mesh, element));
     }
-    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
-    R.replace<BBox>(e, bbox);
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) { // todo manage in listeners
-        Buffers->VertexBuffer.Update(buffers->Buffers.Vertices.Range, CreateBoxVertices(bbox));
+        Buffers->VertexBuffer.Update(buffers->Buffers.Vertices.Range, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
     }
     R.replace<Mesh>(e, std::move(mesh));
     UpdateMeshElementStateBuffers(e);
@@ -1920,8 +1915,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
         }
     }
     if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-        const auto &bbox = R.get<BBox>(mesh_entity);
-        R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices, IndexKind::Edge));
+        R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         Buffers->Release(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
         R.remove<BoundingBoxesBuffers>(mesh_entity);
