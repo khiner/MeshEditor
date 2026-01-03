@@ -150,11 +150,11 @@ std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_
 }
 } // namespace
 
-void MeshStore::Init(mvk::BufferContext &ctx) {
-    VerticesBuffer = std::make_unique<BufferArena<Vertex3D>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer);
-    FaceIdBuffer = std::make_unique<BufferArena<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer);
-    FaceNormalBuffer = std::make_unique<BufferArena<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer);
-}
+MeshStore::MeshStore(mvk::BufferContext &ctx)
+    : VerticesBuffer{std::make_unique<BufferArena<Vertex3D>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer)},
+      FaceIdBuffer{std::make_unique<BufferArena<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer)},
+      FaceNormalBuffer{std::make_unique<BufferArena<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer)} {}
+
 void MeshStore::UpdateNormals(const Mesh &mesh) {
     const auto id = mesh.GetStoreId();
     {
@@ -256,5 +256,5 @@ uint32_t MeshStore::AcquireId() {
         return id;
     }
     Entries.emplace_back();
-    return static_cast<uint32_t>(Entries.size() - 1);
+    return Entries.size() - 1;
 }

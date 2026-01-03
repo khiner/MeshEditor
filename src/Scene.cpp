@@ -1060,8 +1060,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
           Vk.Device, Vk.PhysicalDevice,
           Slots->GetSetLayout(), Slots->GetSet()
       )},
-      Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)} {
-    Meshes.Init(Buffers->Ctx);
+      Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
+      Meshes{Buffers->Ctx} {
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);

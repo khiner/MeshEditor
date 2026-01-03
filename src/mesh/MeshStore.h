@@ -11,10 +11,7 @@
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
-    MeshStore() = default;
-    explicit MeshStore(mvk::BufferContext &ctx) { Init(ctx); }
-
-    void Init(mvk::BufferContext &ctx);
+    explicit MeshStore(mvk::BufferContext &);
 
     struct Entry {
         BufferRange Vertices, FaceIds, FaceNormals;
