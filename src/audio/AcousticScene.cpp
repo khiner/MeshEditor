@@ -89,7 +89,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     if (!fs::exists(directory)) throw std::runtime_error(std::format("RealImpact directory does not exist: {}", directory.string()));
 
     scene.ClearMeshes();
-    const auto e = scene.AddMesh(
+    const auto [mesh_entity, instance_entity] = scene.AddMesh(
         directory / "transformed.obj",
         {
             .Name = *RealImpact::FindObjectName(directory),
@@ -99,7 +99,6 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
             },
         }
     );
-    const auto mesh_entity = scene.GetMeshEntity(e);
 
     std::vector<uint> vertex_indices(RealImpact::NumImpactVertices);
     {
@@ -112,10 +111,10 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         }
     }
 
-    const auto listener_entity = scene.AddMesh(
+    const auto [listener_mesh_entity, _] = scene.AddMesh(
         Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
         {
-            .Name = std::format("RealImpact Listeners: {}", R.get<Name>(e).Value),
+            .Name = std::format("RealImpact Listeners: {}", R.get<Name>(instance_entity).Value),
             .Select = MeshCreateInfo::SelectBehavior::None,
             .Visible = false,
         }
@@ -123,7 +122,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     for (const auto &listener_point : RealImpact::LoadListenerPoints(directory)) {
         static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
         const auto listener_instance_entity = scene.DuplicateLinked(
-            listener_entity,
+            listener_mesh_entity,
             MeshCreateInfo{
                 .Name = std::format("RealImpact Listener: {}", listener_point.Index),
                 .Transform = {
@@ -137,7 +136,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
 
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
         if (listener_point.Index == CenterListenerIndex) {
-            R.emplace<SoundObjectListener>(e, listener_instance_entity);
+            R.emplace<SoundObjectListener>(instance_entity, listener_instance_entity);
 
             static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
                 for (const auto &material : materials::acoustic::All) {
@@ -145,12 +144,12 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
                 }
                 return {};
             };
-            auto material_name = RealImpact::FindMaterialName(R.get<Name>(e).Value);
+            auto material_name = RealImpact::FindMaterialName(R.get<Name>(instance_entity).Value);
             const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
             if (real_impact_material) R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
-            R.emplace<Frozen>(e);
-            R.emplace<Excitable>(e, vertex_indices);
-            SetImpactFrames(e, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
+            R.emplace<Frozen>(instance_entity);
+            R.emplace<Excitable>(instance_entity, vertex_indices);
+            SetImpactFrames(instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
         }
     }
 }

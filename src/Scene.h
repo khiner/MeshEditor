@@ -118,9 +118,10 @@ struct Scene {
 
     World World{};
 
-    entt::entity AddMesh(Mesh &&, MeshCreateInfo = {});
-    entt::entity AddMesh(MeshData &&, MeshCreateInfo = {});
-    entt::entity AddMesh(const fs::path &, MeshCreateInfo = {});
+    // Returns (mesh_entity, instance_entity)
+    std::pair<entt::entity, entt::entity> AddMesh(Mesh &&, MeshCreateInfo = {});
+    std::pair<entt::entity, entt::entity> AddMesh(MeshData &&, MeshCreateInfo = {});
+    std::pair<entt::entity, entt::entity> AddMesh(const fs::path &, MeshCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});

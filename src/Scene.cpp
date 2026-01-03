@@ -428,21 +428,11 @@ struct SceneBuffers {
         return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
     }
 
-    void UpdateRenderVertices(RenderBuffers &buffers, std::vector<Vertex3D> &&vertices) {
-        if (!buffers.Vertices.OwnsRange()) return;
-        VertexBuffer.Update(buffers.Vertices.Range, vertices);
-    }
-
     void ReleaseRenderVertices(RenderBuffers &buffers) {
         if (!buffers.Vertices.OwnsRange()) return;
         VertexBuffer.Release(buffers.Vertices.Range);
         buffers.Vertices.Range = {};
     }
-
-    void UpdateRenderIndices(RenderBuffers &buffers, std::span<const uint32_t> indices) {
-        GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, indices);
-    }
-
     void ReleaseRenderIndices(RenderBuffers &buffers) {
         if (buffers.Indices.Range.Count == 0) return;
         GetIndexBuffer(buffers.IndexType).Release(buffers.Indices.Range);
@@ -1112,7 +1102,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
                         CreateDefaultPrimitive(PrimitiveType::Cube),
                         {.Name = ToString(PrimitiveType::Cube), .Transform = t, .Select = MeshCreateInfo::SelectBehavior::None}
                     );
-                    R.emplace<PrimitiveType>(e, PrimitiveType::Cube);
+                    R.emplace<PrimitiveType>(e.first, PrimitiveType::Cube);
                     ++count;
                 }
             }
@@ -1195,9 +1185,8 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     // Create vertex indicator arrow pointing at the excited vertex.
     const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
     const float scale_factor = 0.1f * glm::length(bbox.Max - bbox.Min);
-    auto vertex_indicator_mesh = Meshes.CreateMesh(Arrow());
-    excited_vertex.IndicatorEntity = AddMesh(
-        std::move(vertex_indicator_mesh),
+    const auto [_, indicator_entity] = AddMesh(
+        Meshes.CreateMesh(Arrow()),
         {.Name = "Excite vertex indicator",
          .Transform = {
              .P = vertex_pos + 0.05f * scale_factor * normal,
@@ -1206,11 +1195,11 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
          },
          .Select = MeshCreateInfo::SelectBehavior::None}
     );
+    excited_vertex.IndicatorEntity = indicator_entity;
     UpdateRenderBuffers(mesh_entity);
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
-    const auto indicator = r.get<ExcitedVertex>(e).IndicatorEntity;
-    if (indicator != entt::null) {
+    if (const auto indicator = r.get<ExcitedVertex>(e).IndicatorEntity; indicator != entt::null) {
         Destroy(indicator);
     }
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
@@ -1284,7 +1273,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     InvalidateCommandBuffer();
 }
 
-entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
+std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     const auto mesh_entity = R.create();
     { // Mesh data
         const auto bbox = MeshRender::ComputeBoundingBox(mesh);
@@ -1349,18 +1338,18 @@ entt::entity Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
     }
 
     InvalidateCommandBuffer();
-    return instance_entity;
+    return {mesh_entity, instance_entity};
 }
 
-entt::entity Scene::AddMesh(MeshData &&data, MeshCreateInfo info) {
+std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, MeshCreateInfo info) {
     return AddMesh(Meshes.CreateMesh(std::move(data)), std::move(info));
 }
 
-entt::entity Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
+std::pair<entt::entity, entt::entity> Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
     auto mesh = Meshes.LoadMesh(path);
     if (!mesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
     const auto e = AddMesh(std::move(*mesh), std::move(info));
-    R.emplace<Path>(e, path);
+    R.emplace<Path>(e.first, path);
     return e;
 }
 
@@ -1375,8 +1364,8 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info
             .Visible = R.all_of<Visible>(e),
         })
     );
-    if (auto primitive_type = R.try_get<PrimitiveType>(mesh_entity)) R.emplace<PrimitiveType>(e_new, *primitive_type);
-    return e_new;
+    if (auto primitive_type = R.try_get<PrimitiveType>(mesh_entity)) R.emplace<PrimitiveType>(e_new.first, *primitive_type);
+    return e_new.second;
 }
 
 entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo> info) {
@@ -1463,7 +1452,7 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     const auto reset_buffers = [&](RenderBuffers &buffers, const std::vector<uint> &indices) {
         Buffers->ReleaseRenderVertices(buffers);
         buffers.Vertices = {vertex_range, vertex_slot};
-        Buffers->UpdateRenderIndices(buffers, indices);
+        Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, indices);
     };
     const auto face_indices = MeshRender::CreateFaceIndices(pm);
     const auto edge_indices = MeshRender::CreateEdgeIndices(pm);
@@ -1477,11 +1466,11 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
         ResetElementStateBuffer(state_buffers->Vertices, pm.VertexCount());
     }
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-        Buffers->UpdateRenderVertices(buffers, MeshRender::CreateNormalVertices(pm, element));
-        Buffers->UpdateRenderIndices(buffers, MeshRender::CreateNormalIndices(pm, element));
+        Buffers->VertexBuffer.Update(buffers.Vertices.Range, MeshRender::CreateNormalVertices(pm, element));
+        Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, MeshRender::CreateNormalIndices(pm, element));
     }
     if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) {
-        Buffers->UpdateRenderVertices(buffers->Buffers, CreateBoxVertices(bbox));
+        Buffers->VertexBuffer.Update(buffers->Buffers.Vertices.Range, CreateBoxVertices(bbox));
     }
     UpdateRenderBuffers(e);
 }
@@ -3171,7 +3160,7 @@ void Scene::RenderControls() {
                 }
                 const auto selected_type = PrimitiveType(selected_type_i);
                 if (auto mesh = PrimitiveEditor(selected_type, true)) {
-                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh), {.Name = ToString(selected_type)}), selected_type);
+                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh), {.Name = ToString(selected_type)}).first, selected_type);
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
                 PopID();
