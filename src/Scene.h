@@ -148,7 +148,6 @@ struct Scene {
 
     // Handle mouse/keyboard interactions.
     void Interact();
-    ray GetMouseWorldRay() const; // World space ray from the mouse into the scene.
 
     // Renders to an image view that can be accessed with `GetViewportImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
@@ -163,7 +162,7 @@ struct Scene {
 
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
-    void UpdateRenderBuffers(entt::entity);
+    void UpdateMeshElementStateBuffers(entt::entity);
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     void RecordTransferCommandBuffer();
 #endif
@@ -173,10 +172,11 @@ struct Scene {
 
     void OnCreateSelected(entt::registry &, entt::entity);
     void OnDestroySelected(entt::registry &, entt::entity);
+    void OnCreateMeshSelection(entt::registry &, entt::entity);
+    void OnUpdateMeshSelection(entt::registry &, entt::entity);
     void OnCreateExcitable(entt::registry &, entt::entity);
     void OnUpdateExcitable(entt::registry &, entt::entity);
     void OnDestroyExcitable(entt::registry &, entt::entity);
-
     void OnCreateExcitedVertex(entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
@@ -269,12 +269,12 @@ private:
     void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
 
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
-    std::vector<entt::entity> RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max);
+    std::vector<entt::entity> RunBoxSelect(std::pair<glm::uvec2, glm::uvec2>);
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
     void RenderSilhouetteDepth(vk::CommandBuffer cb);
     void RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn, vk::Semaphore signal_semaphore = {});
     void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
-    std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, glm::uvec2 box_min, glm::uvec2 box_max);
+    std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<glm::uvec2, glm::uvec2>);
     std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);
     std::optional<uint32_t> RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px);
 

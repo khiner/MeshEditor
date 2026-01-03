@@ -11,8 +11,6 @@ struct SceneNode {
     entt::entity NextSibling{null_entity};
 };
 
-void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &); // actually defined in mesh/MeshRender.cpp
-
 // Inverse of parent's world matrix at the moment of parenting.
 // Used to compute world matrices that follow parent transforms.
 // WorldMatrix = ParentWorldMatrix * ParentInverse * LocalMatrix
@@ -49,5 +47,6 @@ void ClearParent(entt::registry &, entt::entity child);
 
 Transform GetTransform(const entt::registry &, entt::entity);
 
+void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &); // actually defined in mesh/MeshRender.cpp
 // Recursively update world matrices of entity and its children based on current transforms
 void UpdateWorldMatrix(entt::registry &, entt::entity);

@@ -124,13 +124,6 @@ struct PipelineRenderer {
 
 namespace {
 std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
-ElementStateBuffer CreateElementStateBuffer(mvk::BufferContext &ctx, size_t count) {
-    auto states = MakeElementStates(count);
-    return {mvk::Buffer{ctx, as_bytes(states), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}};
-}
-void ResetElementStateBuffer(ElementStateBuffer &buffer, size_t count) {
-    buffer.Buffer.Update(as_bytes(MakeElementStates(count)));
-}
 
 // Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt::registry &r) {
@@ -146,8 +139,8 @@ std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt:
 
 struct MeshSelection {
     Element Element{Element::None};
-    std::vector<uint32_t> Handles;
-    std::optional<uint32_t> ActiveHandle; // Most recently selected element (always in Handles if set)
+    std::vector<uint32_t> Handles{};
+    std::optional<uint32_t> ActiveHandle{}; // Most recently selected element (always in Handles if set)
 };
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
@@ -284,7 +277,7 @@ void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     );
 }
 
-void UpdateTransform(entt::registry &r, entt::entity e, const Transform &t) {
+void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
     r.emplace_or_replace<Position>(e, t.P);
     // Avoid replacing rotation UI slider values if the value hasn't changed.
     if (!r.all_of<Rotation>(e) || r.get<Rotation>(e).Value != t.R) SetRotation(r, e, t.R);
@@ -428,13 +421,9 @@ struct SceneBuffers {
         return {vertex_range, {index_range, index_buffer.Buffer.Slot}, index_kind};
     }
 
-    void ReleaseRenderVertices(RenderBuffers &buffers) {
-        if (!buffers.Vertices.OwnsRange()) return;
+    void Release(RenderBuffers &buffers) {
         VertexBuffer.Release(buffers.Vertices.Range);
         buffers.Vertices.Range = {};
-    }
-    void ReleaseRenderIndices(RenderBuffers &buffers) {
-        if (buffers.Indices.Range.Count == 0) return;
         GetIndexBuffer(buffers.IndexType).Release(buffers.Indices.Range);
         buffers.Indices.Range = {};
     }
@@ -1076,6 +1065,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     // EnTT listeners
     R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
     R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
+    R.on_construct<MeshSelection>().connect<&Scene::OnCreateMeshSelection>(*this);
+    R.on_update<MeshSelection>().connect<&Scene::OnUpdateMeshSelection>(*this);
     R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
     R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
     R.on_destroy<Excitable>().connect<&Scene::OnDestroyExcitable>(*this);
@@ -1139,36 +1130,52 @@ void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
         const auto mesh_entity = mesh_instance->MeshEntity;
         if (auto *buffers = r.try_get<MeshBuffers>(mesh_entity)) {
-            for (auto &[_, buffers] : buffers->NormalIndicators) {
-                Buffers->ReleaseRenderVertices(buffers);
-                Buffers->ReleaseRenderIndices(buffers);
-            }
+            for (auto &[_, buffers] : buffers->NormalIndicators) Buffers->Release(buffers);
             buffers->NormalIndicators.clear();
         }
-        if (auto *bbox_buffers = r.try_get<BoundingBoxesBuffers>(mesh_entity)) {
-            Buffers->ReleaseRenderVertices(bbox_buffers->Buffers);
-            Buffers->ReleaseRenderIndices(bbox_buffers->Buffers);
-        }
+        if (auto *bbox_buffers = r.try_get<BoundingBoxesBuffers>(mesh_entity)) Buffers->Release(bbox_buffers->Buffers);
         r.remove<BoundingBoxesBuffers>(mesh_entity);
     }
 }
 
+void Scene::OnCreateMeshSelection(entt::registry &r, entt::entity e) {
+    if (r.all_of<MeshElementStateBuffers>(e)) {
+        UpdateMeshElementStateBuffers(e);
+    } else {
+        const auto &mesh = r.get<Mesh>(e);
+        R.emplace<MeshElementStateBuffers>(
+            e,
+            mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.FaceCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+            mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+            mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
+        );
+    }
+}
+void Scene::OnUpdateMeshSelection(entt::registry &, entt::entity e) {
+    UpdateMeshElementStateBuffers(e);
+}
+
 void Scene::OnCreateExcitable(entt::registry &r, entt::entity e) {
+    const bool was_excite = InteractionMode == InteractionMode::Excite;
     InteractionModes.insert(InteractionMode::Excite);
     SetInteractionMode(InteractionMode::Excite);
-    UpdateRenderBuffers(r.get<MeshInstance>(e).MeshEntity);
+    UpdateMeshElementStateBuffers(r.get<MeshInstance>(e).MeshEntity);
+    if (was_excite) InvalidateCommandBuffer();
 }
 void Scene::OnUpdateExcitable(entt::registry &r, entt::entity e) {
-    UpdateRenderBuffers(r.get<MeshInstance>(e).MeshEntity);
+    UpdateMeshElementStateBuffers(r.get<MeshInstance>(e).MeshEntity);
 }
 void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
+    const bool was_excite = InteractionMode == InteractionMode::Excite;
+    const bool last_excitable = r.storage<Excitable>().size() == 1;
     if (r.storage<Excitable>().size() == 1) {
         if (InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
         InteractionModes.erase(InteractionMode::Excite);
     }
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
-        UpdateRenderBuffers(mesh_instance->MeshEntity);
+        UpdateMeshElementStateBuffers(mesh_instance->MeshEntity);
     }
+    if (was_excite && !last_excitable) InvalidateCommandBuffer();
 }
 
 void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
@@ -1196,14 +1203,14 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
          .Select = MeshCreateInfo::SelectBehavior::None}
     );
     excited_vertex.IndicatorEntity = indicator_entity;
-    UpdateRenderBuffers(mesh_entity);
+    UpdateMeshElementStateBuffers(mesh_entity);
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
     if (const auto indicator = r.get<ExcitedVertex>(e).IndicatorEntity; indicator != entt::null) {
         Destroy(indicator);
     }
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
-        UpdateRenderBuffers(mesh_instance->MeshEntity);
+        UpdateMeshElementStateBuffers(mesh_instance->MeshEntity);
     }
 }
 
@@ -1281,27 +1288,18 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
 
         const auto vertex_range = Meshes.GetVerticesRange(mesh.GetStoreId());
         const auto vertex_slot = Meshes.GetVerticesSlot();
-        auto face_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, MeshRender::CreateFaceIndices(mesh), IndexKind::Face);
-        auto edge_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, MeshRender::CreateEdgeIndices(mesh), IndexKind::Edge);
+        auto face_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, mesh.CreateTriangleIndices(), IndexKind::Face);
+        auto edge_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, mesh.CreateEdgeIndices(), IndexKind::Edge);
         auto vertex_buffers = Buffers->CreateRenderBuffers({vertex_range, vertex_slot}, MeshRender::CreateVertexIndices(mesh), IndexKind::Vertex);
 
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
-        R.emplace<MeshSelection>(mesh_entity);
         R.emplace<ModelsBuffer>(
             mesh_entity,
             mvk::Buffer{Buffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
             mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer}
         );
         R.emplace<MeshBuffers>(mesh_entity, std::move(face_buffers), std::move(edge_buffers), std::move(vertex_buffers));
-        {
-            R.emplace<MeshElementStateBuffers>(
-                mesh_entity,
-                CreateElementStateBuffer(Buffers->Ctx, mesh.FaceCount()),
-                CreateElementStateBuffer(Buffers->Ctx, mesh.EdgeCount() * 2),
-                CreateElementStateBuffer(Buffers->Ctx, mesh.VertexCount())
-            );
-        }
-        UpdateRenderBuffers(mesh_entity);
+        R.emplace<MeshSelection>(mesh_entity);
         if (ShowBoundingBoxes) {
             R.emplace<BoundingBoxesBuffers>(
                 mesh_entity,
@@ -1312,7 +1310,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
 
     const auto instance_entity = R.create();
     R.emplace<MeshInstance>(instance_entity, mesh_entity);
-    UpdateTransform(R, instance_entity, info.Transform);
+    SetTransform(R, instance_entity, info.Transform);
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
     auto &models = R.get<ModelsBuffer>(mesh_entity);
@@ -1384,7 +1382,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
         models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
         models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
     }
-    UpdateTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
+    SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
 
     if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
@@ -1440,39 +1438,28 @@ void Scene::ClearMeshes() {
 
 void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     auto mesh = Meshes.CreateMesh(std::move(data));
-    // Update components
-    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
-    R.replace<BBox>(e, bbox);
-    R.replace<Mesh>(e, std::move(mesh));
-
-    const auto &pm = R.get<Mesh>(e);
-    auto &mesh_buffers = R.get<MeshBuffers>(e);
-    const auto vertex_range = Meshes.GetVerticesRange(pm.GetStoreId());
+    const auto vertex_range = Meshes.GetVerticesRange(mesh.GetStoreId());
     const auto vertex_slot = Meshes.GetVerticesSlot();
-    const auto reset_buffers = [&](RenderBuffers &buffers, const std::vector<uint> &indices) {
-        Buffers->ReleaseRenderVertices(buffers);
+    const auto reset_buffers = [&](auto &buffers, auto &&indices) {
+        Buffers->VertexBuffer.Release(buffers.Vertices.Range);
         buffers.Vertices = {vertex_range, vertex_slot};
         Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, indices);
     };
-    const auto face_indices = MeshRender::CreateFaceIndices(pm);
-    const auto edge_indices = MeshRender::CreateEdgeIndices(pm);
-    const auto vertex_indices = MeshRender::CreateVertexIndices(pm);
-    reset_buffers(mesh_buffers.Faces, face_indices);
-    reset_buffers(mesh_buffers.Edges, edge_indices);
-    reset_buffers(mesh_buffers.Vertices, vertex_indices);
-    if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(e)) {
-        ResetElementStateBuffer(state_buffers->Faces, pm.FaceCount());
-        ResetElementStateBuffer(state_buffers->Edges, pm.EdgeCount() * 2);
-        ResetElementStateBuffer(state_buffers->Vertices, pm.VertexCount());
-    }
+    auto &mesh_buffers = R.get<MeshBuffers>(e);
+    reset_buffers(mesh_buffers.Faces, mesh.CreateTriangleIndices());
+    reset_buffers(mesh_buffers.Edges, mesh.CreateEdgeIndices());
+    reset_buffers(mesh_buffers.Vertices, MeshRender::CreateVertexIndices(mesh));
     for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-        Buffers->VertexBuffer.Update(buffers.Vertices.Range, MeshRender::CreateNormalVertices(pm, element));
-        Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, MeshRender::CreateNormalIndices(pm, element));
+        Buffers->VertexBuffer.Update(buffers.Vertices.Range, MeshRender::CreateNormalVertices(mesh, element));
+        Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, MeshRender::CreateNormalIndices(mesh, element));
     }
-    if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) {
+    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
+    R.replace<BBox>(e, bbox);
+    if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) { // todo manage in listeners
         Buffers->VertexBuffer.Update(buffers->Buffers.Vertices.Range, CreateBoxVertices(bbox));
     }
-    UpdateRenderBuffers(e);
+    R.replace<Mesh>(e, std::move(mesh));
+    UpdateMeshElementStateBuffers(e);
 }
 
 void Scene::Destroy(entt::entity e) {
@@ -1500,21 +1487,12 @@ void Scene::Destroy(entt::entity e) {
         );
         if (!has_instances) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) {
-                Buffers->ReleaseRenderVertices(mesh_buffers->Faces);
-                Buffers->ReleaseRenderVertices(mesh_buffers->Edges);
-                Buffers->ReleaseRenderVertices(mesh_buffers->Vertices);
-                Buffers->ReleaseRenderIndices(mesh_buffers->Faces);
-                Buffers->ReleaseRenderIndices(mesh_buffers->Edges);
-                Buffers->ReleaseRenderIndices(mesh_buffers->Vertices);
-                for (auto &[_, buffers] : mesh_buffers->NormalIndicators) {
-                    Buffers->ReleaseRenderVertices(buffers);
-                    Buffers->ReleaseRenderIndices(buffers);
-                }
+                Buffers->Release(mesh_buffers->Faces);
+                Buffers->Release(mesh_buffers->Edges);
+                Buffers->Release(mesh_buffers->Vertices);
+                for (auto &[_, buffers] : mesh_buffers->NormalIndicators) Buffers->Release(buffers);
             }
-            if (auto *buffers = R.try_get<BoundingBoxesBuffers>(mesh_entity)) {
-                Buffers->ReleaseRenderVertices(buffers->Buffers);
-                Buffers->ReleaseRenderIndices(buffers->Buffers);
-            }
+            if (auto *buffers = R.try_get<BoundingBoxesBuffers>(mesh_entity)) Buffers->Release(buffers->Buffers);
             R.destroy(mesh_entity);
         }
     }
@@ -1526,138 +1504,127 @@ void Scene::SetInteractionMode(::InteractionMode mode) {
     if (InteractionMode == mode) return;
 
     InteractionMode = mode;
-    for (const auto &entity : R.view<Mesh>()) UpdateRenderBuffers(entity);
-    const auto e = FindActiveEntity(R);
-    if (e != entt::null && R.all_of<Excitable>(e)) {
-        UpdateRenderBuffers(R.get<MeshInstance>(e).MeshEntity);
-    }
+    for (const auto &entity : R.view<Mesh>()) UpdateMeshElementStateBuffers(entity);
+    InvalidateCommandBuffer();
 }
 void Scene::SetEditMode(Element mode) {
     if (EditMode == mode) return;
+
     EditMode = mode;
-    for (const auto mesh_entity : R.view<MeshSelection, Mesh>()) {
-        R.patch<MeshSelection>(mesh_entity, [&](auto &s) {
-            s = {EditMode, ConvertSelectionElement(s, R.get<Mesh>(mesh_entity), EditMode), std::nullopt};
-        });
-        UpdateRenderBuffers(mesh_entity);
+    for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
+        R.replace<MeshSelection>(e, MeshSelection{EditMode, ConvertSelectionElement(selection, mesh, EditMode), std::nullopt});
     }
+    InvalidateCommandBuffer();
 }
 
 void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool toggle) {
     auto &selection = R.get<MeshSelection>(mesh_entity);
     const auto new_element = element ? element.Element : Element::None;
     if (!toggle || selection.Element != new_element) {
-        selection.Element = new_element;
-        selection.Handles.clear();
-        selection.ActiveHandle = {};
+        selection = {.Element = new_element};
+    }
+    if (!element) {
+        UpdateMeshElementStateBuffers(mesh_entity);
+        return;
     }
 
-    if (element.Element != Element::None && element) {
-        const auto handle = *element;
-        if (auto it = find(selection.Handles, handle); toggle && it != selection.Handles.end()) {
-            selection.Handles.erase(it);
-            if (selection.ActiveHandle == handle) selection.ActiveHandle = {};
-        } else {
-            selection.Handles.emplace_back(handle);
-            selection.ActiveHandle = handle;
-        }
+    const auto handle = *element;
+    if (auto it = find(selection.Handles, handle); toggle && it != selection.Handles.end()) {
+        selection.Handles.erase(it);
+        if (selection.ActiveHandle == handle) selection.ActiveHandle = {};
+    } else {
+        selection.Handles.emplace_back(handle);
+        selection.ActiveHandle = handle;
     }
-    UpdateRenderBuffers(mesh_entity);
+    UpdateMeshElementStateBuffers(mesh_entity);
 }
 
-void Scene::UpdateRenderBuffers(entt::entity e) {
-    if (const auto *mesh = R.try_get<Mesh>(e)) {
-        std::unordered_set<VH> selected_vertices;
-        std::unordered_set<EH> selected_edges;
-        std::unordered_set<FH> selected_faces;
-        const auto &selection = R.get<MeshSelection>(e);
-        const bool edit_mode = InteractionMode == InteractionMode::Edit;
-        const bool excite_mode = InteractionMode == InteractionMode::Excite;
-        Element element = Element::None;
-        std::optional<uint32_t> active_handle;
-        if (excite_mode) {
-            element = Element::Vertex;
-            for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
-                if (mi.MeshEntity != e) continue;
-                for (const auto vertex : excitable.ExcitableVertices) {
-                    selected_vertices.emplace(VH(vertex));
-                }
-                if (R.all_of<ExcitedVertex>(entity)) {
-                    active_handle = R.get<ExcitedVertex>(entity).Vertex;
-                }
-                break;
-            }
-        } else if (edit_mode && selection.Element == EditMode) {
-            element = selection.Element;
-            if (element == Element::Vertex) {
-                for (auto h : selection.Handles) {
-                    selected_vertices.emplace(h);
-                }
-            } else if (element == Element::Edge) {
-                for (auto h : selection.Handles) {
-                    selected_edges.emplace(h);
-                }
-            } else if (element == Element::Face) {
-                for (auto h : selection.Handles) {
-                    selected_faces.emplace(h);
-                    for (const auto heh : mesh->fh_range(FH{h})) selected_edges.emplace(mesh->GetEdge(heh));
-                }
-            }
-            active_handle = selection.ActiveHandle;
-        }
+void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
+    if (!R.all_of<Mesh>(e)) return;
 
-        auto face_states = MakeElementStates(mesh->FaceCount());
-        auto edge_states = MakeElementStates(mesh->EdgeCount() * 2);
-        auto vertex_states = MakeElementStates(mesh->VertexCount());
-        if (element == Element::Face) {
-            for (const auto fh : selected_faces) face_states[*fh] |= MeshRender::ElementStateSelected;
-            if (active_handle) face_states[*active_handle] |= MeshRender::ElementStateActive;
-        }
-        if (element == Element::Edge || element == Element::Face) {
-            const bool has_active_edge = element == Element::Edge && active_handle.has_value();
-            for (uint32_t ei = 0; ei < mesh->EdgeCount(); ++ei) {
-                const EH eh{ei};
-                uint32_t state = 0;
-                if (selected_edges.contains(eh)) state |= MeshRender::ElementStateSelected;
-                if (has_active_edge && *active_handle == ei) state |= MeshRender::ElementStateActive;
-                edge_states[2 * ei] = state;
-                edge_states[2 * ei + 1] = state;
+    const auto &mesh = R.get<Mesh>(e);
+    std::unordered_set<VH> selected_vertices;
+    std::unordered_set<EH> selected_edges;
+    std::unordered_set<FH> selected_faces;
+
+    auto element{Element::None};
+    std::vector<uint32_t> handles;
+    std::optional<uint32_t> active_handle;
+    if (InteractionMode == InteractionMode::Excite) {
+        element = Element::Vertex;
+        for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
+            if (mi.MeshEntity != e) continue;
+            handles = excitable.ExcitableVertices;
+            selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
+            if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) {
+                active_handle = excited_vertex->Vertex;
             }
-        } else if (element == Element::Vertex) {
-            const bool has_active_vertex = active_handle.has_value();
-            for (uint32_t ei = 0; ei < mesh->EdgeCount(); ++ei) {
-                const auto heh = mesh->GetHalfedge(EH{ei}, 0);
-                const auto v_from = mesh->GetFromVertex(heh);
-                const auto v_to = mesh->GetToVertex(heh);
-                uint32_t state_from = 0;
-                uint32_t state_to = 0;
-                if (selected_vertices.contains(v_from)) state_from |= MeshRender::ElementStateSelected;
-                if (selected_vertices.contains(v_to)) state_to |= MeshRender::ElementStateSelected;
-                if (has_active_vertex && *active_handle == *v_from) state_from |= MeshRender::ElementStateActive;
-                if (has_active_vertex && *active_handle == *v_to) state_to |= MeshRender::ElementStateActive;
-                edge_states[2 * ei] = state_from;
-                edge_states[2 * ei + 1] = state_to;
-            }
+            break;
         }
+    } else if (const auto &selection = R.get<MeshSelection>(e);
+               InteractionMode == InteractionMode::Edit && selection.Element == EditMode) {
+        element = selection.Element;
+        handles = selection.Handles;
+        active_handle = selection.ActiveHandle;
         if (element == Element::Vertex) {
-            for (const auto vh : selected_vertices) vertex_states[*vh] |= MeshRender::ElementStateSelected;
-            if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
+            selected_vertices.insert(selection.Handles.begin(), selection.Handles.end());
+        } else if (element == Element::Edge) {
+            selected_edges.insert(selection.Handles.begin(), selection.Handles.end());
+        } else if (element == Element::Face) {
+            for (auto h : selection.Handles) {
+                selected_faces.emplace(h);
+                for (const auto heh : mesh.fh_range(FH{h})) selected_edges.emplace(mesh.GetEdge(heh));
+            }
         }
+    }
 
-        auto &states = R.get<MeshElementStateBuffers>(e);
-        states.Faces.Buffer.Update(as_bytes(face_states));
-        states.Edges.Buffer.Update(as_bytes(edge_states));
-        states.Vertices.Buffer.Update(as_bytes(vertex_states));
-        InvalidateCommandBuffer();
-    };
+    auto face_states = MakeElementStates(mesh.FaceCount());
+    auto edge_states = MakeElementStates(mesh.EdgeCount() * 2);
+    auto vertex_states = MakeElementStates(mesh.VertexCount());
+    if (element == Element::Face) {
+        for (const auto fh : selected_faces) face_states[*fh] |= MeshRender::ElementStateSelected;
+        if (active_handle) face_states[*active_handle] |= MeshRender::ElementStateActive;
+    }
+
+    if (element == Element::Edge || element == Element::Face) {
+        for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
+            uint32_t state = 0;
+            if (selected_edges.contains(EH{ei})) state |= MeshRender::ElementStateSelected;
+            if (element == Element::Edge && active_handle == ei) state |= MeshRender::ElementStateActive;
+            edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
+        }
+    } else if (element == Element::Vertex) {
+        for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
+            const auto heh = mesh.GetHalfedge(EH{ei}, 0);
+            const auto v_from = mesh.GetFromVertex(heh), v_to = mesh.GetToVertex(heh);
+            auto get_state = [&](auto vh) {
+                uint32_t state = 0;
+                if (selected_vertices.contains(vh)) state |= MeshRender::ElementStateSelected;
+                if (active_handle == *vh) state |= MeshRender::ElementStateActive;
+                return state;
+            };
+            edge_states[2 * ei] = get_state(v_from);
+            edge_states[2 * ei + 1] = get_state(v_to);
+        }
+    }
+
+    if (element == Element::Vertex) {
+        for (const auto vh : selected_vertices) vertex_states[*vh] |= MeshRender::ElementStateSelected;
+        if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
+    }
+
+    auto &states = R.get<MeshElementStateBuffers>(e);
+    states.Faces.Update(as_bytes(face_states));
+    states.Edges.Update(as_bytes(edge_states));
+    states.Vertices.Update(as_bytes(vertex_states));
+
+    SelectionStale = true;
+    RequestRender();
 }
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
 
 namespace {
-void SetTransform(entt::registry &r, entt::entity e, Transform &&t) {
-    UpdateTransform(r, e, std::move(t));
-}
 
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.
 void Draw(
@@ -1719,7 +1686,7 @@ void Scene::RecordRenderCommandBuffer() {
             auto &models = R.get<ModelsBuffer>(mesh_entity);
             auto pc = MakeDrawPc(buffers, models);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
-            Draw(cb, pipeline, buffers, models, pc, *GetModelBufferIndex(R, e));
+            Draw(cb, pipeline, buffers, models, pc, R.get<RenderInstance>(e).BufferIndex);
         };
         if (is_edit_mode) {
             for (const auto e : silhouette_instances) render(e);
@@ -1794,12 +1761,12 @@ void Scene::RecordRenderCommandBuffer() {
                 pc.FaceNormalOffset = face_normal_range.Offset;
                 if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                     // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                    pc.ElementStateSlot = state_buffers.Faces.Buffer.Slot;
-                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *GetModelBufferIndex(R, it->second));
+                    pc.ElementStateSlot = state_buffers.Faces.Slot;
+                    Draw(cb, pipeline, mesh_buffers.Faces, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
                     pc.ElementStateSlot = InvalidSlot;
                     Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
                 } else {
-                    pc.ElementStateSlot = state_buffers.Faces.Buffer.Slot;
+                    pc.ElementStateSlot = state_buffers.Faces.Slot;
                     Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
                 }
             }
@@ -1811,11 +1778,11 @@ void Scene::RecordRenderCommandBuffer() {
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
                 auto pc = MakeDrawPc(mesh_buffers.Edges, models);
-                pc.ElementStateSlot = state_buffers.Edges.Buffer.Slot;
+                pc.ElementStateSlot = state_buffers.Edges.Slot;
                 if (show_wireframe) {
                     Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
                 } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc, *GetModelBufferIndex(R, it->second));
+                    Draw(cb, pipeline, mesh_buffers.Edges, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
                 } else if (excitable_mesh_entities.contains(entity)) {
                     Draw(cb, pipeline, mesh_buffers.Edges, models, pc);
                 }
@@ -1828,9 +1795,9 @@ void Scene::RecordRenderCommandBuffer() {
             for (auto [entity, mesh_buffers, models, state_buffers] :
                  R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
                 auto pc = MakeDrawPc(mesh_buffers.Vertices, models);
-                pc.ElementStateSlot = state_buffers.Vertices.Buffer.Slot;
+                pc.ElementStateSlot = state_buffers.Vertices.Slot;
                 if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-                    Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, *GetModelBufferIndex(R, it->second));
+                    Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
                 } else if (excitable_mesh_entities.contains(entity)) {
                     Draw(cb, pipeline, mesh_buffers.Vertices, models, pc);
                 }
@@ -1948,8 +1915,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
                 Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
             );
         } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
-            Buffers->ReleaseRenderVertices(mesh_buffers.NormalIndicators.at(element));
-            Buffers->ReleaseRenderIndices(mesh_buffers.NormalIndicators.at(element));
+            Buffers->Release(mesh_buffers.NormalIndicators.at(element));
             mesh_buffers.NormalIndicators.erase(element);
         }
     }
@@ -1957,8 +1923,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity instance_entity) {
         const auto &bbox = R.get<BBox>(mesh_entity);
         R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(bbox), BBox::EdgeIndices, IndexKind::Edge));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-        Buffers->ReleaseRenderVertices(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
-        Buffers->ReleaseRenderIndices(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
+        Buffers->Release(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
         R.remove<BoundingBoxesBuffers>(mesh_entity);
     }
 }
@@ -1969,13 +1934,7 @@ namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr vk::Extent2D ToExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
-std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(
-    vec2 start,
-    vec2 end,
-    vec2 window_pos,
-    vk::Extent2D extent,
-    float drag_threshold
-) {
+std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent, float drag_threshold) {
     if (glm::distance(start, end) <= drag_threshold) return {};
 
     const vec2 extent_size{float(extent.width), float(extent.height)};
@@ -2050,7 +2009,7 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
             pc.SelectionNodesSlot = Buffers->SelectionNodeBuffer.Slot;
             pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
             if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
-                Draw(cb, pipeline, mesh_buffers.Faces, models, pc, *GetModelBufferIndex(R, it->second));
+                Draw(cb, pipeline, mesh_buffers.Faces, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
             } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
                 Draw(cb, pipeline, mesh_buffers.Faces, models, pc);
             }
@@ -2230,17 +2189,18 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
             pc.ElementIdOffset = r.Offset;
             if (auto it = primary_edit_instances.find(r.MeshEntity); it != primary_edit_instances.end()) {
-                Draw(cb, pipeline, buffers, models, pc, *GetModelBufferIndex(R, it->second));
+                Draw(cb, pipeline, buffers, models, pc, R.get<RenderInstance>(it->second).BufferIndex);
             } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
                 Draw(cb, pipeline, buffers, models, pc);
             }
         } }, signal_semaphore);
 }
 
-std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, glm::uvec2 box_min, glm::uvec2 box_max) {
+std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<glm::uvec2, glm::uvec2> box_px) {
     if (ranges.empty() || element == Element::None) return {};
 
     std::vector<std::vector<uint32_t>> results(ranges.size());
+    const auto [box_min, box_max] = box_px;
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return results;
 
     const Timer timer{"RunBoxSelectElements"};
@@ -2329,7 +2289,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         pc.VertexCountOrHeadImageSlot = SelectionHandles->HeadImage;
         pc.SelectionNodesSlot = Buffers->SelectionNodeBuffer.Slot;
         pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
-        pc.ElementStateSlot = state_buffers.Vertices.Buffer.Slot;
+        pc.ElementStateSlot = state_buffers.Vertices.Slot;
         Draw(cb, pipeline, mesh_buffers.Vertices, models, pc, model_index); }, *SelectionReadySemaphore);
 
     return FindNearestSelectionElement(
@@ -2382,7 +2342,8 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     return entities;
 }
 
-std::vector<entt::entity> Scene::RunBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max) {
+std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> box_px) {
+    const auto [box_min, box_max] = box_px;
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
 
     const auto visible_entities = R.view<Visible>() | to<std::vector>();
@@ -2496,13 +2457,12 @@ void Scene::Interact() {
             BoxSelectEnd = mouse_pos;
             static constexpr float drag_threshold{2};
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent, drag_threshold)) {
-                const auto &[box_min_px, box_max_px] = *box_px;
-
-                for (const auto mesh_entity : R.view<MeshSelection>()) {
-                    R.patch<MeshSelection>(mesh_entity, [](auto &s) { s.Handles.clear(); s.ActiveHandle = {}; });
+                Timer timer{"BoxSelectElements (all)"};
+                // todo don't double-update MeshSelection
+                for (const auto e : R.view<MeshSelection>()) {
+                    R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.ActiveHandle = {}; });
                 }
 
-                Timer timer{"BoxSelectElements (all)"};
                 std::unordered_set<entt::entity> mesh_entities; // Meshs of selected instances
                 for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
                     mesh_entities.insert(mi.MeshEntity);
@@ -2517,17 +2477,11 @@ void Scene::Interact() {
                     }
                 }
 
-                auto results = RunBoxSelectElements(ranges, EditMode, box_min_px, box_max_px);
+                auto results = RunBoxSelectElements(ranges, EditMode, *box_px);
                 for (size_t i = 0; i < ranges.size(); ++i) {
-                    const auto mesh_entity = ranges[i].MeshEntity;
-                    R.patch<MeshSelection>(mesh_entity, [&](auto &s) {
-                        s.Element = EditMode;
-                        s.Handles = i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{};
-                        s.ActiveHandle = {};
-                    });
-                    UpdateRenderBuffers(mesh_entity);
+                    const auto e = ranges[i].MeshEntity;
+                    R.replace<MeshSelection>(e, MeshSelection{EditMode, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
                 }
-                InvalidateCommandBuffer();
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
             BoxSelectStart.reset();
@@ -2545,8 +2499,7 @@ void Scene::Interact() {
             BoxSelectEnd = mouse_pos;
             static constexpr float drag_threshold{2};
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent, drag_threshold)) {
-                const auto &[box_min_px, box_max_px] = *box_px;
-                const auto selected_entities = RunBoxSelect(box_min_px, box_max_px);
+                const auto selected_entities = RunBoxSelect(*box_px);
                 R.clear<Selected>();
                 for (const auto e : selected_entities) R.emplace<Selected>(e);
                 InvalidateCommandBuffer();
@@ -2571,9 +2524,9 @@ void Scene::Interact() {
             const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
             if (!toggle) {
                 for (const auto [e, selection] : R.view<MeshSelection>().each()) {
-                    if (selection.Handles.empty()) continue;
-                    R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.Element = Element::None; });
-                    UpdateRenderBuffers(e);
+                    if (!selection.Handles.empty() || selection.Element != Element::None) {
+                        R.replace<MeshSelection>(e, MeshSelection{});
+                    }
                 }
             }
             if (hit_it != hit_entities.end()) {

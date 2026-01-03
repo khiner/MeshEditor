@@ -14,10 +14,7 @@ using namespace he;
 
 namespace MeshRender {
 
-std::vector<uint> CreateFaceIndices(const Mesh &mesh) { return mesh.CreateTriangleIndices(); }
-std::vector<uint> CreateEdgeIndices(const Mesh &mesh) { return mesh.CreateEdgeIndices(); }
-
-std::vector<uint> CreateVertexIndices(const Mesh &mesh) { return iota(0u, mesh.VertexCount()) | to<std::vector<uint>>(); }
+std::vector<uint> CreateVertexIndices(const Mesh &mesh) { return iota(0u, mesh.VertexCount()) | to<std::vector>(); }
 
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     if (element == Element::None || element == Element::Edge) return {};

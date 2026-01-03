@@ -76,11 +76,8 @@ struct MeshBuffers {
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
-struct ElementStateBuffer {
-    mvk::Buffer Buffer;
-};
 struct MeshElementStateBuffers {
-    ElementStateBuffer Faces, Edges, Vertices;
+    mvk::Buffer Faces, Edges, Vertices;
 };
 // Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity);
@@ -96,11 +93,8 @@ constexpr vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Pre
 constexpr vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
 constexpr vec4 UnselectedVertexEditColor{0, 0, 0, 1}; // Unselected vertex in edit mode
 constexpr float NormalIndicatorLengthScale{0.25};
-constexpr uint32_t ElementStateSelected{1u << 0};
-constexpr uint32_t ElementStateActive{1u << 1};
+constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
-std::vector<uint> CreateFaceIndices(const Mesh &);
-std::vector<uint> CreateEdgeIndices(const Mesh &);
 std::vector<uint> CreateVertexIndices(const Mesh &);
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &, he::Element);
 std::vector<uint> CreateNormalIndices(const Mesh &, he::Element);
