@@ -16,10 +16,10 @@ layout(push_constant) uniform PC {
 } pc;
 
 struct SelectionNode {
-    uvec2 Pixel;
     float Depth;
     uint ObjectId;
     uint Next;
+    uint Padding0;
 };
 
 const uint INVALID_NODE = 0xffffffffu;

@@ -2,22 +2,24 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 // Bindless layout (set 0):
+// binding 1: storage images (HeadImage)
 // binding 6: storage buffers (SelectionNodes, ClickElementResult) via indices
 #define GROUP_SIZE 256
 layout(local_size_x = GROUP_SIZE) in;
 
 layout(push_constant) uniform PC {
     uvec2 TargetPx;
-    uint NodeCount;
+    uint Radius;
+    uint HeadImageIndex;
     uint SelectionNodesIndex;
     uint ClickResultIndex;
 } pc;
 
 struct SelectionNode {
-    uvec2 Pixel;
     float Depth;
     uint ObjectId;
     uint Next;
+    uint Padding0;
 };
 
 struct ClickElementCandidate {
@@ -30,6 +32,10 @@ struct ClickElementCandidate {
 layout(set = 0, binding = 6, std430) buffer SelectionNodes {
     SelectionNode Nodes[];
 } SelectionBuffers[];
+
+const uint INVALID_NODE = 0xffffffffu;
+
+layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
 
 layout(set = 0, binding = 6, std430) buffer ClickElementResult {
     ClickElementCandidate Candidates[];
@@ -55,14 +61,27 @@ void main() {
     best.DistanceSq = 0xffffffffu;
     best.Padding = 0u;
 
-    if (idx < pc.NodeCount) {
-        const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
-        if (node.ObjectId != 0u) {
-            const int dx = int(node.Pixel.x) - int(pc.TargetPx.x);
-            const int dy = int(node.Pixel.y) - int(pc.TargetPx.y);
-            best.ObjectId = node.ObjectId;
-            best.Depth = node.Depth;
-            best.DistanceSq = uint(dx * dx + dy * dy);
+    const uint diameter = pc.Radius * 2u + 1u;
+    const uint pixel_count = diameter * diameter;
+    if (idx < pixel_count) {
+        const int dx = int(idx % diameter) - int(pc.Radius);
+        const int dy = int(idx / diameter) - int(pc.Radius);
+        const uint distance_sq = uint(dx * dx + dy * dy);
+        if (distance_sq <= pc.Radius * pc.Radius) {
+            const ivec2 pixel = ivec2(pc.TargetPx) + ivec2(dx, dy);
+            const ivec2 size = imageSize(HeadImages[pc.HeadImageIndex]);
+            if (pixel.x >= 0 && pixel.y >= 0 && pixel.x < size.x && pixel.y < size.y) {
+                uint node_idx = imageLoad(HeadImages[pc.HeadImageIndex], pixel).r;
+                while (node_idx != INVALID_NODE) {
+                    const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[node_idx];
+                    if (node.ObjectId != 0u && (best.ObjectId == 0u || node.Depth < best.Depth)) {
+                        best.ObjectId = node.ObjectId;
+                        best.Depth = node.Depth;
+                        best.DistanceSq = distance_sq;
+                    }
+                    node_idx = node.Next;
+                }
+            }
         }
     }
 

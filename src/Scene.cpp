@@ -316,13 +316,12 @@ BindlessConfig MakeBindlessConfig(vk::PhysicalDevice pd) {
 }
 
 struct SelectionNode {
-    glm::uvec2 Pixel;
     float Depth;
     uint32_t ObjectId;
     uint32_t Next;
     uint32_t Padding0;
 };
-static_assert(sizeof(SelectionNode) == 24, "SelectionNode must match std430 layout.");
+static_assert(sizeof(SelectionNode) == 16, "SelectionNode must match std430 layout.");
 
 struct SelectionCounters {
     uint32_t Count;
@@ -356,7 +355,8 @@ struct ClickSelectPushConstants {
 
 struct ClickSelectElementPushConstants {
     glm::uvec2 TargetPx;
-    uint32_t NodeCount;
+    uint32_t Radius;
+    uint32_t HeadImageIndex;
     uint32_t SelectionNodesIndex;
     uint32_t ClickResultIndex;
 };
@@ -369,6 +369,10 @@ struct BoxSelectPushConstants {
     uint32_t SelectionNodesIndex;
     uint32_t BoxResultIndex;
 };
+
+constexpr uint32_t ClickSelectRadiusPx = 50;
+constexpr uint32_t ClickSelectDiameterPx = ClickSelectRadiusPx * 2 + 1;
+constexpr uint32_t ClickSelectPixelCount = ClickSelectDiameterPx * ClickSelectDiameterPx;
 
 void WaitFor(vk::Fence fence, vk::Device device) {
     if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
@@ -384,7 +388,7 @@ struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects = MaxSelectionNodes;
     static constexpr uint32_t BoxSelectBitsetWords = (MaxSelectableObjects + 31) / 32;
     static constexpr uint32_t ClickElementGroupSize = 256;
-    static constexpr uint32_t MaxClickElementGroups = (MaxSelectionNodes + ClickElementGroupSize - 1) / ClickElementGroupSize;
+    static constexpr uint32_t ClickSelectElementGroupCount = (ClickSelectPixelCount + ClickElementGroupSize - 1) / ClickElementGroupSize;
 
     SceneBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
         : Ctx{pd, d, instance, slots},
@@ -396,7 +400,7 @@ struct SceneBuffers {
           SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ClickResultBuffer{Ctx, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ClickElementResultBuffer{Ctx, MaxClickElementGroups * sizeof(ClickElementCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          ClickElementResultBuffer{Ctx, ClickSelectElementGroupCount * sizeof(ClickElementCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           BoxSelectBitsetBuffer{Ctx, BoxSelectBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
 
     const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
@@ -2113,27 +2117,22 @@ SPT SelectionPipelineForElement(Element element, bool xray) {
 std::optional<uint32_t> FindNearestSelectionElement(
     const SceneBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
     vk::Queue queue, vk::Fence fence, vk::Device device,
-    uint32_t selection_nodes_slot, uint32_t click_result_slot, glm::uvec2 mouse_px, uint32_t max_element_id,
+    uint32_t head_image_index, uint32_t selection_nodes_slot, uint32_t click_result_slot,
+    glm::uvec2 mouse_px, uint32_t max_element_id, Element element,
     vk::Semaphore wait_semaphore
 ) {
-    const auto *counters = reinterpret_cast<const SelectionCounters *>(buffers.SelectionCounterBuffer.GetData().data());
-    const uint32_t node_count = std::min<uint32_t>(counters->Count, SceneBuffers::MaxSelectionNodes);
-    const uint32_t group_count = (node_count + SceneBuffers::ClickElementGroupSize - 1) / SceneBuffers::ClickElementGroupSize;
-    if (group_count == 0) {
-        if (wait_semaphore) {
-            RunSelectionCompute(
-                cb, queue, fence, device, compute,
-                ClickSelectElementPushConstants{.TargetPx = mouse_px, .NodeCount = node_count, .SelectionNodesIndex = selection_nodes_slot, .ClickResultIndex = click_result_slot},
-                [](vk::CommandBuffer) {},
-                wait_semaphore
-            );
-        }
-        return {};
-    }
+    const uint32_t radius = element == Element::Face ? 0u : ClickSelectRadiusPx;
+    const uint32_t group_count = element == Element::Face ? 1u : SceneBuffers::ClickSelectElementGroupCount;
 
     RunSelectionCompute(
         cb, queue, fence, device, compute,
-        ClickSelectElementPushConstants{.TargetPx = mouse_px, .NodeCount = node_count, .SelectionNodesIndex = selection_nodes_slot, .ClickResultIndex = click_result_slot},
+        ClickSelectElementPushConstants{
+            .TargetPx = mouse_px,
+            .Radius = radius,
+            .HeadImageIndex = head_image_index,
+            .SelectionNodesIndex = selection_nodes_slot,
+            .ClickResultIndex = click_result_slot,
+        },
         [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); },
         wait_semaphore
     );
@@ -2181,6 +2180,9 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                 Draw(cb, pipeline, indices, models, pc);
             }
         } }, signal_semaphore);
+
+    // Edit selection pass overwrites the shared head image used for object selection.
+    SelectionStale = true;
 }
 
 std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<glm::uvec2, glm::uvec2> box_px) {
@@ -2249,7 +2251,8 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
     if (const auto index = FindNearestSelectionElement(
             *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
             Vk.Queue, *OneShotFence, Vk.Device,
-            Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, element_count,
+            SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult,
+            mouse_px, element_count, element,
             *SelectionReadySemaphore
         )) {
         return AnyHandle{element, *index};
@@ -2278,11 +2281,13 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         pc.SelectionCounterSlot = SelectionHandles->SelectionCounter;
         pc.ElementStateSlot = state_buffers.Vertices.Slot;
         Draw(cb, pipeline, mesh_buffers.VertexIndices, models, pc, model_index); }, *SelectionReadySemaphore);
+    SelectionStale = true;
 
     return FindNearestSelectionElement(
         *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
         Vk.Queue, *OneShotFence, Vk.Device,
-        Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult, mouse_px, vertex_count,
+        SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult,
+        mouse_px, vertex_count, Element::Vertex,
         *SelectionReadySemaphore
     );
 }
@@ -2590,7 +2595,7 @@ bool Scene::RenderViewport() {
             };
             const vk::DescriptorBufferInfo selection_counter{*Buffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
             const vk::DescriptorBufferInfo click_result{*Buffers->ClickResultBuffer, 0, sizeof(ClickResult)};
-            const vk::DescriptorBufferInfo click_element_result{*Buffers->ClickElementResultBuffer, 0, SceneBuffers::MaxClickElementGroups * sizeof(ClickElementCandidate)};
+            const vk::DescriptorBufferInfo click_element_result{*Buffers->ClickElementResultBuffer, 0, SceneBuffers::ClickSelectElementGroupCount * sizeof(ClickElementCandidate)};
             const auto &sil = Pipelines->Silhouette;
             const auto &sil_edge = Pipelines->SilhouetteEdge;
             const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};

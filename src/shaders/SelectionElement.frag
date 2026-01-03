@@ -4,10 +4,10 @@
 #include "Bindless.glsl"
 
 struct SelectionNode {
-    uvec2 Pixel;
     float Depth;
     uint ObjectId;
     uint Next;
+    uint Padding0;
 };
 
 layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
@@ -40,7 +40,6 @@ void main() {
         return;
     }
 
-    SelectionBuffers[nodes_index].Nodes[idx].Pixel = uvec2(gl_FragCoord.xy);
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
     SelectionBuffers[nodes_index].Nodes[idx].ObjectId = ElementId;
 
