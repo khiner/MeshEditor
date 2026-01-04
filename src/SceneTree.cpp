@@ -61,12 +61,12 @@ void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
 
     ClearParent(r, child);
 
-    auto &child_node = r.get<SceneNode>(child);
-    auto &parent_node = r.get<SceneNode>(parent);
-    child_node.Parent = parent;
-    // Add to parent's children list (at the beginning for simplicity)
-    child_node.NextSibling = parent_node.FirstChild;
-    parent_node.FirstChild = child;
+    const auto first_child = r.get<const SceneNode>(parent).FirstChild;
+    r.patch<SceneNode>(child, [parent, first_child](auto &n) {
+        n.Parent = parent;
+        n.NextSibling = first_child; // Add to parent's children list (at the beginning for simplicity)
+    });
+    r.patch<SceneNode>(parent, [child](auto &n) { n.FirstChild = child; });
 
     r.emplace_or_replace<ParentInverse>(child, glm::inverse(r.get<WorldMatrix>(parent).M));
 }
@@ -74,25 +74,27 @@ void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
 void ClearParent(entt::registry &r, entt::entity child) {
     if (child == entt::null || !r.all_of<SceneNode>(child)) return;
 
-    auto &child_node = r.get<SceneNode>(child);
+    const auto &child_node = r.get<const SceneNode>(child);
     const auto parent = child_node.Parent;
     if (parent == entt::null) return;
 
-    if (auto &parent_node = r.get<SceneNode>(parent);
+    const auto next_sibling = child_node.NextSibling;
+    if (const auto &parent_node = r.get<const SceneNode>(parent);
         parent_node.FirstChild == child) {
-        parent_node.FirstChild = child_node.NextSibling;
+        r.patch<SceneNode>(parent, [next_sibling](auto &n) { n.FirstChild = next_sibling; });
     } else {
         for (const auto sibling : Children(&r, parent)) {
-            if (auto &sibling_node = r.get<SceneNode>(sibling);
-                sibling_node.NextSibling == child) {
-                sibling_node.NextSibling = child_node.NextSibling;
+            if (r.get<const SceneNode>(sibling).NextSibling == child) {
+                r.patch<SceneNode>(sibling, [next_sibling](auto &n) { n.NextSibling = next_sibling; });
                 break;
             }
         }
     }
 
-    child_node.Parent = entt::null;
-    child_node.NextSibling = entt::null;
+    r.patch<SceneNode>(child, [](auto &n) {
+        n.Parent = entt::null;
+        n.NextSibling = entt::null;
+    });
     r.remove<ParentInverse>(child);
     UpdateWorldMatrix(r, child);
 }

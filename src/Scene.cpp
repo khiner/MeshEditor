@@ -260,21 +260,23 @@ void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
         return;
     }
 
-    std::visit(
-        overloaded{
-            [&](RotationQuat &v_ui) { v_ui.Value = v; },
-            [&](RotationEuler &v_ui) {
-                float x, y, z;
-                glm::extractEulerAngleXYZ(glm::mat4_cast(v), x, y, z);
-                v_ui.Value = glm::degrees(vec3{x, y, z});
+    r.patch<RotationUiVariant>(e, [&](auto &rotation_ui) {
+        std::visit(
+            overloaded{
+                [&](RotationQuat &v_ui) { v_ui.Value = v; },
+                [&](RotationEuler &v_ui) {
+                    float x, y, z;
+                    glm::extractEulerAngleXYZ(glm::mat4_cast(v), x, y, z);
+                    v_ui.Value = glm::degrees(vec3{x, y, z});
+                },
+                [&](RotationAxisAngle &v_ui) {
+                    const auto q = glm::normalize(v);
+                    v_ui.Value = {glm::axis(q), glm::degrees(glm::angle(q))};
+                },
             },
-            [&](RotationAxisAngle &v_ui) {
-                const auto q = glm::normalize(v);
-                v_ui.Value = {glm::axis(q), glm::degrees(glm::angle(q))};
-            },
-        },
-        r.get<RotationUiVariant>(e)
-    );
+            rotation_ui
+        );
+    });
 }
 
 void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
@@ -1196,7 +1198,7 @@ void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
 
 void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-    auto &excited_vertex = r.get<ExcitedVertex>(e);
+    const auto &excited_vertex = r.get<const ExcitedVertex>(e);
     // Orient the camera towards the excited vertex.
     const auto vh = VH(excited_vertex.Vertex);
     const auto &mesh = r.get<Mesh>(mesh_entity);
@@ -1218,7 +1220,7 @@ void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
          },
          .Select = MeshCreateInfo::SelectBehavior::None}
     );
-    excited_vertex.IndicatorEntity = indicator_entity;
+    r.patch<ExcitedVertex>(e, [indicator_entity](auto &ev) { ev.IndicatorEntity = indicator_entity; });
     UpdateMeshElementStateBuffers(mesh_entity);
 }
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
@@ -1238,19 +1240,18 @@ void UpdateVisibleObjectIds(entt::registry &r) {
     uint32_t object_id = 1;
     for (const auto e : r.view<Visible>()) {
         const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
-        auto &models = r.get<ModelsBuffer>(mesh_entity);
+        const auto &models = r.get<const ModelsBuffer>(mesh_entity);
         const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
         if (instance_count == 0) continue;
         auto &ids = ids_by_mesh[mesh_entity];
         if (ids.empty()) ids.resize(instance_count, 0);
-        const auto buffer_index = r.get<RenderInstance>(e).BufferIndex;
+        const auto buffer_index = r.get<const RenderInstance>(e).BufferIndex;
         if (buffer_index < ids.size()) ids[buffer_index] = object_id;
-        r.get<RenderInstance>(e).ObjectId = object_id;
+        r.patch<RenderInstance>(e, [object_id](auto &ri) { ri.ObjectId = object_id; });
         ++object_id;
     }
-
-    for (auto &[mesh_entity, ids] : ids_by_mesh) {
-        r.get<ModelsBuffer>(mesh_entity).ObjectIds.Update(as_bytes(ids));
+    for (const auto &[mesh_entity, ids] : ids_by_mesh) {
+        r.patch<ModelsBuffer>(mesh_entity, [&ids](auto &mb) { mb.ObjectIds.Update(as_bytes(ids)); });
     }
 }
 } // namespace
@@ -1260,34 +1261,33 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
     const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
-    auto &models = R.get<ModelsBuffer>(mesh_entity);
-    auto &model_buffer = models.Buffer;
-    auto &object_ids = models.ObjectIds;
     if (visible) {
-        auto &render_instance = R.emplace_or_replace<RenderInstance>(entity);
-        render_instance.BufferIndex = model_buffer.UsedSize / sizeof(WorldMatrix);
-        render_instance.ObjectId = 0;
-        model_buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), model_buffer.UsedSize);
-        object_ids.Insert(as_bytes(uint32_t{0}), object_ids.UsedSize); // Placeholder; actual IDs set on-demand.
+        const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldMatrix);
+        R.emplace_or_replace<RenderInstance>(entity, buffer_index, 0u);
+        R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
+            mb.Buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), mb.Buffer.UsedSize);
+            mb.ObjectIds.Insert(as_bytes(uint32_t{0}), mb.ObjectIds.UsedSize); // Placeholder; actual IDs set on-demand.
+        });
         R.emplace<Visible>(entity);
     } else {
         R.remove<Visible>(entity);
-        auto &render_instance = R.get<RenderInstance>(entity);
-        const uint old_model_index = render_instance.BufferIndex;
-        render_instance.ObjectId = 0;
-        model_buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
-        object_ids.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
+        const uint old_model_index = R.get<const RenderInstance>(entity).BufferIndex;
+        R.patch<RenderInstance>(entity, [](auto &ri) { ri.ObjectId = 0; });
+        R.patch<ModelsBuffer>(mesh_entity, [old_model_index](auto &mb) {
+            mb.Buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
+            mb.ObjectIds.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
+        });
         // Update buffer indices for all instances of this mesh that have higher indices
-        for (const auto [other_entity, mesh_instance, render_instance] : R.view<MeshInstance, RenderInstance>().each()) {
-            if (mesh_instance.MeshEntity == mesh_entity && render_instance.BufferIndex > old_model_index) {
-                --render_instance.BufferIndex;
+        for (const auto [other_entity, mesh_instance, ri] : R.view<MeshInstance, const RenderInstance>().each()) {
+            if (mesh_instance.MeshEntity == mesh_entity && ri.BufferIndex > old_model_index) {
+                R.patch<RenderInstance>(other_entity, [](auto &ri) { --ri.BufferIndex; });
             }
         }
         // Also check if the mesh entity itself is visible (it might not have MeshInstance)
         if (mesh_entity != entity) {
-            if (auto *mesh_render_instance = R.try_get<RenderInstance>(mesh_entity)) {
-                if (mesh_render_instance->BufferIndex > old_model_index) {
-                    --mesh_render_instance->BufferIndex;
+            if (const auto *mesh_ri = R.try_get<const RenderInstance>(mesh_entity)) {
+                if (mesh_ri->BufferIndex > old_model_index) {
+                    R.patch<RenderInstance>(mesh_entity, [](auto &ri) { --ri.BufferIndex; });
                 }
             }
         }
@@ -1325,9 +1325,10 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
     SetTransform(R, instance_entity, info.Transform);
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
-    auto &models = R.get<ModelsBuffer>(mesh_entity);
-    models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
-    models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
+    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
+        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
+        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
+    });
     SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
 
@@ -1389,11 +1390,10 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
         R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
     }
     R.emplace<MeshInstance>(e_new, mesh_entity);
-    {
-        auto &models = R.get<ModelsBuffer>(mesh_entity);
-        models.Buffer.Reserve(models.Buffer.UsedSize + sizeof(WorldMatrix));
-        models.ObjectIds.Reserve(models.ObjectIds.UsedSize + sizeof(uint32_t));
-    }
+    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
+        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
+        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
+    });
     SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
 
@@ -1512,24 +1512,22 @@ void Scene::SetEditMode(Element mode) {
 }
 
 void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool toggle) {
-    auto &selection = R.get<MeshSelection>(mesh_entity);
     const auto new_element = element ? element.Element : Element::None;
-    if (!toggle || selection.Element != new_element) {
-        selection = {.Element = new_element};
-    }
-    if (!element) {
-        UpdateMeshElementStateBuffers(mesh_entity);
-        return;
-    }
+    R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
+        if (!toggle || selection.Element != new_element) {
+            selection = {.Element = new_element};
+        }
+        if (!element) return;
 
-    const auto handle = *element;
-    if (auto it = find(selection.Handles, handle); toggle && it != selection.Handles.end()) {
-        selection.Handles.erase(it);
-        if (selection.ActiveHandle == handle) selection.ActiveHandle = {};
-    } else {
-        selection.Handles.emplace_back(handle);
-        selection.ActiveHandle = handle;
-    }
+        const auto handle = *element;
+        if (auto it = find(selection.Handles, handle); toggle && it != selection.Handles.end()) {
+            selection.Handles.erase(it);
+            if (selection.ActiveHandle == handle) selection.ActiveHandle = {};
+        } else {
+            selection.Handles.emplace_back(handle);
+            selection.ActiveHandle = handle;
+        }
+    });
     UpdateMeshElementStateBuffers(mesh_entity);
 }
 
@@ -1607,10 +1605,11 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
         if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
     }
 
-    auto &states = R.get<MeshElementStateBuffers>(e);
-    states.Faces.Update(as_bytes(face_states));
-    states.Edges.Update(as_bytes(edge_states));
-    states.Vertices.Update(as_bytes(vertex_states));
+    R.patch<MeshElementStateBuffers>(e, [&](auto &states) {
+        states.Faces.Update(as_bytes(face_states));
+        states.Edges.Update(as_bytes(edge_states));
+        states.Vertices.Update(as_bytes(vertex_states));
+    });
 
     SelectionStale = true;
     RequestRender();
@@ -1910,19 +1909,20 @@ void Scene::UpdateSceneUBO() {
 
 void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
     const auto &mesh = R.get<const Mesh>(mesh_entity);
-    auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
-    for (const auto element : NormalElements) {
-        if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
-            const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
-            mesh_buffers.NormalIndicators.emplace(
-                element,
-                Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
-            );
-        } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
-            Buffers->Release(mesh_buffers.NormalIndicators.at(element));
-            mesh_buffers.NormalIndicators.erase(element);
+    R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
+        for (const auto element : NormalElements) {
+            if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
+                const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
+                mesh_buffers.NormalIndicators.emplace(
+                    element,
+                    Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
+                );
+            } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
+                Buffers->Release(mesh_buffers.NormalIndicators.at(element));
+                mesh_buffers.NormalIndicators.erase(element);
+            }
         }
-    }
+    });
     if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
     } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
@@ -2946,17 +2946,20 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     bool visible = R.all_of<Visible>(active_entity);
     if (Checkbox("Visible", &visible)) SetVisible(active_entity, visible);
     if (CollapsingHeader("Transform")) {
-        bool model_changed = DragFloat3("Position", &R.get<Position>(active_entity).Value[0], 0.01f);
+        auto position = R.get<const Position>(active_entity).Value;
+        bool model_changed = DragFloat3("Position", &position[0], 0.01f);
+        if (model_changed) R.patch<Position>(active_entity, [&](auto &p) { p.Value = position; });
         // Rotation editor
         {
-            int mode_i = R.get<RotationUiVariant>(active_entity).index();
+            int mode_i = R.get<const RotationUiVariant>(active_entity).index();
             const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
             if (ImGui::Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes))) {
                 R.replace<RotationUiVariant>(active_entity, CreateVariantByIndex<RotationUiVariant>(mode_i));
-                SetRotation(R, active_entity, R.get<Rotation>(active_entity).Value);
+                SetRotation(R, active_entity, R.get<const Rotation>(active_entity).Value);
             }
         }
-        model_changed |= std::visit(
+        auto rotation_ui = R.get<const RotationUiVariant>(active_entity);
+        const bool rotation_changed = std::visit(
             overloaded{
                 [&](RotationQuat &v) {
                     if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f)) {
@@ -2985,13 +2988,20 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     return false;
                 },
             },
-            R.get<RotationUiVariant>(active_entity)
+            rotation_ui
         );
+        if (rotation_changed) {
+            R.patch<RotationUiVariant>(active_entity, [&](auto &v) { v = rotation_ui; });
+        }
+        model_changed |= rotation_changed;
 
         const bool frozen = R.all_of<Frozen>(active_entity);
         if (frozen) BeginDisabled();
         const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-        model_changed |= DragFloat3(label.c_str(), &R.get<Scale>(active_entity).Value[0], 0.01f, 0.01f, 10);
+        auto scale = R.get<const Scale>(active_entity).Value;
+        const bool scale_changed = DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
+        if (scale_changed) R.patch<Scale>(active_entity, [&](auto &s) { s.Value = scale; });
+        model_changed |= scale_changed;
         if (frozen) EndDisabled();
         if (model_changed) {
             UpdateWorldMatrix(R, active_entity);

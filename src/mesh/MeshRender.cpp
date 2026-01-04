@@ -69,6 +69,7 @@ std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entit
 
 void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldMatrix &m) {
     if (const auto i = GetModelBufferIndex(r, e)) {
-        r.get<ModelsBuffer>(r.get<MeshInstance>(e).MeshEntity).Buffer.Update(as_bytes(m), *i * sizeof(WorldMatrix));
+        const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
+        r.patch<ModelsBuffer>(mesh_entity, [&m, i](auto &mb) { mb.Buffer.Update(as_bytes(m), *i * sizeof(WorldMatrix)); });
     }
 }

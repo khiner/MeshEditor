@@ -495,8 +495,8 @@ void AcousticScene::SetImpactFrames(entt::entity e, std::vector<std::vector<floa
 void AcousticScene::SetVertex(entt::entity e, uint vertex) {
     Stop(e);
     // Update vertex in all present models.
-    if (auto *sample_object = R.try_get<SampleSoundObject>(e)) {
-        sample_object->Excitable.SelectedVertexIndex = vertex;
+    if (R.all_of<SampleSoundObject>(e)) {
+        R.patch<SampleSoundObject>(e, [vertex](auto &so) { so.Excitable.SelectedVertexIndex = vertex; });
     }
     if (R.all_of<ModalSoundObject>(e)) {
         Dsp->Set(ExciteIndexParamName, vertex);
@@ -506,8 +506,8 @@ void AcousticScene::SetVertexForce(entt::entity e, float force) {
     const auto model = R.get<SoundObjectModel>(e);
     // Update vertex force in the active model.
     if (model == SoundObjectModel::Samples && force > 0) {
-        if (auto *sample_object = R.try_get<SampleSoundObject>(e)) {
-            sample_object->Frame = 0;
+        if (R.all_of<SampleSoundObject>(e)) {
+            R.patch<SampleSoundObject>(e, [](auto &so) { so.Frame = 0; });
         }
     } else if (model == SoundObjectModel::Modal && R.all_of<ModalSoundObject>(e)) {
         Dsp->Set(GateParamName, force);
