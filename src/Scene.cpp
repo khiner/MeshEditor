@@ -382,13 +382,14 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 }
 } // namespace
 
-// Owns render-only/generated data (e.g., SceneUBO/indicators/overlays/selection fragments) separate from mesh storage.
+// Owns render-only/generated data (e.g., SceneUBO/indicators/overlays/selection fragments).
 struct SceneBuffers {
-    static constexpr uint32_t MaxSelectionNodes = 4'000'000;
-    static constexpr uint32_t MaxSelectableObjects = MaxSelectionNodes;
-    static constexpr uint32_t BoxSelectBitsetWords = (MaxSelectableObjects + 31) / 32;
-    static constexpr uint32_t ClickElementGroupSize = 256;
-    static constexpr uint32_t ClickSelectElementGroupCount = (ClickSelectPixelCount + ClickElementGroupSize - 1) / ClickElementGroupSize;
+    static constexpr uint32_t MaxSelectableObjects{100'000};
+    static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableObjects + 31) / 32};
+    static constexpr uint32_t ClickElementGroupSize{256};
+    static constexpr uint32_t ClickSelectElementGroupCount{(ClickSelectPixelCount + ClickElementGroupSize - 1) / ClickElementGroupSize};
+    static constexpr uint32_t SelectionNodesPerPixel{10};
+    static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
 
     SceneBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
         : Ctx{pd, d, instance, slots},
@@ -397,7 +398,7 @@ struct SceneBuffers {
           EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           SceneUBO{Ctx, sizeof(SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::Uniform},
-          SelectionNodeBuffer{Ctx, MaxSelectionNodes * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+          SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ClickResultBuffer{Ctx, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ClickElementResultBuffer{Ctx, ClickSelectElementGroupCount * sizeof(ClickElementCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
@@ -440,10 +441,21 @@ struct SceneBuffers {
         }
     }
 
+    void ResizeSelectionNodeBuffer(vk::Extent2D extent) {
+        const uint64_t pixels = uint64_t(extent.width) * extent.height;
+        const uint64_t desired_nodes = pixels == 0 ? 1 : pixels * SelectionNodesPerPixel;
+        const uint64_t max_nodes = std::max<uint64_t>(1, MaxSelectionNodeBytes / sizeof(SelectionNode));
+        const uint32_t final_count = std::min<uint64_t>(std::min(desired_nodes, max_nodes), std::numeric_limits<uint32_t>::max());
+        if (final_count == SelectionNodeCapacity) return;
+        SelectionNodeCapacity = final_count;
+        SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    }
+
     mvk::BufferContext Ctx;
     BufferArena<Vertex3D> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
     mvk::Buffer SceneUBO;
+    uint32_t SelectionNodeCapacity{1};
     mvk::Buffer SelectionNodeBuffer;
     // CPU readback buffers (host-visible)
     mvk::Buffer SelectionCounterBuffer, ClickResultBuffer, ClickElementResultBuffer, BoxSelectBitsetBuffer;
@@ -2123,7 +2135,6 @@ std::optional<uint32_t> FindNearestSelectionElement(
 ) {
     const uint32_t radius = element == Element::Face ? 0u : ClickSelectRadiusPx;
     const uint32_t group_count = element == Element::Face ? 1u : SceneBuffers::ClickSelectElementGroupCount;
-
     RunSelectionCompute(
         cb, queue, fence, device, compute,
         ClickSelectElementPushConstants{
@@ -2586,6 +2597,7 @@ bool Scene::RenderViewport() {
         UpdateSceneUBO();
         Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
         Pipelines->SetExtent(Extent);
+        Buffers->ResizeSelectionNodeBuffer(Extent);
         {
             const Timer timer{"RenderViewport->UpdateSelectionDescriptorSets"};
             const auto head_image_info = vk::DescriptorImageInfo{
@@ -2615,6 +2627,10 @@ bool Scene::RenderViewport() {
                 },
                 {}
             );
+        }
+        if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
+            Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
+            Buffers->Ctx.ClearDeferredDescriptorUpdates();
         }
         CommandBufferDirty = true;
     }
