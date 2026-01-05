@@ -1147,6 +1147,10 @@ void Scene::OnCreateSelected(entt::registry &, entt::entity e) {
 void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
     if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
         const auto mesh_entity = mesh_instance->MeshEntity;
+        // Check if any other selected entity uses the same mesh
+        for (const auto [other_e, other_mi] : r.view<MeshInstance, Selected>().each()) {
+            if (other_e != e && other_mi.MeshEntity == mesh_entity) return;
+        }
         if (auto *buffers = r.try_get<MeshBuffers>(mesh_entity)) {
             for (auto &[_, buffers] : buffers->NormalIndicators) Buffers->Release(buffers);
             buffers->NormalIndicators.clear();
@@ -1312,12 +1316,6 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
         );
         R.emplace<MeshBuffers>(mesh_entity, vertices, face_indices, edge_indices, vertex_indices);
         R.emplace<MeshSelection>(mesh_entity);
-        if (ShowBoundingBoxes) {
-            R.emplace<BoundingBoxesBuffers>(
-                mesh_entity,
-                Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge)
-            );
-        }
     }
 
     const auto instance_entity = R.create();
@@ -1451,13 +1449,7 @@ void Scene::ClearMeshes() {
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
     const auto &mesh = R.get<const Mesh>(e);
     Meshes.SetPositions(mesh, positions);
-    for (auto &[element, buffers] : R.get<MeshBuffers>(e).NormalIndicators) {
-        Buffers->VertexBuffer.Update(buffers.Vertices, MeshRender::CreateNormalVertices(mesh, element));
-        Buffers->GetIndexBuffer(buffers.IndexType).Update(buffers.Indices.Range, MeshRender::CreateNormalIndices(mesh, element));
-    }
-    if (auto buffers = R.try_get<BoundingBoxesBuffers>(e)) { // todo manage in listeners
-        Buffers->VertexBuffer.Update(buffers->Buffers.Vertices, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
-    }
+    UpdateEntitySelectionOverlays(e);
     UpdateMeshElementStateBuffers(e);
 }
 
@@ -1486,7 +1478,6 @@ void Scene::Destroy(entt::entity e) {
         );
         if (!has_instances) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
-            if (auto *buffers = R.try_get<BoundingBoxesBuffers>(mesh_entity)) Buffers->Release(buffers->Buffers);
             R.destroy(mesh_entity);
         }
     }
@@ -1911,21 +1902,30 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
     const auto &mesh = R.get<const Mesh>(mesh_entity);
     R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
         for (const auto element : NormalElements) {
-            if (ShownNormalElements.contains(element) && !mesh_buffers.NormalIndicators.contains(element)) {
-                const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
-                mesh_buffers.NormalIndicators.emplace(
-                    element,
-                    Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
-                );
-            } else if (!ShownNormalElements.contains(element) && mesh_buffers.NormalIndicators.contains(element)) {
+            if (ShownNormalElements.contains(element)) {
+                if (!mesh_buffers.NormalIndicators.contains(element)) {
+                    const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
+                    mesh_buffers.NormalIndicators.emplace(
+                        element,
+                        Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
+                    );
+                } else {
+                    Buffers->VertexBuffer.Update(mesh_buffers.NormalIndicators.at(element).Vertices, MeshRender::CreateNormalVertices(mesh, element));
+                }
+            } else if (mesh_buffers.NormalIndicators.contains(element)) {
                 Buffers->Release(mesh_buffers.NormalIndicators.at(element));
                 mesh_buffers.NormalIndicators.erase(element);
             }
         }
     });
-    if (ShowBoundingBoxes && !R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-        R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
-    } else if (!ShowBoundingBoxes && R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
+
+    if (ShowBoundingBoxes) {
+        if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
+            R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
+        } else {
+            Buffers->VertexBuffer.Update(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers.Vertices, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
+        }
+    } else if (R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
         Buffers->Release(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
         R.remove<BoundingBoxesBuffers>(mesh_entity);
     }
