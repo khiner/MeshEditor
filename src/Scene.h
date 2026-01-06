@@ -170,14 +170,10 @@ struct Scene {
     void InvalidateCommandBuffer() { CommandBufferDirty = NeedsRender = true; }
     void RequestRender() { NeedsRender = true; }
 
-    void OnCreateSelected(entt::registry &, entt::entity);
-    void OnDestroySelected(entt::registry &, entt::entity);
-    void OnCreateMeshSelection(entt::registry &, entt::entity);
-    void OnUpdateMeshSelection(entt::registry &, entt::entity);
-    void OnCreateExcitable(entt::registry &, entt::entity);
-    void OnUpdateExcitable(entt::registry &, entt::entity);
-    void OnDestroyExcitable(entt::registry &, entt::entity);
-    void OnCreateExcitedVertex(entt::registry &, entt::entity);
+    // Process deferred component events (reactive storage pattern)
+    void ProcessDeferredEvents();
+
+    // temp: Immediate handler needed for ExcitedVertex destroy (captures indicator entity before removal)
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
     std::string DebugBufferHeapUsage() const;

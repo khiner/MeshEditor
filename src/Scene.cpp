@@ -1080,16 +1080,23 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       )},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
       Meshes{Buffers->Ctx} {
-    // EnTT listeners
-    R.on_construct<Selected>().connect<&Scene::OnCreateSelected>(*this);
-    R.on_destroy<Selected>().connect<&Scene::OnDestroySelected>(*this);
-    R.on_construct<MeshSelection>().connect<&Scene::OnCreateMeshSelection>(*this);
-    R.on_update<MeshSelection>().connect<&Scene::OnUpdateMeshSelection>(*this);
-    R.on_construct<Excitable>().connect<&Scene::OnCreateExcitable>(*this);
-    R.on_update<Excitable>().connect<&Scene::OnUpdateExcitable>(*this);
-    R.on_destroy<Excitable>().connect<&Scene::OnDestroyExcitable>(*this);
+    // Reactive storage subscriptions for deferred once-per-frame processing
+    using namespace entt::literals;
 
-    R.on_construct<ExcitedVertex>().connect<&Scene::OnCreateExcitedVertex>(*this);
+    R.storage<entt::reactive>("selected_changes"_hs)
+        .on_construct<Selected>()
+        .on_destroy<Selected>();
+    R.storage<entt::reactive>("mesh_selection_changes"_hs)
+        .on_construct<MeshSelection>()
+        .on_update<MeshSelection>();
+    R.storage<entt::reactive>("excitable_changes"_hs)
+        .on_construct<Excitable>()
+        .on_update<Excitable>()
+        .on_destroy<Excitable>();
+    R.storage<entt::reactive>("excited_vertex_changes"_hs)
+        .on_construct<ExcitedVertex>()
+        .on_destroy<ExcitedVertex>();
+    // temp: Keep immediate handler for ExcitedVertex destroy (needs to capture indicator entity before removal)
     R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
 
     UpdateEdgeColors();
@@ -1141,98 +1148,140 @@ void Scene::LoadIcons(vk::Device device) {
     Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/transform.svg");
 }
 
-void Scene::OnCreateSelected(entt::registry &, entt::entity e) {
-    UpdateEntitySelectionOverlays(R.get<MeshInstance>(e).MeshEntity);
-}
-void Scene::OnDestroySelected(entt::registry &r, entt::entity e) {
-    if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
-        const auto mesh_entity = mesh_instance->MeshEntity;
-        // Check if any other selected entity uses the same mesh
-        for (const auto [other_e, other_mi] : r.view<MeshInstance, Selected>().each()) {
-            if (other_e != e && other_mi.MeshEntity == mesh_entity) return;
+void Scene::ProcessDeferredEvents() {
+    using namespace entt::literals;
+
+    std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
+    { // Selected changes
+        auto &selected_tracker = R.storage<entt::reactive>("selected_changes"_hs);
+        for (auto instance_entity : selected_tracker) {
+            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
+                const auto mesh_entity = mi->MeshEntity;
+                if (R.all_of<Selected>(instance_entity)) {
+                    // Construct: mark mesh for overlay update
+                    dirty_overlay_meshes.insert(mesh_entity);
+                } else {
+                    // Destroy: check if mesh has no more selected instances
+                    bool has_selected = false;
+                    for (const auto [e, other_mi] : R.view<MeshInstance, Selected>().each()) {
+                        if (other_mi.MeshEntity == mesh_entity) {
+                            has_selected = true;
+                            break;
+                        }
+                    }
+                    if (!has_selected) {
+                        // Clean up overlays for this mesh
+                        if (auto *buffers = R.try_get<MeshBuffers>(mesh_entity)) {
+                            for (auto &[_, rb] : buffers->NormalIndicators) Buffers->Release(rb);
+                            buffers->NormalIndicators.clear();
+                        }
+                        if (auto *bbox = R.try_get<BoundingBoxesBuffers>(mesh_entity)) {
+                            Buffers->Release(bbox->Buffers);
+                        }
+                        R.remove<BoundingBoxesBuffers>(mesh_entity);
+                    }
+                }
+            }
         }
-        if (auto *buffers = r.try_get<MeshBuffers>(mesh_entity)) {
-            for (auto &[_, buffers] : buffers->NormalIndicators) Buffers->Release(buffers);
-            buffers->NormalIndicators.clear();
+        selected_tracker.clear();
+    }
+    { // MeshSelection changes
+        auto &mesh_selection_tracker = R.storage<entt::reactive>("mesh_selection_changes"_hs);
+        for (auto mesh_entity : mesh_selection_tracker) {
+            // MeshSelection is on mesh entities directly
+            if (R.all_of<MeshSelection>(mesh_entity)) {
+                // Construct: ensure MeshElementStateBuffers exist
+                if (!R.all_of<MeshElementStateBuffers>(mesh_entity)) {
+                    const auto &mesh = R.get<Mesh>(mesh_entity);
+                    R.emplace<MeshElementStateBuffers>(
+                        mesh_entity,
+                        mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.FaceCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+                        mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+                        mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
+                    );
+                }
+                dirty_element_state_meshes.insert(mesh_entity);
+            }
         }
-        if (auto *bbox_buffers = r.try_get<BoundingBoxesBuffers>(mesh_entity)) Buffers->Release(bbox_buffers->Buffers);
-        r.remove<BoundingBoxesBuffers>(mesh_entity);
+        mesh_selection_tracker.clear();
     }
+    { // Excitable changes
+        auto &excitable_tracker = R.storage<entt::reactive>("excitable_changes"_hs);
+        for (auto instance_entity : excitable_tracker) {
+            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
+                dirty_element_state_meshes.insert(mi->MeshEntity);
+            }
+
+            if (R.all_of<Excitable>(instance_entity)) {
+                // Construct/Update: ensure excite mode is available
+                InteractionModes.insert(InteractionMode::Excite);
+            }
+        }
+        // After processing all, check if we need to remove excite mode
+        if (R.storage<Excitable>().empty()) {
+            if (InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+            InteractionModes.erase(InteractionMode::Excite);
+        } else if (!excitable_tracker.empty()) {
+            // If we just added excitables, switch to excite mode
+            SetInteractionMode(InteractionMode::Excite);
+        }
+        excitable_tracker.clear();
+    }
+    { // ExcitedVertex changes
+        auto &excited_vertex_tracker = R.storage<entt::reactive>("excited_vertex_changes"_hs);
+        for (auto instance_entity : excited_vertex_tracker) {
+            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
+                dirty_element_state_meshes.insert(mi->MeshEntity);
+            }
+
+            if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
+                // Construct: create indicator if not exists
+                if (ev->IndicatorEntity == entt::null) {
+                    const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
+                    const auto &mesh = R.get<Mesh>(mesh_entity);
+                    const auto &transform = R.get<WorldMatrix>(instance_entity).M;
+                    const auto vh = VH(ev->Vertex);
+                    const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
+
+                    // Orient camera towards excited vertex
+                    Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
+
+                    // Create indicator arrow
+                    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
+                    const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
+                    const float scale_factor = 0.1f * glm::length(bbox.Max - bbox.Min);
+                    const auto [_, indicator_entity] = AddMesh(
+                        Meshes.CreateMesh(Arrow()),
+                        {.Name = "Excite vertex indicator",
+                         .Transform = {
+                             .P = vertex_pos + 0.05f * scale_factor * normal,
+                             .R = glm::rotation(World.Up, normal),
+                             .S = vec3{scale_factor},
+                         },
+                         .Select = MeshCreateInfo::SelectBehavior::None}
+                    );
+                    R.patch<ExcitedVertex>(instance_entity, [indicator_entity](auto &e) { e.IndicatorEntity = indicator_entity; });
+                }
+            }
+            // Note: ExcitedVertex destroy is handled by immediate callback (OnDestroyExcitedVertex)
+            // which captures the indicator entity before component removal
+        }
+        excited_vertex_tracker.clear();
+    }
+
+    // Apply batched updates
+    for (const auto mesh_entity : dirty_overlay_meshes) {
+        if (R.valid(mesh_entity)) UpdateEntitySelectionOverlays(mesh_entity);
+    }
+    for (const auto mesh_entity : dirty_element_state_meshes) {
+        if (R.valid(mesh_entity)) UpdateMeshElementStateBuffers(mesh_entity);
+    }
+    if (!dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) InvalidateCommandBuffer();
 }
 
-void Scene::OnCreateMeshSelection(entt::registry &r, entt::entity e) {
-    if (r.all_of<MeshElementStateBuffers>(e)) {
-        UpdateMeshElementStateBuffers(e);
-    } else {
-        const auto &mesh = r.get<Mesh>(e);
-        R.emplace<MeshElementStateBuffers>(
-            e,
-            mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.FaceCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-            mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-            mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
-        );
-    }
-}
-void Scene::OnUpdateMeshSelection(entt::registry &, entt::entity e) {
-    UpdateMeshElementStateBuffers(e);
-}
-
-void Scene::OnCreateExcitable(entt::registry &r, entt::entity e) {
-    const bool was_excite = InteractionMode == InteractionMode::Excite;
-    InteractionModes.insert(InteractionMode::Excite);
-    SetInteractionMode(InteractionMode::Excite);
-    UpdateMeshElementStateBuffers(r.get<MeshInstance>(e).MeshEntity);
-    if (was_excite) InvalidateCommandBuffer();
-}
-void Scene::OnUpdateExcitable(entt::registry &r, entt::entity e) {
-    UpdateMeshElementStateBuffers(r.get<MeshInstance>(e).MeshEntity);
-}
-void Scene::OnDestroyExcitable(entt::registry &r, entt::entity e) {
-    const bool was_excite = InteractionMode == InteractionMode::Excite;
-    const bool last_excitable = r.storage<Excitable>().size() == 1;
-    if (r.storage<Excitable>().size() == 1) {
-        if (InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
-        InteractionModes.erase(InteractionMode::Excite);
-    }
-    if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
-        UpdateMeshElementStateBuffers(mesh_instance->MeshEntity);
-    }
-    if (was_excite && !last_excitable) InvalidateCommandBuffer();
-}
-
-void Scene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
-    const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-    const auto &excited_vertex = r.get<const ExcitedVertex>(e);
-    // Orient the camera towards the excited vertex.
-    const auto vh = VH(excited_vertex.Vertex);
-    const auto &mesh = r.get<Mesh>(mesh_entity);
-    const auto &transform = r.get<WorldMatrix>(e).M;
-    const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
-    Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
-
-    // Create vertex indicator arrow pointing at the excited vertex.
-    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
-    const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
-    const float scale_factor = 0.1f * glm::length(bbox.Max - bbox.Min);
-    const auto [_, indicator_entity] = AddMesh(
-        Meshes.CreateMesh(Arrow()),
-        {.Name = "Excite vertex indicator",
-         .Transform = {
-             .P = vertex_pos + 0.05f * scale_factor * normal,
-             .R = glm::rotation(World.Up, normal),
-             .S = vec3{scale_factor},
-         },
-         .Select = MeshCreateInfo::SelectBehavior::None}
-    );
-    r.patch<ExcitedVertex>(e, [indicator_entity](auto &ev) { ev.IndicatorEntity = indicator_entity; });
-    UpdateMeshElementStateBuffers(mesh_entity);
-}
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
     if (const auto indicator = r.get<ExcitedVertex>(e).IndicatorEntity; indicator != entt::null) {
         Destroy(indicator);
-    }
-    if (const auto *mesh_instance = r.try_get<MeshInstance>(e)) {
-        UpdateMeshElementStateBuffers(mesh_instance->MeshEntity);
     }
 }
 
@@ -2582,6 +2631,8 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 };
 
 bool Scene::RenderViewport() {
+    ProcessDeferredEvents();
+
     if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
         const Timer timer{"RenderViewport->UpdateBufferDescriptorSets"};
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
