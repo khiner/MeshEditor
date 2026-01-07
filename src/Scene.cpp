@@ -163,14 +163,12 @@ void Scene::Select(entt::entity e) {
         R.emplace<Active>(e);
         R.emplace<Selected>(e);
     }
-    InvalidateCommandBuffer();
 }
 void Scene::ToggleSelected(entt::entity e) {
     if (e == entt::null) return;
 
     if (R.all_of<Selected>(e)) R.remove<Selected>(e);
     else R.emplace_or_replace<Selected>(e);
-    InvalidateCommandBuffer();
 }
 
 std::vector<Vertex3D> CreateBoxVertices(const BBox &box) {
@@ -1086,6 +1084,13 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>("selected_changes"_hs)
         .on_construct<Selected>()
         .on_destroy<Selected>();
+    R.storage<entt::reactive>("visible_changes"_hs)
+        .on_construct<Visible>()
+        .on_destroy<Visible>();
+    R.storage<entt::reactive>("active_changes"_hs)
+        .on_construct<Active>()
+        .on_destroy<Active>();
+
     R.storage<entt::reactive>("mesh_selection_changes"_hs)
         .on_construct<MeshSelection>()
         .on_update<MeshSelection>();
@@ -1151,9 +1156,12 @@ void Scene::LoadIcons(vk::Device device) {
 void Scene::ProcessDeferredEvents() {
     using namespace entt::literals;
 
+    bool structural_change = false; // Track if command buffer needs re-recording
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
+
     { // Selected changes
         auto &selected_tracker = R.storage<entt::reactive>("selected_changes"_hs);
+        if (!selected_tracker.empty()) structural_change = true;
         for (auto instance_entity : selected_tracker) {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 const auto mesh_entity = mi->MeshEntity;
@@ -1184,6 +1192,16 @@ void Scene::ProcessDeferredEvents() {
             }
         }
         selected_tracker.clear();
+    }
+    { // Visible changes
+        auto &visible_tracker = R.storage<entt::reactive>("visible_changes"_hs);
+        if (!visible_tracker.empty()) structural_change = true;
+        visible_tracker.clear();
+    }
+    { // Active changes
+        auto &active_tracker = R.storage<entt::reactive>("active_changes"_hs);
+        if (!active_tracker.empty()) structural_change = true;
+        active_tracker.clear();
     }
     { // MeshSelection changes
         auto &mesh_selection_tracker = R.storage<entt::reactive>("mesh_selection_changes"_hs);
@@ -1276,7 +1294,12 @@ void Scene::ProcessDeferredEvents() {
     for (const auto mesh_entity : dirty_element_state_meshes) {
         if (R.valid(mesh_entity)) UpdateMeshElementStateBuffers(mesh_entity);
     }
-    if (!dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) InvalidateCommandBuffer();
+
+    // Structural changes require command buffer re-recording
+    if (structural_change || !dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) {
+        CommandBufferDirty = true;
+        NeedsRender = true;
+    }
 }
 
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
@@ -1346,7 +1369,6 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         }
     }
     UpdateVisibleObjectIds(R);
-    InvalidateCommandBuffer();
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
@@ -2554,7 +2576,6 @@ void Scene::Interact() {
                 const auto selected_entities = RunBoxSelect(*box_px);
                 R.clear<Selected>();
                 for (const auto e : selected_entities) R.emplace<Selected>(e);
-                InvalidateCommandBuffer();
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
             BoxSelectStart.reset();
@@ -2605,7 +2626,6 @@ void Scene::Interact() {
                 R.clear<Active>();
                 R.emplace<Active>(intersected);
                 R.emplace_or_replace<Selected>(intersected);
-                InvalidateCommandBuffer();
             }
         } else if (intersected != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
             Select(intersected);
