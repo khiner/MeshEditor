@@ -195,6 +195,9 @@ private:
     struct SelectionSlotHandles;
     std::unique_ptr<SelectionSlotHandles> SelectionHandles;
 
+    struct EntityDestroyTracker;
+    std::unique_ptr<EntityDestroyTracker> DestroyTracker;
+
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 

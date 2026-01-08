@@ -1058,6 +1058,18 @@ struct Scene::SelectionSlotHandles {
     uint32_t HeadImage, SelectionCounter, ClickResult, ClickElementResult, BoxResult, ObjectIdSampler, DepthSampler, SilhouetteSampler;
 };
 
+// Unmanaged reactive storage to track entity destruction.
+// Unlike managed storage (via R.storage<entt::reactive>()), this keeps entities after destruction
+// until manually cleared, allowing ProcessDeferredEvents to detect that entities were deleted.
+struct Scene::EntityDestroyTracker {
+    entt::storage_for_t<entt::reactive> Storage;
+
+    void Bind(entt::registry &r) {
+        Storage.bind(r);
+        Storage.on_destroy<Visible>();
+    }
+};
+
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : Vk{vc},
       R{r},
@@ -1072,6 +1084,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
       Slots{std::make_unique<DescriptorSlots>(Vk.Device, MakeBindlessConfig(Vk.PhysicalDevice))},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
+      DestroyTracker{std::make_unique<EntityDestroyTracker>()},
       Pipelines{std::make_unique<ScenePipelines>(
           Vk.Device, Vk.PhysicalDevice,
           Slots->GetSetLayout(), Slots->GetSet()
@@ -1103,6 +1116,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_destroy<ExcitedVertex>();
     // temp: Keep immediate handler for ExcitedVertex destroy (needs to capture indicator entity before removal)
     R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
+
+    DestroyTracker->Bind(R);
 
     UpdateEdgeColors();
     UpdateSceneUBO();
@@ -1202,6 +1217,10 @@ void Scene::ProcessDeferredEvents() {
         auto &active_tracker = R.storage<entt::reactive>("active_changes"_hs);
         if (!active_tracker.empty()) structural_change = true;
         active_tracker.clear();
+    }
+    { // Entity destruction
+        if (!DestroyTracker->Storage.empty()) structural_change = true;
+        DestroyTracker->Storage.clear();
     }
     { // MeshSelection changes
         auto &mesh_selection_tracker = R.storage<entt::reactive>("mesh_selection_changes"_hs);
@@ -1417,7 +1436,6 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
             break;
     }
 
-    InvalidateCommandBuffer();
     return {mesh_entity, instance_entity};
 }
 
@@ -1469,7 +1487,6 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
     if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
     else if (info->Select == MeshCreateInfo::SelectBehavior::Exclusive) Select(e_new);
 
-    InvalidateCommandBuffer();
     return e_new;
 }
 
@@ -1514,7 +1531,6 @@ void Scene::ClearMeshes() {
     std::vector<entt::entity> entities;
     for (const auto e : R.view<MeshInstance>()) entities.emplace_back(e);
     for (const auto e : entities) Destroy(e);
-    InvalidateCommandBuffer();
 }
 
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
@@ -1552,8 +1568,6 @@ void Scene::Destroy(entt::entity e) {
             R.destroy(mesh_entity);
         }
     }
-
-    InvalidateCommandBuffer();
 }
 
 void Scene::SetInteractionMode(::InteractionMode mode) {
@@ -1570,7 +1584,6 @@ void Scene::SetEditMode(Element mode) {
     for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
         R.replace<MeshSelection>(e, MeshSelection{EditMode, ConvertSelectionElement(selection, mesh, EditMode), std::nullopt});
     }
-    InvalidateCommandBuffer();
 }
 
 void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool toggle) {
