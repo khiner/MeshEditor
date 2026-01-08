@@ -64,6 +64,11 @@ struct SceneUBO {
     vec4 ActiveColor{0, 0, 0, 0};
 };
 
+// Tracks transform at start of gizmo manipulation. If present, actively manipulating.
+struct StartTransform {
+    Transform T;
+};
+
 enum class ShaderPipelineType {
     Fill,
     Line,
@@ -1114,6 +1119,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>("excited_vertex_changes"_hs)
         .on_construct<ExcitedVertex>()
         .on_destroy<ExcitedVertex>();
+    R.storage<entt::reactive>("models_buffer_changes"_hs)
+        .on_update<ModelsBuffer>();
+    R.storage<entt::reactive>("start_transform_changes"_hs)
+        .on_construct<StartTransform>()
+        .on_destroy<StartTransform>();
     // temp: Keep immediate handler for ExcitedVertex destroy (needs to capture indicator entity before removal)
     R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
 
@@ -1306,6 +1316,18 @@ void Scene::ProcessDeferredEvents() {
         excited_vertex_tracker.clear();
     }
 
+    bool models_buffer_changed = false;
+    { // ModelsBuffer changes
+        auto &models_tracker = R.storage<entt::reactive>("models_buffer_changes"_hs);
+        if (!models_tracker.empty()) models_buffer_changed = true;
+        models_tracker.clear();
+    }
+    { // StartTransform changes (manipulation state - silhouette push constant requires re-record)
+        auto &start_transform_tracker = R.storage<entt::reactive>("start_transform_changes"_hs);
+        if (!start_transform_tracker.empty()) structural_change = true;
+        start_transform_tracker.clear();
+    }
+
     // Apply batched updates
     for (const auto mesh_entity : dirty_overlay_meshes) {
         if (R.valid(mesh_entity)) UpdateEntitySelectionOverlays(mesh_entity);
@@ -1314,9 +1336,10 @@ void Scene::ProcessDeferredEvents() {
         if (R.valid(mesh_entity)) UpdateMeshElementStateBuffers(mesh_entity);
     }
 
-    // Structural changes require command buffer re-recording
     if (structural_change || !dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) {
         CommandBufferDirty = true;
+        NeedsRender = true;
+    } else if (models_buffer_changed) {
         NeedsRender = true;
     }
 }
@@ -2845,11 +2868,6 @@ void Scene::RenderOverlay() {
         // Transform all root selected entities (whose parent is not also selected) around their average position,
         // using the active entity's rotation/scale.
         // Non-root selected entities already follow their parent's transform.
-        struct StartTransform {
-            Transform T;
-        };
-        const auto start_transform_view = R.view<const StartTransform>();
-
         const auto is_parent_selected = [&](entt::entity e) {
             if (const auto *node = R.try_get<SceneNode>(e)) {
                 return node->Parent != entt::null && R.all_of<Selected>(node->Parent);
@@ -2863,6 +2881,7 @@ void Scene::RenderOverlay() {
         const auto active_entity = FindActiveEntity(R);
         const auto active_transform = active_entity != entt::null ? GetTransform(R, active_entity) : Transform{};
         const auto p = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
+        const auto start_transform_view = R.view<const StartTransform>();
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
                 MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
@@ -2887,10 +2906,8 @@ void Scene::RenderOverlay() {
                     }
                 );
             }
-            InvalidateCommandBuffer();
         } else if (!start_transform_view.empty()) {
             R.clear<StartTransform>();
-            InvalidateCommandBuffer(); // No longer manipulating - silhouette color changes.
         }
     }
     { // Orientation gizmo
@@ -2909,8 +2926,7 @@ void Scene::RenderOverlay() {
 
         // Dashed outline
         static constexpr auto outline_color{IM_COL32(255, 255, 255, 200)};
-        static constexpr float dash_size{4};
-        static constexpr float gap_size{4};
+        static constexpr float dash_size{4}, gap_size{4};
         // Top
         for (float x = box_min.x; x < box_max.x; x += dash_size + gap_size) {
             dl.AddLine({x, box_min.y}, {glm::min(x + dash_size, box_max.x), box_min.y}, outline_color, 1.0f);
@@ -3089,7 +3105,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (frozen) EndDisabled();
         if (model_changed) {
             UpdateWorldMatrix(R, active_entity);
-            InvalidateCommandBuffer();
         }
         Spacing();
         {
