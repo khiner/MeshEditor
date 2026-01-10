@@ -167,8 +167,6 @@ struct Scene {
     void RecordTransferCommandBuffer();
 #endif
     void RecordRenderCommandBuffer();
-    void InvalidateCommandBuffer() { CommandBufferDirty = NeedsRender = true; }
-    void RequestRender() { NeedsRender = true; }
 
     // Process deferred component events (reactive storage pattern)
     void ProcessDeferredEvents();
@@ -198,31 +196,25 @@ private:
     struct EntityDestroyTracker;
     std::unique_ptr<EntityDestroyTracker> DestroyTracker;
 
+    entt::entity SettingsEntity{null_entity}; // Singleton for SceneSettings component
+
     Camera Camera{CreateDefaultCamera()};
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
     vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
 
-    ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
-    bool SmoothShading{false}; // true = vertex normals (smooth), false = face normals (flat)
-    ColorMode ColorMode{ColorMode::Mesh};
-
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
-    InteractionMode InteractionMode{InteractionMode::Object};
     he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
     std::vector<uint32_t> BoxSelectZeroBits;
 
     vk::Extent2D Extent;
-    vk::ClearColorValue BackgroundColor{0.25, 0.25, 0.25, 1.f};
     struct Colors {
         vec4 Active{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
         vec4 Selected{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
     };
-
     Colors Colors;
-    uint SilhouetteEdgeWidth{1};
 
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneBuffers> Buffers;
@@ -247,11 +239,7 @@ private:
     };
     TransformIcons Icons;
 
-    bool ShowGrid{true};
-    // Selected entity render settings
-    bool ShowBoundingBoxes{false};
     static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
-    std::unordered_set<he::Element> ShownNormalElements{};
 
     bool CommandBufferDirty{false}; // Render command buffer needs re-recording.
     bool NeedsRender{false}; // Scene needs to be re-rendered (submit command buffers).
@@ -263,7 +251,7 @@ private:
         uint32_t Count;
     };
 
-    void SetInteractionMode(::InteractionMode);
+    void SetInteractionMode(InteractionMode);
     void SetEditMode(he::Element mode);
     void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
 

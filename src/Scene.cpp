@@ -69,6 +69,23 @@ struct StartTransform {
     Transform T;
 };
 
+// Scene render settings singleton component. Changes require command buffer re-recording.
+struct SceneSettings {
+    ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
+    ColorMode ColorMode{ColorMode::Mesh};
+    bool SmoothShading{false};
+    bool ShowGrid{true};
+    vk::ClearColorValue BackgroundColor{0.25f, 0.25f, 0.25f, 1.f};
+    uint32_t SilhouetteEdgeWidth{1};
+    InteractionMode InteractionMode{InteractionMode::Object};
+    bool ShowBoundingBoxes{false};
+    std::unordered_set<he::Element> ShownNormalElements{};
+};
+
+// Helper macros for SceneSettings access
+#define SETTINGS R.get<const SceneSettings>(SettingsEntity)
+#define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SettingsEntity, fn)
+
 enum class ShaderPipelineType {
     Fill,
     Line,
@@ -1124,10 +1141,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>("start_transform_changes"_hs)
         .on_construct<StartTransform>()
         .on_destroy<StartTransform>();
+    R.storage<entt::reactive>("scene_settings_changes"_hs)
+        .on_update<SceneSettings>();
     // temp: Keep immediate handler for ExcitedVertex destroy (needs to capture indicator entity before removal)
     R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
 
     DestroyTracker->Bind(R);
+
+    SettingsEntity = R.create();
+    R.emplace<SceneSettings>(SettingsEntity);
 
     UpdateEdgeColors();
     UpdateSceneUBO();
@@ -1156,7 +1178,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         const float extent = float(kGrid - 1) * kSpacing;
         const vec3 center{extent * 0.5f, extent * 0.5f, extent * 0.5f};
         const vec3 position = center + vec3{extent, extent, extent};
-        Camera = ::Camera{position, center, glm::radians(60.f), 0.01f, 500.f};
+        Camera = {position, center, glm::radians(60.f), 0.01f, 500.f};
     }
 }
 
@@ -1181,12 +1203,11 @@ void Scene::LoadIcons(vk::Device device) {
 void Scene::ProcessDeferredEvents() {
     using namespace entt::literals;
 
-    bool structural_change = false; // Track if command buffer needs re-recording
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
 
     { // Selected changes
         auto &selected_tracker = R.storage<entt::reactive>("selected_changes"_hs);
-        if (!selected_tracker.empty()) structural_change = true;
+        if (!selected_tracker.empty()) CommandBufferDirty = NeedsRender = true;
         for (auto instance_entity : selected_tracker) {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 const auto mesh_entity = mi->MeshEntity;
@@ -1220,16 +1241,16 @@ void Scene::ProcessDeferredEvents() {
     }
     { // Visible changes
         auto &visible_tracker = R.storage<entt::reactive>("visible_changes"_hs);
-        if (!visible_tracker.empty()) structural_change = true;
+        if (!visible_tracker.empty()) CommandBufferDirty = NeedsRender = true;
         visible_tracker.clear();
     }
     { // Active changes
         auto &active_tracker = R.storage<entt::reactive>("active_changes"_hs);
-        if (!active_tracker.empty()) structural_change = true;
+        if (!active_tracker.empty()) CommandBufferDirty = NeedsRender = true;
         active_tracker.clear();
     }
     { // Entity destruction
-        if (!DestroyTracker->Storage.empty()) structural_change = true;
+        if (!DestroyTracker->Storage.empty()) CommandBufferDirty = NeedsRender = true;
         DestroyTracker->Storage.clear();
     }
     { // MeshSelection changes
@@ -1266,7 +1287,7 @@ void Scene::ProcessDeferredEvents() {
         }
         // After processing all, check if we need to remove excite mode
         if (R.storage<Excitable>().empty()) {
-            if (InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+            if (SETTINGS.InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!excitable_tracker.empty()) {
             // If we just added excitables, switch to excite mode
@@ -1316,16 +1337,20 @@ void Scene::ProcessDeferredEvents() {
         excited_vertex_tracker.clear();
     }
 
-    bool models_buffer_changed = false;
-    { // ModelsBuffer changes
+    { // ModelsBuffer changes (buffer data update, not structure)
         auto &models_tracker = R.storage<entt::reactive>("models_buffer_changes"_hs);
-        if (!models_tracker.empty()) models_buffer_changed = true;
+        if (!models_tracker.empty()) NeedsRender = true;
         models_tracker.clear();
     }
     { // StartTransform changes (manipulation state - silhouette push constant requires re-record)
         auto &start_transform_tracker = R.storage<entt::reactive>("start_transform_changes"_hs);
-        if (!start_transform_tracker.empty()) structural_change = true;
+        if (!start_transform_tracker.empty()) CommandBufferDirty = NeedsRender = true;
         start_transform_tracker.clear();
+    }
+    { // SceneSettings changes
+        auto &settings_tracker = R.storage<entt::reactive>("scene_settings_changes"_hs);
+        if (!settings_tracker.empty()) CommandBufferDirty = NeedsRender = true;
+        settings_tracker.clear();
     }
 
     // Apply batched updates
@@ -1336,11 +1361,8 @@ void Scene::ProcessDeferredEvents() {
         if (R.valid(mesh_entity)) UpdateMeshElementStateBuffers(mesh_entity);
     }
 
-    if (structural_change || !dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) {
-        CommandBufferDirty = true;
-        NeedsRender = true;
-    } else if (models_buffer_changed) {
-        NeedsRender = true;
+    if (!dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) {
+        CommandBufferDirty = NeedsRender = true;
     }
 }
 
@@ -1593,12 +1615,11 @@ void Scene::Destroy(entt::entity e) {
     }
 }
 
-void Scene::SetInteractionMode(::InteractionMode mode) {
-    if (InteractionMode == mode) return;
+void Scene::SetInteractionMode(InteractionMode mode) {
+    if (SETTINGS.InteractionMode == mode) return;
 
-    InteractionMode = mode;
+    PATCH_SETTINGS([mode](auto &s) { s.InteractionMode = mode; });
     for (const auto &entity : R.view<Mesh>()) UpdateMeshElementStateBuffers(entity);
-    InvalidateCommandBuffer();
 }
 void Scene::SetEditMode(Element mode) {
     if (EditMode == mode) return;
@@ -1640,7 +1661,7 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
     auto element{Element::None};
     std::vector<uint32_t> handles;
     std::optional<uint32_t> active_handle;
-    if (InteractionMode == InteractionMode::Excite) {
+    if (SETTINGS.InteractionMode == InteractionMode::Excite) {
         element = Element::Vertex;
         for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
             if (mi.MeshEntity != e) continue;
@@ -1652,7 +1673,7 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
             break;
         }
     } else if (const auto &selection = R.get<MeshSelection>(e);
-               InteractionMode == InteractionMode::Edit && selection.Element == EditMode) {
+               SETTINGS.InteractionMode == InteractionMode::Edit && selection.Element == EditMode) {
         element = selection.Element;
         handles = selection.Handles;
         active_handle = selection.ActiveHandle;
@@ -1709,8 +1730,7 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
         states.Vertices.Update(as_bytes(vertex_states));
     });
 
-    SelectionStale = true;
-    RequestRender();
+    NeedsRender = SelectionStale = true;
 }
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
@@ -1773,7 +1793,8 @@ void Scene::RecordRenderCommandBuffer() {
 
     // In Edit mode, only primary edit instance per selected mesh gets Edit visuals.
     // Other selected instances render normally with silhouettes.
-    const bool is_edit_mode = InteractionMode == InteractionMode::Edit;
+    const auto &settings = SETTINGS;
+    const bool is_edit_mode = settings.InteractionMode == InteractionMode::Edit;
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
@@ -1800,7 +1821,7 @@ void Scene::RecordRenderCommandBuffer() {
     };
 
     const bool render_silhouette = !R.view<Selected>().empty() &&
-        (InteractionMode == InteractionMode::Object || !silhouette_instances.empty());
+        (settings.InteractionMode == InteractionMode::Object || !silhouette_instances.empty());
     if (render_silhouette) { // Silhouette depth/object pass
         const auto &silhouette = Pipelines->Silhouette;
         static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
@@ -1817,7 +1838,7 @@ void Scene::RecordRenderCommandBuffer() {
         struct SilhouetteEdgeDepthObjectPushConstants {
             uint32_t SilhouetteEdgeWidth;
             uint32_t SilhouetteSamplerIndex;
-        } edge_pc{SilhouetteEdgeWidth, SelectionHandles->SilhouetteSampler};
+        } edge_pc{settings.SilhouetteEdgeWidth, SelectionHandles->SilhouetteSampler};
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
         silhouette_edo.RenderQuad(cb);
         cb.endRenderPass();
@@ -1826,7 +1847,7 @@ void Scene::RecordRenderCommandBuffer() {
     const auto &main = Pipelines->Main;
     // Main rendering pass
     {
-        const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {BackgroundColor}};
+        const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {settings.BackgroundColor}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
@@ -1840,10 +1861,10 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     { // Meshes
-        const SPT fill_pipeline = ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-        const bool is_excite_mode = InteractionMode == InteractionMode::Excite;
-        const bool show_solid = ViewportShading == ViewportShadingMode::Solid;
-        const bool show_wireframe = ViewportShading == ViewportShadingMode::Wireframe;
+        const SPT fill_pipeline = settings.ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+        const bool is_excite_mode = settings.InteractionMode == InteractionMode::Excite;
+        const bool show_solid = settings.ViewportShading == ViewportShadingMode::Solid;
+        const bool show_wireframe = settings.ViewportShading == ViewportShadingMode::Wireframe;
 
         std::unordered_set<entt::entity> excitable_mesh_entities;
         if (is_excite_mode) {
@@ -1861,7 +1882,7 @@ void Scene::RecordRenderCommandBuffer() {
                 const auto face_normal_range = Meshes.GetFaceNormalRange(mesh.GetStoreId());
                 pc.ObjectIdSlot = Meshes.GetFaceIdSlot();
                 pc.FaceIdOffset = face_id_range.Offset;
-                pc.FaceNormalSlot = SmoothShading ? InvalidSlot : Meshes.GetFaceNormalSlot();
+                pc.FaceNormalSlot = settings.SmoothShading ? InvalidSlot : Meshes.GetFaceNormalSlot();
                 pc.FaceNormalOffset = face_normal_range.Offset;
                 if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                     // Draw primary with element state first, then all without (depth LESS won't overwrite)
@@ -1947,7 +1968,7 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     // Grid lines texture
-    if (ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
+    if (settings.ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
 
     cb.endRenderPass();
     cb.end();
@@ -1980,7 +2001,7 @@ void Scene::RecordTransferCommandBuffer() {
 #endif
 
 void Scene::UpdateEdgeColors() {
-    MeshRender::EdgeColor = ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
+    MeshRender::EdgeColor = SETTINGS.ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
     UpdateSceneUBO();
 }
 
@@ -2002,14 +2023,14 @@ void Scene::UpdateSceneUBO() {
         .ActiveColor = MeshRender::ActiveColor
     };
     Buffers->SceneUBO.Update(as_bytes(scene_ubo));
-    RequestRender();
+    NeedsRender = true;
 }
 
 void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
     const auto &mesh = R.get<const Mesh>(mesh_entity);
     R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
         for (const auto element : NormalElements) {
-            if (ShownNormalElements.contains(element)) {
+            if (SETTINGS.ShownNormalElements.contains(element)) {
                 if (!mesh_buffers.NormalIndicators.contains(element)) {
                     const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
                     mesh_buffers.NormalIndicators.emplace(
@@ -2026,7 +2047,7 @@ void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
         }
     });
 
-    if (ShowBoundingBoxes) {
+    if (SETTINGS.ShowBoundingBoxes) {
         if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
             R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
         } else {
@@ -2102,7 +2123,7 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
 
-    const auto primary_edit_instances = InteractionMode == InteractionMode::Edit ?
+    const auto primary_edit_instances = SETTINGS.InteractionMode == InteractionMode::Edit ?
         ComputePrimaryEditInstances(R) :
         std::unordered_map<entt::entity, entt::entity>{};
 
@@ -2275,7 +2296,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
 
     const auto primary_edit_instances = ComputePrimaryEditInstances(R);
     const Timer timer{"RenderEditSelectionPass"};
-    const bool xray_selection = SelectionXRay || ViewportShading == ViewportShadingMode::Wireframe;
+    const bool xray_selection = SelectionXRay || SETTINGS.ViewportShading == ViewportShadingMode::Wireframe;
     RenderSelectionPassWith(!xray_selection, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SelectionPipelineForElement(element, xray_selection));
         for (const auto &r : ranges) {
@@ -2504,10 +2525,10 @@ void Scene::Interact() {
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Tab)) {
             // Cycle to the next interaction mode, wrapping around to the first.
-            auto it = find(InteractionModes, InteractionMode);
+            auto it = find(InteractionModes, SETTINGS.InteractionMode);
             SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
         }
-        if (InteractionMode == InteractionMode::Edit) {
+        if (SETTINGS.InteractionMode == InteractionMode::Edit) {
             if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
             else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
             else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
@@ -2558,7 +2579,7 @@ void Scene::Interact() {
 
     if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
-    if (SelectionMode == SelectionMode::Box && InteractionMode == InteractionMode::Edit) {
+    if (SelectionMode == SelectionMode::Box && SETTINGS.InteractionMode == InteractionMode::Edit) {
         const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = mouse_pos;
@@ -2600,7 +2621,7 @@ void Scene::Interact() {
         if (BoxSelectStart.has_value()) return;
     }
 
-    if (SelectionMode == SelectionMode::Box && InteractionMode == InteractionMode::Object) {
+    if (SelectionMode == SelectionMode::Box && SETTINGS.InteractionMode == InteractionMode::Object) {
         const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = mouse_pos;
@@ -2626,7 +2647,7 @@ void Scene::Interact() {
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
     const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)};
-    if (InteractionMode == InteractionMode::Edit) {
+    if (SETTINGS.InteractionMode == InteractionMode::Edit) {
         if (EditMode != Element::None) {
             const auto hit_entities = RunClickSelect(mouse_px);
             const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
@@ -2645,7 +2666,7 @@ void Scene::Interact() {
                 }
             }
         }
-    } else if (InteractionMode == InteractionMode::Object) {
+    } else if (SETTINGS.InteractionMode == InteractionMode::Object) {
         const auto hit_entities = RunClickSelect(mouse_px);
         // Cycle through hit entities.
         entt::entity intersected = entt::null;
@@ -2666,7 +2687,7 @@ void Scene::Interact() {
         } else if (intersected != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
             Select(intersected);
         }
-    } else if (InteractionMode == InteractionMode::Excite) {
+    } else if (SETTINGS.InteractionMode == InteractionMode::Excite) {
         // Excite the nearest excitable vertex using screen-space selection.
         if (const auto hit_entities = RunClickSelect(mouse_px); !hit_entities.empty()) {
             if (const auto hit_entity = hit_entities.front(); R.all_of<Excitable>(hit_entity)) {
@@ -3147,7 +3168,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (CollapsingHeader("Update primitive")) {
             if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
                 SetMeshPositions(active_mesh_entity, new_mesh->Positions);
-                InvalidateCommandBuffer();
+                CommandBufferDirty = NeedsRender = true;
             }
         }
     }
@@ -3164,14 +3185,14 @@ void Scene::RenderControls() {
                 PushID("InteractionMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Interaction mode:");
-                int interaction_mode = int(InteractionMode);
+                auto interaction_mode = int(SETTINGS.InteractionMode);
                 bool interaction_mode_changed = false;
                 for (const auto mode : InteractionModes) {
                     SameLine();
                     interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode, int(mode));
                 }
-                if (interaction_mode_changed) SetInteractionMode(::InteractionMode(interaction_mode));
-                const bool wireframe_xray = ViewportShading == ViewportShadingMode::Wireframe;
+                if (interaction_mode_changed) SetInteractionMode(InteractionMode(interaction_mode));
+                const bool wireframe_xray = SETTINGS.ViewportShading == ViewportShadingMode::Wireframe;
                 if (interaction_mode == int(InteractionMode::Edit)) {
                     Checkbox("X-ray selection", &SelectionXRay);
                 }
@@ -3179,7 +3200,7 @@ void Scene::RenderControls() {
                     SameLine();
                     TextDisabled("(wireframe)");
                 }
-                if (InteractionMode == InteractionMode::Edit) {
+                if (SETTINGS.InteractionMode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
                     auto type_interaction_mode = int(EditMode);
@@ -3243,28 +3264,36 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Render")) {
-            if (ColorEdit3("Background color", BackgroundColor.float32)) InvalidateCommandBuffer();
-            if (Checkbox("Show grid", &ShowGrid)) InvalidateCommandBuffer();
+            const auto &settings = SETTINGS;
+            std::array bg_color{settings.BackgroundColor.float32[0], settings.BackgroundColor.float32[1], settings.BackgroundColor.float32[2]};
+            if (ColorEdit3("Background color", bg_color.data())) {
+                R.patch<SceneSettings>(SettingsEntity, [&bg_color](auto &s) { s.BackgroundColor = {bg_color[0], bg_color[1], bg_color[2], 1.f}; });
+            }
+            bool show_grid = settings.ShowGrid;
+            if (Checkbox("Show grid", &show_grid)) {
+                PATCH_SETTINGS([show_grid](auto &s) { s.ShowGrid = show_grid; });
+            }
             if (Button("Recompile shaders")) {
                 Pipelines->CompileShaders();
-                InvalidateCommandBuffer();
+                CommandBufferDirty = NeedsRender = true;
             }
             SeparatorText("Viewport shading");
             PushID("ViewportShading");
-            auto viewport_shading = int(ViewportShading);
+            auto viewport_shading = int(settings.ViewportShading);
             bool viewport_shading_changed = RadioButton("Solid", &viewport_shading, int(ViewportShadingMode::Solid));
             SameLine();
             viewport_shading_changed |= RadioButton("Wireframe", &viewport_shading, int(ViewportShadingMode::Wireframe));
             PopID();
 
             bool smooth_shading_changed = false;
-            if (ViewportShading == ViewportShadingMode::Solid) {
-                smooth_shading_changed = Checkbox("Smooth shading", &SmoothShading);
+            bool smooth_shading = settings.SmoothShading;
+            if (settings.ViewportShading == ViewportShadingMode::Solid) {
+                smooth_shading_changed = Checkbox("Smooth shading", &smooth_shading);
             }
 
-            auto color_mode = int(ColorMode);
+            auto color_mode = int(settings.ColorMode);
             bool color_mode_changed = false;
-            if (ViewportShading == ViewportShadingMode::Solid) {
+            if (settings.ViewportShading == ViewportShadingMode::Solid) {
                 SeparatorText("Fill color mode");
                 PushID("ColorMode");
                 color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
@@ -3272,15 +3301,14 @@ void Scene::RenderControls() {
                 PopID();
             }
             if (viewport_shading_changed || color_mode_changed || smooth_shading_changed) {
-                ViewportShading = ::ViewportShadingMode(viewport_shading);
-                ColorMode = ::ColorMode(color_mode);
+                R.patch<SceneSettings>(SettingsEntity, [viewport_shading, color_mode, smooth_shading](auto &s) {
+                    s.ViewportShading = ViewportShadingMode(viewport_shading);
+                    s.ColorMode = ColorMode(color_mode);
+                    s.SmoothShading = smooth_shading;
+                });
                 UpdateEdgeColors();
-                InvalidateCommandBuffer();
             }
-            if (smooth_shading_changed) {
-                InvalidateCommandBuffer();
-            }
-            if (ViewportShading == ViewportShadingMode::Wireframe) {
+            if (settings.ViewportShading == ViewportShadingMode::Wireframe) {
                 if (ColorEdit3("Edge color", &EdgeColor.x)) UpdateEdgeColors();
             }
             {
@@ -3290,7 +3318,10 @@ void Scene::RenderControls() {
                 if (color_changed) {
                     UpdateSceneUBO();
                 }
-                if (SliderUInt("Edge width", &SilhouetteEdgeWidth, 1, 4)) InvalidateCommandBuffer();
+                uint32_t edge_width = settings.SilhouetteEdgeWidth;
+                if (SliderUInt("Edge width", &edge_width, 1, 4)) {
+                    PATCH_SETTINGS([edge_width](auto &s) { s.SilhouetteEdgeWidth = edge_width; });
+                }
             }
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -3299,20 +3330,25 @@ void Scene::RenderControls() {
                 bool changed = false;
                 for (const auto element : NormalElements) {
                     SameLine();
-                    bool show = ShownNormalElements.contains(element);
+                    bool show = settings.ShownNormalElements.contains(element);
                     const auto type_name = Capitalize(label(element));
                     if (Checkbox(type_name.c_str(), &show)) {
-                        if (show) ShownNormalElements.insert(element);
-                        else ShownNormalElements.erase(element);
+                        R.patch<SceneSettings>(SettingsEntity, [element, show](auto &s) {
+                            if (show) s.ShownNormalElements.insert(element);
+                            else s.ShownNormalElements.erase(element);
+                        });
                         changed = true;
                     }
                 }
-                if (Checkbox("Bounding boxes", &ShowBoundingBoxes)) changed = true;
+                bool show_bboxes = settings.ShowBoundingBoxes;
+                if (Checkbox("Bounding boxes", &show_bboxes)) {
+                    PATCH_SETTINGS([show_bboxes](auto &s) { s.ShowBoundingBoxes = show_bboxes; });
+                    changed = true;
+                }
                 if (changed) {
                     for (auto selected_entity : R.view<Selected>()) {
                         UpdateEntitySelectionOverlays(R.get<MeshInstance>(selected_entity).MeshEntity);
                     }
-                    InvalidateCommandBuffer();
                 }
             }
             EndTabItem();
