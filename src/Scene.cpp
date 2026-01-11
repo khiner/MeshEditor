@@ -1361,28 +1361,6 @@ void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
 
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
 
-namespace {
-void UpdateVisibleObjectIds(entt::registry &r) {
-    std::unordered_map<entt::entity, std::vector<uint32_t>> ids_by_mesh;
-    uint32_t object_id = 1;
-    for (const auto e : r.view<RenderInstance>()) {
-        const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
-        const auto &models = r.get<const ModelsBuffer>(mesh_entity);
-        const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
-        if (instance_count == 0) continue;
-        auto &ids = ids_by_mesh[mesh_entity];
-        if (ids.empty()) ids.resize(instance_count, 0);
-        const auto buffer_index = r.get<const RenderInstance>(e).BufferIndex;
-        if (buffer_index < ids.size()) ids[buffer_index] = object_id;
-        r.patch<RenderInstance>(e, [object_id](auto &ri) { ri.ObjectId = object_id; });
-        ++object_id;
-    }
-    for (const auto &[mesh_entity, ids] : ids_by_mesh) {
-        r.patch<ModelsBuffer>(mesh_entity, [&ids](auto &mb) { mb.ObjectIds.Update(as_bytes(ids)); });
-    }
-}
-} // namespace
-
 void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<RenderInstance>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
@@ -1390,10 +1368,11 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
     if (visible) {
         const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldMatrix);
-        R.emplace<RenderInstance>(entity, buffer_index, 0u);
+        const uint32_t object_id = NextObjectId++;
+        R.emplace<RenderInstance>(entity, buffer_index, object_id);
         R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
             mb.Buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), mb.Buffer.UsedSize);
-            mb.ObjectIds.Insert(as_bytes(uint32_t{0}), mb.ObjectIds.UsedSize); // Placeholder; actual IDs set on-demand.
+            mb.ObjectIds.Insert(as_bytes(object_id), mb.ObjectIds.UsedSize);
         });
     } else {
         const uint old_model_index = R.get<const RenderInstance>(entity).BufferIndex;
@@ -1417,7 +1396,6 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
             }
         }
     }
-    UpdateVisibleObjectIds(R);
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
@@ -2438,10 +2416,11 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 
     // Convert click hits to entities.
     const auto &result = Buffers->GetClickResult();
-    const auto visible_entities = R.view<RenderInstance>() | to<std::vector>();
+    std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
+    for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
     auto hits = result.Hits //
         | take(std::min<uint32_t>(result.Count, result.Hits.size())) //
-        | filter([&](const auto &hit) { return hit.ObjectId != 0 && hit.ObjectId <= visible_entities.size(); }) //
+        | filter([&](const auto &hit) { return object_id_to_entity.contains(hit.ObjectId); }) //
         | transform([](const auto &hit) { return std::pair{hit.Depth, hit.ObjectId}; }) //
         | to<std::vector>();
     std::ranges::sort(hits);
@@ -2451,7 +2430,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     std::unordered_set<uint32_t> seen_object_ids;
     for (const auto &[_, object_id] : hits) {
         if (seen_object_ids.insert(object_id).second) {
-            entities.emplace_back(visible_entities[object_id - 1]);
+            entities.emplace_back(object_id_to_entity.at(object_id));
         }
     }
     return entities;
@@ -2460,13 +2439,11 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
+    if (NextObjectId <= 1) return {}; // No objects have been assigned IDs yet
 
-    const auto visible_entities = R.view<RenderInstance>() | to<std::vector>();
-    const auto object_count = static_cast<uint32_t>(visible_entities.size());
-    if (object_count == 0) return {};
-
-    const uint32_t bitset_words = (object_count + 31) / 32;
-    if (bitset_words > BoxSelectZeroBits.size()) return {};
+    // ObjectCount is the max ObjectId that could appear (for shader bounds check)
+    const uint32_t max_object_id = std::min(NextObjectId - 1, SceneBuffers::MaxSelectableObjects);
+    const uint32_t bitset_words = (max_object_id + 31) / 32;
 
     const Timer timer{"RunBoxSelect"};
     const bool selection_rendered = SelectionStale;
@@ -2484,7 +2461,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
-            .ObjectCount = object_count,
+            .ObjectCount = max_object_id,
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .BoxResultIndex = SelectionHandles->BoxResult,
@@ -2493,12 +2470,24 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
         selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{}
     );
 
+    // Build ObjectId -> entity map for lookup
+    std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
+    for (const auto [e, ri] : R.view<RenderInstance>().each()) {
+        object_id_to_entity[ri.ObjectId] = e;
+    }
+
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
-    return iota(uint32_t{0}, object_count) | filter([&](uint32_t i) {
-               const uint32_t mask = 1u << (i % 32);
-               return (bits[i / 32] & mask) != 0;
-           }) |
-        transform([&](uint32_t i) { return visible_entities[i]; }) | to<std::vector>();
+    std::vector<entt::entity> entities;
+    for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
+        const uint32_t bit_index = object_id - 1;
+        const uint32_t mask = 1u << (bit_index % 32);
+        if ((bits[bit_index / 32] & mask) != 0) {
+            if (auto it = object_id_to_entity.find(object_id); it != object_id_to_entity.end()) {
+                entities.emplace_back(it->second);
+            }
+        }
+    }
+    return entities;
 }
 
 void Scene::Interact() {
@@ -3213,15 +3202,11 @@ void Scene::RenderControls() {
                 }
                 PopID();
             }
-            if (!R.storage<Selected>().empty()) { // Selection actions
+            if (!R.storage<Selected>().empty()) {
                 SeparatorText("Selection actions");
-                if (Button("Duplicate")) {
-                    Duplicate();
-                }
+                if (Button("Duplicate")) Duplicate();
                 SameLine();
-                if (Button("Duplicate linked")) {
-                    DuplicateLinked();
-                }
+                if (Button("Duplicate linked")) DuplicateLinked();
                 if (Button("Delete")) Delete();
             }
             RenderEntityControls(FindActiveEntity(R));
