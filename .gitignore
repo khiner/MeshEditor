@@ -1,6 +1,7 @@
 build/
 .vscode/
 .DS_Store
+.cache/
 
 # Latex
 **/**.aux

@@ -1131,7 +1131,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_update<MeshSelection>();
     R.storage<entt::reactive>("excitable_changes"_hs)
         .on_construct<Excitable>()
-        .on_update<Excitable>()
         .on_destroy<Excitable>();
     R.storage<entt::reactive>("excited_vertex_changes"_hs)
         .on_construct<ExcitedVertex>()
@@ -1262,6 +1261,7 @@ void Scene::ProcessComponentEvents() {
                         mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
                         mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
                     );
+                    CommandBufferDirty = NeedsRender = true;
                 }
                 dirty_element_state_meshes.insert(mesh_entity);
             }
@@ -1271,18 +1271,14 @@ void Scene::ProcessComponentEvents() {
     { // Excitable changes
         auto &excitable_tracker = R.storage<entt::reactive>("excitable_changes"_hs);
         for (auto instance_entity : excitable_tracker) {
-            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
-                dirty_element_state_meshes.insert(mi->MeshEntity);
-            }
-            if (R.all_of<Excitable>(instance_entity)) {
-                InteractionModes.insert(InteractionMode::Excite);
-            }
+            if (R.all_of<Excitable>(instance_entity)) InteractionModes.insert(InteractionMode::Excite);
         }
         if (R.storage<Excitable>().empty()) {
             if (SETTINGS.InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!excitable_tracker.empty()) {
-            SetInteractionMode(InteractionMode::Excite); // If we just added excitables, switch to excite mode
+            if (SETTINGS.InteractionMode == InteractionMode::Excite) CommandBufferDirty = NeedsRender = true;
+            else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
         }
         excitable_tracker.clear();
     }
@@ -1347,10 +1343,6 @@ void Scene::ProcessComponentEvents() {
     // Apply batched updates
     for (const auto mesh_entity : dirty_overlay_meshes) UpdateEntitySelectionOverlays(mesh_entity);
     for (const auto mesh_entity : dirty_element_state_meshes) UpdateMeshElementStateBuffers(mesh_entity);
-
-    if (!dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) {
-        CommandBufferDirty = NeedsRender = true;
-    }
 }
 
 void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
@@ -1770,8 +1762,8 @@ void Scene::RecordRenderCommandBuffer() {
         const auto &pipeline = renderer.Bind(cb, spt);
         auto render = [&](entt::entity e) {
             const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-            auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
-            auto &models = R.get<ModelsBuffer>(mesh_entity);
+            const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
+            const auto &models = R.get<ModelsBuffer>(mesh_entity);
             auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
             Draw(cb, pipeline, mesh_buffers.FaceIndices, models, pc, R.get<RenderInstance>(e).BufferIndex);
@@ -1831,8 +1823,9 @@ void Scene::RecordRenderCommandBuffer() {
 
         std::unordered_set<entt::entity> excitable_mesh_entities;
         if (is_excite_mode) {
-            for (const auto [e, mi, excitable] : R.view<const MeshInstance, const Excitable>().each())
+            for (const auto [e, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
                 excitable_mesh_entities.emplace(mi.MeshEntity);
+            }
         }
 
         // Solid faces
@@ -2121,8 +2114,8 @@ void Scene::RenderSilhouetteDepth(vk::CommandBuffer cb) {
     const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
     for (const auto e : R.view<Selected>()) {
         const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-        auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
-        auto &models = R.get<ModelsBuffer>(mesh_entity);
+        const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
+        const auto &models = R.get<ModelsBuffer>(mesh_entity);
         if (const auto model_index = GetModelBufferIndex(R, e)) {
             auto pc = MakeDrawPc(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
             pc.ObjectIdSlot = models.ObjectIds.Slot;
@@ -2262,8 +2255,8 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
     RenderSelectionPassWith(!xray_selection, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SelectionPipelineForElement(element, xray_selection));
         for (const auto &r : ranges) {
-            auto &mesh_buffers = R.get<MeshBuffers>(r.MeshEntity);
-            auto &models = R.get<ModelsBuffer>(r.MeshEntity);
+            const auto &mesh_buffers = R.get<MeshBuffers>(r.MeshEntity);
+            const auto &models = R.get<ModelsBuffer>(r.MeshEntity);
             const auto &mesh = R.get<Mesh>(r.MeshEntity);
             const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
                 element == Element::Edge                     ? mesh_buffers.EdgeIndices :
@@ -2370,9 +2363,9 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
     const uint32_t vertex_count = mesh.VertexCount();
     if (vertex_count == 0) return {};
 
-    auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
-    auto &models = R.get<ModelsBuffer>(mesh_entity);
-    auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
+    const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
+    const auto &models = R.get<ModelsBuffer>(mesh_entity);
+    const auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
     const auto model_index = R.get<RenderInstance>(instance_entity).BufferIndex;
     RenderSelectionPassWith(true, [&](vk::CommandBuffer cb, const PipelineRenderer &renderer) {
         const auto &pipeline = renderer.Bind(cb, SPT::SelectionElementVertex);

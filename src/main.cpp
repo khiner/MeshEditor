@@ -374,16 +374,7 @@ void run() {
 
     NFD_Init();
     entt::registry r;
-    auto scene = std::make_unique<Scene>(
-        SceneVulkanResources{
-            *vc->Instance,
-            vc->PhysicalDevice,
-            *vc->Device,
-            vc->QueueFamily,
-            vc->Queue,
-        },
-        r
-    );
+    auto scene = std::make_unique<Scene>(SceneVulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue}, r);
     auto device = *vc->Device;
 
     // Load transform mode icons

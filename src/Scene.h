@@ -246,7 +246,7 @@ private:
 #endif
     void RecordRenderCommandBuffer();
 
-    // Process deferred component events (reactive storage pattern - called once per frame)
+    // Process deferred component events. Called once per frame.
     void ProcessComponentEvents();
     // temp: Immediate handler needed for ExcitedVertex destroy (captures indicator entity before removal)
     void OnDestroyExcitedVertex(entt::registry &, entt::entity);
