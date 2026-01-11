@@ -3406,8 +3406,9 @@ void Scene::RenderEntitiesTable(std::string name, entt::entity parent) {
         };
 
         if (parent == entt::null) { // Iterate root entities
-            for (const auto &[entity, node] : R.view<const SceneNode>().each()) {
-                if (node.Parent == entt::null) render_entity(entity);
+            for (const auto &[entity, name] : R.view<const Name>().each()) {
+                const auto *node = R.try_get<SceneNode>(entity);
+                if (!node || node->Parent == entt::null) render_entity(entity);
             }
         } else { // Iterate children
             for (const auto child : Children{&R, parent}) render_entity(child);
