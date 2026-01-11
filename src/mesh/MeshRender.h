@@ -15,8 +15,6 @@
 struct WorldMatrix;
 struct Mesh;
 
-struct Visible {};
-
 struct RenderInstance {
     uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
     uint32_t ObjectId{0};
@@ -78,7 +76,7 @@ struct MeshElementStateBuffers {
     mvk::Buffer Faces, Edges, Vertices;
 };
 
-// Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
+// Returns `std::nullopt` if the entity does not have a RenderInstance (i.e., is not visible).
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity);
 void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
 

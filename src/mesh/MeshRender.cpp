@@ -61,10 +61,9 @@ BBox ComputeBoundingBox(const Mesh &mesh) {
 
 } // namespace MeshRender
 
-// Returns `std::nullopt` if the entity is not Visible (and thus does not have a RenderInstance).
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
-    if (e == entt::null || !r.all_of<Visible>(e)) return std::nullopt;
-    return r.get<RenderInstance>(e).BufferIndex;
+    if (const auto *ri = r.try_get<RenderInstance>(e)) return ri->BufferIndex;
+    return std::nullopt;
 }
 
 void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldMatrix &m) {

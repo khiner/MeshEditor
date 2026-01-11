@@ -1088,7 +1088,7 @@ struct Scene::EntityDestroyTracker {
 
     void Bind(entt::registry &r) {
         Storage.bind(r);
-        Storage.on_destroy<Visible>();
+        Storage.on_destroy<RenderInstance>();
     }
 };
 
@@ -1120,8 +1120,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<Selected>()
         .on_destroy<Selected>();
     R.storage<entt::reactive>("visible_changes"_hs)
-        .on_construct<Visible>()
-        .on_destroy<Visible>();
+        .on_construct<RenderInstance>()
+        .on_destroy<RenderInstance>();
     R.storage<entt::reactive>("active_changes"_hs)
         .on_construct<Active>()
         .on_destroy<Active>();
@@ -1365,7 +1365,7 @@ namespace {
 void UpdateVisibleObjectIds(entt::registry &r) {
     std::unordered_map<entt::entity, std::vector<uint32_t>> ids_by_mesh;
     uint32_t object_id = 1;
-    for (const auto e : r.view<Visible>()) {
+    for (const auto e : r.view<RenderInstance>()) {
         const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
         const auto &models = r.get<const ModelsBuffer>(mesh_entity);
         const uint32_t instance_count = models.Buffer.UsedSize / sizeof(WorldMatrix);
@@ -1384,22 +1384,20 @@ void UpdateVisibleObjectIds(entt::registry &r) {
 } // namespace
 
 void Scene::SetVisible(entt::entity entity, bool visible) {
-    const bool already_visible = R.all_of<Visible>(entity);
+    const bool already_visible = R.all_of<RenderInstance>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
     const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
     if (visible) {
         const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldMatrix);
-        R.emplace_or_replace<RenderInstance>(entity, buffer_index, 0u);
+        R.emplace<RenderInstance>(entity, buffer_index, 0u);
         R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
             mb.Buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), mb.Buffer.UsedSize);
             mb.ObjectIds.Insert(as_bytes(uint32_t{0}), mb.ObjectIds.UsedSize); // Placeholder; actual IDs set on-demand.
         });
-        R.emplace<Visible>(entity);
     } else {
-        R.remove<Visible>(entity);
         const uint old_model_index = R.get<const RenderInstance>(entity).BufferIndex;
-        R.patch<RenderInstance>(entity, [](auto &ri) { ri.ObjectId = 0; });
+        R.remove<RenderInstance>(entity);
         R.patch<ModelsBuffer>(mesh_entity, [old_model_index](auto &mb) {
             mb.Buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
             mb.ObjectIds.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
@@ -1491,7 +1489,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info
             .Name = std::format("{}_copy", GetName(R, e)),
             .Transform = GetTransform(R, e),
             .Select = R.all_of<Selected>(e) ? MeshCreateInfo::SelectBehavior::Additive : MeshCreateInfo::SelectBehavior::None,
-            .Visible = R.all_of<Visible>(e),
+            .Visible = R.all_of<RenderInstance>(e),
         })
     );
     if (auto primitive_type = R.try_get<PrimitiveType>(mesh_entity)) R.emplace<PrimitiveType>(e_new.first, *primitive_type);
@@ -1785,7 +1783,7 @@ void Scene::RecordRenderCommandBuffer() {
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
-        for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+        for (const auto [e, mi, ri] : R.view<const MeshInstance, const Selected, const RenderInstance>().each()) {
             if (primary_edit_instances.at(mi.MeshEntity) != e) silhouette_instances.insert(e);
         }
     }
@@ -1803,7 +1801,7 @@ void Scene::RecordRenderCommandBuffer() {
         if (is_edit_mode) {
             for (const auto e : silhouette_instances) render(e);
         } else {
-            for (const auto e : R.view<Selected>()) render(e);
+            for (const auto e : R.view<Selected, RenderInstance>()) render(e);
         }
     };
 
@@ -1924,7 +1922,7 @@ void Scene::RecordRenderCommandBuffer() {
         uint32_t active_object_id = 0;
         if (!is_edit_mode) {
             const auto active_entity = FindActiveEntity(R);
-            active_object_id = active_entity != entt::null && R.all_of<Visible>(active_entity) ?
+            active_object_id = active_entity != entt::null && R.all_of<RenderInstance>(active_entity) ?
                 R.get<RenderInstance>(active_entity).ObjectId :
                 0;
         }
@@ -2440,7 +2438,7 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
 
     // Convert click hits to entities.
     const auto &result = Buffers->GetClickResult();
-    const auto visible_entities = R.view<Visible>() | to<std::vector>();
+    const auto visible_entities = R.view<RenderInstance>() | to<std::vector>();
     auto hits = result.Hits //
         | take(std::min<uint32_t>(result.Count, result.Hits.size())) //
         | filter([&](const auto &hit) { return hit.ObjectId != 0 && hit.ObjectId <= visible_entities.size(); }) //
@@ -2463,7 +2461,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
     const auto [box_min, box_max] = box_px;
     if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
 
-    const auto visible_entities = R.view<Visible>() | to<std::vector>();
+    const auto visible_entities = R.view<RenderInstance>() | to<std::vector>();
     const auto object_count = static_cast<uint32_t>(visible_entities.size());
     if (object_count == 0) return {};
 
@@ -2527,7 +2525,7 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
             else if (IsKeyPressed(ImGuiKey_S, false)) StartScreenTransform = TransformGizmo::TransformType::Scale;
             else if (IsKeyPressed(ImGuiKey_H, false)) {
-                for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<Visible>(e));
+                for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<RenderInstance>(e));
             } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
                 if (active_entity != entt::null) {
                     for (const auto e : R.view<Selected>()) {
@@ -2858,7 +2856,7 @@ void Scene::RenderOverlay() {
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto size = ToGlm(GetContentRegionAvail());
         const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
-        for (const auto [e, wm] : R.view<const WorldMatrix, const Visible>().each()) {
+        for (const auto [e, wm, ri] : R.view<const WorldMatrix, const RenderInstance>().each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
 
             const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
@@ -3050,7 +3048,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
     );
     Unindent();
-    bool visible = R.all_of<Visible>(active_entity);
+    bool visible = R.all_of<RenderInstance>(active_entity);
     if (Checkbox("Visible", &visible)) SetVisible(active_entity, visible);
     if (CollapsingHeader("Transform")) {
         auto position = R.get<const Position>(active_entity).Value;
