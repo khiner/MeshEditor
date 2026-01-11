@@ -30,7 +30,7 @@ void main() {
     WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
     vec4 base_color = pc.LineColor;
     if (pc.ObjectIdSlot != INVALID_SLOT) {
-        base_color = Scene.BaseColor;
+        base_color = vec4(0.7, 0.7, 0.7, 1);
     } else if (pc.ElementStateSlot != INVALID_SLOT) {
         base_color = Scene.EdgeColor;
     }

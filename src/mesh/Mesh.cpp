@@ -70,8 +70,7 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, const Mesh &src)
       Halfedges(src.Halfedges),
       HalfedgeToEdge(src.HalfedgeToEdge),
       Edges(src.Edges),
-      Faces(src.Faces),
-      Color(src.Color) {}
+      Faces(src.Faces) {}
 
 Mesh::Mesh(Mesh &&other) noexcept
     : Store(std::exchange(other.Store, nullptr)),
@@ -82,8 +81,7 @@ Mesh::Mesh(Mesh &&other) noexcept
       Halfedges(std::move(other.Halfedges)),
       HalfedgeToEdge(std::move(other.HalfedgeToEdge)),
       Edges(std::move(other.Edges)),
-      Faces(std::move(other.Faces)),
-      Color(other.Color) {}
+      Faces(std::move(other.Faces)) {}
 
 Mesh &Mesh::operator=(Mesh &&other) noexcept {
     if (this != &other) {
@@ -97,7 +95,6 @@ Mesh &Mesh::operator=(Mesh &&other) noexcept {
         HalfedgeToEdge = std::move(other.HalfedgeToEdge);
         Edges = std::move(other.Edges);
         Faces = std::move(other.Faces);
-        Color = other.Color;
     }
     return *this;
 }

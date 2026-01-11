@@ -19,8 +19,6 @@ struct Mesh {
     using EH = he::EH;
     using FH = he::FH;
 
-    static constexpr vec4 DefaultMeshColor{0.7, 0.7, 0.7, 1};
-
     Mesh(MeshStore &, uint32_t store_id, std::vector<std::vector<uint>> &&faces);
     Mesh(MeshStore &, uint32_t store_id, const Mesh &src);
 
@@ -235,6 +233,4 @@ private:
     std::vector<EH> HalfedgeToEdge;
     std::vector<HH> Edges; // Maps edge index to its halfedge at index 0
     std::vector<Face> Faces;
-
-    vec4 Color{DefaultMeshColor};
 };

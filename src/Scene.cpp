@@ -56,7 +56,6 @@ struct SceneUBO {
     vec4 LightDirectionFar{0, 0, 0, 0}; // xyz = light dir, w = far
     vec4 SilhouetteActive{0, 0, 0, 0};
     vec4 SilhouetteSelected{0, 0, 0, 0};
-    vec4 BaseColor{0, 0, 0, 0};
     vec4 EdgeColor{0, 0, 0, 0};
     vec4 VertexUnselectedColor{0, 0, 0, 0};
     vec4 SelectedColor{0, 0, 0, 0};
@@ -1940,7 +1939,6 @@ void Scene::UpdateSceneUBO() {
         .LightDirectionFar = vec4{Lights.Direction, Camera.FarClip},
         .SilhouetteActive = Colors.Active,
         .SilhouetteSelected = Colors.Selected,
-        .BaseColor = Mesh::DefaultMeshColor,
         .EdgeColor = MeshRender::EdgeColor,
         .VertexUnselectedColor = MeshRender::UnselectedVertexEditColor,
         .SelectedColor = MeshRender::SelectedColor,
