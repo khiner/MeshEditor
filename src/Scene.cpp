@@ -3002,8 +3002,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
     );
     Unindent();
-    bool visible = R.all_of<RenderInstance>(active_entity);
-    if (Checkbox("Visible", &visible)) SetVisible(active_entity, visible);
     if (CollapsingHeader("Transform")) {
         auto position = R.get<const Position>(active_entity).Value;
         bool model_changed = DragFloat3("Position", &position[0], 0.01f);
@@ -3169,6 +3167,16 @@ void Scene::RenderControls() {
             }
             if (!R.storage<Selected>().empty()) {
                 SeparatorText("Selection actions");
+                const auto visible_view = R.view<Selected, RenderInstance>();
+                const auto hidden_view = R.view<Selected>(entt::exclude<RenderInstance>);
+                const bool any_visible = visible_view.begin() != visible_view.end();
+                const bool any_hidden = hidden_view.begin() != hidden_view.end();
+                const bool mixed_visible = any_visible && any_hidden;
+                if (mixed_visible) ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
+                if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) {
+                    for (const auto e : R.view<Selected>()) SetVisible(e, set_visible);
+                }
+                if (mixed_visible) ImGui::PopItemFlag();
                 if (Button("Duplicate")) Duplicate();
                 SameLine();
                 if (Button("Duplicate linked")) DuplicateLinked();
