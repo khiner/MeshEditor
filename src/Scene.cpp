@@ -2575,12 +2575,26 @@ void Scene::Interact() {
         if (BoxSelectStart.has_value()) return;
     }
 
-    if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
-
-    // Handle mouse selection.
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
     const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)};
+
+    if (SETTINGS.InteractionMode == InteractionMode::Excite) {
+        if (IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (const auto hit_entities = RunClickSelect(mouse_px); !hit_entities.empty()) {
+                if (const auto hit_entity = hit_entities.front(); R.all_of<Excitable>(hit_entity)) {
+                    if (const auto vertex = RunClickSelectExcitableVertex(hit_entity, mouse_px)) {
+                        R.emplace_or_replace<ExcitedVertex>(hit_entity, *vertex, 1.f);
+                    }
+                }
+            }
+        } else if (!IsMouseDown(ImGuiMouseButton_Left)) {
+            R.clear<ExcitedVertex>();
+        }
+        return;
+    }
+    if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
+
     if (SETTINGS.InteractionMode == InteractionMode::Edit) {
         if (EditMode != Element::None) {
             const auto hit_entities = RunClickSelect(mouse_px);
@@ -2620,16 +2634,6 @@ void Scene::Interact() {
             }
         } else if (intersected != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
             Select(intersected);
-        }
-    } else if (SETTINGS.InteractionMode == InteractionMode::Excite) {
-        // Excite the nearest excitable vertex using screen-space selection.
-        if (const auto hit_entities = RunClickSelect(mouse_px); !hit_entities.empty()) {
-            if (const auto hit_entity = hit_entities.front(); R.all_of<Excitable>(hit_entity)) {
-                if (const auto vertex = RunClickSelectExcitableVertex(hit_entity, mouse_px)) {
-                    R.remove<ExcitedVertex>(hit_entity);
-                    R.emplace<ExcitedVertex>(hit_entity, *vertex, 1.f);
-                }
-            }
         }
     }
 }
