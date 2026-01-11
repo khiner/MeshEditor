@@ -162,18 +162,6 @@ struct Scene {
 
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
 
-    void UpdateMeshElementStateBuffers(entt::entity);
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    void RecordTransferCommandBuffer();
-#endif
-    void RecordRenderCommandBuffer();
-
-    // Process deferred component events (reactive storage pattern)
-    void ProcessDeferredEvents();
-
-    // temp: Immediate handler needed for ExcitedVertex destroy (captures indicator entity before removal)
-    void OnDestroyExcitedVertex(entt::registry &, entt::entity);
-
     std::string DebugBufferHeapUsage() const;
 
 private:
@@ -250,6 +238,17 @@ private:
         uint32_t Offset;
         uint32_t Count;
     };
+
+    void UpdateMeshElementStateBuffers(entt::entity);
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    void RecordTransferCommandBuffer();
+#endif
+    void RecordRenderCommandBuffer();
+
+    // Process deferred component events (reactive storage pattern - called once per frame)
+    void ProcessComponentEvents();
+    // temp: Immediate handler needed for ExcitedVertex destroy (captures indicator entity before removal)
+    void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
     void SetInteractionMode(InteractionMode);
     void SetEditMode(he::Element mode);

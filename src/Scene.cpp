@@ -1082,7 +1082,7 @@ struct Scene::SelectionSlotHandles {
 
 // Unmanaged reactive storage to track entity destruction.
 // Unlike managed storage (via R.storage<entt::reactive>()), this keeps entities after destruction
-// until manually cleared, allowing ProcessDeferredEvents to detect that entities were deleted.
+// until manually cleared, allowing ProcessComponentEvents to detect that entities were deleted.
 struct Scene::EntityDestroyTracker {
     entt::storage_for_t<entt::reactive> Storage;
 
@@ -1160,25 +1160,22 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     { // Default scene content
         static constexpr int kGrid = 10;
         static constexpr float kSpacing = 2.0f;
-        int count = 0;
         for (int z = 0; z < kGrid; ++z) {
             for (int y = 0; y < kGrid; ++y) {
                 for (int x = 0; x < kGrid; ++x) {
-                    if (count >= kGrid * kGrid * kGrid) break;
-                    const Transform t{.P = vec3{float(x) * kSpacing, float(y) * kSpacing, float(z) * kSpacing}};
                     const auto e = AddMesh(
                         CreateDefaultPrimitive(PrimitiveType::Cube),
-                        {.Name = ToString(PrimitiveType::Cube), .Transform = t, .Select = MeshCreateInfo::SelectBehavior::None}
+                        {.Name = ToString(PrimitiveType::Cube),
+                         .Transform = {.P = vec3{x, y, z} * kSpacing},
+                         .Select = MeshCreateInfo::SelectBehavior::None}
                     );
                     R.emplace<PrimitiveType>(e.first, PrimitiveType::Cube);
-                    ++count;
                 }
             }
         }
-        const float extent = float(kGrid - 1) * kSpacing;
-        const vec3 center{extent * 0.5f, extent * 0.5f, extent * 0.5f};
-        const vec3 position = center + vec3{extent, extent, extent};
-        Camera = {position, center, glm::radians(60.f), 0.01f, 500.f};
+        const float extent{(kGrid - 1) * kSpacing};
+        const vec3 center{extent * 0.5f};
+        Camera = {center + vec3{extent}, center, glm::radians(60.f), 0.01f, 500.f};
     }
 }
 
@@ -1200,7 +1197,7 @@ void Scene::LoadIcons(vk::Device device) {
     Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/transform.svg");
 }
 
-void Scene::ProcessDeferredEvents() {
+void Scene::ProcessComponentEvents() {
     using namespace entt::literals;
 
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
@@ -1256,9 +1253,7 @@ void Scene::ProcessDeferredEvents() {
     { // MeshSelection changes
         auto &mesh_selection_tracker = R.storage<entt::reactive>("mesh_selection_changes"_hs);
         for (auto mesh_entity : mesh_selection_tracker) {
-            // MeshSelection is on mesh entities directly
             if (R.all_of<MeshSelection>(mesh_entity)) {
-                // Construct: ensure MeshElementStateBuffers exist
                 if (!R.all_of<MeshElementStateBuffers>(mesh_entity)) {
                     const auto &mesh = R.get<Mesh>(mesh_entity);
                     R.emplace<MeshElementStateBuffers>(
@@ -1279,19 +1274,15 @@ void Scene::ProcessDeferredEvents() {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 dirty_element_state_meshes.insert(mi->MeshEntity);
             }
-
             if (R.all_of<Excitable>(instance_entity)) {
-                // Construct/Update: ensure excite mode is available
                 InteractionModes.insert(InteractionMode::Excite);
             }
         }
-        // After processing all, check if we need to remove excite mode
         if (R.storage<Excitable>().empty()) {
             if (SETTINGS.InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!excitable_tracker.empty()) {
-            // If we just added excitables, switch to excite mode
-            SetInteractionMode(InteractionMode::Excite);
+            SetInteractionMode(InteractionMode::Excite); // If we just added excitables, switch to excite mode
         }
         excitable_tracker.clear();
     }
@@ -1354,12 +1345,8 @@ void Scene::ProcessDeferredEvents() {
     }
 
     // Apply batched updates
-    for (const auto mesh_entity : dirty_overlay_meshes) {
-        if (R.valid(mesh_entity)) UpdateEntitySelectionOverlays(mesh_entity);
-    }
-    for (const auto mesh_entity : dirty_element_state_meshes) {
-        if (R.valid(mesh_entity)) UpdateMeshElementStateBuffers(mesh_entity);
-    }
+    for (const auto mesh_entity : dirty_overlay_meshes) UpdateEntitySelectionOverlays(mesh_entity);
+    for (const auto mesh_entity : dirty_element_state_meshes) UpdateMeshElementStateBuffers(mesh_entity);
 
     if (!dirty_overlay_meshes.empty() || !dirty_element_state_meshes.empty()) {
         CommandBufferDirty = NeedsRender = true;
@@ -2007,7 +1994,7 @@ void Scene::UpdateEdgeColors() {
 
 void Scene::UpdateSceneUBO() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    SceneUBO scene_ubo{
+    Buffers->SceneUBO.Update(as_bytes(SceneUBO{
         .View = Camera.View(),
         .Proj = Camera.Projection(aspect_ratio),
         .CameraPositionNear = vec4{Camera.Position(), Camera.NearClip},
@@ -2020,9 +2007,8 @@ void Scene::UpdateSceneUBO() {
         .EdgeColor = MeshRender::EdgeColor,
         .VertexUnselectedColor = MeshRender::UnselectedVertexEditColor,
         .SelectedColor = MeshRender::SelectedColor,
-        .ActiveColor = MeshRender::ActiveColor
-    };
-    Buffers->SceneUBO.Update(as_bytes(scene_ubo));
+        .ActiveColor = MeshRender::ActiveColor,
+    }));
     NeedsRender = true;
 }
 
@@ -2708,7 +2694,7 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 };
 
 bool Scene::RenderViewport() {
-    ProcessDeferredEvents();
+    ProcessComponentEvents();
 
     if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
         const Timer timer{"RenderViewport->UpdateBufferDescriptorSets"};
@@ -3168,7 +3154,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (CollapsingHeader("Update primitive")) {
             if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
                 SetMeshPositions(active_mesh_entity, new_mesh->Positions);
-                CommandBufferDirty = NeedsRender = true;
+                NeedsRender = true;
             }
         }
     }
