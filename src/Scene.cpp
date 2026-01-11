@@ -9,7 +9,6 @@
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
-#include "mesh/Arrow.h"
 #include "mesh/MeshRender.h"
 #include "mesh/Primitives.h"
 
@@ -1142,8 +1141,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_destroy<StartTransform>();
     R.storage<entt::reactive>("scene_settings_changes"_hs)
         .on_update<SceneSettings>();
-    // temp: Keep immediate handler for ExcitedVertex destroy (needs to capture indicator entity before removal)
-    R.on_destroy<ExcitedVertex>().connect<&Scene::OnDestroyExcitedVertex>(*this);
 
     DestroyTracker->Bind(R);
 
@@ -1288,38 +1285,15 @@ void Scene::ProcessComponentEvents() {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 dirty_element_state_meshes.insert(mi->MeshEntity);
             }
-
             if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
-                // Construct: create indicator if not exists
-                if (ev->IndicatorEntity == entt::null) {
-                    const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
-                    const auto &mesh = R.get<Mesh>(mesh_entity);
-                    const auto &transform = R.get<WorldMatrix>(instance_entity).M;
-                    const auto vh = VH(ev->Vertex);
-                    const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
-
-                    // Orient camera towards excited vertex
-                    Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
-
-                    // Create indicator arrow
-                    const auto bbox = MeshRender::ComputeBoundingBox(mesh);
-                    const vec3 normal{transform * vec4{mesh.GetNormal(vh), 0}};
-                    const float scale_factor = 0.1f * glm::length(bbox.Max - bbox.Min);
-                    const auto [_, indicator_entity] = AddMesh(
-                        Meshes.CreateMesh(Arrow()),
-                        {.Name = "Excite vertex indicator",
-                         .Transform = {
-                             .P = vertex_pos + 0.05f * scale_factor * normal,
-                             .R = glm::rotation(World.Up, normal),
-                             .S = vec3{scale_factor},
-                         },
-                         .Select = MeshCreateInfo::SelectBehavior::None}
-                    );
-                    R.patch<ExcitedVertex>(instance_entity, [indicator_entity](auto &e) { e.IndicatorEntity = indicator_entity; });
-                }
+                // Orient camera towards excited vertex
+                const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
+                const auto &mesh = R.get<Mesh>(mesh_entity);
+                const auto &transform = R.get<WorldMatrix>(instance_entity).M;
+                const auto vh = VH(ev->Vertex);
+                const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
+                Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
             }
-            // Note: ExcitedVertex destroy is handled by immediate callback (OnDestroyExcitedVertex)
-            // which captures the indicator entity before component removal
         }
         excited_vertex_tracker.clear();
     }
@@ -1343,12 +1317,6 @@ void Scene::ProcessComponentEvents() {
     // Apply batched updates
     for (const auto mesh_entity : dirty_overlay_meshes) UpdateEntitySelectionOverlays(mesh_entity);
     for (const auto mesh_entity : dirty_element_state_meshes) UpdateMeshElementStateBuffers(mesh_entity);
-}
-
-void Scene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
-    if (const auto indicator = r.get<ExcitedVertex>(e).IndicatorEntity; indicator != entt::null) {
-        Destroy(indicator);
-    }
 }
 
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }

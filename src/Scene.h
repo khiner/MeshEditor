@@ -248,8 +248,6 @@ private:
 
     // Process deferred component events. Called once per frame.
     void ProcessComponentEvents();
-    // temp: Immediate handler needed for ExcitedVertex destroy (captures indicator entity before removal)
-    void OnDestroyExcitedVertex(entt::registry &, entt::entity);
 
     void SetInteractionMode(InteractionMode);
     void SetEditMode(he::Element mode);

@@ -22,5 +22,4 @@ struct Excitable {
 struct ExcitedVertex {
     uint32_t Vertex;
     float Force;
-    entt::entity IndicatorEntity{};
 };
