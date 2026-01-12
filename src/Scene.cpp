@@ -1986,7 +1986,8 @@ namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr vk::Extent2D ToExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
-std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent, float drag_threshold) {
+std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
+    static constexpr float drag_threshold{2};
     if (glm::distance(start, end) <= drag_threshold) return {};
 
     const vec2 extent_size{float(extent.width), float(extent.height)};
@@ -2511,73 +2512,58 @@ void Scene::Interact() {
 
     if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
-    if (SelectionMode == SelectionMode::Box && SETTINGS.InteractionMode == InteractionMode::Edit) {
+    const auto interaction_mode = SETTINGS.InteractionMode;
+    if (SelectionMode == SelectionMode::Box && (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Object)) {
         const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = mouse_pos;
             BoxSelectEnd = mouse_pos;
-        } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
+        } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectEnd = mouse_pos;
-            static constexpr float drag_threshold{2};
-            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent, drag_threshold)) {
-                Timer timer{"BoxSelectElements (all)"};
-                // todo don't double-update MeshSelection
-                for (const auto e : R.view<MeshSelection>()) {
-                    R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.ActiveHandle = {}; });
-                }
-
-                std::unordered_set<entt::entity> mesh_entities; // Meshs of selected instances
-                for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
-                    mesh_entities.insert(mi.MeshEntity);
-                }
-                std::vector<ElementRange> ranges;
-                ranges.reserve(mesh_entities.size());
-                uint32_t offset = 0;
-                for (const auto mesh_entity : mesh_entities) {
-                    if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), EditMode); count > 0) {
-                        ranges.emplace_back(mesh_entity, offset, count);
-                        offset += count;
+            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent); box_px) {
+                if (interaction_mode == InteractionMode::Edit) {
+                    Timer timer{"BoxSelectElements (all)"};
+                    // todo don't double-update MeshSelection
+                    for (const auto e : R.view<MeshSelection>()) {
+                        R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.ActiveHandle = {}; });
                     }
-                }
 
-                auto results = RunBoxSelectElements(ranges, EditMode, *box_px);
-                for (size_t i = 0; i < ranges.size(); ++i) {
-                    const auto e = ranges[i].MeshEntity;
-                    R.replace<MeshSelection>(e, MeshSelection{EditMode, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
+                    std::unordered_set<entt::entity> mesh_entities;
+                    for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                        mesh_entities.insert(mi.MeshEntity);
+                    }
+                    std::vector<ElementRange> ranges;
+                    uint32_t offset = 0;
+                    for (const auto mesh_entity : mesh_entities) {
+                        if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), EditMode); count > 0) {
+                            ranges.emplace_back(mesh_entity, offset, count);
+                            offset += count;
+                        }
+                    }
+
+                    auto results = RunBoxSelectElements(ranges, EditMode, *box_px);
+                    for (size_t i = 0; i < ranges.size(); ++i) {
+                        const auto e = ranges[i].MeshEntity;
+                        R.replace<MeshSelection>(e, MeshSelection{EditMode, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
+                    }
+                } else if (interaction_mode == InteractionMode::Object) {
+                    const auto selected_entities = RunBoxSelect(*box_px);
+                    R.clear<Selected>();
+                    for (const auto e : selected_entities) R.emplace<Selected>(e);
                 }
             }
-        } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectStart.reset();
             BoxSelectEnd.reset();
         }
-        if (BoxSelectStart.has_value()) return;
-    }
-
-    if (SelectionMode == SelectionMode::Box && SETTINGS.InteractionMode == InteractionMode::Object) {
-        const auto mouse_pos = ToGlm(GetMousePos());
-        if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            BoxSelectStart = mouse_pos;
-            BoxSelectEnd = mouse_pos;
-        } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
-            BoxSelectEnd = mouse_pos;
-            static constexpr float drag_threshold{2};
-            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent, drag_threshold)) {
-                const auto selected_entities = RunBoxSelect(*box_px);
-                R.clear<Selected>();
-                for (const auto e : selected_entities) R.emplace<Selected>(e);
-            }
-        } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart.has_value()) {
-            BoxSelectStart.reset();
-            BoxSelectEnd.reset();
-        }
-        if (BoxSelectStart.has_value()) return;
+        if (BoxSelectStart) return;
     }
 
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
     const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)};
 
-    if (SETTINGS.InteractionMode == InteractionMode::Excite) {
+    if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             if (const auto hit_entities = RunClickSelect(mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); R.all_of<Excitable>(hit_entity)) {
@@ -2593,27 +2579,25 @@ void Scene::Interact() {
     }
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
 
-    if (SETTINGS.InteractionMode == InteractionMode::Edit) {
-        if (EditMode != Element::None) {
-            const auto hit_entities = RunClickSelect(mouse_px);
-            const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
-            const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-            if (!toggle) {
-                for (const auto [e, selection] : R.view<MeshSelection>().each()) {
-                    if (!selection.Handles.empty() || selection.Element != Element::None) {
-                        R.replace<MeshSelection>(e, MeshSelection{});
-                    }
-                }
-            }
-            if (hit_it != hit_entities.end()) {
-                const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
-                if (const auto element = RunClickSelectElement(mesh_entity, EditMode, mouse_px)) {
-                    SelectElement(mesh_entity, *element, toggle);
+    if (interaction_mode == InteractionMode::Edit && EditMode == Element::None) return;
+    const auto hit_entities = RunClickSelect(mouse_px);
+    if (interaction_mode == InteractionMode::Edit) {
+        const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
+        const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
+        if (!toggle) {
+            for (const auto [e, selection] : R.view<MeshSelection>().each()) {
+                if (!selection.Handles.empty() || selection.Element != Element::None) {
+                    R.replace<MeshSelection>(e, MeshSelection{});
                 }
             }
         }
-    } else if (SETTINGS.InteractionMode == InteractionMode::Object) {
-        const auto hit_entities = RunClickSelect(mouse_px);
+        if (hit_it != hit_entities.end()) {
+            const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
+            if (const auto element = RunClickSelectElement(mesh_entity, EditMode, mouse_px)) {
+                SelectElement(mesh_entity, *element, toggle);
+            }
+        }
+    } else if (interaction_mode == InteractionMode::Object) {
         // Cycle through hit entities.
         entt::entity intersected = entt::null;
         if (!hit_entities.empty()) {
