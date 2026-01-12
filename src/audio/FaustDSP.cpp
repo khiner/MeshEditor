@@ -33,7 +33,7 @@ void FaustDSP::DrawGraph() {
         if (!FaustSvg || FaustSvg->Path != faust_svg_path) {
             CreateSvg(FaustSvg, faust_svg_path);
         }
-        if (auto clickedLinkOpt = FaustSvg->Render()) {
+        if (auto clickedLinkOpt = FaustSvg->Draw()) {
             SelectedSvgPath = std::move(*clickedLinkOpt);
         }
     }

@@ -152,8 +152,11 @@ struct Scene {
     // Renders to an image view that can be accessed with `GetViewportImageView()`.
     // The extent of the resolve image can be found with `GetExtent()` after the call,
     // and it will be equal to the dimensions of `GetContentRegionAvail()` at the beginning of the call.
-    // Returns true if the scene was updated, which can happen when the window size or background color changes.
-    bool RenderViewport(); // The main scene viewport (not to be confused with ImGui viewports)
+    // Returns true if the extent changed, which requires recreating the ImGui texture wrapper.
+    // Note: This submits GPU work but does NOT wait for completion. Call WaitForRender() before sampling the viewport image.
+    bool SubmitViewport();
+    // Wait for pending viewport render to complete. No-op if no render pending.
+    void WaitForRender();
     // The "overlay" is everything drawn ontop of the viewport with ImGui, independent of the main scene vulkan pipeline:
     // - Orientation/Transform gizmos
     // - Active object center-dot
@@ -232,6 +235,7 @@ private:
 
     bool CommandBufferDirty{false}; // Render command buffer needs re-recording.
     bool NeedsRender{false}; // Scene needs to be re-rendered (submit command buffers).
+    bool RenderPending{false}; // GPU render submitted but not yet waited on.
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
 
     struct ElementRange {

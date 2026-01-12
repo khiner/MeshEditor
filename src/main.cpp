@@ -557,7 +557,8 @@ void run() {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
                 scene->Interact();
-                if (scene->RenderViewport()) {
+                // Submit GPU render. Nonblocking: WaitForRender() is called later, before RenderFrame() samples the resolve image.
+                if (scene->SubmitViewport()) {
                     // Extent changed. Update the scene texture.
                     scene_viewport_texture.reset(); // Ensure destruction before creation.
                     scene_viewport_texture = std::make_unique<mvk::ImGuiTexture>(*vc->Device, scene->GetViewportImageView(), vec2{0, 1}, vec2{1, 0});
@@ -565,7 +566,7 @@ void run() {
                 if (scene_viewport_texture) {
                     const auto cursor = GetCursorPos();
                     const auto &scene_extent = scene->GetExtent();
-                    scene_viewport_texture->Render({float(scene_extent.width), float(scene_extent.height)});
+                    scene_viewport_texture->Draw({float(scene_extent.width), float(scene_extent.height)});
                     SetCursorPos(cursor);
                 }
                 scene->RenderOverlay();
@@ -583,6 +584,7 @@ void run() {
         ImGui::Render();
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
+            scene->WaitForRender(); // ImGui samples resolve image
             RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
             PresentFrame(vc->Queue, wd);
         }

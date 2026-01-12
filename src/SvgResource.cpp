@@ -47,13 +47,13 @@ struct SvgResource::Impl {
     }
 
     // Returns the clicked link path.
-    std::optional<fs::path> Render() {
+    std::optional<fs::path> Draw() {
         using namespace ImGui;
 
         const auto doc = Document->documentElement();
         const auto doc_box = doc.getBoundingBox();
         const auto display_width = std::min(GetContentRegionAvail().x, doc_box.w * Scale);
-        Texture->Render({display_width, display_width * doc_box.h / doc_box.w});
+        Texture->Draw({display_width, display_width * doc_box.h / doc_box.w});
         if (IsItemHovered()) {
             static constexpr std::string LinkAttribute = "xlink:href";
             const auto display_scale = display_width / doc_box.w;
@@ -83,8 +83,8 @@ SvgResource::SvgResource(vk::Device device, BitmapToImage render, fs::path path)
     : Path(std::move(path)), Imp(std::make_unique<SvgResource::Impl>(device, std::move(render), Path)) {}
 SvgResource::~SvgResource() = default;
 
-std::optional<fs::path> SvgResource::Render() { return Imp->Render(); }
+std::optional<fs::path> SvgResource::Draw() { return Imp->Draw(); }
 
-void SvgResource::RenderIcon(vec2 size) const {
-    if (Imp->Texture) Imp->Texture->Render(size);
+void SvgResource::DrawIcon(vec2 size) const {
+    if (Imp->Texture) Imp->Texture->Draw(size);
 }

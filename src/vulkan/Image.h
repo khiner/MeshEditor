@@ -18,7 +18,7 @@ struct ImGuiTexture {
     ImGuiTexture(vk::Device, vk::ImageView, vec2 uv0 = {0, 0}, vec2 uv1 = {1, 1});
     ~ImGuiTexture();
 
-    void Render(vec2 size) const;
+    void Draw(vec2 size) const; // ImGui draw
 
 private:
     vk::UniqueSampler Sampler;

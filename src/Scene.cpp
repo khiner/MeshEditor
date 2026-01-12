@@ -2643,11 +2643,11 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);
 };
 
-bool Scene::RenderViewport() {
+bool Scene::SubmitViewport() {
     ProcessComponentEvents();
 
     if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        const Timer timer{"RenderViewport->UpdateBufferDescriptorSets"};
+        const Timer timer{"SubmitViewport->UpdateBufferDescriptorSets"};
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
@@ -2655,7 +2655,7 @@ bool Scene::RenderViewport() {
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && !CommandBufferDirty && !NeedsRender) return false;
 
-    const Timer timer{"RenderViewport"};
+    const Timer timer{"SubmitViewport"};
     if (extent_changed) {
         Extent = ToExtent(content_region);
         UpdateSceneUBO();
@@ -2663,7 +2663,7 @@ bool Scene::RenderViewport() {
         Pipelines->SetExtent(Extent);
         Buffers->ResizeSelectionNodeBuffer(Extent);
         {
-            const Timer timer{"RenderViewport->UpdateSelectionDescriptorSets"};
+            const Timer timer{"SubmitViewport->UpdateSelectionDescriptorSets"};
             const auto head_image_info = vk::DescriptorImageInfo{
                 nullptr,
                 *Pipelines->SelectionFragment.Resources->HeadImage.View,
@@ -2716,15 +2716,18 @@ bool Scene::RenderViewport() {
     submit.setCommandBuffers(*RenderCommandBuffer);
 #endif
     Vk.Queue.submit(submit, *RenderFence);
-    {
-        const Timer timer{"RenderViewport->WaitForGPU"};
-        WaitFor(*RenderFence, Vk.Device);
-    }
-
-    Buffers->Ctx.ReclaimRetiredBuffers();
-
+    RenderPending = true;
     NeedsRender = false;
     return extent_changed;
+}
+
+void Scene::WaitForRender() {
+    if (!RenderPending) return;
+
+    const Timer timer{"WaitForRender"};
+    WaitFor(*RenderFence, Vk.Device);
+    Buffers->Ctx.ReclaimRetiredBuffers();
+    RenderPending = false;
 }
 
 void Scene::RenderOverlay() {
@@ -2800,7 +2803,7 @@ void Scene::RenderOverlay() {
             );
             dl.AddRectFilled(GetItemRectMin() + padding, GetItemRectMax() - padding, bg_color, 8.f, corners);
             SetCursorScreenPos(GetItemRectMin() + (button_size - icon_size) * 0.5f);
-            icon.RenderIcon(std::bit_cast<vec2>(icon_size));
+            icon.DrawIcon(std::bit_cast<vec2>(icon_size));
         }
         SetCursorScreenPos(saved_cursor_pos);
     }

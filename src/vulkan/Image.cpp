@@ -12,7 +12,7 @@ ImGuiTexture::~ImGuiTexture() {
     ImGui_ImplVulkan_RemoveTexture(DescriptorSet);
 }
 
-void ImGuiTexture::Render(vec2 size) const {
+void ImGuiTexture::Draw(vec2 size) const {
     ImGui::Image(ImTextureID((void *)DescriptorSet), {size.x, size.y}, {Uv0.x, Uv0.y}, {Uv1.x, Uv1.y});
 }
 
