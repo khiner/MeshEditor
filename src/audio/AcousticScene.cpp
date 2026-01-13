@@ -61,7 +61,7 @@ struct Recording {
 };
 
 AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg)
-    : R(r), CreateSvg(std::move(create_svg)), Dsp(std::make_unique<FaustDSP>(std::move(create_svg))),
+    : R(r), CreateSvg(std::move(create_svg)), Dsp(std::make_unique<FaustDSP>(CreateSvg)),
       FaustGenerator(std::make_unique<::FaustGenerator>(r, [this](std::string_view code) { Dsp->SetCode(code); })) {
     R.on_construct<ExcitedVertex>().connect<&AcousticScene::OnCreateExcitedVertex>(*this);
     R.on_destroy<ExcitedVertex>().connect<&AcousticScene::OnDestroyExcitedVertex>(*this);

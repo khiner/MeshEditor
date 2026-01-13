@@ -1183,7 +1183,6 @@ void Scene::LoadIcons(vk::Device device) {
         return RenderBitmapToImage(data, width, height);
     };
 
-    device.waitIdle();
     Icons.Select = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/select.svg");
     Icons.SelectBox = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/select_box.svg");
     Icons.Move = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/move.svg");
@@ -2627,7 +2626,7 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);
 };
 
-bool Scene::SubmitViewport() {
+bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     ProcessComponentEvents();
 
     if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
@@ -2643,7 +2642,9 @@ bool Scene::SubmitViewport() {
     if (extent_changed) {
         Extent = ToExtent(content_region);
         UpdateSceneUBO();
-        Vk.Device.waitIdle(); // Ensure GPU work is done before destroying old pipeline resources
+        if (viewportConsumerFence) { // Wait for viewport consumer to finish sampling old resources
+            std::ignore = Vk.Device.waitForFences(viewportConsumerFence, VK_TRUE, UINT64_MAX);
+        }
         Pipelines->SetExtent(Extent);
         Buffers->ResizeSelectionNodeBuffer(Extent);
         {

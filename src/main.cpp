@@ -380,11 +380,12 @@ void run() {
     // Load transform mode icons
     scene->LoadIcons(device);
 
-    const auto CreateSvg = [device, &scene](std::unique_ptr<SvgResource> &svg, fs::path path) {
+    const auto CreateSvg = [device, &scene, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         const auto RenderBitmap = [&scene](std::span<const std::byte> data, uint32_t width, uint32_t height) {
             return scene->RenderBitmapToImage(data, width, height);
         };
-        device.waitIdle();
+        // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
+        CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
         svg.reset(); // Ensure destruction before creation.
         svg = std::make_unique<SvgResource>(device, RenderBitmap, std::move(path));
     };
@@ -558,7 +559,9 @@ void run() {
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
                 scene->Interact();
                 // Submit GPU render. Nonblocking: WaitForRender() is called later, before RenderFrame() samples the resolve image.
-                if (scene->SubmitViewport()) {
+                // Pass consumer fence only after first frame (fence hasn't been submitted yet on frame 1).
+                vk::Fence consumerFence = GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{};
+                if (scene->SubmitViewport(consumerFence)) {
                     // Extent changed. Update the scene texture.
                     scene_viewport_texture.reset(); // Ensure destruction before creation.
                     scene_viewport_texture = std::make_unique<mvk::ImGuiTexture>(*vc->Device, scene->GetViewportImageView(), vec2{0, 1}, vec2{1, 0});
