@@ -1657,6 +1657,7 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
     const auto &mesh = R.get<Mesh>(e);
     std::unordered_set<VH> selected_vertices;
     std::unordered_set<EH> selected_edges;
+    std::unordered_set<EH> active_edges;
     std::unordered_set<FH> selected_faces;
 
     auto element{Element::None};
@@ -1687,6 +1688,11 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
                 selected_faces.emplace(h);
                 for (const auto heh : mesh.fh_range(FH{h})) selected_edges.emplace(mesh.GetEdge(heh));
             }
+            if (active_handle) {
+                for (const auto heh : mesh.fh_range(FH{*active_handle})) {
+                    active_edges.emplace(mesh.GetEdge(heh));
+                }
+            }
         }
     }
 
@@ -1702,7 +1708,9 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
         for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
             uint32_t state = 0;
             if (selected_edges.contains(EH{ei})) state |= MeshRender::ElementStateSelected;
-            if (element == Element::Edge && active_handle == ei) state |= MeshRender::ElementStateActive;
+            if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
+                state |= MeshRender::ElementStateActive;
+            }
             edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
         }
     } else if (element == Element::Vertex) {
