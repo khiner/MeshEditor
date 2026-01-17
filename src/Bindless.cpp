@@ -7,42 +7,25 @@ namespace {
 constexpr vk::DescriptorBindingFlags BindlessFlagsUpdateAfterBind = vk::DescriptorBindingFlagBits::ePartiallyBound |
     vk::DescriptorBindingFlagBits::eUpdateAfterBind;
 
-constexpr std::array SlotTypeNames{
-    "uniform",
-    "image",
-    "sampler",
-    "buffer",
-    "vertex buffer",
-    "index buffer",
-    "model buffer",
-    "object id buffer",
-    "face normal buffer",
-    "draw data buffer"
+struct SlotInfo {
+    const char *Name;
+    vk::DescriptorType Descriptor;
+    uint32_t Binding;
 };
-constexpr std::array SlotTypeDescriptors{
-    vk::DescriptorType::eUniformBuffer,
-    vk::DescriptorType::eStorageImage,
-    vk::DescriptorType::eCombinedImageSampler,
-    vk::DescriptorType::eStorageBuffer,
-    vk::DescriptorType::eStorageBuffer,
-    vk::DescriptorType::eStorageBuffer,
-    vk::DescriptorType::eStorageBuffer,
-    vk::DescriptorType::eStorageBuffer,
-    vk::DescriptorType::eStorageBuffer,
-    vk::DescriptorType::eStorageBuffer
+
+constexpr std::array SlotInfos{
+    SlotInfo{"uniform", vk::DescriptorType::eUniformBuffer, 0u},
+    SlotInfo{"image", vk::DescriptorType::eStorageImage, 1u},
+    SlotInfo{"sampler", vk::DescriptorType::eCombinedImageSampler, 2u},
+    SlotInfo{"buffer", vk::DescriptorType::eStorageBuffer, 6u}, // General storage buffers
+    SlotInfo{"vertex buffer", vk::DescriptorType::eStorageBuffer, 3u},
+    SlotInfo{"index buffer", vk::DescriptorType::eStorageBuffer, 4u},
+    SlotInfo{"model buffer", vk::DescriptorType::eStorageBuffer, 5u},
+    SlotInfo{"object id buffer", vk::DescriptorType::eStorageBuffer, 7u},
+    SlotInfo{"face normal buffer", vk::DescriptorType::eStorageBuffer, 8u},
+    SlotInfo{"draw data buffer", vk::DescriptorType::eStorageBuffer, 9u},
 };
-constexpr std::array SlotTypeBindings{
-    0u, // Uniform
-    1u, // Image
-    2u, // Sampler
-    6u, // General storage buffers
-    3u, // Vertex buffers
-    4u, // Index buffers
-    5u, // Model buffers
-    7u, // Object ID buffers
-    8u, // Face normal buffers
-    9u // Draw data buffers
-};
+static_assert(SlotInfos.size() == SlotTypeCount, "SlotInfos must match SlotTypeCount.");
 } // namespace
 
 DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config)
@@ -100,7 +83,7 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config
 uint32_t DescriptorSlots::Allocate(SlotType type) {
     auto &free_list = FreeSlots[static_cast<size_t>(type)];
     if (free_list.empty()) {
-        throw std::runtime_error(std::format("Bindless {} slots exhausted", SlotTypeNames[static_cast<size_t>(type)]));
+        throw std::runtime_error(std::format("Bindless {} slots exhausted", SlotInfos[static_cast<size_t>(type)].Name));
     }
     const auto slot = free_list.back();
     free_list.pop_back();
@@ -110,27 +93,27 @@ uint32_t DescriptorSlots::Allocate(SlotType type) {
 void DescriptorSlots::Release(TypedSlot slot) {
     const auto idx = static_cast<size_t>(slot.Type);
     if (const uint32_t max = Config.Max(slot.Type); slot.Slot >= max) {
-        throw std::runtime_error(std::format("Bindless {} slot {} is out of range (max {}).", SlotTypeNames[idx], slot.Slot, max));
+        throw std::runtime_error(std::format("Bindless {} slot {} is out of range (max {}).", SlotInfos[idx].Name, slot.Slot, max));
     }
     FreeSlots[idx].emplace_back(slot.Slot);
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
     const auto idx = static_cast<size_t>(slot.Type);
-    return {GetSet(), SlotTypeBindings[idx], slot.Slot, 1, SlotTypeDescriptors[idx], nullptr, &info};
+    return {GetSet(), SlotInfos[idx].Binding, slot.Slot, 1, SlotInfos[idx].Descriptor, nullptr, &info};
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
     constexpr auto idx = static_cast<size_t>(SlotType::Image);
-    return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], &info, nullptr};
+    return {GetSet(), SlotInfos[idx].Binding, slot, 1, SlotInfos[idx].Descriptor, &info, nullptr};
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeUniformWrite(uint32_t slot, const vk::DescriptorBufferInfo &info) const {
     constexpr auto idx = static_cast<size_t>(SlotType::Uniform);
-    return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], nullptr, &info};
+    return {GetSet(), SlotInfos[idx].Binding, slot, 1, SlotInfos[idx].Descriptor, nullptr, &info};
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
     constexpr auto idx = static_cast<size_t>(SlotType::Sampler);
-    return {GetSet(), SlotTypeBindings[idx], slot, 1, SlotTypeDescriptors[idx], &info, nullptr};
+    return {GetSet(), SlotInfos[idx].Binding, slot, 1, SlotInfos[idx].Descriptor, &info, nullptr};
 }

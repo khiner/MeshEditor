@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 constexpr uint32_t InvalidSlot{~0u};
@@ -14,9 +15,10 @@ enum class SlotType : uint8_t {
     ModelBuffer,
     ObjectIdBuffer,
     FaceNormalBuffer,
-    DrawDataBuffer
+    DrawDataBuffer,
+    Count
 };
-constexpr uint8_t SlotTypeCount{10};
+constexpr size_t SlotTypeCount{static_cast<size_t>(SlotType::Count)};
 
 struct TypedSlot {
     SlotType Type;
