@@ -1216,7 +1216,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     SettingsEntity = R.create();
     R.emplace<SceneSettings>(SettingsEntity);
 
-    UpdateEdgeColors();
     UpdateSceneUBO();
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
 
@@ -1610,6 +1609,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     if (SETTINGS.InteractionMode == mode) return;
 
     PATCH_SETTINGS([mode](auto &s) { s.InteractionMode = mode; });
+    UpdateSceneUBO();
     for (const auto &entity : R.view<Mesh>()) UpdateMeshElementStateBuffers(entity);
 }
 void Scene::SetEditMode(Element mode) {
@@ -1890,7 +1890,7 @@ void Scene::RecordRenderCommandBuffer() {
         }
         for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
             auto draw = MakeDrawData(bounding_boxes.Buffers, vertex_slot, models);
-            draw.LineColor = MeshRender::EdgeColor;
+            draw.LineColor = CurrentEdgeColor();
             AppendDraw(draw_list, overlay_batch, bounding_boxes.Buffers.Indices, models, draw);
         }
     }
@@ -2023,10 +2023,7 @@ void Scene::RecordTransferCommandBuffer() {
 }
 #endif
 
-void Scene::UpdateEdgeColors() {
-    MeshRender::EdgeColor = SETTINGS.ViewportShading == ViewportShadingMode::Solid ? MeshEdgeColor : EdgeColor;
-    UpdateSceneUBO();
-}
+vec4 Scene::CurrentEdgeColor() const { return SETTINGS.InteractionMode == InteractionMode::Edit ? Colors.WireEdit : Colors.Wire; }
 
 void Scene::UpdateSceneUBO() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
@@ -2039,7 +2036,7 @@ void Scene::UpdateSceneUBO() {
         .LightDirectionFar = vec4{Lights.Direction, Camera.FarClip},
         .SilhouetteActive = Colors.Active,
         .SilhouetteSelected = Colors.Selected,
-        .EdgeColor = MeshRender::EdgeColor,
+        .EdgeColor = CurrentEdgeColor(),
         .VertexUnselectedColor = MeshRender::UnselectedVertexEditColor,
         .SelectedColor = MeshRender::SelectedColor,
         .ActiveColor = MeshRender::ActiveColor,
@@ -3345,9 +3342,12 @@ void Scene::RenderControls() {
             auto color_mode = int(settings.ColorMode);
             bool color_mode_changed = false;
             if (settings.ViewportShading == ViewportShadingMode::Solid) {
-                SeparatorText("Fill color mode");
                 PushID("ColorMode");
+                AlignTextToFramePadding();
+                TextUnformatted("Fill color mode");
+                SameLine();
                 color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
+                SameLine();
                 color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
                 PopID();
             }
@@ -3357,27 +3357,12 @@ void Scene::RenderControls() {
                     s.ColorMode = ColorMode(color_mode);
                     s.SmoothShading = smooth_shading;
                 });
-                UpdateEdgeColors();
-            }
-            if (settings.ViewportShading == ViewportShadingMode::Wireframe) {
-                if (ColorEdit3("Edge color", &EdgeColor.x)) UpdateEdgeColors();
-            }
-            {
-                SeparatorText("Active/Selected");
-                bool color_changed = ColorEdit3("Active color", &Colors.Active[0]);
-                color_changed |= ColorEdit3("Selected color", &Colors.Selected[0]);
-                if (color_changed) {
-                    UpdateSceneUBO();
-                }
-                uint32_t edge_width = settings.SilhouetteEdgeWidth;
-                if (SliderUInt("Edge width", &edge_width, 1, 4)) {
-                    PATCH_SETTINGS([edge_width](auto &s) { s.SilhouetteEdgeWidth = edge_width; });
-                }
+                UpdateSceneUBO();
             }
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
                 AlignTextToFramePadding();
-                TextUnformatted("Normals:");
+                TextUnformatted("Normals");
                 bool changed = false;
                 for (const auto element : NormalElements) {
                     SameLine();
@@ -3400,6 +3385,19 @@ void Scene::RenderControls() {
                     for (auto selected_entity : R.view<Selected>()) {
                         UpdateEntitySelectionOverlays(R.get<MeshInstance>(selected_entity).MeshEntity);
                     }
+                }
+            }
+            {
+                SeparatorText("Style");
+                bool color_changed{false};
+                color_changed |= ColorEdit3("Wire color", &Colors.Wire.x);
+                color_changed |= ColorEdit3("Wire edit color", &Colors.WireEdit.x);
+                color_changed |= ColorEdit3("Active color", &Colors.Active[0]);
+                color_changed |= ColorEdit3("Selected color", &Colors.Selected[0]);
+                if (color_changed) UpdateSceneUBO();
+                uint32_t edge_width = settings.SilhouetteEdgeWidth;
+                if (SliderUInt("Silhouette edge width", &edge_width, 1, 4)) {
+                    PATCH_SETTINGS([edge_width](auto &s) { s.SilhouetteEdgeWidth = edge_width; });
                 }
             }
             EndTabItem();
@@ -3437,9 +3435,7 @@ void Scene::RenderControls() {
             light_changed |= SliderFloat3("Direction##Directional", &Lights.Direction[0], -1, 1);
             light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
             light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
-            if (light_changed) {
-                UpdateSceneUBO();
-            }
+            if (light_changed) UpdateSceneUBO();
             EndTabItem();
         }
         EndTabBar();

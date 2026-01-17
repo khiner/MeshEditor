@@ -82,7 +82,7 @@ void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
 
 namespace MeshRender {
 // Rendering colors
-inline vec4 VertexColor{1}, EdgeColor{0, 0, 0, 1};
+inline vec4 VertexColor{1};
 
 constexpr vec4 ActiveColor{1, 1, 1, 1};
 constexpr vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select

@@ -195,9 +195,6 @@ private:
     Camera Camera;
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
-    vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
-    vec4 MeshEdgeColor{0, 0, 0, 1}; // Used for faces mode.
-
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
     he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
@@ -206,6 +203,8 @@ private:
 
     vk::Extent2D Extent;
     struct Colors {
+        vec4 Wire{0, 0, 0, 1}; // Non-editing wireframe line color.
+        vec4 WireEdit{0, 0, 0, 1}; // Non-selected edit-mode line color.
         vec4 Active{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
         vec4 Selected{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
     };
@@ -273,7 +272,7 @@ private:
     void RenderEntitiesTable(std::string name, entt::entity parent);
 
     // VK buffer update methods
+    vec4 CurrentEdgeColor() const;
     void UpdateSceneUBO();
-    void UpdateEdgeColors();
     void UpdateEntitySelectionOverlays(entt::entity mesh_entity);
 };
