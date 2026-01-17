@@ -7,14 +7,15 @@ layout(location = 1) out vec3 WorldPosition;
 layout(location = 2) out vec4 Color;
 
 void main() {
-    const uint vertex_count = max(pc.VertexCountOrHeadImageSlot, 1u);
+    const DrawData draw = GetDrawData();
+    const uint vertex_count = max(draw.VertexCountOrHeadImageSlot, 1u);
     const uint idx = min(gl_VertexIndex, vertex_count - 1);
-    const Vertex vert = VertexBuffers[pc.VertexSlot].Vertices[idx + pc.VertexOffset];
-    const WorldMatrix world = ModelBuffers[pc.ModelSlot].Models[pc.FirstInstance + gl_InstanceIndex];
+    const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
+    const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint state = 0u;
-    if (pc.ElementStateSlot != INVALID_SLOT) {
-        state = ElementStateBuffers[pc.ElementStateSlot].States[idx];
+    if (draw.ElementStateSlot != INVALID_SLOT) {
+        state = ElementStateBuffers[draw.ElementStateSlot].States[idx];
     }
     const bool is_selected = (state & STATE_SELECTED) != 0u;
     const bool is_active = (state & STATE_ACTIVE) != 0u;

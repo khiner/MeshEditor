@@ -49,6 +49,19 @@ add_executable(${PROJECT_NAME}
     ${SOURCES}
 )
 
+set(DRAW_DATA_DEF "${CMAKE_SOURCE_DIR}/src/DrawData.def")
+set(DRAW_DATA_GLSL "${CMAKE_BINARY_DIR}/shaders/DrawData.glsl")
+set(GENERATE_DRAW_DATA_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/GenerateDrawDataGlsl.cmake")
+add_custom_command(
+    OUTPUT ${DRAW_DATA_GLSL}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${DRAW_DATA_DEF} -DOUTPUT=${DRAW_DATA_GLSL} -P ${GENERATE_DRAW_DATA_SCRIPT}
+    DEPENDS ${DRAW_DATA_DEF} ${GENERATE_DRAW_DATA_SCRIPT}
+    COMMENT "Generating DrawData.glsl"
+)
+add_custom_target(generate_drawdata_glsl DEPENDS ${DRAW_DATA_GLSL})
+add_dependencies(${PROJECT_NAME} generate_drawdata_glsl)
+
 include_directories(
     ${Vulkan_INCLUDE_DIRS}
     ${ImguiDir}
@@ -138,4 +151,5 @@ if(CMAKE_BUILD_TYPE MATCHES Release)
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/src/shaders ${CMAKE_BINARY_DIR}/shaders
     )
     add_dependencies(${PROJECT_NAME} copy_shaders)
+    add_dependencies(copy_shaders generate_drawdata_glsl)
 endif()

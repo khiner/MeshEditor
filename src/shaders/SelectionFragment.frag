@@ -1,34 +1,17 @@
 #version 450
 
-#define BINDLESS_NO_ELEMENT_STATE 1
-#include "Bindless.glsl"
+#extension GL_EXT_nonuniform_qualifier : require
 
-struct SelectionNode {
-    float Depth;
-    uint ObjectId;
-    uint Next;
-    uint Padding0;
-};
+#include "SelectionShared.glsl"
 
-layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
-
-layout(set = 0, binding = 6, std430) buffer SelectionNodes {
-    SelectionNode Nodes[];
-} SelectionBuffers[];
-
-layout(set = 0, binding = 6, std430) buffer SelectionCounter {
-    uint Count;
-    uint Overflow;
-} Counters[];
-
-layout(location = 0) flat in uint InstanceIndex;
+layout(location = 1) flat in uint ObjectId;
 
 const uint INVALID_NODE = 0xffffffffu;
 
 void main() {
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
     // when using .length() or image atomics, even when the index is uniform.
-    const uint head_index = nonuniformEXT(pc.VertexCountOrHeadImageSlot);
+    const uint head_index = nonuniformEXT(pc.SelectionHeadImageSlot);
     const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
     const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
 
@@ -38,9 +21,8 @@ void main() {
         return;
     }
 
-    const uint objectId = ObjectIdBuffers[pc.ObjectIdSlot].Ids[pc.FirstInstance + InstanceIndex];
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
-    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = objectId;
+    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = ObjectId;
 
     const ivec2 coord = ivec2(gl_FragCoord.xy);
     const uint prev = imageAtomicExchange(HeadImages[head_index], coord, idx);

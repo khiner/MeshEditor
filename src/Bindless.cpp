@@ -16,12 +16,14 @@ constexpr std::array SlotTypeNames{
     "index buffer",
     "model buffer",
     "object id buffer",
-    "face normal buffer"
+    "face normal buffer",
+    "draw data buffer"
 };
 constexpr std::array SlotTypeDescriptors{
     vk::DescriptorType::eUniformBuffer,
     vk::DescriptorType::eStorageImage,
     vk::DescriptorType::eCombinedImageSampler,
+    vk::DescriptorType::eStorageBuffer,
     vk::DescriptorType::eStorageBuffer,
     vk::DescriptorType::eStorageBuffer,
     vk::DescriptorType::eStorageBuffer,
@@ -38,7 +40,8 @@ constexpr std::array SlotTypeBindings{
     4u, // Index buffers
     5u, // Model buffers
     7u, // Object ID buffers
-    8u // Face normal buffers
+    8u, // Face normal buffers
+    9u // Draw data buffers
 };
 } // namespace
 
@@ -54,6 +57,7 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config
         vk::DescriptorSetLayoutBinding{6, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
         vk::DescriptorSetLayoutBinding{7, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
         vk::DescriptorSetLayoutBinding{8, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
+        vk::DescriptorSetLayoutBinding{9, vk::DescriptorType::eStorageBuffer, Config.MaxBuffers, vk::ShaderStageFlagBits::eAll},
     };
     const std::array<vk::DescriptorBindingFlags, bindings.size()> binding_flags{
         vk::DescriptorBindingFlagBits::ePartiallyBound, // Uniforms
@@ -64,7 +68,8 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Model buffers
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // General buffers (selection nodes, counters, click/box results, element state buffers)
         vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Object ID buffers
-        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind // Face normal buffers
+        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind, // Face normal buffers
+        vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind // Draw data buffers
     };
     const vk::DescriptorSetLayoutBindingFlagsCreateInfo binding_flags_ci{
         static_cast<uint32_t>(binding_flags.size()),
@@ -78,8 +83,8 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const BindlessConfig &config
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, Config.MaxUniforms},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, Config.MaxImages},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, Config.MaxSamplers},
-        // Storage-buffer bindings (vertex, index, model, general, object id, face normals), each with MaxBuffers slots.
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, Config.MaxBuffers * 6},
+        // Storage-buffer bindings (vertex, index, model, general, object id, face normals, draw data), each with MaxBuffers slots.
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, Config.MaxBuffers * 7},
     };
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());

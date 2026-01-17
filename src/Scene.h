@@ -6,7 +6,6 @@
 #include "mesh/MeshStore.h"
 #include "numeric/vec2.h"
 #include "numeric/vec4.h"
-#include "vulkan/Image.h"
 
 #include "entt_fwd.h"
 
@@ -15,7 +14,6 @@
 #include <memory>
 #include <set>
 #include <span>
-#include <unordered_set>
 #include <vector>
 
 using uint = uint32_t;
@@ -59,13 +57,29 @@ enum class ColorMode {
     Normals,
 };
 
-inline std::string to_string(InteractionMode mode) {
-    switch (mode) {
-        case InteractionMode::Object: return "Object";
-        case InteractionMode::Edit: return "Edit";
-        case InteractionMode::Excite: return "Excite";
-    }
-}
+enum class ShaderPipelineType {
+    Fill,
+    Line,
+    LineOverlay,
+    Point,
+    Grid,
+    SilhouetteDepthObject,
+    SilhouetteEdgeDepthObject,
+    SilhouetteEdgeDepth,
+    SilhouetteEdgeColor,
+    SelectionElementFace,
+    SelectionElementEdge,
+    SelectionElementVertex,
+    SelectionElementFaceXRay,
+    SelectionElementEdgeXRay,
+    SelectionElementVertexXRay,
+    SelectionFragmentXRay,
+    SelectionFragment,
+    DebugNormals,
+};
+
+struct DrawListBuilder;
+struct SelectionDrawInfo;
 
 struct MeshCreateInfo {
     std::string Name{};
@@ -80,25 +94,13 @@ struct MeshCreateInfo {
     bool Visible{true};
 };
 
-static constexpr Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100}; }
-
-inline static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice pd) {
-    const auto props = pd.getProperties();
-    const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
-    if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
-    if (counts & vk::SampleCountFlagBits::e32) return vk::SampleCountFlagBits::e32;
-    if (counts & vk::SampleCountFlagBits::e16) return vk::SampleCountFlagBits::e16;
-    if (counts & vk::SampleCountFlagBits::e8) return vk::SampleCountFlagBits::e8;
-    if (counts & vk::SampleCountFlagBits::e4) return vk::SampleCountFlagBits::e4;
-    if (counts & vk::SampleCountFlagBits::e2) return vk::SampleCountFlagBits::e2;
-
-    return vk::SampleCountFlagBits::e1;
-}
-
 struct SvgResource;
 struct ScenePipelines;
 struct SceneBuffers;
 struct DescriptorSlots;
+namespace mvk {
+struct ImageResource;
+}
 
 struct SceneVulkanResources {
     vk::Instance Instance;
@@ -190,7 +192,7 @@ private:
 
     entt::entity SettingsEntity{null_entity}; // Singleton for SceneSettings component
 
-    Camera Camera{CreateDefaultCamera()};
+    Camera Camera;
     Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
 
     vec4 EdgeColor{1, 1, 1, 1}; // Used for line mode.
@@ -261,8 +263,7 @@ private:
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(std::pair<glm::uvec2, glm::uvec2>);
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
-    void RenderSilhouetteDepth(vk::CommandBuffer cb);
-    void RenderSelectionPassWith(bool render_depth, const std::function<void(vk::CommandBuffer, const PipelineRenderer &)> &draw_fn, vk::Semaphore signal_semaphore = {});
+    void RenderSelectionPassWith(bool render_depth, const std::function<SelectionDrawInfo(DrawListBuilder &)> &build_fn, vk::Semaphore signal_semaphore = {});
     void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<glm::uvec2, glm::uvec2>);
     std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);

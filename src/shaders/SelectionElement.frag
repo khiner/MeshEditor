@@ -1,25 +1,8 @@
 #version 450
 
-#define BINDLESS_NO_ELEMENT_STATE 1
-#include "Bindless.glsl"
+#extension GL_EXT_nonuniform_qualifier : require
 
-struct SelectionNode {
-    float Depth;
-    uint ObjectId;
-    uint Next;
-    uint Padding0;
-};
-
-layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
-
-layout(set = 0, binding = 6, std430) buffer SelectionNodes {
-    SelectionNode Nodes[];
-} SelectionBuffers[];
-
-layout(set = 0, binding = 6, std430) buffer SelectionCounter {
-    uint Count;
-    uint Overflow;
-} Counters[];
+#include "SelectionShared.glsl"
 
 layout(location = 0) flat in uint ElementId;
 
@@ -30,7 +13,7 @@ layout(early_fragment_tests) in;
 void main() {
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
     // when using .length() or image atomics, even when the index is uniform.
-    const uint head_index = nonuniformEXT(pc.VertexCountOrHeadImageSlot);
+    const uint head_index = nonuniformEXT(pc.SelectionHeadImageSlot);
     const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
     const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
 

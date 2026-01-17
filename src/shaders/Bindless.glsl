@@ -2,6 +2,11 @@
 #extension GL_EXT_scalar_block_layout : require
 
 #include "SceneUBO.glsl"
+#include "DrawData.glsl"
+
+#ifndef DRAW_DATA_INDEX
+#define DRAW_DATA_INDEX gl_InstanceIndex
+#endif
 
 struct Vertex {
     vec3 Position;
@@ -39,26 +44,21 @@ layout(set = 0, binding = 8, scalar) readonly buffer FaceNormalBuffer {
     vec3 Normals[];
 } FaceNormalBuffers[];
 
+layout(set = 0, binding = 9, scalar) readonly buffer DrawDataBuffer {
+    DrawData Draws[];
+} DrawDataBuffers[];
+
 const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
 
 layout(push_constant) uniform PushConstants {
-    uint VertexSlot;
-    uint IndexSlot;
-    uint IndexOffset;
-    uint ModelSlot;
-    uint FirstInstance;
-    uint ObjectIdSlot; // Slot for per-instance ObjectId buffer (INVALID_SLOT if unused)
-    uint FaceNormalSlot;
-    uint FaceIdOffset;
-    uint FaceNormalOffset;
-    uint VertexCountOrHeadImageSlot; // HeadImageSlot for selection fragment
-    uint SelectionNodesSlot;
-    uint SelectionCounterSlot;
-    uint ElementIdOffset;
-    uint ElementStateSlot;
-    uint VertexOffset;
+    uint DrawDataSlot;
+    uint DrawDataOffset;
     uint Pad0;
-    vec4 LineColor;
+    uint Pad1;
 } pc;
+
+DrawData GetDrawData() {
+    return DrawDataBuffers[nonuniformEXT(pc.DrawDataSlot)].Draws[pc.DrawDataOffset + DRAW_DATA_INDEX];
+}

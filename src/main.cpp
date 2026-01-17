@@ -185,9 +185,13 @@ struct VulkanContext {
         if (!PhysicalDevice.getFeatures().fillModeNonSolid) {
             throw std::runtime_error("`fillModeNonSolid` is not supported, but is needed for line rendering.");
         }
+        if (!PhysicalDevice.getFeatures().multiDrawIndirect) {
+            throw std::runtime_error("`multiDrawIndirect` is not supported, but is needed for MDI submission.");
+        }
 
         vk::PhysicalDeviceFeatures device_features{};
         device_features.fillModeNonSolid = VK_TRUE;
+        device_features.multiDrawIndirect = VK_TRUE;
         device_features.fragmentStoresAndAtomics = VK_TRUE; // For writing to storage buffers from fragment shaders
 
         // Create logical device (with one queue).
@@ -211,7 +215,6 @@ struct VulkanContext {
         RequireFeature(supported_indexing.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
         RequireFeature(supported_bda.bufferDeviceAddress, "bufferDeviceAddress");
         RequireFeature(supported_scalar.scalarBlockLayout, "scalarBlockLayout");
-
         vk::PhysicalDeviceBufferDeviceAddressFeatures buffer_device_address_features{};
         buffer_device_address_features.bufferDeviceAddress = VK_TRUE;
         vk::PhysicalDeviceScalarBlockLayoutFeatures scalar_block_layout_features{};

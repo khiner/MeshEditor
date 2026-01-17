@@ -1,0 +1,23 @@
+if(NOT DEFINED INPUT OR NOT DEFINED OUTPUT)
+    message(FATAL_ERROR "GenerateDrawDataGlsl.cmake requires INPUT and OUTPUT")
+endif()
+
+file(STRINGS "${INPUT}" lines)
+set(output "struct DrawData {\n")
+
+foreach(line IN LISTS lines)
+    string(STRIP "${line}" line)
+    if(line STREQUAL "" OR line MATCHES "^#" OR line MATCHES "^//")
+        continue()
+    endif()
+    string(REGEX MATCH "FIELD\\(([^,]+),([^,]+),([^,]+),(.+)\\)" _match "${line}")
+    if(NOT _match)
+        message(FATAL_ERROR "Invalid DrawData field line: ${line}")
+    endif()
+    string(STRIP "${CMAKE_MATCH_2}" glsl_type)
+    string(STRIP "${CMAKE_MATCH_3}" name)
+    set(output "${output}    ${glsl_type} ${name};\n")
+endforeach()
+
+set(output "${output}};\n")
+file(WRITE "${OUTPUT}" "#ifndef DRAW_DATA_GLSL\n#define DRAW_DATA_GLSL\n\n// Generated from src/DrawData.def. Do not edit by hand.\n\n${output}\n#endif\n")

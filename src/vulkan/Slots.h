@@ -13,9 +13,10 @@ enum class SlotType : uint8_t {
     IndexBuffer,
     ModelBuffer,
     ObjectIdBuffer,
-    FaceNormalBuffer
+    FaceNormalBuffer,
+    DrawDataBuffer
 };
-constexpr uint8_t SlotTypeCount{9};
+constexpr uint8_t SlotTypeCount{10};
 
 struct TypedSlot {
     SlotType Type;

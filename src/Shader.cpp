@@ -12,9 +12,21 @@ using std::views::transform, std::ranges::find_if, std::ranges::to;
 #ifdef RELEASE_BUILD
 // All files in `src/shaders` are copied to `build/shaders` at build time.
 static const fs::path ShadersDir = "shaders";
+static const std::array ShaderIncludeDirs{ShadersDir};
 #else
 static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
+static const fs::path BuildShadersDir = "shaders";
+static const std::array ShaderIncludeDirs{BuildShadersDir, ShadersDir};
 #endif
+
+static fs::path ResolveShaderPath(const fs::path &requested) {
+    for (const auto &dir : ShaderIncludeDirs) {
+        const auto candidate = dir / requested;
+        std::error_code ec;
+        if (fs::exists(candidate, ec)) return candidate;
+    }
+    throw std::runtime_error(std::format("Failed to resolve shader path '{}'", requested.string()));
+}
 
 // Resolves #include directives relative to `ShadersDir`
 class ShaderIncluder : public shaderc::CompileOptions::IncluderInterface {
@@ -22,39 +34,35 @@ public:
     shaderc_include_result *GetInclude(
         const char *requested_source, shaderc_include_type, const char *, size_t
     ) override {
-        const auto path = ShadersDir / requested_source;
         auto *result = new shaderc_include_result;
         try {
-            auto *content = new std::string(File::Read(path));
-            auto *name = new std::string(path.string());
-            result->source_name = name->c_str();
-            result->source_name_length = name->size();
-            result->content = content->c_str();
-            result->content_length = content->size();
-            result->user_data = new IncludeData{content, name};
+            const auto resolved_path = ResolveShaderPath(requested_source);
+            auto *include_data = new IncludeData{File::Read(resolved_path), resolved_path.string()};
+            result->source_name = include_data->Name.c_str();
+            result->source_name_length = include_data->Name.size();
+            result->content = include_data->Content.c_str();
+            result->content_length = include_data->Content.size();
+            result->user_data = include_data;
         } catch (...) {
-            auto *error = new std::string(std::format("Failed to include '{}'", requested_source));
+            auto *include_data = new IncludeData{std::format("Failed to include '{}'", requested_source), ""};
             result->source_name = "";
             result->source_name_length = 0;
-            result->content = error->c_str();
-            result->content_length = error->size();
-            result->user_data = new IncludeData{error, nullptr};
+            result->content = include_data->Content.c_str();
+            result->content_length = include_data->Content.size();
+            result->user_data = include_data;
         }
         return result;
     }
 
     void ReleaseInclude(shaderc_include_result *data) override {
-        auto *include_data = static_cast<IncludeData *>(data->user_data);
-        delete include_data->Content;
-        delete include_data->Name;
-        delete include_data;
+        delete static_cast<IncludeData *>(data->user_data);
         delete data;
     }
 
 private:
     struct IncludeData {
-        std::string *Content;
-        std::string *Name;
+        std::string Content;
+        std::string Name;
     };
 };
 
@@ -74,7 +82,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
             compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
             compile_opts.SetIncluder(std::make_unique<ShaderIncluder>());
             const auto type = resource.TypePath.Type;
-            const auto path = ShadersDir / resource.TypePath.Path;
+            const auto path = ResolveShaderPath(resource.TypePath.Path);
             const auto kind = [type] {
                 switch (type) {
                     case ShaderType::eVertex: return shaderc_glsl_vertex_shader;
