@@ -81,14 +81,6 @@ std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity
 void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
 
 namespace MeshRender {
-// Rendering colors
-inline vec4 VertexColor{1};
-
-constexpr vec4 ActiveColor{1, 1, 1, 1};
-constexpr vec4 SelectedColor{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select
-constexpr vec4 FaceNormalIndicatorColor{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal
-constexpr vec4 VertexNormalIndicatorColor{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal
-constexpr vec4 UnselectedVertexEditColor{0, 0, 0, 1}; // Unselected vertex in edit mode
 constexpr float NormalIndicatorLengthScale{0.25};
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 

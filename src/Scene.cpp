@@ -83,6 +83,8 @@ struct SceneUBO {
     vec4 SilhouetteActive{0, 0, 0, 0};
     vec4 SilhouetteSelected{0, 0, 0, 0};
     vec4 EdgeColor{0, 0, 0, 0};
+    vec4 FaceNormalColor{0, 0, 0, 0};
+    vec4 VertexNormalColor{0, 0, 0, 0};
     vec4 VertexUnselectedColor{0, 0, 0, 0};
     vec4 SelectedColor{0, 0, 0, 0};
     vec4 ActiveColor{0, 0, 0, 0};
@@ -111,6 +113,11 @@ struct SceneSettings {
 #define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SettingsEntity, fn)
 
 using SPT = ShaderPipelineType;
+enum class OverlayKind : uint32_t {
+    Edge = 0,
+    FaceNormal = 1,
+    VertexNormal = 2,
+};
 
 struct DrawPassPushConstants {
     uint32_t DrawDataSlot{InvalidSlot};
@@ -664,15 +671,18 @@ struct MainPipeline {
                 CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
             )
         );
-        pipelines.emplace(
-            SPT::LineOverlay,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
+        const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
+            return ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "VertexTransform.vert", {{0, static_cast<uint32_t>(overlay_kind)}}},
+                  {ShaderType::eFragment, "VertexColor.frag"}}},
                 {},
                 vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
                 CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
-            )
-        );
+            );
+        };
+        pipelines.emplace(SPT::LineOverlayFaceNormals, make_overlay_pipeline(OverlayKind::FaceNormal));
+        pipelines.emplace(SPT::LineOverlayVertexNormals, make_overlay_pipeline(OverlayKind::VertexNormal));
+        pipelines.emplace(SPT::LineOverlayBBox, make_overlay_pipeline(OverlayKind::Edge));
         pipelines.emplace(
             SPT::Point,
             ctx.CreateGraphics(
@@ -1761,7 +1771,6 @@ DrawData MakeDrawData(uint32_t vertex_slot, BufferRange vertices, const SlottedB
         .ElementStateSlot = InvalidSlot,
         .VertexOffset = vertices.Offset,
         .Pad0 = 0,
-        .LineColor = vec4{0, 0, 0, 0},
     };
 }
 DrawData MakeDrawData(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
@@ -1805,7 +1814,9 @@ void Scene::RecordRenderCommandBuffer() {
     DrawBatchInfo fill_batch{};
     DrawBatchInfo line_batch{};
     DrawBatchInfo point_batch{};
-    DrawBatchInfo overlay_batch{};
+    DrawBatchInfo overlay_face_normals_batch{};
+    DrawBatchInfo overlay_vertex_normals_batch{};
+    DrawBatchInfo overlay_bbox_batch{};
 
     if (render_silhouette) {
         silhouette_batch = draw_list.BeginBatch();
@@ -1878,20 +1889,28 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    overlay_batch = draw_list.BeginBatch();
     {
         const auto vertex_slot = Buffers->VertexBuffer.Buffer.Slot;
+        overlay_face_normals_batch = draw_list.BeginBatch();
         for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-            for (auto &[element, buffers] : mesh_buffers.NormalIndicators) {
-                auto draw = MakeDrawData(buffers, vertex_slot, models);
-                draw.LineColor = element == Element::Face ? MeshRender::FaceNormalIndicatorColor : MeshRender::VertexNormalIndicatorColor;
-                AppendDraw(draw_list, overlay_batch, buffers.Indices, models, draw);
+            if (auto it = mesh_buffers.NormalIndicators.find(Element::Face); it != mesh_buffers.NormalIndicators.end()) {
+                auto draw = MakeDrawData(it->second, vertex_slot, models);
+                AppendDraw(draw_list, overlay_face_normals_batch, it->second.Indices, models, draw);
             }
         }
+
+        overlay_vertex_normals_batch = draw_list.BeginBatch();
+        for (auto [_, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            if (auto it = mesh_buffers.NormalIndicators.find(Element::Vertex); it != mesh_buffers.NormalIndicators.end()) {
+                auto draw = MakeDrawData(it->second, vertex_slot, models);
+                AppendDraw(draw_list, overlay_vertex_normals_batch, it->second.Indices, models, draw);
+            }
+        }
+
+        overlay_bbox_batch = draw_list.BeginBatch();
         for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
             auto draw = MakeDrawData(bounding_boxes.Buffers, vertex_slot, models);
-            draw.LineColor = CurrentEdgeColor();
-            AppendDraw(draw_list, overlay_batch, bounding_boxes.Buffers.Indices, models, draw);
+            AppendDraw(draw_list, overlay_bbox_batch, bounding_boxes.Buffers.Indices, models, draw);
         }
     }
 
@@ -1987,7 +2006,9 @@ void Scene::RecordRenderCommandBuffer() {
 
     { // Selection overlays
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        record_draw_batch(main.Renderer, SPT::LineOverlay, overlay_batch);
+        record_draw_batch(main.Renderer, SPT::LineOverlayFaceNormals, overlay_face_normals_batch);
+        record_draw_batch(main.Renderer, SPT::LineOverlayVertexNormals, overlay_vertex_normals_batch);
+        record_draw_batch(main.Renderer, SPT::LineOverlayBBox, overlay_bbox_batch);
     }
 
     // Grid lines texture
@@ -2037,9 +2058,11 @@ void Scene::UpdateSceneUBO() {
         .SilhouetteActive = Colors.Active,
         .SilhouetteSelected = Colors.Selected,
         .EdgeColor = CurrentEdgeColor(),
-        .VertexUnselectedColor = MeshRender::UnselectedVertexEditColor,
-        .SelectedColor = MeshRender::SelectedColor,
-        .ActiveColor = MeshRender::ActiveColor,
+        .FaceNormalColor = Colors.FaceNormal,
+        .VertexNormalColor = Colors.VertexNormal,
+        .VertexUnselectedColor = Colors.VertexUnselected,
+        .SelectedColor = Colors.ElementSelected,
+        .ActiveColor = Colors.ElementActive,
     }));
     NeedsRender = true;
 }
@@ -3390,10 +3413,15 @@ void Scene::RenderControls() {
             {
                 SeparatorText("Style");
                 bool color_changed{false};
-                color_changed |= ColorEdit3("Wire color", &Colors.Wire.x);
-                color_changed |= ColorEdit3("Wire edit color", &Colors.WireEdit.x);
-                color_changed |= ColorEdit3("Active color", &Colors.Active[0]);
-                color_changed |= ColorEdit3("Selected color", &Colors.Selected[0]);
+                color_changed |= ColorEdit3("Wire", &Colors.Wire.x);
+                color_changed |= ColorEdit3("Wire edit", &Colors.WireEdit.x);
+                color_changed |= ColorEdit3("Face normal", &Colors.FaceNormal.x);
+                color_changed |= ColorEdit3("Vertex normal", &Colors.VertexNormal.x);
+                color_changed |= ColorEdit3("Vertex", &Colors.VertexUnselected.x);
+                color_changed |= ColorEdit3("Element active", &Colors.ElementActive.x);
+                color_changed |= ColorEdit3("Element selected", &Colors.ElementSelected.x);
+                color_changed |= ColorEdit3("Object active", &Colors.Active.x);
+                color_changed |= ColorEdit3("Object selected", &Colors.Selected.x);
                 if (color_changed) UpdateSceneUBO();
                 uint32_t edge_width = settings.SilhouetteEdgeWidth;
                 if (SliderUInt("Silhouette edge width", &edge_width, 1, 4)) {

@@ -15,6 +15,7 @@ using ShaderType = vk::ShaderStageFlagBits;
 struct ShaderTypePath {
     ShaderType Type;
     fs::path Path; // Paths are relative to the `shaders` directory.
+    std::vector<std::pair<uint32_t, uint32_t>> SpecializationConstants{};
 };
 
 struct Shaders {
@@ -31,6 +32,12 @@ private:
     struct ShaderResource {
         ShaderTypePath TypePath;
         vk::UniqueShaderModule Module{};
+        struct SpecializationData {
+            std::vector<vk::SpecializationMapEntry> Entries;
+            std::vector<uint32_t> Data;
+            vk::SpecializationInfo Info{};
+        };
+        std::optional<SpecializationData> Specialization{};
     };
     std::vector<ShaderResource> Resources;
 };

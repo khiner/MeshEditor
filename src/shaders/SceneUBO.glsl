@@ -8,6 +8,8 @@ layout(set = 0, binding = 0) uniform SceneUBO {
     vec4 SilhouetteActive;
     vec4 SilhouetteSelected;
     vec4 EdgeColor;
+    vec4 FaceNormalColor;
+    vec4 VertexNormalColor;
     vec4 VertexUnselectedColor;
     vec4 SelectedColor;
     vec4 ActiveColor;

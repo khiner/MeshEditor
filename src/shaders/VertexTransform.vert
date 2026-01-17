@@ -6,6 +6,8 @@ layout(location = 0) out vec3 WorldNormal;
 layout(location = 1) out vec3 WorldPosition;
 layout(location = 2) out vec4 Color;
 
+layout(constant_id = 0) const uint OverlayKind = 0u;
+
 void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.IndexSlot].Indices[draw.IndexOffset + uint(gl_VertexIndex)];
@@ -29,7 +31,12 @@ void main() {
 
     WorldNormal = mat3(world.MInv) * normal;
     WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
-    vec4 base_color = draw.LineColor;
+    vec4 base_color = Scene.EdgeColor;
+    if (OverlayKind == 1u) {
+        base_color = Scene.FaceNormalColor;
+    } else if (OverlayKind == 2u) {
+        base_color = Scene.VertexNormalColor;
+    }
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         base_color = vec4(0.7, 0.7, 0.7, 1);
     } else if (draw.ElementStateSlot != INVALID_SLOT) {

@@ -51,8 +51,12 @@ const uint STATE_ACTIVE = 1u << 1;
 layout(push_constant) uniform PushConstants {
     uint DrawDataSlot;
     uint DrawDataOffset;
+    uint SelectionHeadImageSlot;
+    uint SelectionNodesSlot;
+    uint SelectionCounterSlot;
     uint Pad0;
     uint Pad1;
+    uint Pad2;
 } pc;
 
 DrawData GetDrawData() {

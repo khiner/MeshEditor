@@ -60,7 +60,9 @@ enum class ColorMode {
 enum class ShaderPipelineType {
     Fill,
     Line,
-    LineOverlay,
+    LineOverlayFaceNormals,
+    LineOverlayVertexNormals,
+    LineOverlayBBox,
     Point,
     Grid,
     SilhouetteDepthObject,
@@ -205,8 +207,13 @@ private:
     struct Colors {
         vec4 Wire{0, 0, 0, 1}; // Non-editing wireframe line color.
         vec4 WireEdit{0, 0, 0, 1}; // Non-selected edit-mode line color.
-        vec4 Active{1, 0.627, 0.157, 1}; // Blender's default `Preferences->Themes->3D Viewport->Active Object`.
-        vec4 Selected{0.929, 0.341, 0, 1}; // Blender's default `Preferences->Themes->3D Viewport->Object Selected`.
+        vec4 FaceNormal{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal.
+        vec4 VertexNormal{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal.
+        vec4 VertexUnselected{0, 0, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex.
+        vec4 ElementSelected{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select.
+        vec4 ElementActive{1, 1, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Active Vertex.
+        vec4 Active{1, 0.627, 0.157, 1}; // Blender: Preferences->Themes->3D Viewport->Active Object.
+        vec4 Selected{0.929, 0.341, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Object Selected.
     };
     Colors Colors;
 

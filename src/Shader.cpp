@@ -67,7 +67,29 @@ private:
 };
 
 Shaders::Shaders(std::vector<ShaderTypePath> type_paths)
-    : Resources(type_paths | transform([](const auto &tp) { return ShaderResource{tp}; }) | to<std::vector>()) {}
+    : Resources(type_paths | transform([](const auto &tp) {
+                    ShaderResource resource{tp};
+                    if (!tp.SpecializationConstants.empty()) {
+                        ShaderResource::SpecializationData spec{};
+                        spec.Entries.reserve(tp.SpecializationConstants.size());
+                        spec.Data.reserve(tp.SpecializationConstants.size());
+                        size_t offset = 0;
+                        for (const auto &[id, value] : tp.SpecializationConstants) {
+                            spec.Entries.emplace_back(vk::SpecializationMapEntry{id, static_cast<uint32_t>(offset), sizeof(uint32_t)});
+                            spec.Data.push_back(value);
+                            offset += sizeof(uint32_t);
+                        }
+                        spec.Info = vk::SpecializationInfo{
+                            static_cast<uint32_t>(spec.Entries.size()),
+                            spec.Entries.data(),
+                            spec.Data.size() * sizeof(uint32_t),
+                            spec.Data.data(),
+                        };
+                        resource.Specialization = std::move(spec);
+                    }
+                    return resource;
+                }) |
+                to<std::vector>()) {}
 Shaders::Shaders(Shaders &&) = default;
 Shaders::~Shaders() = default;
 
@@ -98,7 +120,11 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
             }
             std::vector<uint> spirv_words{comp_result.cbegin(), comp_result.cend()};
             resource.Module = device.createShaderModuleUnique({{}, spirv_words});
-            return vk::PipelineShaderStageCreateInfo{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
+            vk::PipelineShaderStageCreateInfo stage_info{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
+            if (resource.Specialization) {
+                stage_info.setPSpecializationInfo(&resource.Specialization->Info);
+            }
+            return stage_info;
         }) |
         to<std::vector>();
     return stages;
