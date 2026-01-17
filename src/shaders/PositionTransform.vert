@@ -1,6 +1,5 @@
 #version 450
 
-#define DRAW_DATA_INDEX gl_InstanceIndex
 #include "Bindless.glsl"
 
 layout(location = 1) flat out uint ObjectId;

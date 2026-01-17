@@ -4,10 +4,6 @@
 #include "SceneUBO.glsl"
 #include "DrawData.glsl"
 
-#ifndef DRAW_DATA_INDEX
-#define DRAW_DATA_INDEX gl_InstanceIndex
-#endif
-
 struct Vertex {
     vec3 Position;
     vec3 Normal;
@@ -60,5 +56,5 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 DrawData GetDrawData() {
-    return DrawDataBuffers[nonuniformEXT(pc.DrawDataSlot)].Draws[pc.DrawDataOffset + DRAW_DATA_INDEX];
+    return DrawDataBuffers[nonuniformEXT(pc.DrawDataSlot)].Draws[pc.DrawDataOffset + gl_InstanceIndex];
 }

@@ -1,6 +1,5 @@
 #version 450
 
-#define DRAW_DATA_INDEX gl_InstanceIndex
 #define BINDLESS_NO_ELEMENT_STATE 1
 #include "Bindless.glsl"
 
