@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "BindlessBindings.h"
+#include "generated/BindlessBindings.h"
 
 constexpr uint32_t InvalidSlot{~0u};
 

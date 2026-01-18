@@ -9,6 +9,7 @@
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
+#include "generated/DrawData.h"
 #include "mesh/MeshRender.h"
 #include "mesh/Primitives.h"
 #include "vulkan/Image.h"
@@ -130,13 +131,6 @@ struct DrawPassPushConstants {
     uint32_t Pad2{0};
 };
 static_assert(sizeof(DrawPassPushConstants) % 16 == 0, "DrawPassPushConstants must be 16-byte aligned.");
-
-struct DrawData {
-#define FIELD(cpp_type, glsl_type, name, default_value) cpp_type name{default_value};
-#include "DrawData.def"
-#undef FIELD
-};
-static_assert(sizeof(DrawData) % 16 == 0, "DrawData must be 16-byte aligned.");
 
 struct DrawBatchInfo {
     uint32_t DrawDataOffset{0};

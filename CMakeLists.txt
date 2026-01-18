@@ -51,24 +51,28 @@ add_executable(${PROJECT_NAME}
 
 add_executable(bindless_bindings_gen tools/GenerateBindlessBindings.cpp)
 target_include_directories(bindless_bindings_gen PRIVATE src)
+add_executable(drawdata_gen tools/GenerateDrawData.cpp)
+target_include_directories(drawdata_gen PRIVATE src)
 
-set(DRAW_DATA_DEF "${CMAKE_SOURCE_DIR}/src/DrawData.def")
 set(DRAW_DATA_GLSL "${CMAKE_BINARY_DIR}/shaders/DrawData.glsl")
-set(GENERATE_DRAW_DATA_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/GenerateDrawDataGlsl.cmake")
+set(DRAW_DATA_HEADER "${CMAKE_BINARY_DIR}/generated/DrawData.h")
 set(BINDLESS_BINDINGS_GLSL "${CMAKE_BINARY_DIR}/shaders/BindlessBindings.glsl")
+set(BINDLESS_BINDINGS_HEADER "${CMAKE_BINARY_DIR}/generated/BindlessBindings.h")
 add_custom_command(
-    OUTPUT ${DRAW_DATA_GLSL}
+    OUTPUT ${DRAW_DATA_GLSL} ${DRAW_DATA_HEADER}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
-    COMMAND ${CMAKE_COMMAND} -DINPUT=${DRAW_DATA_DEF} -DOUTPUT=${DRAW_DATA_GLSL} -P ${GENERATE_DRAW_DATA_SCRIPT}
-    DEPENDS ${DRAW_DATA_DEF} ${GENERATE_DRAW_DATA_SCRIPT}
-    COMMENT "Generating DrawData.glsl"
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
+    COMMAND $<TARGET_FILE:drawdata_gen> ${DRAW_DATA_GLSL} ${DRAW_DATA_HEADER}
+    DEPENDS drawdata_gen ${CMAKE_SOURCE_DIR}/src/DrawDataFields.h
+    COMMENT "Generating DrawData.glsl and DrawData.h"
 )
 add_custom_command(
-    OUTPUT ${BINDLESS_BINDINGS_GLSL}
+    OUTPUT ${BINDLESS_BINDINGS_GLSL} ${BINDLESS_BINDINGS_HEADER}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
-    COMMAND $<TARGET_FILE:bindless_bindings_gen> ${BINDLESS_BINDINGS_GLSL}
-    DEPENDS bindless_bindings_gen ${CMAKE_SOURCE_DIR}/src/BindlessBindings.h
-    COMMENT "Generating BindlessBindings.glsl"
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
+    COMMAND $<TARGET_FILE:bindless_bindings_gen> ${BINDLESS_BINDINGS_GLSL} ${BINDLESS_BINDINGS_HEADER}
+    DEPENDS bindless_bindings_gen ${CMAKE_SOURCE_DIR}/src/BindlessBindingFields.h
+    COMMENT "Generating BindlessBindings.glsl and BindlessBindings.h"
 )
 add_custom_target(generate_drawdata_glsl DEPENDS ${DRAW_DATA_GLSL})
 add_custom_target(generate_bindless_bindings_glsl DEPENDS ${BINDLESS_BINDINGS_GLSL})
@@ -80,6 +84,7 @@ include_directories(
     ${ImguiDir}
     ${ImguiDir}/backends
     ${ImplotDir}
+    ${CMAKE_BINARY_DIR}
     SYSTEM lib/imspinner
     SYSTEM lib/glm
     SYSTEM lib/entt/src

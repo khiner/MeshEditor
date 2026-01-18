@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <format>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -12,13 +13,13 @@ constexpr vk::DescriptorBindingFlags BindlessFlagsUpdateAfterBind = vk::Descript
 
 constexpr std::pair<uint32_t, uint32_t> MaxUpdateAfterBindPair(const vk::PhysicalDeviceDescriptorIndexingProperties &props, BindKind kind) {
     switch (kind) {
-        case BindKind::buffer:
+        case BindKind::Buffer:
             return {props.maxDescriptorSetUpdateAfterBindStorageBuffers, props.maxPerStageDescriptorUpdateAfterBindStorageBuffers};
-        case BindKind::image:
+        case BindKind::Image:
             return {props.maxDescriptorSetUpdateAfterBindStorageImages, props.maxPerStageDescriptorUpdateAfterBindStorageImages};
-        case BindKind::uniform:
+        case BindKind::Uniform:
             return {props.maxDescriptorSetUpdateAfterBindUniformBuffers, props.maxPerStageDescriptorUpdateAfterBindUniformBuffers};
-        case BindKind::sampler:
+        case BindKind::Sampler:
             return {props.maxDescriptorSetUpdateAfterBindSampledImages, props.maxPerStageDescriptorUpdateAfterBindSamplers};
     }
     return {0u, 0u};
@@ -31,10 +32,10 @@ constexpr uint32_t ClampLimit(const vk::PhysicalDeviceDescriptorIndexingProperti
 
 constexpr uint32_t LimitCapFor(BindKind kind) {
     switch (kind) {
-        case BindKind::buffer: return 32768u;
-        case BindKind::image: return 1024u;
-        case BindKind::uniform: return 64u;
-        case BindKind::sampler: return 256u;
+        case BindKind::Buffer: return 32768u;
+        case BindKind::Image: return 1024u;
+        case BindKind::Uniform: return 64u;
+        case BindKind::Sampler: return 256u;
     }
     return 0u;
 }
@@ -45,20 +46,20 @@ constexpr uint32_t GetMaxDescriptors(const vk::PhysicalDeviceDescriptorIndexingP
 
 constexpr vk::DescriptorType DescriptorTypeFor(BindKind kind) {
     switch (kind) {
-        case BindKind::uniform: return vk::DescriptorType::eUniformBuffer;
-        case BindKind::image: return vk::DescriptorType::eStorageImage;
-        case BindKind::sampler: return vk::DescriptorType::eCombinedImageSampler;
-        case BindKind::buffer: return vk::DescriptorType::eStorageBuffer;
+        case BindKind::Uniform: return vk::DescriptorType::eUniformBuffer;
+        case BindKind::Image: return vk::DescriptorType::eStorageImage;
+        case BindKind::Sampler: return vk::DescriptorType::eCombinedImageSampler;
+        case BindKind::Buffer: return vk::DescriptorType::eStorageBuffer;
     }
     return vk::DescriptorType::eStorageBuffer;
 }
 
 constexpr vk::DescriptorBindingFlags FlagsFor(BindKind kind) {
     switch (kind) {
-        case BindKind::uniform: return vk::DescriptorBindingFlagBits::ePartiallyBound;
-        case BindKind::image: return BindlessFlagsUpdateAfterBind;
-        case BindKind::sampler: return BindlessFlagsUpdateAfterBind;
-        case BindKind::buffer: return vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind;
+        case BindKind::Uniform: return vk::DescriptorBindingFlagBits::ePartiallyBound;
+        case BindKind::Image: return BindlessFlagsUpdateAfterBind;
+        case BindKind::Sampler: return BindlessFlagsUpdateAfterBind;
+        case BindKind::Buffer: return vk::DescriptorBindingFlagBits::ePartiallyBound | BindlessFlagsUpdateAfterBind;
     }
     return vk::DescriptorBindingFlagBits::ePartiallyBound;
 }
@@ -66,13 +67,13 @@ constexpr vk::DescriptorBindingFlags FlagsFor(BindKind kind) {
 constexpr uint32_t CountBufferBindings() {
     uint32_t count = 0;
     for (const auto &def : BindingDefs) {
-        if (def.Kind == BindKind::buffer) ++count;
+        if (def.Kind == BindKind::Buffer) ++count;
     }
     return count;
 }
 
 struct SlotInfo {
-    const char *Name;
+    std::string_view Name;
     vk::DescriptorType Descriptor;
     uint32_t Binding;
 };
@@ -82,7 +83,7 @@ constexpr std::array<SlotInfo, SlotTypeCount> MakeSlotInfos() {
     for (size_t i = 0; i < BindingDefs.size(); ++i) {
         const auto &def = BindingDefs[i];
         const auto type = static_cast<SlotType>(i);
-        infos[i] = SlotInfo{def.Name.data(), DescriptorTypeFor(def.Kind), static_cast<uint32_t>(type)};
+        infos[i] = SlotInfo{def.Name, DescriptorTypeFor(def.Kind), static_cast<uint32_t>(type)};
     }
     return infos;
 }
@@ -94,10 +95,10 @@ static_assert(SlotInfos.size() == SlotTypeCount, "SlotInfos must match SlotTypeC
 DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDescriptorIndexingProperties &props)
     : Device(device) {
     std::unordered_map<BindKind, uint32_t> limits_map{
-        {BindKind::buffer, GetMaxDescriptors(props, BindKind::buffer)},
-        {BindKind::image, GetMaxDescriptors(props, BindKind::image)},
-        {BindKind::uniform, GetMaxDescriptors(props, BindKind::uniform)},
-        {BindKind::sampler, GetMaxDescriptors(props, BindKind::sampler)},
+        {BindKind::Buffer, GetMaxDescriptors(props, BindKind::Buffer)},
+        {BindKind::Image, GetMaxDescriptors(props, BindKind::Image)},
+        {BindKind::Uniform, GetMaxDescriptors(props, BindKind::Uniform)},
+        {BindKind::Sampler, GetMaxDescriptors(props, BindKind::Sampler)},
     };
     std::array<vk::DescriptorSetLayoutBinding, SlotTypeCount> bindings{};
     std::array<vk::DescriptorBindingFlags, SlotTypeCount> binding_flags{};
@@ -120,11 +121,11 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
     SetLayout = Device.createDescriptorSetLayoutUnique(layout_ci);
 
     const std::array pool_sizes{
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, limits_map.at(BindKind::uniform)},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, limits_map.at(BindKind::image)},
-        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, limits_map.at(BindKind::sampler)},
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, limits_map.at(BindKind::Uniform)},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, limits_map.at(BindKind::Image)},
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, limits_map.at(BindKind::Sampler)},
         // Storage-buffer bindings, each with MaxBuffers slots.
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, limits_map.at(BindKind::buffer) * CountBufferBindings()},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, limits_map.at(BindKind::Buffer) * CountBufferBindings()},
     };
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
