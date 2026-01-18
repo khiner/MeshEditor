@@ -80,13 +80,11 @@ struct SceneViewUBO {
     vec3 CameraPosition{0, 0, 0};
     float CameraNear{0.f};
     float CameraFar{0.f};
-    vec3 Pad0{0.f, 0.f, 0.f};
     vec3 ViewColor{0, 0, 0};
     float AmbientIntensity{0.f};
     vec3 DirectionalColor{0, 0, 0};
     float DirectionalIntensity{0.f};
     vec3 LightDirection{0, 0, 0};
-    float Pad1{0.f};
 };
 
 struct ViewportThemeUBO {
@@ -135,11 +133,7 @@ struct DrawPassPushConstants {
     uint32_t SelectionHeadImageSlot{InvalidSlot};
     uint32_t SelectionNodesSlot{InvalidSlot};
     uint32_t SelectionCounterSlot{InvalidSlot};
-    uint32_t Pad0{0};
-    uint32_t Pad1{0};
-    uint32_t Pad2{0};
 };
-static_assert(sizeof(DrawPassPushConstants) % 16 == 0, "DrawPassPushConstants must be 16-byte aligned.");
 
 struct DrawBatchInfo {
     uint32_t DrawDataOffset{0};
@@ -367,9 +361,8 @@ struct SelectionNode {
     float Depth;
     uint32_t ObjectId;
     uint32_t Next;
-    uint32_t Padding0;
 };
-static_assert(sizeof(SelectionNode) == 16, "SelectionNode must match scalar layout.");
+static_assert(sizeof(SelectionNode) == 12, "SelectionNode must match scalar layout.");
 
 struct SelectionCounters {
     uint32_t Count;
@@ -390,9 +383,8 @@ struct ClickElementCandidate {
     uint32_t ObjectId;
     float Depth;
     uint32_t DistanceSq;
-    uint32_t Padding;
 };
-static_assert(sizeof(ClickElementCandidate) == 16, "ClickElementCandidate must match scalar layout.");
+static_assert(sizeof(ClickElementCandidate) == 12, "ClickElementCandidate must match scalar layout.");
 
 struct ClickSelectPushConstants {
     glm::uvec2 TargetPx;
@@ -1761,7 +1753,6 @@ DrawData MakeDrawData(uint32_t vertex_slot, BufferRange vertices, const SlottedB
         .ElementIdOffset = 0,
         .ElementStateSlot = InvalidSlot,
         .VertexOffset = vertices.Offset,
-        .Pad0 = 0,
     };
 }
 DrawData MakeDrawData(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
@@ -2344,7 +2335,7 @@ std::optional<uint32_t> FindNearestSelectionElement(
     );
 
     const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(buffers.ClickElementResultBuffer.GetData().data());
-    ClickElementCandidate best{.ObjectId = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max(), .Padding = 0};
+    ClickElementCandidate best{.ObjectId = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
     for (uint32_t i = 0; i < group_count; ++i) {
         const auto &candidate = candidates[i];
         if (candidate.ObjectId == 0) continue;

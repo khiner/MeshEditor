@@ -8,13 +8,11 @@ layout(set = 0, binding = BINDING_SceneViewUBO, scalar) uniform SceneViewUBO {
     vec3 CameraPosition;
     float CameraNear;
     float CameraFar;
-    vec3 Pad0;
     vec3 ViewColor;
     float AmbientIntensity;
     vec3 DirectionalColor;
     float DirectionalIntensity;
     vec3 LightDirection;
-    float Pad1;
 } SceneView;
 
 layout(set = 0, binding = BINDING_ViewportThemeUBO, scalar) uniform ViewportThemeUBO {

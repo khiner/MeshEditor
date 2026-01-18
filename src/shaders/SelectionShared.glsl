@@ -9,7 +9,6 @@ struct SelectionNode {
     float Depth;
     uint ObjectId;
     uint Next;
-    uint Padding0;
 };
 
 layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
@@ -29,9 +28,6 @@ layout(push_constant) uniform SelectionPushConstants {
     uint SelectionHeadImageSlot;
     uint SelectionNodesSlot;
     uint SelectionCounterSlot;
-    uint Pad0;
-    uint Pad1;
-    uint Pad2;
 } pc;
 
 #endif

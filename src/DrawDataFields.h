@@ -28,7 +28,4 @@ constexpr std::array DrawDataFields{
     DrawDataField{FieldType::U32, "ElementIdOffset", "0"},
     DrawDataField{FieldType::U32, "ElementStateSlot", "InvalidSlot"},
     DrawDataField{FieldType::U32, "VertexOffset", "0"},
-    DrawDataField{FieldType::U32, "Pad0", "0"},
-    DrawDataField{FieldType::U32, "Pad1", "0"},
-    DrawDataField{FieldType::U32, "Pad2", "0"},
 };

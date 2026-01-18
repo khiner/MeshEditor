@@ -55,9 +55,6 @@ layout(push_constant) uniform PushConstants {
     uint SelectionHeadImageSlot;
     uint SelectionNodesSlot;
     uint SelectionCounterSlot;
-    uint Pad0;
-    uint Pad1;
-    uint Pad2;
 } pc;
 
 DrawData GetDrawData() {

@@ -22,14 +22,12 @@ struct SelectionNode {
     float Depth;
     uint ObjectId;
     uint Next;
-    uint Padding0;
 };
 
 struct ClickElementCandidate {
     uint ObjectId;
     float Depth;
     uint DistanceSq;
-    uint Padding;
 };
 
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
@@ -62,7 +60,6 @@ void main() {
     best.ObjectId = 0u;
     best.Depth = 1.0;
     best.DistanceSq = 0xffffffffu;
-    best.Padding = 0u;
 
     const uint diameter = pc.Radius * 2u + 1u;
     const uint pixel_count = diameter * diameter;

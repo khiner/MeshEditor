@@ -20,7 +20,6 @@ struct SelectionNode {
     float Depth;
     uint ObjectId;
     uint Next;
-    uint Padding0;
 };
 
 #define MAX_CLICK_RESULTS 64

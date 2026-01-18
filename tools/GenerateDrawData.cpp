@@ -38,7 +38,6 @@ int main(int argc, char **argv) {
     for (const auto &field : DrawDataFields) {
         header_out << "    " << CppTypeFor(field.Type) << " " << field.Name << "{" << field.DefaultValue << "};\n";
     }
-    header_out << "};\n\n"
-               << "static_assert(sizeof(DrawData) % 16 == 0, \"DrawData must be 16-byte aligned.\");\n";
+    header_out << "};\n";
     return 0;
 }
