@@ -228,8 +228,12 @@ private:
 
     static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
 
-    bool CommandBufferDirty{false}; // Render command buffer needs re-recording.
-    bool NeedsRender{false}; // Scene needs to be re-rendered (submit command buffers).
+    enum class RenderRequest : uint8_t {
+        None,
+        Submit,
+        ReRecord,
+    };
+    RenderRequest PendingRender{RenderRequest::None};
     bool RenderPending{false}; // GPU render submitted but not yet waited on.
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
 
@@ -267,4 +271,5 @@ private:
     // VK buffer update methods
     void UpdateSceneViewUBO();
     void UpdateEntitySelectionOverlays(entt::entity mesh_entity);
+    void RequireRender(RenderRequest);
 };

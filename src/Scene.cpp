@@ -1265,7 +1265,7 @@ void Scene::ProcessComponentEvents() {
 
     { // Selected changes
         auto &selected_tracker = R.storage<entt::reactive>("selected_changes"_hs);
-        if (!selected_tracker.empty()) CommandBufferDirty = NeedsRender = true;
+        if (!selected_tracker.empty()) RequireRender(RenderRequest::ReRecord);
         for (auto instance_entity : selected_tracker) {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 const auto mesh_entity = mi->MeshEntity;
@@ -1299,16 +1299,16 @@ void Scene::ProcessComponentEvents() {
     }
     { // Visible changes
         auto &visible_tracker = R.storage<entt::reactive>("visible_changes"_hs);
-        if (!visible_tracker.empty()) CommandBufferDirty = NeedsRender = true;
+        if (!visible_tracker.empty()) RequireRender(RenderRequest::ReRecord);
         visible_tracker.clear();
     }
     { // Active changes
         auto &active_tracker = R.storage<entt::reactive>("active_changes"_hs);
-        if (!active_tracker.empty()) CommandBufferDirty = NeedsRender = true;
+        if (!active_tracker.empty()) RequireRender(RenderRequest::ReRecord);
         active_tracker.clear();
     }
     { // Entity destruction
-        if (!DestroyTracker->Storage.empty()) CommandBufferDirty = NeedsRender = true;
+        if (!DestroyTracker->Storage.empty()) RequireRender(RenderRequest::ReRecord);
         DestroyTracker->Storage.clear();
     }
     { // MeshSelection changes
@@ -1323,7 +1323,7 @@ void Scene::ProcessComponentEvents() {
                         mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
                         mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
                     );
-                    CommandBufferDirty = NeedsRender = true;
+                    RequireRender(RenderRequest::ReRecord);
                 }
                 dirty_element_state_meshes.insert(mesh_entity);
             }
@@ -1339,7 +1339,7 @@ void Scene::ProcessComponentEvents() {
             if (SETTINGS.InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!excitable_tracker.empty()) {
-            if (SETTINGS.InteractionMode == InteractionMode::Excite) CommandBufferDirty = NeedsRender = true;
+            if (SETTINGS.InteractionMode == InteractionMode::Excite) RequireRender(RenderRequest::ReRecord);
             else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
         }
         excitable_tracker.clear();
@@ -1365,18 +1365,18 @@ void Scene::ProcessComponentEvents() {
 
     { // ModelsBuffer changes (buffer data update, not structure)
         auto &models_tracker = R.storage<entt::reactive>("models_buffer_changes"_hs);
-        if (!models_tracker.empty()) NeedsRender = true;
+        if (!models_tracker.empty()) RequireRender(RenderRequest::Submit);
         models_tracker.clear();
     }
     { // StartTransform changes (manipulation state - silhouette push constant requires re-record)
         auto &start_transform_tracker = R.storage<entt::reactive>("start_transform_changes"_hs);
-        if (!start_transform_tracker.empty()) CommandBufferDirty = NeedsRender = true;
+        if (!start_transform_tracker.empty()) RequireRender(RenderRequest::ReRecord);
         start_transform_tracker.clear();
     }
     { // SceneSettings changes
         auto &settings_tracker = R.storage<entt::reactive>("scene_settings_changes"_hs);
         if (!settings_tracker.empty()) {
-            CommandBufferDirty = NeedsRender = true;
+            RequireRender(RenderRequest::ReRecord);
             UpdateSceneViewUBO();
         }
         settings_tracker.clear();
@@ -1385,7 +1385,7 @@ void Scene::ProcessComponentEvents() {
         auto &theme_tracker = R.storage<entt::reactive>("viewport_theme_changes"_hs);
         if (!theme_tracker.empty()) {
             Buffers->ViewportThemeUBO.Update(as_bytes(THEME));
-            NeedsRender = true;
+            RequireRender(RenderRequest::Submit);
         }
         theme_tracker.clear();
     }
@@ -1621,11 +1621,15 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     PATCH_THEME([](auto &) {});
     for (const auto &entity : R.view<Mesh>()) UpdateMeshElementStateBuffers(entity);
 }
+
+void Scene::RequireRender(RenderRequest request) {
+    if (static_cast<uint8_t>(request) > static_cast<uint8_t>(PendingRender)) PendingRender = request;
+}
 void Scene::SetEditMode(Element mode) {
     if (EditMode == mode) return;
 
     EditMode = mode;
-    CommandBufferDirty = NeedsRender = true;
+    RequireRender(RenderRequest::ReRecord);
     for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
         R.replace<MeshSelection>(e, MeshSelection{EditMode, ConvertSelectionElement(selection, mesh, EditMode), std::nullopt});
     }
@@ -1739,7 +1743,8 @@ void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
         states.Vertices.Update(as_bytes(vertex_states));
     });
 
-    NeedsRender = SelectionStale = true;
+    SelectionStale = true;
+    RequireRender(RenderRequest::Submit);
 }
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
@@ -2065,7 +2070,7 @@ void Scene::UpdateSceneViewUBO() {
         .LightDirection = Lights.Direction,
         .InteractionMode = static_cast<uint32_t>(SETTINGS.InteractionMode),
     }));
-    NeedsRender = true;
+    RequireRender(RenderRequest::Submit);
 }
 
 void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
@@ -2780,7 +2785,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     }
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
-    if (!extent_changed && !CommandBufferDirty && !NeedsRender) return false;
+    if (!extent_changed && PendingRender == RenderRequest::None) return false;
 
     const Timer timer{"SubmitViewport"};
     if (extent_changed) {
@@ -2825,16 +2830,15 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
             Buffers->Ctx.ClearDeferredDescriptorUpdates();
         }
-        CommandBufferDirty = true;
+        RequireRender(RenderRequest::ReRecord);
     }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     RecordTransferCommandBuffer();
 #endif
 
-    if (CommandBufferDirty) {
+    if (PendingRender == RenderRequest::ReRecord) {
         RecordRenderCommandBuffer();
-        CommandBufferDirty = false;
     }
 
     vk::SubmitInfo submit;
@@ -2846,7 +2850,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
 #endif
     Vk.Queue.submit(submit, *RenderFence);
     RenderPending = true;
-    NeedsRender = false;
+    PendingRender = RenderRequest::None;
     return extent_changed;
 }
 
@@ -3234,7 +3238,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (CollapsingHeader("Update primitive")) {
             if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
                 SetMeshPositions(active_mesh_entity, new_mesh->Positions);
-                NeedsRender = true;
+                RequireRender(RenderRequest::Submit);
             }
         }
     }
@@ -3347,7 +3351,7 @@ void Scene::RenderControls() {
             }
             if (Button("Recompile shaders")) {
                 Pipelines->CompileShaders();
-                CommandBufferDirty = NeedsRender = true;
+                RequireRender(RenderRequest::ReRecord);
             }
             SeparatorText("Viewport shading");
             PushID("ViewportShading");
