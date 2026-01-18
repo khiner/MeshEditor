@@ -1,12 +1,23 @@
+#extension GL_EXT_scalar_block_layout : require
+
 #include "BindlessBindings.glsl"
 
-layout(set = 0, binding = BINDING_Uniform) uniform SceneUBO {
+layout(set = 0, binding = BINDING_SceneViewUBO, scalar) uniform SceneViewUBO {
     mat4 View;
     mat4 Proj;
-    vec4 CameraPositionNear; // xyz: camera, w: near
-    vec4 ViewColorAndAmbient;
-    vec4 DirectionalColorAndIntensity;
-    vec4 LightDirectionFar; // xyz: dir, w: far
+    vec3 CameraPosition;
+    float CameraNear;
+    float CameraFar;
+    vec3 Pad0;
+    vec3 ViewColor;
+    float AmbientIntensity;
+    vec3 DirectionalColor;
+    float DirectionalIntensity;
+    vec3 LightDirection;
+    float Pad1;
+} SceneView;
+
+layout(set = 0, binding = BINDING_ViewportThemeUBO, scalar) uniform ViewportThemeUBO {
     vec4 SilhouetteActive;
     vec4 SilhouetteSelected;
     vec4 EdgeColor;
@@ -15,4 +26,4 @@ layout(set = 0, binding = BINDING_Uniform) uniform SceneUBO {
     vec4 VertexUnselectedColor;
     vec4 SelectedColor;
     vec4 ActiveColor;
-} Scene;
+} ViewportTheme;

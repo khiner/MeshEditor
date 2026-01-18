@@ -94,12 +94,17 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
     layout_ci.pNext = &binding_flags_ci;
     SetLayout = Device.createDescriptorSetLayoutUnique(layout_ci);
 
-    const uint32_t buffer_binding_count = count_if(BindingDefs, [](const auto &def) { return def.Kind == BindKind::Buffer; });
+    const auto pool_size_for = [&](BindKind kind) {
+        return vk::DescriptorPoolSize{
+            DescriptorTypeFor(kind),
+            GetMaxDescriptors(props, kind) * uint32_t(count_if(BindingDefs, [kind](const auto &def) { return def.Kind == kind; })),
+        };
+    };
     const std::array pool_sizes{
-        vk::DescriptorPoolSize{DescriptorTypeFor(BindKind::Uniform), GetMaxDescriptors(props, BindKind::Uniform)},
-        vk::DescriptorPoolSize{DescriptorTypeFor(BindKind::Image), GetMaxDescriptors(props, BindKind::Image)},
-        vk::DescriptorPoolSize{DescriptorTypeFor(BindKind::Sampler), GetMaxDescriptors(props, BindKind::Sampler)},
-        vk::DescriptorPoolSize{DescriptorTypeFor(BindKind::Buffer), GetMaxDescriptors(props, BindKind::Buffer) * buffer_binding_count},
+        pool_size_for(BindKind::Uniform),
+        pool_size_for(BindKind::Image),
+        pool_size_for(BindKind::Sampler),
+        pool_size_for(BindKind::Buffer),
     };
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
@@ -133,9 +138,8 @@ vk::WriteDescriptorSet DescriptorSlots::MakeImageWrite(uint32_t slot, const vk::
     return {*DescriptorSet, slot_info.Binding, slot, 1, slot_info.Descriptor, &info, nullptr};
 }
 
-vk::WriteDescriptorSet DescriptorSlots::MakeUniformWrite(uint32_t slot, const vk::DescriptorBufferInfo &info) const {
-    const auto &slot_info = GetSlotInfo(SlotType::Uniform);
-    return {*DescriptorSet, slot_info.Binding, slot, 1, slot_info.Descriptor, nullptr, &info};
+vk::WriteDescriptorSet DescriptorSlots::MakeUniformWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
+    return MakeBufferWrite(slot, info);
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {

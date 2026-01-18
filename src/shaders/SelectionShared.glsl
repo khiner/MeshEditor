@@ -1,6 +1,8 @@
 #ifndef SELECTION_SHARED_GLSL
 #define SELECTION_SHARED_GLSL
 
+#extension GL_EXT_scalar_block_layout : require
+
 #include "BindlessBindings.glsl"
 
 struct SelectionNode {
@@ -12,11 +14,11 @@ struct SelectionNode {
 
 layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
 
-layout(set = 0, binding = BINDING_Buffer, std430) buffer SelectionNodes {
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
     SelectionNode Nodes[];
 } SelectionBuffers[];
 
-layout(set = 0, binding = BINDING_Buffer, std430) buffer SelectionCounter {
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionCounter {
     uint Count;
     uint Overflow;
 } Counters[];

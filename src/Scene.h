@@ -30,12 +30,10 @@ struct World {
 };
 
 struct Lights {
-    // RGB: Color of the light emitting from the view position.
-    // A: Ambient intensity. (Using a single vec4 for 16-byte alignment.)
-    vec4 ViewColorAndAmbient;
-    // RGB: Color of the directional light.
-    // A: Intensity of the directional light.
-    vec4 DirectionalColorAndIntensity;
+    vec3 ViewColor; // Light emitting from the view position
+    float AmbientIntensity;
+    vec3 DirectionalColor;
+    float DirectionalIntensity;
     vec3 Direction;
 };
 
@@ -195,7 +193,7 @@ private:
     entt::entity SettingsEntity{null_entity}; // Singleton for SceneSettings component
 
     Camera Camera;
-    Lights Lights{{1, 1, 1, 0.1}, {1, 1, 1, 0.15}, {-1, -1, -1}};
+    Lights Lights{{1, 1, 1}, 0.1f, {1, 1, 1}, 0.15f, {-1, -1, -1}};
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
     he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
@@ -280,6 +278,7 @@ private:
 
     // VK buffer update methods
     vec4 CurrentEdgeColor() const;
-    void UpdateSceneUBO();
+    void UpdateSceneViewUBO();
+    void UpdateViewportThemeUBO();
     void UpdateEntitySelectionOverlays(entt::entity mesh_entity);
 };

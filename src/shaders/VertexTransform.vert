@@ -31,19 +31,19 @@ void main() {
 
     WorldNormal = mat3(world.MInv) * normal;
     WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
-    vec4 base_color = Scene.EdgeColor;
+    vec4 base_color = ViewportTheme.EdgeColor;
     if (OverlayKind == 1u) {
-        base_color = Scene.FaceNormalColor;
+        base_color = ViewportTheme.FaceNormalColor;
     } else if (OverlayKind == 2u) {
-        base_color = Scene.VertexNormalColor;
+        base_color = ViewportTheme.VertexNormalColor;
     }
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         base_color = vec4(0.7, 0.7, 0.7, 1);
     } else if (draw.ElementStateSlot != INVALID_SLOT) {
-        base_color = Scene.EdgeColor;
+        base_color = ViewportTheme.EdgeColor;
     }
     const bool is_selected = (state & STATE_SELECTED) != 0u;
     const bool is_active = (state & STATE_ACTIVE) != 0u;
-    Color = is_active ? Scene.ActiveColor : is_selected ? Scene.SelectedColor : base_color;
-    gl_Position = Scene.Proj * Scene.View * world.M * vec4(vert.Position, 1.0);
+    Color = is_active ? ViewportTheme.ActiveColor : is_selected ? ViewportTheme.SelectedColor : base_color;
+    gl_Position = SceneView.Proj * SceneView.View * world.M * vec4(vert.Position, 1.0);
 }

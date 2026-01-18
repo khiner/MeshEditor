@@ -24,6 +24,6 @@ void main() {
         discard;
     } else {
         const bool is_active = pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId;
-        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor : is_active ? Scene.SilhouetteActive : Scene.SilhouetteSelected;
+        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor : is_active ? ViewportTheme.SilhouetteActive : ViewportTheme.SilhouetteSelected;
     }
 }

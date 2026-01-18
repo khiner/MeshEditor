@@ -75,12 +75,21 @@ template<typename V> V CreateVariantByIndex(size_t i) {
     }(std::make_index_sequence<N>{});
 }
 
-struct SceneUBO {
+struct SceneViewUBO {
     mat4 View{1}, Proj{1};
-    vec4 CameraPositionNear{0, 0, 0, 0}; // xyz = camera pos, w = near
-    vec4 ViewColorAndAmbient{0, 0, 0, 0};
-    vec4 DirectionalColorAndIntensity{0, 0, 0, 0};
-    vec4 LightDirectionFar{0, 0, 0, 0}; // xyz = light dir, w = far
+    vec3 CameraPosition{0, 0, 0};
+    float CameraNear{0.f};
+    float CameraFar{0.f};
+    vec3 Pad0{0.f, 0.f, 0.f};
+    vec3 ViewColor{0, 0, 0};
+    float AmbientIntensity{0.f};
+    vec3 DirectionalColor{0, 0, 0};
+    float DirectionalIntensity{0.f};
+    vec3 LightDirection{0, 0, 0};
+    float Pad1{0.f};
+};
+
+struct ViewportThemeUBO {
     vec4 SilhouetteActive{0, 0, 0, 0};
     vec4 SilhouetteSelected{0, 0, 0, 0};
     vec4 EdgeColor{0, 0, 0, 0};
@@ -360,7 +369,7 @@ struct SelectionNode {
     uint32_t Next;
     uint32_t Padding0;
 };
-static_assert(sizeof(SelectionNode) == 16, "SelectionNode must match std430 layout.");
+static_assert(sizeof(SelectionNode) == 16, "SelectionNode must match scalar layout.");
 
 struct SelectionCounters {
     uint32_t Count;
@@ -383,7 +392,7 @@ struct ClickElementCandidate {
     uint32_t DistanceSq;
     uint32_t Padding;
 };
-static_assert(sizeof(ClickElementCandidate) == 16, "ClickElementCandidate must match std430 layout.");
+static_assert(sizeof(ClickElementCandidate) == 16, "ClickElementCandidate must match scalar layout.");
 
 struct ClickSelectPushConstants {
     glm::uvec2 TargetPx;
@@ -421,7 +430,7 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 }
 } // namespace
 
-// Owns render-only/generated data (e.g., SceneUBO/indicators/overlays/selection fragments).
+// Owns render-only/generated data (e.g., SceneViewUBO/ViewportThemeUBO/indicators/overlays/selection fragments).
 struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
     static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableObjects + 31) / 32};
@@ -436,7 +445,8 @@ struct SceneBuffers {
           FaceIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
-          SceneUBO{Ctx, sizeof(SceneUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::Uniform},
+          SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
+          ViewportThemeUBO{Ctx, sizeof(ViewportThemeUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           RenderDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
           RenderIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
           SelectionDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
@@ -506,7 +516,8 @@ struct SceneBuffers {
     mvk::BufferContext Ctx;
     BufferArena<Vertex3D> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    mvk::Buffer SceneUBO;
+    mvk::Buffer SceneViewUBO;
+    mvk::Buffer ViewportThemeUBO;
     mvk::Buffer RenderDrawData;
     mvk::Buffer RenderIndirect;
     mvk::Buffer SelectionDrawData;
@@ -1197,7 +1208,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     SettingsEntity = R.create();
     R.emplace<SceneSettings>(SettingsEntity);
 
-    UpdateSceneUBO();
+    UpdateSceneViewUBO();
+    UpdateViewportThemeUBO();
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
 
     Pipelines->CompileShaders();
@@ -1590,7 +1602,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     if (SETTINGS.InteractionMode == mode) return;
 
     PATCH_SETTINGS([mode](auto &s) { s.InteractionMode = mode; });
-    UpdateSceneUBO();
+    UpdateViewportThemeUBO();
     for (const auto &entity : R.view<Mesh>()) UpdateMeshElementStateBuffers(entity);
 }
 void Scene::SetEditMode(Element mode) {
@@ -2025,15 +2037,25 @@ void Scene::RecordTransferCommandBuffer() {
 
 vec4 Scene::CurrentEdgeColor() const { return SETTINGS.InteractionMode == InteractionMode::Edit ? Colors.WireEdit : Colors.Wire; }
 
-void Scene::UpdateSceneUBO() {
+void Scene::UpdateSceneViewUBO() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    Buffers->SceneUBO.Update(as_bytes(SceneUBO{
+    Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
         .View = Camera.View(),
         .Proj = Camera.Projection(aspect_ratio),
-        .CameraPositionNear = vec4{Camera.Position(), Camera.NearClip},
-        .ViewColorAndAmbient = Lights.ViewColorAndAmbient,
-        .DirectionalColorAndIntensity = Lights.DirectionalColorAndIntensity,
-        .LightDirectionFar = vec4{Lights.Direction, Camera.FarClip},
+        .CameraPosition = Camera.Position(),
+        .CameraNear = Camera.NearClip,
+        .CameraFar = Camera.FarClip,
+        .ViewColor = Lights.ViewColor,
+        .AmbientIntensity = Lights.AmbientIntensity,
+        .DirectionalColor = Lights.DirectionalColor,
+        .DirectionalIntensity = Lights.DirectionalIntensity,
+        .LightDirection = Lights.Direction,
+    }));
+    NeedsRender = true;
+}
+
+void Scene::UpdateViewportThemeUBO() {
+    Buffers->ViewportThemeUBO.Update(as_bytes(ViewportThemeUBO{
         .SilhouetteActive = Colors.Active,
         .SilhouetteSelected = Colors.Selected,
         .EdgeColor = CurrentEdgeColor(),
@@ -2763,7 +2785,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     const Timer timer{"SubmitViewport"};
     if (extent_changed) {
         Extent = ToExtent(content_region);
-        UpdateSceneUBO();
+        UpdateSceneViewUBO();
         if (viewportConsumerFence) { // Wait for viewport consumer to finish sampling old resources
             std::ignore = Vk.Device.waitForFences(viewportConsumerFence, VK_TRUE, UINT64_MAX);
         }
@@ -2982,7 +3004,7 @@ void Scene::RenderOverlay() {
         const float padding = GetTextLineHeightWithSpacing();
         const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
         OrientationGizmo::Draw(pos, OGizmoSize, Camera);
-        if (Camera.Tick()) UpdateSceneUBO();
+        if (Camera.Tick()) UpdateSceneViewUBO();
     }
 
     if (BoxSelectStart.has_value() && BoxSelectEnd.has_value()) {
@@ -3359,7 +3381,7 @@ void Scene::RenderControls() {
                     s.ColorMode = ColorMode(color_mode);
                     s.SmoothShading = smooth_shading;
                 });
-                UpdateSceneUBO();
+                UpdateViewportThemeUBO();
             }
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -3401,7 +3423,7 @@ void Scene::RenderControls() {
                 color_changed |= ColorEdit3("Element selected", &Colors.ElementSelected.x);
                 color_changed |= ColorEdit3("Object active", &Colors.Active.x);
                 color_changed |= ColorEdit3("Object selected", &Colors.Selected.x);
-                if (color_changed) UpdateSceneUBO();
+                if (color_changed) UpdateViewportThemeUBO();
                 uint32_t edge_width = settings.SilhouetteEdgeWidth;
                 if (SliderUInt("Silhouette edge width", &edge_width, 1, 4)) {
                     PATCH_SETTINGS([edge_width](auto &s) { s.SilhouetteEdgeWidth = edge_width; });
@@ -3427,7 +3449,7 @@ void Scene::RenderControls() {
             camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
             if (camera_changed) {
                 Camera.StopMoving();
-                UpdateSceneUBO();
+                UpdateSceneViewUBO();
             }
             EndTabItem();
         }
@@ -3435,14 +3457,14 @@ void Scene::RenderControls() {
         if (BeginTabItem("Lights")) {
             bool light_changed = false;
             SeparatorText("View light");
-            light_changed |= ColorEdit3("Color##View", &Lights.ViewColorAndAmbient[0]);
+            light_changed |= ColorEdit3("Color##View", &Lights.ViewColor[0]);
             SeparatorText("Ambient light");
-            light_changed |= SliderFloat("Intensity##Ambient", &Lights.ViewColorAndAmbient[3], 0, 1);
+            light_changed |= SliderFloat("Intensity##Ambient", &Lights.AmbientIntensity, 0, 1);
             SeparatorText("Directional light");
             light_changed |= SliderFloat3("Direction##Directional", &Lights.Direction[0], -1, 1);
-            light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColorAndIntensity[0]);
-            light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalColorAndIntensity[3], 0, 1);
-            if (light_changed) UpdateSceneUBO();
+            light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColor[0]);
+            light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalIntensity, 0, 1);
+            if (light_changed) UpdateSceneViewUBO();
             EndTabItem();
         }
         EndTabBar();

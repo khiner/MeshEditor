@@ -10,5 +10,5 @@ void main() {
     const vec3 position = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset].Position;
     const mat4 model = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance].M;
     ObjectId = (draw.ObjectIdSlot != INVALID_SLOT) ? ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FirstInstance] : 0u;
-    gl_Position = Scene.Proj * Scene.View * model * vec4(position, 1.0);
+    gl_Position = SceneView.Proj * SceneView.View * model * vec4(position, 1.0);
 }

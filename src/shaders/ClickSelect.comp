@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
 
 // Bindless layout (set 0):
 // binding BINDING_Image: storage images (HeadImage)
@@ -27,7 +28,7 @@ const uint INVALID_NODE = 0xffffffffu;
 
 layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
 
-layout(set = 0, binding = BINDING_Buffer, std430) buffer SelectionNodes {
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
     SelectionNode Nodes[];
 } SelectionBuffers[];
 
@@ -36,7 +37,7 @@ struct ClickHit {
     uint ObjectId;
 };
 
-layout(set = 0, binding = BINDING_Buffer, std430) buffer ClickResult {
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer ClickResult {
     uint Count;
     ClickHit Hits[MAX_CLICK_RESULTS];
 } ClickResults[];

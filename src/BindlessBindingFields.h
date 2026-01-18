@@ -17,7 +17,8 @@ struct BindlessBindingField {
 };
 
 constexpr std::array BindlessBindingFields{
-    BindlessBindingField{BindKind::Uniform, "Uniform"},
+    BindlessBindingField{BindKind::Uniform, "SceneViewUBO"},
+    BindlessBindingField{BindKind::Uniform, "ViewportThemeUBO"},
     BindlessBindingField{BindKind::Image, "Image"},
     BindlessBindingField{BindKind::Sampler, "Sampler"},
     BindlessBindingField{BindKind::Buffer, "VertexBuffer"},
