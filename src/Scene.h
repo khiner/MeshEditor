@@ -202,18 +202,6 @@ private:
     uint32_t NextObjectId{1}; // Monotonically increasing, assigned to RenderInstance on show
 
     vk::Extent2D Extent;
-    struct Colors {
-        vec4 Wire{0, 0, 0, 1}; // Non-editing wireframe line color.
-        vec4 WireEdit{0, 0, 0, 1}; // Non-selected edit-mode line color.
-        vec4 FaceNormal{0.133, 0.867, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Face Normal.
-        vec4 VertexNormal{0.137, 0.380, 0.867, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Normal.
-        vec4 VertexUnselected{0, 0, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex.
-        vec4 ElementSelected{1, 0.478, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Vertex Select.
-        vec4 ElementActive{1, 1, 1, 1}; // Blender: Preferences->Themes->3D Viewport->Active Vertex.
-        vec4 Active{1, 0.627, 0.157, 1}; // Blender: Preferences->Themes->3D Viewport->Active Object.
-        vec4 Selected{0.929, 0.341, 0, 1}; // Blender: Preferences->Themes->3D Viewport->Object Selected.
-    };
-    Colors Colors;
 
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneBuffers> Buffers;
@@ -277,8 +265,6 @@ private:
     void RenderEntitiesTable(std::string name, entt::entity parent);
 
     // VK buffer update methods
-    vec4 CurrentEdgeColor() const;
     void UpdateSceneViewUBO();
-    void UpdateViewportThemeUBO();
     void UpdateEntitySelectionOverlays(entt::entity mesh_entity);
 };

@@ -85,17 +85,25 @@ struct SceneViewUBO {
     vec3 DirectionalColor{0, 0, 0};
     float DirectionalIntensity{0.f};
     vec3 LightDirection{0, 0, 0};
+    uint32_t InteractionMode{0};
 };
 
-struct ViewportThemeUBO {
-    vec4 SilhouetteActive{0, 0, 0, 0};
-    vec4 SilhouetteSelected{0, 0, 0, 0};
-    vec4 EdgeColor{0, 0, 0, 0};
-    vec4 FaceNormalColor{0, 0, 0, 0};
-    vec4 VertexNormalColor{0, 0, 0, 0};
-    vec4 VertexUnselectedColor{0, 0, 0, 0};
-    vec4 SelectedColor{0, 0, 0, 0};
-    vec4 ActiveColor{0, 0, 0, 0};
+struct ViewportThemeColors {
+    // These mirror Blender: Preferences->Themes->3D Viewport->...
+    vec4 Wire{0, 0, 0, 1}; // Wire
+    vec4 WireEdit{0, 0, 0, 1}; // Wire Edit
+    vec4 ObjectActive{1, 0.627, 0.157, 1}; // Active Object
+    vec4 ObjectSelected{0.929, 0.341, 0, 1}; // Object Selected
+    vec4 Vertex{0, 0, 0, 1}; // Vertex
+    vec4 ElementSelected{1, 0.478, 0, 1}; // Vertex Select
+    vec4 ElementActive{1, 1, 1, 1}; // Active Vertex/Edge/Face
+    vec4 FaceNormal{0.133, 0.867, 0.867, 1}; // Face Normal
+    vec4 VertexNormal{0.137, 0.380, 0.867, 1}; // Vertex Normal
+};
+
+struct ViewportTheme {
+    ViewportThemeColors Colors{};
+    uint32_t SilhouetteEdgeWidth{1};
 };
 
 // Tracks transform at start of gizmo manipulation. If present, actively manipulating.
@@ -110,7 +118,6 @@ struct SceneSettings {
     bool SmoothShading{false};
     bool ShowGrid{true};
     vk::ClearColorValue BackgroundColor{0.25f, 0.25f, 0.25f, 1.f};
-    uint32_t SilhouetteEdgeWidth{1};
     InteractionMode InteractionMode{InteractionMode::Object};
     bool ShowBoundingBoxes{false};
     std::unordered_set<he::Element> ShownNormalElements{};
@@ -119,6 +126,8 @@ struct SceneSettings {
 // Helper macros for SceneSettings access
 #define SETTINGS R.get<const SceneSettings>(SettingsEntity)
 #define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SettingsEntity, fn)
+#define THEME R.get<const ViewportTheme>(SettingsEntity)
+#define PATCH_THEME(fn) R.patch<ViewportTheme>(SettingsEntity, fn)
 
 using SPT = ShaderPipelineType;
 enum class OverlayKind : uint32_t {
@@ -422,7 +431,7 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 }
 } // namespace
 
-// Owns render-only/generated data (e.g., SceneViewUBO/ViewportThemeUBO/indicators/overlays/selection fragments).
+// Owns render-only/generated data (e.g., SceneViewUBO/ViewportTheme/indicators/overlays/selection fragments).
 struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
     static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableObjects + 31) / 32};
@@ -438,7 +447,7 @@ struct SceneBuffers {
           EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
-          ViewportThemeUBO{Ctx, sizeof(ViewportThemeUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
+          ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           RenderDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
           RenderIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
           SelectionDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
@@ -1193,15 +1202,19 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<StartTransform>()
         .on_destroy<StartTransform>();
     R.storage<entt::reactive>("scene_settings_changes"_hs)
+        .on_construct<SceneSettings>()
         .on_update<SceneSettings>();
+    R.storage<entt::reactive>("viewport_theme_changes"_hs)
+        .on_construct<ViewportTheme>()
+        .on_update<ViewportTheme>();
 
     DestroyTracker->Bind(R);
 
     SettingsEntity = R.create();
     R.emplace<SceneSettings>(SettingsEntity);
+    R.emplace<ViewportTheme>(SettingsEntity);
 
     UpdateSceneViewUBO();
-    UpdateViewportThemeUBO();
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
 
     Pipelines->CompileShaders();
@@ -1362,8 +1375,19 @@ void Scene::ProcessComponentEvents() {
     }
     { // SceneSettings changes
         auto &settings_tracker = R.storage<entt::reactive>("scene_settings_changes"_hs);
-        if (!settings_tracker.empty()) CommandBufferDirty = NeedsRender = true;
+        if (!settings_tracker.empty()) {
+            CommandBufferDirty = NeedsRender = true;
+            UpdateSceneViewUBO();
+        }
         settings_tracker.clear();
+    }
+    { // ViewportTheme changes
+        auto &theme_tracker = R.storage<entt::reactive>("viewport_theme_changes"_hs);
+        if (!theme_tracker.empty()) {
+            Buffers->ViewportThemeUBO.Update(as_bytes(THEME));
+            NeedsRender = true;
+        }
+        theme_tracker.clear();
     }
 
     // Apply batched updates
@@ -1594,7 +1618,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     if (SETTINGS.InteractionMode == mode) return;
 
     PATCH_SETTINGS([mode](auto &s) { s.InteractionMode = mode; });
-    UpdateViewportThemeUBO();
+    PATCH_THEME([](auto &) {});
     for (const auto &entity : R.view<Mesh>()) UpdateMeshElementStateBuffers(entity);
 }
 void Scene::SetEditMode(Element mode) {
@@ -1932,9 +1956,8 @@ void Scene::RecordRenderCommandBuffer() {
         cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, edge_clear_values}, vk::SubpassContents::eInline);
         const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
         struct SilhouetteEdgeDepthObjectPushConstants {
-            uint32_t SilhouetteEdgeWidth;
             uint32_t SilhouetteSamplerIndex;
-        } edge_pc{settings.SilhouetteEdgeWidth, SelectionHandles->SilhouetteSampler};
+        } edge_pc{SelectionHandles->SilhouetteSampler};
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
         silhouette_edo.RenderQuad(cb);
         cb.endRenderPass();
@@ -2026,8 +2049,6 @@ void Scene::RecordTransferCommandBuffer() {
 }
 #endif
 
-vec4 Scene::CurrentEdgeColor() const { return SETTINGS.InteractionMode == InteractionMode::Edit ? Colors.WireEdit : Colors.Wire; }
-
 void Scene::UpdateSceneViewUBO() {
     const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
     Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
@@ -2041,20 +2062,7 @@ void Scene::UpdateSceneViewUBO() {
         .DirectionalColor = Lights.DirectionalColor,
         .DirectionalIntensity = Lights.DirectionalIntensity,
         .LightDirection = Lights.Direction,
-    }));
-    NeedsRender = true;
-}
-
-void Scene::UpdateViewportThemeUBO() {
-    Buffers->ViewportThemeUBO.Update(as_bytes(ViewportThemeUBO{
-        .SilhouetteActive = Colors.Active,
-        .SilhouetteSelected = Colors.Selected,
-        .EdgeColor = CurrentEdgeColor(),
-        .FaceNormalColor = Colors.FaceNormal,
-        .VertexNormalColor = Colors.VertexNormal,
-        .VertexUnselectedColor = Colors.VertexUnselected,
-        .SelectedColor = Colors.ElementSelected,
-        .ActiveColor = Colors.ElementActive,
+        .InteractionMode = static_cast<uint32_t>(SETTINGS.InteractionMode),
     }));
     NeedsRender = true;
 }
@@ -2939,7 +2947,7 @@ void Scene::RenderOverlay() {
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
             const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
             auto &dl = *GetWindowDrawList();
-            dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(R.all_of<Active>(e) ? Colors.Active : Colors.Selected)), 10);
+            dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(R.all_of<Active>(e) ? THEME.Colors.ObjectActive : THEME.Colors.ObjectSelected)), 10);
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
         }
     }
@@ -3372,7 +3380,6 @@ void Scene::RenderControls() {
                     s.ColorMode = ColorMode(color_mode);
                     s.SmoothShading = smooth_shading;
                 });
-                UpdateViewportThemeUBO();
             }
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -3403,22 +3410,20 @@ void Scene::RenderControls() {
                 }
             }
             {
-                SeparatorText("Style");
-                bool color_changed{false};
-                color_changed |= ColorEdit3("Wire", &Colors.Wire.x);
-                color_changed |= ColorEdit3("Wire edit", &Colors.WireEdit.x);
-                color_changed |= ColorEdit3("Face normal", &Colors.FaceNormal.x);
-                color_changed |= ColorEdit3("Vertex normal", &Colors.VertexNormal.x);
-                color_changed |= ColorEdit3("Vertex", &Colors.VertexUnselected.x);
-                color_changed |= ColorEdit3("Element active", &Colors.ElementActive.x);
-                color_changed |= ColorEdit3("Element selected", &Colors.ElementSelected.x);
-                color_changed |= ColorEdit3("Object active", &Colors.Active.x);
-                color_changed |= ColorEdit3("Object selected", &Colors.Selected.x);
-                if (color_changed) UpdateViewportThemeUBO();
-                uint32_t edge_width = settings.SilhouetteEdgeWidth;
-                if (SliderUInt("Silhouette edge width", &edge_width, 1, 4)) {
-                    PATCH_SETTINGS([edge_width](auto &s) { s.SilhouetteEdgeWidth = edge_width; });
-                }
+                SeparatorText("Viewport theme");
+                auto theme = THEME;
+                bool theme_changed{false};
+                theme_changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
+                theme_changed |= ColorEdit3("Wire edit", &theme.Colors.WireEdit.x);
+                theme_changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
+                theme_changed |= ColorEdit3("Vertex normal", &theme.Colors.VertexNormal.x);
+                theme_changed |= ColorEdit3("Vertex", &theme.Colors.Vertex.x);
+                theme_changed |= ColorEdit3("Element active", &theme.Colors.ElementActive.x);
+                theme_changed |= ColorEdit3("Element selected", &theme.Colors.ElementSelected.x);
+                theme_changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
+                theme_changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
+                theme_changed |= SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
+                if (theme_changed) PATCH_THEME([theme](auto &t) { t = theme; });
             }
             EndTabItem();
         }

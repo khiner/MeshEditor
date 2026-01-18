@@ -2,13 +2,13 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "BindlessBindings.glsl"
+#include "SceneUBO.glsl"
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[]; // Assumes {Depth, ObjectID} at each pixel.
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out float ObjectId; // ObjectID for edge pixels, discarded otherwise.
 
 layout(push_constant) uniform PC {
-    uint SilhouetteEdgeWidth; // Really half-width
     uint SilhouetteSamplerIndex;
 } pc;
 
@@ -27,7 +27,7 @@ void main() {
             // so it's fast and looks decent enough for small line widths.
             // More than that, and the missing corner pixels are noticeable.
             // We use vk::SamplerAddressMode::eClampToEdge, so there's no need to check for out-of-bounds.
-            const ivec2 neighbor_texel = texel + ivec2(i, j) * int(pc.SilhouetteEdgeWidth);
+            const ivec2 neighbor_texel = texel + ivec2(i, j) * int(ViewportTheme.SilhouetteEdgeWidth);
             const vec2 neighbor_depth_id = texelFetch(Samplers[pc.SilhouetteSamplerIndex], neighbor_texel, 0).xy;
             if (depth_id.y != neighbor_depth_id.y) {
                 const vec2 edge_depth_id = depth_id.x != 0 ? depth_id : neighbor_depth_id;

@@ -21,9 +21,9 @@ void main() {
     const bool is_active = (state & STATE_ACTIVE) != 0u;
     WorldNormal = mat3(world.MInv) * vert.Normal;
     WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
-    Color = is_active ? ViewportTheme.ActiveColor :
-        is_selected  ? ViewportTheme.SelectedColor :
-                       ViewportTheme.VertexUnselectedColor;
+    Color = is_active ? ViewportTheme.Colors.ElementActive :
+        is_selected  ? ViewportTheme.Colors.ElementSelected :
+                       ViewportTheme.Colors.Vertex;
     gl_Position = SceneView.Proj * SceneView.View * world.M * vec4(vert.Position, 1.0);
     gl_PointSize = 6.0;
 }

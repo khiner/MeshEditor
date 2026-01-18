@@ -2,6 +2,8 @@
 
 #include "BindlessBindings.glsl"
 
+const uint InteractionModeObject = 0u, InteractionModeEdit = 1u, InteractionModeExcite = 2u;
+
 layout(set = 0, binding = BINDING_SceneViewUBO, scalar) uniform SceneViewUBO {
     mat4 View;
     mat4 Proj;
@@ -13,15 +15,22 @@ layout(set = 0, binding = BINDING_SceneViewUBO, scalar) uniform SceneViewUBO {
     vec3 DirectionalColor;
     float DirectionalIntensity;
     vec3 LightDirection;
+    uint InteractionMode;
 } SceneView;
 
+struct ViewportThemeColors {
+    vec4 Wire;
+    vec4 WireEdit;
+    vec4 ObjectActive;
+    vec4 ObjectSelected;
+    vec4 Vertex;
+    vec4 ElementSelected;
+    vec4 ElementActive;
+    vec4 FaceNormal;
+    vec4 VertexNormal;
+};
+
 layout(set = 0, binding = BINDING_ViewportThemeUBO, scalar) uniform ViewportThemeUBO {
-    vec4 SilhouetteActive;
-    vec4 SilhouetteSelected;
-    vec4 EdgeColor;
-    vec4 FaceNormalColor;
-    vec4 VertexNormalColor;
-    vec4 VertexUnselectedColor;
-    vec4 SelectedColor;
-    vec4 ActiveColor;
+    ViewportThemeColors Colors;
+    uint SilhouetteEdgeWidth;
 } ViewportTheme;
