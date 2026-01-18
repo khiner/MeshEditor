@@ -1625,6 +1625,7 @@ void Scene::SetEditMode(Element mode) {
     if (EditMode == mode) return;
 
     EditMode = mode;
+    CommandBufferDirty = NeedsRender = true;
     for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
         R.replace<MeshSelection>(e, MeshSelection{EditMode, ConvertSelectionElement(selection, mesh, EditMode), std::nullopt});
     }
