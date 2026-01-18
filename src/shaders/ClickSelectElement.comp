@@ -2,10 +2,12 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 // Bindless layout (set 0):
-// binding 1: storage images (HeadImage)
-// binding 6: storage buffers (SelectionNodes, ClickElementResult) via indices
+// binding BINDING_Image: storage images (HeadImage)
+// binding BINDING_Buffer: storage buffers (SelectionNodes, ClickElementResult) via indices
 #define GROUP_SIZE 256
 layout(local_size_x = GROUP_SIZE) in;
+
+#include "BindlessBindings.glsl"
 
 layout(push_constant) uniform PC {
     uvec2 TargetPx;
@@ -29,15 +31,15 @@ struct ClickElementCandidate {
     uint Padding;
 };
 
-layout(set = 0, binding = 6, std430) buffer SelectionNodes {
+layout(set = 0, binding = BINDING_Buffer, std430) buffer SelectionNodes {
     SelectionNode Nodes[];
 } SelectionBuffers[];
 
 const uint INVALID_NODE = 0xffffffffu;
 
-layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
+layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
 
-layout(set = 0, binding = 6, std430) buffer ClickElementResult {
+layout(set = 0, binding = BINDING_Buffer, std430) buffer ClickElementResult {
     ClickElementCandidate Candidates[];
 } ClickResults[];
 

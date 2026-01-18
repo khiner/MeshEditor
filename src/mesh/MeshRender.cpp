@@ -23,6 +23,7 @@ std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
 }
 
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {
+    constexpr float NormalIndicatorLengthScale{0.25};
     std::vector<Vertex3D> vertices;
     if (element == Element::Vertex) {
         vertices.reserve(mesh.VertexCount() * 2);

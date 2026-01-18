@@ -81,7 +81,6 @@ std::optional<uint32_t> GetModelBufferIndex(const entt::registry &, entt::entity
 void UpdateModelBuffer(entt::registry &, entt::entity, const WorldMatrix &);
 
 namespace MeshRender {
-constexpr float NormalIndicatorLengthScale{0.25};
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
 std::vector<uint> CreateVertexIndices(const Mesh &);

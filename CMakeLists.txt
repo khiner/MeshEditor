@@ -49,9 +49,13 @@ add_executable(${PROJECT_NAME}
     ${SOURCES}
 )
 
+add_executable(bindless_bindings_gen tools/GenerateBindlessBindings.cpp)
+target_include_directories(bindless_bindings_gen PRIVATE src)
+
 set(DRAW_DATA_DEF "${CMAKE_SOURCE_DIR}/src/DrawData.def")
 set(DRAW_DATA_GLSL "${CMAKE_BINARY_DIR}/shaders/DrawData.glsl")
 set(GENERATE_DRAW_DATA_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/GenerateDrawDataGlsl.cmake")
+set(BINDLESS_BINDINGS_GLSL "${CMAKE_BINARY_DIR}/shaders/BindlessBindings.glsl")
 add_custom_command(
     OUTPUT ${DRAW_DATA_GLSL}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
@@ -59,8 +63,17 @@ add_custom_command(
     DEPENDS ${DRAW_DATA_DEF} ${GENERATE_DRAW_DATA_SCRIPT}
     COMMENT "Generating DrawData.glsl"
 )
+add_custom_command(
+    OUTPUT ${BINDLESS_BINDINGS_GLSL}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+    COMMAND $<TARGET_FILE:bindless_bindings_gen> ${BINDLESS_BINDINGS_GLSL}
+    DEPENDS bindless_bindings_gen ${CMAKE_SOURCE_DIR}/src/BindlessBindings.h
+    COMMENT "Generating BindlessBindings.glsl"
+)
 add_custom_target(generate_drawdata_glsl DEPENDS ${DRAW_DATA_GLSL})
+add_custom_target(generate_bindless_bindings_glsl DEPENDS ${BINDLESS_BINDINGS_GLSL})
 add_dependencies(${PROJECT_NAME} generate_drawdata_glsl)
+add_dependencies(${PROJECT_NAME} generate_bindless_bindings_glsl)
 
 include_directories(
     ${Vulkan_INCLUDE_DIRS}

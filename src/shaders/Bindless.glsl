@@ -1,6 +1,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
 
+#include "BindlessBindings.glsl"
 #include "SceneUBO.glsl"
 #include "DrawData.glsl"
 
@@ -14,33 +15,33 @@ struct WorldMatrix {
     mat4 MInv;
 };
 
-layout(set = 0, binding = 3, scalar) readonly buffer VertexBuffer {
+layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBuffer {
     Vertex Vertices[];
 } VertexBuffers[];
 
-layout(set = 0, binding = 5, scalar) readonly buffer ModelBuffer {
+layout(set = 0, binding = BINDING_ModelBuffer, scalar) readonly buffer ModelBuffer {
     WorldMatrix Models[];
 } ModelBuffers[];
 
-layout(set = 0, binding = 4, scalar) readonly buffer IndexBuffer {
+layout(set = 0, binding = BINDING_IndexBuffer, scalar) readonly buffer IndexBuffer {
     uint Indices[];
 } IndexBuffers[];
 
 #ifndef BINDLESS_NO_ELEMENT_STATE
-layout(set = 0, binding = 6, scalar) readonly buffer ElementStateBuffer {
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer ElementStateBuffer {
     uint States[];
 } ElementStateBuffers[];
 #endif
 
-layout(set = 0, binding = 7, scalar) readonly buffer ObjectIdBuffer {
+layout(set = 0, binding = BINDING_ObjectIdBuffer, scalar) readonly buffer ObjectIdBuffer {
     uint Ids[];
 } ObjectIdBuffers[];
 
-layout(set = 0, binding = 8, scalar) readonly buffer FaceNormalBuffer {
+layout(set = 0, binding = BINDING_FaceNormalBuffer, scalar) readonly buffer FaceNormalBuffer {
     vec3 Normals[];
 } FaceNormalBuffers[];
 
-layout(set = 0, binding = 9, scalar) readonly buffer DrawDataBuffer {
+layout(set = 0, binding = BINDING_DrawDataBuffer, scalar) readonly buffer DrawDataBuffer {
     DrawData Draws[];
 } DrawDataBuffers[];
 

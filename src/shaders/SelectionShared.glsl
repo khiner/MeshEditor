@@ -1,6 +1,8 @@
 #ifndef SELECTION_SHARED_GLSL
 #define SELECTION_SHARED_GLSL
 
+#include "BindlessBindings.glsl"
+
 struct SelectionNode {
     float Depth;
     uint ObjectId;
@@ -8,13 +10,13 @@ struct SelectionNode {
     uint Padding0;
 };
 
-layout(set = 0, binding = 1, r32ui) uniform uimage2D HeadImages[];
+layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
 
-layout(set = 0, binding = 6, std430) buffer SelectionNodes {
+layout(set = 0, binding = BINDING_Buffer, std430) buffer SelectionNodes {
     SelectionNode Nodes[];
 } SelectionBuffers[];
 
-layout(set = 0, binding = 6, std430) buffer SelectionCounter {
+layout(set = 0, binding = BINDING_Buffer, std430) buffer SelectionCounter {
     uint Count;
     uint Overflow;
 } Counters[];

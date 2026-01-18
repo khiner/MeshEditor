@@ -1,7 +1,9 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(set = 0, binding = 2) uniform sampler2D Samplers[]; // Assumes {Depth, ObjectID} at each pixel.
+#include "BindlessBindings.glsl"
+
+layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[]; // Assumes {Depth, ObjectID} at each pixel.
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out float ObjectId; // ObjectID for edge pixels, discarded otherwise.
 

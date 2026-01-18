@@ -1,4 +1,6 @@
-layout(set = 0, binding = 0) uniform SceneUBO {
+#include "BindlessBindings.glsl"
+
+layout(set = 0, binding = BINDING_Uniform) uniform SceneUBO {
     mat4 View;
     mat4 Proj;
     vec4 CameraPositionNear; // xyz: camera, w: near

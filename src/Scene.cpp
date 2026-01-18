@@ -360,29 +360,6 @@ vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.heig
 constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
 constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 
-BindlessConfig MakeBindlessConfig(vk::PhysicalDevice pd) {
-    const auto p2 = pd.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>();
-    const auto &props = p2.get<vk::PhysicalDeviceDescriptorIndexingProperties>();
-    return {
-        .MaxBuffers = std::clamp(
-            std::min(props.maxDescriptorSetUpdateAfterBindStorageBuffers, props.maxPerStageDescriptorUpdateAfterBindStorageBuffers),
-            1u, 32768u
-        ),
-        .MaxImages = std::clamp(
-            std::min(props.maxDescriptorSetUpdateAfterBindStorageImages, props.maxPerStageDescriptorUpdateAfterBindStorageImages),
-            1u, 1024u
-        ),
-        .MaxUniforms = std::clamp(
-            std::min(props.maxDescriptorSetUpdateAfterBindUniformBuffers, props.maxPerStageDescriptorUpdateAfterBindUniformBuffers),
-            1u, 64u
-        ),
-        .MaxSamplers = std::clamp(
-            std::min(props.maxDescriptorSetUpdateAfterBindSampledImages, props.maxPerStageDescriptorUpdateAfterBindSamplers),
-            1u, 256u
-        )
-    };
-}
-
 struct SelectionNode {
     float Depth;
     uint32_t ObjectId;
@@ -1181,7 +1158,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       OneShotFence{Vk.Device.createFenceUnique({})},
       SelectionReadySemaphore{Vk.Device.createSemaphoreUnique({})},
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
-      Slots{std::make_unique<DescriptorSlots>(Vk.Device, MakeBindlessConfig(Vk.PhysicalDevice))},
+      Slots{std::make_unique<DescriptorSlots>(
+          Vk.Device,
+          Vk.PhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>()
+              .get<vk::PhysicalDeviceDescriptorIndexingProperties>()
+      )},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
       Camera{CreateDefaultCamera()},

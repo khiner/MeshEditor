@@ -1,9 +1,10 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
+#include "BindlessBindings.glsl"
 #include "SceneUBO.glsl"
 
-layout(set = 0, binding = 2) uniform sampler2D Samplers[];
+layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 
 layout(push_constant) uniform PC {
     uint Manipulating;
