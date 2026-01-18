@@ -1154,16 +1154,12 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
       Slots{std::make_unique<DescriptorSlots>(
           Vk.Device,
-          Vk.PhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>()
-              .get<vk::PhysicalDeviceDescriptorIndexingProperties>()
+          Vk.PhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>().get<vk::PhysicalDeviceDescriptorIndexingProperties>()
       )},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
       Camera{CreateDefaultCamera()},
-      Pipelines{std::make_unique<ScenePipelines>(
-          Vk.Device, Vk.PhysicalDevice,
-          Slots->GetSetLayout(), Slots->GetSet()
-      )},
+      Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots->GetSetLayout(), Slots->GetSet())},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
       Meshes{Buffers->Ctx} {
     // Reactive storage subscriptions for deferred once-per-frame processing
