@@ -117,7 +117,7 @@ struct SceneSettings {
     uint8_t NormalOverlays{0}; // Bitmask of he::Element
 };
 
-constexpr uint8_t ElementMask(he::Element element) { return static_cast<uint8_t>(element); }
+constexpr uint8_t ElementMask(he::Element element) { return uint8_t(element); }
 constexpr bool HasNormalOverlay(uint8_t mask, he::Element element) { return (mask & ElementMask(element)) != 0; }
 constexpr void SetNormalOverlay(uint8_t &mask, he::Element element, bool enabled) {
     if (enabled) mask |= ElementMask(element);
@@ -178,12 +178,12 @@ struct DrawListBuilder {
     uint32_t MaxIndexCount{0};
 
     DrawBatchInfo BeginBatch() {
-        return {static_cast<uint32_t>(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)};
+        return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)};
     }
 
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
-        const uint32_t draw_data_start = static_cast<uint32_t>(Draws.size());
+        const auto draw_data_start = uint32_t(Draws.size());
         Draws.reserve(Draws.size() + instance_count);
         for (uint32_t i = 0; i < instance_count; ++i) {
             DrawData per_instance = draw;
@@ -681,7 +681,7 @@ struct MainPipeline {
         );
         const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
             return ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert", {{0, static_cast<uint32_t>(overlay_kind)}}},
+                {{{ShaderType::eVertex, "VertexTransform.vert", {{0, uint32_t(overlay_kind)}}},
                   {ShaderType::eFragment, "VertexColor.frag"}}},
                 {},
                 vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
@@ -1314,20 +1314,22 @@ static bool HasSelectedInstance(entt::registry &r, entt::entity mesh_entity) {
     return false;
 }
 
-void Scene::ProcessComponentEvents() {
+Scene::RenderRequest Scene::ProcessComponentEvents() {
     using namespace entt::literals;
 
-    std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
+    auto render_request = RenderRequest::None;
+    auto request = [&render_request](RenderRequest req) { render_request = std::max(render_request, req); };
 
     if (ShaderRecompileRequested) {
         ShaderRecompileRequested = false;
         Pipelines->CompileShaders();
-        RequireRender(RenderRequest::ReRecord);
+        request(RenderRequest::ReRecord);
     }
 
+    std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
     { // Selected changes
         auto &selected_tracker = R.storage<entt::reactive>("selected_changes"_hs);
-        if (!selected_tracker.empty()) RequireRender(RenderRequest::ReRecord);
+        if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
         for (auto instance_entity : selected_tracker) {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 const auto mesh_entity = mi->MeshEntity;
@@ -1358,7 +1360,7 @@ void Scene::ProcessComponentEvents() {
         auto &active_tracker = R.storage<entt::reactive>("active_changes"_hs);
         auto &start_transform_tracker = R.storage<entt::reactive>("start_transform_changes"_hs);
         if (!edit_mode_tracker.empty() || !visible_tracker.empty() || !active_tracker.empty() || !start_transform_tracker.empty() || !DestroyTracker->Storage.empty()) {
-            RequireRender(RenderRequest::ReRecord);
+            request(RenderRequest::ReRecord);
         }
         visible_tracker.clear();
         active_tracker.clear();
@@ -1378,7 +1380,7 @@ void Scene::ProcessComponentEvents() {
                         mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
                         mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
                     );
-                    RequireRender(RenderRequest::ReRecord);
+                    request(RenderRequest::ReRecord);
                 }
                 dirty_element_state_meshes.insert(mesh_entity);
             }
@@ -1395,7 +1397,7 @@ void Scene::ProcessComponentEvents() {
             }
             R.clear<MeshGeometryDirty>();
             mesh_geometry_tracker.clear();
-            RequireRender(RenderRequest::Submit);
+            request(RenderRequest::Submit);
         }
     }
     { // Excitable changes
@@ -1407,7 +1409,7 @@ void Scene::ProcessComponentEvents() {
             if (INTERACTION.Mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!excitable_tracker.empty()) {
-            if (INTERACTION.Mode == InteractionMode::Excite) RequireRender(RenderRequest::ReRecord);
+            if (INTERACTION.Mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
             else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
         }
         excitable_tracker.clear();
@@ -1431,14 +1433,14 @@ void Scene::ProcessComponentEvents() {
 
     { // ModelsBuffer changes (buffer data update, not structure)
         auto &models_tracker = R.storage<entt::reactive>("models_buffer_changes"_hs);
-        if (!models_tracker.empty()) RequireRender(RenderRequest::Submit);
+        if (!models_tracker.empty()) request(RenderRequest::Submit);
         models_tracker.clear();
     }
     bool scene_view_dirty = false;
     { // SceneSettings changes
         auto &settings_tracker = R.storage<entt::reactive>("scene_settings_changes"_hs);
         if (!settings_tracker.empty()) {
-            RequireRender(RenderRequest::ReRecord);
+            request(RenderRequest::ReRecord);
             scene_view_dirty = true;
             for (const auto selected_entity : R.view<Selected>()) dirty_overlay_meshes.insert(R.get<MeshInstance>(selected_entity).MeshEntity);
         }
@@ -1447,7 +1449,7 @@ void Scene::ProcessComponentEvents() {
     { // Interaction mode changes
         auto &interaction_tracker = R.storage<entt::reactive>("interaction_mode_changes"_hs);
         if (!interaction_tracker.empty()) {
-            RequireRender(RenderRequest::ReRecord);
+            request(RenderRequest::ReRecord);
             scene_view_dirty = true;
             for (const auto [mesh_entity, selection] : R.view<MeshSelection>().each()) {
                 if (!selection.Handles.empty() || selection.ActiveHandle) dirty_element_state_meshes.insert(mesh_entity);
@@ -1467,7 +1469,7 @@ void Scene::ProcessComponentEvents() {
         auto &theme_tracker = R.storage<entt::reactive>("viewport_theme_changes"_hs);
         if (!theme_tracker.empty()) {
             Buffers->ViewportThemeUBO.Update(as_bytes(THEME));
-            RequireRender(RenderRequest::Submit);
+            request(RenderRequest::Submit);
         }
         theme_tracker.clear();
     }
@@ -1487,9 +1489,9 @@ void Scene::ProcessComponentEvents() {
             .DirectionalColor = lights.DirectionalColor,
             .DirectionalIntensity = lights.DirectionalIntensity,
             .LightDirection = lights.Direction,
-            .InteractionMode = static_cast<uint32_t>(INTERACTION.Mode),
+            .InteractionMode = uint32_t(INTERACTION.Mode),
         }));
-        RequireRender(RenderRequest::Submit);
+        request(RenderRequest::Submit);
     }
 
     // Update selection overlays
@@ -1612,7 +1614,8 @@ void Scene::ProcessComponentEvents() {
 
         SelectionStale = true;
     }
-    if (!dirty_element_state_meshes.empty()) RequireRender(RenderRequest::Submit);
+    if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
+    return render_request;
 }
 
 vk::Extent2D Scene::GetExtent() const { return VIEWPORT_EXTENT.Value; }
@@ -1840,9 +1843,6 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     PATCH_THEME([](auto &) {});
 }
 
-void Scene::RequireRender(RenderRequest request) {
-    if (static_cast<uint8_t>(request) > static_cast<uint8_t>(PendingRender)) PendingRender = request;
-}
 void Scene::SetEditMode(Element mode) {
     if (EDIT_MODE == mode) return;
 
@@ -1882,7 +1882,7 @@ void AppendDraw(
 ) {
     draw.FirstInstance = model_index.value_or(0);
     const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
-    builder.Append(batch, draw, index_count, static_cast<uint32_t>(instance_count));
+    builder.Append(batch, draw, index_count, uint32_t(instance_count));
 }
 
 void AppendDraw(
@@ -2193,14 +2193,8 @@ std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 sta
     const auto box_max = glm::max(start, end) - window_pos;
     const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, extent_size);
     const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, extent_size);
-    const glm::uvec2 box_min_px{
-        static_cast<uint32_t>(glm::floor(local_min.x)),
-        static_cast<uint32_t>(glm::floor(extent_size.y - local_max.y))
-    };
-    const glm::uvec2 box_max_px{
-        static_cast<uint32_t>(glm::ceil(local_max.x)),
-        static_cast<uint32_t>(glm::ceil(extent_size.y - local_min.y))
-    };
+    const glm::uvec2 box_min_px{uint32_t(glm::floor(local_min.x)), uint32_t(glm::floor(extent_size.y - local_max.y))};
+    const glm::uvec2 box_max_px{uint32_t(glm::ceil(local_max.x)), uint32_t(glm::ceil(extent_size.y - local_min.y))};
     return std::pair{box_min_px, box_max_px};
 }
 
@@ -2863,14 +2857,14 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
         PATCH_VIEWPORT_EXTENT([](auto &) {});
     }
 
-    ProcessComponentEvents();
+    const auto render_request = ProcessComponentEvents();
 
     if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
         const Timer timer{"SubmitViewport->UpdateBufferDescriptorSets"};
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
-    if (!extent_changed && PendingRender == RenderRequest::None) return false;
+    if (!extent_changed && render_request == RenderRequest::None) return false;
 
     const Timer timer{"SubmitViewport"};
     if (extent_changed) {
@@ -2919,7 +2913,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     RecordTransferCommandBuffer();
 #endif
 
-    if (PendingRender == RenderRequest::ReRecord || extent_changed) RecordRenderCommandBuffer();
+    if (render_request == RenderRequest::ReRecord || extent_changed) RecordRenderCommandBuffer();
 
     vk::SubmitInfo submit;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
@@ -2930,7 +2924,6 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
 #endif
     Vk.Queue.submit(submit, *RenderFence);
     RenderPending = true;
-    PendingRender = RenderRequest::None;
     return extent_changed;
 }
 

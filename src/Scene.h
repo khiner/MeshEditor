@@ -226,7 +226,6 @@ private:
         Submit,
         ReRecord,
     };
-    RenderRequest PendingRender{RenderRequest::None};
     bool RenderPending{false}; // GPU render submitted but not yet waited on.
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
     bool ShaderRecompileRequested{false};
@@ -243,7 +242,7 @@ private:
     void RecordRenderCommandBuffer();
 
     // Process deferred component events. Called once per frame.
-    void ProcessComponentEvents();
+    RenderRequest ProcessComponentEvents();
 
     void SetInteractionMode(InteractionMode);
     void SetEditMode(he::Element mode);
@@ -260,6 +259,4 @@ private:
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);
-
-    void RequireRender(RenderRequest);
 };
