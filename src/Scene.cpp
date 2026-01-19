@@ -37,6 +37,22 @@ using std::views::filter, std::views::iota, std::views::take, std::views::transf
 
 using namespace he;
 
+namespace changes {
+using namespace entt::literals;
+constexpr auto
+    Selected = "selected_changes"_hs,
+    Rerecord = "rerecord_changes"_hs,
+    MeshSelection = "mesh_selection_changes"_hs,
+    MeshGeometry = "mesh_geometry_changes"_hs,
+    Excitable = "excitable_changes"_hs,
+    ExcitedVertex = "excited_vertex_changes"_hs,
+    ModelsBuffer = "models_buffer_changes"_hs,
+    SceneSettings = "scene_settings_changes"_hs,
+    InteractionMode = "interaction_mode_changes"_hs,
+    ViewportTheme = "viewport_theme_changes"_hs,
+    SceneView = "scene_view_changes"_hs;
+} // namespace changes
+
 template<class... Ts> struct overloaded : Ts... {
     using Ts::operator()...;
 };
@@ -1206,10 +1222,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     // Reactive storage subscriptions for deferred once-per-frame processing
     using namespace entt::literals;
 
-    R.storage<entt::reactive>("selected_changes"_hs)
+    R.storage<entt::reactive>(changes::Selected)
         .on_construct<Selected>()
         .on_destroy<Selected>();
-    R.storage<entt::reactive>("rerecord_changes"_hs)
+    R.storage<entt::reactive>(changes::Rerecord)
         .on_construct<RenderInstance>()
         .on_destroy<RenderInstance>()
         .on_construct<Active>()
@@ -1219,30 +1235,30 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<SceneEditMode>()
         .on_update<SceneEditMode>();
 
-    R.storage<entt::reactive>("mesh_selection_changes"_hs)
+    R.storage<entt::reactive>(changes::MeshSelection)
         .on_construct<MeshSelection>()
         .on_update<MeshSelection>();
-    R.storage<entt::reactive>("mesh_geometry_changes"_hs)
+    R.storage<entt::reactive>(changes::MeshGeometry)
         .on_construct<MeshGeometryDirty>()
         .on_update<MeshGeometryDirty>();
-    R.storage<entt::reactive>("excitable_changes"_hs)
+    R.storage<entt::reactive>(changes::Excitable)
         .on_construct<Excitable>()
         .on_destroy<Excitable>();
-    R.storage<entt::reactive>("excited_vertex_changes"_hs)
+    R.storage<entt::reactive>(changes::ExcitedVertex)
         .on_construct<ExcitedVertex>()
         .on_destroy<ExcitedVertex>();
-    R.storage<entt::reactive>("models_buffer_changes"_hs)
+    R.storage<entt::reactive>(changes::ModelsBuffer)
         .on_update<ModelsBuffer>();
-    R.storage<entt::reactive>("scene_settings_changes"_hs)
+    R.storage<entt::reactive>(changes::SceneSettings)
         .on_construct<SceneSettings>()
         .on_update<SceneSettings>();
-    R.storage<entt::reactive>("interaction_mode_changes"_hs)
+    R.storage<entt::reactive>(changes::InteractionMode)
         .on_construct<SceneInteraction>()
         .on_update<SceneInteraction>();
-    R.storage<entt::reactive>("viewport_theme_changes"_hs)
+    R.storage<entt::reactive>(changes::ViewportTheme)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
-    R.storage<entt::reactive>("scene_view_changes"_hs)
+    R.storage<entt::reactive>(changes::SceneView)
         .on_construct<Camera>()
         .on_update<Camera>()
         .on_construct<Lights>()
@@ -1325,7 +1341,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
     { // Selected changes
-        auto &selected_tracker = R.storage<entt::reactive>("selected_changes"_hs);
+        auto &selected_tracker = R.storage<entt::reactive>(changes::Selected);
         if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
         for (auto instance_entity : selected_tracker) {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
@@ -1351,11 +1367,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     { // ReRecord-only changes + destruction
-        auto &rerecord_tracker = R.storage<entt::reactive>("rerecord_changes"_hs);
+        auto &rerecord_tracker = R.storage<entt::reactive>(changes::Rerecord);
         if (!rerecord_tracker.empty() || !DestroyTracker->Storage.empty()) request(RenderRequest::ReRecord);
     }
     { // MeshSelection changes
-        auto &mesh_selection_tracker = R.storage<entt::reactive>("mesh_selection_changes"_hs);
+        auto &mesh_selection_tracker = R.storage<entt::reactive>(changes::MeshSelection);
         for (auto mesh_entity : mesh_selection_tracker) {
             if (R.all_of<MeshSelection>(mesh_entity)) {
                 if (!R.all_of<MeshElementStateBuffers>(mesh_entity)) {
@@ -1373,7 +1389,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     { // Mesh geometry changes
-        auto &mesh_geometry_tracker = R.storage<entt::reactive>("mesh_geometry_changes"_hs);
+        auto &mesh_geometry_tracker = R.storage<entt::reactive>(changes::MeshGeometry);
         if (!mesh_geometry_tracker.empty()) {
             for (auto mesh_entity : mesh_geometry_tracker) {
                 if (R.all_of<Selected>(mesh_entity) || HasSelectedInstance(R, mesh_entity)) {
@@ -1385,7 +1401,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     { // Excitable changes
-        auto &excitable_tracker = R.storage<entt::reactive>("excitable_changes"_hs);
+        auto &excitable_tracker = R.storage<entt::reactive>(changes::Excitable);
         for (auto instance_entity : excitable_tracker) {
             if (R.all_of<Excitable>(instance_entity)) InteractionModes.insert(InteractionMode::Excite);
         }
@@ -1398,7 +1414,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     { // ExcitedVertex changes
-        auto &excited_vertex_tracker = R.storage<entt::reactive>("excited_vertex_changes"_hs);
+        auto &excited_vertex_tracker = R.storage<entt::reactive>(changes::ExcitedVertex);
         for (auto instance_entity : excited_vertex_tracker) {
             if (INTERACTION.Mode == InteractionMode::Excite) {
                 if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
@@ -1414,12 +1430,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
 
     { // ModelsBuffer changes (buffer data update, not structure)
-        auto &models_tracker = R.storage<entt::reactive>("models_buffer_changes"_hs);
+        auto &models_tracker = R.storage<entt::reactive>(changes::ModelsBuffer);
         if (!models_tracker.empty()) request(RenderRequest::Submit);
     }
     bool scene_view_dirty = false;
     { // SceneSettings changes
-        auto &settings_tracker = R.storage<entt::reactive>("scene_settings_changes"_hs);
+        auto &settings_tracker = R.storage<entt::reactive>(changes::SceneSettings);
         if (!settings_tracker.empty()) {
             request(RenderRequest::ReRecord);
             scene_view_dirty = true;
@@ -1427,7 +1443,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     { // Interaction mode changes
-        auto &interaction_tracker = R.storage<entt::reactive>("interaction_mode_changes"_hs);
+        auto &interaction_tracker = R.storage<entt::reactive>(changes::InteractionMode);
         if (!interaction_tracker.empty()) {
             request(RenderRequest::ReRecord);
             scene_view_dirty = true;
@@ -1440,11 +1456,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     { // Scene view changes (camera/lights/viewport extent)
-        auto &scene_view_tracker = R.storage<entt::reactive>("scene_view_changes"_hs);
+        auto &scene_view_tracker = R.storage<entt::reactive>(changes::SceneView);
         if (!scene_view_tracker.empty()) scene_view_dirty = true;
     }
     { // ViewportTheme changes
-        auto &theme_tracker = R.storage<entt::reactive>("viewport_theme_changes"_hs);
+        auto &theme_tracker = R.storage<entt::reactive>(changes::ViewportTheme);
         if (!theme_tracker.empty()) {
             Buffers->ViewportThemeUBO.Update(as_bytes(THEME));
             request(RenderRequest::Submit);
