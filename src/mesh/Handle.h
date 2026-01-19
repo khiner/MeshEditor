@@ -10,11 +10,11 @@ using uint = uint32_t;
 
 constexpr uint null{std::numeric_limits<uint>::max()};
 
-enum class Element {
-    None,
-    Vertex, // Vertices are not duplicated. Each vertex uses the vertex normal.
-    Edge, // Vertices are duplicated. Each vertex uses the vertex normal.
-    Face, // Vertices are duplicated. Each vertex uses the face normal.
+enum class Element : uint8_t {
+    None = 0,
+    Vertex = 1 << 0,
+    Edge = 1 << 1,
+    Face = 1 << 2,
 };
 
 constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};

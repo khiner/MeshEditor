@@ -117,8 +117,15 @@ struct SceneSettings {
     bool ShowGrid{true};
     vk::ClearColorValue BackgroundColor{0.25f, 0.25f, 0.25f, 1.f};
     bool ShowBoundingBoxes{false};
-    std::unordered_set<he::Element> ShownNormalElements{};
+    uint8_t NormalOverlays{0}; // Bitmask of he::Element
 };
+
+constexpr uint8_t ElementMask(he::Element element) { return static_cast<uint8_t>(element); }
+constexpr bool HasNormalOverlay(uint8_t mask, he::Element element) { return (mask & ElementMask(element)) != 0; }
+constexpr void SetNormalOverlay(uint8_t &mask, he::Element element, bool enabled) {
+    if (enabled) mask |= ElementMask(element);
+    else mask &= ~ElementMask(element);
+}
 
 struct SceneInteraction {
     InteractionMode Mode{InteractionMode::Object};
@@ -1470,7 +1477,7 @@ void Scene::ProcessComponentEvents() {
         const auto &mesh = R.get<const Mesh>(mesh_entity);
         R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
             for (const auto element : NormalElements) {
-                if (SETTINGS.ShownNormalElements.contains(element)) {
+                if (HasNormalOverlay(SETTINGS.NormalOverlays, element)) {
                     if (!mesh_buffers.NormalIndicators.contains(element)) {
                         const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
                         mesh_buffers.NormalIndicators.emplace(
@@ -3450,12 +3457,11 @@ void Scene::RenderControls() {
                 TextUnformatted("Normals");
                 for (const auto element : NormalElements) {
                     SameLine();
-                    bool show = settings.ShownNormalElements.contains(element);
+                    bool show = HasNormalOverlay(settings.NormalOverlays, element);
                     const auto type_name = Capitalize(label(element));
                     if (Checkbox(type_name.c_str(), &show)) {
                         R.patch<SceneSettings>(SceneEntity, [element, show](auto &s) {
-                            if (show) s.ShownNormalElements.insert(element);
-                            else s.ShownNormalElements.erase(element);
+                            SetNormalOverlay(s.NormalOverlays, element, show);
                         });
                     }
                 }
