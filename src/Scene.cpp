@@ -1316,18 +1316,16 @@ void Scene::ProcessComponentEvents() {
         }
         selected_tracker.clear();
     }
-    { // Visible changes
+    { // Visible/Active/StartTransform/destruction
         auto &visible_tracker = R.storage<entt::reactive>("visible_changes"_hs);
-        if (!visible_tracker.empty()) RequireRender(RenderRequest::ReRecord);
-        visible_tracker.clear();
-    }
-    { // Active changes
         auto &active_tracker = R.storage<entt::reactive>("active_changes"_hs);
-        if (!active_tracker.empty()) RequireRender(RenderRequest::ReRecord);
+        auto &start_transform_tracker = R.storage<entt::reactive>("start_transform_changes"_hs);
+        if (!visible_tracker.empty() || !active_tracker.empty() || !start_transform_tracker.empty() || !DestroyTracker->Storage.empty()) {
+            RequireRender(RenderRequest::ReRecord);
+        }
+        visible_tracker.clear();
         active_tracker.clear();
-    }
-    { // Entity destruction
-        if (!DestroyTracker->Storage.empty()) RequireRender(RenderRequest::ReRecord);
+        start_transform_tracker.clear();
         DestroyTracker->Storage.clear();
     }
     { // MeshSelection changes
@@ -1387,11 +1385,6 @@ void Scene::ProcessComponentEvents() {
         if (!models_tracker.empty()) RequireRender(RenderRequest::Submit);
         models_tracker.clear();
     }
-    { // StartTransform changes (manipulation state - silhouette push constant requires re-record)
-        auto &start_transform_tracker = R.storage<entt::reactive>("start_transform_changes"_hs);
-        if (!start_transform_tracker.empty()) RequireRender(RenderRequest::ReRecord);
-        start_transform_tracker.clear();
-    }
     bool scene_view_dirty = false;
     { // SceneSettings changes
         auto &settings_tracker = R.storage<entt::reactive>("scene_settings_changes"_hs);
@@ -1417,12 +1410,11 @@ void Scene::ProcessComponentEvents() {
 
     if (scene_view_dirty) {
         const auto &extent = VIEWPORT_EXTENT.Value;
-        const float aspect_ratio = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
         const auto &camera = CAMERA;
         const auto &lights = LIGHTS;
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .View = camera.View(),
-            .Proj = camera.Projection(aspect_ratio),
+            .Proj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)),
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip,
             .CameraFar = camera.FarClip,
