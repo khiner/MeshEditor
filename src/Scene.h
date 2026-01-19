@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Camera.h"
 #include "TransformGizmo.h"
 #include "mesh/Handle.h"
 #include "mesh/MeshStore.h"
@@ -145,7 +144,7 @@ struct Scene {
     void DuplicateLinked();
     void Delete();
 
-    vk::Extent2D GetExtent() const { return Extent; }
+    vk::Extent2D GetExtent() const;
     vk::ImageView GetViewportImageView() const;
 
     // Handle mouse/keyboard interactions.
@@ -190,18 +189,13 @@ private:
     struct EntityDestroyTracker;
     std::unique_ptr<EntityDestroyTracker> DestroyTracker;
 
-    entt::entity SettingsEntity{null_entity}; // Singleton for SceneSettings component
-
-    Camera Camera;
-    Lights Lights{{1, 1, 1}, 0.1f, {1, 1, 1}, 0.15f, {-1, -1, -1}};
+    entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
     he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
     std::vector<uint32_t> BoxSelectZeroBits;
     uint32_t NextObjectId{1}; // Monotonically increasing, assigned to RenderInstance on show
-
-    vk::Extent2D Extent;
 
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneBuffers> Buffers;
@@ -243,7 +237,6 @@ private:
         uint32_t Count;
     };
 
-    void UpdateMeshElementStateBuffers(entt::entity);
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     void RecordTransferCommandBuffer();
 #endif
@@ -269,7 +262,7 @@ private:
     void RenderEntitiesTable(std::string name, entt::entity parent);
 
     // VK buffer update methods
-    void UpdateSceneViewUBO();
     void UpdateEntitySelectionOverlays(entt::entity mesh_entity);
+    void UpdateMeshElementStateBuffers(entt::entity);
     void RequireRender(RenderRequest);
 };

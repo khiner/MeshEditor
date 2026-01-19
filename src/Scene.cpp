@@ -1,4 +1,5 @@
 #include "Scene.h"
+#include "Camera.h"
 #include "Widgets.h" // imgui
 
 #include "Bindless.h"
@@ -101,17 +102,13 @@ struct ViewportThemeColors {
     vec4 VertexNormal{0.137, 0.380, 0.867, 1}; // Vertex Normal
 };
 
+// Component on the scene singleton entity. Sent directly as UBO to shader.
 struct ViewportTheme {
     ViewportThemeColors Colors{};
     uint32_t SilhouetteEdgeWidth{1};
 };
 
-// Tracks transform at start of gizmo manipulation. If present, actively manipulating.
-struct StartTransform {
-    Transform T;
-};
-
-// Scene render settings singleton component. Changes require command buffer re-recording.
+// Component on the scene singleton entity. Changes require command buffer re-recording.
 struct SceneSettings {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ColorMode ColorMode{ColorMode::Mesh};
@@ -123,11 +120,20 @@ struct SceneSettings {
     std::unordered_set<he::Element> ShownNormalElements{};
 };
 
-// Helper macros for SceneSettings access
-#define SETTINGS R.get<const SceneSettings>(SettingsEntity)
-#define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SettingsEntity, fn)
-#define THEME R.get<const ViewportTheme>(SettingsEntity)
-#define PATCH_THEME(fn) R.patch<ViewportTheme>(SettingsEntity, fn)
+struct ViewportExtent {
+    vk::Extent2D Value{};
+};
+
+#define SETTINGS R.get<const SceneSettings>(SceneEntity)
+#define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SceneEntity, fn)
+#define THEME R.get<const ViewportTheme>(SceneEntity)
+#define PATCH_THEME(fn) R.patch<ViewportTheme>(SceneEntity, fn)
+#define CAMERA R.get<Camera>(SceneEntity)
+#define PATCH_CAMERA(fn) R.patch<Camera>(SceneEntity, fn)
+#define LIGHTS R.get<Lights>(SceneEntity)
+#define PATCH_LIGHTS(fn) R.patch<Lights>(SceneEntity, fn)
+#define VIEWPORT_EXTENT R.get<ViewportExtent>(SceneEntity)
+#define PATCH_VIEWPORT_EXTENT(fn) R.patch<ViewportExtent>(SceneEntity, fn)
 
 using SPT = ShaderPipelineType;
 enum class OverlayKind : uint32_t {
@@ -1113,6 +1119,11 @@ struct ScenePipelines {
     }
 };
 
+// Tracks transform at start of gizmo manipulation. If present, actively manipulating.
+struct StartTransform {
+    Transform T;
+};
+
 struct Scene::SelectionSlotHandles {
     explicit SelectionSlotHandles(DescriptorSlots &slots)
         : Slots(slots),
@@ -1170,7 +1181,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       )},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
-      Camera{CreateDefaultCamera()},
       Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots->GetSetLayout(), Slots->GetSet())},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
       Meshes{Buffers->Ctx} {
@@ -1207,14 +1217,23 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>("viewport_theme_changes"_hs)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
+    R.storage<entt::reactive>("scene_view_changes"_hs)
+        .on_construct<Camera>()
+        .on_update<Camera>()
+        .on_construct<Lights>()
+        .on_update<Lights>()
+        .on_construct<ViewportExtent>()
+        .on_update<ViewportExtent>();
 
     DestroyTracker->Bind(R);
 
-    SettingsEntity = R.create();
-    R.emplace<SceneSettings>(SettingsEntity);
-    R.emplace<ViewportTheme>(SettingsEntity);
+    SceneEntity = R.create();
+    R.emplace<SceneSettings>(SceneEntity);
+    R.emplace<ViewportTheme>(SceneEntity);
+    R.emplace<Camera>(SceneEntity, CreateDefaultCamera());
+    R.emplace<Lights>(SceneEntity, Lights{{1, 1, 1}, 0.1f, {1, 1, 1}, 0.15f, {-1, -1, -1}});
+    R.emplace<ViewportExtent>(SceneEntity);
 
-    UpdateSceneViewUBO();
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
 
     Pipelines->CompileShaders();
@@ -1237,7 +1256,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         }
         const float extent{(kGrid - 1) * kSpacing};
         const vec3 center{extent * 0.5f};
-        Camera = {center + vec3{extent}, center, glm::radians(60.f), 0.01f, 500.f};
+        R.replace<Camera>(SceneEntity, Camera{center + vec3{extent}, center, glm::radians(60.f), 0.01f, 500.f});
     }
 }
 
@@ -1357,7 +1376,7 @@ void Scene::ProcessComponentEvents() {
                 const auto &transform = R.get<WorldMatrix>(instance_entity).M;
                 const auto vh = VH(ev->Vertex);
                 const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
-                Camera.SetTargetDirection(glm::normalize(vertex_pos - Camera.Target));
+                PATCH_CAMERA([&](auto &camera) { camera.SetTargetDirection(glm::normalize(vertex_pos - camera.Target)); });
             }
         }
         excited_vertex_tracker.clear();
@@ -1373,13 +1392,19 @@ void Scene::ProcessComponentEvents() {
         if (!start_transform_tracker.empty()) RequireRender(RenderRequest::ReRecord);
         start_transform_tracker.clear();
     }
+    bool scene_view_dirty = false;
     { // SceneSettings changes
         auto &settings_tracker = R.storage<entt::reactive>("scene_settings_changes"_hs);
         if (!settings_tracker.empty()) {
             RequireRender(RenderRequest::ReRecord);
-            UpdateSceneViewUBO();
+            scene_view_dirty = true;
         }
         settings_tracker.clear();
+    }
+    { // Scene view changes (camera/lights/viewport extent)
+        auto &scene_view_tracker = R.storage<entt::reactive>("scene_view_changes"_hs);
+        if (!scene_view_tracker.empty()) scene_view_dirty = true;
+        scene_view_tracker.clear();
     }
     { // ViewportTheme changes
         auto &theme_tracker = R.storage<entt::reactive>("viewport_theme_changes"_hs);
@@ -1390,11 +1415,33 @@ void Scene::ProcessComponentEvents() {
         theme_tracker.clear();
     }
 
+    if (scene_view_dirty) {
+        const auto &extent = VIEWPORT_EXTENT.Value;
+        const float aspect_ratio = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
+        const auto &camera = CAMERA;
+        const auto &lights = LIGHTS;
+        Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
+            .View = camera.View(),
+            .Proj = camera.Projection(aspect_ratio),
+            .CameraPosition = camera.Position(),
+            .CameraNear = camera.NearClip,
+            .CameraFar = camera.FarClip,
+            .ViewColor = lights.ViewColor,
+            .AmbientIntensity = lights.AmbientIntensity,
+            .DirectionalColor = lights.DirectionalColor,
+            .DirectionalIntensity = lights.DirectionalIntensity,
+            .LightDirection = lights.Direction,
+            .InteractionMode = static_cast<uint32_t>(SETTINGS.InteractionMode),
+        }));
+        RequireRender(RenderRequest::Submit);
+    }
+
     // Apply batched updates
     for (const auto mesh_entity : dirty_overlay_meshes) UpdateEntitySelectionOverlays(mesh_entity);
     for (const auto mesh_entity : dirty_element_state_meshes) UpdateMeshElementStateBuffers(mesh_entity);
 }
 
+vk::Extent2D Scene::GetExtent() const { return VIEWPORT_EXTENT.Value; }
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
 
 void Scene::SetVisible(entt::entity entity, bool visible) {
@@ -1934,11 +1981,11 @@ void Scene::RecordRenderCommandBuffer() {
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
 
+    const auto &extent = VIEWPORT_EXTENT.Value;
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
-
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
@@ -2055,24 +2102,6 @@ void Scene::RecordTransferCommandBuffer() {
 }
 #endif
 
-void Scene::UpdateSceneViewUBO() {
-    const float aspect_ratio = Extent.width == 0 || Extent.height == 0 ? 1.f : float(Extent.width) / float(Extent.height);
-    Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
-        .View = Camera.View(),
-        .Proj = Camera.Projection(aspect_ratio),
-        .CameraPosition = Camera.Position(),
-        .CameraNear = Camera.NearClip,
-        .CameraFar = Camera.FarClip,
-        .ViewColor = Lights.ViewColor,
-        .AmbientIntensity = Lights.AmbientIntensity,
-        .DirectionalColor = Lights.DirectionalColor,
-        .DirectionalIntensity = Lights.DirectionalIntensity,
-        .LightDirection = Lights.Direction,
-        .InteractionMode = static_cast<uint32_t>(SETTINGS.InteractionMode),
-    }));
-    RequireRender(RenderRequest::Submit);
-}
-
 void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
     const auto &mesh = R.get<const Mesh>(mesh_entity);
     R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
@@ -2110,7 +2139,6 @@ using namespace ImGui;
 
 namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
-constexpr vk::Extent2D ToExtent(vec2 e) { return {uint(e.x), uint(e.y)}; }
 
 std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
     static constexpr float drag_threshold{2};
@@ -2239,8 +2267,9 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(Extent.width), float(Extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, Extent});
+    const auto &extent = VIEWPORT_EXTENT.Value;
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
 
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
@@ -2599,7 +2628,8 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
 }
 
 void Scene::Interact() {
-    if (Extent.width == 0 || Extent.height == 0) return;
+    const auto &extent = VIEWPORT_EXTENT.Value;
+    if (extent.width == 0 || extent.height == 0) return;
 
     const auto active_entity = FindActiveEntity(R);
     // Handle keyboard input.
@@ -2652,9 +2682,9 @@ void Scene::Interact() {
     const auto &io = GetIO();
     if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
         if (io.KeyCtrl || io.KeySuper) {
-            Camera.SetTargetDistance(std::max(Camera.Distance * (1 - wheel.y / 16.f), 0.01f));
+            PATCH_CAMERA([&](auto &camera) { camera.SetTargetDistance(std::max(camera.Distance * (1 - wheel.y / 16.f), 0.01f)); });
         } else {
-            Camera.SetTargetYawPitch(Camera.YawPitch + wheel * 0.15f);
+            PATCH_CAMERA([&](auto &camera) { camera.SetTargetYawPitch(camera.YawPitch + wheel * 0.15f); });
         }
     }
 
@@ -2668,7 +2698,7 @@ void Scene::Interact() {
             BoxSelectEnd = mouse_pos;
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectEnd = mouse_pos;
-            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), Extent); box_px) {
+            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), extent); box_px) {
                 if (interaction_mode == InteractionMode::Edit) {
                     Timer timer{"BoxSelectElements (all)"};
                     // todo don't double-update MeshSelection
@@ -2709,7 +2739,7 @@ void Scene::Interact() {
 
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
-    const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(Extent.height - mouse_pos_rel.y)};
+    const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(extent.height - mouse_pos_rel.y)};
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -2776,6 +2806,16 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 };
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
+    auto &extent = VIEWPORT_EXTENT.Value;
+    const auto content_region = ToGlm(GetContentRegionAvail());
+    const bool extent_changed = extent.width != content_region.x || extent.height != content_region.y;
+    if (extent_changed) {
+        // uint(e.x), uint(e.y)
+        extent.width = uint(content_region.x);
+        extent.height = uint(content_region.y);
+        PATCH_VIEWPORT_EXTENT([](auto &) {});
+    }
+
     ProcessComponentEvents();
 
     if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
@@ -2783,19 +2823,15 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
-    const auto content_region = ToGlm(GetContentRegionAvail());
-    const bool extent_changed = Extent.width != content_region.x || Extent.height != content_region.y;
     if (!extent_changed && PendingRender == RenderRequest::None) return false;
 
     const Timer timer{"SubmitViewport"};
     if (extent_changed) {
-        Extent = ToExtent(content_region);
-        UpdateSceneViewUBO();
         if (viewportConsumerFence) { // Wait for viewport consumer to finish sampling old resources
             std::ignore = Vk.Device.waitForFences(viewportConsumerFence, VK_TRUE, UINT64_MAX);
         }
-        Pipelines->SetExtent(Extent);
-        Buffers->ResizeSelectionNodeBuffer(Extent);
+        Pipelines->SetExtent(extent);
+        Buffers->ResizeSelectionNodeBuffer(extent);
         {
             const Timer timer{"SubmitViewport->UpdateSelectionDescriptorSets"};
             const auto head_image_info = vk::DescriptorImageInfo{
@@ -2865,6 +2901,7 @@ void Scene::WaitForRender() {
 
 void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
+    auto &camera = CAMERA;
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
             const SvgResource &Icon;
@@ -2943,7 +2980,7 @@ void Scene::RenderOverlay() {
 
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto size = ToGlm(GetContentRegionAvail());
-        const auto vp = Camera.Projection(size.x / size.y) * Camera.View();
+        const auto vp = camera.Projection(size.x / size.y) * camera.View();
         for (const auto [e, wm, ri] : R.view<const WorldMatrix, const RenderInstance>().each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
 
@@ -2977,7 +3014,7 @@ void Scene::RenderOverlay() {
         const auto start_transform_view = R.view<const StartTransform>();
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
-                MGizmo.Config, Camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
+                MGizmo.Config, camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
                 StartScreenTransform
             )) {
             const auto &[ts, td] = *start_delta;
@@ -3007,8 +3044,8 @@ void Scene::RenderOverlay() {
         static constexpr float OGizmoSize{90};
         const float padding = GetTextLineHeightWithSpacing();
         const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-        OrientationGizmo::Draw(pos, OGizmoSize, Camera);
-        if (Camera.Tick()) UpdateSceneViewUBO();
+        OrientationGizmo::Draw(pos, OGizmoSize, camera);
+        if (camera.Tick()) PATCH_CAMERA([](auto &) {});
     }
 
     if (BoxSelectStart.has_value() && BoxSelectEnd.has_value()) {
@@ -3343,7 +3380,7 @@ void Scene::RenderControls() {
             const auto &settings = SETTINGS;
             std::array bg_color{settings.BackgroundColor.float32[0], settings.BackgroundColor.float32[1], settings.BackgroundColor.float32[2]};
             if (ColorEdit3("Background color", bg_color.data())) {
-                R.patch<SceneSettings>(SettingsEntity, [&bg_color](auto &s) { s.BackgroundColor = {bg_color[0], bg_color[1], bg_color[2], 1.f}; });
+                R.patch<SceneSettings>(SceneEntity, [&bg_color](auto &s) { s.BackgroundColor = {bg_color[0], bg_color[1], bg_color[2], 1.f}; });
             }
             bool show_grid = settings.ShowGrid;
             if (Checkbox("Show grid", &show_grid)) {
@@ -3380,7 +3417,7 @@ void Scene::RenderControls() {
                 PopID();
             }
             if (viewport_shading_changed || color_mode_changed || smooth_shading_changed) {
-                R.patch<SceneSettings>(SettingsEntity, [viewport_shading, color_mode, smooth_shading](auto &s) {
+                R.patch<SceneSettings>(SceneEntity, [viewport_shading, color_mode, smooth_shading](auto &s) {
                     s.ViewportShading = ViewportShadingMode(viewport_shading);
                     s.ColorMode = ColorMode(color_mode);
                     s.SmoothShading = smooth_shading;
@@ -3396,7 +3433,7 @@ void Scene::RenderControls() {
                     bool show = settings.ShownNormalElements.contains(element);
                     const auto type_name = Capitalize(label(element));
                     if (Checkbox(type_name.c_str(), &show)) {
-                        R.patch<SceneSettings>(SettingsEntity, [element, show](auto &s) {
+                        R.patch<SceneSettings>(SceneEntity, [element, show](auto &s) {
                             if (show) s.ShownNormalElements.insert(element);
                             else s.ShownNormalElements.erase(element);
                         });
@@ -3417,55 +3454,53 @@ void Scene::RenderControls() {
             {
                 SeparatorText("Viewport theme");
                 auto theme = THEME;
-                bool theme_changed{false};
-                theme_changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
-                theme_changed |= ColorEdit3("Wire edit", &theme.Colors.WireEdit.x);
-                theme_changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
-                theme_changed |= ColorEdit3("Vertex normal", &theme.Colors.VertexNormal.x);
-                theme_changed |= ColorEdit3("Vertex", &theme.Colors.Vertex.x);
-                theme_changed |= ColorEdit3("Element active", &theme.Colors.ElementActive.x);
-                theme_changed |= ColorEdit3("Element selected", &theme.Colors.ElementSelected.x);
-                theme_changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
-                theme_changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
-                theme_changed |= SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
-                if (theme_changed) PATCH_THEME([theme](auto &t) { t = theme; });
+                bool changed{false};
+                changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
+                changed |= ColorEdit3("Wire edit", &theme.Colors.WireEdit.x);
+                changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
+                changed |= ColorEdit3("Vertex normal", &theme.Colors.VertexNormal.x);
+                changed |= ColorEdit3("Vertex", &theme.Colors.Vertex.x);
+                changed |= ColorEdit3("Element active", &theme.Colors.ElementActive.x);
+                changed |= ColorEdit3("Element selected", &theme.Colors.ElementSelected.x);
+                changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
+                changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
+                changed |= SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
+                if (changed) PATCH_THEME([theme](auto &t) { t = theme; });
             }
             EndTabItem();
         }
 
         if (BeginTabItem("Camera")) {
-            bool camera_changed = false;
+            auto &camera = CAMERA;
+            bool changed = false;
             if (Button("Reset camera")) {
-                Camera = CreateDefaultCamera();
-                camera_changed = true;
+                camera = CreateDefaultCamera();
+                changed = true;
             }
-            // camera_changed |= SliderFloat3("Position", &Camera.Position.x, -10, 10);
-            camera_changed |= SliderFloat3("Target", &Camera.Target.x, -10, 10);
-            float fov_deg = glm::degrees(Camera.FieldOfViewRad);
+            changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);
+            float fov_deg = glm::degrees(camera.FieldOfViewRad);
             if (SliderFloat("Field of view (deg)", &fov_deg, 1, 180)) {
-                Camera.FieldOfViewRad = glm::radians(fov_deg);
-                camera_changed = true;
+                camera.FieldOfViewRad = glm::radians(fov_deg);
+                changed = true;
             }
-            camera_changed |= SliderFloat("Near clip", &Camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
-            camera_changed |= SliderFloat("Far clip", &Camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
-            if (camera_changed) {
-                Camera.StopMoving();
-                UpdateSceneViewUBO();
-            }
+            changed |= SliderFloat("Near clip", &camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
+            changed |= SliderFloat("Far clip", &camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
+            if (changed) PATCH_CAMERA([](auto &camera) { camera.StopMoving(); });
             EndTabItem();
         }
 
         if (BeginTabItem("Lights")) {
-            bool light_changed = false;
+            bool changed = false;
             SeparatorText("View light");
-            light_changed |= ColorEdit3("Color##View", &Lights.ViewColor[0]);
+            auto &lights = LIGHTS;
+            changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
             SeparatorText("Ambient light");
-            light_changed |= SliderFloat("Intensity##Ambient", &Lights.AmbientIntensity, 0, 1);
+            changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
             SeparatorText("Directional light");
-            light_changed |= SliderFloat3("Direction##Directional", &Lights.Direction[0], -1, 1);
-            light_changed |= ColorEdit3("Color##Directional", &Lights.DirectionalColor[0]);
-            light_changed |= SliderFloat("Intensity##Directional", &Lights.DirectionalIntensity, 0, 1);
-            if (light_changed) UpdateSceneViewUBO();
+            changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
+            changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
+            changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
+            if (changed) PATCH_LIGHTS([](auto &) {});
             EndTabItem();
         }
         EndTabBar();
