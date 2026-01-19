@@ -261,8 +261,5 @@ private:
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);
 
-    // VK buffer update methods
-    void UpdateEntitySelectionOverlays(entt::entity mesh_entity);
-    void UpdateMeshElementStateBuffers(entt::entity);
     void RequireRender(RenderRequest);
 };

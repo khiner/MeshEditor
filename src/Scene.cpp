@@ -109,15 +109,19 @@ struct ViewportTheme {
 };
 
 // Component on the scene singleton entity. Changes require command buffer re-recording.
+// todo break this up further and only re-record when necessary
 struct SceneSettings {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ColorMode ColorMode{ColorMode::Mesh};
     bool SmoothShading{false};
     bool ShowGrid{true};
     vk::ClearColorValue BackgroundColor{0.25f, 0.25f, 0.25f, 1.f};
-    InteractionMode InteractionMode{InteractionMode::Object};
     bool ShowBoundingBoxes{false};
     std::unordered_set<he::Element> ShownNormalElements{};
+};
+
+struct SceneInteraction {
+    InteractionMode Mode{InteractionMode::Object};
 };
 
 struct ViewportExtent {
@@ -126,6 +130,8 @@ struct ViewportExtent {
 
 #define SETTINGS R.get<const SceneSettings>(SceneEntity)
 #define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SceneEntity, fn)
+#define INTERACTION R.get<const SceneInteraction>(SceneEntity)
+#define PATCH_INTERACTION(fn) R.patch<SceneInteraction>(SceneEntity, fn)
 #define THEME R.get<const ViewportTheme>(SceneEntity)
 #define PATCH_THEME(fn) R.patch<ViewportTheme>(SceneEntity, fn)
 #define CAMERA R.get<Camera>(SceneEntity)
@@ -222,6 +228,9 @@ struct MeshSelection {
     std::vector<uint32_t> Handles{};
     std::optional<uint32_t> ActiveHandle{}; // Most recently selected element (always in Handles if set)
 };
+
+// Tag to request overlay + element-state buffer refresh after mesh geometry changes.
+struct MeshGeometryDirty {};
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
     if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) {
@@ -1200,6 +1209,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>("mesh_selection_changes"_hs)
         .on_construct<MeshSelection>()
         .on_update<MeshSelection>();
+    R.storage<entt::reactive>("mesh_geometry_changes"_hs)
+        .on_construct<MeshGeometryDirty>()
+        .on_update<MeshGeometryDirty>();
     R.storage<entt::reactive>("excitable_changes"_hs)
         .on_construct<Excitable>()
         .on_destroy<Excitable>();
@@ -1214,6 +1226,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>("scene_settings_changes"_hs)
         .on_construct<SceneSettings>()
         .on_update<SceneSettings>();
+    R.storage<entt::reactive>("interaction_mode_changes"_hs)
+        .on_construct<SceneInteraction>()
+        .on_update<SceneInteraction>();
     R.storage<entt::reactive>("viewport_theme_changes"_hs)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
@@ -1229,6 +1244,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     SceneEntity = R.create();
     R.emplace<SceneSettings>(SceneEntity);
+    R.emplace<SceneInteraction>(SceneEntity);
     R.emplace<ViewportTheme>(SceneEntity);
     R.emplace<Camera>(SceneEntity, CreateDefaultCamera());
     R.emplace<Lights>(SceneEntity, Lights{{1, 1, 1}, 0.1f, {1, 1, 1}, 0.15f, {-1, -1, -1}});
@@ -1277,6 +1293,13 @@ void Scene::LoadIcons(vk::Device device) {
     Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/transform.svg");
 }
 
+static bool HasSelectedInstance(entt::registry &r, entt::entity mesh_entity) {
+    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
+        if (mi.MeshEntity == mesh_entity) return true;
+    }
+    return false;
+}
+
 void Scene::ProcessComponentEvents() {
     using namespace entt::literals;
 
@@ -1293,14 +1316,7 @@ void Scene::ProcessComponentEvents() {
                     dirty_overlay_meshes.insert(mesh_entity);
                 } else {
                     // Destroy: check if mesh has no more selected instances
-                    bool has_selected = false;
-                    for (const auto [e, other_mi] : R.view<MeshInstance, Selected>().each()) {
-                        if (other_mi.MeshEntity == mesh_entity) {
-                            has_selected = true;
-                            break;
-                        }
-                    }
-                    if (!has_selected) {
+                    if (!HasSelectedInstance(R, mesh_entity)) {
                         // Clean up overlays for this mesh
                         if (auto *buffers = R.try_get<MeshBuffers>(mesh_entity)) {
                             for (auto &[_, rb] : buffers->NormalIndicators) Buffers->Release(rb);
@@ -1347,16 +1363,29 @@ void Scene::ProcessComponentEvents() {
         }
         mesh_selection_tracker.clear();
     }
+    { // Mesh geometry changes
+        auto &mesh_geometry_tracker = R.storage<entt::reactive>("mesh_geometry_changes"_hs);
+        if (!mesh_geometry_tracker.empty()) {
+            for (auto mesh_entity : mesh_geometry_tracker) {
+                if (R.all_of<Selected>(mesh_entity) || HasSelectedInstance(R, mesh_entity)) {
+                    dirty_overlay_meshes.insert(mesh_entity);
+                }
+            }
+            R.clear<MeshGeometryDirty>();
+            mesh_geometry_tracker.clear();
+            RequireRender(RenderRequest::Submit);
+        }
+    }
     { // Excitable changes
         auto &excitable_tracker = R.storage<entt::reactive>("excitable_changes"_hs);
         for (auto instance_entity : excitable_tracker) {
             if (R.all_of<Excitable>(instance_entity)) InteractionModes.insert(InteractionMode::Excite);
         }
         if (R.storage<Excitable>().empty()) {
-            if (SETTINGS.InteractionMode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+            if (INTERACTION.Mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!excitable_tracker.empty()) {
-            if (SETTINGS.InteractionMode == InteractionMode::Excite) RequireRender(RenderRequest::ReRecord);
+            if (INTERACTION.Mode == InteractionMode::Excite) RequireRender(RenderRequest::ReRecord);
             else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
         }
         excitable_tracker.clear();
@@ -1364,9 +1393,7 @@ void Scene::ProcessComponentEvents() {
     { // ExcitedVertex changes
         auto &excited_vertex_tracker = R.storage<entt::reactive>("excited_vertex_changes"_hs);
         for (auto instance_entity : excited_vertex_tracker) {
-            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
-                dirty_element_state_meshes.insert(mi->MeshEntity);
-            }
+            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
             if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
                 // Orient camera towards excited vertex
                 const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
@@ -1391,8 +1418,18 @@ void Scene::ProcessComponentEvents() {
         if (!settings_tracker.empty()) {
             RequireRender(RenderRequest::ReRecord);
             scene_view_dirty = true;
+            for (const auto selected_entity : R.view<Selected>()) dirty_overlay_meshes.insert(R.get<MeshInstance>(selected_entity).MeshEntity);
         }
         settings_tracker.clear();
+    }
+    { // Interaction mode changes
+        auto &interaction_tracker = R.storage<entt::reactive>("interaction_mode_changes"_hs);
+        if (!interaction_tracker.empty()) {
+            RequireRender(RenderRequest::ReRecord);
+            scene_view_dirty = true;
+            for (const auto mesh_entity : R.view<Mesh>()) dirty_element_state_meshes.insert(mesh_entity);
+        }
+        interaction_tracker.clear();
     }
     { // Scene view changes (camera/lights/viewport extent)
         auto &scene_view_tracker = R.storage<entt::reactive>("scene_view_changes"_hs);
@@ -1423,14 +1460,133 @@ void Scene::ProcessComponentEvents() {
             .DirectionalColor = lights.DirectionalColor,
             .DirectionalIntensity = lights.DirectionalIntensity,
             .LightDirection = lights.Direction,
-            .InteractionMode = static_cast<uint32_t>(SETTINGS.InteractionMode),
+            .InteractionMode = static_cast<uint32_t>(INTERACTION.Mode),
         }));
         RequireRender(RenderRequest::Submit);
     }
 
-    // Apply batched updates
-    for (const auto mesh_entity : dirty_overlay_meshes) UpdateEntitySelectionOverlays(mesh_entity);
-    for (const auto mesh_entity : dirty_element_state_meshes) UpdateMeshElementStateBuffers(mesh_entity);
+    // Update selection overlays
+    for (const auto mesh_entity : dirty_overlay_meshes) {
+        const auto &mesh = R.get<const Mesh>(mesh_entity);
+        R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
+            for (const auto element : NormalElements) {
+                if (SETTINGS.ShownNormalElements.contains(element)) {
+                    if (!mesh_buffers.NormalIndicators.contains(element)) {
+                        const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
+                        mesh_buffers.NormalIndicators.emplace(
+                            element,
+                            Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
+                        );
+                    } else {
+                        Buffers->VertexBuffer.Update(mesh_buffers.NormalIndicators.at(element).Vertices, MeshRender::CreateNormalVertices(mesh, element));
+                    }
+                } else if (mesh_buffers.NormalIndicators.contains(element)) {
+                    Buffers->Release(mesh_buffers.NormalIndicators.at(element));
+                    mesh_buffers.NormalIndicators.erase(element);
+                }
+            }
+        });
+        if (SETTINGS.ShowBoundingBoxes) {
+            if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
+                R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
+            } else {
+                Buffers->VertexBuffer.Update(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers.Vertices, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
+            }
+        } else if (R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
+            Buffers->Release(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
+            R.remove<BoundingBoxesBuffers>(mesh_entity);
+        }
+    }
+    // Update mesh element state buffers
+    for (const auto mesh_entity : dirty_element_state_meshes) {
+        const auto &mesh = R.get<Mesh>(mesh_entity);
+        std::unordered_set<VH> selected_vertices;
+        std::unordered_set<EH> selected_edges;
+        std::unordered_set<EH> active_edges;
+        std::unordered_set<FH> selected_faces;
+
+        auto element{Element::None};
+        std::vector<uint32_t> handles;
+        std::optional<uint32_t> active_handle;
+        if (INTERACTION.Mode == InteractionMode::Excite) {
+            element = Element::Vertex;
+            for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
+                if (mi.MeshEntity != mesh_entity) continue;
+                handles = excitable.ExcitableVertices;
+                selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
+                if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) {
+                    active_handle = excited_vertex->Vertex;
+                }
+                break;
+            }
+        } else if (const auto &selection = R.get<MeshSelection>(mesh_entity);
+                   INTERACTION.Mode == InteractionMode::Edit && selection.Element == EditMode) {
+            element = selection.Element;
+            handles = selection.Handles;
+            active_handle = selection.ActiveHandle;
+            if (element == Element::Vertex) {
+                selected_vertices.insert(selection.Handles.begin(), selection.Handles.end());
+            } else if (element == Element::Edge) {
+                selected_edges.insert(selection.Handles.begin(), selection.Handles.end());
+            } else if (element == Element::Face) {
+                for (auto h : selection.Handles) {
+                    selected_faces.emplace(h);
+                    for (const auto heh : mesh.fh_range(FH{h})) selected_edges.emplace(mesh.GetEdge(heh));
+                }
+                if (active_handle) {
+                    for (const auto heh : mesh.fh_range(FH{*active_handle})) {
+                        active_edges.emplace(mesh.GetEdge(heh));
+                    }
+                }
+            }
+        }
+
+        auto face_states = MakeElementStates(mesh.FaceCount());
+        auto edge_states = MakeElementStates(mesh.EdgeCount() * 2);
+        auto vertex_states = MakeElementStates(mesh.VertexCount());
+        if (element == Element::Face) {
+            for (const auto fh : selected_faces) face_states[*fh] |= MeshRender::ElementStateSelected;
+            if (active_handle) face_states[*active_handle] |= MeshRender::ElementStateActive;
+        }
+
+        if (element == Element::Edge || element == Element::Face) {
+            for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
+                uint32_t state = 0;
+                if (selected_edges.contains(EH{ei})) state |= MeshRender::ElementStateSelected;
+                if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
+                    state |= MeshRender::ElementStateActive;
+                }
+                edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
+            }
+        } else if (element == Element::Vertex) {
+            for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
+                const auto heh = mesh.GetHalfedge(EH{ei}, 0);
+                const auto v_from = mesh.GetFromVertex(heh), v_to = mesh.GetToVertex(heh);
+                auto get_state = [&](auto vh) {
+                    uint32_t state = 0;
+                    if (selected_vertices.contains(vh)) state |= MeshRender::ElementStateSelected;
+                    if (active_handle == *vh) state |= MeshRender::ElementStateActive;
+                    return state;
+                };
+                edge_states[2 * ei] = get_state(v_from);
+                edge_states[2 * ei + 1] = get_state(v_to);
+            }
+        }
+
+        if (element == Element::Vertex) {
+            for (const auto vh : selected_vertices) vertex_states[*vh] |= MeshRender::ElementStateSelected;
+            if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
+        }
+
+        R.patch<MeshElementStateBuffers>(mesh_entity, [&](auto &states) {
+            states.Faces.Update(as_bytes(face_states));
+            states.Edges.Update(as_bytes(edge_states));
+            states.Vertices.Update(as_bytes(vertex_states));
+        });
+
+        SelectionStale = true;
+        RequireRender(RenderRequest::Submit);
+    }
 }
 
 vk::Extent2D Scene::GetExtent() const { return VIEWPORT_EXTENT.Value; }
@@ -1617,10 +1773,8 @@ void Scene::ClearMeshes() {
 }
 
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
-    const auto &mesh = R.get<const Mesh>(e);
-    Meshes.SetPositions(mesh, positions);
-    UpdateEntitySelectionOverlays(e);
-    UpdateMeshElementStateBuffers(e);
+    Meshes.SetPositions(R.get<const Mesh>(e), positions);
+    R.emplace_or_replace<MeshGeometryDirty>(e);
 }
 
 void Scene::Destroy(entt::entity e) {
@@ -1654,11 +1808,10 @@ void Scene::Destroy(entt::entity e) {
 }
 
 void Scene::SetInteractionMode(InteractionMode mode) {
-    if (SETTINGS.InteractionMode == mode) return;
+    if (INTERACTION.Mode == mode) return;
 
-    PATCH_SETTINGS([mode](auto &s) { s.InteractionMode = mode; });
+    PATCH_INTERACTION([mode](auto &s) { s.Mode = mode; });
     PATCH_THEME([](auto &) {});
-    for (const auto &entity : R.view<Mesh>()) UpdateMeshElementStateBuffers(entity);
 }
 
 void Scene::RequireRender(RenderRequest request) {
@@ -1691,99 +1844,6 @@ void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool togg
             selection.ActiveHandle = handle;
         }
     });
-    UpdateMeshElementStateBuffers(mesh_entity);
-}
-
-void Scene::UpdateMeshElementStateBuffers(entt::entity e) {
-    if (!R.all_of<Mesh>(e)) return;
-
-    const auto &mesh = R.get<Mesh>(e);
-    std::unordered_set<VH> selected_vertices;
-    std::unordered_set<EH> selected_edges;
-    std::unordered_set<EH> active_edges;
-    std::unordered_set<FH> selected_faces;
-
-    auto element{Element::None};
-    std::vector<uint32_t> handles;
-    std::optional<uint32_t> active_handle;
-    if (SETTINGS.InteractionMode == InteractionMode::Excite) {
-        element = Element::Vertex;
-        for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
-            if (mi.MeshEntity != e) continue;
-            handles = excitable.ExcitableVertices;
-            selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
-            if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) {
-                active_handle = excited_vertex->Vertex;
-            }
-            break;
-        }
-    } else if (const auto &selection = R.get<MeshSelection>(e);
-               SETTINGS.InteractionMode == InteractionMode::Edit && selection.Element == EditMode) {
-        element = selection.Element;
-        handles = selection.Handles;
-        active_handle = selection.ActiveHandle;
-        if (element == Element::Vertex) {
-            selected_vertices.insert(selection.Handles.begin(), selection.Handles.end());
-        } else if (element == Element::Edge) {
-            selected_edges.insert(selection.Handles.begin(), selection.Handles.end());
-        } else if (element == Element::Face) {
-            for (auto h : selection.Handles) {
-                selected_faces.emplace(h);
-                for (const auto heh : mesh.fh_range(FH{h})) selected_edges.emplace(mesh.GetEdge(heh));
-            }
-            if (active_handle) {
-                for (const auto heh : mesh.fh_range(FH{*active_handle})) {
-                    active_edges.emplace(mesh.GetEdge(heh));
-                }
-            }
-        }
-    }
-
-    auto face_states = MakeElementStates(mesh.FaceCount());
-    auto edge_states = MakeElementStates(mesh.EdgeCount() * 2);
-    auto vertex_states = MakeElementStates(mesh.VertexCount());
-    if (element == Element::Face) {
-        for (const auto fh : selected_faces) face_states[*fh] |= MeshRender::ElementStateSelected;
-        if (active_handle) face_states[*active_handle] |= MeshRender::ElementStateActive;
-    }
-
-    if (element == Element::Edge || element == Element::Face) {
-        for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-            uint32_t state = 0;
-            if (selected_edges.contains(EH{ei})) state |= MeshRender::ElementStateSelected;
-            if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
-                state |= MeshRender::ElementStateActive;
-            }
-            edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
-        }
-    } else if (element == Element::Vertex) {
-        for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-            const auto heh = mesh.GetHalfedge(EH{ei}, 0);
-            const auto v_from = mesh.GetFromVertex(heh), v_to = mesh.GetToVertex(heh);
-            auto get_state = [&](auto vh) {
-                uint32_t state = 0;
-                if (selected_vertices.contains(vh)) state |= MeshRender::ElementStateSelected;
-                if (active_handle == *vh) state |= MeshRender::ElementStateActive;
-                return state;
-            };
-            edge_states[2 * ei] = get_state(v_from);
-            edge_states[2 * ei + 1] = get_state(v_to);
-        }
-    }
-
-    if (element == Element::Vertex) {
-        for (const auto vh : selected_vertices) vertex_states[*vh] |= MeshRender::ElementStateSelected;
-        if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
-    }
-
-    R.patch<MeshElementStateBuffers>(e, [&](auto &states) {
-        states.Faces.Update(as_bytes(face_states));
-        states.Edges.Update(as_bytes(edge_states));
-        states.Vertices.Update(as_bytes(vertex_states));
-    });
-
-    SelectionStale = true;
-    RequireRender(RenderRequest::Submit);
 }
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
@@ -1837,8 +1897,8 @@ void Scene::RecordRenderCommandBuffer() {
     // In Edit mode, only primary edit instance per selected mesh gets Edit visuals.
     // Other selected instances render normally with silhouettes.
     const auto &settings = SETTINGS;
-    const bool is_edit_mode = settings.InteractionMode == InteractionMode::Edit;
-    const bool is_excite_mode = settings.InteractionMode == InteractionMode::Excite;
+    const bool is_edit_mode = INTERACTION.Mode == InteractionMode::Edit;
+    const bool is_excite_mode = INTERACTION.Mode == InteractionMode::Excite;
     const bool show_solid = settings.ViewportShading == ViewportShadingMode::Solid;
     const bool show_wireframe = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const SPT fill_pipeline = settings.ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
@@ -1858,7 +1918,7 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     const bool render_silhouette = !R.view<Selected>().empty() &&
-        (settings.InteractionMode == InteractionMode::Object || !silhouette_instances.empty());
+        (INTERACTION.Mode == InteractionMode::Object || !silhouette_instances.empty());
 
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
@@ -2094,39 +2154,6 @@ void Scene::RecordTransferCommandBuffer() {
 }
 #endif
 
-void Scene::UpdateEntitySelectionOverlays(entt::entity mesh_entity) {
-    const auto &mesh = R.get<const Mesh>(mesh_entity);
-    R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
-        for (const auto element : NormalElements) {
-            if (SETTINGS.ShownNormalElements.contains(element)) {
-                if (!mesh_buffers.NormalIndicators.contains(element)) {
-                    const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
-                    mesh_buffers.NormalIndicators.emplace(
-                        element,
-                        Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
-                    );
-                } else {
-                    Buffers->VertexBuffer.Update(mesh_buffers.NormalIndicators.at(element).Vertices, MeshRender::CreateNormalVertices(mesh, element));
-                }
-            } else if (mesh_buffers.NormalIndicators.contains(element)) {
-                Buffers->Release(mesh_buffers.NormalIndicators.at(element));
-                mesh_buffers.NormalIndicators.erase(element);
-            }
-        }
-    });
-
-    if (SETTINGS.ShowBoundingBoxes) {
-        if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-            R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
-        } else {
-            Buffers->VertexBuffer.Update(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers.Vertices, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
-        }
-    } else if (R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-        Buffers->Release(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
-        R.remove<BoundingBoxesBuffers>(mesh_entity);
-    }
-}
-
 using namespace ImGui;
 
 namespace {
@@ -2190,25 +2217,28 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 
 void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
-
-    const auto primary_edit_instances = SETTINGS.InteractionMode == InteractionMode::Edit ?
+    const auto primary_edit_instances = INTERACTION.Mode == InteractionMode::Edit ?
         ComputePrimaryEditInstances(R) :
         std::unordered_map<entt::entity, entt::entity>{};
-
     // Object selection never uses depth testing - we want all visible pixels regardless of occlusion
-    RenderSelectionPassWith(false, [&](DrawListBuilder &draw_list) {
-        auto batch = draw_list.BeginBatch();
-        for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
-            draw.ObjectIdSlot = models.ObjectIds.Slot;
-            draw.VertexCountOrHeadImageSlot = 0;
-            if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
-                AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
-            } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
-                AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw);
+    RenderSelectionPassWith(
+        false,
+        [&](DrawListBuilder &draw_list) {
+            auto batch = draw_list.BeginBatch();
+            for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
+                draw.ObjectIdSlot = models.ObjectIds.Slot;
+                draw.VertexCountOrHeadImageSlot = 0;
+                if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
+                    AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
+                } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
+                    AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw);
+                }
             }
-        }
-        return SelectionDrawInfo{SPT::SelectionFragmentXRay, batch}; }, signal_semaphore);
+            return SelectionDrawInfo{SPT::SelectionFragmentXRay, batch};
+        },
+        signal_semaphore
+    );
 
     SelectionStale = false;
 }
@@ -2628,10 +2658,10 @@ void Scene::Interact() {
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Tab)) {
             // Cycle to the next interaction mode, wrapping around to the first.
-            auto it = find(InteractionModes, SETTINGS.InteractionMode);
+            auto it = find(InteractionModes, INTERACTION.Mode);
             SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
         }
-        if (SETTINGS.InteractionMode == InteractionMode::Edit) {
+        if (INTERACTION.Mode == InteractionMode::Edit) {
             if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
             else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
             else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
@@ -2682,7 +2712,7 @@ void Scene::Interact() {
 
     if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
-    const auto interaction_mode = SETTINGS.InteractionMode;
+    const auto interaction_mode = INTERACTION.Mode;
     if (SelectionMode == SelectionMode::Box && (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Object)) {
         const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -3265,9 +3295,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
         if (CollapsingHeader("Update primitive")) {
-            if (auto new_mesh = PrimitiveEditor(*primitive_type, false)) {
-                SetMeshPositions(active_mesh_entity, new_mesh->Positions);
-                RequireRender(RenderRequest::Submit);
+            if (auto mesh_data = PrimitiveEditor(*primitive_type, false)) {
+                SetMeshPositions(active_mesh_entity, std::move(mesh_data->Positions));
             }
         }
     }
@@ -3284,7 +3313,7 @@ void Scene::RenderControls() {
                 PushID("InteractionMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Interaction mode:");
-                auto interaction_mode = int(SETTINGS.InteractionMode);
+                auto interaction_mode = int(INTERACTION.Mode);
                 bool interaction_mode_changed = false;
                 for (const auto mode : InteractionModes) {
                     SameLine();
@@ -3299,7 +3328,7 @@ void Scene::RenderControls() {
                     SameLine();
                     TextDisabled("(wireframe)");
                 }
-                if (SETTINGS.InteractionMode == InteractionMode::Edit) {
+                if (INTERACTION.Mode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
                     auto type_interaction_mode = int(EditMode);
@@ -3355,8 +3384,8 @@ void Scene::RenderControls() {
                     RadioButton(ToString(PrimitiveTypes[i]).c_str(), &selected_type_i, i);
                 }
                 const auto selected_type = PrimitiveType(selected_type_i);
-                if (auto mesh = PrimitiveEditor(selected_type, true)) {
-                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh), {.Name = ToString(selected_type)}).first, selected_type);
+                if (auto mesh_data = PrimitiveEditor(selected_type, true)) {
+                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh_data), {.Name = ToString(selected_type)}).first, selected_type);
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
                 PopID();
@@ -3419,7 +3448,6 @@ void Scene::RenderControls() {
                 SeparatorText("Selection overlays");
                 AlignTextToFramePadding();
                 TextUnformatted("Normals");
-                bool changed = false;
                 for (const auto element : NormalElements) {
                     SameLine();
                     bool show = settings.ShownNormalElements.contains(element);
@@ -3429,18 +3457,11 @@ void Scene::RenderControls() {
                             if (show) s.ShownNormalElements.insert(element);
                             else s.ShownNormalElements.erase(element);
                         });
-                        changed = true;
                     }
                 }
                 bool show_bboxes = settings.ShowBoundingBoxes;
                 if (Checkbox("Bounding boxes", &show_bboxes)) {
                     PATCH_SETTINGS([show_bboxes](auto &s) { s.ShowBoundingBoxes = show_bboxes; });
-                    changed = true;
-                }
-                if (changed) {
-                    for (auto selected_entity : R.view<Selected>()) {
-                        UpdateEntitySelectionOverlays(R.get<MeshInstance>(selected_entity).MeshEntity);
-                    }
                 }
             }
             {
