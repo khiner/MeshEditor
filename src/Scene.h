@@ -229,6 +229,7 @@ private:
     RenderRequest PendingRender{RenderRequest::None};
     bool RenderPending{false}; // GPU render submitted but not yet waited on.
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
+    bool ShaderRecompileRequested{false};
 
     struct ElementRange {
         entt::entity MeshEntity;

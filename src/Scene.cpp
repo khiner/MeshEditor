@@ -1319,6 +1319,12 @@ void Scene::ProcessComponentEvents() {
 
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
 
+    if (ShaderRecompileRequested) {
+        ShaderRecompileRequested = false;
+        Pipelines->CompileShaders();
+        RequireRender(RenderRequest::ReRecord);
+    }
+
     { // Selected changes
         auto &selected_tracker = R.storage<entt::reactive>("selected_changes"_hs);
         if (!selected_tracker.empty()) RequireRender(RenderRequest::ReRecord);
@@ -2907,16 +2913,13 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
             Buffers->Ctx.ClearDeferredDescriptorUpdates();
         }
-        RequireRender(RenderRequest::ReRecord);
     }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     RecordTransferCommandBuffer();
 #endif
 
-    if (PendingRender == RenderRequest::ReRecord) {
-        RecordRenderCommandBuffer();
-    }
+    if (PendingRender == RenderRequest::ReRecord || extent_changed) RecordRenderCommandBuffer();
 
     vk::SubmitInfo submit;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
@@ -3426,10 +3429,7 @@ void Scene::RenderControls() {
             if (Checkbox("Show grid", &show_grid)) {
                 PATCH_SETTINGS([show_grid](auto &s) { s.ShowGrid = show_grid; });
             }
-            if (Button("Recompile shaders")) {
-                Pipelines->CompileShaders();
-                RequireRender(RenderRequest::ReRecord);
-            }
+            if (Button("Recompile shaders")) ShaderRecompileRequested = true;
             SeparatorText("Viewport shading");
             PushID("ViewportShading");
             auto viewport_shading = int(settings.ViewportShading);
