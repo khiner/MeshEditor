@@ -192,7 +192,6 @@ private:
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
-    he::Element EditMode{he::Element::Face}; // Which element type to edit (vertex/edge/face)
     vec2 AccumulatedWrapMouseDelta{0, 0};
     std::vector<uint32_t> BoxSelectZeroBits;
     uint32_t NextObjectId{1}; // Monotonically increasing, assigned to RenderInstance on show

@@ -131,6 +131,10 @@ struct SceneInteraction {
     InteractionMode Mode{InteractionMode::Object};
 };
 
+struct SceneEditMode {
+    he::Element Value{he::Element::Face};
+};
+
 struct ViewportExtent {
     vk::Extent2D Value{};
 };
@@ -139,6 +143,8 @@ struct ViewportExtent {
 #define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SceneEntity, fn)
 #define INTERACTION R.get<const SceneInteraction>(SceneEntity)
 #define PATCH_INTERACTION(fn) R.patch<SceneInteraction>(SceneEntity, fn)
+#define EDIT_MODE R.get<const SceneEditMode>(SceneEntity).Value
+#define PATCH_EDIT_MODE(fn) R.patch<SceneEditMode>(SceneEntity, fn)
 #define THEME R.get<const ViewportTheme>(SceneEntity)
 #define PATCH_THEME(fn) R.patch<ViewportTheme>(SceneEntity, fn)
 #define CAMERA R.get<Camera>(SceneEntity)
@@ -1236,6 +1242,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>("interaction_mode_changes"_hs)
         .on_construct<SceneInteraction>()
         .on_update<SceneInteraction>();
+    R.storage<entt::reactive>("edit_mode_changes"_hs)
+        .on_construct<SceneEditMode>()
+        .on_update<SceneEditMode>();
     R.storage<entt::reactive>("viewport_theme_changes"_hs)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
@@ -1252,6 +1261,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     SceneEntity = R.create();
     R.emplace<SceneSettings>(SceneEntity);
     R.emplace<SceneInteraction>(SceneEntity);
+    R.emplace<SceneEditMode>(SceneEntity);
     R.emplace<ViewportTheme>(SceneEntity);
     R.emplace<Camera>(SceneEntity, CreateDefaultCamera());
     R.emplace<Lights>(SceneEntity, Lights{{1, 1, 1}, 0.1f, {1, 1, 1}, 0.15f, {-1, -1, -1}});
@@ -1339,17 +1349,19 @@ void Scene::ProcessComponentEvents() {
         }
         selected_tracker.clear();
     }
-    { // Visible/Active/StartTransform/destruction
+    { // Edit mode/Visible/Active/StartTransform/destruction
+        auto &edit_mode_tracker = R.storage<entt::reactive>("edit_mode_changes"_hs);
         auto &visible_tracker = R.storage<entt::reactive>("visible_changes"_hs);
         auto &active_tracker = R.storage<entt::reactive>("active_changes"_hs);
         auto &start_transform_tracker = R.storage<entt::reactive>("start_transform_changes"_hs);
-        if (!visible_tracker.empty() || !active_tracker.empty() || !start_transform_tracker.empty() || !DestroyTracker->Storage.empty()) {
+        if (!edit_mode_tracker.empty() || !visible_tracker.empty() || !active_tracker.empty() || !start_transform_tracker.empty() || !DestroyTracker->Storage.empty()) {
             RequireRender(RenderRequest::ReRecord);
         }
         visible_tracker.clear();
         active_tracker.clear();
         start_transform_tracker.clear();
         DestroyTracker->Storage.clear();
+        edit_mode_tracker.clear();
     }
     { // MeshSelection changes
         auto &mesh_selection_tracker = R.storage<entt::reactive>("mesh_selection_changes"_hs);
@@ -1527,7 +1539,7 @@ void Scene::ProcessComponentEvents() {
                 break;
             }
         } else if (const auto &selection = R.get<MeshSelection>(mesh_entity);
-                   INTERACTION.Mode == InteractionMode::Edit && selection.Element == EditMode) {
+                   INTERACTION.Mode == InteractionMode::Edit && selection.Element == EDIT_MODE) {
             element = selection.Element;
             handles = selection.Handles;
             active_handle = selection.ActiveHandle;
@@ -1825,12 +1837,11 @@ void Scene::RequireRender(RenderRequest request) {
     if (static_cast<uint8_t>(request) > static_cast<uint8_t>(PendingRender)) PendingRender = request;
 }
 void Scene::SetEditMode(Element mode) {
-    if (EditMode == mode) return;
+    if (EDIT_MODE == mode) return;
 
-    EditMode = mode;
-    RequireRender(RenderRequest::ReRecord);
+    PATCH_EDIT_MODE([mode](auto &edit_mode) { edit_mode.Value = mode; });
     for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
-        R.replace<MeshSelection>(e, MeshSelection{EditMode, ConvertSelectionElement(selection, mesh, EditMode), std::nullopt});
+        R.replace<MeshSelection>(e, MeshSelection{mode, ConvertSelectionElement(selection, mesh, mode), std::nullopt});
     }
 }
 
@@ -1993,7 +2004,7 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    if ((is_edit_mode && EditMode == Element::Vertex) || is_excite_mode) {
+    if ((is_edit_mode && EDIT_MODE == Element::Vertex) || is_excite_mode) {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, state_buffers] :
              R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
@@ -2098,7 +2109,7 @@ void Scene::RecordRenderCommandBuffer() {
         // Wireframe edges
         if (show_wireframe || is_edit_mode || is_excite_mode) record_draw_batch(main.Renderer, SPT::Line, line_batch);
         // Vertex points
-        if ((is_edit_mode && EditMode == Element::Vertex) || is_excite_mode) record_draw_batch(main.Renderer, SPT::Point, point_batch);
+        if ((is_edit_mode && EDIT_MODE == Element::Vertex) || is_excite_mode) record_draw_batch(main.Renderer, SPT::Point, point_batch);
     }
 
     // Silhouette edge color (rendered ontop of meshes)
@@ -2742,16 +2753,16 @@ void Scene::Interact() {
                     std::vector<ElementRange> ranges;
                     uint32_t offset = 0;
                     for (const auto mesh_entity : mesh_entities) {
-                        if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), EditMode); count > 0) {
+                        if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), EDIT_MODE); count > 0) {
                             ranges.emplace_back(mesh_entity, offset, count);
                             offset += count;
                         }
                     }
 
-                    auto results = RunBoxSelectElements(ranges, EditMode, *box_px);
+                    auto results = RunBoxSelectElements(ranges, EDIT_MODE, *box_px);
                     for (size_t i = 0; i < ranges.size(); ++i) {
                         const auto e = ranges[i].MeshEntity;
-                        R.replace<MeshSelection>(e, MeshSelection{EditMode, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
+                        R.replace<MeshSelection>(e, MeshSelection{EDIT_MODE, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
                     }
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto selected_entities = RunBoxSelect(*box_px);
@@ -2786,7 +2797,7 @@ void Scene::Interact() {
     }
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
 
-    if (interaction_mode == InteractionMode::Edit && EditMode == Element::None) return;
+    if (interaction_mode == InteractionMode::Edit && EDIT_MODE == Element::None) return;
     const auto hit_entities = RunClickSelect(mouse_px);
     if (interaction_mode == InteractionMode::Edit) {
         const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
@@ -2800,7 +2811,7 @@ void Scene::Interact() {
         }
         if (hit_it != hit_entities.end()) {
             const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
-            if (const auto element = RunClickSelectElement(mesh_entity, EditMode, mouse_px)) {
+            if (const auto element = RunClickSelectElement(mesh_entity, EDIT_MODE, mouse_px)) {
                 SelectElement(mesh_entity, *element, toggle);
             }
         }
@@ -3338,7 +3349,7 @@ void Scene::RenderControls() {
                 if (INTERACTION.Mode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    auto type_interaction_mode = int(EditMode);
+                    auto type_interaction_mode = int(EDIT_MODE);
                     for (const auto element : Elements) {
                         auto name = Capitalize(label(element));
                         SameLine();
@@ -3350,10 +3361,10 @@ void Scene::RenderControls() {
                     if (active_entity != entt::null) {
                         const auto mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
                         const auto &selection = R.get<MeshSelection>(mesh_entity);
-                        const bool matching_mode = selection.Element == EditMode;
+                        const bool matching_mode = selection.Element == EDIT_MODE;
                         const auto selected_count = matching_mode ? selection.Handles.size() : 0;
-                        Text("Editing %s: %zu selected", label(EditMode).data(), selected_count);
-                        if (EditMode == Element::Vertex && matching_mode && selected_count > 0) {
+                        Text("Editing %s: %zu selected", label(EDIT_MODE).data(), selected_count);
+                        if (EDIT_MODE == Element::Vertex && matching_mode && selected_count > 0) {
                             const auto &mesh = R.get<Mesh>(mesh_entity);
                             for (const auto vh : selection.Handles) {
                                 const auto pos = mesh.GetPosition(VH{vh});
