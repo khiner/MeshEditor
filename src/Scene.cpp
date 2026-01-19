@@ -3209,9 +3209,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     );
     Unindent();
     if (CollapsingHeader("Transform")) {
-        auto position = R.get<const Position>(active_entity).Value;
+        auto &position = R.get<Position>(active_entity).Value;
         bool model_changed = DragFloat3("Position", &position[0], 0.01f);
-        if (model_changed) R.patch<Position>(active_entity, [&](auto &p) { p.Value = position; });
+        if (model_changed) R.patch<Position>(active_entity, [](auto &) {});
         // Rotation editor
         {
             int mode_i = R.get<const RotationUiVariant>(active_entity).index();
@@ -3221,7 +3221,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 SetRotation(R, active_entity, R.get<const Rotation>(active_entity).Value);
             }
         }
-        auto rotation_ui = R.get<const RotationUiVariant>(active_entity);
+        auto &rotation_ui = R.get<RotationUiVariant>(active_entity);
         const bool rotation_changed = std::visit(
             overloaded{
                 [&](RotationQuat &v) {
@@ -3254,16 +3254,16 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             rotation_ui
         );
         if (rotation_changed) {
-            R.patch<RotationUiVariant>(active_entity, [&](auto &v) { v = rotation_ui; });
+            R.patch<RotationUiVariant>(active_entity, [](auto &) {});
         }
         model_changed |= rotation_changed;
 
         const bool frozen = R.all_of<Frozen>(active_entity);
         if (frozen) BeginDisabled();
         const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-        auto scale = R.get<const Scale>(active_entity).Value;
+        auto &scale = R.get<Scale>(active_entity).Value;
         const bool scale_changed = DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
-        if (scale_changed) R.patch<Scale>(active_entity, [&](auto &s) { s.Value = scale; });
+        if (scale_changed) R.patch<Scale>(active_entity, [](auto &) {});
         model_changed |= scale_changed;
         if (frozen) EndDisabled();
         if (model_changed) {
@@ -3411,14 +3411,16 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Render")) {
-            const auto &settings = SETTINGS;
-            std::array bg_color{settings.ClearColor.float32[0], settings.ClearColor.float32[1], settings.ClearColor.float32[2]};
-            if (ColorEdit3("Background color", bg_color.data())) {
-                R.patch<SceneSettings>(SceneEntity, [&bg_color](auto &s) { s.ClearColor = {bg_color[0], bg_color[1], bg_color[2], 1.f}; });
+            auto &settings = R.get<SceneSettings>(SceneEntity);
+            bool settings_changed = false;
+            if (ColorEdit3("Background color", settings.ClearColor.float32)) {
+                settings.ClearColor.float32[3] = 1.f;
+                settings_changed = true;
             }
             bool show_grid = settings.ShowGrid;
             if (Checkbox("Show grid", &show_grid)) {
-                PATCH_SETTINGS([show_grid](auto &s) { s.ShowGrid = show_grid; });
+                settings.ShowGrid = show_grid;
+                settings_changed = true;
             }
             if (Button("Recompile shaders")) ShaderRecompileRequested = true;
             SeparatorText("Viewport shading");
@@ -3448,11 +3450,10 @@ void Scene::RenderControls() {
                 PopID();
             }
             if (viewport_shading_changed || color_mode_changed || smooth_shading_changed) {
-                R.patch<SceneSettings>(SceneEntity, [viewport_shading, color_mode, smooth_shading](auto &s) {
-                    s.ViewportShading = ViewportShadingMode(viewport_shading);
-                    s.FaceColorMode = FaceColorMode(color_mode);
-                    s.SmoothShading = smooth_shading;
-                });
+                settings.ViewportShading = ViewportShadingMode(viewport_shading);
+                settings.FaceColorMode = FaceColorMode(color_mode);
+                settings.SmoothShading = smooth_shading;
+                settings_changed = true;
             }
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
@@ -3463,19 +3464,19 @@ void Scene::RenderControls() {
                     bool show = HasNormalOverlay(settings.NormalOverlays, element);
                     const auto type_name = Capitalize(label(element));
                     if (Checkbox(type_name.c_str(), &show)) {
-                        R.patch<SceneSettings>(SceneEntity, [element, show](auto &s) {
-                            SetNormalOverlay(s.NormalOverlays, element, show);
-                        });
+                        SetNormalOverlay(settings.NormalOverlays, element, show);
+                        settings_changed = true;
                     }
                 }
                 bool show_bboxes = settings.ShowBoundingBoxes;
                 if (Checkbox("Bounding boxes", &show_bboxes)) {
-                    PATCH_SETTINGS([show_bboxes](auto &s) { s.ShowBoundingBoxes = show_bboxes; });
+                    settings.ShowBoundingBoxes = show_bboxes;
+                    settings_changed = true;
                 }
             }
             {
                 SeparatorText("Viewport theme");
-                auto theme = THEME;
+                auto &theme = R.get<ViewportTheme>(SceneEntity);
                 bool changed{false};
                 changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
                 changed |= ColorEdit3("Wire edit", &theme.Colors.WireEdit.x);
@@ -3487,8 +3488,9 @@ void Scene::RenderControls() {
                 changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
                 changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
                 changed |= SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
-                if (changed) PATCH_THEME([theme](auto &t) { t = theme; });
+                if (changed) PATCH_THEME([](auto &) {});
             }
+            if (settings_changed) PATCH_SETTINGS([](auto &) {});
             EndTabItem();
         }
 
