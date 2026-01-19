@@ -109,14 +109,11 @@ struct ViewportTheme {
 };
 
 // Component on the scene singleton entity. Changes require command buffer re-recording.
-// todo break this up further and only re-record when necessary
 struct SceneSettings {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
-    ColorMode ColorMode{ColorMode::Mesh};
-    bool SmoothShading{false};
-    bool ShowGrid{true};
-    vk::ClearColorValue BackgroundColor{0.25f, 0.25f, 0.25f, 1.f};
-    bool ShowBoundingBoxes{false};
+    vk::ClearColorValue ClearColor{0.25f, 0.25f, 0.25f, 1.f};
+    FaceColorMode FaceColorMode{FaceColorMode::Mesh};
+    bool SmoothShading{false}, ShowGrid{true}, ShowBoundingBoxes{false};
     uint8_t NormalOverlays{0}; // Bitmask of he::Element
 };
 
@@ -1417,9 +1414,7 @@ void Scene::ProcessComponentEvents() {
                 // Orient camera towards excited vertex
                 const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
                 const auto &mesh = R.get<Mesh>(mesh_entity);
-                const auto &transform = R.get<WorldMatrix>(instance_entity).M;
-                const auto vh = VH(ev->Vertex);
-                const vec3 vertex_pos{transform * vec4{mesh.GetPosition(vh), 1}};
+                const vec3 vertex_pos{R.get<WorldMatrix>(instance_entity).M * vec4{mesh.GetPosition(VH(ev->Vertex)), 1}};
                 PATCH_CAMERA([&](auto &camera) { camera.SetTargetDirection(glm::normalize(vertex_pos - camera.Target)); });
             }
         }
@@ -1520,8 +1515,7 @@ void Scene::ProcessComponentEvents() {
     for (const auto mesh_entity : dirty_element_state_meshes) {
         const auto &mesh = R.get<Mesh>(mesh_entity);
         std::unordered_set<VH> selected_vertices;
-        std::unordered_set<EH> selected_edges;
-        std::unordered_set<EH> active_edges;
+        std::unordered_set<EH> selected_edges, active_edges;
         std::unordered_set<FH> selected_faces;
 
         auto element{Element::None};
@@ -1919,7 +1913,7 @@ void Scene::RecordRenderCommandBuffer() {
     const bool is_excite_mode = INTERACTION.Mode == InteractionMode::Excite;
     const bool show_solid = settings.ViewportShading == ViewportShadingMode::Solid;
     const bool show_wireframe = settings.ViewportShading == ViewportShadingMode::Wireframe;
-    const SPT fill_pipeline = settings.ColorMode == ColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+    const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
@@ -2089,7 +2083,7 @@ void Scene::RecordRenderCommandBuffer() {
     const auto &main = Pipelines->Main;
     // Main rendering pass
     {
-        const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {settings.BackgroundColor}};
+        const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {settings.ClearColor}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
@@ -3417,9 +3411,9 @@ void Scene::RenderControls() {
 
         if (BeginTabItem("Render")) {
             const auto &settings = SETTINGS;
-            std::array bg_color{settings.BackgroundColor.float32[0], settings.BackgroundColor.float32[1], settings.BackgroundColor.float32[2]};
+            std::array bg_color{settings.ClearColor.float32[0], settings.ClearColor.float32[1], settings.ClearColor.float32[2]};
             if (ColorEdit3("Background color", bg_color.data())) {
-                R.patch<SceneSettings>(SceneEntity, [&bg_color](auto &s) { s.BackgroundColor = {bg_color[0], bg_color[1], bg_color[2], 1.f}; });
+                R.patch<SceneSettings>(SceneEntity, [&bg_color](auto &s) { s.ClearColor = {bg_color[0], bg_color[1], bg_color[2], 1.f}; });
             }
             bool show_grid = settings.ShowGrid;
             if (Checkbox("Show grid", &show_grid)) {
@@ -3443,22 +3437,22 @@ void Scene::RenderControls() {
                 smooth_shading_changed = Checkbox("Smooth shading", &smooth_shading);
             }
 
-            auto color_mode = int(settings.ColorMode);
+            auto color_mode = int(settings.FaceColorMode);
             bool color_mode_changed = false;
             if (settings.ViewportShading == ViewportShadingMode::Solid) {
-                PushID("ColorMode");
+                PushID("FaceColorMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Fill color mode");
                 SameLine();
-                color_mode_changed |= RadioButton("Mesh", &color_mode, int(ColorMode::Mesh));
+                color_mode_changed |= RadioButton("Mesh", &color_mode, int(FaceColorMode::Mesh));
                 SameLine();
-                color_mode_changed |= RadioButton("Normals", &color_mode, int(ColorMode::Normals));
+                color_mode_changed |= RadioButton("Normals", &color_mode, int(FaceColorMode::Normals));
                 PopID();
             }
             if (viewport_shading_changed || color_mode_changed || smooth_shading_changed) {
                 R.patch<SceneSettings>(SceneEntity, [viewport_shading, color_mode, smooth_shading](auto &s) {
                     s.ViewportShading = ViewportShadingMode(viewport_shading);
-                    s.ColorMode = ColorMode(color_mode);
+                    s.FaceColorMode = FaceColorMode(color_mode);
                     s.SmoothShading = smooth_shading;
                 });
             }

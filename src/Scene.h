@@ -49,7 +49,7 @@ enum class ViewportShadingMode {
     Solid,
 };
 
-enum class ColorMode {
+enum class FaceColorMode {
     Mesh,
     Normals,
 };
