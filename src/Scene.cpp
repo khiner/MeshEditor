@@ -1409,7 +1409,9 @@ void Scene::ProcessComponentEvents() {
     { // ExcitedVertex changes
         auto &excited_vertex_tracker = R.storage<entt::reactive>("excited_vertex_changes"_hs);
         for (auto instance_entity : excited_vertex_tracker) {
-            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
+            if (INTERACTION.Mode == InteractionMode::Excite) {
+                if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
+            }
             if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
                 // Orient camera towards excited vertex
                 const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
@@ -1441,7 +1443,12 @@ void Scene::ProcessComponentEvents() {
         if (!interaction_tracker.empty()) {
             RequireRender(RenderRequest::ReRecord);
             scene_view_dirty = true;
-            for (const auto mesh_entity : R.view<Mesh>()) dirty_element_state_meshes.insert(mesh_entity);
+            for (const auto [mesh_entity, selection] : R.view<MeshSelection>().each()) {
+                if (!selection.Handles.empty() || selection.ActiveHandle) dirty_element_state_meshes.insert(mesh_entity);
+            }
+            for (const auto [_, mi, __] : R.view<const MeshInstance, const Excitable>().each()) {
+                dirty_element_state_meshes.insert(mi.MeshEntity);
+            }
         }
         interaction_tracker.clear();
     }
@@ -1598,8 +1605,8 @@ void Scene::ProcessComponentEvents() {
         });
 
         SelectionStale = true;
-        RequireRender(RenderRequest::Submit);
     }
+    if (!dirty_element_state_meshes.empty()) RequireRender(RenderRequest::Submit);
 }
 
 vk::Extent2D Scene::GetExtent() const { return VIEWPORT_EXTENT.Value; }
