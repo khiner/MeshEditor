@@ -35,51 +35,47 @@
 using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::iota, std::views::take, std::views::transform;
 
-using namespace he;
+struct DrawBatchInfo {
+    uint32_t DrawDataOffset{0};
+    uint32_t DrawCount{0};
+    vk::DeviceSize IndirectOffset{0};
+};
 
-namespace changes {
-using namespace entt::literals;
-constexpr auto
-    Selected = "selected_changes"_hs,
-    Rerecord = "rerecord_changes"_hs,
-    MeshSelection = "mesh_selection_changes"_hs,
-    MeshGeometry = "mesh_geometry_changes"_hs,
-    Excitable = "excitable_changes"_hs,
-    ExcitedVertex = "excited_vertex_changes"_hs,
-    ModelsBuffer = "models_buffer_changes"_hs,
-    SceneSettings = "scene_settings_changes"_hs,
-    InteractionMode = "interaction_mode_changes"_hs,
-    ViewportTheme = "viewport_theme_changes"_hs,
-    SceneView = "scene_view_changes"_hs;
-} // namespace changes
+struct DrawListBuilder {
+    std::vector<DrawData> Draws;
+    std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
+    uint32_t MaxIndexCount{0};
 
+    DrawBatchInfo BeginBatch() {
+        return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)};
+    }
+
+    void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
+        if (index_count == 0 || instance_count == 0) return;
+        const auto draw_data_start = uint32_t(Draws.size());
+        Draws.reserve(Draws.size() + instance_count);
+        for (uint32_t i = 0; i < instance_count; ++i) {
+            DrawData per_instance = draw;
+            per_instance.FirstInstance = draw.FirstInstance + i;
+            Draws.emplace_back(per_instance);
+        }
+        const uint32_t first_instance = draw_data_start - batch.DrawDataOffset;
+        IndirectCommands.emplace_back(vk::DrawIndexedIndirectCommand{index_count, instance_count, 0, 0, first_instance});
+        MaxIndexCount = std::max(MaxIndexCount, index_count);
+        ++batch.DrawCount;
+    }
+};
+
+struct SelectionDrawInfo {
+    ShaderPipelineType Pipeline{ShaderPipelineType::Fill};
+    DrawBatchInfo Batch{};
+};
+
+namespace {
 template<class... Ts> struct overloaded : Ts... {
     using Ts::operator()...;
 };
 template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
-
-static std::string to_string(InteractionMode mode) {
-    switch (mode) {
-        case InteractionMode::Object: return "Object";
-        case InteractionMode::Edit: return "Edit";
-        case InteractionMode::Excite: return "Excite";
-    }
-}
-
-Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100}; }
-
-static vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice pd) {
-    const auto props = pd.getProperties();
-    const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
-    if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
-    if (counts & vk::SampleCountFlagBits::e32) return vk::SampleCountFlagBits::e32;
-    if (counts & vk::SampleCountFlagBits::e16) return vk::SampleCountFlagBits::e16;
-    if (counts & vk::SampleCountFlagBits::e8) return vk::SampleCountFlagBits::e8;
-    if (counts & vk::SampleCountFlagBits::e4) return vk::SampleCountFlagBits::e4;
-    if (counts & vk::SampleCountFlagBits::e2) return vk::SampleCountFlagBits::e2;
-
-    return vk::SampleCountFlagBits::e1;
-}
 
 // No built-in way to default-construct a variant by runtime index.
 // Variants are the best, but they are the absolute worst to actually work with...
@@ -133,13 +129,6 @@ struct SceneSettings {
     uint8_t NormalOverlays{0}; // Bitmask of he::Element
 };
 
-constexpr uint8_t ElementMask(he::Element element) { return uint8_t(element); }
-constexpr bool HasNormalOverlay(uint8_t mask, he::Element element) { return (mask & ElementMask(element)) != 0; }
-constexpr void SetNormalOverlay(uint8_t &mask, he::Element element, bool enabled) {
-    if (enabled) mask |= ElementMask(element);
-    else mask &= ~ElementMask(element);
-}
-
 struct SceneInteraction {
     InteractionMode Mode{InteractionMode::Object};
 };
@@ -167,72 +156,7 @@ struct DrawPassPushConstants {
     uint32_t SelectionCounterSlot{InvalidSlot};
 };
 
-struct DrawBatchInfo {
-    uint32_t DrawDataOffset{0};
-    uint32_t DrawCount{0};
-    vk::DeviceSize IndirectOffset{0};
-};
-
-struct DrawListBuilder {
-    std::vector<DrawData> Draws;
-    std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
-    uint32_t MaxIndexCount{0};
-
-    DrawBatchInfo BeginBatch() {
-        return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)};
-    }
-
-    void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
-        if (index_count == 0 || instance_count == 0) return;
-        const auto draw_data_start = uint32_t(Draws.size());
-        Draws.reserve(Draws.size() + instance_count);
-        for (uint32_t i = 0; i < instance_count; ++i) {
-            DrawData per_instance = draw;
-            per_instance.FirstInstance = draw.FirstInstance + i;
-            Draws.emplace_back(per_instance);
-        }
-        const uint32_t first_instance = draw_data_start - batch.DrawDataOffset;
-        IndirectCommands.emplace_back(vk::DrawIndexedIndirectCommand{index_count, instance_count, 0, 0, first_instance});
-        MaxIndexCount = std::max(MaxIndexCount, index_count);
-        ++batch.DrawCount;
-    }
-};
-
-struct SelectionDrawInfo {
-    ShaderPipelineType Pipeline{ShaderPipelineType::Fill};
-    DrawBatchInfo Batch{};
-};
-
-struct PipelineRenderer {
-    vk::UniqueRenderPass RenderPass;
-    std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
-
-    void CompileShaders() {
-        for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
-    }
-
-    const ShaderPipeline &Bind(vk::CommandBuffer cb, SPT spt) const {
-        const auto &pipeline = ShaderPipelines.at(spt);
-        cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.Pipeline);
-        cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.PipelineLayout, 0, pipeline.GetDescriptorSet(), {});
-        return pipeline;
-    }
-};
-
-namespace {
-std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
-
-// Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt::registry &r) {
-    std::unordered_map<entt::entity, entt::entity> primaries;
-    const auto active = FindActiveEntity(r);
-    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
-        auto &primary = primaries[mi.MeshEntity];
-        if (primary == entt::entity{} || e == active) primary = e;
-    }
-    return primaries;
-}
-} // namespace
+using namespace he;
 
 struct MeshSelection {
     Element Element{Element::None};
@@ -242,34 +166,6 @@ struct MeshSelection {
 
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
-
-entt::entity Scene::GetMeshEntity(entt::entity e) const {
-    if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) {
-        return mesh_instance->MeshEntity;
-    }
-    return entt::null;
-}
-entt::entity Scene::GetActiveMeshEntity() const {
-    if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) {
-        return GetMeshEntity(active_entity);
-    }
-    return entt::null;
-}
-
-void Scene::Select(entt::entity e) {
-    R.clear<Selected>();
-    R.clear<Active>();
-    if (e != entt::null) {
-        R.emplace<Active>(e);
-        R.emplace<Selected>(e);
-    }
-}
-void Scene::ToggleSelected(entt::entity e) {
-    if (e == entt::null) return;
-
-    if (R.all_of<Selected>(e)) R.remove<Selected>(e);
-    else R.emplace_or_replace<Selected>(e);
-}
 
 std::vector<Vertex3D> CreateBoxVertices(const BBox &box) {
     return box.Corners() |
@@ -327,127 +223,31 @@ std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, co
     return new_handles | to<std::vector>();
 }
 
-const vk::ClearColorValue Transparent{0, 0, 0, 0};
+Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100}; }
+} // namespace
 
-namespace Format {
-constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
-constexpr auto Depth = vk::Format::eD32Sfloat;
-constexpr auto Float = vk::Format::eR32Sfloat;
-constexpr auto Float2 = vk::Format::eR32G32Sfloat;
-constexpr auto Uint = vk::Format::eR32Uint;
-} // namespace Format
+#include "scene_impl/SceneSelection.h"
+
+#include "scene_impl/SceneTransformUtils.h"
+#include "scene_impl/SceneBuffers.h"
+#include "scene_impl/ScenePipelines.h"
 
 namespace {
-// Mutually exclusive structs to track rotation representation.
-// Note: `Rotation` is still the source of truth transformation component. These are for slider values only.
-struct RotationQuat {
-    quat Value; // wxyz
-};
-struct RotationEuler {
-    vec3 Value; // xyz degrees
-};
-struct RotationAxisAngle {
-    vec4 Value; // axis (xyz), angle (degrees)
-};
-using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxisAngle>;
-
-void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
-    r.emplace_or_replace<Rotation>(e, v);
-    if (!r.all_of<RotationUiVariant>(e)) {
-        r.emplace<RotationUiVariant>(e, RotationQuat{v});
-        return;
-    }
-
-    r.patch<RotationUiVariant>(e, [&](auto &rotation_ui) {
-        std::visit(
-            overloaded{
-                [&](RotationQuat &v_ui) { v_ui.Value = v; },
-                [&](RotationEuler &v_ui) {
-                    float x, y, z;
-                    glm::extractEulerAngleXYZ(glm::mat4_cast(v), x, y, z);
-                    v_ui.Value = glm::degrees(vec3{x, y, z});
-                },
-                [&](RotationAxisAngle &v_ui) {
-                    const auto q = glm::normalize(v);
-                    v_ui.Value = {glm::axis(q), glm::degrees(glm::angle(q))};
-                },
-            },
-            rotation_ui
-        );
-    });
-}
-
-void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
-    r.emplace_or_replace<Position>(e, t.P);
-    // Avoid replacing rotation UI slider values if the value hasn't changed.
-    if (!r.all_of<Rotation>(e) || r.get<Rotation>(e).Value != t.R) SetRotation(r, e, t.R);
-    // Frozen entities can't have their scale changed.
-    if (!r.all_of<Frozen>(e)) r.emplace_or_replace<Scale>(e, t.S);
-
-    UpdateWorldMatrix(r, e);
-}
-
-vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-
-constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
-constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-
-struct SelectionNode {
-    float Depth;
-    uint32_t ObjectId;
-    uint32_t Next;
-};
-static_assert(sizeof(SelectionNode) == 12, "SelectionNode must match scalar layout.");
-
-struct SelectionCounters {
-    uint32_t Count;
-    uint32_t Overflow;
-};
-
-struct ClickHit {
-    float Depth;
-    uint32_t ObjectId;
-};
-
-struct ClickResult {
-    uint32_t Count;
-    std::array<ClickHit, 64> Hits;
-};
-
-struct ClickElementCandidate {
-    uint32_t ObjectId;
-    float Depth;
-    uint32_t DistanceSq;
-};
-static_assert(sizeof(ClickElementCandidate) == 12, "ClickElementCandidate must match scalar layout.");
-
-struct ClickSelectPushConstants {
-    glm::uvec2 TargetPx;
-    uint32_t HeadImageIndex;
-    uint32_t SelectionNodesIndex;
-    uint32_t ClickResultIndex;
-};
-
-struct ClickSelectElementPushConstants {
-    glm::uvec2 TargetPx;
-    uint32_t Radius;
-    uint32_t HeadImageIndex;
-    uint32_t SelectionNodesIndex;
-    uint32_t ClickResultIndex;
-};
-
-struct BoxSelectPushConstants {
-    glm::uvec2 BoxMin;
-    glm::uvec2 BoxMax;
-    uint32_t ObjectCount;
-    uint32_t HeadImageIndex;
-    uint32_t SelectionNodesIndex;
-    uint32_t BoxResultIndex;
-};
-
-constexpr uint32_t ClickSelectRadiusPx = 50;
-constexpr uint32_t ClickSelectDiameterPx = ClickSelectRadiusPx * 2 + 1;
-constexpr uint32_t ClickSelectPixelCount = ClickSelectDiameterPx * ClickSelectDiameterPx;
+namespace changes {
+using namespace entt::literals;
+constexpr auto
+    Selected = "selected_changes"_hs,
+    Rerecord = "rerecord_changes"_hs,
+    MeshSelection = "mesh_selection_changes"_hs,
+    MeshGeometry = "mesh_geometry_changes"_hs,
+    Excitable = "excitable_changes"_hs,
+    ExcitedVertex = "excited_vertex_changes"_hs,
+    ModelsBuffer = "models_buffer_changes"_hs,
+    SceneSettings = "scene_settings_changes"_hs,
+    InteractionMode = "interaction_mode_changes"_hs,
+    ViewportTheme = "viewport_theme_changes"_hs,
+    SceneView = "scene_view_changes"_hs;
+} // namespace changes
 
 void WaitFor(vk::Fence fence, vk::Device device) {
     if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
@@ -456,693 +256,6 @@ void WaitFor(vk::Fence fence, vk::Device device) {
     device.resetFences(fence);
 }
 } // namespace
-
-// Owns render-only/generated data (e.g., SceneViewUBO/ViewportTheme/indicators/overlays/selection fragments).
-struct SceneBuffers {
-    static constexpr uint32_t MaxSelectableObjects{100'000};
-    static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableObjects + 31) / 32};
-    static constexpr uint32_t ClickElementGroupSize{256};
-    static constexpr uint32_t ClickSelectElementGroupCount{(ClickSelectPixelCount + ClickElementGroupSize - 1) / ClickElementGroupSize};
-    static constexpr uint32_t SelectionNodesPerPixel{10};
-    static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
-
-    SceneBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
-        : Ctx{pd, d, instance, slots},
-          VertexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
-          FaceIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
-          EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
-          VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
-          SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
-          ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
-          RenderDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
-          RenderIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
-          SelectionDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
-          SelectionIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
-          IdentityIndexBuffer{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
-          SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ClickResultBuffer{Ctx, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ClickElementResultBuffer{Ctx, ClickSelectElementGroupCount * sizeof(ClickElementCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          BoxSelectBitsetBuffer{Ctx, BoxSelectBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
-
-    const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
-    vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
-
-    SlottedBufferRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
-        auto &index_buffer = GetIndexBuffer(index_kind);
-        return {index_buffer.Allocate(indices), index_buffer.Buffer.Slot};
-    }
-    RenderBuffers CreateRenderBuffers(std::span<const Vertex3D> vertices, std::span<const uint> indices, IndexKind index_kind) {
-        return {VertexBuffer.Allocate(vertices), CreateIndices(indices, index_kind), index_kind};
-    }
-
-    void Release(RenderBuffers &buffers) {
-        VertexBuffer.Release(buffers.Vertices);
-        buffers.Vertices = {};
-        GetIndexBuffer(buffers.IndexType).Release(buffers.Indices.Range);
-        buffers.Indices.Range = {};
-    }
-
-    void Release(MeshBuffers &buffers) {
-        FaceIndexBuffer.Release(buffers.FaceIndices.Range);
-        buffers.FaceIndices.Range = {};
-        EdgeIndexBuffer.Release(buffers.EdgeIndices.Range);
-        buffers.EdgeIndices.Range = {};
-        VertexIndexBuffer.Release(buffers.VertexIndices.Range);
-        buffers.VertexIndices.Range = {};
-        for (auto &[_, rb] : buffers.NormalIndicators) Release(rb);
-        buffers.NormalIndicators.clear();
-    }
-
-    BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
-        switch (kind) {
-            case IndexKind::Face: return FaceIndexBuffer;
-            case IndexKind::Edge: return EdgeIndexBuffer;
-            case IndexKind::Vertex: return VertexIndexBuffer;
-        }
-    }
-
-    void ResizeSelectionNodeBuffer(vk::Extent2D extent) {
-        const uint64_t pixels = uint64_t(extent.width) * extent.height;
-        const uint64_t desired_nodes = pixels == 0 ? 1 : pixels * SelectionNodesPerPixel;
-        const uint64_t max_nodes = std::max<uint64_t>(1, MaxSelectionNodeBytes / sizeof(SelectionNode));
-        const uint32_t final_count = std::min<uint64_t>(std::min(desired_nodes, max_nodes), std::numeric_limits<uint32_t>::max());
-        if (final_count == SelectionNodeCapacity) return;
-        SelectionNodeCapacity = final_count;
-        SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
-    }
-
-    void EnsureIdentityIndexBuffer(uint32_t count) {
-        if (count <= IdentityIndexCount) return;
-        std::vector<uint32_t> indices(count);
-        std::iota(indices.begin(), indices.end(), 0u);
-        IdentityIndexBuffer.Update(as_bytes(indices));
-        IdentityIndexCount = count;
-    }
-
-    mvk::BufferContext Ctx;
-    BufferArena<Vertex3D> VertexBuffer;
-    BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    mvk::Buffer SceneViewUBO;
-    mvk::Buffer ViewportThemeUBO;
-    mvk::Buffer RenderDrawData;
-    mvk::Buffer RenderIndirect;
-    mvk::Buffer SelectionDrawData;
-    mvk::Buffer SelectionIndirect;
-    mvk::Buffer IdentityIndexBuffer;
-    uint32_t IdentityIndexCount{0};
-    uint32_t SelectionNodeCapacity{1};
-    mvk::Buffer SelectionNodeBuffer;
-    // CPU readback buffers (host-visible)
-    mvk::Buffer SelectionCounterBuffer, ClickResultBuffer, ClickElementResultBuffer, BoxSelectBitsetBuffer;
-};
-
-mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
-    auto image = mvk::CreateImage(
-        Vk.Device, Vk.PhysicalDevice,
-        {{},
-         vk::ImageType::e2D,
-         Format::Color,
-         {width, height, 1},
-         1,
-         1,
-         vk::SampleCountFlagBits::e1,
-         vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-         vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
-    );
-
-    auto cb = std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front());
-    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    {
-        // Write the bitmap into a temporary staging buffer.
-        mvk::Buffer staging_buffer{Buffers->Ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
-        // Transition the image layout to be ready for data transfer.
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTopOfPipe,
-            vk::PipelineStageFlagBits::eTransfer,
-            {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
-            vk::ImageMemoryBarrier{
-                {}, // srcAccessMask
-                vk::AccessFlagBits::eTransferWrite, // dstAccessMask
-                {}, // oldLayout
-                vk::ImageLayout::eTransferDstOptimal, // newLayout
-                {}, // srcQueueFamilyIndex
-                {}, // dstQueueFamilyIndex
-                *image.Image, // image
-                ColorSubresourceRange // subresourceRange
-            }
-        );
-
-        // Copy buffer to image.
-        cb->copyBufferToImage(
-            *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
-            vk::BufferImageCopy{
-                0, // bufferOffset
-                0, // bufferRowLength (tightly packed)
-                0, // bufferImageHeight
-                {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
-                {0, 0, 0}, // imageOffset
-                {width, height, 1} // imageExtent
-            }
-        );
-
-        // Transition the image layout to be ready for shader sampling.
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer,
-            vk::PipelineStageFlagBits::eFragmentShader,
-            {}, {}, {},
-            vk::ImageMemoryBarrier{
-                vk::AccessFlagBits::eTransferWrite, // srcAccessMask
-                vk::AccessFlagBits::eShaderRead, // dstAccessMask
-                vk::ImageLayout::eTransferDstOptimal, // oldLayout
-                vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
-                {}, // srcQueueFamilyIndex
-                {}, // dstQueueFamilyIndex
-                *image.Image, // image
-                ColorSubresourceRange // subresourceRange
-            }
-        );
-        cb->end();
-
-        vk::SubmitInfo submit;
-        submit.setCommandBuffers(*cb);
-        Vk.Queue.submit(submit, *OneShotFence);
-        WaitFor(*OneShotFence, Vk.Device);
-    } // staging buffer is destroyed here
-
-    Buffers->Ctx.ReclaimRetiredBuffers();
-
-    return image;
-}
-
-// Pipeline definitions
-namespace {
-struct MainPipeline {
-    static PipelineRenderer CreateRenderer(
-        vk::Device d, vk::SampleCountFlagBits msaa_samples,
-        vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}
-    ) {
-        const std::vector<vk::AttachmentDescription> attachments{
-            // Depth attachment.
-            {{}, Format::Depth, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-            // Multisampled offscreen image.
-            {{}, Format::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-            // Single-sampled resolve target. UNDEFINED + DONT_CARE = discard previous contents, let render pass handle transition.
-            {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-        };
-        const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-        const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-        const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
-        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
-
-        const PipelineContext ctx{d, shared_layout, shared_set, msaa_samples};
-        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
-
-        // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
-        std::unordered_map<SPT, ShaderPipeline> pipelines;
-        pipelines.emplace(
-            SPT::Fill,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::Line,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
-                {},
-                vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-                CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
-            )
-        );
-        const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
-            return ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert", {{0, uint32_t(overlay_kind)}}},
-                  {ShaderType::eFragment, "VertexColor.frag"}}},
-                {},
-                vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-                CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
-            );
-        };
-        pipelines.emplace(SPT::LineOverlayFaceNormals, make_overlay_pipeline(OverlayKind::FaceNormal));
-        pipelines.emplace(SPT::LineOverlayVertexNormals, make_overlay_pipeline(OverlayKind::VertexNormal));
-        pipelines.emplace(SPT::LineOverlayBBox, make_overlay_pipeline(OverlayKind::Edge));
-        pipelines.emplace(
-            SPT::Point,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexPoint.vert"}, {ShaderType::eFragment, "VertexPoint.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc, -1.0f
-            )
-        );
-        pipelines.emplace(
-            SPT::Grid,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(true), CreateDepthStencil(true, false)
-            )
-        );
-
-        // Render the silhouette edge depth regardless of the tested depth value.
-        // We should be able to just disable depth tests and enable depth writes, but it seems that some GPUs or drivers
-        // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
-        pipelines.emplace(
-            SPT::SilhouetteEdgeDepth,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SampleDepth.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways),
-                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)}
-            )
-        );
-        // Render silhouette edge color regardless of the tested depth value.
-        pipelines.emplace(
-            SPT::SilhouetteEdgeColor,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeColor.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(true), CreateDepthStencil(false, false),
-                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 3} // Manipulating flag + sampler index + active object id
-            )
-        );
-        pipelines.emplace(
-            SPT::DebugNormals,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
-            )
-        );
-        return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
-    }
-
-    struct ResourcesT {
-        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::SampleCountFlagBits msaa_samples, vk::RenderPass render_pass)
-            : DepthImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Depth,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   msaa_samples,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
-              )},
-              OffscreenImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Color,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   msaa_samples,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
-              )},
-              ResolveImage{mvk::CreateImage(
-                  d, pd,
-                  {
-                      {},
-                      vk::ImageType::e2D,
-                      Format::Color,
-                      vk::Extent3D{extent, 1},
-                      1,
-                      1,
-                      vk::SampleCountFlagBits::e1,
-                      vk::ImageTiling::eOptimal,
-                      vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
-                      vk::SharingMode::eExclusive,
-                  },
-                  {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
-              )} {
-            const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
-            Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
-        }
-
-        // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
-        mvk::ImageResource DepthImage, OffscreenImage, ResolveImage;
-        vk::UniqueFramebuffer Framebuffer;
-    };
-
-    void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::SampleCountFlagBits msaa_samples) {
-        Resources = std::make_unique<ResourcesT>(extent, d, pd, msaa_samples, *Renderer.RenderPass);
-    }
-    PipelineRenderer Renderer;
-    std::unique_ptr<ResourcesT> Resources;
-};
-
-struct SilhouettePipeline {
-    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
-        const std::vector<vk::AttachmentDescription> attachments{
-            // Store depth for reuse by element selection (mutual occlusion between selected meshes).
-            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-            // Single-sampled offscreen "image" of two channels: depth and object ID.
-            {{}, Format::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-        };
-        const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-        const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
-
-        const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
-        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
-        std::unordered_map<SPT, ShaderPipeline> pipelines;
-        pipelines.emplace(
-            SPT::SilhouetteDepthObject,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "DepthObject.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                CreateColorBlendAttachment(false), CreateDepthStencil(), draw_pc
-            )
-        );
-        return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
-    }
-
-    struct ResourcesT {
-        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass)
-            : DepthImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Depth,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   vk::SampleCountFlagBits::e1,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
-              )},
-              OffscreenImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Float2,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   vk::SampleCountFlagBits::e1,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Float2, {}, ColorSubresourceRange}
-              )} {
-            const std::array image_views{*DepthImage.View, *OffscreenImage.View};
-            Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
-            ImageSampler = d.createSamplerUnique({
-                {},
-                vk::Filter::eNearest,
-                vk::Filter::eNearest,
-                vk::SamplerMipmapMode::eNearest,
-                // Prevent edge detection from wrapping around to the other side of the image.
-                // Instead, use the pixel value at the nearest edge.
-                vk::SamplerAddressMode::eClampToEdge,
-                vk::SamplerAddressMode::eClampToEdge,
-                vk::SamplerAddressMode::eClampToEdge,
-            });
-        }
-
-        mvk::ImageResource DepthImage, OffscreenImage;
-        vk::UniqueSampler ImageSampler;
-        vk::UniqueFramebuffer Framebuffer;
-    };
-
-    void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
-        Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
-    }
-
-    PipelineRenderer Renderer;
-    std::unique_ptr<ResourcesT> Resources;
-};
-
-struct SilhouetteEdgePipeline {
-    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
-        const std::vector<vk::AttachmentDescription> attachments{
-            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal},
-            {{}, Format::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-        };
-        const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-        const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
-
-        const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
-        std::unordered_map<SPT, ShaderPipeline> pipelines;
-        pipelines.emplace(
-            SPT::SilhouetteEdgeDepthObject,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeDepthObject.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-                CreateColorBlendAttachment(false), CreateDepthStencil(),
-                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2}
-            )
-        );
-        return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
-    }
-
-    struct ResourcesT {
-        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass)
-            : DepthImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Depth,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   vk::SampleCountFlagBits::e1,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange}
-              )},
-              OffscreenImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Float,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   vk::SampleCountFlagBits::e1,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Float, {}, ColorSubresourceRange}
-              )} {
-            const std::array image_views{*DepthImage.View, *OffscreenImage.View};
-            Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
-            ImageSampler = d.createSamplerUnique(vk::SamplerCreateInfo{});
-            DepthSampler = d.createSamplerUnique(vk::SamplerCreateInfo{});
-        }
-
-        mvk::ImageResource DepthImage, OffscreenImage;
-        vk::UniqueSampler ImageSampler, DepthSampler;
-        vk::UniqueFramebuffer Framebuffer;
-    };
-
-    void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
-        Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
-    }
-
-    PipelineRenderer Renderer;
-    std::unique_ptr<ResourcesT> Resources;
-};
-
-struct SelectionFragmentPipeline {
-    // Render pass that loads depth from silhouette pass for element occlusion
-    static PipelineRenderer CreateRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}) {
-        const std::vector<vk::AttachmentDescription> attachments{
-            {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        };
-        const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
-
-        const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
-        const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
-        std::unordered_map<SPT, ShaderPipeline> pipelines;
-        pipelines.emplace(
-            SPT::SelectionElementFace,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionElementFaceXRay,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(false, false), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionElementEdge,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionElementEdgeXRay,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-                {}, CreateDepthStencil(false, false), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionElementVertex,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionElementVertexXRay,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                {}, CreateDepthStencil(false, false), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionFragment,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionFragmentXRay,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(false, false), draw_pc
-            )
-        );
-        return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
-    }
-
-    struct ResourcesT {
-        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::ImageView silhouette_depth_view)
-            : HeadImage{mvk::CreateImage(
-                  d, pd,
-                  {{},
-                   vk::ImageType::e2D,
-                   Format::Uint,
-                   vk::Extent3D{extent, 1},
-                   1,
-                   1,
-                   vk::SampleCountFlagBits::e1,
-                   vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst,
-                   vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Uint, {}, ColorSubresourceRange}
-              )},
-              Framebuffer{d.createFramebufferUnique({{}, render_pass, silhouette_depth_view, extent.width, extent.height, 1})} {}
-
-        mvk::ImageResource HeadImage;
-        vk::UniqueFramebuffer Framebuffer;
-    };
-
-    void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::ImageView silhouette_depth_view) {
-        Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass, silhouette_depth_view);
-    }
-
-    PipelineRenderer Renderer;
-    std::unique_ptr<ResourcesT> Resources;
-};
-} // namespace
-
-struct ScenePipelines {
-    ScenePipelines(
-        vk::Device d, vk::PhysicalDevice pd,
-        vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {}
-    )
-        : Device(d), PhysicalDevice(pd), Samples{GetMaxUsableSampleCount(pd)},
-          Main{MainPipeline::CreateRenderer(d, Samples, selection_layout, selection_set), nullptr},
-          Silhouette{SilhouettePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
-          SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
-          SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
-          ClickSelect{
-              d, Shaders{{{ShaderType::eCompute, "ClickSelect.comp"}}},
-              vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectPushConstants)},
-              selection_layout,
-              selection_set
-          },
-          ClickSelectElement{
-              d, Shaders{{{ShaderType::eCompute, "ClickSelectElement.comp"}}},
-              vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectElementPushConstants)},
-              selection_layout,
-              selection_set
-          },
-          BoxSelect{
-              d, Shaders{{{ShaderType::eCompute, "BoxSelect.comp"}}},
-              vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(BoxSelectPushConstants)},
-              selection_layout,
-              selection_set
-          } {}
-
-    vk::Device Device;
-    vk::PhysicalDevice PhysicalDevice;
-    vk::SampleCountFlagBits Samples;
-
-    MainPipeline Main;
-    SilhouettePipeline Silhouette;
-    SilhouetteEdgePipeline SilhouetteEdge;
-    SelectionFragmentPipeline SelectionFragment;
-    ComputePipeline ClickSelect;
-    ComputePipeline ClickSelectElement;
-    ComputePipeline BoxSelect;
-
-    void SetExtent(vk::Extent2D);
-    void CompileShaders() {
-        Main.Renderer.CompileShaders();
-        Silhouette.Renderer.CompileShaders();
-        SilhouetteEdge.Renderer.CompileShaders();
-        SelectionFragment.Renderer.CompileShaders();
-        ClickSelect.Compile();
-        ClickSelectElement.Compile();
-        BoxSelect.Compile();
-    }
-};
-
-// Tracks transform at start of gizmo manipulation. If present, actively manipulating.
-struct StartTransform {
-    Transform T;
-};
 
 struct Scene::SelectionSlotHandles {
     explicit SelectionSlotHandles(DescriptorSlots &slots)
@@ -1292,6 +405,114 @@ Scene::~Scene() {
     R.clear<Mesh>();
 }
 
+entt::entity Scene::GetMeshEntity(entt::entity e) const {
+    if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) {
+        return mesh_instance->MeshEntity;
+    }
+    return entt::null;
+}
+entt::entity Scene::GetActiveMeshEntity() const {
+    if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) {
+        return GetMeshEntity(active_entity);
+    }
+    return entt::null;
+}
+
+void Scene::Select(entt::entity e) {
+    R.clear<Selected>();
+    R.clear<Active>();
+    if (e != entt::null) {
+        R.emplace<Active>(e);
+        R.emplace<Selected>(e);
+    }
+}
+void Scene::ToggleSelected(entt::entity e) {
+    if (e == entt::null) return;
+
+    if (R.all_of<Selected>(e)) R.remove<Selected>(e);
+    else R.emplace_or_replace<Selected>(e);
+}
+
+mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
+    auto image = mvk::CreateImage(
+        Vk.Device, Vk.PhysicalDevice,
+        {{},
+         vk::ImageType::e2D,
+         Format::Color,
+         {width, height, 1},
+         1,
+         1,
+         vk::SampleCountFlagBits::e1,
+         vk::ImageTiling::eOptimal,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+         vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
+    );
+
+    auto cb = std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    {
+        // Write the bitmap into a temporary staging buffer.
+        mvk::Buffer staging_buffer{Buffers->Ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
+        // Transition the image layout to be ready for data transfer.
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe,
+            vk::PipelineStageFlagBits::eTransfer,
+            {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
+            vk::ImageMemoryBarrier{
+                {}, // srcAccessMask
+                vk::AccessFlagBits::eTransferWrite, // dstAccessMask
+                {}, // oldLayout
+                vk::ImageLayout::eTransferDstOptimal, // newLayout
+                {}, // srcQueueFamilyIndex
+                {}, // dstQueueFamilyIndex
+                *image.Image, // image
+                ColorSubresourceRange // subresourceRange
+            }
+        );
+
+        // Copy buffer to image.
+        cb->copyBufferToImage(
+            *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
+            vk::BufferImageCopy{
+                0, // bufferOffset
+                0, // bufferRowLength (tightly packed)
+                0, // bufferImageHeight
+                {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
+                {0, 0, 0}, // imageOffset
+                {width, height, 1} // imageExtent
+            }
+        );
+
+        // Transition the image layout to be ready for shader sampling.
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eFragmentShader,
+            {}, {}, {},
+            vk::ImageMemoryBarrier{
+                vk::AccessFlagBits::eTransferWrite, // srcAccessMask
+                vk::AccessFlagBits::eShaderRead, // dstAccessMask
+                vk::ImageLayout::eTransferDstOptimal, // oldLayout
+                vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
+                {}, // srcQueueFamilyIndex
+                {}, // dstQueueFamilyIndex
+                *image.Image, // image
+                ColorSubresourceRange // subresourceRange
+            }
+        );
+        cb->end();
+
+        vk::SubmitInfo submit;
+        submit.setCommandBuffers(*cb);
+        Vk.Queue.submit(submit, *OneShotFence);
+        WaitFor(*OneShotFence, Vk.Device);
+    } // staging buffer is destroyed here
+
+    Buffers->Ctx.ReclaimRetiredBuffers();
+
+    return image;
+}
+
 void Scene::LoadIcons(vk::Device device) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(data, width, height);
@@ -1305,12 +526,26 @@ void Scene::LoadIcons(vk::Device device) {
     Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/transform.svg");
 }
 
-static bool HasSelectedInstance(entt::registry &r, entt::entity mesh_entity) {
+namespace {
+std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
+
+// Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
+std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt::registry &r) {
+    std::unordered_map<entt::entity, entt::entity> primaries;
+    const auto active = FindActiveEntity(r);
+    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
+        auto &primary = primaries[mi.MeshEntity];
+        if (primary == entt::entity{} || e == active) primary = e;
+    }
+    return primaries;
+}
+bool HasSelectedInstance(entt::registry &r, entt::entity mesh_entity) {
     for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
         if (mi.MeshEntity == mesh_entity) return true;
     }
     return false;
 }
+} // namespace
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
     using namespace entt::literals;
@@ -1456,7 +691,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &mesh = R.get<const Mesh>(mesh_entity);
         R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
             for (const auto element : NormalElements) {
-                if (HasNormalOverlay(settings.NormalOverlays, element)) {
+                if (ElementMaskContains(settings.NormalOverlays, element)) {
                     if (!mesh_buffers.NormalIndicators.contains(element)) {
                         const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
                         mesh_buffers.NormalIndicators.emplace(
@@ -1878,6 +1113,8 @@ DrawData MakeDrawData(const SlottedBufferRange &vertices, const SlottedBufferRan
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {
     return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, mb.Buffer.Slot);
 }
+const vk::ClearColorValue Transparent{0, 0, 0, 0};
+vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 } // namespace
 
 void Scene::RecordRenderCommandBuffer() {
@@ -1911,13 +1148,9 @@ void Scene::RecordRenderCommandBuffer() {
         (interaction_mode == InteractionMode::Object || !silhouette_instances.empty());
 
     DrawListBuilder draw_list;
+    DrawBatchInfo fill_batch{}, line_batch{}, point_batch{};
     DrawBatchInfo silhouette_batch{};
-    DrawBatchInfo fill_batch{};
-    DrawBatchInfo line_batch{};
-    DrawBatchInfo point_batch{};
-    DrawBatchInfo overlay_face_normals_batch{};
-    DrawBatchInfo overlay_vertex_normals_batch{};
-    DrawBatchInfo overlay_bbox_batch{};
+    DrawBatchInfo overlay_face_normals_batch{}, overlay_vertex_normals_batch{}, overlay_bbox_batch{};
 
     if (render_silhouette) {
         silhouette_batch = draw_list.BeginBatch();
@@ -3136,6 +2369,14 @@ void RenderMat4(const mat4 &m) {
 bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
     return SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
 }
+
+std::string to_string(InteractionMode mode) {
+    switch (mode) {
+        case InteractionMode::Object: return "Object";
+        case InteractionMode::Edit: return "Edit";
+        case InteractionMode::Excite: return "Excite";
+    }
+}
 } // namespace
 
 void Scene::RenderEntityControls(entt::entity active_entity) {
@@ -3432,10 +2673,10 @@ void Scene::RenderControls() {
                 TextUnformatted("Normals");
                 for (const auto element : NormalElements) {
                     SameLine();
-                    bool show = HasNormalOverlay(settings.NormalOverlays, element);
+                    bool show = ElementMaskContains(settings.NormalOverlays, element);
                     const auto type_name = Capitalize(label(element));
                     if (Checkbox(type_name.c_str(), &show)) {
-                        SetNormalOverlay(settings.NormalOverlays, element, show);
+                        SetElementMask(settings.NormalOverlays, element, show);
                         settings_changed = true;
                     }
                 }

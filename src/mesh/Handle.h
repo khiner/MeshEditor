@@ -16,6 +16,12 @@ enum class Element : uint8_t {
     Edge = 1 << 1,
     Face = 1 << 2,
 };
+constexpr uint8_t ElementMask(he::Element element) { return uint8_t(element); }
+constexpr bool ElementMaskContains(uint8_t mask, he::Element element) { return (mask & ElementMask(element)) != 0; }
+constexpr void SetElementMask(uint8_t &mask, he::Element element, bool enabled) {
+    if (enabled) mask |= ElementMask(element);
+    else mask &= ~ElementMask(element);
+}
 
 constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};
 
