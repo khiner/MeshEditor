@@ -152,21 +152,6 @@ struct ViewportExtent {
     vk::Extent2D Value{};
 };
 
-#define SETTINGS R.get<const SceneSettings>(SceneEntity)
-#define PATCH_SETTINGS(fn) R.patch<SceneSettings>(SceneEntity, fn)
-#define INTERACTION R.get<const SceneInteraction>(SceneEntity)
-#define PATCH_INTERACTION(fn) R.patch<SceneInteraction>(SceneEntity, fn)
-#define EDIT_MODE R.get<const SceneEditMode>(SceneEntity).Value
-#define PATCH_EDIT_MODE(fn) R.patch<SceneEditMode>(SceneEntity, fn)
-#define THEME R.get<const ViewportTheme>(SceneEntity)
-#define PATCH_THEME(fn) R.patch<ViewportTheme>(SceneEntity, fn)
-#define CAMERA R.get<Camera>(SceneEntity)
-#define PATCH_CAMERA(fn) R.patch<Camera>(SceneEntity, fn)
-#define LIGHTS R.get<Lights>(SceneEntity)
-#define PATCH_LIGHTS(fn) R.patch<Lights>(SceneEntity, fn)
-#define VIEWPORT_EXTENT R.get<ViewportExtent>(SceneEntity)
-#define PATCH_VIEWPORT_EXTENT(fn) R.patch<ViewportExtent>(SceneEntity, fn)
-
 using SPT = ShaderPipelineType;
 enum class OverlayKind : uint32_t {
     Edge = 0,
@@ -1340,6 +1325,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
 
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
+    const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     { // Selected changes
         auto &selected_tracker = R.storage<entt::reactive>(changes::Selected);
         if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
@@ -1406,17 +1392,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             if (R.all_of<Excitable>(instance_entity)) InteractionModes.insert(InteractionMode::Excite);
         }
         if (R.storage<Excitable>().empty()) {
-            if (INTERACTION.Mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!excitable_tracker.empty()) {
-            if (INTERACTION.Mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
+            if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
             else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
         }
     }
     { // ExcitedVertex changes
         auto &excited_vertex_tracker = R.storage<entt::reactive>(changes::ExcitedVertex);
         for (auto instance_entity : excited_vertex_tracker) {
-            if (INTERACTION.Mode == InteractionMode::Excite) {
+            if (interaction_mode == InteractionMode::Excite) {
                 if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
             }
             if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
@@ -1424,7 +1410,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
                 const auto &mesh = R.get<Mesh>(mesh_entity);
                 const vec3 vertex_pos{R.get<WorldMatrix>(instance_entity).M * vec4{mesh.GetPosition(VH(ev->Vertex)), 1}};
-                PATCH_CAMERA([&](auto &camera) { camera.SetTargetDirection(glm::normalize(vertex_pos - camera.Target)); });
+                R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetDirection(glm::normalize(vertex_pos - camera.Target)); });
             }
         }
     }
@@ -1462,15 +1448,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     { // ViewportTheme changes
         auto &theme_tracker = R.storage<entt::reactive>(changes::ViewportTheme);
         if (!theme_tracker.empty()) {
-            Buffers->ViewportThemeUBO.Update(as_bytes(THEME));
+            Buffers->ViewportThemeUBO.Update(as_bytes(R.get<const ViewportTheme>(SceneEntity)));
             request(RenderRequest::Submit);
         }
     }
 
     if (scene_view_dirty) {
-        const auto &extent = VIEWPORT_EXTENT.Value;
-        const auto &camera = CAMERA;
-        const auto &lights = LIGHTS;
+        const auto &camera = R.get<const Camera>(SceneEntity);
+        const auto &lights = R.get<const Lights>(SceneEntity);
+        const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .View = camera.View(),
             .Proj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)),
@@ -1482,17 +1468,18 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .DirectionalColor = lights.DirectionalColor,
             .DirectionalIntensity = lights.DirectionalIntensity,
             .LightDirection = lights.Direction,
-            .InteractionMode = uint32_t(INTERACTION.Mode),
+            .InteractionMode = uint32_t(interaction_mode),
         }));
         request(RenderRequest::Submit);
     }
 
     // Update selection overlays
+    const auto &settings = R.get<const SceneSettings>(SceneEntity);
     for (const auto mesh_entity : dirty_overlay_meshes) {
         const auto &mesh = R.get<const Mesh>(mesh_entity);
         R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
             for (const auto element : NormalElements) {
-                if (HasNormalOverlay(SETTINGS.NormalOverlays, element)) {
+                if (HasNormalOverlay(settings.NormalOverlays, element)) {
                     if (!mesh_buffers.NormalIndicators.contains(element)) {
                         const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
                         mesh_buffers.NormalIndicators.emplace(
@@ -1508,7 +1495,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 }
             }
         });
-        if (SETTINGS.ShowBoundingBoxes) {
+        if (settings.ShowBoundingBoxes) {
             if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
                 R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
             } else {
@@ -1520,6 +1507,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     // Update mesh element state buffers
+    const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     for (const auto mesh_entity : dirty_element_state_meshes) {
         const auto &mesh = R.get<Mesh>(mesh_entity);
         std::unordered_set<VH> selected_vertices;
@@ -1529,7 +1517,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         auto element{Element::None};
         std::vector<uint32_t> handles;
         std::optional<uint32_t> active_handle;
-        if (INTERACTION.Mode == InteractionMode::Excite) {
+        if (interaction_mode == InteractionMode::Excite) {
             element = Element::Vertex;
             for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
                 if (mi.MeshEntity != mesh_entity) continue;
@@ -1541,7 +1529,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 break;
             }
         } else if (const auto &selection = R.get<MeshSelection>(mesh_entity);
-                   INTERACTION.Mode == InteractionMode::Edit && selection.Element == EDIT_MODE) {
+                   interaction_mode == InteractionMode::Edit && selection.Element == edit_mode) {
             element = selection.Element;
             handles = selection.Handles;
             active_handle = selection.ActiveHandle;
@@ -1616,7 +1604,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     return render_request;
 }
 
-vk::Extent2D Scene::GetExtent() const { return VIEWPORT_EXTENT.Value; }
+vk::Extent2D Scene::GetExtent() const { return R.get<const ViewportExtent>(SceneEntity).Value; }
 vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
 
 void Scene::SetVisible(entt::entity entity, bool visible) {
@@ -1835,16 +1823,16 @@ void Scene::Destroy(entt::entity e) {
 }
 
 void Scene::SetInteractionMode(InteractionMode mode) {
-    if (INTERACTION.Mode == mode) return;
+    if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return;
 
-    PATCH_INTERACTION([mode](auto &s) { s.Mode = mode; });
-    PATCH_THEME([](auto &) {});
+    R.patch<SceneInteraction>(SceneEntity, [mode](auto &s) { s.Mode = mode; });
+    R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
 }
 
 void Scene::SetEditMode(Element mode) {
-    if (EDIT_MODE == mode) return;
+    if (R.get<const SceneEditMode>(SceneEntity).Value == mode) return;
 
-    PATCH_EDIT_MODE([mode](auto &edit_mode) { edit_mode.Value = mode; });
+    R.patch<SceneEditMode>(SceneEntity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
     for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
         R.replace<MeshSelection>(e, MeshSelection{mode, ConvertSelectionElement(selection, mesh, mode), std::nullopt});
     }
@@ -1919,9 +1907,11 @@ void Scene::RecordRenderCommandBuffer() {
     SelectionStale = true;
     // In Edit mode, only primary edit instance per selected mesh gets Edit visuals.
     // Other selected instances render normally with silhouettes.
-    const auto &settings = SETTINGS;
-    const bool is_edit_mode = INTERACTION.Mode == InteractionMode::Edit;
-    const bool is_excite_mode = INTERACTION.Mode == InteractionMode::Excite;
+    const auto &settings = R.get<const SceneSettings>(SceneEntity);
+    const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+    const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+    const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
+    const bool is_excite_mode = interaction_mode == InteractionMode::Excite;
     const bool show_solid = settings.ViewportShading == ViewportShadingMode::Solid;
     const bool show_wireframe = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
@@ -1941,7 +1931,7 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     const bool render_silhouette = !R.view<Selected>().empty() &&
-        (INTERACTION.Mode == InteractionMode::Object || !silhouette_instances.empty());
+        (interaction_mode == InteractionMode::Object || !silhouette_instances.empty());
 
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
@@ -2009,7 +1999,7 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    if ((is_edit_mode && EDIT_MODE == Element::Vertex) || is_excite_mode) {
+    if ((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode) {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, state_buffers] :
              R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
@@ -2056,7 +2046,7 @@ void Scene::RecordRenderCommandBuffer() {
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
 
-    const auto &extent = VIEWPORT_EXTENT.Value;
+    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
@@ -2114,7 +2104,7 @@ void Scene::RecordRenderCommandBuffer() {
         // Wireframe edges
         if (show_wireframe || is_edit_mode || is_excite_mode) record_draw_batch(main.Renderer, SPT::Line, line_batch);
         // Vertex points
-        if ((is_edit_mode && EDIT_MODE == Element::Vertex) || is_excite_mode) record_draw_batch(main.Renderer, SPT::Point, point_batch);
+        if ((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode) record_draw_batch(main.Renderer, SPT::Point, point_batch);
     }
 
     // Silhouette edge color (rendered ontop of meshes)
@@ -2234,7 +2224,7 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 
 void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
-    const auto primary_edit_instances = INTERACTION.Mode == InteractionMode::Edit ?
+    const auto primary_edit_instances = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit ?
         ComputePrimaryEditInstances(R) :
         std::unordered_map<entt::entity, entt::entity>{};
     // Object selection never uses depth testing - we want all visible pixels regardless of occlusion
@@ -2306,7 +2296,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    const auto &extent = VIEWPORT_EXTENT.Value;
+    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
 
@@ -2436,7 +2426,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
 
     const auto primary_edit_instances = ComputePrimaryEditInstances(R);
     const Timer timer{"RenderEditSelectionPass"};
-    const bool xray_selection = SelectionXRay || SETTINGS.ViewportShading == ViewportShadingMode::Wireframe;
+    const bool xray_selection = SelectionXRay || R.get<SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe;
     RenderSelectionPassWith(!xray_selection, [&](DrawListBuilder &draw_list) {
         auto batch = draw_list.BeginBatch();
         for (const auto &r : ranges) {
@@ -2667,18 +2657,19 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
 }
 
 void Scene::Interact() {
-    const auto &extent = VIEWPORT_EXTENT.Value;
+    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
     if (extent.width == 0 || extent.height == 0) return;
-
+    
+    const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto active_entity = FindActiveEntity(R);
     // Handle keyboard input.
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Tab)) {
             // Cycle to the next interaction mode, wrapping around to the first.
-            auto it = find(InteractionModes, INTERACTION.Mode);
+            auto it = find(InteractionModes, interaction_mode);
             SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
         }
-        if (INTERACTION.Mode == InteractionMode::Edit) {
+        if (interaction_mode == InteractionMode::Edit) {
             if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
             else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
             else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
@@ -2721,15 +2712,14 @@ void Scene::Interact() {
     const auto &io = GetIO();
     if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
         if (io.KeyCtrl || io.KeySuper) {
-            PATCH_CAMERA([&](auto &camera) { camera.SetTargetDistance(std::max(camera.Distance * (1 - wheel.y / 16.f), 0.01f)); });
+            R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetDistance(std::max(camera.Distance * (1 - wheel.y / 16.f), 0.01f)); });
         } else {
-            PATCH_CAMERA([&](auto &camera) { camera.SetTargetYawPitch(camera.YawPitch + wheel * 0.15f); });
+            R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetYawPitch(camera.YawPitch + wheel * 0.15f); });
         }
     }
-
     if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
-    const auto interaction_mode = INTERACTION.Mode;
+    const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     if (SelectionMode == SelectionMode::Box && (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Object)) {
         const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -2752,16 +2742,16 @@ void Scene::Interact() {
                     std::vector<ElementRange> ranges;
                     uint32_t offset = 0;
                     for (const auto mesh_entity : mesh_entities) {
-                        if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), EDIT_MODE); count > 0) {
+                        if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), edit_mode); count > 0) {
                             ranges.emplace_back(mesh_entity, offset, count);
                             offset += count;
                         }
                     }
 
-                    auto results = RunBoxSelectElements(ranges, EDIT_MODE, *box_px);
+                    auto results = RunBoxSelectElements(ranges, edit_mode, *box_px);
                     for (size_t i = 0; i < ranges.size(); ++i) {
                         const auto e = ranges[i].MeshEntity;
-                        R.replace<MeshSelection>(e, MeshSelection{EDIT_MODE, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
+                        R.replace<MeshSelection>(e, MeshSelection{edit_mode, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
                     }
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto selected_entities = RunBoxSelect(*box_px);
@@ -2795,8 +2785,8 @@ void Scene::Interact() {
         return;
     }
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
+    if (interaction_mode == InteractionMode::Edit && edit_mode == Element::None) return;
 
-    if (interaction_mode == InteractionMode::Edit && EDIT_MODE == Element::None) return;
     const auto hit_entities = RunClickSelect(mouse_px);
     if (interaction_mode == InteractionMode::Edit) {
         const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
@@ -2810,7 +2800,7 @@ void Scene::Interact() {
         }
         if (hit_it != hit_entities.end()) {
             const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
-            if (const auto element = RunClickSelectElement(mesh_entity, EDIT_MODE, mouse_px)) {
+            if (const auto element = RunClickSelectElement(mesh_entity, edit_mode, mouse_px)) {
                 SelectElement(mesh_entity, *element, toggle);
             }
         }
@@ -2845,14 +2835,14 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 };
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
-    auto &extent = VIEWPORT_EXTENT.Value;
+    auto &extent = R.get<ViewportExtent>(SceneEntity).Value;
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = extent.width != content_region.x || extent.height != content_region.y;
     if (extent_changed) {
         // uint(e.x), uint(e.y)
         extent.width = uint(content_region.x);
         extent.height = uint(content_region.y);
-        PATCH_VIEWPORT_EXTENT([](auto &) {});
+        R.patch<ViewportExtent>(SceneEntity, [](auto &) {});
     }
 
     const auto render_request = ProcessComponentEvents();
@@ -2936,7 +2926,7 @@ void Scene::WaitForRender() {
 
 void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
-    auto &camera = CAMERA;
+    auto &camera = R.get<Camera>(SceneEntity);
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
             const SvgResource &Icon;
@@ -3014,6 +3004,7 @@ void Scene::RenderOverlay() {
     }
 
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
+        const auto &theme = R.get<const ViewportTheme>(SceneEntity);
         const auto size = ToGlm(GetContentRegionAvail());
         const auto vp = camera.Projection(size.x / size.y) * camera.View();
         for (const auto [e, wm, ri] : R.view<const WorldMatrix, const RenderInstance>().each()) {
@@ -3024,7 +3015,7 @@ void Scene::RenderOverlay() {
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
             const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
             auto &dl = *GetWindowDrawList();
-            dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(R.all_of<Active>(e) ? THEME.Colors.ObjectActive : THEME.Colors.ObjectSelected)), 10);
+            dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected)), 10);
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
         }
     }
@@ -3080,7 +3071,7 @@ void Scene::RenderOverlay() {
         const float padding = GetTextLineHeightWithSpacing();
         const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
         OrientationGizmo::Draw(pos, OGizmoSize, camera);
-        if (camera.Tick()) PATCH_CAMERA([](auto &) {});
+        if (camera.Tick()) R.patch<Camera>(SceneEntity, [](auto &) {});
     }
 
     if (BoxSelectStart.has_value() && BoxSelectEnd.has_value()) {
@@ -3323,28 +3314,31 @@ void Scene::RenderControls() {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
+                const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+                const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
                 PushID("InteractionMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Interaction mode:");
-                auto interaction_mode = int(INTERACTION.Mode);
+                auto interaction_mode_value = int(interaction_mode);
                 bool interaction_mode_changed = false;
                 for (const auto mode : InteractionModes) {
                     SameLine();
-                    interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode, int(mode));
+                    interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
                 }
-                if (interaction_mode_changed) SetInteractionMode(InteractionMode(interaction_mode));
-                const bool wireframe_xray = SETTINGS.ViewportShading == ViewportShadingMode::Wireframe;
-                if (interaction_mode == int(InteractionMode::Edit)) {
+                if (interaction_mode_changed) SetInteractionMode(InteractionMode(interaction_mode_value));
+                const bool wireframe_xray =
+                    R.get<const SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe;
+                if (interaction_mode == InteractionMode::Edit) {
                     Checkbox("X-ray selection", &SelectionXRay);
                 }
                 if (wireframe_xray) {
                     SameLine();
                     TextDisabled("(wireframe)");
                 }
-                if (INTERACTION.Mode == InteractionMode::Edit) {
+                if (interaction_mode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
-                    auto type_interaction_mode = int(EDIT_MODE);
+                    auto type_interaction_mode = int(edit_mode);
                     for (const auto element : Elements) {
                         auto name = Capitalize(label(element));
                         SameLine();
@@ -3356,10 +3350,10 @@ void Scene::RenderControls() {
                     if (active_entity != entt::null) {
                         const auto mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
                         const auto &selection = R.get<MeshSelection>(mesh_entity);
-                        const bool matching_mode = selection.Element == EDIT_MODE;
+                        const bool matching_mode = selection.Element == edit_mode;
                         const auto selected_count = matching_mode ? selection.Handles.size() : 0;
-                        Text("Editing %s: %zu selected", label(EDIT_MODE).data(), selected_count);
-                        if (EDIT_MODE == Element::Vertex && matching_mode && selected_count > 0) {
+                        Text("Editing %s: %zu selected", label(edit_mode).data(), selected_count);
+                        if (edit_mode == Element::Vertex && matching_mode && selected_count > 0) {
                             const auto &mesh = R.get<Mesh>(mesh_entity);
                             for (const auto vh : selection.Handles) {
                                 const auto pos = mesh.GetPosition(VH{vh});
@@ -3488,14 +3482,14 @@ void Scene::RenderControls() {
                 changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
                 changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
                 changed |= SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
-                if (changed) PATCH_THEME([](auto &) {});
+                if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
             }
-            if (settings_changed) PATCH_SETTINGS([](auto &) {});
+            if (settings_changed) R.patch<SceneSettings>(SceneEntity, [](auto &) {});
             EndTabItem();
         }
 
         if (BeginTabItem("Camera")) {
-            auto &camera = CAMERA;
+            auto &camera = R.get<Camera>(SceneEntity);
             bool changed = false;
             if (Button("Reset camera")) {
                 camera = CreateDefaultCamera();
@@ -3509,14 +3503,14 @@ void Scene::RenderControls() {
             }
             changed |= SliderFloat("Near clip", &camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
             changed |= SliderFloat("Far clip", &camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
-            if (changed) PATCH_CAMERA([](auto &camera) { camera.StopMoving(); });
+            if (changed) R.patch<Camera>(SceneEntity, [](auto &camera) { camera.StopMoving(); });
             EndTabItem();
         }
 
         if (BeginTabItem("Lights")) {
             bool changed = false;
             SeparatorText("View light");
-            auto &lights = LIGHTS;
+            auto &lights = R.get<Lights>(SceneEntity);
             changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
             SeparatorText("Ambient light");
             changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
@@ -3524,7 +3518,7 @@ void Scene::RenderControls() {
             changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
             changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
             changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
-            if (changed) PATCH_LIGHTS([](auto &) {});
+            if (changed) R.patch<Lights>(SceneEntity, [](auto &) {});
             EndTabItem();
         }
         EndTabBar();
