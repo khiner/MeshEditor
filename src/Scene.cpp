@@ -1352,30 +1352,26 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
     }
-    { // ReRecord-only changes + destruction
-        auto &rerecord_tracker = R.storage<entt::reactive>(changes::Rerecord);
-        if (!rerecord_tracker.empty() || !DestroyTracker->Storage.empty()) request(RenderRequest::ReRecord);
+    if (!R.storage<entt::reactive>(changes::Rerecord).empty() || !DestroyTracker->Storage.empty()) {
+        request(RenderRequest::ReRecord);
     }
-    { // MeshSelection changes
-        auto &mesh_selection_tracker = R.storage<entt::reactive>(changes::MeshSelection);
-        for (auto mesh_entity : mesh_selection_tracker) {
-            if (R.all_of<MeshSelection>(mesh_entity)) {
-                if (!R.all_of<MeshElementStateBuffers>(mesh_entity)) {
-                    const auto &mesh = R.get<Mesh>(mesh_entity);
-                    R.emplace<MeshElementStateBuffers>(
-                        mesh_entity,
-                        mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.FaceCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-                        mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-                        mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
-                    );
-                    request(RenderRequest::ReRecord);
-                }
-                dirty_element_state_meshes.insert(mesh_entity);
+    for (auto mesh_entity : R.storage<entt::reactive>(changes::MeshSelection)) {
+        if (R.all_of<MeshSelection>(mesh_entity)) {
+            if (!R.all_of<MeshElementStateBuffers>(mesh_entity)) {
+                const auto &mesh = R.get<Mesh>(mesh_entity);
+                R.emplace<MeshElementStateBuffers>(
+                    mesh_entity,
+                    mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.FaceCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+                    mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+                    mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
+                );
+                request(RenderRequest::ReRecord);
             }
+            dirty_element_state_meshes.insert(mesh_entity);
         }
     }
-    { // Mesh geometry changes
-        auto &mesh_geometry_tracker = R.storage<entt::reactive>(changes::MeshGeometry);
+    {
+        const auto &mesh_geometry_tracker = R.storage<entt::reactive>(changes::MeshGeometry);
         if (!mesh_geometry_tracker.empty()) {
             for (auto mesh_entity : mesh_geometry_tracker) {
                 if (R.all_of<Selected>(mesh_entity) || HasSelectedInstance(R, mesh_entity)) {
@@ -1387,7 +1383,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     { // Excitable changes
-        auto &excitable_tracker = R.storage<entt::reactive>(changes::Excitable);
+        const auto &excitable_tracker = R.storage<entt::reactive>(changes::Excitable);
         for (auto instance_entity : excitable_tracker) {
             if (R.all_of<Excitable>(instance_entity)) InteractionModes.insert(InteractionMode::Excite);
         }
@@ -1399,60 +1395,41 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
         }
     }
-    { // ExcitedVertex changes
-        auto &excited_vertex_tracker = R.storage<entt::reactive>(changes::ExcitedVertex);
-        for (auto instance_entity : excited_vertex_tracker) {
-            if (interaction_mode == InteractionMode::Excite) {
-                if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
-            }
-            if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
-                // Orient camera towards excited vertex
-                const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
-                const auto &mesh = R.get<Mesh>(mesh_entity);
-                const vec3 vertex_pos{R.get<WorldMatrix>(instance_entity).M * vec4{mesh.GetPosition(VH(ev->Vertex)), 1}};
-                R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetDirection(glm::normalize(vertex_pos - camera.Target)); });
-            }
+    for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
+        if (interaction_mode == InteractionMode::Excite) {
+            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
+        }
+        if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
+            // Orient camera towards excited vertex
+            const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
+            const auto &mesh = R.get<Mesh>(mesh_entity);
+            const vec3 vertex_pos{R.get<WorldMatrix>(instance_entity).M * vec4{mesh.GetPosition(VH(ev->Vertex)), 1}};
+            R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetDirection(glm::normalize(vertex_pos - camera.Target)); });
         }
     }
-
-    { // ModelsBuffer changes (buffer data update, not structure)
-        auto &models_tracker = R.storage<entt::reactive>(changes::ModelsBuffer);
-        if (!models_tracker.empty()) request(RenderRequest::Submit);
+    if (!R.storage<entt::reactive>(changes::ModelsBuffer).empty()) request(RenderRequest::Submit);
+    if (!R.storage<entt::reactive>(changes::ViewportTheme).empty()) {
+        Buffers->ViewportThemeUBO.Update(as_bytes(R.get<const ViewportTheme>(SceneEntity)));
+        request(RenderRequest::Submit);
     }
+
     bool scene_view_dirty = false;
-    { // SceneSettings changes
-        auto &settings_tracker = R.storage<entt::reactive>(changes::SceneSettings);
-        if (!settings_tracker.empty()) {
-            request(RenderRequest::ReRecord);
-            scene_view_dirty = true;
-            for (const auto selected_entity : R.view<Selected>()) dirty_overlay_meshes.insert(R.get<MeshInstance>(selected_entity).MeshEntity);
+    if (!R.storage<entt::reactive>(changes::SceneSettings).empty()) {
+        request(RenderRequest::ReRecord);
+        scene_view_dirty = true;
+        for (const auto selected_entity : R.view<Selected>()) dirty_overlay_meshes.insert(R.get<MeshInstance>(selected_entity).MeshEntity);
+    }
+    if (!R.storage<entt::reactive>(changes::InteractionMode).empty()) {
+        request(RenderRequest::ReRecord);
+        scene_view_dirty = true;
+        for (const auto [mesh_entity, selection] : R.view<MeshSelection>().each()) {
+            if (!selection.Handles.empty() || selection.ActiveHandle) dirty_element_state_meshes.insert(mesh_entity);
+        }
+        for (const auto [_, mi, __] : R.view<const MeshInstance, const Excitable>().each()) {
+            dirty_element_state_meshes.insert(mi.MeshEntity);
         }
     }
-    { // Interaction mode changes
-        auto &interaction_tracker = R.storage<entt::reactive>(changes::InteractionMode);
-        if (!interaction_tracker.empty()) {
-            request(RenderRequest::ReRecord);
-            scene_view_dirty = true;
-            for (const auto [mesh_entity, selection] : R.view<MeshSelection>().each()) {
-                if (!selection.Handles.empty() || selection.ActiveHandle) dirty_element_state_meshes.insert(mesh_entity);
-            }
-            for (const auto [_, mi, __] : R.view<const MeshInstance, const Excitable>().each()) {
-                dirty_element_state_meshes.insert(mi.MeshEntity);
-            }
-        }
-    }
-    { // Scene view changes (camera/lights/viewport extent)
-        auto &scene_view_tracker = R.storage<entt::reactive>(changes::SceneView);
-        if (!scene_view_tracker.empty()) scene_view_dirty = true;
-    }
-    { // ViewportTheme changes
-        auto &theme_tracker = R.storage<entt::reactive>(changes::ViewportTheme);
-        if (!theme_tracker.empty()) {
-            Buffers->ViewportThemeUBO.Update(as_bytes(R.get<const ViewportTheme>(SceneEntity)));
-            request(RenderRequest::Submit);
-        }
-    }
-
+    if (!R.storage<entt::reactive>(changes::SceneView).empty()) scene_view_dirty = true;
     if (scene_view_dirty) {
         const auto &camera = R.get<const Camera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
@@ -2659,7 +2636,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
 void Scene::Interact() {
     const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
     if (extent.width == 0 || extent.height == 0) return;
-    
+
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto active_entity = FindActiveEntity(R);
     // Handle keyboard input.
