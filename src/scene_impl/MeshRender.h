@@ -1,27 +1,83 @@
-#include "MeshRender.h"
+#pragma once
 
-#include "Mesh.h"
-#include "WorldMatrix.h"
+#include "BBox.h"
 
-#include <entt/entity/registry.hpp>
+namespace {
+struct RenderInstance {
+    uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
+    uint32_t ObjectId{0};
+};
 
-#include <numeric>
-#include <ranges>
+// Stored on mesh entities.
+// Holds the `WorldMatrix` of all instances of the mesh.
+struct ModelsBuffer {
+    mvk::Buffer Buffer;
+    mvk::Buffer ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
+};
 
-using std::views::iota, std::ranges::to;
+// Component for entities that render a mesh via instancing.
+// References an entity with Mesh+MeshBuffers+ModelsBuffer components.
+struct MeshInstance {
+    entt::entity MeshEntity;
+};
 
-using namespace he;
+enum class IndexKind {
+    Face,
+    Edge,
+    Vertex
+};
 
-namespace MeshRender {
+struct SlottedBufferRange {
+    BufferRange Range;
+    uint32_t Slot;
+};
+
+struct RenderBuffers {
+    RenderBuffers(BufferRange vertices, SlottedBufferRange indices, IndexKind index_type)
+        : Vertices(vertices), Indices(indices), IndexType(index_type) {}
+    RenderBuffers(RenderBuffers &&) = default;
+    RenderBuffers &operator=(RenderBuffers &&) = default;
+    RenderBuffers(const RenderBuffers &) = delete;
+    RenderBuffers &operator=(const RenderBuffers &) = delete;
+
+    BufferRange Vertices;
+    SlottedBufferRange Indices;
+    IndexKind IndexType;
+};
+
+struct BoundingBoxesBuffers {
+    RenderBuffers Buffers;
+};
+
+struct MeshBuffers {
+    MeshBuffers(SlottedBufferRange vertices, SlottedBufferRange face_indices, SlottedBufferRange edge_indices, SlottedBufferRange vertex_indices)
+        : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
+    MeshBuffers(const MeshBuffers &) = delete;
+    MeshBuffers &operator=(const MeshBuffers &) = delete;
+
+    SlottedBufferRange Vertices;
+    SlottedBufferRange FaceIndices, EdgeIndices, VertexIndices;
+    std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
+};
+
+struct MeshElementStateBuffers {
+    mvk::Buffer Faces, Edges, Vertices;
+};
+
+// Returns `std::nullopt` if the entity does not have a RenderInstance (i.e., is not visible).
+std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
+    if (const auto *ri = r.try_get<RenderInstance>(e)) return ri->BufferIndex;
+    return std::nullopt;
+}
+
+constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
 std::vector<uint> CreateVertexIndices(const Mesh &mesh) { return iota(0u, mesh.VertexCount()) | to<std::vector>(); }
-
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     if (element == Element::None || element == Element::Edge) return {};
     const auto n = element == Element::Face ? mesh.FaceCount() : mesh.VertexCount();
     return iota(0u, n * 2) | to<std::vector<uint>>();
 }
-
 std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {
     constexpr float NormalIndicatorLengthScale{0.25};
     std::vector<Vertex3D> vertices;
@@ -59,13 +115,7 @@ BBox ComputeBoundingBox(const Mesh &mesh) {
     }
     return bbox;
 }
-
-} // namespace MeshRender
-
-std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
-    if (const auto *ri = r.try_get<RenderInstance>(e)) return ri->BufferIndex;
-    return std::nullopt;
-}
+} // namespace
 
 void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldMatrix &m) {
     if (const auto i = GetModelBufferIndex(r, e)) {

@@ -6,12 +6,10 @@
 #include "Entity.h"
 #include "Excitable.h"
 #include "OrientationGizmo.h"
-#include "SceneTree.h"
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
 #include "generated/DrawData.h"
-#include "mesh/MeshRender.h"
 #include "mesh/Primitives.h"
 #include "vulkan/Image.h"
 
@@ -57,10 +55,15 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 }
 } // namespace
 
+#include "WorldMatrix.h"
+
+#include "scene_impl/MeshRender.h"
 #include "scene_impl/SceneComponents.h"
 
 #include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneSelection.h"
+
+#include "scene_impl/SceneTree.h"
 
 #include "scene_impl/SceneDrawing.h"
 #include "scene_impl/ScenePipelines.h"
@@ -503,10 +506,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
                         mesh_buffers.NormalIndicators.emplace(
                             element,
-                            Buffers->CreateRenderBuffers(MeshRender::CreateNormalVertices(mesh, element), MeshRender::CreateNormalIndices(mesh, element), index_kind)
+                            Buffers->CreateRenderBuffers(CreateNormalVertices(mesh, element), CreateNormalIndices(mesh, element), index_kind)
                         );
                     } else {
-                        Buffers->VertexBuffer.Update(mesh_buffers.NormalIndicators.at(element).Vertices, MeshRender::CreateNormalVertices(mesh, element));
+                        Buffers->VertexBuffer.Update(mesh_buffers.NormalIndicators.at(element).Vertices, CreateNormalVertices(mesh, element));
                     }
                 } else if (mesh_buffers.NormalIndicators.contains(element)) {
                     Buffers->Release(mesh_buffers.NormalIndicators.at(element));
@@ -515,7 +518,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         });
         if (settings.ShowBoundingBoxes) {
-            const std::vector<Vertex3D> box_vertices = MeshRender::ComputeBoundingBox(mesh).Corners() |
+            const std::vector<Vertex3D> box_vertices = ComputeBoundingBox(mesh).Corners() |
                 // Normals don't matter for wireframes.
                 transform([](const auto &corner) { return Vertex3D{corner, vec3{}}; }) |
                 to<std::vector>();
@@ -577,16 +580,16 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         auto edge_states = MakeElementStates(mesh.EdgeCount() * 2);
         auto vertex_states = MakeElementStates(mesh.VertexCount());
         if (element == Element::Face) {
-            for (const auto fh : selected_faces) face_states[*fh] |= MeshRender::ElementStateSelected;
-            if (active_handle) face_states[*active_handle] |= MeshRender::ElementStateActive;
+            for (const auto fh : selected_faces) face_states[*fh] |= ElementStateSelected;
+            if (active_handle) face_states[*active_handle] |= ElementStateActive;
         }
 
         if (element == Element::Edge || element == Element::Face) {
             for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
                 uint32_t state = 0;
-                if (selected_edges.contains(EH{ei})) state |= MeshRender::ElementStateSelected;
+                if (selected_edges.contains(EH{ei})) state |= ElementStateSelected;
                 if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
-                    state |= MeshRender::ElementStateActive;
+                    state |= ElementStateActive;
                 }
                 edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
             }
@@ -596,8 +599,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto v_from = mesh.GetFromVertex(heh), v_to = mesh.GetToVertex(heh);
                 auto get_state = [&](auto vh) {
                     uint32_t state = 0;
-                    if (selected_vertices.contains(vh)) state |= MeshRender::ElementStateSelected;
-                    if (active_handle == *vh) state |= MeshRender::ElementStateActive;
+                    if (selected_vertices.contains(vh)) state |= ElementStateSelected;
+                    if (active_handle == *vh) state |= ElementStateActive;
                     return state;
                 };
                 edge_states[2 * ei] = get_state(v_from);
@@ -606,8 +609,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
 
         if (element == Element::Vertex) {
-            for (const auto vh : selected_vertices) vertex_states[*vh] |= MeshRender::ElementStateSelected;
-            if (active_handle) vertex_states[*active_handle] |= MeshRender::ElementStateActive;
+            for (const auto vh : selected_vertices) vertex_states[*vh] |= ElementStateSelected;
+            if (active_handle) vertex_states[*active_handle] |= ElementStateActive;
         }
 
         R.patch<MeshElementStateBuffers>(mesh_entity, [&](auto &states) {
@@ -673,7 +676,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
         SlottedBufferRange vertices{Meshes.GetVerticesRange(mesh.GetStoreId()), Meshes.GetVerticesSlot()};
         auto face_indices = Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face);
         auto edge_indices = Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge);
-        auto vertex_indices = Buffers->CreateIndices(MeshRender::CreateVertexIndices(mesh), IndexKind::Vertex);
+        auto vertex_indices = Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex);
 
         R.emplace<Mesh>(mesh_entity, std::move(mesh));
         R.emplace<ModelsBuffer>(
