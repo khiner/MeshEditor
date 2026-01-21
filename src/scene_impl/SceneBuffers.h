@@ -1,5 +1,37 @@
 #pragma once
 
+struct ClickHit {
+    float Depth;
+    uint32_t ObjectId;
+};
+
+struct ClickResult {
+    uint32_t Count;
+    std::array<ClickHit, 64> Hits;
+};
+
+struct SelectionNode {
+    float Depth;
+    uint32_t ObjectId;
+    uint32_t Next;
+};
+
+struct SelectionCounters {
+    uint32_t Count;
+    uint32_t Overflow;
+};
+
+struct ClickElementCandidate {
+    uint32_t ObjectId;
+    float Depth;
+    uint32_t DistanceSq;
+};
+
+constexpr uint32_t
+    ClickSelectRadiusPx = 50,
+    ClickSelectDiameterPx = ClickSelectRadiusPx * 2 + 1,
+    ClickSelectPixelCount = ClickSelectDiameterPx * ClickSelectDiameterPx;
+
 // Owns render-only/generated data (e.g., SceneViewUBO/ViewportTheme/indicators/overlays/selection fragments).
 struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};

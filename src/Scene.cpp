@@ -20,6 +20,7 @@
 #include <glm/gtx/matrix_decompose.hpp>
 #include <imgui_internal.h>
 
+#include "Variant.h"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -30,132 +31,11 @@
 #include <ranges>
 #include <unordered_map>
 #include <unordered_set>
-#include <variant>
 
 using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::iota, std::views::take, std::views::transform;
 
-struct DrawBatchInfo {
-    uint32_t DrawDataOffset{0};
-    uint32_t DrawCount{0};
-    vk::DeviceSize IndirectOffset{0};
-};
-
-struct DrawListBuilder {
-    std::vector<DrawData> Draws;
-    std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
-    uint32_t MaxIndexCount{0};
-
-    DrawBatchInfo BeginBatch() {
-        return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)};
-    }
-
-    void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
-        if (index_count == 0 || instance_count == 0) return;
-        const auto draw_data_start = uint32_t(Draws.size());
-        Draws.reserve(Draws.size() + instance_count);
-        for (uint32_t i = 0; i < instance_count; ++i) {
-            DrawData per_instance = draw;
-            per_instance.FirstInstance = draw.FirstInstance + i;
-            Draws.emplace_back(per_instance);
-        }
-        const uint32_t first_instance = draw_data_start - batch.DrawDataOffset;
-        IndirectCommands.emplace_back(vk::DrawIndexedIndirectCommand{index_count, instance_count, 0, 0, first_instance});
-        MaxIndexCount = std::max(MaxIndexCount, index_count);
-        ++batch.DrawCount;
-    }
-};
-
-struct SelectionDrawInfo {
-    ShaderPipelineType Pipeline{ShaderPipelineType::Fill};
-    DrawBatchInfo Batch{};
-};
-
 namespace {
-template<class... Ts> struct overloaded : Ts... {
-    using Ts::operator()...;
-};
-template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
-
-// No built-in way to default-construct a variant by runtime index.
-// Variants are the best, but they are the absolute worst to actually work with...
-template<typename V> V CreateVariantByIndex(size_t i) {
-    constexpr auto N = std::variant_size_v<V>;
-    assert(i < N);
-    return [&]<size_t... Is>(std::index_sequence<Is...>) -> V {
-        static constexpr V table[]{V{std::in_place_index<Is>}...};
-        return table[i]; // copy out
-    }(std::make_index_sequence<N>{});
-}
-
-struct SceneViewUBO {
-    mat4 View{1}, Proj{1};
-    vec3 CameraPosition{0, 0, 0};
-    float CameraNear{0.f};
-    float CameraFar{0.f};
-    vec3 ViewColor{0, 0, 0};
-    float AmbientIntensity{0.f};
-    vec3 DirectionalColor{0, 0, 0};
-    float DirectionalIntensity{0.f};
-    vec3 LightDirection{0, 0, 0};
-    uint32_t InteractionMode{0};
-};
-
-struct ViewportThemeColors {
-    // These mirror Blender: Preferences->Themes->3D Viewport->...
-    vec4 Wire{0, 0, 0, 1}; // Wire
-    vec4 WireEdit{0, 0, 0, 1}; // Wire Edit
-    vec4 ObjectActive{1, 0.627, 0.157, 1}; // Active Object
-    vec4 ObjectSelected{0.929, 0.341, 0, 1}; // Object Selected
-    vec4 Vertex{0, 0, 0, 1}; // Vertex
-    vec4 ElementSelected{1, 0.478, 0, 1}; // Vertex Select
-    vec4 ElementActive{1, 1, 1, 1}; // Active Vertex/Edge/Face
-    vec4 FaceNormal{0.133, 0.867, 0.867, 1}; // Face Normal
-    vec4 VertexNormal{0.137, 0.380, 0.867, 1}; // Vertex Normal
-};
-
-// Component on the scene singleton entity. Sent directly as UBO to shader.
-struct ViewportTheme {
-    ViewportThemeColors Colors{};
-    uint32_t SilhouetteEdgeWidth{1};
-};
-
-// Component on the scene singleton entity. Changes require command buffer re-recording.
-struct SceneSettings {
-    ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
-    vk::ClearColorValue ClearColor{0.25f, 0.25f, 0.25f, 1.f};
-    FaceColorMode FaceColorMode{FaceColorMode::Mesh};
-    bool SmoothShading{false}, ShowGrid{true}, ShowBoundingBoxes{false};
-    uint8_t NormalOverlays{0}; // Bitmask of he::Element
-};
-
-struct SceneInteraction {
-    InteractionMode Mode{InteractionMode::Object};
-};
-
-struct SceneEditMode {
-    he::Element Value{he::Element::Face};
-};
-
-struct ViewportExtent {
-    vk::Extent2D Value{};
-};
-
-using SPT = ShaderPipelineType;
-enum class OverlayKind : uint32_t {
-    Edge = 0,
-    FaceNormal = 1,
-    VertexNormal = 2,
-};
-
-struct DrawPassPushConstants {
-    uint32_t DrawDataSlot{InvalidSlot};
-    uint32_t DrawDataOffset{0};
-    uint32_t SelectionHeadImageSlot{InvalidSlot};
-    uint32_t SelectionNodesSlot{InvalidSlot};
-    uint32_t SelectionCounterSlot{InvalidSlot};
-};
-
 using namespace he;
 
 struct MeshSelection {
@@ -167,70 +47,25 @@ struct MeshSelection {
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
 
-std::vector<Vertex3D> CreateBoxVertices(const BBox &box) {
-    return box.Corners() |
-        // Normals don't matter for wireframes.
-        transform([](const auto &corner) { return Vertex3D{corner, vec3{}}; }) |
-        to<std::vector>();
-}
-
-std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, const Mesh &mesh, Element new_element) {
-    if (selection.Element == Element::None || selection.Handles.empty()) return {};
-    if (selection.Element == new_element) return selection.Handles;
-
-    const auto handles = selection.Handles | to<std::unordered_set>();
-    std::unordered_set<uint32_t> new_handles;
-    if (selection.Element == Element::Face) {
-        if (new_element == Element::Edge) {
-            for (auto f : handles) {
-                for (const auto heh : mesh.fh_range(FH{f})) new_handles.emplace(*mesh.GetEdge(heh));
-            }
-        } else if (new_element == Element::Vertex) {
-            for (auto f : handles) {
-                for (const auto vh : mesh.fv_range(FH{f})) new_handles.emplace(*vh);
-            }
-        }
-    } else if (selection.Element == Element::Edge) {
-        if (new_element == Element::Vertex) {
-            for (auto eh_raw : handles) {
-                const auto heh = mesh.GetHalfedge(EH{eh_raw}, 0);
-                new_handles.emplace(*mesh.GetFromVertex(heh));
-                new_handles.emplace(*mesh.GetToVertex(heh));
-            }
-        } else if (new_element == Element::Face) {
-            for (const auto fh : mesh.faces()) {
-                const bool all_selected = all_of(mesh.fh_range(fh), [&](auto heh) {
-                    return handles.contains(*mesh.GetEdge(heh));
-                });
-                if (all_selected) new_handles.emplace(*fh);
-            }
-        }
-    } else if (selection.Element == Element::Vertex) {
-        if (new_element == Element::Edge) {
-            for (const auto eh : mesh.edges()) {
-                const auto heh = mesh.GetHalfedge(eh, 0);
-                if (handles.contains(*mesh.GetFromVertex(heh)) && handles.contains(*mesh.GetToVertex(heh))) {
-                    new_handles.emplace(*eh);
-                }
-            }
-        } else if (new_element == Element::Face) {
-            for (const auto fh : mesh.faces()) {
-                const bool all_selected = all_of(mesh.fv_range(fh), [&](auto vh) { return handles.contains(*vh); });
-                if (all_selected) new_handles.emplace(*fh);
-            }
-        }
-    }
-    return new_handles | to<std::vector>();
-}
-
 Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100}; }
+
+void WaitFor(vk::Fence fence, vk::Device device) {
+    if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
+    }
+    device.resetFences(fence);
+}
 } // namespace
 
+#include "scene_impl/SceneComponents.h"
+
+#include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneSelection.h"
 
-#include "scene_impl/SceneTransformUtils.h"
-#include "scene_impl/SceneBuffers.h"
+#include "scene_impl/SceneDrawing.h"
 #include "scene_impl/ScenePipelines.h"
+#include "scene_impl/SceneTransformUtils.h"
+#include "scene_impl/SceneUI.h"
 
 namespace {
 namespace changes {
@@ -248,13 +83,6 @@ constexpr auto
     ViewportTheme = "viewport_theme_changes"_hs,
     SceneView = "scene_view_changes"_hs;
 } // namespace changes
-
-void WaitFor(vk::Fence fence, vk::Device device) {
-    if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    device.resetFences(fence);
-}
 } // namespace
 
 struct Scene::SelectionSlotHandles {
@@ -526,27 +354,6 @@ void Scene::LoadIcons(vk::Device device) {
     Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/transform.svg");
 }
 
-namespace {
-std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
-
-// Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt::registry &r) {
-    std::unordered_map<entt::entity, entt::entity> primaries;
-    const auto active = FindActiveEntity(r);
-    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
-        auto &primary = primaries[mi.MeshEntity];
-        if (primary == entt::entity{} || e == active) primary = e;
-    }
-    return primaries;
-}
-bool HasSelectedInstance(entt::registry &r, entt::entity mesh_entity) {
-    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
-        if (mi.MeshEntity == mesh_entity) return true;
-    }
-    return false;
-}
-} // namespace
-
 Scene::RenderRequest Scene::ProcessComponentEvents() {
     using namespace entt::literals;
 
@@ -708,10 +515,14 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         });
         if (settings.ShowBoundingBoxes) {
+            const std::vector<Vertex3D> box_vertices = MeshRender::ComputeBoundingBox(mesh).Corners() |
+                // Normals don't matter for wireframes.
+                transform([](const auto &corner) { return Vertex3D{corner, vec3{}}; }) |
+                to<std::vector>();
             if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-                R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)), BBox::EdgeIndices, IndexKind::Edge));
+                R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(box_vertices, BBox::EdgeIndices, IndexKind::Edge));
             } else {
-                Buffers->VertexBuffer.Update(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers.Vertices, CreateBoxVertices(MeshRender::ComputeBoundingBox(mesh)));
+                Buffers->VertexBuffer.Update(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers.Vertices, box_vertices);
             }
         } else if (R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
             Buffers->Release(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
@@ -1071,52 +882,6 @@ void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool togg
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
 
-namespace {
-
-// If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.
-void AppendDraw(
-    DrawListBuilder &builder, DrawBatchInfo &batch, uint32_t index_count, const ModelsBuffer &models,
-    DrawData draw, std::optional<uint> model_index = {}
-) {
-    draw.FirstInstance = model_index.value_or(0);
-    const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
-    builder.Append(batch, draw, index_count, uint32_t(instance_count));
-}
-
-void AppendDraw(
-    DrawListBuilder &builder, DrawBatchInfo &batch, const SlottedBufferRange &indices, const ModelsBuffer &models,
-    DrawData draw, std::optional<uint> model_index = {}
-) {
-    AppendDraw(builder, batch, indices.Range.Count, models, draw, model_index);
-}
-
-DrawData MakeDrawData(uint32_t vertex_slot, BufferRange vertices, const SlottedBufferRange &indices, uint32_t model_slot) {
-    return {
-        .VertexSlot = vertex_slot,
-        .IndexSlot = indices.Slot,
-        .IndexOffset = indices.Range.Offset,
-        .ModelSlot = model_slot,
-        .FirstInstance = 0,
-        .ObjectIdSlot = InvalidSlot,
-        .FaceNormalSlot = InvalidSlot,
-        .FaceIdOffset = 0,
-        .FaceNormalOffset = 0,
-        .VertexCountOrHeadImageSlot = vertices.Count,
-        .ElementIdOffset = 0,
-        .ElementStateSlot = InvalidSlot,
-        .VertexOffset = vertices.Offset,
-    };
-}
-DrawData MakeDrawData(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
-    return MakeDrawData(vertices.Slot, vertices.Range, indices, mb.Buffer.Slot);
-}
-DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {
-    return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, mb.Buffer.Slot);
-}
-const vk::ClearColorValue Transparent{0, 0, 0, 0};
-vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-} // namespace
-
 void Scene::RecordRenderCommandBuffer() {
     SelectionStale = true;
     // In Edit mode, only primary edit instance per selected mesh gets Edit visuals.
@@ -1377,61 +1142,6 @@ void Scene::RecordTransferCommandBuffer() {
 }
 #endif
 
-using namespace ImGui;
-
-namespace {
-constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
-
-std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
-    static constexpr float drag_threshold{2};
-    if (glm::distance(start, end) <= drag_threshold) return {};
-
-    const vec2 extent_size{float(extent.width), float(extent.height)};
-    const auto box_min = glm::min(start, end) - window_pos;
-    const auto box_max = glm::max(start, end) - window_pos;
-    const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, extent_size);
-    const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, extent_size);
-    const glm::uvec2 box_min_px{uint32_t(glm::floor(local_min.x)), uint32_t(glm::floor(extent_size.y - local_max.y))};
-    const glm::uvec2 box_max_px{uint32_t(glm::ceil(local_max.x)), uint32_t(glm::ceil(extent_size.y - local_min.y))};
-    return std::pair{box_min_px, box_max_px};
-}
-
-constexpr std::string Capitalize(std::string_view str) {
-    if (str.empty()) return {};
-
-    std::string result{str};
-    char &c = result[0];
-    if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
-    return result;
-}
-
-void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
-    const auto &g = *GImGui;
-    ImVec2 mouse_delta{0, 0};
-    for (int axis = 0; axis < 2; ++axis) {
-        if (g.IO.MousePos[axis] >= wrap_rect.Max[axis]) mouse_delta[axis] = -wrap_rect.GetSize()[axis] + 1;
-        else if (g.IO.MousePos[axis] <= wrap_rect.Min[axis]) mouse_delta[axis] = wrap_rect.GetSize()[axis] - 1;
-    }
-    if (mouse_delta != ImVec2{0, 0}) {
-        accumulated_wrap_mouse_delta -= ToGlm(mouse_delta);
-        TeleportMousePos(g.IO.MousePos + mouse_delta);
-    }
-}
-
-bool IsSingleClicked(ImGuiMouseButton button) {
-    static bool EscapePressed = false; // Escape cancels click
-    if (IsMouseClicked(button)) EscapePressed = false;
-    if (IsKeyPressed(ImGuiKey_Escape, false)) EscapePressed = true;
-    if (IsMouseReleased(button)) {
-        const bool was_escape_pressed = EscapePressed;
-        EscapePressed = false;
-        if (was_escape_pressed) return false;
-    }
-    return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
-}
-
-} // namespace
-
 void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
     const auto primary_edit_instances = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit ?
@@ -1550,93 +1260,17 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
     WaitFor(*OneShotFence, Vk.Device);
 }
 
-namespace {
-void RunSelectionCompute(
-    vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device,
-    const auto &compute, const auto &pc, auto &&dispatch, vk::Semaphore wait_semaphore = {}
-) {
-    const Timer timer{"RunSelectionCompute"};
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
-    cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    dispatch(cb);
-
-    const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
-    cb.end();
-
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    static constexpr vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eComputeShader};
-    if (wait_semaphore) {
-        submit.setWaitSemaphores(wait_semaphore);
-        submit.setWaitDstStageMask(wait_stage);
-    }
-    queue.submit(submit, fence);
-    WaitFor(fence, device);
-}
-
-uint32_t GetElementCount(const Mesh &mesh, Element element) {
-    if (element == Element::Vertex) return mesh.VertexCount();
-    if (element == Element::Edge) return mesh.EdgeCount();
-    if (element == Element::Face) return mesh.FaceCount();
-    return 0;
-}
-
-SPT SelectionPipelineForElement(Element element, bool xray) {
-    if (element == Element::Vertex) return xray ? SPT::SelectionElementVertexXRay : SPT::SelectionElementVertex;
-    if (element == Element::Edge) return xray ? SPT::SelectionElementEdgeXRay : SPT::SelectionElementEdge;
-    return xray ? SPT::SelectionElementFaceXRay : SPT::SelectionElementFace;
-}
-
-// After rendering elements to selection buffer, dispatch compute shader to find the nearest element to mouse_px.
-// Returns 0-based element index, or nullopt if no element found.
-std::optional<uint32_t> FindNearestSelectionElement(
-    const SceneBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
-    vk::Queue queue, vk::Fence fence, vk::Device device,
-    uint32_t head_image_index, uint32_t selection_nodes_slot, uint32_t click_result_slot,
-    glm::uvec2 mouse_px, uint32_t max_element_id, Element element,
-    vk::Semaphore wait_semaphore
-) {
-    const uint32_t radius = element == Element::Face ? 0u : ClickSelectRadiusPx;
-    const uint32_t group_count = element == Element::Face ? 1u : SceneBuffers::ClickSelectElementGroupCount;
-    RunSelectionCompute(
-        cb, queue, fence, device, compute,
-        ClickSelectElementPushConstants{
-            .TargetPx = mouse_px,
-            .Radius = radius,
-            .HeadImageIndex = head_image_index,
-            .SelectionNodesIndex = selection_nodes_slot,
-            .ClickResultIndex = click_result_slot,
-        },
-        [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); },
-        wait_semaphore
-    );
-
-    const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(buffers.ClickElementResultBuffer.GetData().data());
-    ClickElementCandidate best{.ObjectId = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
-    for (uint32_t i = 0; i < group_count; ++i) {
-        const auto &candidate = candidates[i];
-        if (candidate.ObjectId == 0) continue;
-        if (candidate.DistanceSq < best.DistanceSq || (candidate.DistanceSq == best.DistanceSq && candidate.Depth < best.Depth)) {
-            best = candidate;
-        }
-    }
-
-    if (best.ObjectId == 0 || best.ObjectId > max_element_id) return {};
-    return best.ObjectId - 1;
-}
-} // namespace
-
 void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element, vk::Semaphore signal_semaphore) {
     if (ranges.empty() || element == Element::None) return;
 
     const auto primary_edit_instances = ComputePrimaryEditInstances(R);
     const Timer timer{"RenderEditSelectionPass"};
     const bool xray_selection = SelectionXRay || R.get<SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe;
+    const auto selection_pipeline = [xray_selection](Element el) -> SPT {
+        if (el == Element::Vertex) return xray_selection ? SPT::SelectionElementVertexXRay : SPT::SelectionElementVertex;
+        if (el == Element::Edge) return xray_selection ? SPT::SelectionElementEdgeXRay : SPT::SelectionElementEdge;
+        return xray_selection ? SPT::SelectionElementFaceXRay : SPT::SelectionElementFace;
+    };
     RenderSelectionPassWith(!xray_selection, [&](DrawListBuilder &draw_list) {
         auto batch = draw_list.BeginBatch();
         for (const auto &r : ranges) {
@@ -1657,7 +1291,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                 AppendDraw(draw_list, batch, indices, models, draw);
             }
         }
-        return SelectionDrawInfo{SelectionPipelineForElement(element, xray_selection), batch}; }, signal_semaphore);
+        return SelectionDrawInfo{selection_pipeline(element), batch}; }, signal_semaphore);
 
     // Edit selection pass overwrites the shared head image used for object selection.
     SelectionStale = true;
@@ -2313,71 +1947,6 @@ void Scene::RenderOverlay() {
 
     StartScreenTransform = {};
 }
-
-namespace {
-std::optional<MeshData> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
-    const char *create_label = is_create ? "Add" : "Update";
-    if (type == PrimitiveType::Rect) {
-        static vec2 size{1, 1};
-        InputFloat2("Size", &size.x);
-        if (Button(create_label)) return Rect(size / 2.f);
-    } else if (type == PrimitiveType::Circle) {
-        static float r = 0.5;
-        InputFloat("Radius", &r);
-        if (Button(create_label)) return Circle(r);
-    } else if (type == PrimitiveType::Cube) {
-        static vec3 size{1.0, 1.0, 1.0};
-        InputFloat3("Size", &size.x);
-        if (Button(create_label)) return Cuboid(size / 2.f);
-    } else if (type == PrimitiveType::IcoSphere) {
-        static float r = 0.5;
-        static int subdivisions = 3;
-        InputFloat("Radius", &r);
-        InputInt("Subdivisions", &subdivisions);
-        if (Button(create_label)) return IcoSphere(r, uint(subdivisions));
-    } else if (type == PrimitiveType::UVSphere) {
-        static float r = 0.5;
-        InputFloat("Radius", &r);
-        if (Button(create_label)) return UVSphere(r);
-    } else if (type == PrimitiveType::Torus) {
-        static vec2 radii{0.5, 0.2};
-        static glm::ivec2 n_segments = {32, 16};
-        InputFloat2("Major/minor radius", &radii.x);
-        InputInt2("Major/minor segments", &n_segments.x);
-        if (Button(create_label)) return Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
-    } else if (type == PrimitiveType::Cylinder) {
-        static float r = 1, h = 1;
-        InputFloat("Radius", &r);
-        InputFloat("Height", &h);
-        if (Button(create_label)) return Cylinder(r, h);
-    } else if (type == PrimitiveType::Cone) {
-        static float r = 1, h = 1;
-        InputFloat("Radius", &r);
-        InputFloat("Height", &h);
-        if (Button(create_label)) return Cone(r, h);
-    }
-
-    return {};
-}
-
-void RenderMat4(const mat4 &m) {
-    for (uint i = 0; i < 4; ++i) {
-        Text("%.2f, %.2f, %.2f, %.2f", m[0][i], m[1][i], m[2][i], m[3][i]);
-    }
-}
-
-bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
-    return SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
-}
-
-std::string to_string(InteractionMode mode) {
-    switch (mode) {
-        case InteractionMode::Object: return "Object";
-        case InteractionMode::Edit: return "Edit";
-        case InteractionMode::Excite: return "Excite";
-    }
-}
-} // namespace
 
 void Scene::RenderEntityControls(entt::entity active_entity) {
     if (active_entity == entt::null) {

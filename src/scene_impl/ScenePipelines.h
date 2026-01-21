@@ -1,5 +1,12 @@
 #pragma once
 
+using SPT = ShaderPipelineType;
+enum class OverlayKind : uint32_t {
+    Edge = 0,
+    FaceNormal = 1,
+    VertexNormal = 2,
+};
+
 namespace {
 constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
 constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
