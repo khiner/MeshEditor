@@ -1,6 +1,6 @@
 #pragma once
 
-#include "BBox.h"
+#include <numeric>
 
 namespace {
 struct RenderInstance {
@@ -104,16 +104,6 @@ std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {
         }
     }
     return vertices;
-}
-
-BBox ComputeBoundingBox(const Mesh &mesh) {
-    BBox bbox;
-    for (const auto vh : mesh.vertices()) {
-        const auto p = mesh.GetPosition(vh);
-        bbox.Min = glm::min(bbox.Min, p);
-        bbox.Max = glm::max(bbox.Max, p);
-    }
-    return bbox;
 }
 } // namespace
 

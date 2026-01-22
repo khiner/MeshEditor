@@ -1,7 +1,7 @@
 #include "Scene.h"
-#include "Camera.h"
 #include "Widgets.h" // imgui
 
+#include "BBox.h"
 #include "Bindless.h"
 #include "Entity.h"
 #include "Excitable.h"
@@ -9,25 +9,13 @@
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
-#include "generated/DrawData.h"
 #include "mesh/Primitives.h"
-#include "vulkan/Image.h"
 
 #include <entt/entity/registry.hpp>
-#include <glm/gtx/euler_angles.hpp>
-#include <glm/gtx/matrix_decompose.hpp>
 #include <imgui_internal.h>
 
 #include "Variant.h"
-#include <algorithm>
-#include <array>
-#include <cassert>
-#include <cstddef>
 #include <format>
-#include <limits>
-#include <numeric>
-#include <ranges>
-#include <unordered_map>
 #include <unordered_set>
 
 using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
@@ -45,7 +33,7 @@ struct MeshSelection {
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
 
-Camera CreateDefaultCamera() { return {{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100}; }
+Camera DefaultCamera{{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100};
 
 void WaitFor(vk::Fence fence, vk::Device device) {
     if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
@@ -202,7 +190,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<SceneInteraction>(SceneEntity);
     R.emplace<SceneEditMode>(SceneEntity);
     R.emplace<ViewportTheme>(SceneEntity);
-    R.emplace<Camera>(SceneEntity, CreateDefaultCamera());
+    R.emplace<Camera>(SceneEntity, DefaultCamera);
     R.emplace<Lights>(SceneEntity, Lights{{1, 1, 1}, 0.1f, {1, 1, 1}, 0.15f, {-1, -1, -1}});
     R.emplace<ViewportExtent>(SceneEntity);
 
@@ -378,21 +366,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 const auto mesh_entity = mi->MeshEntity;
                 if (R.all_of<Selected>(instance_entity)) {
-                    // Construct: mark mesh for overlay update
                     dirty_overlay_meshes.insert(mesh_entity);
-                } else {
-                    // Destroy: check if mesh has no more selected instances
-                    if (!HasSelectedInstance(R, mesh_entity)) {
-                        // Clean up overlays for this mesh
-                        if (auto *buffers = R.try_get<MeshBuffers>(mesh_entity)) {
-                            for (auto &[_, rb] : buffers->NormalIndicators) Buffers->Release(rb);
-                            buffers->NormalIndicators.clear();
-                        }
-                        if (auto *bbox = R.try_get<BoundingBoxesBuffers>(mesh_entity)) {
-                            Buffers->Release(bbox->Buffers);
-                        }
-                        R.remove<BoundingBoxesBuffers>(mesh_entity);
+                } else if (!HasSelectedInstance(R, mesh_entity)) {
+                    // Clean up overlays for this mesh
+                    if (auto *buffers = R.try_get<MeshBuffers>(mesh_entity)) {
+                        for (auto &[_, rb] : buffers->NormalIndicators) Buffers->Release(rb);
+                        buffers->NormalIndicators.clear();
                     }
+                    if (auto *bbox = R.try_get<BoundingBoxesBuffers>(mesh_entity)) Buffers->Release(bbox->Buffers);
+                    R.remove<BoundingBoxesBuffers>(mesh_entity);
                 }
             }
         }
@@ -427,18 +409,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             request(RenderRequest::Submit);
         }
     }
-    { // Excitable changes
-        const auto &excitable_tracker = R.storage<entt::reactive>(changes::Excitable);
-        for (auto instance_entity : excitable_tracker) {
-            if (R.all_of<Excitable>(instance_entity)) InteractionModes.insert(InteractionMode::Excite);
-        }
-        if (R.storage<Excitable>().empty()) {
-            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
-            InteractionModes.erase(InteractionMode::Excite);
-        } else if (!excitable_tracker.empty()) {
-            if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
-            else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
-        }
+    if (R.storage<Excitable>().empty()) {
+        if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+        InteractionModes.erase(InteractionMode::Excite);
+    } else if (!R.storage<entt::reactive>(changes::Excitable).empty()) {
+        InteractionModes.insert(InteractionMode::Excite);
+        if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
+        else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
     }
     for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
         if (interaction_mode == InteractionMode::Excite) {
@@ -518,8 +495,16 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         });
         if (settings.ShowBoundingBoxes) {
-            const std::vector<Vertex3D> box_vertices = ComputeBoundingBox(mesh).Corners() |
-                // Normals don't matter for wireframes.
+            static const auto create_bbox = [](const Mesh &mesh) {
+                BBox bbox;
+                for (const auto vh : mesh.vertices()) {
+                    const auto p = mesh.GetPosition(vh);
+                    bbox.Min = glm::min(bbox.Min, p);
+                    bbox.Max = glm::max(bbox.Max, p);
+                }
+                return bbox;
+            };
+            const auto box_vertices = create_bbox(mesh).Corners() |
                 transform([](const auto &corner) { return Vertex3D{corner, vec3{}}; }) |
                 to<std::vector>();
             if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
@@ -2282,7 +2267,7 @@ void Scene::RenderControls() {
             auto &camera = R.get<Camera>(SceneEntity);
             bool changed = false;
             if (Button("Reset camera")) {
-                camera = CreateDefaultCamera();
+                camera = DefaultCamera;
                 changed = true;
             }
             changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);

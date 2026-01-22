@@ -7,20 +7,18 @@
 #include <optional>
 #include <span>
 
-namespace fs = std::filesystem;
-
 using BitmapToImage = std::function<mvk::ImageResource(std::span<const std::byte> data, uint32_t width, uint32_t height)>;
 
 struct SvgResource {
-    SvgResource(vk::Device, BitmapToImage, fs::path);
+    SvgResource(vk::Device, BitmapToImage, std::filesystem::path);
     ~SvgResource();
 
     // Returns the clicked link path.
-    std::optional<fs::path> Draw();
+    std::optional<std::filesystem::path> Draw();
     // Draw icon at given size (no interaction)
     void DrawIcon(vec2 size) const;
 
-    fs::path Path;
+    std::filesystem::path Path;
 
 private:
     struct Impl;

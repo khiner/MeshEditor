@@ -8,13 +8,11 @@
 #include <unordered_map>
 #include <vector>
 
-namespace fs = std::filesystem;
-
 using ShaderType = vk::ShaderStageFlagBits;
 
 struct ShaderTypePath {
     ShaderType Type;
-    fs::path Path; // Paths are relative to the `shaders` directory.
+    std::filesystem::path Path; // Paths are relative to the `shaders` directory.
     std::vector<std::pair<uint32_t, uint32_t>> SpecializationConstants{};
 };
 

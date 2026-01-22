@@ -1,5 +1,7 @@
 #pragma once
 
+#include <glm/gtx/euler_angles.hpp>
+
 namespace {
 // Mutually exclusive structs to track rotation representation.
 // Note: `Rotation` is still the source of truth transformation component. These are for slider values only.

@@ -4,9 +4,7 @@
 #include "mesh/MeshData.h"
 #include "numeric/vec2.h"
 
-#include <algorithm>
 #include <array>
-#include <cmath>
 #include <ranges>
 #include <unordered_map>
 

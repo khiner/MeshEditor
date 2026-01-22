@@ -35,7 +35,7 @@ lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale
 } // namespace
 
 struct SvgResource::Impl {
-    Impl(vk::Device device, BitmapToImage render, fs::path path) {
+    Impl(vk::Device device, BitmapToImage render, std::filesystem::path path) {
         if ((Document = lunasvg::Document::loadFromFile(path))) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
                 const auto width = uint32_t(bitmap.width()), height = uint32_t(bitmap.height());
@@ -47,7 +47,7 @@ struct SvgResource::Impl {
     }
 
     // Returns the clicked link path.
-    std::optional<fs::path> Draw() {
+    std::optional<std::filesystem::path> Draw() {
         using namespace ImGui;
 
         const auto doc = Document->documentElement();
@@ -79,12 +79,11 @@ private:
     static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap.
 };
 
-SvgResource::SvgResource(vk::Device device, BitmapToImage render, fs::path path)
+SvgResource::SvgResource(vk::Device device, BitmapToImage render, std::filesystem::path path)
     : Path(std::move(path)), Imp(std::make_unique<SvgResource::Impl>(device, std::move(render), Path)) {}
 SvgResource::~SvgResource() = default;
 
-std::optional<fs::path> SvgResource::Draw() { return Imp->Draw(); }
-
+std::optional<std::filesystem::path> SvgResource::Draw() { return Imp->Draw(); }
 void SvgResource::DrawIcon(vec2 size) const {
     if (Imp->Texture) Imp->Texture->Draw(size);
 }

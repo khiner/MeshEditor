@@ -1,5 +1,7 @@
 #include "MeshStore.h"
 
+#include "MeshData.h"
+
 #include <glm/glm.hpp>
 
 #include <algorithm>

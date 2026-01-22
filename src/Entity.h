@@ -16,7 +16,7 @@ struct Name {
 struct Selected {};
 struct Active {};
 
-struct Frozen {}; // Disable entity transform changes
+struct Frozen {}; // Disable scale changes (translate/rotate still allowed)
 
 std::string IdString(entt::entity);
 std::string GetName(const entt::registry &, entt::entity); // Returns name if present, otherwise hex ID.

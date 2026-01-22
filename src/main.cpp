@@ -1,6 +1,5 @@
 #include "Scene.h"
 #include "SvgResource.h"
-#include "Widgets.h" // imgui
 #include "Window.h"
 #include "audio/AcousticScene.h"
 #include "audio/AudioDevice.h"

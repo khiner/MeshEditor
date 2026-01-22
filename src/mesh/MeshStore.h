@@ -2,12 +2,13 @@
 
 #include "../vulkan/BufferArena.h"
 #include "Mesh.h"
-#include "MeshData.h"
 
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
+
+struct MeshData;
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "generated/DrawData.h"
+
 struct DrawBatchInfo {
     uint32_t DrawDataOffset{0};
     uint32_t DrawCount{0};
