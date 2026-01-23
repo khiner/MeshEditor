@@ -357,8 +357,18 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
     }
 
+    { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
+        const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+        if (R.storage<Excitable>().empty()) {
+            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+            InteractionModes.erase(InteractionMode::Excite);
+        } else if (!R.storage<entt::reactive>(changes::Excitable).empty()) {
+            InteractionModes.insert(InteractionMode::Excite);
+            if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
+            else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
+        }
+    }
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
-    const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     { // Selected changes
         auto &selected_tracker = R.storage<entt::reactive>(changes::Selected);
         if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
@@ -409,14 +419,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             request(RenderRequest::Submit);
         }
     }
-    if (R.storage<Excitable>().empty()) {
-        if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
-        InteractionModes.erase(InteractionMode::Excite);
-    } else if (!R.storage<entt::reactive>(changes::Excitable).empty()) {
-        InteractionModes.insert(InteractionMode::Excite);
-        if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
-        else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
-    }
+
+    const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
         if (interaction_mode == InteractionMode::Excite) {
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
