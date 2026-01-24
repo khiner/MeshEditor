@@ -1,0 +1,66 @@
+bindings:
+  - name: SceneViewUBO
+    kind: Uniform
+  - name: ViewportThemeUBO
+    kind: Uniform
+  - name: Image
+    kind: Image
+  - name: Sampler
+    kind: Sampler
+  - name: VertexBuffer
+    kind: Buffer
+  - name: IndexBuffer
+    kind: Buffer
+  - name: ModelBuffer
+    kind: Buffer
+  - name: Buffer
+    kind: Buffer
+  - name: ObjectIdBuffer
+    kind: Buffer
+  - name: FaceNormalBuffer
+    kind: Buffer
+  - name: DrawDataBuffer
+    kind: Buffer
+
+structs:
+  - name: DrawData
+    fields:
+      - name: VertexSlot
+        type: u32
+        default: InvalidSlot
+      - name: IndexSlot
+        type: u32
+        default: InvalidSlot
+      - name: IndexOffset
+        type: u32
+        default: 0
+      - name: ModelSlot
+        type: u32
+        default: InvalidSlot
+      - name: FirstInstance
+        type: u32
+        default: 0
+      - name: ObjectIdSlot
+        type: u32
+        default: InvalidSlot
+      - name: FaceNormalSlot
+        type: u32
+        default: InvalidSlot
+      - name: FaceIdOffset
+        type: u32
+        default: 0
+      - name: FaceNormalOffset
+        type: u32
+        default: 0
+      - name: VertexCountOrHeadImageSlot
+        type: u32
+        default: 0
+      - name: ElementIdOffset
+        type: u32
+        default: 0
+      - name: ElementStateSlot
+        type: u32
+        default: InvalidSlot
+      - name: VertexOffset
+        type: u32
+        default: 0

@@ -66,18 +66,17 @@ constexpr vk::DescriptorBindingFlags FlagsFor(BindKind kind) {
     return {};
 }
 
-struct SlotInfo {
-    std::string_view Name;
-    vk::DescriptorType Descriptor;
+struct SlotBinding {
     uint32_t Binding;
+    vk::DescriptorType Descriptor;
 };
 
-constexpr auto SlotInfos = []<size_t... I>(std::index_sequence<I...>) {
-    return std::array{
-        SlotInfo{BindingDefs[I].Name, DescriptorTypeFor(BindingDefs[I].Kind), static_cast<uint32_t>(I)}...
-    };
-}(std::make_index_sequence<SlotTypeCount>{});
-constexpr auto GetSlotInfo(SlotType type) { return SlotInfos[size_t(type)]; }
+constexpr SlotBinding BindingFor(SlotType type) {
+    const auto binding = static_cast<uint32_t>(type);
+    const auto descriptor = DescriptorTypeFor(BindingDefs[size_t(type)].Kind);
+    return {binding, descriptor};
+}
+
 } // namespace
 
 DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDescriptorIndexingProperties &props)
@@ -117,7 +116,7 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
 
 uint32_t DescriptorSlots::Allocate(SlotType type) {
     auto &free_list = FreeSlots[size_t(type)];
-    if (free_list.empty()) throw std::runtime_error(std::format("Bindless {} slots exhausted", GetSlotInfo(type).Name));
+    if (free_list.empty()) throw std::runtime_error(std::format("Bindless {} slots exhausted", BindingDefs[size_t(type)].Name));
 
     const auto slot = free_list.back();
     free_list.pop_back();
@@ -129,13 +128,13 @@ void DescriptorSlots::Release(TypedSlot slot) {
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
-    const auto &slot_info = GetSlotInfo(slot.Type);
-    return {*DescriptorSet, slot_info.Binding, slot.Slot, 1, slot_info.Descriptor, nullptr, &info};
+    const auto [binding, descriptor] = BindingFor(slot.Type);
+    return {*DescriptorSet, binding, slot.Slot, 1, descriptor, nullptr, &info};
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
-    const auto &slot_info = GetSlotInfo(SlotType::Image);
-    return {*DescriptorSet, slot_info.Binding, slot, 1, slot_info.Descriptor, &info, nullptr};
+    const auto [binding, descriptor] = BindingFor(SlotType::Image);
+    return {*DescriptorSet, binding, slot, 1, descriptor, &info, nullptr};
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeUniformWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
@@ -143,6 +142,6 @@ vk::WriteDescriptorSet DescriptorSlots::MakeUniformWrite(TypedSlot slot, const v
 }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
-    const auto &slot_info = GetSlotInfo(SlotType::Sampler);
-    return {*DescriptorSet, slot_info.Binding, slot, 1, slot_info.Descriptor, &info, nullptr};
+    const auto [binding, descriptor] = BindingFor(SlotType::Sampler);
+    return {*DescriptorSet, binding, slot, 1, descriptor, &info, nullptr};
 }

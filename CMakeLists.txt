@@ -49,35 +49,22 @@ add_executable(${PROJECT_NAME}
     ${SOURCES}
 )
 
-add_executable(bindless_bindings_gen tools/GenerateBindlessBindings.cpp)
-target_include_directories(bindless_bindings_gen PRIVATE src)
-add_executable(drawdata_gen tools/GenerateDrawData.cpp)
-target_include_directories(drawdata_gen PRIVATE src)
+add_executable(gpu_schema_gen tools/GenerateGpuSchema.cpp)
+target_include_directories(gpu_schema_gen PRIVATE src)
 
-set(DRAW_DATA_GLSL "${CMAKE_BINARY_DIR}/shaders/DrawData.glsl")
-set(DRAW_DATA_HEADER "${CMAKE_BINARY_DIR}/generated/DrawData.h")
-set(BINDLESS_BINDINGS_GLSL "${CMAKE_BINARY_DIR}/shaders/BindlessBindings.glsl")
-set(BINDLESS_BINDINGS_HEADER "${CMAKE_BINARY_DIR}/generated/BindlessBindings.h")
+set(GPU_SCHEMA_STAMP "${CMAKE_BINARY_DIR}/generated/gpu_schema.stamp")
 add_custom_command(
-    OUTPUT ${DRAW_DATA_GLSL} ${DRAW_DATA_HEADER}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
-    COMMAND $<TARGET_FILE:drawdata_gen> ${DRAW_DATA_GLSL} ${DRAW_DATA_HEADER}
-    DEPENDS drawdata_gen ${CMAKE_SOURCE_DIR}/src/DrawDataFields.h
-    COMMENT "Generating DrawData.glsl and DrawData.h"
+    OUTPUT ${GPU_SCHEMA_STAMP}
+    COMMAND $<TARGET_FILE:gpu_schema_gen>
+        ${CMAKE_BINARY_DIR}
+        ${CMAKE_SOURCE_DIR}
+        src/gpu/Schema.yaml
+    COMMAND ${CMAKE_COMMAND} -E touch ${GPU_SCHEMA_STAMP}
+    DEPENDS gpu_schema_gen ${CMAKE_SOURCE_DIR}/src/gpu/Schema.yaml
+    COMMENT "Generating GPU schema outputs"
 )
-add_custom_command(
-    OUTPUT ${BINDLESS_BINDINGS_GLSL} ${BINDLESS_BINDINGS_HEADER}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
-    COMMAND $<TARGET_FILE:bindless_bindings_gen> ${BINDLESS_BINDINGS_GLSL} ${BINDLESS_BINDINGS_HEADER}
-    DEPENDS bindless_bindings_gen ${CMAKE_SOURCE_DIR}/src/BindlessBindingFields.h
-    COMMENT "Generating BindlessBindings.glsl and BindlessBindings.h"
-)
-add_custom_target(generate_drawdata_glsl DEPENDS ${DRAW_DATA_GLSL})
-add_custom_target(generate_bindless_bindings_glsl DEPENDS ${BINDLESS_BINDINGS_GLSL})
-add_dependencies(${PROJECT_NAME} generate_drawdata_glsl)
-add_dependencies(${PROJECT_NAME} generate_bindless_bindings_glsl)
+add_custom_target(generate_gpu_schema DEPENDS ${GPU_SCHEMA_STAMP})
+add_dependencies(${PROJECT_NAME} generate_gpu_schema)
 
 include_directories(
     ${Vulkan_INCLUDE_DIRS}
