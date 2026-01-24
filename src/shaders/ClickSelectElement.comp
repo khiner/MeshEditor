@@ -9,6 +9,8 @@
 layout(local_size_x = GROUP_SIZE) in;
 
 #include "BindlessBindings.glsl"
+#include "ClickElementCandidate.glsl"
+#include "SelectionNode.glsl"
 
 layout(push_constant) uniform PC {
     uvec2 TargetPx;
@@ -17,18 +19,6 @@ layout(push_constant) uniform PC {
     uint SelectionNodesIndex;
     uint ClickResultIndex;
 } pc;
-
-struct SelectionNode {
-    float Depth;
-    uint ObjectId;
-    uint Next;
-};
-
-struct ClickElementCandidate {
-    uint ObjectId;
-    float Depth;
-    uint DistanceSq;
-};
 
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
     SelectionNode Nodes[];

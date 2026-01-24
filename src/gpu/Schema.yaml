@@ -131,3 +131,37 @@ structs:
         type: mat4
       - name: MInv
         type: mat4
+  - name: SelectionNode
+    fields:
+      - name: Depth
+        type: float
+      - name: ObjectId
+        type: u32
+      - name: Next
+        type: u32
+  - name: SelectionCounters
+    fields:
+      - name: Count
+        type: u32
+      - name: Overflow
+        type: u32
+  - name: ClickHit
+    fields:
+      - name: Depth
+        type: float
+      - name: ObjectId
+        type: u32
+  - name: ClickResult
+    fields:
+      - name: Count
+        type: u32
+      - name: Hits
+        type: ClickHit[64]
+  - name: ClickElementCandidate
+    fields:
+      - name: ObjectId
+        type: u32
+      - name: Depth
+        type: float
+      - name: DistanceSq
+        type: u32

@@ -1,31 +1,9 @@
 #pragma once
 
-struct ClickHit {
-    float Depth;
-    uint32_t ObjectId;
-};
-
-struct ClickResult {
-    uint32_t Count;
-    std::array<ClickHit, 64> Hits;
-};
-
-struct SelectionNode {
-    float Depth;
-    uint32_t ObjectId;
-    uint32_t Next;
-};
-
-struct SelectionCounters {
-    uint32_t Count;
-    uint32_t Overflow;
-};
-
-struct ClickElementCandidate {
-    uint32_t ObjectId;
-    float Depth;
-    uint32_t DistanceSq;
-};
+#include "generated/ClickElementCandidate.h"
+#include "generated/ClickResult.h"
+#include "generated/SelectionCounters.h"
+#include "generated/SelectionNode.h"
 
 constexpr uint32_t
     ClickSelectRadiusPx = 50,

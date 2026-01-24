@@ -8,6 +8,7 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 #include "BindlessBindings.glsl"
+#include "SelectionNode.glsl"
 
 layout(push_constant) uniform PC {
     uvec2 BoxMin;
@@ -17,12 +18,6 @@ layout(push_constant) uniform PC {
     uint SelectionNodesIndex;
     uint BoxResultIndex;
 } pc;
-
-struct SelectionNode {
-    float Depth;
-    uint ObjectId;
-    uint Next;
-};
 
 const uint INVALID_NODE = 0xffffffffu;
 

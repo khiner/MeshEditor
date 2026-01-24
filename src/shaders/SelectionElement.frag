@@ -17,9 +17,9 @@ void main() {
     const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
     const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
 
-    const uint idx = atomicAdd(Counters[counter_index].Count, 1);
+    const uint idx = atomicAdd(Counters[counter_index].Data.Count, 1);
     if (idx >= SelectionBuffers[nodes_index].Nodes.length()) {
-        atomicAdd(Counters[counter_index].Overflow, 1);
+        atomicAdd(Counters[counter_index].Data.Overflow, 1);
         return;
     }
 

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -73,6 +74,26 @@ enum class Section {
     Bindings,
     Structs,
 };
+
+struct TypeSpec {
+    std::string_view Base;
+    std::optional<size_t> ArraySize;
+};
+
+TypeSpec ParseType(std::string_view type) {
+    const auto open = type.find('[');
+    if (open == std::string_view::npos) return {.Base = Trim(type), .ArraySize = std::nullopt};
+    const auto close = type.find(']', open + 1);
+    if (close == std::string_view::npos || close != type.size() - 1) return {.Base = Trim(type), .ArraySize = std::nullopt};
+    const auto size_view = Trim(type.substr(open + 1, close - open - 1));
+    size_t size = 0;
+    const auto *begin = size_view.data();
+    const auto *end = size_view.data() + size_view.size();
+    if (auto [ptr, ec] = std::from_chars(begin, end, size); ec != std::errc{} || ptr != end) {
+        return {.Base = Trim(type), .ArraySize = std::nullopt};
+    }
+    return {.Base = Trim(type.substr(0, open)), .ArraySize = size};
+}
 
 bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindings, std::vector<StructDef> &structs) {
     std::ifstream in{path};
@@ -320,9 +341,10 @@ int main(int argc, char **argv) {
                  << GeneratedComment(schema_relative_path);
         std::vector<std::string_view> glsl_includes;
         for (const auto &field : def.Fields) {
-            if (IsStructType(field.Type, structs) && field.Type != def.Name) {
-                if (find(glsl_includes, field.Type) == glsl_includes.end()) {
-                    glsl_includes.emplace_back(field.Type);
+            const auto spec = ParseType(field.Type);
+            if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
+                if (find(glsl_includes, spec.Base) == glsl_includes.end()) {
+                    glsl_includes.emplace_back(spec.Base);
                 }
             }
         }
@@ -332,15 +354,19 @@ int main(int argc, char **argv) {
         if (!glsl_includes.empty()) glsl_out << "\n";
         glsl_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
-            if (const auto glsl_type = GlslTypeFor(field.Type, structs); !glsl_type) {
+            const auto spec = ParseType(field.Type);
+            if (const auto glsl_type = GlslTypeFor(spec.Base, structs); !glsl_type) {
                 std::cerr << "Unknown type: " << field.Type << "\n";
                 return 1;
+            } else if (spec.ArraySize) {
+                glsl_out << "    " << *glsl_type << " " << field.Name << "[" << *spec.ArraySize << "];\n";
             } else {
                 glsl_out << "    " << *glsl_type << " " << field.Name << ";\n";
             }
         }
         glsl_out << "};\n\n#endif\n";
 
+        bool needs_array = false;
         bool needs_cstdint = false;
         bool needs_vec3 = false;
         bool needs_vec4 = false;
@@ -348,20 +374,23 @@ int main(int argc, char **argv) {
         bool needs_slots = false;
         std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
-            if (field.Type == "u32") needs_cstdint = true;
-            if (field.Type == "vec3") needs_vec3 = true;
-            if (field.Type == "vec4") needs_vec4 = true;
-            if (field.Type == "mat4") needs_mat4 = true;
+            const auto spec = ParseType(field.Type);
+            if (spec.ArraySize) needs_array = true;
+            if (spec.Base == "u32") needs_cstdint = true;
+            if (spec.Base == "vec3") needs_vec3 = true;
+            if (spec.Base == "vec4") needs_vec4 = true;
+            if (spec.Base == "mat4") needs_mat4 = true;
             if (field.DefaultValue.find("InvalidSlot") != std::string::npos) needs_slots = true;
-            if (IsStructType(field.Type, structs) && field.Type != def.Name) {
-                if (find(cpp_includes, field.Type) == cpp_includes.end()) {
-                    cpp_includes.emplace_back(field.Type);
+            if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
+                if (find(cpp_includes, spec.Base) == cpp_includes.end()) {
+                    cpp_includes.emplace_back(spec.Base);
                 }
             }
         }
 
         cpp_out << "#pragma once\n\n"
                 << GeneratedComment(schema_relative_path);
+        if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
         if (needs_mat4) cpp_out << "#include \"numeric/mat4.h\"\n";
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
@@ -375,9 +404,12 @@ int main(int argc, char **argv) {
 
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
-            if (const auto cpp_type = CppTypeFor(field.Type, structs); !cpp_type) {
+            const auto spec = ParseType(field.Type);
+            if (const auto cpp_type = CppTypeFor(spec.Base, structs); !cpp_type) {
                 std::cerr << "Unknown type: " << field.Type << "\n";
                 return 1;
+            } else if (spec.ArraySize) {
+                cpp_out << "    std::array<" << *cpp_type << ", " << *spec.ArraySize << "> " << field.Name << "{};\n";
             } else {
                 const auto &value = field.DefaultValue;
                 cpp_out << "    " << *cpp_type << " " << field.Name << '{'
