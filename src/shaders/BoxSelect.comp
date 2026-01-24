@@ -7,13 +7,8 @@
 // binding BINDING_Buffer: storage buffers (SelectionNodes, BoxSelectResult) via indices
 layout(local_size_x = 16, local_size_y = 16) in;
 
-#include "BindlessBindings.glsl"
 #include "BoxSelectPushConstants.glsl"
 #include "SelectionNode.glsl"
-
-layout(push_constant) uniform PC {
-    BoxSelectPushConstants Data;
-} pc;
 
 const uint INVALID_NODE = 0xffffffffu;
 
@@ -29,17 +24,17 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer BoxSelectResult {
 
 void main() {
     const uvec2 local = gl_GlobalInvocationID.xy;
-    const uvec2 pixel = pc.Data.BoxMin + local;
-    if (pixel.x >= pc.Data.BoxMax.x || pixel.y >= pc.Data.BoxMax.y) return;
+    const uvec2 pixel = pc.BoxMin + local;
+    if (pixel.x >= pc.BoxMax.x || pixel.y >= pc.BoxMax.y) return;
 
-    uint idx = imageLoad(HeadImages[pc.Data.HeadImageIndex], ivec2(pixel)).r;
+    uint idx = imageLoad(HeadImages[pc.HeadImageIndex], ivec2(pixel)).r;
     while (idx != INVALID_NODE) {
-        const SelectionNode node = SelectionBuffers[pc.Data.SelectionNodesIndex].Nodes[idx];
-        if (node.ObjectId != 0 && node.ObjectId <= pc.Data.ObjectCount) {
+        const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
+        if (node.ObjectId != 0 && node.ObjectId <= pc.ObjectCount) {
             const uint object_idx = node.ObjectId - 1;
             const uint word_idx = object_idx >> 5;
             const uint bit = object_idx & 31;
-            atomicOr(BoxResults[pc.Data.BoxResultIndex].Bits[word_idx], 1u << bit);
+            atomicOr(BoxResults[pc.BoxResultIndex].Bits[word_idx], 1u << bit);
         }
         idx = node.Next;
     }

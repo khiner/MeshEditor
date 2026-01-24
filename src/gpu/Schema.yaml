@@ -58,6 +58,7 @@ structs:
       - name: VertexOffset
         type: u32
   - name: SceneViewUBO
+    binding: SceneViewUBO
     fields:
       - name: View
         type: mat4
@@ -113,6 +114,7 @@ structs:
         type: vec4
         default: [0.137, 0.380, 0.867, 1]
   - name: ViewportTheme
+    binding: ViewportThemeUBO
     fields:
       - name: Colors
         type: ViewportThemeColors
@@ -166,6 +168,7 @@ structs:
       - name: DistanceSq
         type: u32
   - name: DrawPassPushConstants
+    push_constant: true
     fields:
       - name: DrawDataSlot
         type: u32
@@ -182,6 +185,7 @@ structs:
         type: u32
         default: InvalidSlot
   - name: ClickSelectPushConstants
+    push_constant: true
     fields:
       - name: TargetPx
         type: uvec2
@@ -192,6 +196,7 @@ structs:
       - name: ClickResultIndex
         type: u32
   - name: ClickSelectElementPushConstants
+    push_constant: true
     fields:
       - name: TargetPx
         type: uvec2
@@ -204,6 +209,7 @@ structs:
       - name: ClickResultIndex
         type: u32
   - name: BoxSelectPushConstants
+    push_constant: true
     fields:
       - name: BoxMin
         type: uvec2
@@ -218,10 +224,12 @@ structs:
       - name: BoxResultIndex
         type: u32
   - name: SilhouetteEdgeDepthObjectPushConstants
+    push_constant: true
     fields:
       - name: SilhouetteSamplerIndex
         type: u32
   - name: SilhouetteEdgeColorPushConstants
+    push_constant: true
     fields:
       - name: Manipulating
         type: u32

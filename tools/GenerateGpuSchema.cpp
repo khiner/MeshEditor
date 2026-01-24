@@ -26,6 +26,8 @@ struct Field {
 
 struct StructDef {
     std::string Name;
+    std::string Binding; // References a binding name (for uniforms)
+    bool IsPushConstant = false;
     std::vector<Field> Fields;
 };
 
@@ -111,10 +113,7 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
 
     auto commit_binding = [&]() {
         if (!has_binding) return;
-        if (current_binding.Name.empty() || current_binding.Kind.empty()) {
-            std::cerr << "Invalid binding entry in schema.\n";
-            std::exit(1);
-        }
+        if (current_binding.Name.empty() || current_binding.Kind.empty()) Fail("Invalid binding entry in schema.");
         bindings.push_back(current_binding);
         current_binding = {};
         has_binding = false;
@@ -122,10 +121,8 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
 
     auto commit_field = [&]() {
         if (!has_field) return;
-        if (current_field.Name.empty() || current_field.Type.empty()) {
-            std::cerr << "Invalid field entry in schema.\n";
-            std::exit(1);
-        }
+        if (current_field.Name.empty() || current_field.Type.empty()) Fail("Invalid field entry in schema.");
+
         current_struct.Fields.push_back(current_field);
         current_field = {};
         has_field = false;
@@ -134,10 +131,7 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
     auto commit_struct = [&]() {
         if (!has_struct) return;
         commit_field();
-        if (current_struct.Name.empty() || current_struct.Fields.empty()) {
-            std::cerr << "Invalid struct entry in schema.\n";
-            std::exit(1);
-        }
+        if (current_struct.Name.empty() || current_struct.Fields.empty()) Fail("Invalid struct entry in schema.");
         structs.push_back(current_struct);
         current_struct = {};
         has_struct = false;
@@ -204,6 +198,8 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
             } else {
                 has_struct = true;
                 if (key == "name") current_struct.Name = value;
+                else if (key == "binding") current_struct.Binding = value;
+                else if (key == "push_constant") current_struct.IsPushConstant = (value == "true");
                 else Fail("Unknown struct key: " + key);
             }
         } else Fail("Item defined outside of a section.");
@@ -246,6 +242,10 @@ std::optional<std::string_view> BindKindEnum(std::string_view kind) {
     if (kind == "Sampler") return "Sampler";
     if (kind == "Buffer") return "Buffer";
     return std::nullopt;
+}
+
+bool BindingExists(const std::vector<Binding> &bindings, std::string_view name) {
+    return any_of(bindings, [&](const auto &b) { return b.Name == name; });
 }
 
 std::string ToMacroName(const std::string &name, std::string_view suffix) {
@@ -321,11 +321,10 @@ int main(int argc, char **argv) {
                     << "};\n\n"
                     << "constexpr std::array<BindingDef, SlotTypeCount> BindingDefs{{\n";
     for (const auto &binding : bindings) {
-        if (const auto kind = BindKindEnum(binding.Kind); !kind) {
-            std::cerr << "Unknown binding kind: " << binding.Kind << "\n";
-            return 1;
-        } else {
+        if (const auto kind = BindKindEnum(binding.Kind)) {
             bindless_header << "    BindingDef{BindKind::" << *kind << ", \"" << binding.Name << "\"},\n";
+        } else {
+            Fail("Unknown binding kind: " + binding.Kind);
         }
     }
     bindless_header << "}};\n";
@@ -350,31 +349,41 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        for (const auto &include : glsl_includes) {
-            glsl_out << "#include \"" << include << ".glsl\"\n";
+        // Determine if we need extensions and BindlessBindings.glsl for layout declarations
+        const bool is_uniform = !def.Binding.empty();
+        if (is_uniform) glsl_out << "#extension GL_EXT_scalar_block_layout : require\n\n";
+        if (is_uniform || def.IsPushConstant) glsl_out << "#include \"BindlessBindings.glsl\"\n";
+        for (const auto &include : glsl_includes) glsl_out << "#include \"" << include << ".glsl\"\n";
+        if (is_uniform || def.IsPushConstant || !glsl_includes.empty()) glsl_out << "\n";
+
+        // Generate layout block or plain struct
+        if (def.IsPushConstant) {
+            glsl_out << "layout(push_constant) uniform " << def.Name;
+        } else if (is_uniform) {
+            if (!BindingExists(bindings, def.Binding)) Fail("Unknown binding: " + def.Binding);
+            glsl_out << "layout(set = 0, binding = BINDING_" << def.Binding << ", scalar) uniform " << def.Name << "Block";
+        } else {
+            glsl_out << "struct " << def.Name;
         }
-        if (!glsl_includes.empty()) glsl_out << "\n";
-        glsl_out << "struct " << def.Name << " {\n";
+        glsl_out << " {\n";
+
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
-            if (const auto glsl_type = GlslTypeFor(spec.Base, structs); !glsl_type) {
-                std::cerr << "Unknown type: " << field.Type << "\n";
-                return 1;
-            } else if (spec.ArraySize) {
-                glsl_out << "    " << *glsl_type << " " << field.Name << "[" << *spec.ArraySize << "];\n";
-            } else {
-                glsl_out << "    " << *glsl_type << " " << field.Name << ";\n";
-            }
+            if (const auto glsl_type = GlslTypeFor(spec.Base, structs)) {
+                glsl_out << "    " << *glsl_type << " " << field.Name;
+                if (spec.ArraySize) glsl_out << "[" << *spec.ArraySize << "]";
+                glsl_out << ";\n";
+            } else Fail("Unknown type: " + field.Type);
         }
-        glsl_out << "};\n\n#endif\n";
 
-        bool needs_array = false;
-        bool needs_cstdint = false;
-        bool needs_uvec2 = false;
-        bool needs_vec3 = false;
-        bool needs_vec4 = false;
-        bool needs_mat4 = false;
-        bool needs_slots = false;
+        if (def.IsPushConstant) glsl_out << "} pc;";
+        else if (is_uniform) glsl_out << "} " << def.Name << ";";
+        else glsl_out << "};";
+        glsl_out << "\n\n#endif\n";
+
+        bool needs_array{false}, needs_cstdint{false},
+            needs_uvec2{false}, needs_vec3{false}, needs_vec4{false},
+            needs_mat4{false}, needs_slots{false};
         std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
@@ -401,26 +410,22 @@ int main(int argc, char **argv) {
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
-        for (const auto &include : cpp_includes) {
-            cpp_out << "#include \"generated/" << include << ".h\"\n";
-        }
-        if (needs_cstdint || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots) cpp_out << "\n";
-        if (!cpp_includes.empty()) cpp_out << "\n";
+        for (const auto &include : cpp_includes) cpp_out << "#include \"generated/" << include << ".h\"\n";
+        if (needs_cstdint || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots || !cpp_includes.empty()) cpp_out << "\n";
 
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
-            if (const auto cpp_type = CppTypeFor(spec.Base, structs); !cpp_type) {
-                std::cerr << "Unknown type: " << field.Type << "\n";
-                return 1;
-            } else if (spec.ArraySize) {
-                cpp_out << "    std::array<" << *cpp_type << ", " << *spec.ArraySize << "> " << field.Name << "{};\n";
-            } else {
-                const auto &value = field.DefaultValue;
-                cpp_out << "    " << *cpp_type << " " << field.Name << '{'
-                        << (value.empty() ? std::string_view{} : std::string_view{value})
-                        << "};\n";
-            }
+            if (const auto cpp_type = CppTypeFor(spec.Base, structs)) {
+                cpp_out << "    ";
+                if (spec.ArraySize) {
+                    cpp_out << "std::array<" << *cpp_type << ", " << *spec.ArraySize << "> " << field.Name << "{};\n";
+                } else {
+                    cpp_out << *cpp_type << " " << field.Name << '{'
+                            << (field.DefaultValue.empty() ? std::string_view{} : std::string_view{field.DefaultValue})
+                            << "};\n";
+                }
+            } else Fail("Unknown type: " + field.Type);
         }
         cpp_out << "};\n";
     }

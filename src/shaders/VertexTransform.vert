@@ -31,7 +31,7 @@ void main() {
 
     WorldNormal = mat3(world.MInv) * normal;
     WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
-    const bool is_edit_mode = SceneView.InteractionMode == InteractionModeEdit;
+    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
     const vec4 edge_color = is_edit_mode ? ViewportTheme.Colors.WireEdit : ViewportTheme.Colors.Wire;
     const vec4 object_base_color = vec4(0.7, 0.7, 0.7, 1);
     const vec4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color :
@@ -42,5 +42,5 @@ void main() {
     const bool is_selected = (state & STATE_SELECTED) != 0u;
     const bool is_active = (state & STATE_ACTIVE) != 0u;
     Color = is_active ? ViewportTheme.Colors.ElementActive : is_selected ? ViewportTheme.Colors.ElementSelected : base_color;
-    gl_Position = SceneView.Proj * SceneView.View * world.M * vec4(vert.Position, 1.0);
+    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * world.M * vec4(vert.Position, 1.0);
 }

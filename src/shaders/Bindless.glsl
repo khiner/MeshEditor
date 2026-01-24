@@ -1,20 +1,11 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
 
-#include "BindlessBindings.glsl"
 #include "SceneUBO.glsl"
 #include "DrawData.glsl"
 #include "DrawPassPushConstants.glsl"
-
-struct Vertex {
-    vec3 Position;
-    vec3 Normal;
-};
-
-struct WorldMatrix {
-    mat4 M;
-    mat4 MInv;
-};
+#include "Vertex.glsl"
+#include "WorldMatrix.glsl"
 
 layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBuffer {
     Vertex Vertices[];
@@ -50,10 +41,6 @@ const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
 
-layout(push_constant) uniform PushConstants {
-    DrawPassPushConstants Data;
-} pc;
-
 DrawData GetDrawData() {
-    return DrawDataBuffers[nonuniformEXT(pc.Data.DrawDataSlot)].Draws[pc.Data.DrawDataOffset + gl_InstanceIndex];
+    return DrawDataBuffers[nonuniformEXT(pc.DrawDataSlot)].Draws[pc.DrawDataOffset + gl_InstanceIndex];
 }

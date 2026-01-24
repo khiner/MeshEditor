@@ -12,5 +12,5 @@ void main() {
 
     const uint face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[gl_VertexIndex + draw.FaceIdOffset];
     ElementId = draw.ElementIdOffset + face_id;
-    gl_Position = SceneView.Proj * SceneView.View * world.M * vec4(vert.Position, 1.0);
+    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * world.M * vec4(vert.Position, 1.0);
 }

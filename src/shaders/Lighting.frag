@@ -16,8 +16,8 @@ vec3 DirectionalLighting(vec3 direction, vec3 normal, vec3 color, float ambient,
 }
 
 void main() {
-    const vec3 view_lighting = DirectionalLighting(normalize(WorldPosition - SceneView.CameraPosition), WorldNormal, SceneView.ViewColor, SceneView.AmbientIntensity, 1);
-    const vec3 directional_lighting = DirectionalLighting(SceneView.LightDirection, WorldNormal, SceneView.DirectionalColor, 0, SceneView.DirectionalIntensity);
+    const vec3 view_lighting = DirectionalLighting(normalize(WorldPosition - SceneViewUBO.CameraPosition), WorldNormal, SceneViewUBO.ViewColor, SceneViewUBO.AmbientIntensity, 1);
+    const vec3 directional_lighting = DirectionalLighting(SceneViewUBO.LightDirection, WorldNormal, SceneViewUBO.DirectionalColor, 0, SceneViewUBO.DirectionalIntensity);
     const vec3 lighting = view_lighting + directional_lighting;
     OutColor = vec4(InColor.rgb * lighting, InColor.a);
 }

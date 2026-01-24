@@ -8,14 +8,9 @@
 #define GROUP_SIZE 256
 layout(local_size_x = GROUP_SIZE) in;
 
-#include "BindlessBindings.glsl"
 #include "ClickElementCandidate.glsl"
 #include "ClickSelectElementPushConstants.glsl"
 #include "SelectionNode.glsl"
-
-layout(push_constant) uniform PC {
-    ClickSelectElementPushConstants Data;
-} pc;
 
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
     SelectionNode Nodes[];
@@ -48,19 +43,19 @@ void main() {
     best.Depth = 1.0;
     best.DistanceSq = 0xffffffffu;
 
-    const uint diameter = pc.Data.Radius * 2u + 1u;
+    const uint diameter = pc.Radius * 2u + 1u;
     const uint pixel_count = diameter * diameter;
     if (idx < pixel_count) {
-        const int dx = int(idx % diameter) - int(pc.Data.Radius);
-        const int dy = int(idx / diameter) - int(pc.Data.Radius);
+        const int dx = int(idx % diameter) - int(pc.Radius);
+        const int dy = int(idx / diameter) - int(pc.Radius);
         const uint distance_sq = uint(dx * dx + dy * dy);
-        if (distance_sq <= pc.Data.Radius * pc.Data.Radius) {
-            const ivec2 pixel = ivec2(pc.Data.TargetPx) + ivec2(dx, dy);
-            const ivec2 size = imageSize(HeadImages[pc.Data.HeadImageIndex]);
+        if (distance_sq <= pc.Radius * pc.Radius) {
+            const ivec2 pixel = ivec2(pc.TargetPx) + ivec2(dx, dy);
+            const ivec2 size = imageSize(HeadImages[pc.HeadImageIndex]);
             if (pixel.x >= 0 && pixel.y >= 0 && pixel.x < size.x && pixel.y < size.y) {
-                uint node_idx = imageLoad(HeadImages[pc.Data.HeadImageIndex], pixel).r;
+                uint node_idx = imageLoad(HeadImages[pc.HeadImageIndex], pixel).r;
                 while (node_idx != INVALID_NODE) {
-                    const SelectionNode node = SelectionBuffers[pc.Data.SelectionNodesIndex].Nodes[node_idx];
+                    const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[node_idx];
                     if (node.ObjectId != 0u && (best.ObjectId == 0u || node.Depth < best.Depth)) {
                         best.ObjectId = node.ObjectId;
                         best.Depth = node.Depth;
@@ -87,6 +82,6 @@ void main() {
     }
 
     if (local == 0) {
-        ClickResults[pc.Data.ClickResultIndex].Candidates[gl_WorkGroupID.x] = SharedCandidates[0];
+        ClickResults[pc.ClickResultIndex].Candidates[gl_WorkGroupID.x] = SharedCandidates[0];
     }
 }

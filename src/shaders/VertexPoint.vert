@@ -24,6 +24,6 @@ void main() {
     Color = is_active ? ViewportTheme.Colors.ElementActive :
         is_selected  ? ViewportTheme.Colors.ElementSelected :
                        ViewportTheme.Colors.Vertex;
-    gl_Position = SceneView.Proj * SceneView.View * world.M * vec4(vert.Position, 1.0);
+    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * world.M * vec4(vert.Position, 1.0);
     gl_PointSize = 6.0;
 }

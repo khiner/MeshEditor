@@ -7,14 +7,9 @@
 // binding BINDING_Buffer: storage buffers (SelectionNodes, ClickResult) via indices
 layout(local_size_x = 1) in;
 
-#include "BindlessBindings.glsl"
 #include "ClickResult.glsl"
 #include "ClickSelectPushConstants.glsl"
 #include "SelectionNode.glsl"
-
-layout(push_constant) uniform PC {
-    ClickSelectPushConstants Data;
-} pc;
 
 #define MAX_CLICK_RESULTS 64
 const uint INVALID_NODE = 0xffffffffu;
@@ -33,13 +28,13 @@ void main() {
     // Single invocation does the traversal
     if (gl_GlobalInvocationID.x != 0) return;
 
-    uint idx = imageLoad(HeadImages[pc.Data.HeadImageIndex], ivec2(pc.Data.TargetPx)).r;
+    uint idx = imageLoad(HeadImages[pc.HeadImageIndex], ivec2(pc.TargetPx)).r;
     while (idx != INVALID_NODE) {
-        const SelectionNode node = SelectionBuffers[pc.Data.SelectionNodesIndex].Nodes[idx];
-        const uint write_idx = atomicAdd(ClickResults[pc.Data.ClickResultIndex].Data.Count, 1);
+        const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
+        const uint write_idx = atomicAdd(ClickResults[pc.ClickResultIndex].Data.Count, 1);
         if (write_idx < MAX_CLICK_RESULTS) {
-            ClickResults[pc.Data.ClickResultIndex].Data.Hits[write_idx].Depth = node.Depth;
-            ClickResults[pc.Data.ClickResultIndex].Data.Hits[write_idx].ObjectId = node.ObjectId;
+            ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Depth = node.Depth;
+            ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].ObjectId = node.ObjectId;
         }
         idx = node.Next;
     }
