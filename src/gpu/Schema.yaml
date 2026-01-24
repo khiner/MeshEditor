@@ -119,3 +119,15 @@ structs:
       - name: SilhouetteEdgeWidth
         type: u32
         default: 1
+  - name: Vertex
+    fields:
+      - name: Position
+        type: vec3
+      - name: Normal
+        type: vec3
+  - name: WorldMatrix
+    fields:
+      - name: M
+        type: mat4
+      - name: MInv
+        type: mat4

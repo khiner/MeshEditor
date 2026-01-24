@@ -41,6 +41,8 @@ Transform GetTransform(const entt::registry &r, entt::entity e) {
     return {r.get<Position>(e).Value, r.get<Rotation>(e).Value, r.all_of<Scale>(e) ? r.get<Scale>(e).Value : vec3{1}};
 }
 
+WorldMatrix MakeWorldMatrix(mat4 m) { return {std::move(m), glm::transpose(glm::inverse(m))}; }
+
 // Recursively update world matrices of entity and its children based on current transforms
 void UpdateWorldMatrix(entt::registry &r, entt::entity e) {
     // How much the child's parent has transformed since parenting, or identity if no parent.
@@ -50,7 +52,7 @@ void UpdateWorldMatrix(entt::registry &r, entt::entity e) {
         return r.get<WorldMatrix>(node->Parent).M * r.get<ParentInverse>(child).M;
     };
     static const auto ToMatrix = [](Transform &&t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); };
-    const auto &world_matrix = r.emplace_or_replace<WorldMatrix>(e, GetParentDelta(r, e) * ToMatrix(GetTransform(r, e)));
+    const auto &world_matrix = r.emplace_or_replace<WorldMatrix>(e, MakeWorldMatrix(GetParentDelta(r, e) * ToMatrix(GetTransform(r, e))));
     UpdateModelBuffer(r, e, world_matrix);
     for (const auto child : Children{&r, e}) UpdateWorldMatrix(r, child);
 }

@@ -43,8 +43,6 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 }
 } // namespace
 
-#include "WorldMatrix.h"
-
 #include "scene_impl/MeshRender.h"
 #include "scene_impl/SceneComponents.h"
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "generated/WorldMatrix.h"
+
 #include <numeric>
 
 namespace {
