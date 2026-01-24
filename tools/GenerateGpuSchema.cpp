@@ -1,12 +1,16 @@
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
+
+using std::ranges::any_of, std::ranges::find, std::ranges::find_if_not;
 
 struct Binding {
     std::string Name;
@@ -34,11 +38,11 @@ std::string GeneratedComment(const std::filesystem::path &schema_relative_path) 
 }
 
 std::string_view Trim(std::string_view s) {
-    size_t start = 0;
-    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
-    size_t end = s.size();
-    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
-    return s.substr(start, end - start);
+    constexpr auto is_space = [](unsigned char c) { return std::isspace(c); };
+    const auto first = find_if_not(s, is_space);
+    const auto last = find_if_not(s | std::views::reverse, is_space).base();
+    if (first >= last) return {};
+    return {first, last};
 }
 
 std::string_view StripComment(std::string_view s) {
@@ -50,8 +54,8 @@ bool ParseKeyValue(std::string_view line, std::string &key, std::string &value) 
     const auto pos = line.find(':');
     if (pos == std::string_view::npos) return false;
 
-    key = std::string{Trim(line.substr(0, pos))};
-    value = std::string{Trim(line.substr(pos + 1))};
+    key = Trim(line.substr(0, pos));
+    value = Trim(line.substr(pos + 1));
     if (value.size() >= 2) {
         const char quote = value.front();
         if ((quote == '"' || quote == '\'') && value.back() == quote) {
@@ -157,7 +161,7 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
         }
 
         std::string key, value;
-        if (!ParseKeyValue(trimmed, key, value)) Fail(std::string{"Unrecognized schema line: "} + std::string{trimmed});
+        if (!ParseKeyValue(trimmed, key, value)) Fail("Unrecognized schema line: " + std::string{trimmed});
 
         if (section == Section::Bindings) {
             has_binding = true;
@@ -190,20 +194,26 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
     return true;
 }
 
-std::optional<std::string_view> CppTypeFor(std::string_view type) {
+bool IsStructType(std::string_view type, const std::vector<StructDef> &structs) {
+    return any_of(structs, [&](const auto &def) { return def.Name == type; });
+}
+
+std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
     if (type == "u32") return "uint32_t";
     if (type == "float") return "float";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
+    if (IsStructType(type, structs)) return type;
     return {};
 }
-std::optional<std::string_view> GlslTypeFor(std::string_view type) {
+std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
     if (type == "u32") return "uint";
     if (type == "float") return "float";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
+    if (IsStructType(type, structs)) return type;
     return {};
 }
 
@@ -307,10 +317,22 @@ int main(int argc, char **argv) {
         const auto guard = ToMacroName(def.Name, "GLSL");
         glsl_out << "#ifndef " << guard << "\n"
                  << "#define " << guard << "\n\n"
-                 << GeneratedComment(schema_relative_path)
-                 << "struct " << def.Name << " {\n";
+                 << GeneratedComment(schema_relative_path);
+        std::vector<std::string_view> glsl_includes;
         for (const auto &field : def.Fields) {
-            if (const auto glsl_type = GlslTypeFor(field.Type); !glsl_type) {
+            if (IsStructType(field.Type, structs) && field.Type != def.Name) {
+                if (find(glsl_includes, field.Type) == glsl_includes.end()) {
+                    glsl_includes.emplace_back(field.Type);
+                }
+            }
+        }
+        for (const auto &include : glsl_includes) {
+            glsl_out << "#include \"" << include << ".glsl\"\n";
+        }
+        if (!glsl_includes.empty()) glsl_out << "\n";
+        glsl_out << "struct " << def.Name << " {\n";
+        for (const auto &field : def.Fields) {
+            if (const auto glsl_type = GlslTypeFor(field.Type, structs); !glsl_type) {
                 std::cerr << "Unknown type: " << field.Type << "\n";
                 return 1;
             } else {
@@ -324,12 +346,18 @@ int main(int argc, char **argv) {
         bool needs_vec4 = false;
         bool needs_mat4 = false;
         bool needs_slots = false;
+        std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
             if (field.Type == "u32") needs_cstdint = true;
             if (field.Type == "vec3") needs_vec3 = true;
             if (field.Type == "vec4") needs_vec4 = true;
             if (field.Type == "mat4") needs_mat4 = true;
             if (field.DefaultValue.find("InvalidSlot") != std::string::npos) needs_slots = true;
+            if (IsStructType(field.Type, structs) && field.Type != def.Name) {
+                if (find(cpp_includes, field.Type) == cpp_includes.end()) {
+                    cpp_includes.emplace_back(field.Type);
+                }
+            }
         }
 
         cpp_out << "#pragma once\n\n"
@@ -339,17 +367,22 @@ int main(int argc, char **argv) {
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
+        for (const auto &include : cpp_includes) {
+            cpp_out << "#include \"generated/" << include << ".h\"\n";
+        }
         if (needs_cstdint || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots) cpp_out << "\n";
+        if (!cpp_includes.empty()) cpp_out << "\n";
 
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
-            if (const auto cpp_type = CppTypeFor(field.Type); !cpp_type) {
+            if (const auto cpp_type = CppTypeFor(field.Type, structs); !cpp_type) {
                 std::cerr << "Unknown type: " << field.Type << "\n";
                 return 1;
-            } else if (field.DefaultValue.empty()) {
-                cpp_out << "    " << *cpp_type << " " << field.Name << ";\n";
             } else {
-                cpp_out << "    " << *cpp_type << " " << field.Name << "{" << field.DefaultValue << "};\n";
+                const auto &value = field.DefaultValue;
+                cpp_out << "    " << *cpp_type << " " << field.Name << '{'
+                        << (value.empty() ? std::string_view{} : std::string_view{value})
+                        << "};\n";
             }
         }
         cpp_out << "};\n";
