@@ -49,18 +49,18 @@ add_executable(${PROJECT_NAME}
     ${SOURCES}
 )
 
-add_executable(gpu_schema_gen tools/GenerateGpuSchema.cpp)
+add_executable(gpu_schema_gen gpu/GenerateGpuSchema.cpp)
 target_include_directories(gpu_schema_gen PRIVATE src)
 
-set(GPU_SCHEMA_STAMP "${CMAKE_BINARY_DIR}/generated/gpu_schema.stamp")
+set(GPU_SCHEMA_STAMP "${CMAKE_BINARY_DIR}/gpu/gpu_schema.stamp")
 add_custom_command(
     OUTPUT ${GPU_SCHEMA_STAMP}
     COMMAND $<TARGET_FILE:gpu_schema_gen>
         ${CMAKE_BINARY_DIR}
         ${CMAKE_SOURCE_DIR}
-        src/gpu/Schema.yaml
+        gpu/GpuSchema.yaml
     COMMAND ${CMAKE_COMMAND} -E touch ${GPU_SCHEMA_STAMP}
-    DEPENDS gpu_schema_gen ${CMAKE_SOURCE_DIR}/src/gpu/Schema.yaml
+    DEPENDS gpu_schema_gen ${CMAKE_SOURCE_DIR}/gpu/GpuSchema.yaml
     COMMENT "Generating GPU schema outputs"
 )
 add_custom_target(generate_gpu_schema DEPENDS ${GPU_SCHEMA_STAMP})

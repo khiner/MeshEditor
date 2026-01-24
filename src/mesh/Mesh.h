@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Handle.h"
-#include "generated/Vertex.h"
+#include "gpu/Vertex.h"
 #include "numeric/vec4.h"
 
 #include <span>

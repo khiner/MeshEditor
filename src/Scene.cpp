@@ -9,8 +9,8 @@
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
-#include "generated/SilhouetteEdgeColorPushConstants.h"
-#include "generated/SilhouetteEdgeDepthObjectPushConstants.h"
+#include "gpu/SilhouetteEdgeColorPushConstants.h"
+#include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/Primitives.h"
 
 #include <entt/entity/registry.hpp>

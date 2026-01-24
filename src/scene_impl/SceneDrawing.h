@@ -1,6 +1,6 @@
 #pragma once
 
-#include "generated/DrawData.h"
+#include "gpu/DrawData.h"
 
 struct DrawBatchInfo {
     uint32_t DrawDataOffset{0};
@@ -38,7 +38,7 @@ struct SelectionDrawInfo {
     DrawBatchInfo Batch{};
 };
 
-#include "generated/DrawPassPushConstants.h"
+#include "gpu/DrawPassPushConstants.h"
 
 namespace {
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.

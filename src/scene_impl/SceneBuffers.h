@@ -1,16 +1,15 @@
 #pragma once
 
-#include "generated/ClickElementCandidate.h"
-#include "generated/ClickResult.h"
-#include "generated/SelectionCounters.h"
-#include "generated/SelectionNode.h"
+#include "gpu/ClickElementCandidate.h"
+#include "gpu/ClickResult.h"
+#include "gpu/SelectionCounters.h"
+#include "gpu/SelectionNode.h"
 
 constexpr uint32_t
     ClickSelectRadiusPx = 50,
     ClickSelectDiameterPx = ClickSelectRadiusPx * 2 + 1,
     ClickSelectPixelCount = ClickSelectDiameterPx * ClickSelectDiameterPx;
 
-// Owns render-only/generated data (e.g., SceneViewUBO/ViewportTheme/indicators/overlays/selection fragments).
 struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
     static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableObjects + 31) / 32};

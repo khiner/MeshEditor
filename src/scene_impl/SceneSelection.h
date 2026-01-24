@@ -1,8 +1,8 @@
 #pragma once
 
-#include "generated/BoxSelectPushConstants.h"
-#include "generated/ClickSelectElementPushConstants.h"
-#include "generated/ClickSelectPushConstants.h"
+#include "gpu/BoxSelectPushConstants.h"
+#include "gpu/ClickSelectElementPushConstants.h"
+#include "gpu/ClickSelectPushConstants.h"
 
 namespace {
 

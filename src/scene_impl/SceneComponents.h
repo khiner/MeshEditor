@@ -1,7 +1,7 @@
 #pragma once
 
-#include "generated/SceneViewUBO.h"
-#include "generated/ViewportTheme.h"
+#include "gpu/SceneViewUBO.h"
+#include "gpu/ViewportTheme.h"
 
 namespace {
 // Component on the scene singleton entity. Sent directly as UBO to shader.

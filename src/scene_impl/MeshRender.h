@@ -1,6 +1,6 @@
 #pragma once
 
-#include "generated/WorldMatrix.h"
+#include "gpu/WorldMatrix.h"
 
 #include <numeric>
 

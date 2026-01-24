@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
     const std::filesystem::path schema_relative_path{argv[3]};
     const std::filesystem::path schema_path = source_dir / schema_relative_path;
     const auto glsl_dir = build_dir / "shaders";
-    const auto cpp_dir = build_dir / "generated";
+    const auto cpp_dir = build_dir / "gpu";
 
     std::error_code fs_error;
     std::filesystem::create_directories(glsl_dir, fs_error);
@@ -410,7 +410,7 @@ int main(int argc, char **argv) {
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
-        for (const auto &include : cpp_includes) cpp_out << "#include \"generated/" << include << ".h\"\n";
+        for (const auto &include : cpp_includes) cpp_out << "#include \"gpu/" << include << ".h\"\n";
         if (needs_cstdint || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots || !cpp_includes.empty()) cpp_out << "\n";
 
         cpp_out << "struct " << def.Name << " {\n";

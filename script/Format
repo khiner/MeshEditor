@@ -3,6 +3,6 @@
 ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
 ProjectRootDir="$(dirname "${ScriptDir}")"
 
-for dir in "${ProjectRootDir}/src" "${ProjectRootDir}/tools"; do
+for dir in "${ProjectRootDir}/src" "${ProjectRootDir}/gpu"; do
     find -E "${dir}" -regex '.*\.(cpp|hpp|c|cc|cxx|h|hh)' -exec clang-format -style=file -i {} \;
 done

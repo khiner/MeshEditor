@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "generated/BindlessBindings.h"
+#include "gpu/BindlessBindings.h"
 
 constexpr uint32_t InvalidSlot{~0u};
 
