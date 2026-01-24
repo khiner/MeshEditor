@@ -11,9 +11,9 @@ const uint INVALID_NODE = 0xffffffffu;
 void main() {
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
     // when using .length() or image atomics, even when the index is uniform.
-    const uint head_index = nonuniformEXT(pc.SelectionHeadImageSlot);
-    const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
-    const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
+    const uint head_index = nonuniformEXT(pc.Data.SelectionHeadImageSlot);
+    const uint nodes_index = nonuniformEXT(pc.Data.SelectionNodesSlot);
+    const uint counter_index = nonuniformEXT(pc.Data.SelectionCounterSlot);
 
     const uint idx = atomicAdd(Counters[counter_index].Data.Count, 1);
     if (idx >= SelectionBuffers[nodes_index].Nodes.length()) {

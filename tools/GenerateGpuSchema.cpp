@@ -222,6 +222,7 @@ bool IsStructType(std::string_view type, const std::vector<StructDef> &structs) 
 std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
     if (type == "u32") return "uint32_t";
     if (type == "float") return "float";
+    if (type == "uvec2") return "glm::uvec2";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
@@ -231,6 +232,7 @@ std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vec
 std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
     if (type == "u32") return "uint";
     if (type == "float") return "float";
+    if (type == "uvec2") return "uvec2";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
@@ -368,6 +370,7 @@ int main(int argc, char **argv) {
 
         bool needs_array = false;
         bool needs_cstdint = false;
+        bool needs_uvec2 = false;
         bool needs_vec3 = false;
         bool needs_vec4 = false;
         bool needs_mat4 = false;
@@ -377,6 +380,7 @@ int main(int argc, char **argv) {
             const auto spec = ParseType(field.Type);
             if (spec.ArraySize) needs_array = true;
             if (spec.Base == "u32") needs_cstdint = true;
+            if (spec.Base == "uvec2") needs_uvec2 = true;
             if (spec.Base == "vec3") needs_vec3 = true;
             if (spec.Base == "vec4") needs_vec4 = true;
             if (spec.Base == "mat4") needs_mat4 = true;
@@ -392,6 +396,7 @@ int main(int argc, char **argv) {
                 << GeneratedComment(schema_relative_path);
         if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
+        if (needs_uvec2) cpp_out << "#include \"glm/glm.hpp\"\n";
         if (needs_mat4) cpp_out << "#include \"numeric/mat4.h\"\n";
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";

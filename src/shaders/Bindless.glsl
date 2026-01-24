@@ -4,6 +4,7 @@
 #include "BindlessBindings.glsl"
 #include "SceneUBO.glsl"
 #include "DrawData.glsl"
+#include "DrawPassPushConstants.glsl"
 
 struct Vertex {
     vec3 Position;
@@ -50,13 +51,9 @@ const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
 
 layout(push_constant) uniform PushConstants {
-    uint DrawDataSlot;
-    uint DrawDataOffset;
-    uint SelectionHeadImageSlot;
-    uint SelectionNodesSlot;
-    uint SelectionCounterSlot;
+    DrawPassPushConstants Data;
 } pc;
 
 DrawData GetDrawData() {
-    return DrawDataBuffers[nonuniformEXT(pc.DrawDataSlot)].Draws[pc.DrawDataOffset + gl_InstanceIndex];
+    return DrawDataBuffers[nonuniformEXT(pc.Data.DrawDataSlot)].Draws[pc.Data.DrawDataOffset + gl_InstanceIndex];
 }

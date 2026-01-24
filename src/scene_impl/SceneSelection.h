@@ -1,29 +1,10 @@
 #pragma once
 
+#include "generated/BoxSelectPushConstants.h"
+#include "generated/ClickSelectElementPushConstants.h"
+#include "generated/ClickSelectPushConstants.h"
+
 namespace {
-struct ClickSelectPushConstants {
-    glm::uvec2 TargetPx;
-    uint32_t HeadImageIndex;
-    uint32_t SelectionNodesIndex;
-    uint32_t ClickResultIndex;
-};
-
-struct ClickSelectElementPushConstants {
-    glm::uvec2 TargetPx;
-    uint32_t Radius;
-    uint32_t HeadImageIndex;
-    uint32_t SelectionNodesIndex;
-    uint32_t ClickResultIndex;
-};
-
-struct BoxSelectPushConstants {
-    glm::uvec2 BoxMin;
-    glm::uvec2 BoxMax;
-    uint32_t ObjectCount;
-    uint32_t HeadImageIndex;
-    uint32_t SelectionNodesIndex;
-    uint32_t BoxResultIndex;
-};
 
 std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, const Mesh &mesh, Element new_element) {
     if (selection.Element == Element::None || selection.Handles.empty()) return {};

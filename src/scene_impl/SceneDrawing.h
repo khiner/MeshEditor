@@ -38,13 +38,7 @@ struct SelectionDrawInfo {
     DrawBatchInfo Batch{};
 };
 
-struct DrawPassPushConstants {
-    uint32_t DrawDataSlot{InvalidSlot};
-    uint32_t DrawDataOffset{0};
-    uint32_t SelectionHeadImageSlot{InvalidSlot};
-    uint32_t SelectionNodesSlot{InvalidSlot};
-    uint32_t SelectionCounterSlot{InvalidSlot};
-};
+#include "generated/DrawPassPushConstants.h"
 
 namespace {
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.

@@ -4,6 +4,7 @@
 #extension GL_EXT_scalar_block_layout : require
 
 #include "BindlessBindings.glsl"
+#include "DrawPassPushConstants.glsl"
 #include "SelectionCounters.glsl"
 #include "SelectionNode.glsl"
 
@@ -18,11 +19,7 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionCounter {
 } Counters[];
 
 layout(push_constant) uniform SelectionPushConstants {
-    uint DrawDataSlot;
-    uint DrawDataOffset;
-    uint SelectionHeadImageSlot;
-    uint SelectionNodesSlot;
-    uint SelectionCounterSlot;
+    DrawPassPushConstants Data;
 } pc;
 
 #endif

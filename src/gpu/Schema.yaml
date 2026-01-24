@@ -165,3 +165,67 @@ structs:
         type: float
       - name: DistanceSq
         type: u32
+  - name: DrawPassPushConstants
+    fields:
+      - name: DrawDataSlot
+        type: u32
+        default: InvalidSlot
+      - name: DrawDataOffset
+        type: u32
+      - name: SelectionHeadImageSlot
+        type: u32
+        default: InvalidSlot
+      - name: SelectionNodesSlot
+        type: u32
+        default: InvalidSlot
+      - name: SelectionCounterSlot
+        type: u32
+        default: InvalidSlot
+  - name: ClickSelectPushConstants
+    fields:
+      - name: TargetPx
+        type: uvec2
+      - name: HeadImageIndex
+        type: u32
+      - name: SelectionNodesIndex
+        type: u32
+      - name: ClickResultIndex
+        type: u32
+  - name: ClickSelectElementPushConstants
+    fields:
+      - name: TargetPx
+        type: uvec2
+      - name: Radius
+        type: u32
+      - name: HeadImageIndex
+        type: u32
+      - name: SelectionNodesIndex
+        type: u32
+      - name: ClickResultIndex
+        type: u32
+  - name: BoxSelectPushConstants
+    fields:
+      - name: BoxMin
+        type: uvec2
+      - name: BoxMax
+        type: uvec2
+      - name: ObjectCount
+        type: u32
+      - name: HeadImageIndex
+        type: u32
+      - name: SelectionNodesIndex
+        type: u32
+      - name: BoxResultIndex
+        type: u32
+  - name: SilhouetteEdgeDepthObjectPushConstants
+    fields:
+      - name: SilhouetteSamplerIndex
+        type: u32
+  - name: SilhouetteEdgeColorPushConstants
+    fields:
+      - name: Manipulating
+        type: u32
+      - name: ObjectSamplerIndex
+        type: u32
+      - name: ActiveObjectId
+        type: u32

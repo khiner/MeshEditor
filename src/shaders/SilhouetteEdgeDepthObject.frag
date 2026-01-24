@@ -3,19 +3,20 @@
 
 #include "BindlessBindings.glsl"
 #include "SceneUBO.glsl"
+#include "SilhouetteEdgeDepthObjectPushConstants.glsl"
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[]; // Assumes {Depth, ObjectID} at each pixel.
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out float ObjectId; // ObjectID for edge pixels, discarded otherwise.
 
 layout(push_constant) uniform PC {
-    uint SilhouetteSamplerIndex;
+    SilhouetteEdgeDepthObjectPushConstants Data;
 } pc;
 
 void main() {
-    const ivec2 tex_size = textureSize(Samplers[pc.SilhouetteSamplerIndex], 0);
+    const ivec2 tex_size = textureSize(Samplers[pc.Data.SilhouetteSamplerIndex], 0);
     const ivec2 texel = ivec2(TexCoord * tex_size);
-    const vec2 depth_id = texelFetch(Samplers[pc.SilhouetteSamplerIndex], texel, 0).xy;
+    const vec2 depth_id = texelFetch(Samplers[pc.Data.SilhouetteSamplerIndex], texel, 0).xy;
 
     vec2 min_depth_id = vec2(10, 0); // Find the minimum depth (closest) of all neighborhood pixels.
     for (int i = -1; i <= 1; i++) {
@@ -28,7 +29,7 @@ void main() {
             // More than that, and the missing corner pixels are noticeable.
             // We use vk::SamplerAddressMode::eClampToEdge, so there's no need to check for out-of-bounds.
             const ivec2 neighbor_texel = texel + ivec2(i, j) * int(ViewportTheme.SilhouetteEdgeWidth);
-            const vec2 neighbor_depth_id = texelFetch(Samplers[pc.SilhouetteSamplerIndex], neighbor_texel, 0).xy;
+            const vec2 neighbor_depth_id = texelFetch(Samplers[pc.Data.SilhouetteSamplerIndex], neighbor_texel, 0).xy;
             if (depth_id.y != neighbor_depth_id.y) {
                 const vec2 edge_depth_id = depth_id.x != 0 ? depth_id : neighbor_depth_id;
                 min_depth_id = vec2(min(min_depth_id.x, edge_depth_id.x), edge_depth_id.y);

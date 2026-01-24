@@ -9,6 +9,8 @@
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
+#include "generated/SilhouetteEdgeColorPushConstants.h"
+#include "generated/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/Primitives.h"
 
 #include <entt/entity/registry.hpp>
@@ -1038,9 +1040,7 @@ void Scene::RecordRenderCommandBuffer() {
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, edge_clear_values}, vk::SubpassContents::eInline);
         const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
-        struct SilhouetteEdgeDepthObjectPushConstants {
-            uint32_t SilhouetteSamplerIndex;
-        } edge_pc{SelectionHandles->SilhouetteSampler};
+        const SilhouetteEdgeDepthObjectPushConstants edge_pc{SelectionHandles->SilhouetteSampler};
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
         silhouette_edo.RenderQuad(cb);
         cb.endRenderPass();
@@ -1083,11 +1083,7 @@ void Scene::RecordRenderCommandBuffer() {
                 R.get<RenderInstance>(active_entity).ObjectId :
                 0;
         }
-        struct SilhouetteEdgeColorPushConstants {
-            uint32_t Manipulating;
-            uint32_t ObjectSamplerIndex;
-            uint32_t ActiveObjectId;
-        } pc{TransformGizmo::IsUsing(), SelectionHandles->ObjectIdSampler, active_object_id};
+        const SilhouetteEdgeColorPushConstants pc{TransformGizmo::IsUsing(), SelectionHandles->ObjectIdSampler, active_object_id};
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         silhouette_edc.RenderQuad(cb);
     }
