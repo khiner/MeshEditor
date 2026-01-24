@@ -1,22 +1,13 @@
 #extension GL_EXT_scalar_block_layout : require
 
 #include "BindlessBindings.glsl"
+#include "SceneViewUBO.glsl"
 
 const uint InteractionModeObject = 0u, InteractionModeEdit = 1u, InteractionModeExcite = 2u;
 
-layout(set = 0, binding = BINDING_SceneViewUBO, scalar) uniform SceneViewUBO {
-    mat4 View;
-    mat4 Proj;
-    vec3 CameraPosition;
-    float CameraNear;
-    float CameraFar;
-    vec3 ViewColor;
-    float AmbientIntensity;
-    vec3 DirectionalColor;
-    float DirectionalIntensity;
-    vec3 LightDirection;
-    uint InteractionMode;
-} SceneView;
+layout(set = 0, binding = BINDING_SceneViewUBO, scalar) uniform SceneViewUBOBlock {
+    SceneViewUBO SceneView;
+};
 
 struct ViewportThemeColors {
     vec4 Wire;

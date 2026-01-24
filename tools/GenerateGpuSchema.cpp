@@ -29,6 +29,10 @@ struct StructDef {
     std::exit(1);
 }
 
+std::string GeneratedComment(const std::filesystem::path &schema_relative_path) {
+    return "// Generated from " + schema_relative_path.string() + ". Do not edit by hand.\n\n";
+}
+
 std::string_view Trim(std::string_view s) {
     size_t start = 0;
     while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
@@ -48,6 +52,15 @@ bool ParseKeyValue(std::string_view line, std::string &key, std::string &value) 
 
     key = std::string{Trim(line.substr(0, pos))};
     value = std::string{Trim(line.substr(pos + 1))};
+    if (value.size() >= 2) {
+        const char quote = value.front();
+        if ((quote == '"' || quote == '\'') && value.back() == quote) {
+            value = value.substr(1, value.size() - 2);
+        }
+    }
+    if (!value.empty() && value.front() == '[' && value.back() == ']') {
+        value = value.substr(1, value.size() - 2);
+    }
     return !key.empty();
 }
 
@@ -179,10 +192,18 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
 
 std::optional<std::string_view> CppTypeFor(std::string_view type) {
     if (type == "u32") return "uint32_t";
+    if (type == "float") return "float";
+    if (type == "vec3") return "vec3";
+    if (type == "vec4") return "vec4";
+    if (type == "mat4") return "mat4";
     return {};
 }
 std::optional<std::string_view> GlslTypeFor(std::string_view type) {
     if (type == "u32") return "uint";
+    if (type == "float") return "float";
+    if (type == "vec3") return "vec3";
+    if (type == "vec4") return "vec4";
+    if (type == "mat4") return "mat4";
     return {};
 }
 
@@ -237,13 +258,14 @@ int main(int argc, char **argv) {
 
     bindless_glsl << "#ifndef BINDLESS_BINDINGS_GLSL\n"
                   << "#define BINDLESS_BINDINGS_GLSL\n\n"
-                  << "// Generated from " << schema_relative_path << ". Do not edit by hand.\n\n";
+                  << GeneratedComment(schema_relative_path);
     for (size_t i = 0; i < bindings.size(); ++i) {
         bindless_glsl << "const uint BINDING_" << bindings[i].Name << " = " << i << ";\n";
     }
     bindless_glsl << "\n\n#endif\n";
 
     bindless_header << "#pragma once\n\n"
+                    << GeneratedComment(schema_relative_path)
                     << "#include <array>\n"
                     << "#include <cstddef>\n"
                     << "#include <cstdint>\n"
@@ -285,7 +307,7 @@ int main(int argc, char **argv) {
         const auto guard = ToMacroName(def.Name, "GLSL");
         glsl_out << "#ifndef " << guard << "\n"
                  << "#define " << guard << "\n\n"
-                 << "// Generated from " << schema_relative_path << ". Do not edit by hand.\n\n"
+                 << GeneratedComment(schema_relative_path)
                  << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
             if (const auto glsl_type = GlslTypeFor(field.Type); !glsl_type) {
@@ -297,9 +319,29 @@ int main(int argc, char **argv) {
         }
         glsl_out << "};\n\n#endif\n";
 
+        bool needs_cstdint = false;
+        bool needs_vec3 = false;
+        bool needs_vec4 = false;
+        bool needs_mat4 = false;
+        bool needs_slots = false;
+        for (const auto &field : def.Fields) {
+            if (field.Type == "u32") needs_cstdint = true;
+            if (field.Type == "vec3") needs_vec3 = true;
+            if (field.Type == "vec4") needs_vec4 = true;
+            if (field.Type == "mat4") needs_mat4 = true;
+            if (field.DefaultValue.find("InvalidSlot") != std::string::npos) needs_slots = true;
+        }
+
         cpp_out << "#pragma once\n\n"
-                << "#include \"vulkan/Slots.h\"\n\n"
-                << "struct " << def.Name << " {\n";
+                << GeneratedComment(schema_relative_path);
+        if (needs_cstdint) cpp_out << "#include <cstdint>\n";
+        if (needs_mat4) cpp_out << "#include \"numeric/mat4.h\"\n";
+        if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
+        if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
+        if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
+        if (needs_cstdint || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots) cpp_out << "\n";
+
+        cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
             if (const auto cpp_type = CppTypeFor(field.Type); !cpp_type) {
                 std::cerr << "Unknown type: " << field.Type << "\n";

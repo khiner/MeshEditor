@@ -64,3 +64,38 @@ structs:
       - name: VertexOffset
         type: u32
         default: 0
+  - name: SceneViewUBO
+    fields:
+      - name: View
+        type: mat4
+        default: 1
+      - name: Proj
+        type: mat4
+        default: 1
+      - name: CameraPosition
+        type: vec3
+        default: [0, 0, 0]
+      - name: CameraNear
+        type: float
+        default: 0
+      - name: CameraFar
+        type: float
+        default: 0
+      - name: ViewColor
+        type: vec3
+        default: [0, 0, 0]
+      - name: AmbientIntensity
+        type: float
+        default: 0
+      - name: DirectionalColor
+        type: vec3
+        default: [0, 0, 0]
+      - name: DirectionalIntensity
+        type: float
+        default: 0
+      - name: LightDirection
+        type: vec3
+        default: [0, 0, 0]
+      - name: InteractionMode
+        type: u32
+        default: 0

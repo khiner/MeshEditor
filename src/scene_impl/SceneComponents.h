@@ -1,18 +1,8 @@
 #pragma once
 
+#include "generated/SceneViewUBO.h"
+
 namespace {
-struct SceneViewUBO {
-    mat4 View{1}, Proj{1};
-    vec3 CameraPosition{0, 0, 0};
-    float CameraNear{0.f};
-    float CameraFar{0.f};
-    vec3 ViewColor{0, 0, 0};
-    float AmbientIntensity{0.f};
-    vec3 DirectionalColor{0, 0, 0};
-    float DirectionalIntensity{0.f};
-    vec3 LightDirection{0, 0, 0};
-    uint32_t InteractionMode{0};
-};
 
 struct ViewportThemeColors {
     // These mirror Blender: Preferences->Themes->3D Viewport->...
