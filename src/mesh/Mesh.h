@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Handle.h"
-#include "Vertex3D.h"
+#include "Vertex.h"
 #include "numeric/vec4.h"
 
 #include <span>
@@ -226,7 +226,7 @@ private:
     static constexpr uint32_t InvalidStoreId{~0u};
     MeshStore *Store{};
     uint32_t StoreId{InvalidStoreId};
-    std::span<const Vertex3D> Vertices;
+    std::span<const Vertex> Vertices;
     std::span<const vec3> FaceNormals;
     std::vector<HH> OutgoingHalfedges;
     std::vector<Halfedge> Halfedges;

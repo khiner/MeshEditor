@@ -67,7 +67,7 @@ struct SceneBuffers {
         auto &index_buffer = GetIndexBuffer(index_kind);
         return {index_buffer.Allocate(indices), index_buffer.Buffer.Slot};
     }
-    RenderBuffers CreateRenderBuffers(std::span<const Vertex3D> vertices, std::span<const uint> indices, IndexKind index_kind) {
+    RenderBuffers CreateRenderBuffers(std::span<const Vertex> vertices, std::span<const uint> indices, IndexKind index_kind) {
         return {VertexBuffer.Allocate(vertices), CreateIndices(indices, index_kind), index_kind};
     }
 
@@ -116,7 +116,7 @@ struct SceneBuffers {
     }
 
     mvk::BufferContext Ctx;
-    BufferArena<Vertex3D> VertexBuffer;
+    BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
     mvk::Buffer SceneViewUBO;
     mvk::Buffer ViewportThemeUBO;

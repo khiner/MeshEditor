@@ -78,9 +78,9 @@ std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     const auto n = element == Element::Face ? mesh.FaceCount() : mesh.VertexCount();
     return iota(0u, n * 2) | to<std::vector<uint>>();
 }
-std::vector<Vertex3D> CreateNormalVertices(const Mesh &mesh, Element element) {
+std::vector<Vertex> CreateNormalVertices(const Mesh &mesh, Element element) {
     constexpr float NormalIndicatorLengthScale{0.25};
-    std::vector<Vertex3D> vertices;
+    std::vector<Vertex> vertices;
     if (element == Element::Vertex) {
         vertices.reserve(mesh.VertexCount() * 2);
         for (const auto vh : mesh.vertices()) {

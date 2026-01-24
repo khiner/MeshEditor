@@ -153,7 +153,7 @@ std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_
 } // namespace
 
 MeshStore::MeshStore(mvk::BufferContext &ctx)
-    : VerticesBuffer{std::make_unique<BufferArena<Vertex3D>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer)},
+    : VerticesBuffer{std::make_unique<BufferArena<Vertex>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer)},
       FaceIdBuffer{std::make_unique<BufferArena<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer)},
       FaceNormalBuffer{std::make_unique<BufferArena<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer)} {}
 
@@ -222,8 +222,8 @@ std::optional<Mesh> MeshStore::LoadMesh(const std::filesystem::path &path) {
     return {};
 }
 
-std::span<const Vertex3D> MeshStore::GetVertices(uint32_t id) const { return VerticesBuffer->Get(Entries.at(id).Vertices); }
-std::span<Vertex3D> MeshStore::GetVertices(uint32_t id) { return VerticesBuffer->GetMutable(Entries.at(id).Vertices); }
+std::span<const Vertex> MeshStore::GetVertices(uint32_t id) const { return VerticesBuffer->Get(Entries.at(id).Vertices); }
+std::span<Vertex> MeshStore::GetVertices(uint32_t id) { return VerticesBuffer->GetMutable(Entries.at(id).Vertices); }
 BufferRange MeshStore::GetVerticesRange(uint32_t id) const { return Entries.at(id).Vertices; }
 uint32_t MeshStore::GetVerticesSlot() const { return VerticesBuffer->Buffer.Slot; }
 

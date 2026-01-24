@@ -509,7 +509,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 return bbox;
             };
             const auto box_vertices = create_bbox(mesh).Corners() |
-                transform([](const auto &corner) { return Vertex3D{corner, vec3{}}; }) |
+                transform([](const auto &corner) { return Vertex{corner, vec3{}}; }) |
                 to<std::vector>();
             if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
                 R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(box_vertices, BBox::EdgeIndices, IndexKind::Edge));

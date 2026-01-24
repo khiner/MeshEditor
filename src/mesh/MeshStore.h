@@ -25,8 +25,8 @@ struct MeshStore {
 
     void SetPositions(const Mesh &, std::span<const vec3>);
 
-    std::span<const Vertex3D> GetVertices(uint32_t id) const;
-    std::span<Vertex3D> GetVertices(uint32_t id);
+    std::span<const Vertex> GetVertices(uint32_t id) const;
+    std::span<Vertex> GetVertices(uint32_t id);
     BufferRange GetVerticesRange(uint32_t id) const;
     uint32_t GetVerticesSlot() const;
 
@@ -49,7 +49,7 @@ private:
 
     std::vector<Entry> Entries;
     std::vector<uint32_t> FreeIds;
-    std::unique_ptr<BufferArena<Vertex3D>> VerticesBuffer;
+    std::unique_ptr<BufferArena<Vertex>> VerticesBuffer;
     std::unique_ptr<BufferArena<uint32_t>> FaceIdBuffer;
     std::unique_ptr<BufferArena<vec3>> FaceNormalBuffer;
 };
