@@ -72,6 +72,7 @@ DrawData MakeDrawData(uint32_t vertex_slot, BufferRange vertices, const SlottedB
         .VertexCountOrHeadImageSlot = vertices.Count,
         .ElementIdOffset = 0,
         .ElementStateSlot = InvalidSlot,
+        .ElementStateOffset = 0,
         .VertexOffset = vertices.Offset,
     };
 }

@@ -15,7 +15,7 @@ void main() {
 
     uint state = 0u;
     if (draw.ElementStateSlot != INVALID_SLOT) {
-        state = ElementStateBuffers[draw.ElementStateSlot].States[idx];
+        state = ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + idx];
     }
     const bool is_selected = (state & STATE_SELECTED) != 0u;
     const bool is_active = (state & STATE_ACTIVE) != 0u;

@@ -392,16 +392,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     for (auto mesh_entity : R.storage<entt::reactive>(changes::MeshSelection)) {
         if (R.all_of<MeshSelection>(mesh_entity)) {
-            if (!R.all_of<MeshElementStateBuffers>(mesh_entity)) {
-                const auto &mesh = R.get<Mesh>(mesh_entity);
-                R.emplace<MeshElementStateBuffers>(
-                    mesh_entity,
-                    mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.FaceCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-                    mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.EdgeCount() * 2)), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-                    mvk::Buffer{Buffers->Ctx, as_bytes(MakeElementStates(mesh.VertexCount())), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer}
-                );
-                request(RenderRequest::ReRecord);
-            }
             dirty_element_state_meshes.insert(mesh_entity);
         }
     }
@@ -563,10 +553,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
 
-        // todo only recreate element states when topology changes. otherwise, just update selected/active bits.
-        auto face_states = MakeElementStates(mesh.FaceCount());
-        auto edge_states = MakeElementStates(mesh.EdgeCount() * 2);
-        auto vertex_states = MakeElementStates(mesh.VertexCount());
+        // Update element states in-place
+        const auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
+        auto face_states = Buffers->FaceStateBuffer.GetMutable(state_buffers.Faces.Range);
+        auto edge_states = Buffers->EdgeStateBuffer.GetMutable(state_buffers.Edges.Range);
+        auto vertex_states = Buffers->VertexStateBuffer.GetMutable(state_buffers.Vertices.Range);
+
+        // Clear all states
+        std::ranges::fill(face_states, 0u);
+        std::ranges::fill(edge_states, 0u);
+        std::ranges::fill(vertex_states, 0u);
+
         // Note: An element must be both active and selected to be displayed as active.
         if (element == Element::Face) {
             for (const auto fh : selected_faces) {
@@ -610,11 +607,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
 
-        R.patch<MeshElementStateBuffers>(mesh_entity, [&](auto &states) {
-            states.Faces.Update(as_bytes(face_states));
-            states.Edges.Update(as_bytes(edge_states));
-            states.Vertices.Update(as_bytes(vertex_states));
-        });
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
@@ -682,6 +674,13 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
         );
         R.emplace<MeshBuffers>(mesh_entity, vertices, face_indices, edge_indices, vertex_indices);
         R.emplace<MeshSelection>(mesh_entity);
+        const auto &emplaced_mesh = R.get<Mesh>(mesh_entity);
+        R.emplace<MeshElementStateBuffers>(
+            mesh_entity,
+            Buffers->AllocateFaceStates(emplaced_mesh.FaceCount()),
+            Buffers->AllocateEdgeStates(emplaced_mesh.EdgeCount() * 2),
+            Buffers->AllocateVertexStates(emplaced_mesh.VertexCount())
+        );
     }
 
     const auto instance_entity = R.create();
@@ -839,6 +838,7 @@ void Scene::Destroy(entt::entity e) {
         );
         if (!has_instances) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
+            if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(mesh_entity)) Buffers->Release(*state_buffers);
             R.destroy(mesh_entity);
         }
     }
@@ -932,11 +932,13 @@ void Scene::RecordRenderCommandBuffer() {
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)
                 draw.ElementStateSlot = state_buffers.Faces.Slot;
+                draw.ElementStateOffset = state_buffers.Faces.Range.Offset;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
                 draw.ElementStateSlot = InvalidSlot;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             } else {
                 draw.ElementStateSlot = state_buffers.Faces.Slot;
+                draw.ElementStateOffset = state_buffers.Faces.Range.Offset;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             }
         }
@@ -948,6 +950,7 @@ void Scene::RecordRenderCommandBuffer() {
              R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
             draw.ElementStateSlot = state_buffers.Edges.Slot;
+            draw.ElementStateOffset = state_buffers.Edges.Range.Offset;
             if (show_wireframe) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
@@ -964,6 +967,7 @@ void Scene::RecordRenderCommandBuffer() {
              R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
             draw.ElementStateSlot = state_buffers.Vertices.Slot;
+            draw.ElementStateOffset = state_buffers.Vertices.Range.Offset;
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
             } else if (excitable_mesh_entities.contains(entity)) {
@@ -1368,6 +1372,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
         draw.VertexCountOrHeadImageSlot = 0;
         draw.ElementStateSlot = state_buffers.Vertices.Slot;
+        draw.ElementStateOffset = state_buffers.Vertices.Range.Offset;
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return SelectionDrawInfo{SPT::SelectionElementVertex, batch}; }, *SelectionReadySemaphore);
     SelectionStale = true;

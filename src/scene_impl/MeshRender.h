@@ -62,9 +62,8 @@ struct MeshBuffers {
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
-// todo megabuffers instead of per-mesh buffers
 struct MeshElementStateBuffers {
-    mvk::Buffer Faces, Edges, Vertices;
+    SlottedBufferRange Faces, Edges, Vertices;
 };
 
 // Returns `std::nullopt` if the entity does not have a RenderInstance (i.e., is not visible).

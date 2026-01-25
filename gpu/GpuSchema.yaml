@@ -55,6 +55,8 @@ structs:
       - name: ElementStateSlot
         type: u32
         default: InvalidSlot
+      - name: ElementStateOffset
+        type: u32
       - name: VertexOffset
         type: u32
   - name: SceneViewUBO

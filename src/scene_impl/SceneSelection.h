@@ -55,8 +55,6 @@ std::unordered_set<uint32_t> ConvertSelectionElement(const MeshSelection &select
     return new_handles;
 }
 
-std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }
-
 // Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt::registry &r) {
     std::unordered_map<entt::entity, entt::entity> primaries;

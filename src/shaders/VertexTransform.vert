@@ -24,10 +24,10 @@ void main() {
             normal = FaceNormalBuffers[draw.FaceNormalSlot].Normals[draw.FaceNormalOffset + face_id - 1u];
         }
         if (draw.ElementStateSlot != INVALID_SLOT && face_id != 0u) {
-            state = ElementStateBuffers[draw.ElementStateSlot].States[face_id - 1u];
+            state = ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + face_id - 1u];
         }
     } else if (draw.ElementStateSlot != INVALID_SLOT) {
-        state = ElementStateBuffers[draw.ElementStateSlot].States[gl_VertexIndex];
+        state = ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + gl_VertexIndex];
     }
 
     WorldNormal = mat3(world.MInv) * normal;
