@@ -289,7 +289,7 @@ int main(int argc, char **argv) {
     std::ofstream bindless_header{bindless_header_path, std::ios::binary};
     if (!bindless_glsl || !bindless_header) return 1;
 
-    bindless_glsl << "#ifndef BINDLESS_BINDINGS_GLSL\n"
+    bindless_glsl << "#ifndef BINDLESS_BINDINGS_GLSL\n\n"
                   << "#define BINDLESS_BINDINGS_GLSL\n\n"
                   << GeneratedComment(schema_relative_path);
     for (size_t i = 0; i < bindings.size(); ++i) {

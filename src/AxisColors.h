@@ -45,6 +45,8 @@ constexpr ImU32 Blend(ImU32 color1, ImU32 color2, float factor) {
     };
 }
 
+constexpr ImU32 RgbToU32(const vec3 in) { return ImGui::ColorConvertFloat4ToU32({in.x, in.y, in.z, 1.f}); }
+
 // Blender:Themes:Axis & Gizmo Colors
 constexpr ImU32 AxisX IM_COL32(255, 51, 82, 255);
 constexpr ImU32 AxisY IM_COL32(139, 220, 0, 255);

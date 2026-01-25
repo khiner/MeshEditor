@@ -18,6 +18,8 @@ void main() {
         discard;
     } else {
         const bool is_active = pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId;
-        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor : is_active ? ViewportTheme.Colors.ObjectActive : ViewportTheme.Colors.ObjectSelected;
+        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor :
+            is_active ? vec4(ViewportTheme.Colors.ObjectActive, 1.0) :
+                        vec4(ViewportTheme.Colors.ObjectSelected, 1.0);
     }
 }

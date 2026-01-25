@@ -181,7 +181,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<Lights>()
         .on_update<Lights>()
         .on_construct<ViewportExtent>()
-        .on_update<ViewportExtent>();
+        .on_update<ViewportExtent>()
+        .on_construct<SceneEditMode>()
+        .on_update<SceneEditMode>();
 
     DestroyTracker->Bind(R);
 
@@ -460,6 +462,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &camera = R.get<const Camera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .View = camera.View(),
             .Proj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)),
@@ -472,6 +475,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .DirectionalIntensity = lights.DirectionalIntensity,
             .LightDirection = lights.Direction,
             .InteractionMode = uint32_t(interaction_mode),
+            .EditElement = uint32_t(edit_mode),
         }));
         request(RenderRequest::Submit);
     }
@@ -1845,7 +1849,7 @@ void Scene::RenderOverlay() {
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
             const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
             auto &dl = *GetWindowDrawList();
-            dl.AddCircleFilled(p_px, 3.5f, ColorConvertFloat4ToU32(std::bit_cast<ImVec4>(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected)), 10);
+            dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
         }
     }
@@ -2250,8 +2254,12 @@ void Scene::RenderControls() {
                 changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
                 changed |= ColorEdit3("Vertex normal", &theme.Colors.VertexNormal.x);
                 changed |= ColorEdit3("Vertex", &theme.Colors.Vertex.x);
-                changed |= ColorEdit3("Element active", &theme.Colors.ElementActive.x);
-                changed |= ColorEdit3("Element selected", &theme.Colors.ElementSelected.x);
+                changed |= ColorEdit3("Vertex selected", &theme.Colors.VertexSelected.x);
+                changed |= ColorEdit3("Edge selected (incidental)", &theme.Colors.EdgeSelectedIncidental.x);
+                changed |= ColorEdit3("Edge selected", &theme.Colors.EdgeSelected.x);
+                changed |= ColorEdit4("Face selected (incidental)", &theme.Colors.FaceSelectedIncidental.x);
+                changed |= ColorEdit4("Face selected", &theme.Colors.FaceSelected.x);
+                changed |= ColorEdit4("Element active", &theme.Colors.ElementActive.x);
                 changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
                 changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
                 changed |= SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
