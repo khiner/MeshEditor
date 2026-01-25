@@ -4,21 +4,15 @@
 #include "lunasvg.h"
 
 namespace {
-// Find the deepest descendant element with the given attribute containing the given point.
-std::optional<lunasvg::Element> FindElementAtPoint(const lunasvg::Element &element, const std::string &attribute, ImVec2 point, float scale = 1.f) {
-    constexpr auto contains = [](const lunasvg::Box &box, ImVec2 point, float scale) {
-        return box.x * scale <= point.x && point.x <= (box.x + box.w) * scale &&
-            box.y * scale <= point.y && point.y <= (box.y + box.h) * scale;
+// Find the deepest link element whose bounding box contains the point.
+std::optional<lunasvg::Element> FindLinkAtPoint(const lunasvg::Element &root, ImVec2 point, const std::string &attribute) {
+    static const auto contains = [](const lunasvg::Box &box, ImVec2 point) {
+        return box.x <= point.x && point.x <= (box.x + box.w) && box.y <= point.y && point.y <= (box.y + box.h);
     };
-
     std::optional<lunasvg::Element> found;
-    if (contains(element.getBoundingBox(), point, scale) && element.hasAttribute(attribute)) {
-        found = element;
-    }
-    for (const auto &childNode : element.children()) {
-        if (auto descendent = FindElementAtPoint(childNode.toElement(), attribute, point, scale)) {
-            found = *descendent;
-        }
+    if (root.hasAttribute(attribute) && contains(root.getGlobalBoundingBox(), point)) found = root;
+    for (const auto &childNode : root.children()) {
+        if (auto descendent = FindLinkAtPoint(childNode.toElement(), point, attribute)) found = *descendent;
     }
     return found;
 }
@@ -51,21 +45,27 @@ struct SvgResource::Impl {
         using namespace ImGui;
 
         const auto doc = Document->documentElement();
-        const auto doc_box = doc.getBoundingBox();
-        const auto display_width = std::min(GetContentRegionAvail().x, doc_box.w * Scale);
-        Texture->Draw({display_width, display_width * doc_box.h / doc_box.w});
+        const auto doc_width = Document->width(), doc_height = Document->height();
+        if (doc_width <= 0.f || doc_height <= 0.f) return {};
+
+        const auto display_width = std::min(GetContentRegionAvail().x, doc_width * Scale);
+        Texture->Draw({display_width, display_width * doc_height / doc_width});
         if (IsItemHovered()) {
-            static constexpr std::string LinkAttribute = "xlink:href";
-            const auto display_scale = display_width / doc_box.w;
+            static constexpr std::string LinkAttribute{"xlink:href"};
+            const auto display_scale = display_width / doc_width;
             const auto offset = GetItemRectMin();
-            if (auto element = FindElementAtPoint(doc, LinkAttribute, GetMousePos() - offset, display_scale)) {
-                const auto box = element->getBoundingBox();
-                GetWindowDrawList()->AddRect(
-                    offset + ImVec2{box.x, box.y} * display_scale,
-                    offset + ImVec2{box.x + box.w, box.y + box.h} * display_scale,
-                    IM_COL32(0, 255, 0, 255)
-                );
-                if (IsMouseClicked(ImGuiMouseButton_Left)) return element->getAttribute(LinkAttribute);
+            const auto local_point = (GetMousePos() - offset) / display_scale;
+            auto link = FindLinkAtPoint(doc, local_point, LinkAttribute);
+            if (link) {
+                const auto box = link->getGlobalBoundingBox();
+                if (box.w > 0.f && box.h > 0.f) {
+                    GetWindowDrawList()->AddRect(
+                        offset + ImVec2{box.x, box.y} * display_scale,
+                        offset + ImVec2{box.x + box.w, box.y + box.h} * display_scale,
+                        IM_COL32(0, 255, 0, 255)
+                    );
+                }
+                if (IsMouseClicked(ImGuiMouseButton_Left)) return link->getAttribute(LinkAttribute);
             }
         }
         return {};
