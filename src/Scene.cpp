@@ -27,7 +27,6 @@ namespace {
 using namespace he;
 
 struct MeshSelection {
-    Element Element{Element::None}; // do we need this or can we infer from mode? (I think we need for implicit selected elements)
     std::vector<uint32_t> Handles{};
     // Most recently selected element (may not be in Handles - active handle is remembered even when not selected)
     std::optional<uint32_t> ActiveHandle{};
@@ -543,8 +542,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 break;
             }
         } else if (const auto &selection = R.get<const MeshSelection>(mesh_entity);
-                   interaction_mode == InteractionMode::Edit && selection.Element == edit_mode && HasSelectedInstance(R, mesh_entity)) {
-            element = selection.Element;
+                   interaction_mode == InteractionMode::Edit && HasSelectedInstance(R, mesh_entity)) {
+            element = edit_mode;
             handles = selection.Handles;
             active_handle = selection.ActiveHandle;
             if (element == Element::Vertex) {
@@ -853,31 +852,27 @@ void Scene::SetInteractionMode(InteractionMode mode) {
 }
 
 void Scene::SetEditMode(Element mode) {
-    if (R.get<const SceneEditMode>(SceneEntity).Value == mode) return;
+    const auto current_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+    if (current_mode == mode) return;
 
-    R.patch<SceneEditMode>(SceneEntity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
     for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
         R.patch<MeshSelection>(e, [&](auto &selection) {
-            selection.Element = mode;
-            selection.Handles = ConvertSelectionElement(selection, mesh, mode);
+            selection.Handles = ConvertSelectionElement(selection, mesh, current_mode, mode);
             selection.ActiveHandle = {}; // todo not quite right
         });
     }
+    R.patch<SceneEditMode>(SceneEntity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
 }
 
-void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool toggle) {
-    const auto new_element = element ? element.Element : Element::None;
+void Scene::SelectElement(entt::entity mesh_entity, uint32_t element_index, bool toggle) {
     R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
-        if (!toggle || selection.Element != new_element) selection = {.Element = new_element};
-        if (!element) return;
-
-        const auto handle = *element;
-        if (auto it = find(selection.Handles, handle); toggle && it != selection.Handles.end()) {
+        if (!toggle) selection = {};
+        if (auto it = find(selection.Handles, element_index); toggle && it != selection.Handles.end()) {
             selection.Handles.erase(it);
-            if (selection.ActiveHandle == handle) selection.ActiveHandle = {};
+            if (selection.ActiveHandle == element_index) selection.ActiveHandle = {};
         } else {
-            selection.Handles.emplace_back(handle);
-            selection.ActiveHandle = handle;
+            selection.Handles.emplace_back(element_index);
+            selection.ActiveHandle = element_index;
         }
     });
 }
@@ -1348,7 +1343,7 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     return results;
 }
 
-std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, Element element, glm::uvec2 mouse_px) {
+std::optional<uint32_t> Scene::RunClickSelectElement(entt::entity mesh_entity, Element element, glm::uvec2 mouse_px) {
     const auto &mesh = R.get<Mesh>(mesh_entity);
     const uint32_t element_count = GetElementCount(mesh, element);
     if (element_count == 0 || element == Element::None) return {};
@@ -1363,7 +1358,7 @@ std::optional<AnyHandle> Scene::RunClickSelectElement(entt::entity mesh_entity, 
             mouse_px, element_count, element,
             *SelectionReadySemaphore
         )) {
-        return AnyHandle{element, *index};
+        return *index;
     }
     return {};
 }
@@ -1591,7 +1586,6 @@ void Scene::Interact() {
                     for (size_t i = 0; i < ranges.size(); ++i) {
                         const auto e = ranges[i].MeshEntity;
                         R.patch<MeshSelection>(e, [&](auto &s) {
-                            s.Element = edit_mode;
                             s.Handles = i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{};
                         });
                     }
@@ -1635,15 +1629,13 @@ void Scene::Interact() {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
         if (!toggle) {
             for (const auto [e, selection] : R.view<MeshSelection>().each()) {
-                if (!selection.Handles.empty() || selection.Element != Element::None) {
-                    R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); });
-                }
+                if (!selection.Handles.empty()) R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); });
             }
         }
         if (hit_it != hit_entities.end()) {
             const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
-            if (const auto element = RunClickSelectElement(mesh_entity, edit_mode, mouse_px)) {
-                SelectElement(mesh_entity, *element, toggle);
+            if (const auto element_index = RunClickSelectElement(mesh_entity, edit_mode, mouse_px)) {
+                SelectElement(mesh_entity, *element_index, toggle);
             }
         }
     } else if (interaction_mode == InteractionMode::Object) {
@@ -2135,10 +2127,8 @@ void Scene::RenderControls() {
                     if (active_entity != entt::null) {
                         const auto mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
                         const auto &selection = R.get<MeshSelection>(mesh_entity);
-                        const bool matching_mode = selection.Element == edit_mode;
-                        const auto selected_count = matching_mode ? selection.Handles.size() : 0;
-                        Text("Editing %s: %zu selected", label(edit_mode).data(), selected_count);
-                        if (edit_mode == Element::Vertex && matching_mode && selected_count > 0) {
+                        Text("Editing %s: %zu selected", label(edit_mode).data(), selection.Handles.size());
+                        if (edit_mode == Element::Vertex && !selection.Handles.empty()) {
                             const auto &mesh = R.get<Mesh>(mesh_entity);
                             for (const auto vh : selection.Handles) {
                                 const auto pos = mesh.GetPosition(VH{vh});

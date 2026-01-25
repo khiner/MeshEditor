@@ -244,7 +244,7 @@ private:
 
     void SetInteractionMode(InteractionMode);
     void SetEditMode(he::Element mode);
-    void SelectElement(entt::entity mesh_entity, he::AnyHandle element, bool toggle = false);
+    void SelectElement(entt::entity mesh_entity, uint32_t element_index, bool toggle = false);
 
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(std::pair<glm::uvec2, glm::uvec2>);
@@ -252,7 +252,7 @@ private:
     void RenderSelectionPassWith(bool render_depth, const std::function<SelectionDrawInfo(DrawListBuilder &)> &build_fn, vk::Semaphore signal_semaphore = {});
     void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<glm::uvec2, glm::uvec2>);
-    std::optional<he::AnyHandle> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);
+    std::optional<uint32_t> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);
     std::optional<uint32_t> RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px);
 
     void RenderEntityControls(entt::entity);

@@ -6,13 +6,13 @@
 
 namespace {
 
-std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, const Mesh &mesh, Element new_element) {
-    if (selection.Element == Element::None || selection.Handles.empty()) return {};
-    if (selection.Element == new_element) return selection.Handles;
+std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, const Mesh &mesh, Element from_element, Element new_element) {
+    if (from_element == Element::None || selection.Handles.empty()) return {};
+    if (from_element == new_element) return selection.Handles;
 
     const auto handles = selection.Handles | to<std::unordered_set>();
     std::unordered_set<uint32_t> new_handles;
-    if (selection.Element == Element::Face) {
+    if (from_element == Element::Face) {
         if (new_element == Element::Edge) {
             for (auto f : handles) {
                 for (const auto heh : mesh.fh_range(FH{f})) new_handles.emplace(*mesh.GetEdge(heh));
@@ -22,7 +22,7 @@ std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, co
                 for (const auto vh : mesh.fv_range(FH{f})) new_handles.emplace(*vh);
             }
         }
-    } else if (selection.Element == Element::Edge) {
+    } else if (from_element == Element::Edge) {
         if (new_element == Element::Vertex) {
             for (auto eh_raw : handles) {
                 const auto heh = mesh.GetHalfedge(EH{eh_raw}, 0);
@@ -37,7 +37,7 @@ std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, co
                 if (all_selected) new_handles.emplace(*fh);
             }
         }
-    } else if (selection.Element == Element::Vertex) {
+    } else if (from_element == Element::Vertex) {
         if (new_element == Element::Edge) {
             for (const auto eh : mesh.edges()) {
                 const auto heh = mesh.GetHalfedge(eh, 0);
