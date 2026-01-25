@@ -62,6 +62,7 @@ struct MeshBuffers {
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 
+// todo megabuffers instead of per-mesh buffers
 struct MeshElementStateBuffers {
     mvk::Buffer Faces, Edges, Vertices;
 };

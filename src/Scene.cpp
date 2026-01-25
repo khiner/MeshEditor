@@ -27,9 +27,10 @@ namespace {
 using namespace he;
 
 struct MeshSelection {
-    Element Element{Element::None};
+    Element Element{Element::None}; // do we need this or can we infer from mode? (I think we need for implicit selected elements)
     std::vector<uint32_t> Handles{};
-    std::optional<uint32_t> ActiveHandle{}; // Most recently selected element (always in Handles if set)
+    // Most recently selected element (may not be in Handles - active handle is remembered even when not selected)
+    std::optional<uint32_t> ActiveHandle{};
 };
 
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
@@ -227,15 +228,11 @@ Scene::~Scene() {
 }
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
-    if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) {
-        return mesh_instance->MeshEntity;
-    }
+    if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) return mesh_instance->MeshEntity;
     return entt::null;
 }
 entt::entity Scene::GetActiveMeshEntity() const {
-    if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) {
-        return GetMeshEntity(active_entity);
-    }
+    if (const auto active = FindActiveEntity(R); active != entt::null) return GetMeshEntity(active);
     return entt::null;
 }
 
@@ -451,7 +448,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
         scene_view_dirty = true;
         for (const auto [mesh_entity, selection] : R.view<MeshSelection>().each()) {
-            if (!selection.Handles.empty() || selection.ActiveHandle) dirty_element_state_meshes.insert(mesh_entity);
+            if (!selection.Handles.empty()) dirty_element_state_meshes.insert(mesh_entity);
         }
         for (const auto [_, mi, __] : R.view<const MeshInstance, const Excitable>().each()) {
             dirty_element_state_meshes.insert(mi.MeshEntity);
@@ -542,13 +539,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (mi.MeshEntity != mesh_entity) continue;
                 handles = excitable.ExcitableVertices;
                 selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
-                if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) {
-                    active_handle = excited_vertex->Vertex;
-                }
+                if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) active_handle = excited_vertex->Vertex;
                 break;
             }
-        } else if (const auto &selection = R.get<MeshSelection>(mesh_entity);
-                   interaction_mode == InteractionMode::Edit && selection.Element == edit_mode) {
+        } else if (const auto &selection = R.get<const MeshSelection>(mesh_entity);
+                   interaction_mode == InteractionMode::Edit && selection.Element == edit_mode && HasSelectedInstance(R, mesh_entity)) {
             element = selection.Element;
             handles = selection.Handles;
             active_handle = selection.ActiveHandle;
@@ -559,30 +554,36 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             } else if (element == Element::Face) {
                 for (auto h : selection.Handles) {
                     selected_faces.emplace(h);
-                    for (const auto heh : mesh.fh_range(FH{h})) selected_edges.emplace(mesh.GetEdge(heh));
-                }
-                if (active_handle) {
-                    for (const auto heh : mesh.fh_range(FH{*active_handle})) {
-                        active_edges.emplace(mesh.GetEdge(heh));
+                    for (const auto heh : mesh.fh_range(FH{h})) {
+                        selected_edges.emplace(mesh.GetEdge(heh));
+                        if (active_handle == h) {
+                            for (const auto heh : mesh.fh_range(FH{*active_handle})) active_edges.emplace(mesh.GetEdge(heh));
+                        }
                     }
                 }
             }
         }
 
+        // todo only recreate element states when topology changes. otherwise, just update selected/active bits.
         auto face_states = MakeElementStates(mesh.FaceCount());
         auto edge_states = MakeElementStates(mesh.EdgeCount() * 2);
         auto vertex_states = MakeElementStates(mesh.VertexCount());
+        // Note: An element must be both active and selected to be displayed as active.
         if (element == Element::Face) {
-            for (const auto fh : selected_faces) face_states[*fh] |= ElementStateSelected;
-            if (active_handle) face_states[*active_handle] |= ElementStateActive;
+            for (const auto fh : selected_faces) {
+                face_states[*fh] |= ElementStateSelected;
+                if (active_handle == fh) face_states[*active_handle] |= ElementStateActive;
+            }
         }
 
         if (element == Element::Edge || element == Element::Face) {
             for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
                 uint32_t state = 0;
-                if (selected_edges.contains(EH{ei})) state |= ElementStateSelected;
-                if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
-                    state |= ElementStateActive;
+                if (selected_edges.contains(EH{ei})) {
+                    state |= ElementStateSelected;
+                    if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
+                        state |= ElementStateActive;
+                    }
                 }
                 edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
             }
@@ -592,8 +593,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto v_from = mesh.GetFromVertex(heh), v_to = mesh.GetToVertex(heh);
                 auto get_state = [&](auto vh) {
                     uint32_t state = 0;
-                    if (selected_vertices.contains(vh)) state |= ElementStateSelected;
-                    if (active_handle == *vh) state |= ElementStateActive;
+                    if (selected_vertices.contains(vh)) {
+                        state |= ElementStateSelected;
+                        if (active_handle == vh) state |= ElementStateActive;
+                    }
                     return state;
                 };
                 edge_states[2 * ei] = get_state(v_from);
@@ -602,8 +605,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
 
         if (element == Element::Vertex) {
-            for (const auto vh : selected_vertices) vertex_states[*vh] |= ElementStateSelected;
-            if (active_handle) vertex_states[*active_handle] |= ElementStateActive;
+            for (const auto vh : selected_vertices) {
+                vertex_states[*vh] |= ElementStateSelected;
+                if (active_handle == vh) vertex_states[*active_handle] |= ElementStateActive;
+            }
         }
 
         R.patch<MeshElementStateBuffers>(mesh_entity, [&](auto &states) {
@@ -611,7 +616,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             states.Edges.Update(as_bytes(edge_states));
             states.Vertices.Update(as_bytes(vertex_states));
         });
-
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
@@ -853,16 +857,18 @@ void Scene::SetEditMode(Element mode) {
 
     R.patch<SceneEditMode>(SceneEntity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
     for (const auto &[e, selection, mesh] : R.view<MeshSelection, Mesh>().each()) {
-        R.replace<MeshSelection>(e, MeshSelection{mode, ConvertSelectionElement(selection, mesh, mode), std::nullopt});
+        R.patch<MeshSelection>(e, [&](auto &selection) {
+            selection.Element = mode;
+            selection.Handles = ConvertSelectionElement(selection, mesh, mode);
+            selection.ActiveHandle = {}; // todo not quite right
+        });
     }
 }
 
 void Scene::SelectElement(entt::entity mesh_entity, AnyHandle element, bool toggle) {
     const auto new_element = element ? element.Element : Element::None;
     R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
-        if (!toggle || selection.Element != new_element) {
-            selection = {.Element = new_element};
-        }
+        if (!toggle || selection.Element != new_element) selection = {.Element = new_element};
         if (!element) return;
 
         const auto handle = *element;
@@ -1564,9 +1570,8 @@ void Scene::Interact() {
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), extent); box_px) {
                 if (interaction_mode == InteractionMode::Edit) {
                     Timer timer{"BoxSelectElements (all)"};
-                    // todo don't double-update MeshSelection
                     for (const auto e : R.view<MeshSelection>()) {
-                        R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); s.ActiveHandle = {}; });
+                        R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); });
                     }
 
                     std::unordered_set<entt::entity> mesh_entities;
@@ -1585,7 +1590,10 @@ void Scene::Interact() {
                     auto results = RunBoxSelectElements(ranges, edit_mode, *box_px);
                     for (size_t i = 0; i < ranges.size(); ++i) {
                         const auto e = ranges[i].MeshEntity;
-                        R.replace<MeshSelection>(e, MeshSelection{edit_mode, i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{}});
+                        R.patch<MeshSelection>(e, [&](auto &s) {
+                            s.Element = edit_mode;
+                            s.Handles = i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{};
+                        });
                     }
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto selected_entities = RunBoxSelect(*box_px);
@@ -1628,7 +1636,7 @@ void Scene::Interact() {
         if (!toggle) {
             for (const auto [e, selection] : R.view<MeshSelection>().each()) {
                 if (!selection.Handles.empty() || selection.Element != Element::None) {
-                    R.replace<MeshSelection>(e, MeshSelection{});
+                    R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); });
                 }
             }
         }
@@ -1640,23 +1648,23 @@ void Scene::Interact() {
         }
     } else if (interaction_mode == InteractionMode::Object) {
         // Cycle through hit entities.
-        entt::entity intersected = entt::null;
+        entt::entity hit = entt::null;
         if (!hit_entities.empty()) {
             auto it = find(hit_entities, active_entity);
             if (it != hit_entities.end()) ++it;
             if (it == hit_entities.end()) it = hit_entities.begin();
-            intersected = *it;
+            hit = *it;
         }
-        if (intersected != entt::null && IsKeyDown(ImGuiMod_Shift)) {
-            if (active_entity == intersected) {
-                ToggleSelected(intersected);
+        if (hit != entt::null && IsKeyDown(ImGuiMod_Shift)) {
+            if (active_entity == hit) {
+                ToggleSelected(hit);
             } else {
                 R.clear<Active>();
-                R.emplace<Active>(intersected);
-                R.emplace_or_replace<Selected>(intersected);
+                R.emplace<Active>(hit);
+                R.emplace_or_replace<Selected>(hit);
             }
-        } else if (intersected != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
-            Select(intersected);
+        } else if (hit != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
+            Select(hit);
         }
     }
 }
