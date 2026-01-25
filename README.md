@@ -43,6 +43,7 @@ Noteworthy dev bits:
 * GPU-accelerated mouse interactions (no CPU acceleration structures like BVH)
 * Half-edge iterators for mesh topology operations
 * Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
+* C++/GLSL structs generated from YAML to keep types in sync w/o duplication
 
 ### Physical audio modeling
 
