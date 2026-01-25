@@ -6,11 +6,11 @@
 
 namespace {
 
-std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, const Mesh &mesh, Element from_element, Element new_element) {
+std::unordered_set<uint32_t> ConvertSelectionElement(const MeshSelection &selection, const Mesh &mesh, Element from_element, Element new_element) {
     if (from_element == Element::None || selection.Handles.empty()) return {};
     if (from_element == new_element) return selection.Handles;
 
-    const auto handles = selection.Handles | to<std::unordered_set>();
+    const auto &handles = selection.Handles;
     std::unordered_set<uint32_t> new_handles;
     if (from_element == Element::Face) {
         if (new_element == Element::Edge) {
@@ -52,7 +52,7 @@ std::vector<uint32_t> ConvertSelectionElement(const MeshSelection &selection, co
             }
         }
     }
-    return new_handles | to<std::vector>();
+    return new_handles;
 }
 
 std::vector<uint32_t> MakeElementStates(size_t count) { return std::vector<uint32_t>(std::max<size_t>(count, 1u), 0); }

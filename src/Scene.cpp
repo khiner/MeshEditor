@@ -27,7 +27,7 @@ namespace {
 using namespace he;
 
 struct MeshSelection {
-    std::vector<uint32_t> Handles{};
+    std::unordered_set<uint32_t> Handles{};
     // Most recently selected element (may not be in Handles - active handle is remembered even when not selected)
     std::optional<uint32_t> ActiveHandle{};
 };
@@ -530,13 +530,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         std::unordered_set<FH> selected_faces;
 
         auto element{Element::None};
-        std::vector<uint32_t> handles;
+        std::unordered_set<uint32_t> handles;
         std::optional<uint32_t> active_handle;
         if (interaction_mode == InteractionMode::Excite) {
             element = Element::Vertex;
             for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
                 if (mi.MeshEntity != mesh_entity) continue;
-                handles = excitable.ExcitableVertices;
+                handles = excitable.ExcitableVertices | to<std::unordered_set>();
                 selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
                 if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) active_handle = excited_vertex->Vertex;
                 break;
@@ -1276,7 +1276,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
 }
 
 std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<glm::uvec2, glm::uvec2> box_px) {
-    if (ranges.empty() || element == Element::None) return {};
+    if (ranges.empty()) return {};
 
     std::vector<std::vector<uint32_t>> results(ranges.size());
     const auto [box_min, box_max] = box_px;
@@ -1550,8 +1550,10 @@ void Scene::Interact() {
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectEnd = mouse_pos;
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), extent); box_px) {
+                const bool is_additive = IsKeyDown(ImGuiMod_Shift);
                 if (interaction_mode == InteractionMode::Edit) {
                     Timer timer{"BoxSelectElements (all)"};
+
                     std::unordered_set<entt::entity> selected_mesh_entities;
                     for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) {
                         selected_mesh_entities.insert(mi.MeshEntity);
@@ -1560,7 +1562,7 @@ void Scene::Interact() {
                     std::vector<ElementRange> ranges;
                     uint32_t offset = 0;
                     for (const auto mesh_entity : selected_mesh_entities) {
-                        if (!R.get<MeshSelection>(mesh_entity).Handles.empty()) {
+                        if (!is_additive && !R.get<MeshSelection>(mesh_entity).Handles.empty()) {
                             R.patch<MeshSelection>(mesh_entity, [](auto &s) { s.Handles.clear(); });
                         }
                         if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), edit_mode); count > 0) {
@@ -1570,16 +1572,17 @@ void Scene::Interact() {
                     }
 
                     auto results = RunBoxSelectElements(ranges, edit_mode, *box_px);
-                    for (size_t i = 0; i < ranges.size(); ++i) {
+                    for (size_t i = 0; i < results.size(); ++i) {
                         const auto e = ranges[i].MeshEntity;
                         R.patch<MeshSelection>(e, [&](auto &s) {
-                            s.Handles = i < results.size() ? std::move(results[i]) : std::vector<uint32_t>{};
+                            if (is_additive) s.Handles.insert(results[i].begin(), results[i].end());
+                            else s.Handles = {results[i].begin(), results[i].end()};
                         });
                     }
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto selected_entities = RunBoxSelect(*box_px);
-                    R.clear<Selected>();
-                    for (const auto e : selected_entities) R.emplace<Selected>(e);
+                    if (!is_additive) R.clear<Selected>();
+                    for (const auto e : selected_entities) R.emplace_or_replace<Selected>(e);
                 }
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
@@ -1634,7 +1637,7 @@ void Scene::Interact() {
                         selection.Handles.erase(it);
                         if (selection.ActiveHandle == *element_index) selection.ActiveHandle = {};
                     } else {
-                        selection.Handles.emplace_back(*element_index);
+                        selection.Handles.emplace(*element_index);
                         selection.ActiveHandle = *element_index;
                     }
                 });
