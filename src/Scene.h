@@ -244,7 +244,6 @@ private:
 
     void SetInteractionMode(InteractionMode);
     void SetEditMode(he::Element mode);
-    void SelectElement(entt::entity mesh_entity, uint32_t element_index, bool toggle = false);
 
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(std::pair<glm::uvec2, glm::uvec2>);

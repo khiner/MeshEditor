@@ -864,19 +864,6 @@ void Scene::SetEditMode(Element mode) {
     R.patch<SceneEditMode>(SceneEntity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
 }
 
-void Scene::SelectElement(entt::entity mesh_entity, uint32_t element_index, bool toggle) {
-    R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
-        if (!toggle) selection = {};
-        if (auto it = find(selection.Handles, element_index); toggle && it != selection.Handles.end()) {
-            selection.Handles.erase(it);
-            if (selection.ActiveHandle == element_index) selection.ActiveHandle = {};
-        } else {
-            selection.Handles.emplace_back(element_index);
-            selection.ActiveHandle = element_index;
-        }
-    });
-}
-
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
 
 void Scene::RecordRenderCommandBuffer() {
@@ -1565,17 +1552,17 @@ void Scene::Interact() {
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), extent); box_px) {
                 if (interaction_mode == InteractionMode::Edit) {
                     Timer timer{"BoxSelectElements (all)"};
-                    for (const auto e : R.view<MeshSelection>()) {
-                        R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); });
+                    std::unordered_set<entt::entity> selected_mesh_entities;
+                    for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                        selected_mesh_entities.insert(mi.MeshEntity);
                     }
 
-                    std::unordered_set<entt::entity> mesh_entities;
-                    for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
-                        mesh_entities.insert(mi.MeshEntity);
-                    }
                     std::vector<ElementRange> ranges;
                     uint32_t offset = 0;
-                    for (const auto mesh_entity : mesh_entities) {
+                    for (const auto mesh_entity : selected_mesh_entities) {
+                        if (!R.get<MeshSelection>(mesh_entity).Handles.empty()) {
+                            R.patch<MeshSelection>(mesh_entity, [](auto &s) { s.Handles.clear(); });
+                        }
                         if (const uint32_t count = GetElementCount(R.get<Mesh>(mesh_entity), edit_mode); count > 0) {
                             ranges.emplace_back(mesh_entity, offset, count);
                             offset += count;
@@ -1628,14 +1615,29 @@ void Scene::Interact() {
         const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
         if (!toggle) {
-            for (const auto [e, selection] : R.view<MeshSelection>().each()) {
-                if (!selection.Handles.empty()) R.patch<MeshSelection>(e, [](auto &s) { s.Handles.clear(); });
+            std::unordered_set<entt::entity> selected_mesh_entities;
+            for (const auto [_, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                selected_mesh_entities.insert(mi.MeshEntity);
+            }
+            for (const auto mesh_entity : selected_mesh_entities) {
+                if (!R.get<MeshSelection>(mesh_entity).Handles.empty()) {
+                    R.patch<MeshSelection>(mesh_entity, [](auto &s) { s.Handles.clear(); });
+                }
             }
         }
         if (hit_it != hit_entities.end()) {
             const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
             if (const auto element_index = RunClickSelectElement(mesh_entity, edit_mode, mouse_px)) {
-                SelectElement(mesh_entity, *element_index, toggle);
+                R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
+                    if (!toggle) selection = {};
+                    if (auto it = find(selection.Handles, *element_index); toggle && it != selection.Handles.end()) {
+                        selection.Handles.erase(it);
+                        if (selection.ActiveHandle == *element_index) selection.ActiveHandle = {};
+                    } else {
+                        selection.Handles.emplace_back(*element_index);
+                        selection.ActiveHandle = *element_index;
+                    }
+                });
             }
         }
     } else if (interaction_mode == InteractionMode::Object) {
