@@ -1,4 +1,5 @@
 #include "Scene.h"
+#include "SceneDefaults.h"
 #include "Widgets.h" // imgui
 
 #include "BBox.h"
@@ -24,6 +25,8 @@ using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::rang
 using std::views::filter, std::views::iota, std::views::take, std::views::transform;
 
 namespace {
+const SceneDefaults Defaults{};
+
 using namespace he;
 
 struct MeshSelection {
@@ -34,8 +37,6 @@ struct MeshSelection {
 
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
-
-Camera DefaultCamera{{0, 0, 2}, {0, 0, 0}, glm::radians(60.f), 0.01, 100};
 
 void WaitFor(vk::Fence fence, vk::Device device) {
     if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
@@ -191,9 +192,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<SceneSettings>(SceneEntity);
     R.emplace<SceneInteraction>(SceneEntity);
     R.emplace<SceneEditMode>(SceneEntity);
-    R.emplace<ViewportTheme>(SceneEntity);
-    R.emplace<Camera>(SceneEntity, DefaultCamera);
-    R.emplace<Lights>(SceneEntity, Lights{{1, 1, 1}, 0.1f, {1, 1, 1}, 0.15f, {-1, -1, -1}});
+    R.emplace<ViewportTheme>(SceneEntity, Defaults.ViewportTheme);
+    R.emplace<Camera>(SceneEntity, Defaults.Camera);
+    R.emplace<Lights>(SceneEntity, Defaults.Lights);
     R.emplace<ViewportExtent>(SceneEntity);
 
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
@@ -225,6 +226,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 Scene::~Scene() {
     R.clear<Mesh>();
 }
+
+World Scene::GetWorld() const { return Defaults.World; }
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
     if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) return mesh_instance->MeshEntity;
@@ -718,7 +721,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, MeshCreate
     return AddMesh(Meshes.CreateMesh(std::move(data)), std::move(info));
 }
 
-std::pair<entt::entity, entt::entity> Scene::AddMesh(const fs::path &path, MeshCreateInfo info) {
+std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path &path, MeshCreateInfo info) {
     auto mesh = Meshes.LoadMesh(path);
     if (!mesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
     const auto e = AddMesh(std::move(*mesh), std::move(info));
@@ -2257,6 +2260,10 @@ void Scene::RenderControls() {
                 SeparatorText("Viewport theme");
                 auto &theme = R.get<ViewportTheme>(SceneEntity);
                 bool changed{false};
+                if (Button("Reset##ViewportTheme")) {
+                    theme = Defaults.ViewportTheme;
+                    changed = true;
+                }
                 changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
                 changed |= ColorEdit3("Wire edit", &theme.Colors.WireEdit.x);
                 changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
@@ -2280,8 +2287,8 @@ void Scene::RenderControls() {
         if (BeginTabItem("Camera")) {
             auto &camera = R.get<Camera>(SceneEntity);
             bool changed = false;
-            if (Button("Reset camera")) {
-                camera = DefaultCamera;
+            if (Button("Reset##Camera")) {
+                camera = Defaults.Camera;
                 changed = true;
             }
             changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);
@@ -2297,9 +2304,13 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Lights")) {
-            bool changed = false;
-            SeparatorText("View light");
             auto &lights = R.get<Lights>(SceneEntity);
+            bool changed = false;
+            if (Button("Reset##Lights")) {
+                lights = Defaults.Lights;
+                changed = true;
+            }
+            SeparatorText("View light");
             changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
             SeparatorText("Ambient light");
             changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);

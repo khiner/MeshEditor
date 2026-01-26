@@ -24,6 +24,7 @@
 #include <stack>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::to;
+namespace fs = std::filesystem;
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 

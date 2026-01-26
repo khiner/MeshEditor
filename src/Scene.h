@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TransformGizmo.h"
+#include "World.h"
 #include "mesh/Handle.h"
 #include "mesh/MeshStore.h"
 #include "numeric/vec2.h"
@@ -16,22 +17,9 @@
 #include <vector>
 
 using uint = uint32_t;
-namespace fs = std::filesystem;
 
 struct Path {
-    fs::path Value;
-};
-
-struct World {
-    const vec3 Origin{0, 0, 0}, Up{0, 1, 0};
-};
-
-struct Lights {
-    vec3 ViewColor; // Light emitting from the view position
-    float AmbientIntensity;
-    vec3 DirectionalColor;
-    float DirectionalIntensity;
-    vec3 Direction;
+    std::filesystem::path Value;
 };
 
 enum class InteractionMode {
@@ -115,12 +103,12 @@ struct Scene {
 
     void LoadIcons(vk::Device);
 
-    World World{};
+    World GetWorld() const;
 
     // Returns (mesh_entity, instance_entity)
     std::pair<entt::entity, entt::entity> AddMesh(Mesh &&, MeshCreateInfo = {});
     std::pair<entt::entity, entt::entity> AddMesh(MeshData &&, MeshCreateInfo = {});
-    std::pair<entt::entity, entt::entity> AddMesh(const fs::path &, MeshCreateInfo = {});
+    std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, MeshCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});

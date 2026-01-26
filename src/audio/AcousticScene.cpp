@@ -126,8 +126,8 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
             MeshCreateInfo{
                 .Name = std::format("RealImpact Listener: {}", listener_point.Index),
                 .Transform = {
-                    .P = listener_point.GetPosition(scene.World.Up, true),
-                    .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.World.Up) * rot_z,
+                    .P = listener_point.GetPosition(scene.GetWorld().Up, true),
+                    .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.GetWorld().Up) * rot_z,
                 },
                 .Select = MeshCreateInfo::SelectBehavior::None,
             }

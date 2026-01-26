@@ -92,43 +92,30 @@ structs:
     fields:
       - name: Wire # Wire
         type: vec3
-        default: [0, 0, 0]
       - name: WireEdit # Wire Edit
         type: vec3
-        default: [0, 0, 0]
       - name: ObjectActive # Active Object
         type: vec3
-        default: [1, 0.627, 0.157]
       - name: ObjectSelected # Object Selected
         type: vec3
-        default: [0.929, 0.341, 0]
       - name: Vertex # Vertex
         type: vec3
-        default: [0, 0, 0]
       - name: VertexSelected # Vertex Select
         type: vec3
-        default: [1, 0.478, 0]
       - name: EdgeSelectedIncidental # Edge Selection
         type: vec3
-        default: [1, 0.6, 0]
       - name: EdgeSelected # Edge Mode Selection
         type: vec3
-        default: [1, 0.847, 0]
       - name: FaceSelectedIncidental # Face Selection
         type: vec4
-        default: [1, 0.639, 0, 0.2]
       - name: FaceSelected # Face Mode Selection
         type: vec4
-        default: [1, 0.718, 0, 0.2]
       - name: ElementActive # Active Vertex/Edge/Face
         type: vec4
-        default: [1, 1, 1, 0.2]
       - name: FaceNormal # Face Normal
         type: vec3
-        default: [0.133, 0.867, 0.867]
       - name: VertexNormal # Vertex Normal
         type: vec3
-        default: [0.137, 0.380, 0.867]
   - name: ViewportTheme
     binding: ViewportThemeUBO
     fields:
@@ -136,7 +123,6 @@ structs:
         type: ViewportThemeColors
       - name: SilhouetteEdgeWidth
         type: u32
-        default: 1
   - name: Vertex
     fields:
       - name: Position
