@@ -338,12 +338,13 @@ void Scene::LoadIcons(vk::Device device) {
         return RenderBitmapToImage(data, width, height);
     };
 
-    Icons.Select = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/select.svg");
-    Icons.SelectBox = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/select_box.svg");
-    Icons.Move = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/move.svg");
-    Icons.Rotate = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/rotate.svg");
-    Icons.Scale = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/scale.svg");
-    Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, "res/svg/transform.svg");
+    static const std::filesystem::path svg_path{"res/svg/"};
+    Icons.Select = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "select.svg");
+    Icons.SelectBox = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "select_box.svg");
+    Icons.Move = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "move.svg");
+    Icons.Rotate = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "rotate.svg");
+    Icons.Scale = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "scale.svg");
+    Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "transform.svg");
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
@@ -571,7 +572,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (element == Element::Face) {
             for (const auto fh : selected_faces) {
                 face_states[*fh] |= ElementStateSelected;
-                if (active_handle == fh) face_states[*active_handle] |= ElementStateActive;
+                if (active_handle == *fh) face_states[*active_handle] |= ElementStateActive;
             }
         }
 
@@ -589,24 +590,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         } else if (element == Element::Vertex) {
             for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
                 const auto heh = mesh.GetHalfedge(EH{ei}, 0);
-                const auto v_from = mesh.GetFromVertex(heh), v_to = mesh.GetToVertex(heh);
-                auto get_state = [&](auto vh) {
-                    uint32_t state = 0;
-                    if (selected_vertices.contains(vh)) {
-                        state |= ElementStateSelected;
-                        if (active_handle == vh) state |= ElementStateActive;
-                    }
-                    return state;
-                };
-                edge_states[2 * ei] = get_state(v_from);
-                edge_states[2 * ei + 1] = get_state(v_to);
+                edge_states[2 * ei] = selected_vertices.contains(mesh.GetFromVertex(heh)) ? ElementStateSelected : 0u;
+                edge_states[2 * ei + 1] = selected_vertices.contains(mesh.GetToVertex(heh)) ? ElementStateSelected : 0u;
             }
         }
 
         if (element == Element::Vertex) {
             for (const auto vh : selected_vertices) {
                 vertex_states[*vh] |= ElementStateSelected;
-                if (active_handle == vh) vertex_states[*active_handle] |= ElementStateActive;
+                if (active_handle == *vh) vertex_states[*active_handle] |= ElementStateActive;
             }
         }
 
@@ -1641,8 +1633,8 @@ void Scene::Interact() {
             if (const auto element_index = RunClickSelectElement(mesh_entity, edit_mode, mouse_px)) {
                 R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
                     if (!toggle) selection = {};
-                    if (auto it = find(selection.Handles, *element_index); toggle && it != selection.Handles.end()) {
-                        selection.Handles.erase(it);
+                    if (toggle && selection.Handles.contains(*element_index)) {
+                        selection.Handles.erase(*element_index);
                         if (selection.ActiveHandle == *element_index) selection.ActiveHandle = {};
                     } else {
                         selection.Handles.emplace(*element_index);

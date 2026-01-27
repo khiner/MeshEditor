@@ -31,11 +31,8 @@ void main() {
             }
         }
     }
+    if (min_depth_id.y == 0) discard;
 
-    if (min_depth_id.y != 0) {
-        gl_FragDepth = min_depth_id.x;
-        ObjectId = min_depth_id.y;
-    } else {
-        discard;
-    }
+    gl_FragDepth = min_depth_id.x;
+    ObjectId = min_depth_id.y;
 }

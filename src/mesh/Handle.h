@@ -49,7 +49,7 @@ struct Handle {
 
     uint operator*() const { return Index; }
     auto operator<=>(const Handle &) const = default;
-    operator bool() const { return Index != null; }
+    explicit operator bool() const { return Index != null; }
 
     constexpr Element GetElement() const {
         if constexpr (std::is_same_v<Tag, tag::Vertex>) return Element::Vertex;

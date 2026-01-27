@@ -14,12 +14,10 @@ const vec4 ManipulatingColor = vec4(1, 1, 1, 1);
 void main() {
     const ivec2 texel = ivec2(TexCoord * textureSize(Samplers[pc.ObjectSamplerIndex], 0));
     const uint object_id = uint(texelFetch(Samplers[pc.ObjectSamplerIndex], texel, 0).r);
-    if (object_id == 0) {
-        discard;
-    } else {
-        const bool is_active = pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId;
-        EdgeColor = bool(pc.Manipulating) ? ManipulatingColor :
-            is_active ? vec4(ViewportTheme.Colors.ObjectActive, 1.0) :
-                        vec4(ViewportTheme.Colors.ObjectSelected, 1.0);
-    }
+    if (object_id == 0) discard;
+
+    const bool is_active = pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId;
+    EdgeColor = bool(pc.Manipulating) ? ManipulatingColor :
+        is_active ? vec4(ViewportTheme.Colors.ObjectActive, 1.0) :
+                    vec4(ViewportTheme.Colors.ObjectSelected, 1.0);
 }

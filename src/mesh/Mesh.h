@@ -153,7 +153,7 @@ struct Mesh {
 
         VH operator*() const { return M->GetToVertex(CurrentHalfedge); }
         HH advance() const { return M->Halfedges[*CurrentHalfedge].Next; }
-        operator bool() const { return CurrentHalfedge; }
+        operator bool() const { return bool(CurrentHalfedge); }
     };
     struct FaceVertexRange {
         const Mesh *Mesh;
