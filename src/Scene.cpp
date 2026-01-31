@@ -1506,7 +1506,7 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
             else if (IsKeyPressed(ImGuiKey_G, false)) StartScreenTransform = TransformGizmo::TransformType::Translate;
             else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
-            else if (IsKeyPressed(ImGuiKey_S, false)) StartScreenTransform = TransformGizmo::TransformType::Scale;
+            else if (IsKeyPressed(ImGuiKey_S, false) && !R.all_of<Frozen>(active_entity)) StartScreenTransform = TransformGizmo::TransformType::Scale;
             else if (IsKeyPressed(ImGuiKey_H, false)) {
                 for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<RenderInstance>(e));
             } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
