@@ -60,6 +60,21 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 #include "scene_impl/SceneUI.h"
 
 namespace {
+vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t handle) {
+    if (element == Element::Vertex) return mesh.GetPosition(VH{handle});
+    if (element == Element::Edge) {
+        const auto heh = mesh.GetHalfedge(EH{handle}, 0);
+        return (mesh.GetPosition(mesh.GetFromVertex(heh)) + mesh.GetPosition(mesh.GetToVertex(heh))) * 0.5f;
+    }
+    return mesh.CalcFaceCentroid(FH{handle});
+}
+
+vec3 ComputeElementWorldPosition(entt::registry &r, entt::entity instance_entity, Element element, uint32_t handle) {
+    const auto &mesh = r.get<Mesh>(r.get<MeshInstance>(instance_entity).MeshEntity);
+    const auto local_pos = ComputeElementLocalPosition(mesh, element, handle);
+    return {r.get<WorldMatrix>(instance_entity).M * vec4{local_pos, 1.f}};
+}
+
 namespace changes {
 using namespace entt::literals;
 constexpr auto
@@ -373,35 +388,45 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (!R.storage<entt::reactive>(changes::Rerecord).empty() || !DestroyTracker->Storage.empty()) {
         request(RenderRequest::ReRecord);
     }
-    for (auto mesh_entity : R.storage<entt::reactive>(changes::MeshSelection)) {
-        if (R.all_of<MeshSelection>(mesh_entity)) {
-            dirty_element_state_meshes.insert(mesh_entity);
-        }
-    }
-    {
-        const auto &mesh_geometry_tracker = R.storage<entt::reactive>(changes::MeshGeometry);
-        if (!mesh_geometry_tracker.empty()) {
-            for (auto mesh_entity : mesh_geometry_tracker) {
-                if (R.all_of<Selected>(mesh_entity) || HasSelectedInstance(R, mesh_entity)) {
-                    dirty_overlay_meshes.insert(mesh_entity);
-                }
-            }
-            R.clear<MeshGeometryDirty>();
-            request(RenderRequest::Submit);
-        }
-    }
 
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-    for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
-        if (interaction_mode == InteractionMode::Excite) {
-            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
+    const auto orbit_to_active = [&](entt::entity instance_entity, Element element, uint32_t handle) {
+        if (!OrbitToActive) return;
+        const auto world_pos = ComputeElementWorldPosition(R, instance_entity, element, handle);
+        R.patch<Camera>(SceneEntity, [&](auto &camera) {
+            if (const auto dir = world_pos - camera.Target; glm::dot(dir, dir) >= 1e-6f) {
+                camera.SetTargetDirection(glm::normalize(dir));
+            }
+        });
+    };
+    if (const auto &mesh_selection_tracker = R.storage<entt::reactive>(changes::MeshSelection); !mesh_selection_tracker.empty()) {
+        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+        const auto active_entity = FindActiveEntity(R);
+        for (auto mesh_entity : mesh_selection_tracker) {
+            if (const auto *selection = R.try_get<MeshSelection>(mesh_entity)) {
+                dirty_element_state_meshes.insert(mesh_entity);
+                if (selection->ActiveHandle && edit_mode != Element::None && R.all_of<MeshInstance>(active_entity) &&
+                    R.get<MeshInstance>(active_entity).MeshEntity == mesh_entity) {
+                    orbit_to_active(active_entity, edit_mode, *selection->ActiveHandle);
+                }
+            }
         }
-        if (auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
-            // Orient camera towards excited vertex
-            const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
-            const auto &mesh = R.get<Mesh>(mesh_entity);
-            const vec3 vertex_pos{R.get<WorldMatrix>(instance_entity).M * vec4{mesh.GetPosition(VH(ev->Vertex)), 1}};
-            R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetDirection(glm::normalize(vertex_pos - camera.Target)); });
+    }
+    if (auto &mesh_geometry_tracker = R.storage<entt::reactive>(changes::MeshGeometry); !mesh_geometry_tracker.empty()) {
+        for (auto mesh_entity : mesh_geometry_tracker) {
+            if (R.all_of<Selected>(mesh_entity) || HasSelectedInstance(R, mesh_entity)) {
+                dirty_overlay_meshes.insert(mesh_entity);
+            }
+        }
+        R.clear<MeshGeometryDirty>();
+        request(RenderRequest::Submit);
+    }
+    for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
+        if (const auto *mi = R.try_get<MeshInstance>(instance_entity)) {
+            dirty_element_state_meshes.insert(mi->MeshEntity);
+        }
+        if (const auto *ev = R.try_get<ExcitedVertex>(instance_entity)) {
+            orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
         }
     }
     if (!R.storage<entt::reactive>(changes::ModelsBuffer).empty()) request(RenderRequest::Submit);
@@ -431,7 +456,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &camera = R.get<const Camera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .View = camera.View(),
             .Proj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)),
@@ -444,7 +468,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .DirectionalIntensity = lights.DirectionalIntensity,
             .LightDirection = lights.Direction,
             .InteractionMode = uint32_t(interaction_mode),
-            .EditElement = uint32_t(edit_mode),
+            .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
         }));
         request(RenderRequest::Submit);
     }
@@ -2088,14 +2112,15 @@ void Scene::RenderControls() {
                     interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
                 }
                 if (interaction_mode_changed) SetInteractionMode(InteractionMode(interaction_mode_value));
-                const bool wireframe_xray =
-                    R.get<const SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe;
+                if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
+                    Checkbox("Orbit to active", &OrbitToActive);
+                }
                 if (interaction_mode == InteractionMode::Edit) {
                     Checkbox("X-ray selection", &SelectionXRay);
-                }
-                if (wireframe_xray) {
-                    SameLine();
-                    TextDisabled("(wireframe)");
+                    if (R.get<const SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe) {
+                        SameLine();
+                        TextDisabled("(wireframe)");
+                    }
                 }
                 if (interaction_mode == InteractionMode::Edit) {
                     AlignTextToFramePadding();

@@ -190,7 +190,8 @@ private:
                                Box };
     SelectionMode SelectionMode{SelectionMode::Click};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
-    bool SelectionXRay{false}; // Edit mode only. Whether to ignore occlusion when selecting elements.
+    bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
+    bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;
