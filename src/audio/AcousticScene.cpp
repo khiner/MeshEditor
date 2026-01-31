@@ -111,27 +111,30 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         }
     }
 
-    const auto [listener_mesh_entity, _] = scene.AddMesh(
-        Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
-        {
-            .Name = std::format("RealImpact Listeners: {}", R.get<Name>(instance_entity).Value),
+    const auto listener_points = RealImpact::LoadListenerPoints(directory);
+    entt::entity first_listener_instance_entity{entt::null};
+    for (size_t i = 0; i < listener_points.size(); ++i) {
+        const auto &listener_point = listener_points[i];
+        static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
+        MeshCreateInfo info{
+            .Name = std::format("RealImpact Listener: {}", listener_point.Index),
+            .Transform = {
+                .P = listener_point.GetPosition(scene.GetWorld().Up, true),
+                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.GetWorld().Up) * rot_z,
+            },
             .Select = MeshCreateInfo::SelectBehavior::None,
-            .Visible = false,
+        };
+        entt::entity listener_instance_entity{entt::null};
+        if (i == 0) {
+            // todo split up mesh backing data creation and instance creation to simplify this
+            const auto [_, mesh_listener_instance_entity] = scene.AddMesh(
+                Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
+                info
+            );
+            first_listener_instance_entity = listener_instance_entity = mesh_listener_instance_entity;
+        } else {
+            listener_instance_entity = scene.DuplicateLinked(first_listener_instance_entity, info);
         }
-    );
-    for (const auto &listener_point : RealImpact::LoadListenerPoints(directory)) {
-        static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder is oriended with center along the Y axis.
-        const auto listener_instance_entity = scene.DuplicateLinked(
-            listener_mesh_entity,
-            MeshCreateInfo{
-                .Name = std::format("RealImpact Listener: {}", listener_point.Index),
-                .Transform = {
-                    .P = listener_point.GetPosition(scene.GetWorld().Up, true),
-                    .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.GetWorld().Up) * rot_z,
-                },
-                .Select = MeshCreateInfo::SelectBehavior::None,
-            }
-        );
         R.emplace<SoundObjectListenerPoint>(listener_instance_entity, listener_point.Index);
 
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.

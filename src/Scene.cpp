@@ -200,27 +200,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
 
     Pipelines->CompileShaders();
-
-    { // Default scene content
-        static constexpr int kGrid = 10;
-        static constexpr float kSpacing = 2.0f;
-        for (int z = 0; z < kGrid; ++z) {
-            for (int y = 0; y < kGrid; ++y) {
-                for (int x = 0; x < kGrid; ++x) {
-                    const auto e = AddMesh(
-                        CreateDefaultPrimitive(PrimitiveType::Cube),
-                        {.Name = ToString(PrimitiveType::Cube),
-                         .Transform = {.P = vec3{x, y, z} * kSpacing},
-                         .Select = MeshCreateInfo::SelectBehavior::None}
-                    );
-                    R.emplace<PrimitiveType>(e.first, PrimitiveType::Cube);
-                }
-            }
-        }
-        const float extent{(kGrid - 1) * kSpacing};
-        const vec3 center{extent * 0.5f};
-        R.replace<Camera>(SceneEntity, Camera{center + vec3{extent}, center, glm::radians(60.f), 0.01f, 500.f});
-    }
 }
 
 Scene::~Scene() {
@@ -678,6 +657,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
         );
     }
 
+    // Mesh instance
     const auto instance_entity = R.create();
     R.emplace<MeshInstance>(instance_entity, mesh_entity);
     SetTransform(R, instance_entity, info.Transform);
