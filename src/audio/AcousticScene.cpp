@@ -22,7 +22,7 @@
 #include <print>
 #include <ranges>
 
-using std::ranges::find, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
+using std::ranges::find, std::ranges::find_if, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
 using std::views::transform, std::views::take;
 
 // If an entity has this component, it is being listened to by `Listener`.
@@ -91,7 +91,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     scene.ClearMeshes();
     const auto [mesh_entity, instance_entity] = scene.AddMesh(
         directory / "transformed.obj",
-        {
+        MeshInstanceCreateInfo{
             .Name = *RealImpact::FindObjectName(directory),
             // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
             .Transform = {
@@ -112,44 +112,32 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
     }
 
     const auto listener_points = RealImpact::LoadListenerPoints(directory);
-    entt::entity first_listener_instance_entity{entt::null};
-    for (size_t i = 0; i < listener_points.size(); ++i) {
-        const auto &listener_point = listener_points[i];
+    const auto [listener_mesh_entity, _] = scene.AddMesh(Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f));
+    for (const auto &listener_point : listener_points) {
         static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
-        MeshCreateInfo info{
-            .Name = std::format("RealImpact Listener: {}", listener_point.Index),
-            .Transform = {
-                .P = listener_point.GetPosition(scene.GetWorld().Up, true),
-                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.GetWorld().Up) * rot_z,
-            },
-            .Select = MeshCreateInfo::SelectBehavior::None,
-        };
-        entt::entity listener_instance_entity{entt::null};
-        if (i == 0) {
-            // todo split up mesh backing data creation and instance creation to simplify this
-            const auto [_, mesh_listener_instance_entity] = scene.AddMesh(
-                Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f),
-                info
-            );
-            first_listener_instance_entity = listener_instance_entity = mesh_listener_instance_entity;
-        } else {
-            listener_instance_entity = scene.DuplicateLinked(first_listener_instance_entity, info);
-        }
+        const auto listener_instance_entity = scene.AddMeshInstance(
+            listener_mesh_entity,
+            {
+                .Name = std::format("RealImpact Listener: {}", listener_point.Index),
+                .Transform = {
+                    .P = listener_point.GetPosition(scene.GetWorld().Up, true),
+                    .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.GetWorld().Up) * rot_z,
+                },
+                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+            }
+        );
         R.emplace<SoundObjectListenerPoint>(listener_instance_entity, listener_point.Index);
 
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
         if (listener_point.Index == CenterListenerIndex) {
             R.emplace<SoundObjectListener>(instance_entity, listener_instance_entity);
 
-            static const auto FindMaterial = [](std::string_view name) -> std::optional<AcousticMaterial> {
-                for (const auto &material : materials::acoustic::All) {
-                    if (material.Name == name) return material;
-                }
-                return {};
-            };
             auto material_name = RealImpact::FindMaterialName(R.get<Name>(instance_entity).Value);
-            const auto real_impact_material = material_name ? FindMaterial(*material_name) : std::nullopt;
-            if (real_impact_material) R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
+            if (const auto real_impact_material = material_name ?
+                    find_if(materials::acoustic::All, [name = *material_name](const AcousticMaterial &m) { return m.Name == name; }) :
+                    std::ranges::end(materials::acoustic::All)) {
+                R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
+            }
             R.emplace<Frozen>(instance_entity);
             R.emplace<Excitable>(instance_entity, vertex_indices);
             SetImpactFrames(instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
@@ -746,7 +734,7 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
 
 ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, entt::entity mesh_entity, const ModalModelCreateInfo &info) const {
     // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
-    // scene.AddMesh(tets->CreateMesh(), {.Name = "Tet Mesh", R.get<WorldMatrix>(active_entity).M;, .Select = MeshCreateInfo::SelectBehavior::None, .Visible = false});
+    // scene.AddMesh(tets->CreateMesh(), MeshInstanceCreateInfo{.Name = "Tet Mesh", R.get<WorldMatrix>(active_entity).M;, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = false});
 
     // We rely on `PreserveSurface` behavior for excitable vertices;
     // Vertex indices on the surface mesh must match vertex indices on the tet mesh.

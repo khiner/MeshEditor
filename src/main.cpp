@@ -451,7 +451,7 @@ void run() {
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
                         const auto path = fs::path(nfd_path);
-                        scene->AddMesh(path, {.Name = path.filename().string()});
+                        scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.filename().string()});
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));

@@ -656,32 +656,31 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     }
 }
 
-std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo info) {
+std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = R.create();
-    { // Mesh data
-        SlottedBufferRange vertices{Meshes.GetVerticesRange(mesh.GetStoreId()), Meshes.GetVerticesSlot()};
-        auto face_indices = Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face);
-        auto edge_indices = Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge);
-        auto vertex_indices = Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex);
+    R.emplace<ModelsBuffer>(
+        mesh_entity,
+        mvk::Buffer{Buffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
+        mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer}
+    );
+    R.emplace<MeshSelection>(mesh_entity);
+    R.emplace<MeshBuffers>(
+        mesh_entity, SlottedBufferRange{Meshes.GetVerticesRange(mesh.GetStoreId()), Meshes.GetVerticesSlot()},
+        Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
+        Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
+        Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
+    );
+    R.emplace<MeshElementStateBuffers>(
+        mesh_entity,
+        Buffers->AllocateFaceStates(mesh.FaceCount()),
+        Buffers->AllocateEdgeStates(mesh.EdgeCount() * 2),
+        Buffers->AllocateVertexStates(mesh.VertexCount())
+    );
+    R.emplace<Mesh>(mesh_entity, std::move(mesh));
+    return {mesh_entity, info ? AddMeshInstance(mesh_entity, *info) : entt::null};
+}
 
-        R.emplace<Mesh>(mesh_entity, std::move(mesh));
-        R.emplace<ModelsBuffer>(
-            mesh_entity,
-            mvk::Buffer{Buffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
-            mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer}
-        );
-        R.emplace<MeshBuffers>(mesh_entity, vertices, face_indices, edge_indices, vertex_indices);
-        R.emplace<MeshSelection>(mesh_entity);
-        const auto &emplaced_mesh = R.get<Mesh>(mesh_entity);
-        R.emplace<MeshElementStateBuffers>(
-            mesh_entity,
-            Buffers->AllocateFaceStates(emplaced_mesh.FaceCount()),
-            Buffers->AllocateEdgeStates(emplaced_mesh.EdgeCount() * 2),
-            Buffers->AllocateVertexStates(emplaced_mesh.VertexCount())
-        );
-    }
-
-    // Mesh instance
+entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo info) {
     const auto instance_entity = R.create();
     R.emplace<MeshInstance>(instance_entity, mesh_entity);
     SetTransform(R, instance_entity, info.Transform);
@@ -695,13 +694,13 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
     if (!info.Visible) SetVisible(instance_entity, false);
 
     switch (info.Select) {
-        case MeshCreateInfo::SelectBehavior::Exclusive:
+        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
             Select(instance_entity);
             break;
-        case MeshCreateInfo::SelectBehavior::Additive:
+        case MeshInstanceCreateInfo::SelectBehavior::Additive:
             R.emplace<Selected>(instance_entity);
             // Fallthrough
-        case MeshCreateInfo::SelectBehavior::None:
+        case MeshInstanceCreateInfo::SelectBehavior::None:
             // If no mesh is active yet, activate the new one.
             if (R.storage<Active>().empty()) {
                 R.emplace<Active>(instance_entity);
@@ -710,14 +709,14 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, MeshCreateInfo
             break;
     }
 
-    return {mesh_entity, instance_entity};
+    return instance_entity;
 }
 
-std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, MeshCreateInfo info) {
+std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, std::optional<MeshInstanceCreateInfo> info) {
     return AddMesh(Meshes.CreateMesh(std::move(data)), std::move(info));
 }
 
-std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path &path, MeshCreateInfo info) {
+std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path &path, std::optional<MeshInstanceCreateInfo> info) {
     auto mesh = Meshes.LoadMesh(path);
     if (!mesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
     const auto e = AddMesh(std::move(*mesh), std::move(info));
@@ -725,14 +724,14 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
     return e;
 }
 
-entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info) {
+entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = AddMesh(
         Meshes.CloneMesh(R.get<const Mesh>(mesh_entity)),
-        info.value_or(MeshCreateInfo{
+        info.value_or(MeshInstanceCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
             .Transform = GetTransform(R, e),
-            .Select = R.all_of<Selected>(e) ? MeshCreateInfo::SelectBehavior::Additive : MeshCreateInfo::SelectBehavior::None,
+            .Select = R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None,
             .Visible = R.all_of<RenderInstance>(e),
         })
     );
@@ -740,7 +739,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshCreateInfo> info
     return e_new.second;
 }
 
-entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo> info) {
+entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = R.create();
     {
@@ -758,8 +757,8 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshCreateInfo
     SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
 
-    if (!info || info->Select == MeshCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
-    else if (info->Select == MeshCreateInfo::SelectBehavior::Exclusive) Select(e_new);
+    if (!info || info->Select == MeshInstanceCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
+    else if (info->Select == MeshInstanceCreateInfo::SelectBehavior::Exclusive) Select(e_new);
 
     return e_new;
 }
@@ -2177,7 +2176,7 @@ void Scene::RenderControls() {
                 }
                 const auto selected_type = PrimitiveType(selected_type_i);
                 if (auto mesh_data = PrimitiveEditor(selected_type, true)) {
-                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh_data), {.Name = ToString(selected_type)}).first, selected_type);
+                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh_data), MeshInstanceCreateInfo{.Name = ToString(selected_type)}).first, selected_type);
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
                 PopID();

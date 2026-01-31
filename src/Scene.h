@@ -66,7 +66,7 @@ enum class ShaderPipelineType {
 struct DrawListBuilder;
 struct SelectionDrawInfo;
 
-struct MeshCreateInfo {
+struct MeshInstanceCreateInfo {
     std::string Name{};
     Transform Transform{};
 
@@ -105,13 +105,15 @@ struct Scene {
 
     World GetWorld() const;
 
-    // Returns (mesh_entity, instance_entity)
-    std::pair<entt::entity, entt::entity> AddMesh(Mesh &&, MeshCreateInfo = {});
-    std::pair<entt::entity, entt::entity> AddMesh(MeshData &&, MeshCreateInfo = {});
-    std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, MeshCreateInfo = {});
+    // Create mesh backing data, optionally with an instance.
+    // Returns (mesh_entity, instance_entity) - instance_entity is entt::null if no instance info provided.
+    std::pair<entt::entity, entt::entity> AddMesh(Mesh &&, std::optional<MeshInstanceCreateInfo> = {});
+    std::pair<entt::entity, entt::entity> AddMesh(MeshData &&, std::optional<MeshInstanceCreateInfo> = {});
+    std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, std::optional<MeshInstanceCreateInfo> = {});
+    entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
 
-    entt::entity Duplicate(entt::entity, std::optional<MeshCreateInfo> = {});
-    entt::entity DuplicateLinked(entt::entity, std::optional<MeshCreateInfo> = {});
+    entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
+    entt::entity DuplicateLinked(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
 
     void SetMeshPositions(entt::entity, std::span<const vec3>);
     void ClearMeshes();
