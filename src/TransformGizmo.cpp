@@ -50,7 +50,7 @@ struct StartContext {
 };
 
 struct Context {
-    ImRect ScreenRect{{0, 0}, {0, 0}};
+    rect ScreenRect{};
     vec2 MousePx{0, 0};
 
     // World units per (signed) NDC unit at the gizmo origin (sampled along screen-x).
@@ -179,13 +179,13 @@ constexpr vec3 CsToNdc(vec4 cs) { return {fabsf(cs.w) > FLT_EPSILON ? vec3{cs} /
 // NDC (signed) to UV [0,1] (top-left origin)
 constexpr vec2 NdcToUv(vec3 ndc) { return {ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f}; }
 // UV to pixels in window rect
-constexpr ImVec2 UvToPx(vec2 uv) { return g.ScreenRect.Min + ImVec2{uv.x, uv.y} * g.ScreenRect.GetSize(); }
+constexpr ImVec2 UvToPx(vec2 uv) { return std::bit_cast<ImVec2>(g.ScreenRect.pos + uv * g.ScreenRect.size); }
 constexpr vec4 WsToCs(vec3 ws, const mat4 &vp) { return vp * vec4{ws, 1}; }
 constexpr vec3 WsToNdc(vec3 ws, const mat4 &vp) { return CsToNdc(WsToCs(ws, vp)); }
 constexpr vec2 WsToUv(vec3 ws, const mat4 &vp) { return NdcToUv(WsToNdc(ws, vp)); }
 constexpr ImVec2 WsToPx(vec3 ws, const mat4 &vp) { return UvToPx(WsToUv(ws, vp)); }
 // `size` is ratio of gizmo width
-constexpr float SizeToPx(float size = 1.f) { return (g.ScreenRect.Max.x - g.ScreenRect.Min.x) * Style.SizeUv * size; }
+constexpr float SizeToPx(float size = 1.f) { return g.ScreenRect.size.x * Style.SizeUv * size; }
 
 constexpr float IntersectPlane(const ray &r, vec4 plane) {
     const float num = glm::dot(vec3{plane}, r.o) - plane.w;
@@ -262,7 +262,7 @@ std::optional<Interaction> FindHoveredInteraction(const GizmoTransform &transfor
 
     if (type != Type::Rotate) {
         const auto o_ws = transform.P;
-        const auto screen_min_px = g.ScreenRect.Min, mouse_rel_px{mouse_px - screen_min_px};
+        const auto screen_min_px = std::bit_cast<ImVec2>(g.ScreenRect.pos), mouse_rel_px{mouse_px - screen_min_px};
         for (uint32_t i = 0; i < 3; ++i) {
             const vec4 dir_ndc{transform.AxisDirWs(i), 0};
             const auto start = WsToPx(o_ws + vec3{dir_ndc} * g.WorldPerNdc * Style.InnerCircleRadSize, vp) - screen_min_px;
@@ -397,17 +397,18 @@ constexpr ImU32 SelectionColor(ImU32 color, bool selected) {
 
 // Clip ray `p + t*d` to rect `r` using Liang–Barsky algorithm.
 // Returns line endpoints, or empty if no rect intersection.
-std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const ImRect &r, ImVec2 p, ImVec2 d) {
+std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const rect &r, ImVec2 p, ImVec2 d) {
     static constexpr float eps = 1e-6f;
     if (ImLengthSqr(d) <= eps) return {};
 
+    const auto r_min = std::bit_cast<ImVec2>(r.pos), r_max = std::bit_cast<ImVec2>(r.max());
     // Check if parallel and outside (shouldn't happen in practice for axis guide lines)
-    const auto pc = ImClamp(p, r.Min, r.Max);
+    const auto pc = ImClamp(p, r_min, r_max);
     if ((fabsf(d.x) < eps && pc.x != p.x) || (fabsf(d.y) < eps && pc.y != p.y)) return {};
 
     const ImVec2 d_inv{1.f / d.x, 1.f / d.y};
-    const auto t0 = (r.Min - p) * d_inv;
-    const auto t1 = (r.Max - p) * d_inv;
+    const auto t0 = (r_min - p) * d_inv;
+    const auto t1 = (r_max - p) * d_inv;
     const auto tmin = ImMin(t0, t1), tmax = ImMax(t0, t1);
     float t_enter = std::max(tmin.x, tmin.y);
     float t_exit = std::min(tmax.x, tmax.y);
@@ -854,8 +855,8 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
 } // namespace
 
 namespace TransformGizmo {
-std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, vec2 pos, vec2 size, vec2 mouse_px, std::optional<TransformType> start_screen_transform) {
-    g.ScreenRect = {std::bit_cast<ImVec2>(pos), std::bit_cast<ImVec2>(pos + size)};
+std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform) {
+    g.ScreenRect = viewport;
     g.MousePx = mouse_px;
 
     // Behind-camera cull
@@ -865,7 +866,7 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
 
     assert(!g.Start || g.Interaction);
 
-    const auto vp = camera.Projection(size.x / size.y) * camera.View();
+    const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
     const auto cam_basis = camera.Basis();
     const auto cam_ray = camera.Ray();
     // Compute world units per NDC at transform position, sampling along camera-right projected to screen at the transform origin.
@@ -888,7 +889,7 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
         return {};
     }
 
-    const auto mouse_ray_ws = camera.PixelToWorldRay(mouse_px, pos, size);
+    const auto mouse_ray_ws = camera.PixelToWorldRay(mouse_px, viewport);
     if (g.Start) {
         const auto &ts = g.Start->Transform;
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray));

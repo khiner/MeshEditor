@@ -8,6 +8,7 @@
 #include <ranges>
 #include <unordered_map>
 
+namespace primitive {
 using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
 inline MeshData Rect(vec2 half_extents = {0.5, 0.5}) {
@@ -218,6 +219,20 @@ inline MeshData Cone(float radius = 0.5, float height = 1, uint slices = 32) {
     return {std::move(vertices), std::move(indices)};
 }
 
+inline MeshData CreateDefault(PrimitiveType type) {
+    switch (type) {
+        case PrimitiveType::Rect: return Rect();
+        case PrimitiveType::Cube: return Cuboid();
+        case PrimitiveType::IcoSphere: return IcoSphere();
+        case PrimitiveType::Circle: return Circle();
+        case PrimitiveType::UVSphere: return UVSphere();
+        case PrimitiveType::Torus: return Torus();
+        case PrimitiveType::Cylinder: return Cylinder();
+        case PrimitiveType::Cone: return Cone();
+    }
+}
+} // namespace primitive
+
 constexpr std::string ToString(PrimitiveType type) {
     using enum PrimitiveType;
     switch (type) {
@@ -229,19 +244,6 @@ constexpr std::string ToString(PrimitiveType type) {
         case Torus: return "Torus";
         case Cylinder: return "Cylinder";
         case Cone: return "Cone";
-    }
-}
-
-inline MeshData CreateDefaultPrimitive(PrimitiveType type) {
-    switch (type) {
-        case PrimitiveType::Rect: return Rect();
-        case PrimitiveType::Cube: return Cuboid();
-        case PrimitiveType::IcoSphere: return IcoSphere();
-        case PrimitiveType::Circle: return Circle();
-        case PrimitiveType::UVSphere: return UVSphere();
-        case PrimitiveType::Torus: return Torus();
-        case PrimitiveType::Cylinder: return Cylinder();
-        case PrimitiveType::Cone: return Cone();
     }
 }
 

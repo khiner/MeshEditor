@@ -2,7 +2,7 @@
 
 #include "Transform.h"
 #include "numeric/mat3.h"
-#include "numeric/vec2.h"
+#include "numeric/rect.h"
 
 #include <optional>
 #include <string_view>
@@ -60,5 +60,5 @@ struct Result {
 };
 
 // start_screen_transform: If present, starts (non-click-initiated screen-space transform interaction immediately.)
-std::optional<Result> Draw(const GizmoTransform &, Config, const Camera &, vec2 pos, vec2 size, vec2 mouse_px, std::optional<TransformType> start_screen_transform = {});
+std::optional<Result> Draw(const GizmoTransform &, Config, const Camera &, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform = {});
 } // namespace TransformGizmo

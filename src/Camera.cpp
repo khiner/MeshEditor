@@ -15,10 +15,10 @@ constexpr float ShortestAngleDelta(float from, float to) {
 bool Camera::IsAligned(vec3 direction) const { return glm::dot(Forward(), glm::normalize(direction)) > 0.999f; }
 bool Camera::IsInFront(vec3 p) const { return glm::dot(p - Position(), -Forward()) > NearClip; }
 
-ray Camera::PixelToWorldRay(vec2 mouse_px, vec2 viewport_pos, vec2 viewport_size) const {
-    const auto rel = (mouse_px - viewport_pos) / viewport_size;
+ray Camera::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
+    const auto rel = (mouse_px - viewport.pos) / viewport.size;
     const auto ndc = vec2{rel.x, 1.f - rel.y} * 2.f - 1.f;
-    const auto aspect = viewport_size.x / viewport_size.y;
+    const auto aspect = viewport.size.x / viewport.size.y;
     const auto t = std::tan(FieldOfViewRad * 0.5f);
     // View-space direction with +Z along the camera view dir, rotated into world-space
     return {Position(), Basis() * glm::normalize(vec3{ndc.x * aspect * t, ndc.y * t, 1.f})};

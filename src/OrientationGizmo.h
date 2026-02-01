@@ -39,7 +39,7 @@ bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.Drag
 void Draw(vec2 pos, float size, Camera &camera) {
     auto &dl = *ImGui::GetWindowDrawList();
 
-    const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetIO().MousePos);
+    const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetMousePos());
     const auto hover_circle_r = size * Style.HoverCircleRad;
     const auto center = pos + vec2{size, size} * 0.5f;
     Context.Hovered = glm::dot(mouse_pos - center, mouse_pos - center) <= hover_circle_r * hover_circle_r;

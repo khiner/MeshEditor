@@ -1518,9 +1518,7 @@ void Scene::Interact() {
                         if (!selection.Handles.empty()) {
                             const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
                             const auto &camera = R.get<const Camera>(SceneEntity);
-                            const auto window_pos = ToGlm(GetWindowPos());
-                            const auto window_size = ToGlm(GetContentRegionAvail());
-                            StartVertexGrabMouseRay = camera.PixelToWorldRay(ToGlm(GetIO().MousePos), window_pos, window_size);
+                            StartVertexGrabMouseRay = camera.PixelToWorldRay(ToGlm(GetMousePos()), GetViewportRect());
 
                             auto &grab = R.emplace<VertexGrabState>(instance_entity);
                             for (const auto vi : selection.Handles) {
@@ -1565,9 +1563,8 @@ void Scene::Interact() {
             // Update positions
             const auto &camera = R.get<const Camera>(SceneEntity);
             const auto n = -camera.Forward(); // Plane normal (faces camera)
-            const auto window_pos = ToGlm(GetWindowPos());
-            const auto window_size = ToGlm(GetContentRegionAvail());
-            const auto mouse_ray = camera.PixelToWorldRay(ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta, window_pos, window_size);
+            const auto viewport = GetViewportRect();
+            const auto mouse_ray = camera.PixelToWorldRay(ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta, viewport);
             const auto start_ray = *StartVertexGrabMouseRay;
             const auto start_scaled = start_ray.d / glm::dot(n, start_ray.d);
             const auto current_scaled = mouse_ray.d / glm::dot(n, mouse_ray.d);
@@ -1623,12 +1620,10 @@ void Scene::Interact() {
 
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     if (SelectionMode == SelectionMode::Box && (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Object)) {
-        const auto mouse_pos = ToGlm(GetMousePos());
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            BoxSelectStart = mouse_pos;
-            BoxSelectEnd = mouse_pos;
+            BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
-            BoxSelectEnd = mouse_pos;
+            BoxSelectEnd = ToGlm(GetMousePos());
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), extent); box_px) {
                 const bool is_additive = IsKeyDown(ImGuiMod_Shift);
                 if (interaction_mode == InteractionMode::Edit) {
@@ -1844,8 +1839,7 @@ void Scene::WaitForRender() {
 }
 
 void Scene::RenderOverlay() {
-    const auto window_pos = ToGlm(GetWindowPos());
-    const auto window_size = ToGlm(GetContentRegionAvail());
+    const auto viewport = GetViewportRect();
     auto &camera = R.get<Camera>(SceneEntity);
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
@@ -1871,7 +1865,7 @@ void Scene::RenderOverlay() {
         if (!scale_enabled && element == Scale) element = Translate;
 
         const float padding = GetTextLineHeightWithSpacing() / 2.f;
-        const auto start_pos = std::bit_cast<ImVec2>(window_pos) + GetWindowContentRegionMin() + ImVec2{padding, padding};
+        const auto start_pos = std::bit_cast<ImVec2>(viewport.pos) + GetWindowContentRegionMin() + ImVec2{padding, padding};
         const auto saved_cursor_pos = GetCursorScreenPos();
 
         auto &dl = *GetWindowDrawList();
@@ -1925,14 +1919,14 @@ void Scene::RenderOverlay() {
 
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
-        const auto vp = camera.Projection(window_size.x / window_size.y) * camera.View();
+        const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
         for (const auto [e, wm, ri] : R.view<const WorldMatrix, const RenderInstance>().each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
 
             const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
             const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
-            const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * window_size); // UV to px
+            const auto p_px = std::bit_cast<ImVec2>(viewport.pos + p_uv * viewport.size); // UV to px
             auto &dl = *GetWindowDrawList();
             dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
@@ -1959,7 +1953,7 @@ void Scene::RenderOverlay() {
         const auto start_transform_view = R.view<const StartTransform>();
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
-                MGizmo.Config, camera, window_pos, window_size, ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
+                MGizmo.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
                 StartScreenTransform
             )) {
             const auto &[ts, td] = *start_delta;
@@ -1988,7 +1982,7 @@ void Scene::RenderOverlay() {
     { // Orientation gizmo
         static constexpr float OGizmoSize{90};
         const float padding = GetTextLineHeightWithSpacing();
-        const auto pos = window_pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
+        const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
         OrientationGizmo::Draw(pos, OGizmoSize, camera);
         if (camera.Tick()) R.patch<Camera>(SceneEntity, [](auto &) {});
     }

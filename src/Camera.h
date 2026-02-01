@@ -3,7 +3,7 @@
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
 #include "numeric/ray.h"
-#include "numeric/vec2.h"
+#include "numeric/rect.h"
 #include "numeric/vec3.h"
 
 #include <optional>
@@ -29,7 +29,7 @@ struct Camera {
     mat4 View() const;
     mat4 Projection(float aspect_ratio) const;
     vec3 Position() const { return Target + Distance * Forward(); }
-    ray PixelToWorldRay(vec2 mouse_px, vec2 viewport_pos, vec2 viewport_size) const;
+    ray PixelToWorldRay(vec2 mouse_px, rect viewport) const;
 
     bool IsAligned(vec3 direction) const;
     bool IsInFront(vec3) const;

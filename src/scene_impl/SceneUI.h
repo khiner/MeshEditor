@@ -1,9 +1,12 @@
 #pragma once
 
+#include "numeric/rect.h"
+
 using namespace ImGui;
 
 namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
+rect GetViewportRect() { return {ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())}; }
 
 std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
     static constexpr float drag_threshold{2};
@@ -61,41 +64,41 @@ std::optional<MeshData> PrimitiveEditor(PrimitiveType type, bool is_create = tru
     if (type == PrimitiveType::Rect) {
         static vec2 size{1, 1};
         InputFloat2("Size", &size.x);
-        if (Button(create_label)) return Rect(size / 2.f);
+        if (Button(create_label)) return primitive::Rect(size / 2.f);
     } else if (type == PrimitiveType::Circle) {
         static float r = 0.5;
         InputFloat("Radius", &r);
-        if (Button(create_label)) return Circle(r);
+        if (Button(create_label)) return primitive::Circle(r);
     } else if (type == PrimitiveType::Cube) {
         static vec3 size{1.0, 1.0, 1.0};
         InputFloat3("Size", &size.x);
-        if (Button(create_label)) return Cuboid(size / 2.f);
+        if (Button(create_label)) return primitive::Cuboid(size / 2.f);
     } else if (type == PrimitiveType::IcoSphere) {
         static float r = 0.5;
         static int subdivisions = 3;
         InputFloat("Radius", &r);
         InputInt("Subdivisions", &subdivisions);
-        if (Button(create_label)) return IcoSphere(r, uint(subdivisions));
+        if (Button(create_label)) return primitive::IcoSphere(r, uint(subdivisions));
     } else if (type == PrimitiveType::UVSphere) {
         static float r = 0.5;
         InputFloat("Radius", &r);
-        if (Button(create_label)) return UVSphere(r);
+        if (Button(create_label)) return primitive::UVSphere(r);
     } else if (type == PrimitiveType::Torus) {
         static vec2 radii{0.5, 0.2};
         static glm::ivec2 n_segments = {32, 16};
         InputFloat2("Major/minor radius", &radii.x);
         InputInt2("Major/minor segments", &n_segments.x);
-        if (Button(create_label)) return Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
+        if (Button(create_label)) return primitive::Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
     } else if (type == PrimitiveType::Cylinder) {
         static float r = 1, h = 1;
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
-        if (Button(create_label)) return Cylinder(r, h);
+        if (Button(create_label)) return primitive::Cylinder(r, h);
     } else if (type == PrimitiveType::Cone) {
         static float r = 1, h = 1;
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
-        if (Button(create_label)) return Cone(r, h);
+        if (Button(create_label)) return primitive::Cone(r, h);
     }
 
     return {};

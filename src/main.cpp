@@ -585,7 +585,7 @@ void run() {
                 // Initialize scene now that it has an extent.
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
                 // if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
-                const auto [mesh_entity, _] = scene->AddMesh(CreateDefaultPrimitive(PrimitiveType::Cube), MeshInstanceCreateInfo{.Name = ToString(PrimitiveType::Cube)});
+                const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateDefault(PrimitiveType::Cube), MeshInstanceCreateInfo{.Name = ToString(PrimitiveType::Cube)});
                 r.emplace<PrimitiveType>(mesh_entity, PrimitiveType::Cube);
             }
         }
