@@ -59,7 +59,7 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 #include "scene_impl/SceneTransformUtils.h"
 #include "scene_impl/SceneUI.h"
 
-// Tracks state during vertex grab (G key) in Edit mode. Attached to instance entity.
+// Tracks state during element. Attached to instance entity.
 struct VertexGrabState {
     std::vector<std::pair<uint32_t, vec3>> StartPositions{}; // (vertex index, local position)
 };
@@ -1509,19 +1509,19 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
             else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
             else if (IsKeyPressed(ImGuiKey_G, false)) {
-                // In Edit mode with vertex selection, start vertex grab; otherwise start object transform
-                const auto edit_mode_value = R.get<const SceneEditMode>(SceneEntity).Value;
-                if (interaction_mode == InteractionMode::Edit && edit_mode_value == Element::Vertex) {
-                    // Find selected instance with selected vertices
+                // In Edit mode, start element grab; otherwise start object transform
+                if (interaction_mode == InteractionMode::Edit) {
+                    const auto edit_mode_value = R.get<const SceneEditMode>(SceneEntity).Value;
                     for (const auto [instance_entity, mi] : R.view<const MeshInstance, const Selected>().each()) {
                         const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
                         if (!selection.Handles.empty()) {
                             const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                            const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode_value, Element::Vertex);
                             const auto &camera = R.get<const Camera>(SceneEntity);
                             StartVertexGrabMouseRay = camera.PixelToWorldRay(ToGlm(GetMousePos()), GetViewportRect());
 
                             auto &grab = R.emplace<VertexGrabState>(instance_entity);
-                            for (const auto vi : selection.Handles) {
+                            for (const auto vi : vertex_handles) {
                                 grab.StartPositions.emplace_back(vi, mesh.GetPosition(VH{vi}));
                             }
                             break;
@@ -1546,7 +1546,7 @@ void Scene::Interact() {
         }
     }
 
-    // Handle vertex grab interaction (G key in Edit mode with vertex selection)
+    // Handle element grab interaction
     if (StartVertexGrabMouseRay) {
         // Cancel on Escape or right click - restore original positions
         if (IsKeyPressed(ImGuiKey_Escape, false) || IsMouseClicked(ImGuiMouseButton_Right)) {
