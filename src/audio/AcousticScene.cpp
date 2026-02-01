@@ -325,24 +325,37 @@ constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const
     return windowed_data;
 }
 
-// Ordered by lowest to highest frequency.
-constexpr std::vector<float> FindPeakFrequencies(const fftwf_complex *data, uint n_bins, uint n_peaks) {
-    const uint N2 = n_bins / 2;
+std::optional<float> EstimateFundamentalFrequency(const FFTData &fft_data) {
+    const auto *data = fft_data.Complex;
+    const size_t n_bins = fft_data.NumReal / 2 + 1;
 
-    std::vector<std::pair<float, uint>> peaks; // (magnitude, bin)
-    for (uint i = 1; i < N2 - 1; i++) {
-        float mag_sq = data[i][0] * data[i][0] + data[i][1] * data[i][1];
-        float left_mag_sq = data[i - 1][0] * data[i - 1][0] + data[i - 1][1] * data[i - 1][1];
-        float right_mag_sq = data[i + 1][0] * data[i + 1][0] + data[i + 1][1] * data[i + 1][1];
-        if (mag_sq > left_mag_sq && mag_sq > right_mag_sq) peaks.emplace_back(mag_sq, i);
+    std::vector<float> mag_db(n_bins);
+    for (size_t i = 0; i < n_bins; ++i) {
+        const auto mag_sq = data[i][0] * data[i][0] + data[i][1] * data[i][1];
+        mag_db[i] = 10.f * std::log10f(std::max(mag_sq, 1e-20f));
     }
 
-    // Sort descending by magnitude and convert to frequency.
-    sort(peaks, [](const auto &a, const auto &b) { return a.first > b.first; });
-    auto peak_freqs = peaks | take(n_peaks) |
-        transform([n_bins](const auto &p) { return float(p.second * SampleRate / n_bins); }) | to<std::vector>();
-    sort(peak_freqs);
-    return peak_freqs;
+    // Noise floor from upper half median
+    std::vector<float> upper(mag_db.begin() + n_bins / 2, mag_db.end());
+    std::ranges::nth_element(upper, upper.begin() + upper.size() / 2);
+    const float threshold = upper[upper.size() / 2] + 15.f;
+
+    constexpr size_t W = 15; // Prominence window
+    const size_t min_bin = static_cast<size_t>(50.0f * fft_data.NumReal / SampleRate);
+    for (size_t i = std::max(min_bin, W); i < n_bins - W; ++i) {
+        // Local maximum?
+        if (mag_db[i] <= mag_db[i - 1] || mag_db[i] <= mag_db[i + 1]) continue;
+        if (mag_db[i] < threshold) continue;
+
+        constexpr float ProminenceThresholdDb{10.f};
+        // Prominence check: peak must be above the local mean by ProminenceThresholdDb
+        float local_sum = 0;
+        for (size_t j = i - W; j <= i + W; ++j) local_sum += mag_db[j];
+        const float local_mean = local_sum / (2 * W + 1);
+        if (mag_db[i] - local_mean < ProminenceThresholdDb) continue;
+        return float(i) * SampleRate / fft_data.NumReal;
+    }
+    return std::nullopt;
 }
 
 constexpr float LinearToDb(float linear) { return 20.0f * log10f(linear); }
@@ -354,8 +367,6 @@ FFTData ComputeFft(const std::vector<float> &frames) {
     static const auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
     return {ApplyWindow(BHWindow, frames.data() + FftStartFrame)};
 }
-
-std::vector<float> GetPeakFrequencies(const FFTData &fft_data, uint n_peaks) { return FindPeakFrequencies(fft_data.Complex, fft_data.NumReal, n_peaks); }
 
 // If `normalize_max` is set, normalize the data to this maximum value.
 void WriteWav(const std::vector<float> &frames, fs::path file_path, std::optional<float> normalize_max = std::nullopt) {
@@ -751,11 +762,12 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, entt::ent
         };
 
     while (!DspGenerator) {}
-    const auto tets = GenerateTets(mesh, R.get<Scale>(e).Value, {.PreserveSurface = true, .Quality = info.QualityTets});
+    constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
+    const auto tets = GenerateTets(mesh, ScaleFactor * R.get<Scale>(e).Value, {.PreserveSurface = true, .Quality = info.QualityTets});
 
     const auto *sample_object = R.try_get<const SampleSoundObject>(e);
-    auto fundamental = sample_object ? std::optional{GetPeakFrequencies(ComputeFft(sample_object->GetFrames()), 10).front()} : std::nullopt;
-    if (fundamental && *fundamental > 10'000) fundamental = std::nullopt; // Arbitrary high frequency limit.
+    std::optional<float> fundamental;
+    if (sample_object) fundamental = EstimateFundamentalFrequency(ComputeFft(sample_object->GetFrames()));
 
     return {
         .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable.ExcitableVertices, fundamental),

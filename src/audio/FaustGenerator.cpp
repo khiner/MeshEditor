@@ -72,7 +72,7 @@ ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundObject &o
     const float fundamental_freq = obj.Modes.Freqs.front();
     static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
     static constexpr std::string_view ModelT60Scale{"t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)"};
-    const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},60,16000,1)", fundamental_freq);
+    const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},50,16000,1)", fundamental_freq);
     const uint num_excitable = obj.Excitable.ExcitableVertices.size();
     const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1)", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1);
     const auto model = GenerateModalModelDsp(obj.Modes, "modalModel", freq_control);
