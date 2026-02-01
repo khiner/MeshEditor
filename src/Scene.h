@@ -4,6 +4,7 @@
 #include "World.h"
 #include "mesh/Handle.h"
 #include "mesh/MeshStore.h"
+#include "numeric/ray.h"
 #include "numeric/vec2.h"
 #include "numeric/vec4.h"
 
@@ -201,6 +202,7 @@ private:
     };
     TransformGizmoState MGizmo;
     std::optional<TransformGizmo::TransformType> StartScreenTransform;
+    std::optional<ray> StartVertexGrabMouseRay;
     bool TransformModePillsHovered{false};
 
     struct TransformIcons {

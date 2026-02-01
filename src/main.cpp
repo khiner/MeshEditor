@@ -9,6 +9,7 @@
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include "implot.h"
+#include "mesh/Primitives.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <entt/entity/registry.hpp>
@@ -582,8 +583,10 @@ void run() {
 
             if (GetFrameCount() == 1) {
                 // Initialize scene now that it has an extent.
-                static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
+                // static const auto DefaultRealImpactPath = fs::path("../../") / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
+                // if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
+                const auto [mesh_entity, _] = scene->AddMesh(CreateDefaultPrimitive(PrimitiveType::Cube), MeshInstanceCreateInfo{.Name = ToString(PrimitiveType::Cube)});
+                r.emplace<PrimitiveType>(mesh_entity, PrimitiveType::Cube);
             }
         }
 

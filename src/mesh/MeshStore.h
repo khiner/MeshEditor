@@ -24,6 +24,7 @@ struct MeshStore {
     std::optional<Mesh> LoadMesh(const std::filesystem::path &);
 
     void SetPositions(const Mesh &, std::span<const vec3>);
+    void SetPosition(const Mesh &, uint32_t index, vec3 position); // Single vertex, no normal update
 
     std::span<const Vertex> GetVertices(uint32_t id) const;
     std::span<Vertex> GetVertices(uint32_t id);
@@ -38,14 +39,14 @@ struct MeshStore {
     BufferRange GetFaceIdRange(uint32_t id) const;
     uint32_t GetFaceIdSlot() const;
 
+    void UpdateNormals(const Mesh &);
+
     void Release(uint32_t id);
 
 private:
     static constexpr uint32_t InvalidStoreId{~0u};
 
     uint32_t AcquireId();
-
-    void UpdateNormals(const Mesh &);
 
     std::vector<Entry> Entries;
     std::vector<uint32_t> FreeIds;

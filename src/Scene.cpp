@@ -59,6 +59,11 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 #include "scene_impl/SceneTransformUtils.h"
 #include "scene_impl/SceneUI.h"
 
+// Tracks state during vertex grab (G key) in Edit mode. Attached to instance entity.
+struct VertexGrabState {
+    std::vector<std::pair<uint32_t, vec3>> StartPositions{}; // (vertex index, local position)
+};
+
 namespace {
 vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t handle) {
     if (element == Element::Vertex) return mesh.GetPosition(VH{handle});
@@ -1503,8 +1508,33 @@ void Scene::Interact() {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
             else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
             else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
-            else if (IsKeyPressed(ImGuiKey_G, false)) StartScreenTransform = TransformGizmo::TransformType::Translate;
-            else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
+            else if (IsKeyPressed(ImGuiKey_G, false)) {
+                // In Edit mode with vertex selection, start vertex grab; otherwise start object transform
+                const auto edit_mode_value = R.get<const SceneEditMode>(SceneEntity).Value;
+                if (interaction_mode == InteractionMode::Edit && edit_mode_value == Element::Vertex) {
+                    // Find selected instance with selected vertices
+                    for (const auto [instance_entity, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                        const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
+                        if (!selection.Handles.empty()) {
+                            const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                            const auto &camera = R.get<const Camera>(SceneEntity);
+                            const auto window_pos = ToGlm(GetWindowPos());
+                            const auto window_size = ToGlm(GetContentRegionAvail());
+                            const auto mouse_rel = (ToGlm(GetIO().MousePos) - window_pos) / window_size;
+                            const auto mouse_ndc = vec2{mouse_rel.x, 1.f - mouse_rel.y} * 2.f - 1.f;
+                            StartVertexGrabMouseRay = camera.NdcToWorldRay(mouse_ndc, window_size.x / window_size.y);
+
+                            auto &grab = R.emplace<VertexGrabState>(instance_entity);
+                            for (const auto vi : selection.Handles) {
+                                grab.StartPositions.emplace_back(vi, mesh.GetPosition(VH{vi}));
+                            }
+                            break;
+                        }
+                    }
+                } else {
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
+                }
+            } else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
             else if (IsKeyPressed(ImGuiKey_S, false) && !R.all_of<Frozen>(active_entity)) StartScreenTransform = TransformGizmo::TransformType::Scale;
             else if (IsKeyPressed(ImGuiKey_H, false)) {
                 for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<RenderInstance>(e));
@@ -1520,10 +1550,61 @@ void Scene::Interact() {
         }
     }
 
-    // Handle mouse input.
-    if (!IsMouseDown(ImGuiMouseButton_Left)) {
-        R.clear<ExcitedVertex>();
+    // Handle vertex grab interaction (G key in Edit mode with vertex selection)
+    if (StartVertexGrabMouseRay) {
+        // Cancel on Escape or right click - restore original positions
+        if (IsKeyPressed(ImGuiKey_Escape, false) || IsMouseClicked(ImGuiMouseButton_Right)) {
+            for (const auto &[instance_entity, grab] : R.view<VertexGrabState>().each()) {
+                const auto mesh_entity = R.get<const MeshInstance>(instance_entity).MeshEntity;
+                const auto &mesh = R.get<const Mesh>(mesh_entity);
+                for (const auto &[vi, pos] : grab.StartPositions) Meshes.SetPosition(mesh, vi, pos);
+                Meshes.UpdateNormals(mesh);
+                R.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
+            }
+            R.clear<VertexGrabState>();
+            StartVertexGrabMouseRay.reset();
+        } else {
+            // Update positions
+            const auto &camera = R.get<const Camera>(SceneEntity);
+            const auto n = -camera.Forward(); // Plane normal (faces camera)
+            const auto window_pos = ToGlm(GetWindowPos());
+            const auto window_size = ToGlm(GetContentRegionAvail());
+            const auto mouse_rel = (ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta - window_pos) / window_size;
+            const auto mouse_ndc = vec2{mouse_rel.x, 1.f - mouse_rel.y} * 2.f - 1.f;
+            const auto mouse_ray = camera.NdcToWorldRay(mouse_ndc, window_size.x / window_size.y);
+            const auto start_ray = *StartVertexGrabMouseRay;
+            const auto start_scaled = start_ray.d / glm::dot(n, start_ray.d);
+            const auto current_scaled = mouse_ray.d / glm::dot(n, mouse_ray.d);
+            const auto delta_base = (mouse_ray.o - current_scaled * glm::dot(n, mouse_ray.o)) - (start_ray.o - start_scaled * glm::dot(n, start_ray.o));
+            const auto delta_scale = current_scaled - start_scaled;
+            for (const auto &[instance_entity, grab] : R.view<VertexGrabState>().each()) {
+                const auto mesh_entity = R.get<const MeshInstance>(instance_entity).MeshEntity;
+                const auto &mesh = R.get<const Mesh>(mesh_entity);
+                const auto &wm = R.get<const WorldMatrix>(instance_entity);
+                const auto world_to_local = glm::transpose(mat3{wm.MInv});
+                for (const auto &[vi, start_local] : grab.StartPositions) {
+                    const auto depth = glm::dot(n, vec3{wm.M * vec4{start_local, 1.f}});
+                    Meshes.SetPosition(mesh, vi, start_local + world_to_local * (delta_base + delta_scale * depth));
+                }
+                Meshes.UpdateNormals(mesh);
+                R.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
+            }
+
+            // Confirm on left click or enter
+            if (IsMouseClicked(ImGuiMouseButton_Left) || IsKeyPressed(ImGuiKey_Enter, false)) {
+                R.clear<VertexGrabState>();
+                StartVertexGrabMouseRay.reset();
+            } else {
+                SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+                WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
+                return;
+            }
+        }
     }
+
+    // Handle mouse input.
+    if (!IsMouseDown(ImGuiMouseButton_Left)) R.clear<ExcitedVertex>();
+
     if (TransformGizmo::IsUsing()) {
         // TransformGizmo overrides this mouse cursor during some actions - this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);

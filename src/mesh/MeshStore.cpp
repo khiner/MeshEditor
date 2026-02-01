@@ -241,6 +241,10 @@ void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) 
     UpdateNormals(mesh);
 }
 
+void MeshStore::SetPosition(const Mesh &mesh, uint32_t index, vec3 position) {
+    VerticesBuffer->GetMutable(Entries.at(mesh.GetStoreId()).Vertices)[index].Position = position;
+}
+
 void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;
     auto &entry = Entries[id];

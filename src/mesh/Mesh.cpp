@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cassert>
 #include <ranges>
-#include <utility>
 
 using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
 
