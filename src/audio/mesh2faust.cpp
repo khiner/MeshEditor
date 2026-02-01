@@ -5,14 +5,7 @@
 #include "numeric/vec3.h"
 
 #include "tetgen.h"
-#include <Eigen/SparseCore>
-#include <Spectra/MatOp/SparseSymMatProd.h>
-#include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
-
-#include <ranges>
-
-using std::ranges::find_if, std::views::drop, std::views::reverse;
 
 using uint = uint32_t;
 
@@ -229,48 +222,50 @@ ModalModes ComputeModes(
 
     /** Compute modes frequencies/gains/T60s **/
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
+    std::vector<double> omega_undamped(fem_n_modes);
+    const double lambda_eps = sigma * 1e-10; // scale-aware near-zero cutoff
     for (uint mode = 0; mode < fem_n_modes; ++mode) {
-        if (eigenvalues[mode] < 1) { // Ignore very small eigenvalues
-            mode_freqs[mode] = mode_t60s[mode] = 0.0;
-            continue;
-        }
-        // See Eqs. 1-12 in https://www.cs.cornell.edu/~djames/papers/DyRT.pdf for a derivation of the following.
-        const double omega_i = sqrt(eigenvalues[mode]); // Undamped natural frequency, in rad/s
-        // With good eigenvalue estimates, this should be nearly equivalent:
-        // const auto &v = eigenvectors.col(mode);
-        // const double Mv = v.transpose() * M * v, Kv = v.transpose() * K * v, omega_i = sqrt(Kv / Mv);
-        const double xi_i = 0.5 * (opts.Material.Alpha / omega_i + opts.Material.Beta * omega_i); // Damping ratio
-        const double omega_i_hz = omega_i / (2 * M_PI);
-        mode_freqs[mode] = omega_i_hz * sqrt(1 - xi_i * xi_i); // Damped natural frequency
-        // T60 is the time for the mode's amplitude to decay by 60 dB.
-        // 20log10(1000) = 60 dB -> After T60 time, the amplitude is 1/1000th of its initial value.
-        // A change of basis gets us to the ln(1000) factor.
-        // See https://ccrma.stanford.edu/~jos/st/Audio_Decay_Time_T60.html
-        static const double LN_1000 = std::log(1000);
-        mode_t60s[mode] = LN_1000 / (xi_i * omega_i_hz); // Damping is based on the _undamped_ natural frequency.
+        const double lambda_i = eigenvalues[mode];
+        omega_undamped[mode] = lambda_i > lambda_eps ? std::sqrt(lambda_i) : 0;
     }
 
-    /** Scale mode frequencies in-place based on the configured fundamental frequency. **/
-    // First, find the lowest unscaled nonzero mode and keep track of it.
-    // (We need to know the lowest mode to scale the rest.)
-    const auto lowest_mode_it = find_if(mode_freqs, [](auto freq) { return freq > 0; });
-    if (lowest_mode_it == mode_freqs.end()) return {}; // No valid modes
+    const auto c_from_omega = [&material = opts.Material](double omega) { return material.Alpha + material.Beta * (omega * omega); };
+    const auto damped_hz = [&](double omega, double c) {
+        const double omega_d_sq = omega * omega - 0.25 * c * c;
+        return omega_d_sq > 0 ? std::sqrt(omega_d_sq) / (2 * M_PI) : 0;
+    };
 
-    const uint lowest_mode_i = lowest_mode_it - mode_freqs.begin();
-    const float lowest_mode_freq_orig = mode_freqs[lowest_mode_i]; // Save for return
+    uint lowest_mode_i = fem_n_modes;
+    float lowest_mode_freq_orig{0};
+    for (uint mode = 0; mode < fem_n_modes; ++mode) {
+        const double omega_i = omega_undamped[mode];
+        if (omega_i <= 0) {
+            mode_freqs[mode] = mode_t60s[mode] = 0.f;
+            continue;
+        }
+        mode_freqs[mode] = damped_hz(omega_i, c_from_omega(omega_i));
+        if (lowest_mode_i == fem_n_modes && mode_freqs[mode] > 1e-6f) {
+            lowest_mode_i = mode;
+            lowest_mode_freq_orig = mode_freqs[mode];
+        }
+    }
+    if (lowest_mode_i == fem_n_modes) return {};
 
-    // Scale all modes so the lowest valid mode is at the configured fundamental frequency.
-    const float freq_scale = opts.FundamentalFreq ? *opts.FundamentalFreq / mode_freqs[lowest_mode_i] : 1.f;
-    for (uint mode = lowest_mode_i; mode < fem_n_modes; ++mode) mode_freqs[mode] *= freq_scale;
-
+    // Scale all modes so the lowest valid mode is at the configured fundamental frequency,
+    // and calculate T60s from the scaled frequencies.
+    static const double ln_1000 = std::log(1000);
+    const float freq_scale = opts.FundamentalFreq ? *opts.FundamentalFreq / lowest_mode_freq_orig : 1.f;
+    for (uint mode = lowest_mode_i; mode < fem_n_modes; ++mode) {
+        const double omega_s = omega_undamped[mode] * freq_scale; // scaled rad/s
+        const double c = c_from_omega(omega_s);
+        mode_freqs[mode] = damped_hz(omega_s, c);
+        mode_t60s[mode] = c > 0 ? (2 * ln_1000) / c : 0;
+    }
     // Keep modes that are only above the max frequency because of scaling.
     // This allows changing the fundamental without losing the higher modes.
     const float max_mode_freq = opts.MaxModeFreq * std::max(1.f, freq_scale);
-    const auto highest_mode_it = find_if(
-        mode_freqs | drop(lowest_mode_i) | reverse,
-        [max_mode_freq](auto mode_freq) { return mode_freq <= max_mode_freq; }
-    );
-    const uint highest_mode_i = highest_mode_it.base() - mode_freqs.begin();
+    uint highest_mode_i = fem_n_modes;
+    while (highest_mode_i > lowest_mode_i && mode_freqs[highest_mode_i - 1] > max_mode_freq) --highest_mode_i;
 
     // Adjust modes to include only the requested range.
     const uint n_modes = std::min(std::min(opts.NumModes, fem_n_modes), highest_mode_i - lowest_mode_i);

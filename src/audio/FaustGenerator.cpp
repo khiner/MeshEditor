@@ -67,6 +67,7 @@ std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view mode
 }
 
 using ModalDsp = FaustGenerator::ModalDsp;
+// Note: Frequency control is not physically accurate as it doesn't scale mode dampings.
 ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundObject &obj, bool freq_control) {
     const float fundamental_freq = obj.Modes.Freqs.front();
     static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
