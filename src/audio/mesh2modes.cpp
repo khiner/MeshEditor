@@ -1,4 +1,4 @@
-#include "mesh2faust.h"
+#include "mesh2modes.h"
 
 #include "AcousticMaterialProperties.h"
 #include "numeric/mat3.h"

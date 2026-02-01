@@ -12,7 +12,7 @@
 #include "mesh/Primitives.h"
 
 #include "implot.h"
-#include "mesh2faust.h"
+#include "mesh2modes.h"
 #include "miniaudio.h"
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
 #include <entt/entity/registry.hpp>
