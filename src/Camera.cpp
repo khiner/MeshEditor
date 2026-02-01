@@ -15,10 +15,13 @@ constexpr float ShortestAngleDelta(float from, float to) {
 bool Camera::IsAligned(vec3 direction) const { return glm::dot(Forward(), glm::normalize(direction)) > 0.999f; }
 bool Camera::IsInFront(vec3 p) const { return glm::dot(p - Position(), -Forward()) > NearClip; }
 
-ray Camera::NdcToWorldRay(vec2 ndc, float aspect_ratio) const {
-    const float t = std::tan(FieldOfViewRad * 0.5f);
+ray Camera::PixelToWorldRay(vec2 mouse_px, vec2 viewport_pos, vec2 viewport_size) const {
+    const auto rel = (mouse_px - viewport_pos) / viewport_size;
+    const auto ndc = vec2{rel.x, 1.f - rel.y} * 2.f - 1.f;
+    const auto aspect = viewport_size.x / viewport_size.y;
+    const auto t = std::tan(FieldOfViewRad * 0.5f);
     // View-space direction with +Z along the camera view dir, rotated into world-space
-    return {Position(), Basis() * glm::normalize(vec3{ndc.x * aspect_ratio * t, ndc.y * t, 1.f})};
+    return {Position(), Basis() * glm::normalize(vec3{ndc.x * aspect * t, ndc.y * t, 1.f})};
 }
 
 vec3 Camera::YAxis() const {
@@ -27,9 +30,7 @@ vec3 Camera::YAxis() const {
 }
 
 mat4 Camera::View() const { return glm::lookAt(Position(), Target, YAxis()); }
-mat4 Camera::Projection(float aspect_ratio) const {
-    return glm::perspective(FieldOfViewRad, aspect_ratio, NearClip, FarClip);
-}
+mat4 Camera::Projection(float aspect_ratio) const { return glm::perspective(FieldOfViewRad, aspect_ratio, NearClip, FarClip); }
 vec3 Camera::Forward() const { return {glm::cos(YawPitch.x) * glm::cos(YawPitch.y), glm::sin(YawPitch.y), glm::sin(YawPitch.x) * glm::cos(YawPitch.y)}; }
 mat3 Camera::Basis() const {
     const auto forward = Forward();

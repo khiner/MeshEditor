@@ -1520,9 +1520,7 @@ void Scene::Interact() {
                             const auto &camera = R.get<const Camera>(SceneEntity);
                             const auto window_pos = ToGlm(GetWindowPos());
                             const auto window_size = ToGlm(GetContentRegionAvail());
-                            const auto mouse_rel = (ToGlm(GetIO().MousePos) - window_pos) / window_size;
-                            const auto mouse_ndc = vec2{mouse_rel.x, 1.f - mouse_rel.y} * 2.f - 1.f;
-                            StartVertexGrabMouseRay = camera.NdcToWorldRay(mouse_ndc, window_size.x / window_size.y);
+                            StartVertexGrabMouseRay = camera.PixelToWorldRay(ToGlm(GetIO().MousePos), window_pos, window_size);
 
                             auto &grab = R.emplace<VertexGrabState>(instance_entity);
                             for (const auto vi : selection.Handles) {
@@ -1569,9 +1567,7 @@ void Scene::Interact() {
             const auto n = -camera.Forward(); // Plane normal (faces camera)
             const auto window_pos = ToGlm(GetWindowPos());
             const auto window_size = ToGlm(GetContentRegionAvail());
-            const auto mouse_rel = (ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta - window_pos) / window_size;
-            const auto mouse_ndc = vec2{mouse_rel.x, 1.f - mouse_rel.y} * 2.f - 1.f;
-            const auto mouse_ray = camera.NdcToWorldRay(mouse_ndc, window_size.x / window_size.y);
+            const auto mouse_ray = camera.PixelToWorldRay(ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta, window_pos, window_size);
             const auto start_ray = *StartVertexGrabMouseRay;
             const auto start_scaled = start_ray.d / glm::dot(n, start_ray.d);
             const auto current_scaled = mouse_ray.d / glm::dot(n, mouse_ray.d);
@@ -1849,6 +1845,7 @@ void Scene::WaitForRender() {
 
 void Scene::RenderOverlay() {
     const auto window_pos = ToGlm(GetWindowPos());
+    const auto window_size = ToGlm(GetContentRegionAvail());
     auto &camera = R.get<Camera>(SceneEntity);
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
@@ -1928,15 +1925,14 @@ void Scene::RenderOverlay() {
 
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
-        const auto size = ToGlm(GetContentRegionAvail());
-        const auto vp = camera.Projection(size.x / size.y) * camera.View();
+        const auto vp = camera.Projection(window_size.x / window_size.y) * camera.View();
         for (const auto [e, wm, ri] : R.view<const WorldMatrix, const RenderInstance>().each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
 
             const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
             const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
-            const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * size); // UV to px
+            const auto p_px = std::bit_cast<ImVec2>(window_pos + p_uv * window_size); // UV to px
             auto &dl = *GetWindowDrawList();
             dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
@@ -1963,7 +1959,7 @@ void Scene::RenderOverlay() {
         const auto start_transform_view = R.view<const StartTransform>();
         if (auto start_delta = TransformGizmo::Draw(
                 {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
-                MGizmo.Config, camera, window_pos, ToGlm(GetContentRegionAvail()), ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
+                MGizmo.Config, camera, window_pos, window_size, ToGlm(GetIO().MousePos) + AccumulatedWrapMouseDelta,
                 StartScreenTransform
             )) {
             const auto &[ts, td] = *start_delta;

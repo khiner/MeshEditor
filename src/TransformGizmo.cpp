@@ -888,9 +888,7 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
         return {};
     }
 
-    const auto mouse_pos_rel = (mouse_px - pos) / size;
-    const auto mouse_pos_clip = vec2{mouse_pos_rel.x, 1 - mouse_pos_rel.y} * 2.f - 1.f;
-    const auto mouse_ray_ws = camera.NdcToWorldRay(mouse_pos_clip, size.x / size.y);
+    const auto mouse_ray_ws = camera.PixelToWorldRay(mouse_px, pos, size);
     if (g.Start) {
         const auto &ts = g.Start->Transform;
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray));
