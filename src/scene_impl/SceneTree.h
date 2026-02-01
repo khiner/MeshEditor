@@ -46,7 +46,7 @@ WorldMatrix MakeWorldMatrix(mat4 m) { return {std::move(m), glm::transpose(glm::
 // Recursively update world matrices of entity and its children based on current transforms
 void UpdateWorldMatrix(entt::registry &r, entt::entity e) {
     // How much the child's parent has transformed since parenting, or identity if no parent.
-    static const auto GetParentDelta = [](entt::registry &r, entt::entity child) -> mat4 {
+    static const auto GetParentDelta = [](const entt::registry &r, entt::entity child) -> mat4 {
         const auto *node = r.try_get<SceneNode>(child);
         if (!node || node->Parent == entt::null) return I4;
         return r.get<WorldMatrix>(node->Parent).M * r.get<ParentInverse>(child).M;

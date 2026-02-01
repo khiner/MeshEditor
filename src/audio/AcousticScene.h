@@ -53,8 +53,8 @@ private:
     void SetModel(entt::entity, SoundObjectModel);
     void Stop(entt::entity);
 
-    void OnCreateExcitedVertex(entt::registry &, entt::entity);
-    void OnDestroyExcitedVertex(entt::registry &, entt::entity);
+    void OnCreateExcitedVertex(const entt::registry &, entt::entity);
+    void OnDestroyExcitedVertex(const entt::registry &, entt::entity);
 
     ModalSoundObject CreateModalSoundObject(entt::entity, entt::entity mesh_entity, const ModalModelCreateInfo &) const;
 

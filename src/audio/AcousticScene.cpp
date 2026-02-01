@@ -68,7 +68,7 @@ AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg)
 }
 AcousticScene::~AcousticScene() = default;
 
-void AcousticScene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
+void AcousticScene::OnCreateExcitedVertex(const entt::registry &r, entt::entity e) {
     if (r.all_of<SoundObjectModel>(e)) {
         const auto &excited_vertex = r.get<const ExcitedVertex>(e);
         const auto &excitable = r.get<const Excitable>(e);
@@ -79,7 +79,7 @@ void AcousticScene::OnCreateExcitedVertex(entt::registry &r, entt::entity e) {
         }
     }
 }
-void AcousticScene::OnDestroyExcitedVertex(entt::registry &r, entt::entity e) {
+void AcousticScene::OnDestroyExcitedVertex(const entt::registry &r, entt::entity e) {
     if (r.all_of<SoundObjectModel>(e)) {
         SetVertexForce(e, 0.f);
     }

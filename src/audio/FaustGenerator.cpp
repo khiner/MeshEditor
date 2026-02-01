@@ -122,13 +122,13 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
 }
 } // namespace
 
-void FaustGenerator::OnCreateModalSoundObject(entt::registry &r, entt::entity e) {
-    const auto &model = r.get<ModalSoundObject>(e);
+void FaustGenerator::OnCreateModalSoundObject(const entt::registry &r, entt::entity e) {
+    const auto &model = r.get<const ModalSoundObject>(e);
     const auto name = GetName(r, e);
     ModalDspByEntity[e] = GenerateModalDsp(name, model, true);
     OnCodeChanged(GenerateDsp(ModalDspByEntity));
 }
-void FaustGenerator::OnDestroyModalSoundObject(entt::registry &, entt::entity e) {
+void FaustGenerator::OnDestroyModalSoundObject(const entt::registry &, entt::entity e) {
     ModalDspByEntity.erase(e);
     OnCodeChanged(GenerateDsp(ModalDspByEntity));
 }

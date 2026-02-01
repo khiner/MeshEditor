@@ -56,7 +56,7 @@ std::unordered_set<uint32_t> ConvertSelectionElement(const MeshSelection &select
 }
 
 // Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt::registry &r) {
+std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r) {
     std::unordered_map<entt::entity, entt::entity> primaries;
     const auto active = FindActiveEntity(r);
     for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
@@ -65,11 +65,11 @@ std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(entt:
     }
     return primaries;
 }
-bool HasSelectedInstance(entt::registry &r, entt::entity mesh_entity) {
-    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
-        if (mi.MeshEntity == mesh_entity) return true;
-    }
-    return false;
+bool HasSelectedInstance(const entt::registry &r, entt::entity mesh_entity) {
+    return any_of(r.view<const MeshInstance, const Selected>().each(), [mesh_entity](const auto &t) { return std::get<1>(t).MeshEntity == mesh_entity; });
+}
+auto GetSelectedMeshEntities(const entt::registry &r) {
+    return r.view<const MeshInstance, const Selected>().each() | transform([](const auto &t) { return std::get<1>(t).MeshEntity; }) | to<std::unordered_set>();
 }
 
 void RunSelectionCompute(
