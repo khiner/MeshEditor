@@ -5,9 +5,9 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <span>
+#include <unordered_set>
 
 struct MeshData;
 
@@ -17,6 +17,7 @@ struct MeshStore {
 
     struct Entry {
         BufferRange Vertices, FaceIds, FaceNormals;
+        BufferRange FaceStates, EdgeStates;
         bool Alive{false};
     };
 
@@ -27,40 +28,46 @@ struct MeshStore {
     void SetPositions(const Mesh &, std::span<const vec3>);
     void SetPosition(const Mesh &, uint32_t index, vec3 position); // Single vertex, no normal update
 
-    std::span<const Vertex> GetVertices(uint32_t id) const;
-    std::span<Vertex> GetVertices(uint32_t id);
-    BufferRange GetVerticesRange(uint32_t id) const;
-    uint32_t GetVerticesSlot() const;
-    std::span<const uint8_t> GetVertexStates(uint32_t id) const;
-    std::span<uint8_t> GetVertexStates(uint32_t id);
-    BufferRange GetVertexStateRange(uint32_t id) const;
-    uint32_t GetVertexStateSlot() const;
+    std::span<const Vertex> GetVertices(uint32_t id) const { return VerticesBuffer.Get(Entries.at(id).Vertices); }
+    std::span<Vertex> GetVertices(uint32_t id) { return VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
+    SlottedBufferRange GetVerticesBuffer(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
 
-    std::span<const vec3> GetFaceNormals(uint32_t id) const;
-    std::span<vec3> GetFaceNormals(uint32_t id);
-    BufferRange GetFaceNormalRange(uint32_t id) const;
-    uint32_t GetFaceNormalSlot() const;
+    SlottedBufferRange GetVertexStateBuffer(uint32_t id) const { return {Entries.at(id).Vertices, VertexStateBuffer.Slot}; }
+    uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
+    SlottedBufferRange GetFaceStateBuffer(uint32_t id) const { return {Entries.at(id).FaceStates, FaceStateBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetEdgeStateBuffer(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
 
-    BufferRange GetFaceIdRange(uint32_t id) const;
-    uint32_t GetFaceIdSlot() const;
+    std::span<const vec3> GetFaceNormals(uint32_t id) const { return FaceNormalBuffer.Get(Entries.at(id).FaceNormals); }
+    std::span<vec3> GetFaceNormals(uint32_t id) { return FaceNormalBuffer.GetMutable(Entries.at(id).FaceNormals); }
+    SlottedBufferRange GetFaceNormalBuffer(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceNormalBuffer.Buffer.Slot}; }
 
+    SlottedBufferRange GetFaceIdBuffer(uint32_t id) const { return {Entries.at(id).FaceIds, FaceIdBuffer.Buffer.Slot}; }
+
+    void UpdateElementStates(
+        const Mesh &mesh,
+        he::Element element,
+        const std::unordered_set<he::VH> &selected_vertices,
+        const std::unordered_set<he::EH> &selected_edges,
+        const std::unordered_set<he::EH> &active_edges,
+        const std::unordered_set<he::FH> &selected_faces,
+        std::optional<uint32_t> active_handle
+    );
     void UpdateNormals(const Mesh &);
 
     void Release(uint32_t id);
 
 private:
-    static constexpr uint32_t InvalidStoreId{~0u};
-
     uint32_t AcquireId();
 
     std::vector<Entry> Entries;
     std::vector<uint32_t> FreeIds;
-    std::unique_ptr<BufferArena<Vertex>> VerticesBuffer;
+    BufferArena<Vertex> VerticesBuffer;
     mvk::Buffer VertexStateBuffer;
-    std::unique_ptr<BufferArena<uint32_t>> FaceIdBuffer;
-    std::unique_ptr<BufferArena<vec3>> FaceNormalBuffer;
+    BufferArena<uint8_t> FaceStateBuffer;
+    BufferArena<uint8_t> EdgeStateBuffer;
+    BufferArena<uint32_t> FaceIdBuffer;
+    BufferArena<vec3> FaceNormalBuffer;
 
     void EnsureVertexStateCapacity(BufferRange);
-    std::span<const uint8_t> GetVertexStates(BufferRange) const;
     std::span<uint8_t> GetVertexStates(BufferRange);
 };

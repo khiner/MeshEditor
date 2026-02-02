@@ -11,6 +11,11 @@ struct BufferRange {
     uint32_t Offset{0}, Count{0};
 };
 
+struct SlottedBufferRange {
+    BufferRange Range;
+    uint32_t Slot{InvalidSlot};
+};
+
 struct RangeAllocator {
     BufferRange Allocate(uint32_t count) {
         if (count == 0) return {};

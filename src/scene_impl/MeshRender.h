@@ -30,11 +30,6 @@ enum class IndexKind {
     Vertex
 };
 
-struct SlottedBufferRange {
-    BufferRange Range;
-    uint32_t Slot;
-};
-
 struct RenderBuffers {
     RenderBuffers(BufferRange vertices, SlottedBufferRange indices, IndexKind index_type)
         : Vertices(vertices), Indices(indices), IndexType(index_type) {}
@@ -61,10 +56,6 @@ struct MeshBuffers {
     SlottedBufferRange Vertices;
     SlottedBufferRange FaceIndices, EdgeIndices, VertexIndices;
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
-};
-
-struct MeshElementStateBuffers {
-    SlottedBufferRange Faces, Edges;
 };
 
 // Returns `std::nullopt` if the entity does not have a RenderInstance (i.e., is not visible).

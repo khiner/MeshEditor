@@ -10,6 +10,8 @@
 
 using uint = uint32_t;
 
+static constexpr uint32_t InvalidStoreId{~0u};
+
 struct MeshStore;
 
 // Half-edge polymesh data structure
@@ -224,7 +226,6 @@ private:
     };
 
     // Vertex data (ranges stay stable until a mesh resizes its vertex count)
-    static constexpr uint32_t InvalidStoreId{~0u};
     MeshStore *Store{};
     uint32_t StoreId{InvalidStoreId};
     uint32_t VertexCountValue{0};

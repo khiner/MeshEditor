@@ -26,8 +26,6 @@ struct SceneBuffers {
           FaceIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
-          FaceStateBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          EdgeStateBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           RenderDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
@@ -70,19 +68,6 @@ struct SceneBuffers {
         buffers.NormalIndicators.clear();
     }
 
-    void Release(MeshElementStateBuffers &states) {
-        FaceStateBuffer.Release(states.Faces.Range);
-        EdgeStateBuffer.Release(states.Edges.Range);
-        states = {};
-    }
-
-    SlottedBufferRange AllocateFaceStates(uint32_t count) {
-        return {FaceStateBuffer.Allocate(std::max(count, 1u)), FaceStateBuffer.Buffer.Slot};
-    }
-    SlottedBufferRange AllocateEdgeStates(uint32_t count) {
-        return {EdgeStateBuffer.Allocate(std::max(count, 1u)), EdgeStateBuffer.Buffer.Slot};
-    }
-
     BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
         switch (kind) {
             case IndexKind::Face: return FaceIndexBuffer;
@@ -112,7 +97,6 @@ struct SceneBuffers {
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    BufferArena<uint8_t> FaceStateBuffer, EdgeStateBuffer;
     mvk::Buffer SceneViewUBO;
     mvk::Buffer ViewportThemeUBO;
     mvk::Buffer RenderDrawData;

@@ -604,53 +604,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
 
-        // Update element states in-place
-        const auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
-        auto face_states = Buffers->FaceStateBuffer.GetMutable(state_buffers.Faces.Range);
-        auto edge_states = Buffers->EdgeStateBuffer.GetMutable(state_buffers.Edges.Range);
-        auto vertex_states = Meshes.GetVertexStates(mesh.GetStoreId());
-
-        // Clear all states
-        std::ranges::fill(face_states, uint8_t{0});
-        std::ranges::fill(edge_states, uint8_t{0});
-        std::ranges::fill(vertex_states, uint8_t{0});
-
-        // Note: An element must be both active and selected to be displayed as active.
-        if (element == Element::Face) {
-            for (const auto fh : selected_faces) {
-                face_states[*fh] |= static_cast<uint8_t>(ElementStateSelected);
-                if (active_handle == *fh) face_states[*active_handle] |= static_cast<uint8_t>(ElementStateActive);
-            }
-        }
-
-        if (element == Element::Edge || element == Element::Face) {
-            for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-                uint8_t state = 0;
-                if (selected_edges.contains(EH{ei})) {
-                    state |= static_cast<uint8_t>(ElementStateSelected);
-                    if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
-                        state |= static_cast<uint8_t>(ElementStateActive);
-                    }
-                }
-                edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
-            }
-        } else if (element == Element::Vertex) {
-            for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-                const auto heh = mesh.GetHalfedge(EH{ei}, 0);
-                edge_states[2 * ei] = selected_vertices.contains(mesh.GetFromVertex(heh)) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
-                edge_states[2 * ei + 1] = selected_vertices.contains(mesh.GetToVertex(heh)) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
-            }
-        }
-
-        if (!selected_vertices.empty()) {
-            for (const auto vh : selected_vertices) {
-                vertex_states[*vh] |= static_cast<uint8_t>(ElementStateSelected);
-                if (element == Element::Vertex && active_handle == *vh) {
-                    vertex_states[*active_handle] |= static_cast<uint8_t>(ElementStateActive);
-                }
-            }
-        }
-
+        Meshes.UpdateElementStates(mesh, element, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
@@ -715,15 +669,10 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
     );
     R.emplace<MeshSelection>(mesh_entity);
     R.emplace<MeshBuffers>(
-        mesh_entity, SlottedBufferRange{Meshes.GetVerticesRange(mesh.GetStoreId()), Meshes.GetVerticesSlot()},
+        mesh_entity, Meshes.GetVerticesBuffer(mesh.GetStoreId()),
         Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
         Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
         Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
-    );
-    R.emplace<MeshElementStateBuffers>(
-        mesh_entity,
-        Buffers->AllocateFaceStates(mesh.FaceCount()),
-        Buffers->AllocateEdgeStates(mesh.EdgeCount() * 2)
     );
     R.emplace<Mesh>(mesh_entity, std::move(mesh));
     return {mesh_entity, info ? AddMeshInstance(mesh_entity, *info) : entt::null};
@@ -887,7 +836,6 @@ void Scene::Destroy(entt::entity e) {
         );
         if (!has_instances) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
-            if (auto *state_buffers = R.try_get<MeshElementStateBuffers>(mesh_entity)) Buffers->Release(*state_buffers);
             R.destroy(mesh_entity);
         }
     }
@@ -967,25 +915,25 @@ void Scene::RecordRenderCommandBuffer() {
 
     if (show_solid) {
         fill_batch = draw_list.BeginBatch();
-        for (auto [entity, mesh_buffers, models, mesh, state_buffers] :
-             R.view<MeshBuffers, ModelsBuffer, Mesh, MeshElementStateBuffers>().each()) {
+        for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
-            const auto face_id_range = Meshes.GetFaceIdRange(mesh.GetStoreId());
-            const auto face_normal_range = Meshes.GetFaceNormalRange(mesh.GetStoreId());
-            draw.ObjectIdSlot = Meshes.GetFaceIdSlot();
-            draw.FaceIdOffset = face_id_range.Offset;
-            draw.FaceNormalSlot = settings.SmoothShading ? InvalidSlot : Meshes.GetFaceNormalSlot();
-            draw.FaceNormalOffset = face_normal_range.Offset;
+            const auto face_id_buffer = Meshes.GetFaceIdBuffer(mesh.GetStoreId());
+            const auto face_normal_buffer = Meshes.GetFaceNormalBuffer(mesh.GetStoreId());
+            const auto face_state_buffer = Meshes.GetFaceStateBuffer(mesh.GetStoreId());
+            draw.ObjectIdSlot = face_id_buffer.Slot;
+            draw.FaceIdOffset = face_id_buffer.Range.Offset;
+            draw.FaceNormalSlot = settings.SmoothShading ? InvalidSlot : face_normal_buffer.Slot;
+            draw.FaceNormalOffset = face_normal_buffer.Range.Offset;
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                draw.ElementStateSlot = state_buffers.Faces.Slot;
-                draw.ElementStateOffset = state_buffers.Faces.Range.Offset;
+                draw.ElementStateSlot = face_state_buffer.Slot;
+                draw.ElementStateOffset = face_state_buffer.Range.Offset;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
                 draw.ElementStateSlot = InvalidSlot;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             } else {
-                draw.ElementStateSlot = state_buffers.Faces.Slot;
-                draw.ElementStateOffset = state_buffers.Faces.Range.Offset;
+                draw.ElementStateSlot = face_state_buffer.Slot;
+                draw.ElementStateOffset = face_state_buffer.Range.Offset;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             }
         }
@@ -993,11 +941,11 @@ void Scene::RecordRenderCommandBuffer() {
 
     if (show_wireframe || is_edit_mode || is_excite_mode) {
         line_batch = draw_list.BeginBatch();
-        for (auto [entity, mesh_buffers, models, state_buffers] :
-             R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
+        for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
-            draw.ElementStateSlot = state_buffers.Edges.Slot;
-            draw.ElementStateOffset = state_buffers.Edges.Range.Offset;
+            const auto edge_state_buffer = Meshes.GetEdgeStateBuffer(mesh.GetStoreId());
+            draw.ElementStateSlot = edge_state_buffer.Slot;
+            draw.ElementStateOffset = edge_state_buffer.Range.Offset;
             if (show_wireframe) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
@@ -1010,8 +958,7 @@ void Scene::RecordRenderCommandBuffer() {
 
     if ((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode) {
         point_batch = draw_list.BeginBatch();
-        for (auto [entity, mesh_buffers, models] :
-             R.view<MeshBuffers, ModelsBuffer>().each()) {
+        for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
             draw.ElementStateSlot = Meshes.GetVertexStateSlot();
             draw.ElementStateOffset = mesh_buffers.Vertices.Range.Offset;
@@ -1312,8 +1259,14 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                 element == Element::Edge                     ? mesh_buffers.EdgeIndices :
                                                                mesh_buffers.FaceIndices;
             auto draw = MakeDrawData(mesh_buffers.Vertices, indices, models);
-            draw.ObjectIdSlot = element == Element::Face ? Meshes.GetFaceIdSlot() : InvalidSlot;
-            draw.FaceIdOffset = element == Element::Face ? Meshes.GetFaceIdRange(mesh.GetStoreId()).Offset : 0;
+            if (element == Element::Face) {
+                const auto face_id_buffer = Meshes.GetFaceIdBuffer(mesh.GetStoreId());
+                draw.ObjectIdSlot = face_id_buffer.Slot;
+                draw.FaceIdOffset = face_id_buffer.Range.Offset;
+            } else {
+                draw.ObjectIdSlot = InvalidSlot;
+                draw.FaceIdOffset = 0;
+            }
             draw.VertexCountOrHeadImageSlot = 0;
             draw.ElementIdOffset = r.Offset;
             if (auto it = primary_edit_instances.find(r.MeshEntity); it != primary_edit_instances.end()) {
