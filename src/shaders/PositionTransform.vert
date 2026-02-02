@@ -22,5 +22,5 @@ void main() {
         world_pos = apply_pending_transform(world_pos, SceneViewUBO.TransformPivot);
     }
 
-    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * vec4(world_pos, 1.0);
+    gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
 }

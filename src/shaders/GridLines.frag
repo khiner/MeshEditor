@@ -53,7 +53,7 @@ vec4 BlendGrids(vec4 a, vec4 b) {
 void main() {
     const float t = -NearPos.y / (FarPos.y - NearPos.y);
     const vec3 pos_3d = NearPos + t * (FarPos - NearPos);
-    const vec4 clip_space_pos = SceneViewUBO.Proj * SceneViewUBO.View * vec4(pos_3d.xyz, 1);
+    const vec4 clip_space_pos = SceneViewUBO.ViewProj * vec4(pos_3d.xyz, 1);
     gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
 
     // Draw grid at three scales.

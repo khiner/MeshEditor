@@ -492,9 +492,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &camera = R.get<const Camera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+        const auto view = camera.View();
+        const auto proj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height));
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
-            .View = camera.View(),
-            .Proj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)),
+            .ViewProj = proj * view,
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip,
             .CameraFar = camera.FarClip,

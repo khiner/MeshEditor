@@ -41,7 +41,7 @@ void main() {
     Color = is_active ? vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0) :
         is_selected  ? vec4(ViewportTheme.Colors.VertexSelected, 1.0) :
                        vec4(ViewportTheme.Colors.Vertex, 1.0);
-    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * vec4(world_pos, 1.0);
+    gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
     // Only show selected/active vertices in excite mode
     gl_PointSize = SceneViewUBO.InteractionMode == InteractionModeExcite && !is_selected && !is_active ? 0.0 : 6.0;
 }

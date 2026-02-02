@@ -15,7 +15,7 @@ vec3 Unproject(vec3 screen_pos, mat4 inv_view_proj) {
 
 void main() {
     const vec2 p = QuadPositions[gl_VertexIndex];
-    const mat4 inv_view_proj = inverse(SceneViewUBO.Proj * SceneViewUBO.View);
+    const mat4 inv_view_proj = inverse(SceneViewUBO.ViewProj);
     NearPos = Unproject(vec3(p, 0), inv_view_proj).xyz;
     FarPos = Unproject(vec3(p, 1), inv_view_proj).xyz;
     gl_Position = vec4(p, 0, 1);

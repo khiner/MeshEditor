@@ -69,10 +69,7 @@ structs:
   - name: SceneViewUBO
     binding: SceneViewUBO
     fields:
-      - name: View
-        type: mat4
-        default: 1
-      - name: Proj
+      - name: ViewProj
         type: mat4
         default: 1
       - name: CameraPosition

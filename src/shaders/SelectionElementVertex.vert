@@ -23,6 +23,6 @@ void main() {
     const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     ElementId = draw.ElementIdOffset + idx + 1;
-    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * world.M * vec4(vert.Position, 1.0);
+    gl_Position = SceneViewUBO.ViewProj * world.M * vec4(vert.Position, 1.0);
     gl_PointSize = 6.0;
 }

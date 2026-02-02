@@ -81,5 +81,5 @@ void main() {
         if (is_active) final_color = vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0);
         Color = final_color;
     }
-    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * vec4(world_pos, 1.0);
+    gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
 }
