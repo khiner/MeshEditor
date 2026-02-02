@@ -170,10 +170,14 @@ struct VulkanContext {
             vk::PhysicalDeviceFeatures2,
             vk::PhysicalDeviceDescriptorIndexingFeatures,
             vk::PhysicalDeviceBufferDeviceAddressFeatures,
-            vk::PhysicalDeviceScalarBlockLayoutFeatures>();
+            vk::PhysicalDeviceScalarBlockLayoutFeatures,
+            vk::PhysicalDevice8BitStorageFeatures,
+            vk::PhysicalDeviceShaderFloat16Int8Features>();
         const auto &supported_indexing = supported_features.get<vk::PhysicalDeviceDescriptorIndexingFeatures>();
         const auto &supported_bda = supported_features.get<vk::PhysicalDeviceBufferDeviceAddressFeatures>();
         const auto &supported_scalar = supported_features.get<vk::PhysicalDeviceScalarBlockLayoutFeatures>();
+        const auto &supported_8bit_storage = supported_features.get<vk::PhysicalDevice8BitStorageFeatures>();
+        const auto &supported_int8 = supported_features.get<vk::PhysicalDeviceShaderFloat16Int8Features>();
         const auto RequireFeature = [](bool supported, std::string_view feature_name) {
             if (!supported) throw std::runtime_error(std::format("Required device feature {} is not available.", feature_name));
         };
@@ -216,10 +220,20 @@ struct VulkanContext {
         RequireFeature(supported_indexing.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
         RequireFeature(supported_bda.bufferDeviceAddress, "bufferDeviceAddress");
         RequireFeature(supported_scalar.scalarBlockLayout, "scalarBlockLayout");
+        RequireFeature(supported_8bit_storage.storageBuffer8BitAccess, "storageBuffer8BitAccess");
+        RequireFeature(supported_8bit_storage.uniformAndStorageBuffer8BitAccess, "uniformAndStorageBuffer8BitAccess");
+        RequireFeature(supported_int8.shaderInt8, "shaderInt8");
         vk::PhysicalDeviceBufferDeviceAddressFeatures buffer_device_address_features{};
         buffer_device_address_features.bufferDeviceAddress = VK_TRUE;
         vk::PhysicalDeviceScalarBlockLayoutFeatures scalar_block_layout_features{};
         scalar_block_layout_features.scalarBlockLayout = VK_TRUE;
+        vk::PhysicalDevice8BitStorageFeatures storage_8bit_features{};
+        storage_8bit_features.storageBuffer8BitAccess = VK_TRUE;
+        storage_8bit_features.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+        vk::PhysicalDeviceShaderFloat16Int8Features shader_int8_features{};
+        shader_int8_features.shaderInt8 = VK_TRUE;
+        shader_int8_features.pNext = &storage_8bit_features;
+        storage_8bit_features.pNext = &scalar_block_layout_features;
         scalar_block_layout_features.pNext = &buffer_device_address_features;
         vk::PhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_features{};
         descriptor_indexing_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
@@ -231,7 +245,7 @@ struct VulkanContext {
         descriptor_indexing_features.descriptorBindingSampledImageUpdateAfterBind = supported_indexing.descriptorBindingSampledImageUpdateAfterBind;
         descriptor_indexing_features.descriptorBindingStorageBufferUpdateAfterBind = supported_indexing.descriptorBindingStorageBufferUpdateAfterBind;
         descriptor_indexing_features.descriptorBindingStorageImageUpdateAfterBind = supported_indexing.descriptorBindingStorageImageUpdateAfterBind;
-        descriptor_indexing_features.pNext = &scalar_block_layout_features;
+        descriptor_indexing_features.pNext = &shader_int8_features;
         vk::PhysicalDeviceFeatures2 features2{};
         features2.features = device_features;
         features2.pNext = &descriptor_indexing_features;

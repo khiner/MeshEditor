@@ -58,7 +58,13 @@ void AppendDraw(
     AppendDraw(builder, batch, indices.Range.Count, models, draw, model_index);
 }
 
-DrawData MakeDrawData(uint32_t vertex_slot, BufferRange vertices, const SlottedBufferRange &indices, uint32_t model_slot) {
+DrawData MakeDrawData(
+    uint32_t vertex_slot,
+    BufferRange vertices,
+    const SlottedBufferRange &indices,
+    uint32_t model_slot,
+    uint32_t instance_state_slot = InvalidSlot
+) {
     return {
         .VertexSlot = vertex_slot,
         .IndexSlot = indices.Slot,
@@ -73,11 +79,13 @@ DrawData MakeDrawData(uint32_t vertex_slot, BufferRange vertices, const SlottedB
         .ElementIdOffset = 0,
         .ElementStateSlot = InvalidSlot,
         .ElementStateOffset = 0,
+        .InstanceStateSlot = instance_state_slot,
+        .InstanceStateOffset = 0,
         .VertexOffset = vertices.Offset,
     };
 }
 DrawData MakeDrawData(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
-    return MakeDrawData(vertices.Slot, vertices.Range, indices, mb.Buffer.Slot);
+    return MakeDrawData(vertices.Slot, vertices.Range, indices, mb.Buffer.Slot, mb.InstanceStates.Slot);
 }
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {
     return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, mb.Buffer.Slot);

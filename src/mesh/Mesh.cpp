@@ -17,8 +17,8 @@ constexpr uint64_t MakeEdgeKey(uint from, uint to) {
 } // namespace
 
 Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &&faces)
-    : Store(&store), StoreId(store_id), Vertices(store.GetVertices(store_id)), FaceNormals(store.GetFaceNormals(store_id)) {
-    OutgoingHalfedges.resize(Vertices.size());
+    : Store(&store), StoreId(store_id), VertexCountValue(static_cast<uint32_t>(store.GetVertices(store_id).size())) {
+    OutgoingHalfedges.resize(VertexCountValue);
 
     std::unordered_map<uint64_t, HH> halfedge_map;
     for (const auto &face : faces) {
@@ -63,8 +63,7 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
 
 Mesh::Mesh(MeshStore &store, uint32_t store_id, const Mesh &src)
     : Store(&store), StoreId(store_id),
-      Vertices(store.GetVertices(store_id)),
-      FaceNormals(store.GetFaceNormals(store_id)),
+      VertexCountValue(src.VertexCountValue),
       OutgoingHalfedges(src.OutgoingHalfedges),
       Halfedges(src.Halfedges),
       HalfedgeToEdge(src.HalfedgeToEdge),
@@ -74,8 +73,7 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, const Mesh &src)
 Mesh::Mesh(Mesh &&other) noexcept
     : Store(std::exchange(other.Store, nullptr)),
       StoreId(std::exchange(other.StoreId, InvalidStoreId)),
-      Vertices(std::exchange(other.Vertices, {})),
-      FaceNormals(std::exchange(other.FaceNormals, {})),
+      VertexCountValue(std::exchange(other.VertexCountValue, 0)),
       OutgoingHalfedges(std::move(other.OutgoingHalfedges)),
       Halfedges(std::move(other.Halfedges)),
       HalfedgeToEdge(std::move(other.HalfedgeToEdge)),
@@ -87,8 +85,7 @@ Mesh &Mesh::operator=(Mesh &&other) noexcept {
         if (Store && StoreId != InvalidStoreId) Store->Release(StoreId);
         Store = std::exchange(other.Store, nullptr);
         StoreId = std::exchange(other.StoreId, InvalidStoreId);
-        Vertices = std::exchange(other.Vertices, {});
-        FaceNormals = std::exchange(other.FaceNormals, {});
+        VertexCountValue = std::exchange(other.VertexCountValue, 0);
         OutgoingHalfedges = std::move(other.OutgoingHalfedges);
         Halfedges = std::move(other.Halfedges);
         HalfedgeToEdge = std::move(other.HalfedgeToEdge);
@@ -118,10 +115,11 @@ uint Mesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
 
 vec3 Mesh::CalcFaceCentroid(FH fh) const {
     assert(*fh < Faces.size());
+    const auto vertices = Store->GetVertices(StoreId);
     vec3 centroid{0};
     uint count{0};
     for (auto vh : fv_range(fh)) {
-        centroid += Vertices[*vh].Position;
+        centroid += vertices[*vh].Position;
         count++;
     }
     return count > 0 ? centroid / static_cast<float>(count) : centroid;
@@ -129,19 +127,21 @@ vec3 Mesh::CalcFaceCentroid(FH fh) const {
 
 float Mesh::CalcEdgeLength(HH hh) const {
     assert(*hh < Halfedges.size());
+    const auto vertices = GetVerticesSpan();
     const auto from_v = GetFromVertex(hh);
     const auto to_v = Halfedges[*hh].Vertex;
     if (!from_v || !to_v) return 0;
-    return glm::length(Vertices[*to_v].Position - Vertices[*from_v].Position);
+    return glm::length(vertices[*to_v].Position - vertices[*from_v].Position);
 }
 
 float Mesh::CalcFaceArea(FH fh) const {
     assert(*fh < FaceCount());
+    const auto vertices = GetVerticesSpan();
     float area{0};
     auto fv_it = cfv_iter(fh);
-    const auto p0 = Vertices[**fv_it++].Position;
-    for (vec3 p1 = Vertices[**fv_it++].Position, p2; fv_it; ++fv_it) {
-        p2 = Vertices[**fv_it].Position;
+    const auto p0 = vertices[**fv_it++].Position;
+    for (vec3 p1 = vertices[**fv_it++].Position, p2; fv_it; ++fv_it) {
+        p2 = vertices[**fv_it].Position;
         area += glm::length(glm::cross(p1 - p0, p2 - p0)) * 0.5f;
         p1 = p2;
     }
@@ -151,8 +151,9 @@ float Mesh::CalcFaceArea(FH fh) const {
 he::VH Mesh::FindNearestVertex(vec3 p) const {
     VH closest_vertex;
     float min_distance_sq = std::numeric_limits<float>::max();
+    const auto vertex_span = GetVerticesSpan();
     for (const auto vh : vertices()) {
-        const vec3 diff = Vertices[*vh].Position - p;
+        const vec3 diff = vertex_span[*vh].Position - p;
         if (const float distance_sq = glm::dot(diff, diff); distance_sq < min_distance_sq) {
             min_distance_sq = distance_sq;
             closest_vertex = vh;
@@ -160,6 +161,12 @@ he::VH Mesh::FindNearestVertex(vec3 p) const {
     }
     return closest_vertex;
 }
+
+const vec3 &Mesh::GetPosition(VH vh) const { return GetVerticesSpan()[*vh].Position; }
+const vec3 &Mesh::GetNormal(VH vh) const { return GetVerticesSpan()[*vh].Normal; }
+const vec3 &Mesh::GetNormal(FH fh) const { return GetFaceNormalsSpan()[*fh]; }
+std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->GetVertices(StoreId); }
+std::span<const vec3> Mesh::GetFaceNormalsSpan() const { return Store->GetFaceNormals(StoreId); }
 
 bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
     return vh && fh && any_of(fv_range(fh), [vh](const auto &fv) { return fv == vh; });

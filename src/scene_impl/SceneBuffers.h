@@ -5,6 +5,8 @@
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
 
+#include <cstdint>
+
 constexpr uint32_t
     ClickSelectRadiusPx = 50,
     ClickSelectDiameterPx = ClickSelectRadiusPx * 2 + 1,
@@ -26,7 +28,6 @@ struct SceneBuffers {
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           FaceStateBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           EdgeStateBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          VertexStateBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           RenderDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
@@ -72,7 +73,6 @@ struct SceneBuffers {
     void Release(MeshElementStateBuffers &states) {
         FaceStateBuffer.Release(states.Faces.Range);
         EdgeStateBuffer.Release(states.Edges.Range);
-        VertexStateBuffer.Release(states.Vertices.Range);
         states = {};
     }
 
@@ -81,9 +81,6 @@ struct SceneBuffers {
     }
     SlottedBufferRange AllocateEdgeStates(uint32_t count) {
         return {EdgeStateBuffer.Allocate(std::max(count, 1u)), EdgeStateBuffer.Buffer.Slot};
-    }
-    SlottedBufferRange AllocateVertexStates(uint32_t count) {
-        return {VertexStateBuffer.Allocate(std::max(count, 1u)), VertexStateBuffer.Buffer.Slot};
     }
 
     BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
@@ -115,7 +112,7 @@ struct SceneBuffers {
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    BufferArena<uint32_t> FaceStateBuffer, EdgeStateBuffer, VertexStateBuffer;
+    BufferArena<uint8_t> FaceStateBuffer, EdgeStateBuffer;
     mvk::Buffer SceneViewUBO;
     mvk::Buffer ViewportThemeUBO;
     mvk::Buffer RenderDrawData;

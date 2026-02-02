@@ -21,6 +21,8 @@ bindings:
     kind: Buffer
   - name: DrawDataBuffer
     kind: Buffer
+  - name: InstanceStateBuffer
+    kind: Buffer
 
 structs:
   - name: DrawData
@@ -57,6 +59,11 @@ structs:
         default: InvalidSlot
       - name: ElementStateOffset
         type: u32
+      - name: InstanceStateSlot
+        type: u32
+        default: InvalidSlot
+      - name: InstanceStateOffset
+        type: u32
       - name: VertexOffset
         type: u32
   - name: SceneViewUBO
@@ -88,6 +95,17 @@ structs:
         type: u32
       - name: EditElement
         type: u32
+      - name: IsTransforming
+        type: u32
+      - name: TransformPivot
+        type: vec3
+      - name: PendingTransformP
+        type: vec3
+      - name: PendingTransformR
+        type: vec4
+      - name: PendingTransformS
+        type: vec3
+        default: "1, 1, 1"
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
       - name: Wire # Wire
@@ -177,6 +195,9 @@ structs:
         default: InvalidSlot
       - name: DrawDataOffset
         type: u32
+      - name: TransformVertexStateSlot
+        type: u32
+        default: InvalidSlot
       - name: SelectionHeadImageSlot
         type: u32
         default: InvalidSlot

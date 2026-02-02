@@ -1,6 +1,7 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "TransformUtils.glsl"
 
 layout(location = 0) out vec3 WorldNormal;
 layout(location = 1) out vec3 WorldPosition;
@@ -13,18 +14,34 @@ void main() {
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
-    uint state = 0u;
+    uint element_state = 0u;
+    uint vertex_state = 0u;
     if (draw.ElementStateSlot != INVALID_SLOT) {
-        state = ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + idx];
+        element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + idx]);
     }
-    const bool is_selected = (state & STATE_SELECTED) != 0u;
-    const bool is_active = (state & STATE_ACTIVE) != 0u;
+    if (pc.TransformVertexStateSlot != INVALID_SLOT) {
+        vertex_state = uint(ElementStateBuffers[pc.TransformVertexStateSlot].States[draw.VertexOffset + idx]);
+    }
+
+    uint instance_state = 0u;
+    if (draw.InstanceStateSlot != INVALID_SLOT) {
+        instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.InstanceStateOffset + draw.FirstInstance]);
+    }
+
+    const bool is_selected = (element_state & STATE_SELECTED) != 0u;
+    const bool is_active = (element_state & STATE_ACTIVE) != 0u;
+
+    vec3 world_pos = vec3(world.M * vec4(vert.Position, 1.0));
+    if (should_apply_pending_transform(instance_state, vertex_state, SceneViewUBO.InteractionMode == InteractionModeEdit)) {
+        world_pos = apply_pending_transform(world_pos, SceneViewUBO.TransformPivot);
+    }
+
     WorldNormal = mat3(world.MInv) * vert.Normal;
-    WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
+    WorldPosition = world_pos;
     Color = is_active ? vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0) :
         is_selected  ? vec4(ViewportTheme.Colors.VertexSelected, 1.0) :
                        vec4(ViewportTheme.Colors.Vertex, 1.0);
-    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * world.M * vec4(vert.Position, 1.0);
+    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * vec4(world_pos, 1.0);
     // Only show selected/active vertices in excite mode
     gl_PointSize = SceneViewUBO.InteractionMode == InteractionModeExcite && !is_selected && !is_active ? 0.0 : 6.0;
 }

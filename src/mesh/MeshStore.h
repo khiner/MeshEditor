@@ -3,6 +3,7 @@
 #include "../vulkan/BufferArena.h"
 #include "Mesh.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -30,6 +31,10 @@ struct MeshStore {
     std::span<Vertex> GetVertices(uint32_t id);
     BufferRange GetVerticesRange(uint32_t id) const;
     uint32_t GetVerticesSlot() const;
+    std::span<const uint8_t> GetVertexStates(uint32_t id) const;
+    std::span<uint8_t> GetVertexStates(uint32_t id);
+    BufferRange GetVertexStateRange(uint32_t id) const;
+    uint32_t GetVertexStateSlot() const;
 
     std::span<const vec3> GetFaceNormals(uint32_t id) const;
     std::span<vec3> GetFaceNormals(uint32_t id);
@@ -51,6 +56,11 @@ private:
     std::vector<Entry> Entries;
     std::vector<uint32_t> FreeIds;
     std::unique_ptr<BufferArena<Vertex>> VerticesBuffer;
+    mvk::Buffer VertexStateBuffer;
     std::unique_ptr<BufferArena<uint32_t>> FaceIdBuffer;
     std::unique_ptr<BufferArena<vec3>> FaceNormalBuffer;
+
+    void EnsureVertexStateCapacity(BufferRange);
+    std::span<const uint8_t> GetVertexStates(BufferRange) const;
+    std::span<uint8_t> GetVertexStates(BufferRange);
 };

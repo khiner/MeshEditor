@@ -1,6 +1,7 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "TransformUtils.glsl"
 
 layout(location = 0) out vec3 WorldNormal;
 layout(location = 1) out vec3 WorldPosition;
@@ -15,7 +16,8 @@ void main() {
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
-    uint state = 0u;
+    uint element_state = 0u;
+    uint vertex_state = 0u;
     uint face_id = 0u;
     vec3 normal = vert.Normal;
     if (draw.ObjectIdSlot != INVALID_SLOT) {
@@ -24,15 +26,30 @@ void main() {
             normal = FaceNormalBuffers[draw.FaceNormalSlot].Normals[draw.FaceNormalOffset + face_id - 1u];
         }
         if (draw.ElementStateSlot != INVALID_SLOT && face_id != 0u) {
-            state = ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + face_id - 1u];
+            element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + face_id - 1u]);
         }
     } else if (draw.ElementStateSlot != INVALID_SLOT) {
-        state = ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + gl_VertexIndex];
+        element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + gl_VertexIndex]);
+    }
+    if (pc.TransformVertexStateSlot != INVALID_SLOT) {
+        vertex_state = uint(ElementStateBuffers[pc.TransformVertexStateSlot].States[draw.VertexOffset + idx]);
+    }
+
+    uint instance_state = 0u;
+    if (draw.InstanceStateSlot != INVALID_SLOT) {
+        instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.InstanceStateOffset + draw.FirstInstance]);
+    }
+
+    vec3 local_pos = vert.Position;
+    vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
+    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
+    if (should_apply_pending_transform(instance_state, vertex_state, is_edit_mode)) {
+        world_pos = apply_pending_transform(world_pos, SceneViewUBO.TransformPivot);
     }
 
     WorldNormal = mat3(world.MInv) * normal;
-    WorldPosition = vec3(world.M * vec4(vert.Position, 1.0));
-    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
+    WorldPosition = world_pos;
+
     const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == EditElementEdge;
     const vec4 edge_color = is_edit_mode ? vec4(ViewportTheme.Colors.WireEdit, 1.0) : vec4(ViewportTheme.Colors.Wire, 1.0);
     const vec4 object_base_color = vec4(0.7, 0.7, 0.7, 1);
@@ -43,8 +60,8 @@ void main() {
                             edge_color;
     const bool is_face_draw = draw.ObjectIdSlot != INVALID_SLOT;
     const bool is_edge_draw = !is_face_draw && draw.ElementStateSlot != INVALID_SLOT;
-    const bool is_selected = (state & STATE_SELECTED) != 0u;
-    const bool is_active = (state & STATE_ACTIVE) != 0u;
+    const bool is_selected = (element_state & STATE_SELECTED) != 0u;
+    const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
     FaceOverlayFlags = 0u;
 
@@ -64,5 +81,5 @@ void main() {
         if (is_active) final_color = vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0);
         Color = final_color;
     }
-    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * world.M * vec4(vert.Position, 1.0);
+    gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * vec4(world_pos, 1.0);
 }

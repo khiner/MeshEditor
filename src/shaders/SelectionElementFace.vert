@@ -10,7 +10,6 @@ void main() {
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
-    const uint face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[gl_VertexIndex + draw.FaceIdOffset];
-    ElementId = draw.ElementIdOffset + face_id;
+    ElementId = draw.ElementIdOffset + ObjectIdBuffers[draw.ObjectIdSlot].Ids[gl_VertexIndex + draw.FaceIdOffset];
     gl_Position = SceneViewUBO.Proj * SceneViewUBO.View * world.M * vec4(vert.Position, 1.0);
 }

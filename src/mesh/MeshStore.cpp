@@ -154,6 +154,7 @@ std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_
 
 MeshStore::MeshStore(mvk::BufferContext &ctx)
     : VerticesBuffer{std::make_unique<BufferArena<Vertex>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer)},
+      VertexStateBuffer{ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
       FaceIdBuffer{std::make_unique<BufferArena<uint32_t>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer)},
       FaceNormalBuffer{std::make_unique<BufferArena<vec3>>(ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer)} {}
 
@@ -184,12 +185,14 @@ Mesh MeshStore::CreateMesh(MeshData &&data) {
     auto &entry = Entries[id];
     entry.Alive = true;
     entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(data.Positions.size()));
+    EnsureVertexStateCapacity(entry.Vertices);
     auto vertex_span = VerticesBuffer->GetMutable(entry.Vertices);
     for (size_t i = 0; i < data.Positions.size(); ++i) vertex_span[i].Position = data.Positions[i];
     entry.FaceIds = FaceIdBuffer->Allocate(CreateFaceElementIds(data.Faces));
     entry.FaceNormals = FaceNormalBuffer->Allocate(static_cast<uint32_t>(data.Faces.size()));
     Mesh mesh{*this, id, std::move(data.Faces)};
     UpdateNormals(mesh);
+    std::ranges::fill(GetVertexStates(id), uint8_t{0});
     return mesh;
 }
 
@@ -200,6 +203,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     {
         const auto src_vertices = GetVertices(mesh.GetStoreId());
         entry.Vertices = VerticesBuffer->Allocate(static_cast<uint32_t>(src_vertices.size()));
+        EnsureVertexStateCapacity(entry.Vertices);
         auto dst_vertices = VerticesBuffer->GetMutable(entry.Vertices);
         std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
     }
@@ -211,6 +215,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         auto dst_face_normals = FaceNormalBuffer->GetMutable(entry.FaceNormals);
         std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
     }
+    std::ranges::fill(GetVertexStates(id), uint8_t{0});
     return {*this, id, mesh};
 }
 
@@ -226,6 +231,10 @@ std::span<const Vertex> MeshStore::GetVertices(uint32_t id) const { return Verti
 std::span<Vertex> MeshStore::GetVertices(uint32_t id) { return VerticesBuffer->GetMutable(Entries.at(id).Vertices); }
 BufferRange MeshStore::GetVerticesRange(uint32_t id) const { return Entries.at(id).Vertices; }
 uint32_t MeshStore::GetVerticesSlot() const { return VerticesBuffer->Buffer.Slot; }
+std::span<const uint8_t> MeshStore::GetVertexStates(uint32_t id) const { return GetVertexStates(Entries.at(id).Vertices); }
+std::span<uint8_t> MeshStore::GetVertexStates(uint32_t id) { return GetVertexStates(Entries.at(id).Vertices); }
+BufferRange MeshStore::GetVertexStateRange(uint32_t id) const { return Entries.at(id).Vertices; }
+uint32_t MeshStore::GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
 
 std::span<const vec3> MeshStore::GetFaceNormals(uint32_t id) const { return FaceNormalBuffer->Get(Entries.at(id).FaceNormals); }
 std::span<vec3> MeshStore::GetFaceNormals(uint32_t id) { return FaceNormalBuffer->GetMutable(Entries.at(id).FaceNormals); }
@@ -253,6 +262,28 @@ void MeshStore::Release(uint32_t id) {
     FaceNormalBuffer->Release(entry.FaceNormals);
     entry = {};
     FreeIds.emplace_back(id);
+}
+
+void MeshStore::EnsureVertexStateCapacity(BufferRange range) {
+    const auto required_size = static_cast<vk::DeviceSize>(range.Offset + range.Count) * sizeof(uint8_t);
+    VertexStateBuffer.Reserve(required_size);
+    VertexStateBuffer.UsedSize = std::max(VertexStateBuffer.UsedSize, required_size);
+}
+
+std::span<const uint8_t> MeshStore::GetVertexStates(BufferRange range) const {
+    const auto byte_offset = static_cast<vk::DeviceSize>(range.Offset) * sizeof(uint8_t);
+    const auto byte_size = static_cast<vk::DeviceSize>(range.Count) * sizeof(uint8_t);
+    const auto bytes = VertexStateBuffer.GetMappedData();
+    if (byte_offset + byte_size > bytes.size()) return {};
+    return {reinterpret_cast<const uint8_t *>(bytes.data() + byte_offset), range.Count};
+}
+
+std::span<uint8_t> MeshStore::GetVertexStates(BufferRange range) {
+    const auto byte_offset = static_cast<vk::DeviceSize>(range.Offset) * sizeof(uint8_t);
+    const auto byte_size = static_cast<vk::DeviceSize>(range.Count) * sizeof(uint8_t);
+    const auto bytes = VertexStateBuffer.GetMutableRange(byte_offset, byte_size);
+    if (bytes.empty()) return {};
+    return {reinterpret_cast<uint8_t *>(bytes.data()), range.Count};
 }
 
 uint32_t MeshStore::AcquireId() {

@@ -62,11 +62,6 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 #include "scene_impl/SceneTransformUtils.h"
 #include "scene_impl/SceneUI.h"
 
-// Tracks state during element. Attached to instance entity.
-struct VertexGrabState {
-    std::vector<std::pair<uint32_t, vec3>> StartPositions{}; // (vertex index, local position)
-};
-
 namespace {
 vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t handle) {
     if (element == Element::Vertex) return mesh.GetPosition(VH{handle});
@@ -87,6 +82,7 @@ namespace changes {
 using namespace entt::literals;
 constexpr auto
     Selected = "selected_changes"_hs,
+    ActiveInstance = "active_instance_changes"_hs,
     Rerecord = "rerecord_changes"_hs,
     MeshSelection = "mesh_selection_changes"_hs,
     MeshActiveElement = "mesh_active_element_changes"_hs,
@@ -167,6 +163,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::Selected)
         .on_construct<Selected>()
         .on_destroy<Selected>();
+    R.storage<entt::reactive>(changes::ActiveInstance)
+        .on_construct<Active>()
+        .on_destroy<Active>();
     R.storage<entt::reactive>(changes::Rerecord)
         .on_construct<RenderInstance>()
         .on_destroy<RenderInstance>()
@@ -377,10 +376,28 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
-    { // Selected changes
+    { // Selected/Active instance changes - update instance state buffer
         auto &selected_tracker = R.storage<entt::reactive>(changes::Selected);
+        auto &active_tracker = R.storage<entt::reactive>(changes::ActiveInstance);
         if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
+
+        // Helper to update instance state for a given entity
+        const auto update_instance_state = [&](entt::entity instance_entity) {
+            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
+                if (const auto buffer_index = GetModelBufferIndex(R, instance_entity)) {
+                    uint8_t state = 0;
+                    if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
+                    if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
+                    const auto mesh_entity = mi->MeshEntity;
+                    R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
+                        mb.InstanceStates.Update(as_bytes(state), *buffer_index * sizeof(uint8_t));
+                    });
+                }
+            }
+        };
+
         for (auto instance_entity : selected_tracker) {
+            update_instance_state(instance_entity);
             if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
                 const auto mesh_entity = mi->MeshEntity;
                 if (R.all_of<Selected>(instance_entity)) {
@@ -395,6 +412,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     R.remove<BoundingBoxesBuffers>(mesh_entity);
                 }
             }
+        }
+        for (auto instance_entity : active_tracker) {
+            update_instance_state(instance_entity);
         }
     }
     if (!R.storage<entt::reactive>(changes::Rerecord).empty() || !DestroyTracker->Storage.empty()) {
@@ -466,6 +486,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     if (!R.storage<entt::reactive>(changes::SceneView).empty()) scene_view_dirty = true;
+    // Always update UBO and re-render when actively transforming.
+    if (PendingTransform.Active) scene_view_dirty = true;
     if (scene_view_dirty) {
         const auto &camera = R.get<const Camera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
@@ -483,6 +505,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .LightDirection = lights.Direction,
             .InteractionMode = uint32_t(interaction_mode),
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
+            .IsTransforming = PendingTransform.Active ? 1u : 0u,
+            .TransformPivot = PendingTransform.Pivot,
+            .PendingTransformP = PendingTransform.P,
+            .PendingTransformR = vec4{PendingTransform.R.x, PendingTransform.R.y, PendingTransform.R.z, PendingTransform.R.w},
+            .PendingTransformS = PendingTransform.S,
         }));
         request(RenderRequest::Submit);
     }
@@ -557,9 +584,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             element = edit_mode;
             handles = selection->Handles;
             if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity)) active_handle = active_element->Handle;
-            if (element == Element::Vertex) {
-                selected_vertices.insert(selection->Handles.begin(), selection->Handles.end());
-            } else if (element == Element::Edge) {
+            {
+                const auto vertex_handles = ConvertSelectionElement(*selection, mesh, edit_mode, Element::Vertex);
+                selected_vertices.insert(vertex_handles.begin(), vertex_handles.end());
+            }
+            if (element == Element::Edge) {
                 selected_edges.insert(selection->Handles.begin(), selection->Handles.end());
             } else if (element == Element::Face) {
                 for (auto h : selection->Handles) {
@@ -578,28 +607,28 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
         auto face_states = Buffers->FaceStateBuffer.GetMutable(state_buffers.Faces.Range);
         auto edge_states = Buffers->EdgeStateBuffer.GetMutable(state_buffers.Edges.Range);
-        auto vertex_states = Buffers->VertexStateBuffer.GetMutable(state_buffers.Vertices.Range);
+        auto vertex_states = Meshes.GetVertexStates(mesh.GetStoreId());
 
         // Clear all states
-        std::ranges::fill(face_states, 0u);
-        std::ranges::fill(edge_states, 0u);
-        std::ranges::fill(vertex_states, 0u);
+        std::ranges::fill(face_states, uint8_t{0});
+        std::ranges::fill(edge_states, uint8_t{0});
+        std::ranges::fill(vertex_states, uint8_t{0});
 
         // Note: An element must be both active and selected to be displayed as active.
         if (element == Element::Face) {
             for (const auto fh : selected_faces) {
-                face_states[*fh] |= ElementStateSelected;
-                if (active_handle == *fh) face_states[*active_handle] |= ElementStateActive;
+                face_states[*fh] |= static_cast<uint8_t>(ElementStateSelected);
+                if (active_handle == *fh) face_states[*active_handle] |= static_cast<uint8_t>(ElementStateActive);
             }
         }
 
         if (element == Element::Edge || element == Element::Face) {
             for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-                uint32_t state = 0;
+                uint8_t state = 0;
                 if (selected_edges.contains(EH{ei})) {
-                    state |= ElementStateSelected;
+                    state |= static_cast<uint8_t>(ElementStateSelected);
                     if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
-                        state |= ElementStateActive;
+                        state |= static_cast<uint8_t>(ElementStateActive);
                     }
                 }
                 edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
@@ -607,15 +636,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         } else if (element == Element::Vertex) {
             for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
                 const auto heh = mesh.GetHalfedge(EH{ei}, 0);
-                edge_states[2 * ei] = selected_vertices.contains(mesh.GetFromVertex(heh)) ? ElementStateSelected : 0u;
-                edge_states[2 * ei + 1] = selected_vertices.contains(mesh.GetToVertex(heh)) ? ElementStateSelected : 0u;
+                edge_states[2 * ei] = selected_vertices.contains(mesh.GetFromVertex(heh)) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
+                edge_states[2 * ei + 1] = selected_vertices.contains(mesh.GetToVertex(heh)) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
             }
         }
 
-        if (element == Element::Vertex) {
+        if (!selected_vertices.empty()) {
             for (const auto vh : selected_vertices) {
-                vertex_states[*vh] |= ElementStateSelected;
-                if (active_handle == *vh) vertex_states[*active_handle] |= ElementStateActive;
+                vertex_states[*vh] |= static_cast<uint8_t>(ElementStateSelected);
+                if (element == Element::Vertex && active_handle == *vh) {
+                    vertex_states[*active_handle] |= static_cast<uint8_t>(ElementStateActive);
+                }
             }
         }
 
@@ -642,9 +673,11 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldMatrix);
         const uint32_t object_id = NextObjectId++;
         R.emplace<RenderInstance>(entity, buffer_index, object_id);
+        const uint8_t initial_state = R.all_of<Selected>(entity) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
         R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
             mb.Buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), mb.Buffer.UsedSize);
             mb.ObjectIds.Insert(as_bytes(object_id), mb.ObjectIds.UsedSize);
+            mb.InstanceStates.Insert(as_bytes(initial_state), mb.InstanceStates.UsedSize);
         });
     } else {
         const uint old_model_index = R.get<const RenderInstance>(entity).BufferIndex;
@@ -652,6 +685,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         R.patch<ModelsBuffer>(mesh_entity, [old_model_index](auto &mb) {
             mb.Buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
             mb.ObjectIds.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
+            mb.InstanceStates.Erase(old_model_index * sizeof(uint8_t), sizeof(uint8_t));
         });
         // Update buffer indices for all instances of this mesh that have higher indices
         for (const auto [other_entity, mesh_instance, ri] : R.view<MeshInstance, const RenderInstance>().each()) {
@@ -675,7 +709,8 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
     R.emplace<ModelsBuffer>(
         mesh_entity,
         mvk::Buffer{Buffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
-        mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer}
+        mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
+        mvk::Buffer{Buffers->Ctx, sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer}
     );
     R.emplace<MeshSelection>(mesh_entity);
     R.emplace<MeshBuffers>(
@@ -687,8 +722,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
     R.emplace<MeshElementStateBuffers>(
         mesh_entity,
         Buffers->AllocateFaceStates(mesh.FaceCount()),
-        Buffers->AllocateEdgeStates(mesh.EdgeCount() * 2),
-        Buffers->AllocateVertexStates(mesh.VertexCount())
+        Buffers->AllocateEdgeStates(mesh.EdgeCount() * 2)
     );
     R.emplace<Mesh>(mesh_entity, std::move(mesh));
     return {mesh_entity, info ? AddMeshInstance(mesh_entity, *info) : entt::null};
@@ -703,6 +737,7 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
         mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
+        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
     });
     SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
@@ -767,6 +802,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
         mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
+        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
     });
     SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
@@ -973,11 +1009,11 @@ void Scene::RecordRenderCommandBuffer() {
 
     if ((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode) {
         point_batch = draw_list.BeginBatch();
-        for (auto [entity, mesh_buffers, models, state_buffers] :
-             R.view<MeshBuffers, ModelsBuffer, MeshElementStateBuffers>().each()) {
+        for (auto [entity, mesh_buffers, models] :
+             R.view<MeshBuffers, ModelsBuffer>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
-            draw.ElementStateSlot = state_buffers.Vertices.Slot;
-            draw.ElementStateOffset = state_buffers.Vertices.Range.Offset;
+            draw.ElementStateSlot = Meshes.GetVertexStateSlot();
+            draw.ElementStateOffset = mesh_buffers.Vertices.Range.Offset;
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
             } else if (excitable_mesh_entities.contains(entity)) {
@@ -1024,10 +1060,11 @@ void Scene::RecordRenderCommandBuffer() {
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
+    const uint32_t transform_vertex_state_slot = is_edit_mode ? Meshes.GetVertexStateSlot() : InvalidSlot;
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
-        const DrawPassPushConstants pc{Buffers->RenderDrawData.Slot, batch.DrawDataOffset};
+        const DrawPassPushConstants pc{Buffers->RenderDrawData.Slot, batch.DrawDataOffset, transform_vertex_state_slot};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
@@ -1218,6 +1255,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
         const DrawPassPushConstants pc{
             Buffers->SelectionDrawData.Slot,
             batch.DrawDataOffset,
+            InvalidSlot,
             SelectionHandles->HeadImage,
             Buffers->SelectionNodeBuffer.Slot,
             SelectionHandles->SelectionCounter
@@ -1375,14 +1413,13 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
 
     const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
     const auto &models = R.get<ModelsBuffer>(mesh_entity);
-    const auto &state_buffers = R.get<MeshElementStateBuffers>(mesh_entity);
     const auto model_index = R.get<RenderInstance>(instance_entity).BufferIndex;
     RenderSelectionPassWith(true, [&](DrawListBuilder &draw_list) {
         auto batch = draw_list.BeginBatch();
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
         draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementStateSlot = state_buffers.Vertices.Slot;
-        draw.ElementStateOffset = state_buffers.Vertices.Range.Offset;
+        draw.ElementStateSlot = Meshes.GetVertexStateSlot();
+        draw.ElementStateOffset = mesh_buffers.Vertices.Range.Offset;
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return SelectionDrawInfo{SPT::SelectionElementVertex, batch}; }, *SelectionReadySemaphore);
     SelectionStale = true;
@@ -1516,27 +1553,10 @@ void Scene::Interact() {
             else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
             else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
             else if (IsKeyPressed(ImGuiKey_G, false)) {
-                // In Edit mode, start element grab; otherwise start object transform
-                if (interaction_mode == InteractionMode::Edit) {
-                    const auto edit_mode_value = R.get<const SceneEditMode>(SceneEntity).Value;
-                    for (const auto [instance_entity, mi] : R.view<const MeshInstance, const Selected>().each()) {
-                        const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
-                        if (!selection.Handles.empty()) {
-                            const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
-                            const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode_value, Element::Vertex);
-                            const auto &camera = R.get<const Camera>(SceneEntity);
-                            StartVertexGrabMouseRay = camera.PixelToWorldRay(ToGlm(GetMousePos()), GetViewportRect());
-
-                            auto &grab = R.emplace<VertexGrabState>(instance_entity);
-                            for (const auto vi : vertex_handles) {
-                                grab.StartPositions.emplace_back(vi, mesh.GetPosition(VH{vi}));
-                            }
-                            break;
-                        }
-                    }
-                } else {
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
-                }
+                // Start transform gizmo in both Object and Edit modes.
+                // In Edit mode, shader applies transform to selected vertices.
+                // In Object mode, shader applies transform to selected instances.
+                StartScreenTransform = TransformGizmo::TransformType::Translate;
             } else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
             else if (IsKeyPressed(ImGuiKey_S, false) && !R.all_of<Frozen>(active_entity)) StartScreenTransform = TransformGizmo::TransformType::Scale;
             else if (IsKeyPressed(ImGuiKey_H, false)) {
@@ -1549,55 +1569,6 @@ void Scene::Interact() {
                 }
             } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
                 for (const auto e : R.view<Selected>()) ClearParent(R, e);
-            }
-        }
-    }
-
-    // Handle element grab interaction
-    if (StartVertexGrabMouseRay) {
-        // Cancel on Escape or right click - restore original positions
-        if (IsKeyPressed(ImGuiKey_Escape, false) || IsMouseClicked(ImGuiMouseButton_Right)) {
-            for (const auto &[instance_entity, grab] : R.view<VertexGrabState>().each()) {
-                const auto mesh_entity = R.get<const MeshInstance>(instance_entity).MeshEntity;
-                const auto &mesh = R.get<const Mesh>(mesh_entity);
-                for (const auto &[vi, pos] : grab.StartPositions) Meshes.SetPosition(mesh, vi, pos);
-                Meshes.UpdateNormals(mesh);
-                R.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
-            }
-            R.clear<VertexGrabState>();
-            StartVertexGrabMouseRay.reset();
-        } else {
-            // Update positions
-            const auto &camera = R.get<const Camera>(SceneEntity);
-            const auto n = -camera.Forward(); // Plane normal (faces camera)
-            const auto viewport = GetViewportRect();
-            const auto mouse_ray = camera.PixelToWorldRay(ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta, viewport);
-            const auto start_ray = *StartVertexGrabMouseRay;
-            const auto start_scaled = start_ray.d / glm::dot(n, start_ray.d);
-            const auto current_scaled = mouse_ray.d / glm::dot(n, mouse_ray.d);
-            const auto delta_base = (mouse_ray.o - current_scaled * glm::dot(n, mouse_ray.o)) - (start_ray.o - start_scaled * glm::dot(n, start_ray.o));
-            const auto delta_scale = current_scaled - start_scaled;
-            for (const auto &[instance_entity, grab] : R.view<VertexGrabState>().each()) {
-                const auto mesh_entity = R.get<const MeshInstance>(instance_entity).MeshEntity;
-                const auto &mesh = R.get<const Mesh>(mesh_entity);
-                const auto &wm = R.get<const WorldMatrix>(instance_entity);
-                const auto world_to_local = glm::transpose(mat3{wm.MInv});
-                for (const auto &[vi, start_local] : grab.StartPositions) {
-                    const auto depth = glm::dot(n, vec3{wm.M * vec4{start_local, 1.f}});
-                    Meshes.SetPosition(mesh, vi, start_local + world_to_local * (delta_base + delta_scale * depth));
-                }
-                Meshes.UpdateNormals(mesh);
-                R.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
-            }
-
-            // Confirm on left click or enter
-            if (IsMouseClicked(ImGuiMouseButton_Left) || IsKeyPressed(ImGuiKey_Enter, false)) {
-                R.clear<VertexGrabState>();
-                StartVertexGrabMouseRay.reset();
-            } else {
-                SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-                WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
-                return;
             }
         }
     }
@@ -1954,10 +1925,33 @@ void Scene::RenderOverlay() {
 
         const auto active_entity = FindActiveEntity(R);
         const auto active_transform = active_entity != entt::null ? GetTransform(R, active_entity) : Transform{};
-        const auto p = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
+        const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+
+        // In edit mode, compute pivot from selected elements instead of selected entities.
+        vec3 pivot{};
+        if (interaction_mode == InteractionMode::Edit) {
+            // Compute world-space centroid of selected vertices across all selected instances.
+            uint32_t vertex_count = 0;
+            const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+            for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                const auto vertices = mesh.GetVerticesSpan();
+                const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
+                const auto &wm = R.get<const WorldMatrix>(e);
+                const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex);
+                for (const auto vi : vertex_handles) {
+                    pivot += vec3{wm.M * vec4{vertices[vi].Position, 1.f}};
+                    ++vertex_count;
+                }
+            }
+            if (vertex_count > 0) pivot /= float(vertex_count);
+        } else {
+            pivot = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
+        }
+
         const auto start_transform_view = R.view<const StartTransform>();
         if (auto start_delta = TransformGizmo::Draw(
-                {{.P = p, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
+                {{.P = pivot, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
                 MGizmo.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
                 StartScreenTransform
             )) {
@@ -1965,23 +1959,82 @@ void Scene::RenderOverlay() {
             if (start_transform_view.empty()) {
                 for (const auto e : root_selected) R.emplace<StartTransform>(e, GetTransform(R, e));
             }
-            // Compute delta transform from drag start
-            const auto r = ts.R, rT = glm::conjugate(r);
-            for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
-                const auto &ts_e = ts_e_comp.T;
-                const bool frozen = R.all_of<Frozen>(e);
-                const auto offset = ts_e.P - ts.P;
-                SetTransform(
-                    R, e,
-                    {
-                        .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
-                        .R = glm::normalize(td.R * ts_e.R),
-                        .S = frozen ? ts_e.S : td.S * ts_e.S,
-                    }
-                );
-            }
+            // Store pending transform for shader-based preview (both object and edit mode).
+            // The shader applies this visually; actual data is only modified on commit.
+            PendingTransform = {
+                .Active = true,
+                .Pivot = ts.P,
+                .PivotR = ts.R,
+                .P = td.P,
+                .R = td.R,
+                .S = td.S,
+            };
+            // Update UBO transform fields immediately (ProcessComponentEvents already ran).
+            struct TransformUBOFields {
+                uint32_t IsTransforming;
+                vec3 TransformPivot;
+                vec3 PendingTransformP;
+                vec4 PendingTransformR;
+                vec3 PendingTransformS;
+            };
+            const TransformUBOFields fields{
+                .IsTransforming = 1u,
+                .TransformPivot = ts.P,
+                .PendingTransformP = td.P,
+                .PendingTransformR = {td.R.x, td.R.y, td.R.z, td.R.w},
+                .PendingTransformS = td.S,
+            };
+            Buffers->SceneViewUBO.Update(as_bytes(fields), offsetof(SceneViewUBO, IsTransforming));
         } else if (!start_transform_view.empty()) {
+            // Transform ended - commit the pending transform.
+            if (interaction_mode == InteractionMode::Edit) {
+                // Edit mode: bake transform into mesh vertex positions.
+                const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+                for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                    const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                    const auto vertices = mesh.GetVerticesSpan();
+                    const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
+                    const auto &wm = R.get<const WorldMatrix>(e);
+                    const auto world_to_local = glm::inverse(wm.M);
+                    const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex);
+                    for (const auto vi : vertex_handles) {
+                        const auto local_pos = vertices[vi].Position;
+                        const auto world_pos = vec3{wm.M * vec4{local_pos, 1.f}};
+                        // Apply transform around pivot in world space.
+                        auto offset = world_pos - PendingTransform.Pivot;
+                        offset = PendingTransform.S * offset;
+                        offset = glm::rotate(PendingTransform.R, offset);
+                        const auto new_world = PendingTransform.Pivot + offset + PendingTransform.P;
+                        // Convert back to local space using the full inverse matrix.
+                        const auto new_local = vec3{world_to_local * vec4{new_world, 1.f}};
+                        Meshes.SetPosition(mesh, vi, new_local);
+                    }
+                    Meshes.UpdateNormals(mesh);
+                    R.emplace_or_replace<MeshGeometryDirty>(mi.MeshEntity);
+                }
+            } else {
+                // Object mode: apply transform to entity Transform components.
+                const auto ts_pivot = Transform{.P = PendingTransform.Pivot, .R = PendingTransform.PivotR};
+                const auto r = ts_pivot.R, rT = glm::conjugate(r);
+                for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
+                    const auto &ts_e = ts_e_comp.T;
+                    const bool frozen = R.all_of<Frozen>(e);
+                    const auto offset = ts_e.P - ts_pivot.P;
+                    SetTransform(
+                        R, e,
+                        {
+                            .P = PendingTransform.P + ts_pivot.P + glm::rotate(PendingTransform.R, frozen ? offset : r * (rT * offset * PendingTransform.S)),
+                            .R = glm::normalize(PendingTransform.R * ts_e.R),
+                            .S = frozen ? ts_e.S : PendingTransform.S * ts_e.S,
+                        }
+                    );
+                }
+            }
             R.clear<StartTransform>();
+            PendingTransform = {};
+            // Clear transform in UBO.
+            const uint32_t zero = 0u;
+            Buffers->SceneViewUBO.Update(as_bytes(zero), offsetof(SceneViewUBO, IsTransforming));
         }
     }
     { // Orientation gizmo

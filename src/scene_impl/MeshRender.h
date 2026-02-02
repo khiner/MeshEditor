@@ -15,6 +15,7 @@ struct RenderInstance {
 struct ModelsBuffer {
     mvk::Buffer Buffer;
     mvk::Buffer ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
+    mvk::Buffer InstanceStates; // Per-instance selection/active state flags.
 };
 
 // Component for entities that render a mesh via instancing.
@@ -63,7 +64,7 @@ struct MeshBuffers {
 };
 
 struct MeshElementStateBuffers {
-    SlottedBufferRange Faces, Edges, Vertices;
+    SlottedBufferRange Faces, Edges;
 };
 
 // Returns `std::nullopt` if the entity does not have a RenderInstance (i.e., is not visible).

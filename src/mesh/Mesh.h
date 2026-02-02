@@ -28,15 +28,16 @@ struct Mesh {
     Mesh &operator=(Mesh &&) noexcept;
     ~Mesh();
 
-    uint VertexCount() const { return Vertices.size(); }
+    uint VertexCount() const { return VertexCountValue; }
     uint EdgeCount() const { return Edges.size(); }
     uint FaceCount() const { return Faces.size(); }
     uint HalfEdgeCount() const { return Halfedges.size(); }
 
-    const vec3 &GetPosition(VH vh) const { return Vertices[*vh].Position; }
-
-    const vec3 &GetNormal(VH vh) const { return Vertices[*vh].Normal; }
-    const vec3 &GetNormal(FH fh) const { return FaceNormals[*fh]; }
+    const vec3 &GetPosition(VH vh) const;
+    const vec3 &GetNormal(VH vh) const;
+    const vec3 &GetNormal(FH fh) const;
+    std::span<const Vertex> GetVerticesSpan() const;
+    std::span<const vec3> GetFaceNormalsSpan() const;
 
     uint32_t GetStoreId() const { return StoreId; }
 
@@ -226,8 +227,7 @@ private:
     static constexpr uint32_t InvalidStoreId{~0u};
     MeshStore *Store{};
     uint32_t StoreId{InvalidStoreId};
-    std::span<const Vertex> Vertices;
-    std::span<const vec3> FaceNormals;
+    uint32_t VertexCountValue{0};
     std::vector<HH> OutgoingHalfedges;
     std::vector<Halfedge> Halfedges;
     std::vector<EH> HalfedgeToEdge;

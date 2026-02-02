@@ -9,7 +9,7 @@ void main() {
 
     // If ElementStateSlot is set, filter to only selected vertices.
     if (draw.ElementStateSlot != INVALID_SLOT) {
-        const uint state = ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + idx];
+        const uint state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + idx]);
         if ((state & STATE_SELECTED) == 0u) {
             // Clip non-selected vertices by placing them outside the frustum.
             gl_Position = vec4(0.0, 0.0, 0.0, 0.0);
