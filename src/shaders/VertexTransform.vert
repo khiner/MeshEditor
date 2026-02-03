@@ -44,7 +44,7 @@ void main() {
     vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
     if (should_apply_pending_transform(instance_state, vertex_state, is_edit_mode)) {
-        world_pos = apply_pending_transform(world_pos, SceneViewUBO.TransformPivot);
+        world_pos = apply_pending_transform(world_pos);
     }
 
     WorldNormal = mat3(world.MInv) * normal;

@@ -47,6 +47,10 @@ void WaitFor(vk::Fence fence, vk::Device device) {
     }
     device.resetFences(fence);
 }
+
+mat4 ComputePendingTransformMatrix(vec3 pivot, vec3 P, quat R, vec3 S) {
+    return glm::translate(mat4{1}, pivot + P) * glm::mat4_cast(R) * glm::scale(mat4{1}, S) * glm::translate(mat4{1}, -pivot);
+}
 } // namespace
 
 #include "scene_impl/MeshRender.h"
@@ -507,10 +511,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .InteractionMode = uint32_t(interaction_mode),
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
             .IsTransforming = PendingTransform.Active ? 1u : 0u,
-            .TransformPivot = PendingTransform.Pivot,
-            .PendingTransformP = PendingTransform.P,
-            .PendingTransformR = vec4{PendingTransform.R.x, PendingTransform.R.y, PendingTransform.R.z, PendingTransform.R.w},
-            .PendingTransformS = PendingTransform.S,
+            .PendingTransform = ComputePendingTransformMatrix(PendingTransform.Pivot, PendingTransform.P, PendingTransform.R, PendingTransform.S),
         }));
         request(RenderRequest::Submit);
     }
@@ -1915,28 +1916,15 @@ void Scene::RenderOverlay() {
             }
             // Store pending transform for shader-based preview (both object and edit mode).
             // The shader applies this visually; actual data is only modified on commit.
-            PendingTransform = {
-                .Active = true,
-                .Pivot = ts.P,
-                .PivotR = ts.R,
-                .P = td.P,
-                .R = td.R,
-                .S = td.S,
-            };
+            PendingTransform = {.Active = true, .Pivot = ts.P, .PivotR = ts.R, .P = td.P, .R = td.R, .S = td.S};
             // Update UBO transform fields immediately (ProcessComponentEvents already ran).
             struct TransformUBOFields {
                 uint32_t IsTransforming;
-                vec3 TransformPivot;
-                vec3 PendingTransformP;
-                vec4 PendingTransformR;
-                vec3 PendingTransformS;
+                mat4 PendingTransform;
             };
             const TransformUBOFields fields{
-                .IsTransforming = 1u,
-                .TransformPivot = ts.P,
-                .PendingTransformP = td.P,
-                .PendingTransformR = {td.R.x, td.R.y, td.R.z, td.R.w},
-                .PendingTransformS = td.S,
+                .IsTransforming = 1,
+                .PendingTransform = ComputePendingTransformMatrix(ts.P, td.P, td.R, td.S),
             };
             Buffers->SceneViewUBO.Update(as_bytes(fields), offsetof(SceneViewUBO, IsTransforming));
         } else if (!start_transform_view.empty()) {

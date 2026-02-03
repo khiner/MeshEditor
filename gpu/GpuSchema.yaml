@@ -94,15 +94,9 @@ structs:
         type: u32
       - name: IsTransforming
         type: u32
-      - name: TransformPivot
-        type: vec3
-      - name: PendingTransformP
-        type: vec3
-      - name: PendingTransformR
-        type: vec4
-      - name: PendingTransformS
-        type: vec3
-        default: "1, 1, 1"
+      - name: PendingTransform
+        type: mat4
+        default: 1
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
       - name: Wire # Wire

@@ -19,7 +19,7 @@ void main() {
 
     vec3 world_pos = vec3(world.M * vec4(position, 1.0));
     if (should_apply_pending_transform(instance_state, 0u, SceneViewUBO.InteractionMode == InteractionModeEdit)) {
-        world_pos = apply_pending_transform(world_pos, SceneViewUBO.TransformPivot);
+        world_pos = apply_pending_transform(world_pos);
     }
 
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);

@@ -33,7 +33,7 @@ void main() {
 
     vec3 world_pos = vec3(world.M * vec4(vert.Position, 1.0));
     if (should_apply_pending_transform(instance_state, vertex_state, SceneViewUBO.InteractionMode == InteractionModeEdit)) {
-        world_pos = apply_pending_transform(world_pos, SceneViewUBO.TransformPivot);
+        world_pos = apply_pending_transform(world_pos);
     }
 
     WorldNormal = mat3(world.MInv) * vert.Normal;
