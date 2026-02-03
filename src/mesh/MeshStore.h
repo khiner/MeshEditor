@@ -4,9 +4,10 @@
 #include "Mesh.h"
 
 #include <cstdint>
+#include <expected>
 #include <filesystem>
-#include <optional>
 #include <span>
+#include <string>
 #include <unordered_set>
 
 struct MeshData;
@@ -23,7 +24,7 @@ struct MeshStore {
 
     Mesh CreateMesh(MeshData &&);
     Mesh CloneMesh(const Mesh &);
-    std::optional<Mesh> LoadMesh(const std::filesystem::path &);
+    std::expected<Mesh, std::string> LoadMesh(const std::filesystem::path &);
 
     void SetPositions(const Mesh &, std::span<const vec3>);
     void SetPosition(const Mesh &, uint32_t index, vec3 position); // Single vertex, no normal update

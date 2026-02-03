@@ -716,9 +716,9 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, std::optio
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path &path, std::optional<MeshInstanceCreateInfo> info) {
-    auto mesh = Meshes.LoadMesh(path);
-    if (!mesh) throw std::runtime_error(std::format("Failed to load mesh: {}", path.string()));
-    const auto e = AddMesh(std::move(*mesh), std::move(info));
+    auto result = Meshes.LoadMesh(path);
+    if (!result) throw std::runtime_error(result.error());
+    const auto e = AddMesh(std::move(*result), std::move(info));
     R.emplace<Path>(e.first, path);
     return e;
 }

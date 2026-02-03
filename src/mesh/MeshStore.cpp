@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cassert>
 #include <fstream>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -18,13 +20,13 @@
 namespace {
 constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
-std::optional<MeshData> ReadObj(const std::filesystem::path &path) {
+MeshData ReadObj(const std::filesystem::path &path) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
     if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.string().c_str())) {
-        return {};
+        throw std::runtime_error{"Failed to load OBJ: " + err};
     }
 
     MeshData data;
@@ -50,73 +52,67 @@ std::optional<MeshData> ReadObj(const std::filesystem::path &path) {
     return data;
 }
 
-std::optional<MeshData> ReadPly(const std::filesystem::path &path) {
+MeshData ReadPly(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) throw std::runtime_error{"Failed to open: " + path.string()};
+
+    tinyply::PlyFile ply_file;
+    ply_file.parse_header(file);
+
+    auto vertices = ply_file.request_properties_from_element("vertex", {"x", "y", "z"});
+    std::shared_ptr<tinyply::PlyData> faces;
     try {
-        std::ifstream file{path, std::ios::binary};
-        if (!file) return {};
-
-        tinyply::PlyFile ply_file;
-        ply_file.parse_header(file);
-
-        std::shared_ptr<tinyply::PlyData> vertices, faces;
-        try {
-            vertices = ply_file.request_properties_from_element("vertex", {"x", "y", "z"});
-        } catch (...) {
-            return {};
-        }
-        try {
-            faces = ply_file.request_properties_from_element("face", {"vertex_indices"}, 0);
-        } catch (...) {
-            try {
-                faces = ply_file.request_properties_from_element("face", {"vertex_index"}, 0);
-            } catch (...) {
-                return {};
-            }
-        }
-        ply_file.read(file);
-
-        MeshData data;
-        data.Positions.reserve(vertices->count);
-        auto AddVertices = [&](const auto *raw) {
-            for (size_t i = 0; i < vertices->count; ++i) {
-                data.Positions.emplace_back(raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2]);
-            }
-        };
-        if (vertices->t == tinyply::Type::FLOAT32) AddVertices(reinterpret_cast<const float *>(vertices->buffer.get()));
-        else if (vertices->t == tinyply::Type::FLOAT64) AddVertices(reinterpret_cast<const double *>(vertices->buffer.get()));
-        else return {};
-
-        const auto *face_data = reinterpret_cast<const uint8_t *>(faces->buffer.get());
-        const auto idx_size = faces->t == tinyply::Type::UINT32 || faces->t == tinyply::Type::INT32 ? 4 :
-            faces->t == tinyply::Type::UINT16 || faces->t == tinyply::Type::INT16                   ? 2 :
-                                                                                                      1;
-
-        size_t offset = 0;
-        data.Faces.reserve(faces->count);
-        for (size_t f = 0; f < faces->count; ++f) {
-            const auto face_size = face_data[offset++];
-            std::vector<uint> face_verts;
-            face_verts.reserve(face_size);
-            for (uint8_t v = 0; v < face_size; ++v) {
-                const uint vi = idx_size == 4 ? *reinterpret_cast<const uint *>(&face_data[offset]) :
-                    idx_size == 2             ? *reinterpret_cast<const uint16_t *>(&face_data[offset]) :
-                                                face_data[offset];
-                offset += idx_size;
-                face_verts.emplace_back(vi);
-            }
-            data.Faces.emplace_back(std::move(face_verts));
-        }
-
-        return data;
+        faces = ply_file.request_properties_from_element("face", {"vertex_indices"}, 0);
     } catch (...) {
-        return {};
+        faces = ply_file.request_properties_from_element("face", {"vertex_index"}, 0);
     }
+    ply_file.read(file);
+
+    MeshData data;
+    data.Positions.reserve(vertices->count);
+    auto AddVertices = [&](const auto *raw) {
+        for (size_t i = 0; i < vertices->count; ++i) {
+            data.Positions.emplace_back(raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2]);
+        }
+    };
+    if (vertices->t == tinyply::Type::FLOAT32) AddVertices(reinterpret_cast<const float *>(vertices->buffer.get()));
+    else if (vertices->t == tinyply::Type::FLOAT64) AddVertices(reinterpret_cast<const double *>(vertices->buffer.get()));
+    else throw std::runtime_error{"Unsupported vertex type"};
+
+    std::span face_buf{faces->buffer.get(), faces->buffer.size_bytes()};
+    size_t idx_size;
+    switch (faces->t) {
+        case tinyply::Type::UINT32:
+        case tinyply::Type::INT32: idx_size = 4; break;
+        case tinyply::Type::UINT16:
+        case tinyply::Type::INT16: idx_size = 2; break;
+        case tinyply::Type::UINT8:
+        case tinyply::Type::INT8: idx_size = 1; break;
+        default: throw std::runtime_error{"Unsupported index type"};
+    }
+
+    size_t offset = 0;
+    data.Faces.reserve(faces->count);
+    for (size_t f = 0; f < faces->count; ++f) {
+        const auto face_size = face_buf[offset++];
+        std::vector<uint> face_verts;
+        face_verts.reserve(face_size);
+        for (uint8_t v = 0; v < face_size; ++v) {
+            uint vi = 0;
+            std::memcpy(&vi, &face_buf[offset], idx_size);
+            offset += idx_size;
+            face_verts.emplace_back(vi);
+        }
+        data.Faces.emplace_back(std::move(face_verts));
+    }
+
+    return data;
 }
 
 MeshData DeduplicateVertices(const MeshData &mesh) {
     struct VertexHash {
         constexpr size_t operator()(const vec3 &p) const noexcept {
-            return std::hash<float>{}(p[0]) ^ std::hash<float>{}(p[1]) ^ std::hash<float>{}(p[2]);
+            return std::hash<float>{}(p.x) ^ std::hash<float>{}(p.y) ^ std::hash<float>{}(p.z);
         }
     };
 
@@ -144,10 +140,8 @@ std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_
     std::vector<uint32_t> ids;
     ids.reserve(faces.size() * 3);
     for (uint32_t fi = 0; fi < faces.size(); ++fi) {
-        const uint32_t valence = faces[fi].size();
-        if (valence < 3) continue;
-        for (uint32_t i = 0; i < valence - 2; ++i) {
-            ids.insert(ids.end(), 3, fi + 1);
+        if (const uint32_t valence = faces[fi].size(); valence >= 3) {
+            for (uint32_t i = 0; i < valence - 2; ++i) ids.insert(ids.end(), 3, fi + 1);
         }
     }
     return ids;
@@ -167,10 +161,8 @@ void MeshStore::UpdateNormals(const Mesh &mesh) {
     {
         auto face_normals = GetFaceNormals(id);
         for (uint fi = 0; fi < mesh.FaceCount(); ++fi) {
-            auto it = mesh.cfv_iter(Mesh::FH(fi));
-            const auto p0 = mesh.GetPosition(*it);
-            const auto p1 = mesh.GetPosition(*++it);
-            const auto p2 = mesh.GetPosition(*++it);
+            auto it = mesh.cfv_iter(Mesh::FH{fi});
+            const auto p0 = mesh.GetPosition(*it), p1 = mesh.GetPosition(*++it), p2 = mesh.GetPosition(*++it);
             face_normals[fi] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
         }
     }
@@ -178,34 +170,34 @@ void MeshStore::UpdateNormals(const Mesh &mesh) {
         auto vertices = GetVertices(id);
         for (auto &v : vertices) v.Normal = vec3{0};
         for (uint fi = 0; fi < mesh.FaceCount(); ++fi) {
-            const auto &face_normal = mesh.GetNormal(Mesh::FH(fi));
-            for (const auto vh : mesh.fv_range(Mesh::FH(fi))) vertices[*vh].Normal += face_normal;
+            const auto &face_normal = mesh.GetNormal(Mesh::FH{fi});
+            for (const auto vh : mesh.fv_range(Mesh::FH{fi})) vertices[*vh].Normal += face_normal;
         }
         for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
     }
 }
 Mesh MeshStore::CreateMesh(MeshData &&data) {
-    const uint32_t id = AcquireId();
+    const auto id = AcquireId();
     auto &entry = Entries[id];
     entry.Alive = true;
-    entry.Vertices = VerticesBuffer.Allocate(uint32_t(data.Positions.size()));
+    entry.Vertices = VerticesBuffer.Allocate(data.Positions.size());
     EnsureVertexStateCapacity(entry.Vertices);
     auto vertex_span = VerticesBuffer.GetMutable(entry.Vertices);
     for (size_t i = 0; i < data.Positions.size(); ++i) vertex_span[i].Position = data.Positions[i];
     entry.FaceIds = FaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
-    entry.FaceNormals = FaceNormalBuffer.Allocate(uint32_t(data.Faces.size()));
-    entry.FaceStates = FaceStateBuffer.Allocate(uint32_t(data.Faces.size()));
+    entry.FaceNormals = FaceNormalBuffer.Allocate(data.Faces.size());
+    entry.FaceStates = FaceStateBuffer.Allocate(data.Faces.size());
     Mesh mesh{*this, id, std::move(data.Faces)};
     entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     UpdateNormals(mesh);
-    std::ranges::fill(GetVertexStates(entry.Vertices), uint8_t{0});
-    std::ranges::fill(FaceStateBuffer.GetMutable(entry.FaceStates), uint8_t{0});
-    std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), uint8_t{0});
+    std::ranges::fill(GetVertexStates(entry.Vertices), 0);
+    std::ranges::fill(FaceStateBuffer.GetMutable(entry.FaceStates), 0);
+    std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
     return mesh;
 }
 
 Mesh MeshStore::CloneMesh(const Mesh &mesh) {
-    const uint32_t id = AcquireId();
+    const auto id = AcquireId();
     auto &entry = Entries[id];
     entry.Alive = true;
     {
@@ -225,18 +217,20 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         auto dst_face_normals = FaceNormalBuffer.GetMutable(entry.FaceNormals);
         std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
     }
-    std::ranges::fill(GetVertexStates(entry.Vertices), uint8_t{0});
-    std::ranges::fill(FaceStateBuffer.GetMutable(entry.FaceStates), uint8_t{0});
-    std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), uint8_t{0});
+    std::ranges::fill(GetVertexStates(entry.Vertices), 0);
+    std::ranges::fill(FaceStateBuffer.GetMutable(entry.FaceStates), 0);
+    std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
     return {*this, id, mesh};
 }
 
-std::optional<Mesh> MeshStore::LoadMesh(const std::filesystem::path &path) {
-    const auto ext = path.extension().string();
-    if (auto mesh = ext == ".ply" || ext == ".PLY" ? ReadPly(path) : ReadObj(path)) {
-        return CreateMesh(DeduplicateVertices(*mesh));
+std::expected<Mesh, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
+    try {
+        const auto ext = path.extension();
+        auto data = ext == ".ply" || ext == ".PLY" ? ReadPly(path) : ReadObj(path);
+        return CreateMesh(DeduplicateVertices(data));
+    } catch (const std::exception &e) {
+        return std::unexpected{e.what()};
     }
-    return {};
 }
 
 void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) {
@@ -246,6 +240,7 @@ void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) 
 }
 void MeshStore::SetPosition(const Mesh &mesh, uint32_t index, vec3 position) {
     VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices)[index].Position = position;
+    // Caller is responsible for updating normals
 }
 
 void MeshStore::Release(uint32_t id) {
@@ -290,9 +285,9 @@ void MeshStore::UpdateElementStates(
     auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
     auto vertex_states = GetVertexStates(entry.Vertices);
 
-    std::ranges::fill(face_states, uint8_t{0});
-    std::ranges::fill(edge_states, uint8_t{0});
-    std::ranges::fill(vertex_states, uint8_t{0});
+    std::ranges::fill(face_states, 0);
+    std::ranges::fill(edge_states, 0);
+    std::ranges::fill(vertex_states, 0);
 
     if (element == Element::Face) {
         for (const auto fh : selected_faces) {
@@ -334,7 +329,7 @@ void MeshStore::UpdateElementStates(
 
 uint32_t MeshStore::AcquireId() {
     if (!FreeIds.empty()) {
-        const uint32_t id = FreeIds.back();
+        const auto id = FreeIds.back();
         FreeIds.pop_back();
         return id;
     }
