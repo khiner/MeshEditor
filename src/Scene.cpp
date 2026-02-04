@@ -1907,7 +1907,21 @@ void Scene::RenderOverlay() {
         }
     }
 
-    if (const auto selected_view = R.view<const Selected>(); !selected_view.empty()) { // Transform gizmo
+    const auto selected_view = R.view<const Selected>();
+    const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+
+    // Check if there's anything to transform:
+    // - Object mode: at least one object selected
+    // - Edit mode: at least one element selected within selected meshes
+    const auto has_transform_target = [&]() {
+        if (selected_view.empty()) return false;
+        if (interaction_mode != InteractionMode::Edit) return true;
+        for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+            if (!R.get<const MeshSelection>(mi.MeshEntity).Handles.empty()) return true;
+        }
+        return false;
+    }();
+    if (has_transform_target) { // Transform gizmo
         // Transform all root selected entities (whose parent is not also selected) around their average position,
         // using the active entity's rotation/scale.
         // Non-root selected entities already follow their parent's transform.
@@ -1923,7 +1937,6 @@ void Scene::RenderOverlay() {
 
         const auto active_entity = FindActiveEntity(R);
         const auto active_transform = active_entity != entt::null ? GetTransform(R, active_entity) : Transform{};
-        const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
 
         vec3 pivot{};
         if (interaction_mode == InteractionMode::Edit) {
