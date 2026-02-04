@@ -41,6 +41,16 @@ struct MeshActiveElement {
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
 
+// Tracks pending transform for shader-based preview during Edit mode gizmo manipulation.
+// Presence indicates active transform; removal triggers UBO clear.
+struct PendingTransform {
+    vec3 Pivot{};
+    quat PivotR{1, 0, 0, 0};
+    vec3 P{}; // Translation delta
+    quat R{1, 0, 0, 0}; // Rotation delta
+    vec3 S{1, 1, 1}; // Scale delta
+};
+
 void WaitFor(vk::Fence fence, vk::Device device) {
     if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
@@ -97,7 +107,9 @@ constexpr auto
     SceneSettings = "scene_settings_changes"_hs,
     InteractionMode = "interaction_mode_changes"_hs,
     ViewportTheme = "viewport_theme_changes"_hs,
-    SceneView = "scene_view_changes"_hs;
+    SceneView = "scene_view_changes"_hs,
+    TransformPending = "transform_pending_changes"_hs,
+    TransformEnd = "transform_end_changes"_hs;
 } // namespace changes
 } // namespace
 
@@ -215,6 +227,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_update<ViewportExtent>()
         .on_construct<SceneEditMode>()
         .on_update<SceneEditMode>();
+    R.storage<entt::reactive>(changes::TransformPending)
+        .on_construct<PendingTransform>()
+        .on_update<PendingTransform>();
+    R.storage<entt::reactive>(changes::TransformEnd)
+        .on_destroy<StartTransform>();
 
     DestroyTracker->Bind(R);
 
@@ -472,16 +489,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         Buffers->ViewportThemeUBO.Update(as_bytes(R.get<const ViewportTheme>(SceneEntity)));
         request(RenderRequest::Submit);
     }
-
-    bool scene_view_dirty = false;
     if (!R.storage<entt::reactive>(changes::SceneSettings).empty()) {
         request(RenderRequest::ReRecord);
-        scene_view_dirty = true;
         dirty_overlay_meshes.merge(GetSelectedMeshEntities(R));
     }
     if (!R.storage<entt::reactive>(changes::InteractionMode).empty()) {
         request(RenderRequest::ReRecord);
-        scene_view_dirty = true;
         for (const auto [mesh_entity, selection] : R.view<MeshSelection>().each()) {
             if (!selection.Handles.empty()) dirty_element_state_meshes.insert(mesh_entity);
         }
@@ -489,12 +502,42 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             dirty_element_state_meshes.insert(mi.MeshEntity);
         }
     }
-    if (!R.storage<entt::reactive>(changes::SceneView).empty()) scene_view_dirty = true;
-    // Always update UBO and re-render when actively transforming.
-    if (PendingTransform.Active) scene_view_dirty = true;
-    if (scene_view_dirty) {
+    // Handle Edit mode transform commit when StartTransform is cleared.
+    if (!R.storage<entt::reactive>(changes::TransformEnd).empty()) {
+        if (interaction_mode == InteractionMode::Edit) {
+            const auto &pending = R.get<const PendingTransform>(SceneEntity);
+            const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+            for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+                const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                const auto vertices = mesh.GetVerticesSpan();
+                const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
+                const auto &wm = R.get<const WorldMatrix>(e);
+                const auto world_to_local = glm::inverse(wm.M);
+                const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex);
+                for (const auto vi : vertex_handles) {
+                    const auto local_pos = vertices[vi].Position;
+                    const auto world_pos = vec3{wm.M * vec4{local_pos, 1.f}};
+                    auto offset = world_pos - pending.Pivot;
+                    offset = pending.S * offset;
+                    offset = glm::rotate(pending.R, offset);
+                    const auto new_world = pending.Pivot + offset + pending.P;
+                    const auto new_local = vec3{world_to_local * vec4{new_world, 1.f}};
+                    Meshes.SetPosition(mesh, vi, new_local);
+                }
+                Meshes.UpdateNormals(mesh);
+                dirty_overlay_meshes.insert(mi.MeshEntity);
+            }
+        }
+        R.remove<PendingTransform>(SceneEntity);
+    }
+    if (!R.storage<entt::reactive>(changes::SceneView).empty() ||
+        !R.storage<entt::reactive>(changes::TransformPending).empty() ||
+        !R.storage<entt::reactive>(changes::SceneSettings).empty() ||
+        !R.storage<entt::reactive>(changes::InteractionMode).empty() ||
+        !R.storage<entt::reactive>(changes::TransformEnd).empty()) {
         const auto &camera = R.get<const Camera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
+        const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
         const auto view = camera.View();
         const auto proj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height));
@@ -510,8 +553,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .LightDirection = lights.Direction,
             .InteractionMode = uint32_t(interaction_mode),
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
-            .IsTransforming = PendingTransform.Active ? 1u : 0u,
-            .PendingTransform = ComputePendingTransformMatrix(PendingTransform.Pivot, PendingTransform.P, PendingTransform.R, PendingTransform.S),
+            .IsTransforming = pending ? 1u : 0u,
+            .PendingTransform = pending ? ComputePendingTransformMatrix(pending->Pivot, pending->P, pending->R, pending->S) : mat4{1},
         }));
         request(RenderRequest::Submit);
     }
@@ -1882,7 +1925,6 @@ void Scene::RenderOverlay() {
         const auto active_transform = active_entity != entt::null ? GetTransform(R, active_entity) : Transform{};
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
 
-        // In edit mode, compute pivot from selected elements instead of selected entities.
         vec3 pivot{};
         if (interaction_mode == InteractionMode::Edit) {
             // Compute world-space centroid of selected vertices across all selected instances.
@@ -1900,6 +1942,10 @@ void Scene::RenderOverlay() {
                 }
             }
             if (vertex_count > 0) pivot /= float(vertex_count);
+            // Apply pending transform to gizmo position (vertices aren't modified until commit).
+            if (const auto *pending = R.try_get<const PendingTransform>(SceneEntity)) {
+                pivot += pending->P;
+            }
         } else {
             pivot = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
         }
@@ -1914,69 +1960,29 @@ void Scene::RenderOverlay() {
             if (start_transform_view.empty()) {
                 for (const auto e : root_selected) R.emplace<StartTransform>(e, GetTransform(R, e));
             }
-            // Store pending transform for shader-based preview (both object and edit mode).
-            // The shader applies this visually; actual data is only modified on commit.
-            PendingTransform = {.Active = true, .Pivot = ts.P, .PivotR = ts.R, .P = td.P, .R = td.R, .S = td.S};
-            // Update UBO transform fields immediately (ProcessComponentEvents already ran).
-            struct TransformUBOFields {
-                uint32_t IsTransforming;
-                mat4 PendingTransform;
-            };
-            const TransformUBOFields fields{
-                .IsTransforming = 1,
-                .PendingTransform = ComputePendingTransformMatrix(ts.P, td.P, td.R, td.S),
-            };
-            Buffers->SceneViewUBO.Update(as_bytes(fields), offsetof(SceneViewUBO, IsTransforming));
-        } else if (!start_transform_view.empty()) {
-            // Transform ended - commit the pending transform.
             if (interaction_mode == InteractionMode::Edit) {
-                // Edit mode: bake transform into mesh vertex positions.
-                const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-                for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
-                    const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
-                    const auto vertices = mesh.GetVerticesSpan();
-                    const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
-                    const auto &wm = R.get<const WorldMatrix>(e);
-                    const auto world_to_local = glm::inverse(wm.M);
-                    const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex);
-                    for (const auto vi : vertex_handles) {
-                        const auto local_pos = vertices[vi].Position;
-                        const auto world_pos = vec3{wm.M * vec4{local_pos, 1.f}};
-                        // Apply transform around pivot in world space.
-                        auto offset = world_pos - PendingTransform.Pivot;
-                        offset = PendingTransform.S * offset;
-                        offset = glm::rotate(PendingTransform.R, offset);
-                        const auto new_world = PendingTransform.Pivot + offset + PendingTransform.P;
-                        // Convert back to local space using the full inverse matrix.
-                        const auto new_local = vec3{world_to_local * vec4{new_world, 1.f}};
-                        Meshes.SetPosition(mesh, vi, new_local);
-                    }
-                    Meshes.UpdateNormals(mesh);
-                    R.emplace_or_replace<MeshGeometryDirty>(mi.MeshEntity);
-                }
+                // Edit mode: store pending transform for shader-based preview.
+                // Actual vertex positions are only modified on commit.
+                R.emplace_or_replace<PendingTransform>(SceneEntity, ts.P, ts.R, td.P, td.R, td.S);
             } else {
-                // Object mode: apply transform to entity Transform components.
-                const auto ts_pivot = Transform{.P = PendingTransform.Pivot, .R = PendingTransform.PivotR};
-                const auto r = ts_pivot.R, rT = glm::conjugate(r);
+                // Object mode: apply transform to entity components immediately during drag.
+                const auto r = ts.R, rT = glm::conjugate(r);
                 for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
                     const auto &ts_e = ts_e_comp.T;
                     const bool frozen = R.all_of<Frozen>(e);
-                    const auto offset = ts_e.P - ts_pivot.P;
+                    const auto offset = ts_e.P - ts.P;
                     SetTransform(
                         R, e,
                         {
-                            .P = PendingTransform.P + ts_pivot.P + glm::rotate(PendingTransform.R, frozen ? offset : r * (rT * offset * PendingTransform.S)),
-                            .R = glm::normalize(PendingTransform.R * ts_e.R),
-                            .S = frozen ? ts_e.S : PendingTransform.S * ts_e.S,
+                            .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
+                            .R = glm::normalize(td.R * ts_e.R),
+                            .S = frozen ? ts_e.S : td.S * ts_e.S,
                         }
                     );
                 }
             }
-            R.clear<StartTransform>();
-            PendingTransform = {};
-            // Clear transform in UBO.
-            const uint32_t zero = 0u;
-            Buffers->SceneViewUBO.Update(as_bytes(zero), offsetof(SceneViewUBO, IsTransforming));
+        } else if (!start_transform_view.empty()) {
+            R.clear<StartTransform>(); // Transform ended - triggers commit in ProcessComponentEvents.
         }
     }
     { // Orientation gizmo

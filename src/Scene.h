@@ -202,18 +202,6 @@ private:
     std::optional<TransformGizmo::TransformType> StartScreenTransform;
     bool TransformModePillsHovered{false};
 
-    // Tracks pending transform for shader-based preview during gizmo manipulation.
-    // Updated in RenderOverlay, consumed in ProcessComponentEvents for UBO upload.
-    struct PendingTransformState {
-        bool Active{false};
-        vec3 Pivot{};
-        quat PivotR{1, 0, 0, 0};
-        vec3 P{}; // Translation delta
-        quat R{1, 0, 0, 0}; // Rotation delta (identity quaternion)
-        vec3 S{1, 1, 1}; // Scale delta
-    };
-    PendingTransformState PendingTransform;
-
     struct TransformIcons {
         std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
     };
