@@ -9,8 +9,8 @@ constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 rect GetViewportRect() { return {ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())}; }
 
 std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
-    static constexpr float drag_threshold{2};
-    if (glm::distance(start, end) <= drag_threshold) return {};
+    static constexpr float DragThresholdSq{2 * 2};
+    if (glm::distance2(start, end) <= DragThresholdSq) return {};
 
     const vec2 extent_size{float(extent.width), float(extent.height)};
     const auto box_min = glm::min(start, end) - window_pos;

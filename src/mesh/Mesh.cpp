@@ -150,12 +150,11 @@ float Mesh::CalcFaceArea(FH fh) const {
 
 he::VH Mesh::FindNearestVertex(vec3 p) const {
     VH closest_vertex;
-    float min_distance_sq = std::numeric_limits<float>::max();
+    float min_dist_sq = std::numeric_limits<float>::max();
     const auto vertex_span = GetVerticesSpan();
     for (const auto vh : vertices()) {
-        const vec3 diff = vertex_span[*vh].Position - p;
-        if (const float distance_sq = glm::dot(diff, diff); distance_sq < min_distance_sq) {
-            min_distance_sq = distance_sq;
+        if (const float dist_sq = glm::distance2(vertex_span[*vh].Position, p); dist_sq < min_dist_sq) {
+            min_dist_sq = dist_sq;
             closest_vertex = vh;
         }
     }

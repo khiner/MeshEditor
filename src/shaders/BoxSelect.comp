@@ -32,7 +32,7 @@ void markSelected(uint id) {
 void main() {
     const uvec2 local = gl_GlobalInvocationID.xy;
     const uvec2 pixel = pc.BoxMin + local;
-    if (pixel.x >= pc.BoxMax.x || pixel.y >= pc.BoxMax.y) return;
+    if (pixel.x > pc.BoxMax.x || pixel.y > pc.BoxMax.y) return;
 
     float min_depth = 1.0;
     uint min_id = 0u;

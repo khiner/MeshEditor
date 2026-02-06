@@ -1332,7 +1332,7 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
 
     std::vector<std::vector<uint32_t>> results(ranges.size());
     const auto [box_min, box_max] = box_px;
-    if (box_min.x >= box_max.x || box_min.y >= box_max.y) return results;
+    if (box_min.x > box_max.x || box_min.y > box_max.y) return results;
 
     const Timer timer{"RunBoxSelectElements"};
     const auto element_count = fold_left(
@@ -1346,28 +1346,8 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
 
     RenderEditSelectionPass(ranges, element, *SelectionReadySemaphore);
 
-    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
-    Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
-
-    auto cb = *ClickCommandBuffer;
-    const uint32_t group_count_x = (box_max.x - box_min.x + 15) / 16;
-    const uint32_t group_count_y = (box_max.y - box_min.y + 15) / 16;
-    RunSelectionCompute(
-        cb, Vk.Queue, *OneShotFence, Vk.Device, Pipelines->BoxSelect,
-        BoxSelectPushConstants{
-            .BoxMin = box_min,
-            .BoxMax = box_max,
-            .MaxId = element_count,
-            .HeadImageIndex = SelectionHandles->HeadImage,
-            .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
-            .BoxResultIndex = SelectionHandles->BoxResult,
-            .XRay = uint32_t(SelectionXRay || R.get<SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe),
-        },
-        [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
-            dispatch_cb.dispatch(group_count_x, group_count_y, 1);
-        },
-        *SelectionReadySemaphore
-    );
+    const bool xray = SelectionXRay || R.get<SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe;
+    DispatchBoxSelect(box_min, box_max, element_count, xray, *SelectionReadySemaphore);
 
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
     for (size_t i = 0; i < ranges.size(); ++i) {
@@ -1477,39 +1457,40 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     return entities;
 }
 
+void Scene::DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t max_id, bool xray, vk::Semaphore wait_semaphore) {
+    const uint32_t bitset_words = (max_id + 31) / 32;
+    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
+    Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
+
+    const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, glm::uvec2{1, 1});
+    RunSelectionCompute(
+        *ClickCommandBuffer, Vk.Queue, *OneShotFence, Vk.Device, Pipelines->BoxSelect,
+        BoxSelectPushConstants{
+            .BoxMin = box_min,
+            .BoxMax = box_max,
+            .MaxId = max_id,
+            .HeadImageIndex = SelectionHandles->HeadImage,
+            .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
+            .BoxResultIndex = SelectionHandles->BoxResult,
+            .XRay = uint32_t(xray),
+        },
+        [group_counts](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_counts.x, group_counts.y, 1); },
+        wait_semaphore
+    );
+}
+
 std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
-    if (box_min.x >= box_max.x || box_min.y >= box_max.y) return {};
+    if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     if (NextObjectId <= 1) return {}; // No objects have been assigned IDs yet
 
-    // ObjectCount is the max ObjectId that could appear (for shader bounds check)
     const uint32_t max_object_id = std::min(NextObjectId - 1, SceneBuffers::MaxSelectableObjects);
-    const uint32_t bitset_words = (max_object_id + 31) / 32;
 
     const Timer timer{"RunBoxSelect"};
     const bool selection_rendered = SelectionStale;
     if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
 
-    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
-    Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
-
-    auto cb = *ClickCommandBuffer;
-    const auto &compute = Pipelines->BoxSelect;
-    const uint32_t group_count_x = (box_max.x - box_min.x + 15) / 16;
-    const uint32_t group_count_y = (box_max.y - box_min.y + 15) / 16;
-    RunSelectionCompute(
-        cb, Vk.Queue, *OneShotFence, Vk.Device, compute,
-        BoxSelectPushConstants{
-            .BoxMin = box_min,
-            .BoxMax = box_max,
-            .MaxId = max_object_id,
-            .HeadImageIndex = SelectionHandles->HeadImage,
-            .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
-            .BoxResultIndex = SelectionHandles->BoxResult,
-        },
-        [group_count_x, group_count_y](auto dispatch_cb) { dispatch_cb.dispatch(group_count_x, group_count_y, 1); },
-        selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{}
-    );
+    DispatchBoxSelect(box_min, box_max, max_object_id, false, selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{});
 
     // Build ObjectId -> entity map for lookup
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
