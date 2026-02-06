@@ -132,17 +132,17 @@ std::optional<uint32_t> FindNearestSelectionElement(
     );
 
     const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(buffers.ClickElementResultBuffer.GetData().data());
-    ClickElementCandidate best{.ObjectId = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
+    ClickElementCandidate best{.Id = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
     for (uint32_t i = 0; i < group_count; ++i) {
         const auto &candidate = candidates[i];
-        if (candidate.ObjectId == 0) continue;
+        if (candidate.Id == 0) continue;
         if (candidate.DistanceSq < best.DistanceSq || (candidate.DistanceSq == best.DistanceSq && candidate.Depth < best.Depth)) {
             best = candidate;
         }
     }
 
-    if (best.ObjectId == 0 || best.ObjectId > max_element_id) return {};
-    return best.ObjectId - 1;
+    if (best.Id == 0 || best.Id > max_element_id) return {};
+    return best.Id - 1;
 }
 
 } // namespace

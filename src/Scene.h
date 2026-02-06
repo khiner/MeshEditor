@@ -238,7 +238,7 @@ private:
     std::vector<entt::entity> RunClickSelect(glm::uvec2 pixel);
     std::vector<entt::entity> RunBoxSelect(std::pair<glm::uvec2, glm::uvec2>);
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
-    void RenderSelectionPassWith(bool render_depth, const std::function<SelectionDrawInfo(DrawListBuilder &)> &build_fn, vk::Semaphore signal_semaphore = {});
+    void RenderSelectionPassWith(bool render_depth, const std::function<SelectionDrawInfo(DrawListBuilder &)> &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
     void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<glm::uvec2, glm::uvec2>);
     std::optional<uint32_t> RunClickSelectElement(entt::entity mesh_entity, he::Element element, glm::uvec2 mouse_px);

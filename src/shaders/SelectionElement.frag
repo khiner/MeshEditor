@@ -24,7 +24,7 @@ void main() {
     }
 
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
-    SelectionBuffers[nodes_index].Nodes[idx].ObjectId = ElementId;
+    SelectionBuffers[nodes_index].Nodes[idx].Id = ElementId;
 
     const ivec2 coord = ivec2(gl_FragCoord.xy);
     const uint prev = imageAtomicExchange(HeadImages[head_index], coord, idx);

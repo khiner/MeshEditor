@@ -1191,20 +1191,22 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     SelectionStale = false;
 }
 
-void Scene::RenderSelectionPassWith(bool render_depth, const std::function<SelectionDrawInfo(DrawListBuilder &)> &build_fn, vk::Semaphore signal_semaphore) {
+void Scene::RenderSelectionPassWith(bool render_depth, const std::function<SelectionDrawInfo(DrawListBuilder &)> &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
     const Timer timer{"RenderSelectionPassWith"};
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
     if (render_depth) {
         silhouette_batch = draw_list.BeginBatch();
-        for (const auto e : R.view<Selected>()) {
-            const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
-            const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
-            const auto &models = R.get<ModelsBuffer>(mesh_entity);
-            if (const auto model_index = GetModelBufferIndex(R, e)) {
-                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
-                draw.ObjectIdSlot = models.ObjectIds.Slot;
-                AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
+        if (render_silhouette) {
+            for (const auto e : R.view<Selected>()) {
+                const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+                const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
+                const auto &models = R.get<ModelsBuffer>(mesh_entity);
+                if (const auto model_index = GetModelBufferIndex(R, e)) {
+                    auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
+                    draw.ObjectIdSlot = models.ObjectIds.Slot;
+                    AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
+                }
             }
         }
     }
@@ -1319,7 +1321,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                 AppendDraw(draw_list, batch, indices, models, draw);
             }
         }
-        return SelectionDrawInfo{selection_pipeline(element), batch}; }, signal_semaphore);
+        return SelectionDrawInfo{selection_pipeline(element), batch}; }, signal_semaphore, element != Element::Face);
 
     // Edit selection pass overwrites the shared head image used for object selection.
     SelectionStale = true;
@@ -1355,10 +1357,11 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
-            .ObjectCount = element_count,
+            .MaxId = element_count,
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .BoxResultIndex = SelectionHandles->BoxResult,
+            .XRay = uint32_t(SelectionXRay || R.get<SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe),
         },
         [group_count_x, group_count_y](vk::CommandBuffer dispatch_cb) {
             dispatch_cb.dispatch(group_count_x, group_count_y, 1);
@@ -1458,8 +1461,8 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
     for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
     auto hits = result.Hits //
         | take(std::min<uint32_t>(result.Count, result.Hits.size())) //
-        | filter([&](const auto &hit) { return object_id_to_entity.contains(hit.ObjectId); }) //
-        | transform([](const auto &hit) { return std::pair{hit.Depth, hit.ObjectId}; }) //
+        | filter([&](const auto &hit) { return object_id_to_entity.contains(hit.Id); }) //
+        | transform([](const auto &hit) { return std::pair{hit.Depth, hit.Id}; }) //
         | to<std::vector>();
     std::ranges::sort(hits);
 
@@ -1499,7 +1502,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
-            .ObjectCount = max_object_id,
+            .MaxId = max_object_id,
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .BoxResultIndex = SelectionHandles->BoxResult,

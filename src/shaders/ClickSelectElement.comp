@@ -27,8 +27,8 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer ClickElementResult {
 shared ClickElementCandidate SharedCandidates[GROUP_SIZE];
 
 bool IsBetter(ClickElementCandidate a, ClickElementCandidate b) {
-    if (a.ObjectId == 0u) return false;
-    if (b.ObjectId == 0u) return true;
+    if (a.Id == 0u) return false;
+    if (b.Id == 0u) return true;
     if (a.DistanceSq < b.DistanceSq) return true;
     if (a.DistanceSq > b.DistanceSq) return false;
     return a.Depth < b.Depth;
@@ -39,7 +39,7 @@ void main() {
     const uint local = gl_LocalInvocationID.x;
 
     ClickElementCandidate best;
-    best.ObjectId = 0u;
+    best.Id = 0u;
     best.Depth = 1.0;
     best.DistanceSq = 0xffffffffu;
 
@@ -56,8 +56,8 @@ void main() {
                 uint node_idx = imageLoad(HeadImages[pc.HeadImageIndex], pixel).r;
                 while (node_idx != INVALID_NODE) {
                     const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[node_idx];
-                    if (node.ObjectId != 0u && (best.ObjectId == 0u || node.Depth < best.Depth)) {
-                        best.ObjectId = node.ObjectId;
+                    if (node.Id != 0u && (best.Id == 0u || node.Depth < best.Depth)) {
+                        best.Id = node.Id;
                         best.Depth = node.Depth;
                         best.DistanceSq = distance_sq;
                     }

@@ -34,7 +34,7 @@ void main() {
         const uint write_idx = atomicAdd(ClickResults[pc.ClickResultIndex].Data.Count, 1);
         if (write_idx < MAX_CLICK_RESULTS) {
             ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Depth = node.Depth;
-            ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].ObjectId = node.ObjectId;
+            ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Id = node.Id;
         }
         idx = node.Next;
     }

@@ -382,7 +382,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+                {}, CreateDepthStencil(true, true, vk::CompareOp::eLess), draw_pc
             )
         );
         pipelines.emplace(

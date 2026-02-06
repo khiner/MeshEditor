@@ -148,7 +148,7 @@ structs:
     fields:
       - name: Depth
         type: float
-      - name: ObjectId
+      - name: Id
         type: u32
       - name: Next
         type: u32
@@ -162,7 +162,7 @@ structs:
     fields:
       - name: Depth
         type: float
-      - name: ObjectId
+      - name: Id
         type: u32
   - name: ClickResult
     fields:
@@ -172,7 +172,7 @@ structs:
         type: ClickHit[64]
   - name: ClickElementCandidate
     fields:
-      - name: ObjectId
+      - name: Id
         type: u32
       - name: Depth
         type: float
@@ -229,13 +229,15 @@ structs:
         type: uvec2
       - name: BoxMax
         type: uvec2
-      - name: ObjectCount
+      - name: MaxId
         type: u32
       - name: HeadImageIndex
         type: u32
       - name: SelectionNodesIndex
         type: u32
       - name: BoxResultIndex
+        type: u32
+      - name: XRay
         type: u32
   - name: SilhouetteEdgeDepthObjectPushConstants
     push_constant: true
