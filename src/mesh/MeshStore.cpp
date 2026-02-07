@@ -137,24 +137,24 @@ MeshData DeduplicateVertices(const MeshData &mesh) {
 }
 
 std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_t>> &faces) {
+    uint32_t triangle_count{0};
+    for (const auto &face : faces) triangle_count += face.size() - 2;
+
     std::vector<uint32_t> ids;
-    ids.reserve(faces.size() * 3);
-    for (uint32_t fi = 0; fi < faces.size(); ++fi) {
-        if (const uint32_t valence = faces[fi].size(); valence >= 3) {
-            for (uint32_t i = 0; i < valence - 2; ++i) ids.insert(ids.end(), 3, fi + 1);
-        }
-    }
+    ids.reserve(triangle_count);
+    // Assign the same 1-indexed face ID to each of the face's triangles.
+    for (uint32_t fi = 0; fi < faces.size(); ++fi) ids.insert(ids.end(), faces[fi].size() - 2, fi + 1);
     return ids;
 }
 } // namespace
 
 MeshStore::MeshStore(mvk::BufferContext &ctx)
     : VerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
+      FaceNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer},
       VertexStateBuffer{ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
       FaceStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
       EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-      FaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-      FaceNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FaceNormalBuffer} {}
+      TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer} {}
 
 void MeshStore::UpdateNormals(const Mesh &mesh) {
     const auto id = mesh.GetStoreId();
@@ -184,7 +184,7 @@ Mesh MeshStore::CreateMesh(MeshData &&data) {
     EnsureVertexStateCapacity(entry.Vertices);
     auto vertex_span = VerticesBuffer.GetMutable(entry.Vertices);
     for (size_t i = 0; i < data.Positions.size(); ++i) vertex_span[i].Position = data.Positions[i];
-    entry.FaceIds = FaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
+    entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
     entry.FaceNormals = FaceNormalBuffer.Allocate(data.Faces.size());
     entry.FaceStates = FaceStateBuffer.Allocate(data.Faces.size());
     Mesh mesh{*this, id, std::move(data.Faces)};
@@ -208,8 +208,8 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
     }
     {
-        const auto src_face_ids = FaceIdBuffer.Get(Entries.at(mesh.GetStoreId()).FaceIds);
-        entry.FaceIds = FaceIdBuffer.Allocate(src_face_ids);
+        const auto src_triangle_face_ids = TriangleFaceIdBuffer.Get(Entries.at(mesh.GetStoreId()).TriangleFaceIds);
+        entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(src_triangle_face_ids);
         entry.FaceNormals = FaceNormalBuffer.Allocate(mesh.FaceCount());
         entry.FaceStates = FaceStateBuffer.Allocate(mesh.FaceCount());
         entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
@@ -247,7 +247,7 @@ void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;
     auto &entry = Entries[id];
     VerticesBuffer.Release(entry.Vertices);
-    FaceIdBuffer.Release(entry.FaceIds);
+    TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
     FaceNormalBuffer.Release(entry.FaceNormals);
     FaceStateBuffer.Release(entry.FaceStates);
     EdgeStateBuffer.Release(entry.EdgeStates);
@@ -262,10 +262,7 @@ void MeshStore::EnsureVertexStateCapacity(BufferRange range) {
 }
 
 std::span<uint8_t> MeshStore::GetVertexStates(BufferRange range) {
-    const auto byte_offset = static_cast<vk::DeviceSize>(range.Offset) * sizeof(uint8_t);
-    const auto byte_size = static_cast<vk::DeviceSize>(range.Count) * sizeof(uint8_t);
-    const auto bytes = VertexStateBuffer.GetMutableRange(byte_offset, byte_size);
-    if (bytes.empty()) return {};
+    const auto bytes = VertexStateBuffer.GetMutableRange(range.Offset * sizeof(uint8_t), range.Count * sizeof(uint8_t));
     return {reinterpret_cast<uint8_t *>(bytes.data()), range.Count};
 }
 

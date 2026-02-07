@@ -21,7 +21,7 @@ void main() {
     uint face_id = 0u;
     vec3 normal = vert.Normal;
     if (draw.ObjectIdSlot != INVALID_SLOT) {
-        face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[gl_VertexIndex + draw.FaceIdOffset];
+        face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
         if (draw.FaceNormalSlot != INVALID_SLOT && face_id != 0u) {
             normal = FaceNormalBuffers[draw.FaceNormalSlot].Normals[draw.FaceNormalOffset + face_id - 1u];
         }

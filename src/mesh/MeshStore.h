@@ -16,12 +16,6 @@ struct MeshData;
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
 
-    struct Entry {
-        BufferRange Vertices, FaceIds, FaceNormals;
-        BufferRange FaceStates, EdgeStates;
-        bool Alive{false};
-    };
-
     Mesh CreateMesh(MeshData &&);
     Mesh CloneMesh(const Mesh &);
     std::expected<Mesh, std::string> LoadMesh(const std::filesystem::path &);
@@ -41,7 +35,7 @@ struct MeshStore {
     std::span<vec3> GetFaceNormals(uint32_t id) { return FaceNormalBuffer.GetMutable(Entries.at(id).FaceNormals); }
     SlottedBufferRange GetFaceNormalRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceNormalBuffer.Buffer.Slot}; }
 
-    SlottedBufferRange GetFaceIdRange(uint32_t id) const { return {Entries.at(id).FaceIds, FaceIdBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetFaceIdRange(uint32_t id) const { return {Entries.at(id).TriangleFaceIds, TriangleFaceIdBuffer.Buffer.Slot}; }
 
     void UpdateElementStates(
         const Mesh &mesh,
@@ -57,16 +51,24 @@ struct MeshStore {
     void Release(uint32_t id);
 
 private:
-    uint32_t AcquireId();
-
-    std::vector<Entry> Entries;
-    std::vector<uint32_t> FreeIds;
     BufferArena<Vertex> VerticesBuffer;
-    mvk::Buffer VertexStateBuffer;
+    BufferArena<vec3> FaceNormalBuffer;
+    mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
     BufferArena<uint8_t> FaceStateBuffer;
     BufferArena<uint8_t> EdgeStateBuffer;
-    BufferArena<uint32_t> FaceIdBuffer;
-    BufferArena<vec3> FaceNormalBuffer;
+    BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
+
+    struct Entry {
+        BufferRange Vertices, FaceNormals;
+        BufferRange FaceStates, EdgeStates;
+        BufferRange TriangleFaceIds;
+        bool Alive{false};
+    };
+
+    std::vector<Entry> Entries{};
+    std::vector<uint32_t> FreeIds{};
+
+    uint32_t AcquireId();
 
     void EnsureVertexStateCapacity(BufferRange);
     std::span<uint8_t> GetVertexStates(BufferRange);

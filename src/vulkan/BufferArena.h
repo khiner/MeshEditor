@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <ranges>
 #include <span>
 #include <vector>
 
@@ -66,14 +67,14 @@ struct BufferArena {
         const auto range = Allocator.Allocate(count);
         if (range.Count == 0) return range;
 
-        const auto required_size = ByteOffset(range.Offset + range.Count);
+        const vk::DeviceSize required_size = (range.Offset + range.Count) * sizeof(T);
         Buffer.Reserve(required_size);
         Buffer.UsedSize = std::max(Buffer.UsedSize, required_size);
         return range;
     }
 
     BufferRange Allocate(std::span<const T> values) {
-        const auto range = Allocate(static_cast<uint32_t>(values.size()));
+        const auto range = Allocate(values.size());
         WriteRange(range.Offset, values);
         return range;
     }
@@ -83,7 +84,7 @@ struct BufferArena {
             WriteRange(range.Offset, values);
             return;
         }
-        auto new_range = Allocator.Allocate(static_cast<uint32_t>(values.size()));
+        auto new_range = Allocator.Allocate(values.size());
         WriteRange(new_range.Offset, values);
         Allocator.Free(range);
         range = new_range;
@@ -93,23 +94,18 @@ struct BufferArena {
 
     std::span<const T> Get(BufferRange range) const { return SpanFromBytes<const T>(range); }
     std::span<T> GetMutable(BufferRange range) {
-        auto bytes = Buffer.GetMutableRange(ByteOffset(range.Offset), static_cast<vk::DeviceSize>(range.Count) * sizeof(T));
+        auto bytes = Buffer.GetMutableRange(range.Offset * sizeof(T), range.Count * sizeof(T));
         return {reinterpret_cast<T *>(bytes.data()), range.Count};
     }
 
     mvk::Buffer Buffer;
 
 private:
-    static constexpr auto ByteOffset(uint32_t offset) { return static_cast<vk::DeviceSize>(offset) * sizeof(T); }
-
-    void WriteRange(uint32_t offset, std::span<const T> values) {
-        if (values.empty()) return;
-        Buffer.Update(as_bytes(values), ByteOffset(offset));
-    }
+    void WriteRange(uint32_t offset, std::span<const T> values) { Buffer.Update(as_bytes(values), offset * sizeof(T)); }
 
     static auto RangeBytes(auto bytes, BufferRange range) {
-        const auto start = ByteOffset(range.Offset);
-        const auto count_bytes = static_cast<vk::DeviceSize>(range.Count) * sizeof(T);
+        const auto start = range.Offset * sizeof(T);
+        const auto count_bytes = range.Count * sizeof(T);
         return start + count_bytes > bytes.size() ? bytes.subspan(0, 0) : bytes.subspan(start, count_bytes);
     }
 
