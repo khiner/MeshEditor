@@ -507,7 +507,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (interaction_mode == InteractionMode::Edit) {
             const auto &pending = R.get<const PendingTransform>(SceneEntity);
             const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-            for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+            for (const auto [e, mi] : R.view<const MeshInstance, const Selected>(entt::exclude<Frozen>).each()) {
+                if (HasFrozenInstance(R, mi.MeshEntity)) continue;
                 const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
@@ -851,6 +852,8 @@ void Scene::ClearMeshes() {
 }
 
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
+    if (HasFrozenInstance(R, e)) return;
+
     Meshes.SetPositions(R.get<const Mesh>(e), positions);
     R.emplace_or_replace<MeshGeometryDirty>(e);
 }
@@ -921,7 +924,9 @@ void Scene::RecordRenderCommandBuffer() {
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
         for (const auto [e, mi, ri] : R.view<const MeshInstance, const Selected, const RenderInstance>().each()) {
-            if (primary_edit_instances.at(mi.MeshEntity) != e) silhouette_instances.insert(e);
+            if (auto it = primary_edit_instances.find(mi.MeshEntity); it == primary_edit_instances.end() || it->second != e) {
+                silhouette_instances.insert(e);
+            }
         }
     }
 
@@ -1518,6 +1523,11 @@ void Scene::Interact() {
 
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto active_entity = FindActiveEntity(R);
+    const bool has_frozen_selected = R.view<Selected, Frozen>().begin() != R.view<Selected, Frozen>().end();
+    const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
+        any_of(GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return HasFrozenInstance(R, mesh_entity); });
+    const bool transform_shortcuts_enabled = !edit_transform_locked;
+    const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Handle keyboard input.
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Tab)) {
@@ -1534,13 +1544,13 @@ void Scene::Interact() {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
             else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
             else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
-            else if (IsKeyPressed(ImGuiKey_G, false)) {
+            else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
                 StartScreenTransform = TransformGizmo::TransformType::Translate;
-            } else if (IsKeyPressed(ImGuiKey_R, false)) StartScreenTransform = TransformGizmo::TransformType::Rotate;
-            else if (IsKeyPressed(ImGuiKey_S, false) && !R.all_of<Frozen>(active_entity)) StartScreenTransform = TransformGizmo::TransformType::Scale;
+            } else if (IsKeyPressed(ImGuiKey_R, false) && transform_shortcuts_enabled) StartScreenTransform = TransformGizmo::TransformType::Rotate;
+            else if (IsKeyPressed(ImGuiKey_S, false) && scale_shortcut_enabled) StartScreenTransform = TransformGizmo::TransformType::Scale;
             else if (IsKeyPressed(ImGuiKey_H, false)) {
                 for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<RenderInstance>(e));
             } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
@@ -1808,19 +1818,24 @@ void Scene::RenderOverlay() {
         };
 
         using enum TransformGizmo::Type;
-        const auto v = R.view<Selected, Frozen>();
-        const bool scale_enabled = v.begin() == v.end();
+        const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+        const bool has_frozen_selected = R.view<Selected, Frozen>().begin() != R.view<Selected, Frozen>().end();
+        const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
+            any_of(GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return HasFrozenInstance(R, mesh_entity); });
+        const bool transform_enabled = !edit_transform_locked;
+        const bool scale_enabled = transform_enabled && !has_frozen_selected;
         const ButtonInfo buttons[]{
             {*Icons.Select, None, ImDrawFlags_RoundCornersTop, true},
             {*Icons.SelectBox, None, ImDrawFlags_RoundCornersBottom, true},
-            {*Icons.Move, Translate, ImDrawFlags_RoundCornersTop, true},
-            {*Icons.Rotate, Rotate, ImDrawFlags_RoundCornersNone, true},
+            {*Icons.Move, Translate, ImDrawFlags_RoundCornersTop, transform_enabled},
+            {*Icons.Rotate, Rotate, ImDrawFlags_RoundCornersNone, transform_enabled},
             {*Icons.Scale, Scale, ImDrawFlags_RoundCornersNone, scale_enabled},
-            {*Icons.Universal, Universal, ImDrawFlags_RoundCornersBottom, true},
+            {*Icons.Universal, Universal, ImDrawFlags_RoundCornersBottom, transform_enabled},
         };
 
-        auto &element = MGizmo.Config.Type;
-        if (!scale_enabled && element == Scale) element = Translate;
+        auto &transform_type = MGizmo.Config.Type;
+        if (!transform_enabled) transform_type = None;
+        else if (!scale_enabled && transform_type == Scale) transform_type = Translate;
 
         const float padding = GetTextLineHeightWithSpacing() / 2.f;
         const auto start_pos = std::bit_cast<ImVec2>(viewport.pos) + GetWindowContentRegionMin() + ImVec2{padding, padding};
@@ -1846,22 +1861,21 @@ void Scene::RenderOverlay() {
 
             const bool hovered = IsItemHovered();
             if (hovered) TransformModePillsHovered = true;
-
             if (clicked) {
                 if (i == 0) {
                     SelectionMode = SelectionMode::Click;
-                    element = None;
+                    transform_type = None;
                 } else if (i == 1) {
                     SelectionMode = SelectionMode::Box;
-                    element = None;
+                    transform_type = None;
                 } else { // Transform buttons
-                    element = button_type;
+                    transform_type = button_type;
                 }
             }
 
             const bool is_active = i < 2 ?
-                (element == None && ((i == 0 && SelectionMode == SelectionMode::Click) || (i == 1 && SelectionMode == SelectionMode::Box))) :
-                element == button_type;
+                (transform_type == None && ((i == 0 && SelectionMode == SelectionMode::Click) || (i == 1 && SelectionMode == SelectionMode::Box))) :
+                transform_type == button_type;
             const auto bg_color = GetColorU32(
                 !enabled      ? ImGuiCol_FrameBg :
                     is_active ? ImGuiCol_ButtonActive :
@@ -1900,7 +1914,7 @@ void Scene::RenderOverlay() {
     const auto has_transform_target = [&]() {
         if (selected_view.empty()) return false;
         if (interaction_mode != InteractionMode::Edit) return true;
-        for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+        for (const auto [e, mi] : R.view<const MeshInstance, const Selected>(entt::exclude<Frozen>).each()) {
             if (!R.get<const MeshSelection>(mi.MeshEntity).Handles.empty()) return true;
         }
         return false;
@@ -1927,7 +1941,7 @@ void Scene::RenderOverlay() {
             // Compute world-space centroid of selected vertices across all selected instances.
             uint32_t vertex_count = 0;
             const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-            for (const auto [e, mi] : R.view<const MeshInstance, const Selected>().each()) {
+            for (const auto [e, mi] : R.view<const MeshInstance, const Selected>(entt::exclude<Frozen>).each()) {
                 const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &selection = R.get<const MeshSelection>(mi.MeshEntity);
@@ -1955,7 +1969,14 @@ void Scene::RenderOverlay() {
             )) {
             const auto &[ts, td] = *start_delta;
             if (start_transform_view.empty()) {
-                for (const auto e : root_selected) R.emplace<StartTransform>(e, GetTransform(R, e));
+                if (interaction_mode == InteractionMode::Edit) {
+                    for (const auto e : root_selected) {
+                        if (R.all_of<Frozen>(e)) continue;
+                        R.emplace<StartTransform>(e, GetTransform(R, e));
+                    }
+                } else {
+                    for (const auto e : root_selected) R.emplace<StartTransform>(e, GetTransform(R, e));
+                }
             }
             if (interaction_mode == InteractionMode::Edit) {
                 // Edit mode: store pending transform for shader-based preview.
@@ -2157,11 +2178,15 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
     }
     if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
-        if (CollapsingHeader("Update primitive")) {
+        const bool frozen = HasFrozenInstance(R, active_mesh_entity);
+        if (frozen) BeginDisabled();
+        const auto update_label = std::format("Update primitive{}", frozen ? " (frozen)" : "");
+        if (CollapsingHeader(update_label.c_str()) && !frozen) {
             if (auto mesh_data = PrimitiveEditor(*primitive_type, false)) {
                 SetMeshPositions(active_mesh_entity, std::move(mesh_data->Positions));
             }
         }
+        if (frozen) EndDisabled();
     }
     PopID();
 

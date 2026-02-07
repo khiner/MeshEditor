@@ -68,6 +68,9 @@ std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const
 bool HasSelectedInstance(const entt::registry &r, entt::entity mesh_entity) {
     return any_of(r.view<const MeshInstance, const Selected>().each(), [mesh_entity](const auto &t) { return std::get<1>(t).MeshEntity == mesh_entity; });
 }
+bool HasFrozenInstance(const entt::registry &r, entt::entity mesh_entity) {
+    return any_of(r.view<const MeshInstance, const Frozen>().each(), [mesh_entity](const auto &t) { return std::get<1>(t).MeshEntity == mesh_entity; });
+}
 auto GetSelectedMeshEntities(const entt::registry &r) {
     return r.view<const MeshInstance, const Selected>().each() | transform([](const auto &t) { return std::get<1>(t).MeshEntity; }) | to<std::unordered_set>();
 }
