@@ -3,10 +3,10 @@
 #include "TransformGizmo.h"
 #include "World.h"
 #include "mesh/Handle.h"
-#include "mesh/MeshStore.h"
 #include "numeric/vec2.h"
 
 #include "entt_fwd.h"
+#include <vulkan/vulkan.hpp>
 
 #include <filesystem>
 #include <functional>
@@ -78,10 +78,13 @@ struct MeshInstanceCreateInfo {
     bool Visible{true};
 };
 
-struct SvgResource;
+struct Mesh;
+struct MeshData;
+struct MeshStore;
 struct ScenePipelines;
 struct SceneBuffers;
 struct DescriptorSlots;
+struct SvgResource;
 namespace mvk {
 struct ImageResource;
 }
@@ -185,7 +188,7 @@ private:
 
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneBuffers> Buffers;
-    MeshStore Meshes;
+    std::unique_ptr<MeshStore> Meshes;
 
     enum class SelectionMode { Click,
                                Box };

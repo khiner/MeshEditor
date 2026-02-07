@@ -12,6 +12,7 @@
 #include "Timer.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
+#include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 
 #include <entt/entity/registry.hpp>
@@ -172,7 +173,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
       Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots->GetSetLayout(), Slots->GetSet())},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
-      Meshes{Buffers->Ctx} {
+      Meshes{std::make_unique<MeshStore>(Buffers->Ctx)} {
     // Reactive storage subscriptions for deferred once-per-frame processing
     using namespace entt::literals;
 
@@ -523,9 +524,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     offset = glm::rotate(pending.R, offset);
                     const auto new_world = pending.Pivot + offset + pending.P;
                     const auto new_local = vec3{world_to_local * vec4{new_world, 1.f}};
-                    Meshes.SetPosition(mesh, vi, new_local);
+                    Meshes->SetPosition(mesh, vi, new_local);
                 }
-                Meshes.UpdateNormals(mesh);
+                Meshes->UpdateNormals(mesh);
                 dirty_overlay_meshes.insert(mi.MeshEntity);
             }
         }
@@ -649,7 +650,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
 
-        Meshes.UpdateElementStates(mesh, element, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
+        Meshes->UpdateElementStates(mesh, element, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
@@ -714,7 +715,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
     );
     R.emplace<MeshSelection>(mesh_entity);
     R.emplace<MeshBuffers>(
-        mesh_entity, Meshes.GetVerticesBuffer(mesh.GetStoreId()),
+        mesh_entity, Meshes->GetVerticesBuffer(mesh.GetStoreId()),
         Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
         Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
         Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
@@ -757,11 +758,11 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, std::optional<MeshInstanceCreateInfo> info) {
-    return AddMesh(Meshes.CreateMesh(std::move(data)), std::move(info));
+    return AddMesh(Meshes->CreateMesh(std::move(data)), std::move(info));
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path &path, std::optional<MeshInstanceCreateInfo> info) {
-    auto result = Meshes.LoadMesh(path);
+    auto result = Meshes->LoadMesh(path);
     if (!result) throw std::runtime_error(result.error());
     const auto e = AddMesh(std::move(*result), std::move(info));
     R.emplace<Path>(e.first, path);
@@ -771,7 +772,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = AddMesh(
-        Meshes.CloneMesh(R.get<const Mesh>(mesh_entity)),
+        Meshes->CloneMesh(R.get<const Mesh>(mesh_entity)),
         info.value_or(MeshInstanceCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
             .Transform = GetTransform(R, e),
@@ -854,7 +855,7 @@ void Scene::ClearMeshes() {
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
     if (HasFrozenInstance(R, e)) return;
 
-    Meshes.SetPositions(R.get<const Mesh>(e), positions);
+    Meshes->SetPositions(R.get<const Mesh>(e), positions);
     R.emplace_or_replace<MeshGeometryDirty>(e);
 }
 
@@ -966,9 +967,9 @@ void Scene::RecordRenderCommandBuffer() {
         fill_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
-            const auto face_id_buffer = Meshes.GetFaceIdBuffer(mesh.GetStoreId());
-            const auto face_normal_buffer = Meshes.GetFaceNormalBuffer(mesh.GetStoreId());
-            const auto face_state_buffer = Meshes.GetFaceStateBuffer(mesh.GetStoreId());
+            const auto face_id_buffer = Meshes->GetFaceIdBuffer(mesh.GetStoreId());
+            const auto face_normal_buffer = Meshes->GetFaceNormalBuffer(mesh.GetStoreId());
+            const auto face_state_buffer = Meshes->GetFaceStateBuffer(mesh.GetStoreId());
             draw.ObjectIdSlot = face_id_buffer.Slot;
             draw.FaceIdOffset = face_id_buffer.Range.Offset;
             draw.FaceNormalSlot = settings.SmoothShading ? InvalidSlot : face_normal_buffer.Slot;
@@ -992,7 +993,7 @@ void Scene::RecordRenderCommandBuffer() {
         line_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
-            const auto edge_state_buffer = Meshes.GetEdgeStateBuffer(mesh.GetStoreId());
+            const auto edge_state_buffer = Meshes->GetEdgeStateBuffer(mesh.GetStoreId());
             draw.ElementStateSlot = edge_state_buffer.Slot;
             draw.ElementStateOffset = edge_state_buffer.Range.Offset;
             if (show_wireframe) {
@@ -1009,7 +1010,7 @@ void Scene::RecordRenderCommandBuffer() {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
-            draw.ElementStateSlot = Meshes.GetVertexStateSlot();
+            draw.ElementStateSlot = Meshes->GetVertexStateSlot();
             draw.ElementStateOffset = mesh_buffers.Vertices.Range.Offset;
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
@@ -1057,7 +1058,7 @@ void Scene::RecordRenderCommandBuffer() {
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
-    const uint32_t transform_vertex_state_slot = is_edit_mode ? Meshes.GetVertexStateSlot() : InvalidSlot;
+    const uint32_t transform_vertex_state_slot = is_edit_mode ? Meshes->GetVertexStateSlot() : InvalidSlot;
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
@@ -1311,7 +1312,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                                                                mesh_buffers.FaceIndices;
             auto draw = MakeDrawData(mesh_buffers.Vertices, indices, models);
             if (element == Element::Face) {
-                const auto face_id_buffer = Meshes.GetFaceIdBuffer(mesh.GetStoreId());
+                const auto face_id_buffer = Meshes->GetFaceIdBuffer(mesh.GetStoreId());
                 draw.ObjectIdSlot = face_id_buffer.Slot;
                 draw.FaceIdOffset = face_id_buffer.Range.Offset;
             } else {
@@ -1404,7 +1405,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         auto batch = draw_list.BeginBatch();
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
         draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementStateSlot = Meshes.GetVertexStateSlot();
+        draw.ElementStateSlot = Meshes->GetVertexStateSlot();
         draw.ElementStateOffset = mesh_buffers.Vertices.Range.Offset;
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return SelectionDrawInfo{SPT::SelectionElementVertex, batch}; }, *SelectionReadySemaphore);
