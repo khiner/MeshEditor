@@ -28,7 +28,7 @@ struct MeshStore {
     SlottedBufferRange GetVerticesRange(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
 
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
-    SlottedBufferRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceStates, FaceStateBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceStateBuffer.Slot}; }
     SlottedBufferRange GetEdgeStateRange(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
 
     std::span<const vec3> GetFaceNormals(uint32_t id) const { return FaceNormalBuffer.Get(Entries.at(id).FaceNormals); }
@@ -53,14 +53,16 @@ struct MeshStore {
 private:
     BufferArena<Vertex> VerticesBuffer;
     BufferArena<vec3> FaceNormalBuffer;
+
     mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
-    BufferArena<uint8_t> FaceStateBuffer;
+    mvk::Buffer FaceStateBuffer; // Mirrors FaceNormalBuffer
     BufferArena<uint8_t> EdgeStateBuffer;
+
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
 
     struct Entry {
         BufferRange Vertices, FaceNormals;
-        BufferRange FaceStates, EdgeStates;
+        BufferRange EdgeStates;
         BufferRange TriangleFaceIds;
         bool Alive{false};
     };
@@ -70,5 +72,7 @@ private:
 
     uint32_t AcquireId(Entry &&);
     BufferRange AllocateVertices(uint32_t count);
+    BufferRange AllocateFaces(uint32_t count);
+    std::span<uint8_t> GetFaceStates(BufferRange);
     std::span<uint8_t> GetVertexStates(BufferRange);
 };
