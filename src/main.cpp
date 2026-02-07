@@ -418,7 +418,6 @@ void run() {
     };
     audio_device.Start();
 
-    std::unique_ptr<mvk::ImGuiTexture> scene_viewport_texture;
     WindowsState windows;
 
     // Main loop
@@ -576,21 +575,8 @@ void run() {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
                 scene->Interact();
-                // Submit GPU render. Nonblocking: WaitForRender() is called later, before RenderFrame() samples the resolve image.
-                // Pass consumer fence only after first frame (fence hasn't been submitted yet on frame 1).
-                vk::Fence consumerFence = GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{};
-                if (scene->SubmitViewport(consumerFence)) {
-                    // Extent changed. Update the scene texture.
-                    scene_viewport_texture.reset(); // Ensure destruction before creation.
-                    scene_viewport_texture = std::make_unique<mvk::ImGuiTexture>(*vc->Device, scene->GetViewportImageView(), vec2{0, 1}, vec2{1, 0});
-                }
-                if (scene_viewport_texture) {
-                    const auto cursor = GetCursorPos();
-                    const auto &scene_extent = scene->GetExtent();
-                    scene_viewport_texture->Draw({float(scene_extent.width), float(scene_extent.height)});
-                    SetCursorPos(cursor);
-                }
-                scene->RenderOverlay();
+                // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the resolve image.
+                scene->Render(GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
             }
             End();
             PopStyleVar();
@@ -621,7 +607,6 @@ void run() {
     acoustic_scene.reset();
     NFD_Quit();
 
-    scene_viewport_texture.reset();
     scene.reset();
 
     ImGui_ImplVulkan_Shutdown();

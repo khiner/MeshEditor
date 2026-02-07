@@ -662,9 +662,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     return render_request;
 }
 
-vk::Extent2D Scene::GetExtent() const { return R.get<const ViewportExtent>(SceneEntity).Value; }
-vk::ImageView Scene::GetViewportImageView() const { return *Pipelines->Main.Resources->ResolveImage.View; }
-
 void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<RenderInstance>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
@@ -1717,12 +1714,25 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
     SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);
 };
 
+void Scene::Render(vk::Fence viewportConsumerFence) {
+    if (SubmitViewport(viewportConsumerFence)) {
+        // Recreate the ImGui texture wrapper for the new resolve image.
+        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->ResolveImage.View, vec2{0, 1}, vec2{1, 0});
+    }
+    if (ViewportTexture) {
+        const auto cursor = GetCursorPos();
+        const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+        ViewportTexture->Draw({float(extent.width), float(extent.height)});
+        SetCursorPos(cursor);
+    }
+    RenderOverlay();
+}
+
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     auto &extent = R.get<ViewportExtent>(SceneEntity).Value;
     const auto content_region = ToGlm(GetContentRegionAvail());
     const bool extent_changed = extent.width != content_region.x || extent.height != content_region.y;
     if (extent_changed) {
-        // uint(e.x), uint(e.y)
         extent.width = uint(content_region.x);
         extent.height = uint(content_region.y);
         R.patch<ViewportExtent>(SceneEntity, [](auto &) {});
