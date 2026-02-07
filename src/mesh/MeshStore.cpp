@@ -177,49 +177,57 @@ void MeshStore::UpdateNormals(const Mesh &mesh) {
     }
 }
 Mesh MeshStore::CreateMesh(MeshData &&data) {
-    const auto id = AcquireId();
-    auto &entry = Entries[id];
-    entry.Alive = true;
-    entry.Vertices = VerticesBuffer.Allocate(data.Positions.size());
-    EnsureVertexStateCapacity(entry.Vertices);
-    auto vertex_span = VerticesBuffer.GetMutable(entry.Vertices);
+    const auto vertices = AllocateVertices(data.Positions.size());
+    auto vertex_span = VerticesBuffer.GetMutable(vertices);
     for (size_t i = 0; i < data.Positions.size(); ++i) vertex_span[i].Position = data.Positions[i];
-    entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
-    entry.FaceNormals = FaceNormalBuffer.Allocate(data.Faces.size());
-    entry.FaceStates = FaceStateBuffer.Allocate(data.Faces.size());
+    const auto face_normals = FaceNormalBuffer.Allocate(data.Faces.size());
+    const auto face_states = FaceStateBuffer.Allocate(data.Faces.size());
+    const auto triangle_face_ids = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
+    const auto id = AcquireId({
+        .Vertices = vertices,
+        .FaceNormals = face_normals,
+        .FaceStates = face_states,
+        .EdgeStates = {},
+        .TriangleFaceIds = triangle_face_ids,
+        .Alive = true,
+    });
+    auto &entry = Entries[id];
     Mesh mesh{*this, id, std::move(data.Faces)};
     entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     UpdateNormals(mesh);
-    std::ranges::fill(GetVertexStates(entry.Vertices), 0);
-    std::ranges::fill(FaceStateBuffer.GetMutable(entry.FaceStates), 0);
+    std::ranges::fill(GetVertexStates(vertices), 0);
+    std::ranges::fill(FaceStateBuffer.GetMutable(face_states), 0);
     std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
     return mesh;
 }
 
 Mesh MeshStore::CloneMesh(const Mesh &mesh) {
-    const auto id = AcquireId();
-    auto &entry = Entries[id];
-    entry.Alive = true;
-    {
-        const auto src_vertices = GetVertices(mesh.GetStoreId());
-        entry.Vertices = VerticesBuffer.Allocate(src_vertices.size());
-        EnsureVertexStateCapacity(entry.Vertices);
-        auto dst_vertices = VerticesBuffer.GetMutable(entry.Vertices);
-        std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
-    }
-    {
-        const auto src_triangle_face_ids = TriangleFaceIdBuffer.Get(Entries.at(mesh.GetStoreId()).TriangleFaceIds);
-        entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(src_triangle_face_ids);
-        entry.FaceNormals = FaceNormalBuffer.Allocate(mesh.FaceCount());
-        entry.FaceStates = FaceStateBuffer.Allocate(mesh.FaceCount());
-        entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
-        const auto src_face_normals = GetFaceNormals(mesh.GetStoreId());
-        auto dst_face_normals = FaceNormalBuffer.GetMutable(entry.FaceNormals);
-        std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
-    }
-    std::ranges::fill(GetVertexStates(entry.Vertices), 0);
-    std::ranges::fill(FaceStateBuffer.GetMutable(entry.FaceStates), 0);
-    std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
+    const auto src_vertices = GetVertices(mesh.GetStoreId());
+    const auto vertices = AllocateVertices(src_vertices.size());
+    auto dst_vertices = VerticesBuffer.GetMutable(vertices);
+    std::copy(src_vertices.begin(), src_vertices.end(), dst_vertices.begin());
+
+    const auto src_triangle_face_ids = TriangleFaceIdBuffer.Get(Entries.at(mesh.GetStoreId()).TriangleFaceIds);
+    const auto triangle_face_ids = TriangleFaceIdBuffer.Allocate(src_triangle_face_ids);
+    const auto face_normals = FaceNormalBuffer.Allocate(mesh.FaceCount());
+    const auto face_states = FaceStateBuffer.Allocate(mesh.FaceCount());
+    const auto edge_states = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
+    const auto src_face_normals = GetFaceNormals(mesh.GetStoreId());
+    auto dst_face_normals = FaceNormalBuffer.GetMutable(face_normals);
+    std::copy(src_face_normals.begin(), src_face_normals.end(), dst_face_normals.begin());
+
+    const auto id = AcquireId({
+        .Vertices = vertices,
+        .FaceNormals = face_normals,
+        .FaceStates = face_states,
+        .EdgeStates = edge_states,
+        .TriangleFaceIds = triangle_face_ids,
+        .Alive = true,
+    });
+
+    std::ranges::fill(GetVertexStates(vertices), 0);
+    std::ranges::fill(FaceStateBuffer.GetMutable(face_states), 0);
+    std::ranges::fill(EdgeStateBuffer.GetMutable(edge_states), 0);
     return {*this, id, mesh};
 }
 
@@ -255,10 +263,12 @@ void MeshStore::Release(uint32_t id) {
     FreeIds.emplace_back(id);
 }
 
-void MeshStore::EnsureVertexStateCapacity(BufferRange range) {
+BufferRange MeshStore::AllocateVertices(uint32_t count) {
+    const auto range = VerticesBuffer.Allocate(count);
     const auto required_size = static_cast<vk::DeviceSize>(range.Offset + range.Count) * sizeof(uint8_t);
     VertexStateBuffer.Reserve(required_size);
     VertexStateBuffer.UsedSize = std::max(VertexStateBuffer.UsedSize, required_size);
+    return range;
 }
 
 std::span<uint8_t> MeshStore::GetVertexStates(BufferRange range) {
@@ -324,12 +334,13 @@ void MeshStore::UpdateElementStates(
     }
 }
 
-uint32_t MeshStore::AcquireId() {
+uint32_t MeshStore::AcquireId(Entry &&entry) {
     if (!FreeIds.empty()) {
         const auto id = FreeIds.back();
         FreeIds.pop_back();
+        Entries[id] = std::move(entry);
         return id;
     }
-    Entries.emplace_back();
+    Entries.emplace_back(std::move(entry));
     return Entries.size() - 1;
 }

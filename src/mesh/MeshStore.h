@@ -68,8 +68,7 @@ private:
     std::vector<Entry> Entries{};
     std::vector<uint32_t> FreeIds{};
 
-    uint32_t AcquireId();
-
-    void EnsureVertexStateCapacity(BufferRange);
+    uint32_t AcquireId(Entry &&);
+    BufferRange AllocateVertices(uint32_t count);
     std::span<uint8_t> GetVertexStates(BufferRange);
 };
