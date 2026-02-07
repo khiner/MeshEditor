@@ -715,7 +715,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
     );
     R.emplace<MeshSelection>(mesh_entity);
     R.emplace<MeshBuffers>(
-        mesh_entity, Meshes->GetVerticesBuffer(mesh.GetStoreId()),
+        mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()),
         Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
         Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
         Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
@@ -967,9 +967,9 @@ void Scene::RecordRenderCommandBuffer() {
         fill_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
-            const auto face_id_buffer = Meshes->GetFaceIdBuffer(mesh.GetStoreId());
-            const auto face_normal_buffer = Meshes->GetFaceNormalBuffer(mesh.GetStoreId());
-            const auto face_state_buffer = Meshes->GetFaceStateBuffer(mesh.GetStoreId());
+            const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
+            const auto face_normal_buffer = Meshes->GetFaceNormalRange(mesh.GetStoreId());
+            const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
             draw.ObjectIdSlot = face_id_buffer.Slot;
             draw.FaceIdOffset = face_id_buffer.Range.Offset;
             draw.FaceNormalSlot = settings.SmoothShading ? InvalidSlot : face_normal_buffer.Slot;
@@ -993,7 +993,7 @@ void Scene::RecordRenderCommandBuffer() {
         line_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
-            const auto edge_state_buffer = Meshes->GetEdgeStateBuffer(mesh.GetStoreId());
+            const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             draw.ElementStateSlot = edge_state_buffer.Slot;
             draw.ElementStateOffset = edge_state_buffer.Range.Offset;
             if (show_wireframe) {
@@ -1312,7 +1312,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                                                                mesh_buffers.FaceIndices;
             auto draw = MakeDrawData(mesh_buffers.Vertices, indices, models);
             if (element == Element::Face) {
-                const auto face_id_buffer = Meshes->GetFaceIdBuffer(mesh.GetStoreId());
+                const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
                 draw.ObjectIdSlot = face_id_buffer.Slot;
                 draw.FaceIdOffset = face_id_buffer.Range.Offset;
             } else {

@@ -31,18 +31,17 @@ struct MeshStore {
 
     std::span<const Vertex> GetVertices(uint32_t id) const { return VerticesBuffer.Get(Entries.at(id).Vertices); }
     std::span<Vertex> GetVertices(uint32_t id) { return VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
-    SlottedBufferRange GetVerticesBuffer(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetVerticesRange(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
 
-    SlottedBufferRange GetVertexStateBuffer(uint32_t id) const { return {Entries.at(id).Vertices, VertexStateBuffer.Slot}; }
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
-    SlottedBufferRange GetFaceStateBuffer(uint32_t id) const { return {Entries.at(id).FaceStates, FaceStateBuffer.Buffer.Slot}; }
-    SlottedBufferRange GetEdgeStateBuffer(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceStates, FaceStateBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetEdgeStateRange(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
 
     std::span<const vec3> GetFaceNormals(uint32_t id) const { return FaceNormalBuffer.Get(Entries.at(id).FaceNormals); }
     std::span<vec3> GetFaceNormals(uint32_t id) { return FaceNormalBuffer.GetMutable(Entries.at(id).FaceNormals); }
-    SlottedBufferRange GetFaceNormalBuffer(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceNormalBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetFaceNormalRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceNormalBuffer.Buffer.Slot}; }
 
-    SlottedBufferRange GetFaceIdBuffer(uint32_t id) const { return {Entries.at(id).FaceIds, FaceIdBuffer.Buffer.Slot}; }
+    SlottedBufferRange GetFaceIdRange(uint32_t id) const { return {Entries.at(id).FaceIds, FaceIdBuffer.Buffer.Slot}; }
 
     void UpdateElementStates(
         const Mesh &mesh,
