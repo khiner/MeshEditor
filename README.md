@@ -37,9 +37,9 @@ Audio-specific features:
 
 Noteworthy dev bits:
 * Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
-* Bindless rendering with contiguous vertex data arenas shared across all meshes
+* Bindless rendering with vertex pulling from contiguous arenas for all mesh data (vertices, indices, attributes, selection state, etc.)
 * Multi-Draw Indirect rendering (MDI): Each pipeline issues one `vkCmdDrawIndexedIndirect` per render pass (when used)
-* Takes advantage of unified memory (direct-mapped GPU memory). For discrete GPUs that need a staging buffer, minimizes CPU->GPU transfers by deferring and merging transfer copy ranges per-frame
+* Uses unified CPU/GPU memory when available. For discrete GPUs, minimizes staging transfers by deferring and merging copy ranges per-frame
 * GPU-accelerated mouse interactions (no CPU acceleration structures like BVH)
 * Half-edge iterators for mesh topology operations
 * Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
