@@ -961,8 +961,7 @@ void Scene::RecordRenderCommandBuffer() {
     const auto set_edit_pending_local_transform = [&](DrawData &draw, entt::entity mesh_entity) {
         if (!has_pending_transform) return;
         if (auto it = edit_transform_context.PendingLocalTransformOffsets.find(mesh_entity); it != edit_transform_context.PendingLocalTransformOffsets.end()) {
-            draw.PendingLocalTransformSlot = Buffers->EditPendingLocalTransforms.Slot;
-            draw.PendingLocalTransformOffset = it->second;
+            draw.PendingLocalTransform = {Buffers->EditPendingLocalTransforms.Slot, it->second};
         }
     };
     std::unordered_set<entt::entity> silhouette_instances;
@@ -1016,19 +1015,16 @@ void Scene::RecordRenderCommandBuffer() {
             const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
             draw.ObjectIdSlot = face_id_buffer.Slot;
             draw.FaceIdOffset = face_id_buffer.Range.Offset;
-            draw.FaceNormalSlot = settings.SmoothShading ? InvalidSlot : face_normal_buffer.Slot;
-            draw.FaceNormalOffset = face_normal_buffer.Range.Offset;
+            draw.FaceNormal = {settings.SmoothShading ? InvalidSlot : face_normal_buffer.Slot, face_normal_buffer.Range.Offset};
             set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                draw.ElementStateSlot = face_state_buffer.Slot;
-                draw.ElementStateOffset = face_state_buffer.Range.Offset;
+                draw.ElementState = {face_state_buffer.Slot, face_state_buffer.Range.Offset};
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
-                draw.ElementStateSlot = InvalidSlot;
+                draw.ElementState = {};
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             } else {
-                draw.ElementStateSlot = face_state_buffer.Slot;
-                draw.ElementStateOffset = face_state_buffer.Range.Offset;
+                draw.ElementState = {face_state_buffer.Slot, face_state_buffer.Range.Offset};
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             }
         }
@@ -1039,8 +1035,7 @@ void Scene::RecordRenderCommandBuffer() {
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
-            draw.ElementStateSlot = edge_state_buffer.Slot;
-            draw.ElementStateOffset = edge_state_buffer.Range.Offset;
+            draw.ElementState = {edge_state_buffer.Slot, edge_state_buffer.Range.Offset};
             set_edit_pending_local_transform(draw, entity);
             if (show_wireframe) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
@@ -1056,8 +1051,7 @@ void Scene::RecordRenderCommandBuffer() {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
-            draw.ElementStateSlot = Meshes->GetVertexStateSlot();
-            draw.ElementStateOffset = mesh_buffers.Vertices.Range.Offset;
+            draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Range.Offset};
             set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
@@ -1107,7 +1101,7 @@ void Scene::RecordRenderCommandBuffer() {
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
-        const DrawPassPushConstants pc{Buffers->RenderDrawData.Slot, batch.DrawDataOffset, transform_vertex_state_slot};
+        const DrawPassPushConstants pc{{Buffers->RenderDrawData.Slot, batch.DrawDataOffset}, transform_vertex_state_slot};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
@@ -1298,8 +1292,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
         const DrawPassPushConstants pc{
-            Buffers->SelectionDrawData.Slot,
-            batch.DrawDataOffset,
+            {Buffers->SelectionDrawData.Slot, batch.DrawDataOffset},
             InvalidSlot,
             SelectionHandles->HeadImage,
             Buffers->SelectionNodeBuffer.Slot,
@@ -1450,8 +1443,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         auto batch = draw_list.BeginBatch();
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
         draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementStateSlot = Meshes->GetVertexStateSlot();
-        draw.ElementStateOffset = mesh_buffers.Vertices.Range.Offset;
+        draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Range.Offset};
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return SelectionDrawInfo{SPT::SelectionElementVertex, batch}; }, *SelectionReadySemaphore);
     SelectionStale = true;

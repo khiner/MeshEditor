@@ -12,7 +12,7 @@ layout(constant_id = 0) const uint OverlayKind = 0u;
 
 void main() {
     const DrawData draw = GetDrawData();
-    const uint idx = IndexBuffers[draw.IndexSlot].Indices[draw.IndexOffset + uint(gl_VertexIndex)];
+    const uint idx = IndexBuffers[draw.Index.Slot].Indices[draw.Index.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
@@ -21,14 +21,14 @@ void main() {
     vec3 normal = vert.Normal;
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
-        if (draw.FaceNormalSlot != INVALID_SLOT && face_id != 0u) {
-            normal = FaceNormalBuffers[draw.FaceNormalSlot].Normals[draw.FaceNormalOffset + face_id - 1u];
+        if (draw.FaceNormal.Slot != INVALID_SLOT && face_id != 0u) {
+            normal = FaceNormalBuffers[draw.FaceNormal.Slot].Normals[draw.FaceNormal.Offset + face_id - 1u];
         }
-        if (draw.ElementStateSlot != INVALID_SLOT && face_id != 0u) {
-            element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + face_id - 1u]);
+        if (draw.ElementState.Slot != INVALID_SLOT && face_id != 0u) {
+            element_state = uint(ElementStateBuffers[draw.ElementState.Slot].States[draw.ElementState.Offset + face_id - 1u]);
         }
-    } else if (draw.ElementStateSlot != INVALID_SLOT) {
-        element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + gl_VertexIndex]);
+    } else if (draw.ElementState.Slot != INVALID_SLOT) {
+        element_state = uint(ElementStateBuffers[draw.ElementState.Slot].States[draw.ElementState.Offset + gl_VertexIndex]);
     }
     vec3 local_pos = vert.Position;
     vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
@@ -44,12 +44,12 @@ void main() {
     const vec4 edge_color = is_edit_mode ? vec4(ViewportTheme.Colors.WireEdit, 1.0) : vec4(ViewportTheme.Colors.Wire, 1.0);
     const vec4 object_base_color = vec4(0.7, 0.7, 0.7, 1);
     const vec4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color :
-        draw.ElementStateSlot != INVALID_SLOT ? edge_color :
+        draw.ElementState.Slot != INVALID_SLOT ? edge_color :
         OverlayKind == 1u ? vec4(ViewportTheme.Colors.FaceNormal, 1.0) :
         OverlayKind == 2u ? vec4(ViewportTheme.Colors.VertexNormal, 1.0) :
                             edge_color;
     const bool is_face_draw = draw.ObjectIdSlot != INVALID_SLOT;
-    const bool is_edge_draw = !is_face_draw && draw.ElementStateSlot != INVALID_SLOT;
+    const bool is_edge_draw = !is_face_draw && draw.ElementState.Slot != INVALID_SLOT;
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 

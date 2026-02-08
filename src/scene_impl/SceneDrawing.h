@@ -67,22 +67,17 @@ DrawData MakeDrawData(
 ) {
     return {
         .VertexSlot = vertex_slot,
-        .IndexSlot = indices.Slot,
-        .IndexOffset = indices.Range.Offset,
+        .Index = {indices.Slot, indices.Range.Offset},
         .ModelSlot = model_slot,
         .FirstInstance = 0,
         .ObjectIdSlot = InvalidSlot,
-        .FaceNormalSlot = InvalidSlot,
+        .FaceNormal = {},
         .FaceIdOffset = 0,
-        .FaceNormalOffset = 0,
         .VertexCountOrHeadImageSlot = vertices.Count,
         .ElementIdOffset = 0,
-        .ElementStateSlot = InvalidSlot,
-        .ElementStateOffset = 0,
-        .InstanceStateSlot = instance_state_slot,
-        .InstanceStateOffset = 0,
-        .PendingLocalTransformSlot = InvalidSlot,
-        .PendingLocalTransformOffset = 0,
+        .ElementState = {},
+        .InstanceState = {instance_state_slot, 0},
+        .PendingLocalTransform = {},
         .VertexOffset = vertices.Offset,
     };
 }

@@ -25,16 +25,20 @@ bindings:
     kind: Buffer
 
 structs:
+  - name: SlotOffset
+    fields:
+      - name: Slot
+        type: u32
+        default: InvalidSlot
+      - name: Offset
+        type: u32
   - name: DrawData
     fields:
       - name: VertexSlot
         type: u32
         default: InvalidSlot
-      - name: IndexSlot
-        type: u32
-        default: InvalidSlot
-      - name: IndexOffset
-        type: u32
+      - name: Index
+        type: SlotOffset
       - name: ModelSlot
         type: u32
         default: InvalidSlot
@@ -43,32 +47,20 @@ structs:
       - name: ObjectIdSlot
         type: u32
         default: InvalidSlot
-      - name: FaceNormalSlot
-        type: u32
-        default: InvalidSlot
+      - name: FaceNormal
+        type: SlotOffset
       - name: FaceIdOffset
-        type: u32
-      - name: FaceNormalOffset
         type: u32
       - name: VertexCountOrHeadImageSlot
         type: u32
       - name: ElementIdOffset
         type: u32
-      - name: ElementStateSlot
-        type: u32
-        default: InvalidSlot
-      - name: ElementStateOffset
-        type: u32
-      - name: InstanceStateSlot
-        type: u32
-        default: InvalidSlot
-      - name: InstanceStateOffset
-        type: u32
-      - name: PendingLocalTransformSlot
-        type: u32
-        default: InvalidSlot
-      - name: PendingLocalTransformOffset
-        type: u32
+      - name: ElementState
+        type: SlotOffset
+      - name: InstanceState
+        type: SlotOffset
+      - name: PendingLocalTransform
+        type: SlotOffset
       - name: VertexOffset
         type: u32
   - name: SceneViewUBO
@@ -186,11 +178,8 @@ structs:
   - name: DrawPassPushConstants
     push_constant: true
     fields:
-      - name: DrawDataSlot
-        type: u32
-        default: InvalidSlot
-      - name: DrawDataOffset
-        type: u32
+      - name: DrawData
+        type: SlotOffset
       - name: TransformVertexStateSlot
         type: u32
         default: InvalidSlot
