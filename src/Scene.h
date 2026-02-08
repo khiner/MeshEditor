@@ -4,6 +4,7 @@
 #include "World.h"
 #include "mesh/Handle.h"
 #include "numeric/vec2.h"
+#include "vulkan/Image.h"
 
 #include "entt_fwd.h"
 #include <vulkan/vulkan.hpp>
@@ -85,8 +86,8 @@ struct ScenePipelines;
 struct SceneBuffers;
 struct DescriptorSlots;
 struct SvgResource;
+
 namespace mvk {
-struct ImageResource;
 struct ImGuiTexture;
 } // namespace mvk
 
@@ -104,7 +105,7 @@ struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
 
-    void LoadIcons(vk::Device);
+    void LoadIcons();
 
     World GetWorld() const;
 
@@ -147,6 +148,7 @@ struct Scene {
     void RenderControls();
 
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
+    void CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path);
 
     std::string DebugBufferHeapUsage() const;
 

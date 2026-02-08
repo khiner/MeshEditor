@@ -49,7 +49,8 @@ struct SvgResource::Impl {
         if (doc_width <= 0.f || doc_height <= 0.f) return {};
 
         const auto display_width = std::min(GetContentRegionAvail().x, doc_width * Scale);
-        Texture->Draw({display_width, display_width * doc_height / doc_width});
+        const auto &t = *Texture;
+        ImGui::Image(ImTextureID(VkDescriptorSet(t.DescriptorSet)), {display_width, display_width * doc_height / doc_width}, {t.Uv0.x, t.Uv0.y}, {t.Uv1.x, t.Uv1.y});
         if (IsItemHovered()) {
             static constexpr std::string LinkAttribute{"xlink:href"};
             const auto display_scale = display_width / doc_width;
@@ -85,5 +86,5 @@ SvgResource::~SvgResource() = default;
 
 std::optional<std::filesystem::path> SvgResource::Draw() { return Imp->Draw(); }
 void SvgResource::DrawIcon(vec2 size) const {
-    if (Imp->Texture) Imp->Texture->Draw(size);
+    if (const auto *t = Imp->Texture.get()) ImGui::Image(ImTextureID(VkDescriptorSet(t->DescriptorSet)), {size.x, size.y}, {t->Uv0.x, t->Uv0.y}, {t->Uv1.x, t->Uv1.y});
 }

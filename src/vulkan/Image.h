@@ -18,13 +18,9 @@ struct ImGuiTexture {
     ImGuiTexture(vk::Device, vk::ImageView, vec2 uv0 = {0, 0}, vec2 uv1 = {1, 1});
     ~ImGuiTexture();
 
-    void Draw(vec2 size) const; // ImGui draw
-    vk::DescriptorSet GetDescriptorSet() const { return DescriptorSet; }
-
-private:
     vk::UniqueSampler Sampler;
-    vk::DescriptorSet DescriptorSet;
-    const vec2 Uv0, Uv1; // UV coordinates.
+    const vk::DescriptorSet DescriptorSet;
+    const vec2 Uv0, Uv1;
 };
 
 uint32_t FindMemoryType(vk::PhysicalDevice, uint32_t, vk::MemoryPropertyFlags);

@@ -1,5 +1,4 @@
 #include "Scene.h"
-#include "SvgResource.h"
 #include "Window.h"
 #include "audio/AcousticScene.h"
 #include "audio/AudioDevice.h"
@@ -393,21 +392,15 @@ void run() {
     NFD_Init();
     entt::registry r;
     auto scene = std::make_unique<Scene>(SceneVulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue}, r);
-    auto device = *vc->Device;
 
     // Load transform mode icons
-    scene->LoadIcons(device);
+    scene->LoadIcons();
 
-    const auto CreateSvg = [device, &scene, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
-        const auto RenderBitmap = [&scene](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-            return scene->RenderBitmapToImage(data, width, height);
-        };
+    const auto CreateSvg = [device = *vc->Device, &scene, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
-        svg.reset(); // Ensure destruction before creation.
-        svg = std::make_unique<SvgResource>(device, RenderBitmap, std::move(path));
+        scene->CreateSvgResource(svg, std::move(path));
     };
-
     auto acoustic_scene = std::make_unique<AcousticScene>(r, CreateSvg);
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {

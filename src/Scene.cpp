@@ -360,18 +360,21 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     return image;
 }
 
-void Scene::LoadIcons(vk::Device device) {
+void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(data, width, height);
     };
+    svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, std::move(path));
+}
 
+void Scene::LoadIcons() {
     static const std::filesystem::path svg_path{"res/svg/"};
-    Icons.Select = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "select.svg");
-    Icons.SelectBox = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "select_box.svg");
-    Icons.Move = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "move.svg");
-    Icons.Rotate = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "rotate.svg");
-    Icons.Scale = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "scale.svg");
-    Icons.Universal = std::make_unique<SvgResource>(device, RenderBitmap, svg_path / "transform.svg");
+    CreateSvgResource(Icons.Select, svg_path / "select.svg");
+    CreateSvgResource(Icons.SelectBox, svg_path / "select_box.svg");
+    CreateSvgResource(Icons.Move, svg_path / "move.svg");
+    CreateSvgResource(Icons.Rotate, svg_path / "rotate.svg");
+    CreateSvgResource(Icons.Scale, svg_path / "scale.svg");
+    CreateSvgResource(Icons.Universal, svg_path / "transform.svg");
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
@@ -1731,7 +1734,8 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
     if (ViewportTexture) {
         const auto p = std::bit_cast<ImVec2>(ToGlm(GetCursorScreenPos()));
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-        dl.AddImage(ImTextureID(VkDescriptorSet(ViewportTexture->GetDescriptorSet())), p, {p.x + float(extent.width), p.y + float(extent.height)}, {0, 1}, {1, 0}); // UV flip
+        const auto &t = *ViewportTexture;
+        dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, {p.x + float(extent.width), p.y + float(extent.height)}, {t.Uv0.x, t.Uv0.y}, {t.Uv1.x, t.Uv1.y});
     }
     dl.ChannelsMerge();
 }
