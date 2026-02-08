@@ -191,6 +191,26 @@ void BufferContext::DeferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize off
 void BufferContext::CancelDeferredCopies(vk::Buffer src, vk::Buffer dst) {
     DeferredBufferCopies.erase({src, dst});
 }
+
+void BufferContext::RecordDeferredCopies(vk::CommandBuffer cb) {
+    if (auto deferred_copies = TakeDeferredCopies(); !deferred_copies.empty()) {
+        for (const auto &[buffers, ranges] : deferred_copies) {
+            auto regions = ranges | transform([](const auto &r) {
+                               const auto &[start, end] = r;
+                               return vk::BufferCopy{start, start, end - start};
+                           }) |
+                to<std::vector>();
+            cb.copyBuffer(buffers.Src, buffers.Dst, regions);
+        }
+        // Ensure buffer writes (staging copies) are visible to shader reads.
+        const vk::MemoryBarrier buffer_barrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead};
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
+            {}, buffer_barrier, {}, {}
+        );
+    }
+}
 #endif
 
 Buffer::Buffer(BufferContext &ctx, vk::DeviceSize size, vk::BufferUsageFlags usage, SlotType slot_type)

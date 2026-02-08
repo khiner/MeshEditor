@@ -65,6 +65,7 @@ struct BufferContext {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     void DeferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size);
     void CancelDeferredCopies(vk::Buffer src, vk::Buffer dst);
+    void RecordDeferredCopies(vk::CommandBuffer cb);
     auto TakeDeferredCopies() { return std::exchange(DeferredBufferCopies, {}); }
 #endif
 

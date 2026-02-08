@@ -319,52 +319,7 @@ mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, u
     {
         // Write the bitmap into a temporary staging buffer.
         mvk::Buffer staging_buffer{Buffers->Ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
-        // Transition the image layout to be ready for data transfer.
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTopOfPipe,
-            vk::PipelineStageFlagBits::eTransfer,
-            {}, {}, {}, // Dependency flags, memory barriers, buffer memory barriers
-            vk::ImageMemoryBarrier{
-                {}, // srcAccessMask
-                vk::AccessFlagBits::eTransferWrite, // dstAccessMask
-                {}, // oldLayout
-                vk::ImageLayout::eTransferDstOptimal, // newLayout
-                {}, // srcQueueFamilyIndex
-                {}, // dstQueueFamilyIndex
-                *image.Image, // image
-                ColorSubresourceRange // subresourceRange
-            }
-        );
-
-        // Copy buffer to image.
-        cb->copyBufferToImage(
-            *staging_buffer, *image.Image, vk::ImageLayout::eTransferDstOptimal,
-            vk::BufferImageCopy{
-                0, // bufferOffset
-                0, // bufferRowLength (tightly packed)
-                0, // bufferImageHeight
-                {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, // imageSubresource
-                {0, 0, 0}, // imageOffset
-                {width, height, 1} // imageExtent
-            }
-        );
-
-        // Transition the image layout to be ready for shader sampling.
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer,
-            vk::PipelineStageFlagBits::eFragmentShader,
-            {}, {}, {},
-            vk::ImageMemoryBarrier{
-                vk::AccessFlagBits::eTransferWrite, // srcAccessMask
-                vk::AccessFlagBits::eShaderRead, // dstAccessMask
-                vk::ImageLayout::eTransferDstOptimal, // oldLayout
-                vk::ImageLayout::eShaderReadOnlyOptimal, // newLayout
-                {}, // srcQueueFamilyIndex
-                {}, // dstQueueFamilyIndex
-                *image.Image, // image
-                ColorSubresourceRange // subresourceRange
-            }
-        );
+        mvk::RecordBufferToSampledImageUpload(*cb, *staging_buffer, *image.Image, width, height, ColorSubresourceRange);
         cb->end();
 
         vk::SubmitInfo submit;
@@ -1192,23 +1147,7 @@ void Scene::RecordTransferCommandBuffer() {
     const Timer timer{"RecordTransferCommandBuffer"};
     TransferCommandBuffer->reset({});
     TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    if (auto deferred_copies = Buffers->Ctx.TakeDeferredCopies(); !deferred_copies.empty()) {
-        for (const auto &[buffers, ranges] : deferred_copies) {
-            auto regions = ranges | transform([](const auto &r) {
-                               const auto &[start, end] = r;
-                               return vk::BufferCopy{start, start, end - start};
-                           }) |
-                to<std::vector>();
-            TransferCommandBuffer->copyBuffer(buffers.Src, buffers.Dst, regions);
-        }
-        // Ensure buffer writes (staging copies) are visible to shader reads.
-        const vk::MemoryBarrier buffer_barrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead};
-        TransferCommandBuffer->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer,
-            vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
-            {}, buffer_barrier, {}, {}
-        );
-    }
+    Buffers->Ctx.RecordDeferredCopies(*TransferCommandBuffer);
     TransferCommandBuffer->end();
 }
 #endif
