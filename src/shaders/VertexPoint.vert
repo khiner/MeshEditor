@@ -19,17 +19,12 @@ void main() {
         element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + idx]);
     }
 
-    uint instance_state = 0u;
-    if (draw.InstanceStateSlot != INVALID_SLOT) {
-        instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.InstanceStateOffset + draw.FirstInstance]);
-    }
-
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
     vec3 world_pos = vec3(world.M * vec4(vert.Position, 1.0));
-    if (should_apply_pending_transform(instance_state, draw, idx)) {
-        world_pos = apply_pending_transform(world_pos);
+    if (should_apply_pending_transform(draw, idx)) {
+        world_pos = apply_pending_transform(vert.Position, world_pos, world, draw);
     }
 
     WorldNormal = mat3(world.MInv) * vert.Normal;

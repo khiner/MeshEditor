@@ -4,6 +4,7 @@
 #include "gpu/ClickResult.h"
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
+#include "gpu/WorldMatrix.h"
 
 #include <cstdint>
 
@@ -32,6 +33,7 @@ struct SceneBuffers {
           RenderIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
           SelectionDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
           SelectionIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
+          EditPendingLocalTransforms{Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
           IdentityIndexBuffer{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
           SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
@@ -103,6 +105,7 @@ struct SceneBuffers {
     mvk::Buffer RenderIndirect;
     mvk::Buffer SelectionDrawData;
     mvk::Buffer SelectionIndirect;
+    mvk::Buffer EditPendingLocalTransforms;
     mvk::Buffer IdentityIndexBuffer;
     uint32_t IdentityIndexCount{0};
     uint32_t SelectionNodeCapacity{1};

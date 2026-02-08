@@ -64,6 +64,11 @@ structs:
         default: InvalidSlot
       - name: InstanceStateOffset
         type: u32
+      - name: PendingLocalTransformSlot
+        type: u32
+        default: InvalidSlot
+      - name: PendingLocalTransformOffset
+        type: u32
       - name: VertexOffset
         type: u32
   - name: SceneViewUBO

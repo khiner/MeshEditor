@@ -30,15 +30,10 @@ void main() {
     } else if (draw.ElementStateSlot != INVALID_SLOT) {
         element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + gl_VertexIndex]);
     }
-    uint instance_state = 0u;
-    if (draw.InstanceStateSlot != INVALID_SLOT) {
-        instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.InstanceStateOffset + draw.FirstInstance]);
-    }
-
     vec3 local_pos = vert.Position;
     vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
-    if (should_apply_pending_transform(instance_state, draw, idx)) {
-        world_pos = apply_pending_transform(world_pos);
+    if (should_apply_pending_transform(draw, idx)) {
+        world_pos = apply_pending_transform(local_pos, world_pos, world, draw);
     }
 
     WorldNormal = mat3(world.MInv) * normal;

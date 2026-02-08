@@ -55,11 +55,12 @@ std::unordered_set<uint32_t> ConvertSelectionElement(const MeshSelection &select
     return new_handles;
 }
 
-// Returns primary edit instance per selected mesh: active instance if selected, else first selected instance.
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r) {
+// Returns representative edit instance per selected mesh: active instance if selected, else first selected instance.
+std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_frozen = true) {
     std::unordered_map<entt::entity, entt::entity> primaries;
     const auto active = FindActiveEntity(r);
     for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
+        if (!include_frozen && r.all_of<Frozen>(e)) continue;
         auto &primary = primaries[mi.MeshEntity];
         if (primary == entt::entity{} || e == active) primary = e;
     }

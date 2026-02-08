@@ -81,6 +81,8 @@ DrawData MakeDrawData(
         .ElementStateOffset = 0,
         .InstanceStateSlot = instance_state_slot,
         .InstanceStateOffset = 0,
+        .PendingLocalTransformSlot = InvalidSlot,
+        .PendingLocalTransformOffset = 0,
         .VertexOffset = vertices.Offset,
     };
 }
