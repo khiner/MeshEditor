@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstdint>
-
 #include "gpu/BindlessBindings.h"
 
 constexpr uint32_t InvalidSlot{~0u};

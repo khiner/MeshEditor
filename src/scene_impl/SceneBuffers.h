@@ -6,8 +6,6 @@
 #include "gpu/SelectionNode.h"
 #include "gpu/WorldMatrix.h"
 
-#include <cstdint>
-
 constexpr uint32_t
     ClickSelectRadiusPx = 50,
     ClickSelectDiameterPx = ClickSelectRadiusPx * 2 + 1,

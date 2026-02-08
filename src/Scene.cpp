@@ -2,6 +2,7 @@
 #include "SceneDefaults.h"
 #include "Widgets.h" // imgui
 
+#include "Armature.h"
 #include "BBox.h"
 #include "Bindless.h"
 #include "Entity.h"
@@ -664,10 +665,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 }
 
 void Scene::SetVisible(entt::entity entity, bool visible) {
+    const auto *mesh_instance = R.try_get<MeshInstance>(entity);
+    if (!mesh_instance) return;
+
     const bool already_visible = R.all_of<RenderInstance>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
-    const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
+    const auto mesh_entity = mesh_instance->MeshEntity;
     if (visible) {
         const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldMatrix);
         const uint32_t object_id = NextObjectId++;
@@ -728,6 +732,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
 entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo info) {
     const auto instance_entity = R.create();
     R.emplace<MeshInstance>(instance_entity, mesh_entity);
+    R.emplace<ObjectKind>(instance_entity, ObjectKind{ObjectType::Mesh});
     SetTransform(R, instance_entity, info.Transform);
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
@@ -756,6 +761,56 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
     }
 
     return instance_entity;
+}
+
+entt::entity Scene::AddEmpty(ObjectCreateInfo info) {
+    const auto entity = R.create();
+    R.emplace<ObjectKind>(entity, ObjectKind{ObjectType::Empty});
+    SetTransform(R, entity, info.Transform);
+    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Empty" : info.Name));
+
+    switch (info.Select) {
+        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
+            Select(entity);
+            break;
+        case MeshInstanceCreateInfo::SelectBehavior::Additive:
+            R.emplace<Selected>(entity);
+            // Fallthrough
+        case MeshInstanceCreateInfo::SelectBehavior::None:
+            if (R.storage<Active>().empty()) {
+                R.emplace<Active>(entity);
+                R.emplace_or_replace<Selected>(entity);
+            }
+            break;
+    }
+    return entity;
+}
+
+entt::entity Scene::AddArmature(ObjectCreateInfo info) {
+    const auto data_entity = R.create();
+    R.emplace<ArmatureData>(data_entity);
+
+    const auto entity = R.create();
+    R.emplace<ObjectKind>(entity, ObjectKind{ObjectType::Armature});
+    R.emplace<ArmatureObject>(entity, data_entity);
+    SetTransform(R, entity, info.Transform);
+    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Armature" : info.Name));
+
+    switch (info.Select) {
+        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
+            Select(entity);
+            break;
+        case MeshInstanceCreateInfo::SelectBehavior::Additive:
+            R.emplace<Selected>(entity);
+            // Fallthrough
+        case MeshInstanceCreateInfo::SelectBehavior::None:
+            if (R.storage<Active>().empty()) {
+                R.emplace<Active>(entity);
+                R.emplace_or_replace<Selected>(entity);
+            }
+            break;
+    }
+    return entity;
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, std::optional<MeshInstanceCreateInfo> info) {
@@ -819,6 +874,26 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
 }
 
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
+    if (!R.all_of<MeshInstance>(e)) {
+        const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
+        const ObjectCreateInfo create_info{
+            .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
+            .Transform = info ? info->Transform : GetTransform(R, e),
+            .Select = select_behavior,
+        };
+
+        const auto object_type = R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value : ObjectType::Empty;
+        if (object_type == ObjectType::Armature) {
+            const auto copy_entity = AddArmature(create_info);
+            if (const auto *src_armature = R.try_get<ArmatureObject>(e)) {
+                auto &dst_data = R.get<ArmatureData>(R.get<ArmatureObject>(copy_entity).DataEntity);
+                dst_data = R.get<const ArmatureData>(src_armature->DataEntity);
+            }
+            return copy_entity;
+        }
+        return AddEmpty(create_info);
+    }
+
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = AddMesh(
         Meshes->CloneMesh(R.get<const Mesh>(mesh_entity)),
@@ -834,6 +909,34 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
 }
 
 entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
+    if (!R.all_of<MeshInstance>(e)) {
+        const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
+
+        if (const auto *armature = R.try_get<ArmatureObject>(e)) {
+            const auto e_new = R.create();
+            R.emplace<Name>(e_new, !info || info->Name.empty() ? CreateName(R, std::format("{}_copy", GetName(R, e))) : CreateName(R, info->Name));
+            R.emplace<ObjectKind>(e_new, ObjectKind{ObjectType::Armature});
+            R.emplace<ArmatureObject>(e_new, armature->DataEntity);
+            SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
+
+            if (select_behavior == MeshInstanceCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
+            else if (select_behavior == MeshInstanceCreateInfo::SelectBehavior::Exclusive) Select(e_new);
+            else if (R.storage<Active>().empty()) {
+                R.emplace<Active>(e_new);
+                R.emplace_or_replace<Selected>(e_new);
+            }
+            return e_new;
+        }
+
+        return AddEmpty(
+            {
+                .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
+                .Transform = info ? info->Transform : GetTransform(R, e),
+                .Select = select_behavior,
+            }
+        );
+    }
+
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = R.create();
     {
@@ -844,6 +947,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
         R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
     }
     R.emplace<MeshInstance>(e_new, mesh_entity);
+    R.emplace<ObjectKind>(e_new, ObjectKind{ObjectType::Mesh});
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
         mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
@@ -922,6 +1026,8 @@ void Scene::Destroy(entt::entity e) {
         mesh_entity = R.get<MeshInstance>(e).MeshEntity;
         SetVisible(e, false);
     }
+    entt::entity armature_data_entity = entt::null;
+    if (const auto *armature = R.try_get<ArmatureObject>(e)) armature_data_entity = armature->DataEntity;
 
     if (R.valid(e)) R.destroy(e);
 
@@ -935,6 +1041,13 @@ void Scene::Destroy(entt::entity e) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
             R.destroy(mesh_entity);
         }
+    }
+    if (R.valid(armature_data_entity)) {
+        const auto has_users = any_of(
+            R.view<ArmatureObject>().each(),
+            [armature_data_entity](const auto &entry) { return std::get<1>(entry).DataEntity == armature_data_entity; }
+        );
+        if (!has_users) R.destroy(armature_data_entity);
     }
 }
 
@@ -1246,7 +1359,9 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
         silhouette_batch = draw_list.BeginBatch();
         if (render_silhouette) {
             for (const auto e : R.view<Selected>()) {
-                const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+                const auto *mesh_instance = R.try_get<MeshInstance>(e);
+                if (!mesh_instance) continue;
+                const auto mesh_entity = mesh_instance->MeshEntity;
                 const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
                 const auto &models = R.get<ModelsBuffer>(mesh_entity);
                 if (const auto model_index = GetModelBufferIndex(R, e)) {
@@ -1431,9 +1546,11 @@ std::optional<uint32_t> Scene::RunClickSelectElement(entt::entity mesh_entity, E
 
 std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px) {
     if (!R.all_of<Excitable>(instance_entity)) return {};
+    const auto *mesh_instance = R.try_get<MeshInstance>(instance_entity);
+    if (!mesh_instance) return {};
 
     const Timer timer{"RunClickSelectExcitableVertex"};
-    const auto mesh_entity = R.get<MeshInstance>(instance_entity).MeshEntity;
+    const auto mesh_entity = mesh_instance->MeshEntity;
     const auto &mesh = R.get<Mesh>(mesh_entity);
     const uint32_t vertex_count = mesh.VertexCount();
     if (vertex_count == 0) return {};
@@ -1579,6 +1696,13 @@ void Scene::Interact() {
             if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
             else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
             else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
+        }
+        if (IsKeyPressed(ImGuiKey_E, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+            AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
+        } else if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+            AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
         }
         if (!R.storage<Selected>().empty()) {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
@@ -1954,7 +2078,7 @@ void Scene::RenderOverlay() {
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
         const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
-        for (const auto [e, wm, ri] : R.view<const WorldMatrix, const RenderInstance>().each()) {
+        for (const auto [e, wm] : R.view<const WorldMatrix>().each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
 
             const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
@@ -2135,15 +2259,23 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
         Text("Mesh entity: %s", GetName(R, mesh_instance->MeshEntity).c_str());
     }
+    const auto object_type = R.all_of<ObjectKind>(active_entity) ? R.get<const ObjectKind>(active_entity).Value : ObjectType::Empty;
+    Text("Object type: %s", ObjectTypeName(object_type).data());
     {
         const auto model_buffer_index = GetModelBufferIndex(R, active_entity);
         Text("Model buffer index: %s", model_buffer_index ? std::to_string(*model_buffer_index).c_str() : "None");
     }
-    const auto active_mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
-    const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
-    TextUnformatted(
-        std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
-    );
+    const auto *active_mesh_instance = R.try_get<MeshInstance>(active_entity);
+    if (active_mesh_instance) {
+        const auto active_mesh_entity = active_mesh_instance->MeshEntity;
+        const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
+        TextUnformatted(
+            std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
+        );
+    } else if (const auto *armature = R.try_get<ArmatureObject>(active_entity)) {
+        const auto &armature_data = R.get<const ArmatureData>(armature->DataEntity);
+        Text("Bones: %zu", armature_data.Bones.size());
+    }
     Unindent();
     if (CollapsingHeader("Transform")) {
         auto &position = R.get<Position>(active_entity).Value;
@@ -2243,16 +2375,19 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             TreePop();
         }
     }
-    if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
-        const bool frozen = HasFrozenInstance(R, active_mesh_entity);
-        if (frozen) BeginDisabled();
-        const auto update_label = std::format("Update primitive{}", frozen ? " (frozen)" : "");
-        if (CollapsingHeader(update_label.c_str()) && !frozen) {
-            if (auto mesh_data = PrimitiveEditor(*primitive_type, false)) {
-                SetMeshPositions(active_mesh_entity, std::move(mesh_data->Positions));
+    if (active_mesh_instance) {
+        const auto active_mesh_entity = active_mesh_instance->MeshEntity;
+        if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
+            const bool frozen = HasFrozenInstance(R, active_mesh_entity);
+            if (frozen) BeginDisabled();
+            const auto update_label = std::format("Update primitive{}", frozen ? " (frozen)" : "");
+            if (CollapsingHeader(update_label.c_str()) && !frozen) {
+                if (auto mesh_data = PrimitiveEditor(*primitive_type, false)) {
+                    SetMeshPositions(active_mesh_entity, std::move(mesh_data->Positions));
+                }
             }
+            if (frozen) EndDisabled();
         }
-        if (frozen) EndDisabled();
     }
     PopID();
 
@@ -2299,15 +2434,19 @@ void Scene::RenderControls() {
                     }
                     const auto active_entity = FindActiveEntity(R);
                     if (active_entity != entt::null) {
-                        const auto mesh_entity = R.get<MeshInstance>(active_entity).MeshEntity;
-                        const auto &selection = R.get<MeshSelection>(mesh_entity);
-                        Text("Editing %s: %zu selected", label(edit_mode).data(), selection.Handles.size());
-                        if (edit_mode == Element::Vertex && !selection.Handles.empty()) {
-                            const auto &mesh = R.get<Mesh>(mesh_entity);
-                            for (const auto vh : selection.Handles) {
-                                const auto pos = mesh.GetPosition(VH{vh});
-                                Text("Vertex %u: (%.4f, %.4f, %.4f)", vh, pos.x, pos.y, pos.z);
+                        if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
+                            const auto mesh_entity = mesh_instance->MeshEntity;
+                            const auto &selection = R.get<MeshSelection>(mesh_entity);
+                            Text("Editing %s: %zu selected", label(edit_mode).data(), selection.Handles.size());
+                            if (edit_mode == Element::Vertex && !selection.Handles.empty()) {
+                                const auto &mesh = R.get<Mesh>(mesh_entity);
+                                for (const auto vh : selection.Handles) {
+                                    const auto pos = mesh.GetPosition(VH{vh});
+                                    Text("Vertex %u: (%.4f, %.4f, %.4f)", vh, pos.x, pos.y, pos.z);
+                                }
                             }
+                        } else {
+                            TextUnformatted("Edit mode requires an active mesh object.");
                         }
                     }
                 }
@@ -2315,22 +2454,38 @@ void Scene::RenderControls() {
             }
             if (!R.storage<Selected>().empty()) {
                 SeparatorText("Selection actions");
-                const auto visible_view = R.view<Selected, RenderInstance>();
-                const auto hidden_view = R.view<Selected>(entt::exclude<RenderInstance>);
-                const bool any_visible = visible_view.begin() != visible_view.end();
-                const bool any_hidden = hidden_view.begin() != hidden_view.end();
-                const bool mixed_visible = any_visible && any_hidden;
-                if (mixed_visible) ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) {
-                    for (const auto e : R.view<Selected>()) SetVisible(e, set_visible);
+                std::vector<entt::entity> selected_mesh_instances;
+                for (const auto entity : R.view<const Selected, const MeshInstance>()) selected_mesh_instances.emplace_back(entity);
+
+                if (!selected_mesh_instances.empty()) {
+                    const bool any_visible = any_of(selected_mesh_instances, [&](entt::entity e) { return R.all_of<RenderInstance>(e); });
+                    const bool any_hidden = any_of(selected_mesh_instances, [&](entt::entity e) { return !R.all_of<RenderInstance>(e); });
+                    const bool mixed_visible = any_visible && any_hidden;
+                    if (mixed_visible) ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
+                    if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) {
+                        for (const auto e : selected_mesh_instances) SetVisible(e, set_visible);
+                    }
+                    if (mixed_visible) ImGui::PopItemFlag();
                 }
-                if (mixed_visible) ImGui::PopItemFlag();
                 if (Button("Duplicate")) Duplicate();
                 SameLine();
                 if (Button("Duplicate linked")) DuplicateLinked();
                 if (Button("Delete")) Delete();
             }
             RenderEntityControls(FindActiveEntity(R));
+
+            if (CollapsingHeader("Add object")) {
+                TextDisabled("Shortcuts: Ctrl+Shift+E (Empty), Ctrl+Shift+A (Armature)");
+                if (Button("Add Empty")) {
+                    AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
+                }
+                SameLine();
+                if (Button("Add Armature")) {
+                    AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
+                }
+            }
 
             if (CollapsingHeader("Add primitive")) {
                 PushID("AddPrimitive");
@@ -2488,10 +2643,11 @@ void Scene::RenderControls() {
 }
 
 void Scene::RenderEntitiesTable(std::string name, entt::entity parent) {
-    if (MeshEditor::BeginTable(name.c_str(), 3)) {
+    if (MeshEditor::BeginTable(name.c_str(), 4)) {
         static const float CharWidth = CalcTextSize("A").x;
         TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
         TableSetupColumn("Name");
+        TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
         TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
         TableHeadersRow();
         entt::entity activate_entity = entt::null, toggle_selected = entt::null;
@@ -2504,6 +2660,11 @@ void Scene::RenderEntitiesTable(std::string name, entt::entity parent) {
             TextUnformatted(IdString(e).c_str());
             TableNextColumn();
             TextUnformatted(R.get<Name>(e).Value.c_str());
+            TableNextColumn();
+            const auto type =
+                R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value :
+                                          (R.all_of<MeshInstance>(e) ? ObjectType::Mesh : ObjectType::Empty);
+            TextUnformatted(ObjectTypeName(type).data());
             TableNextColumn();
             if (!R.all_of<Active>(e) && Button("Activate")) activate_entity = e;
             SameLine();

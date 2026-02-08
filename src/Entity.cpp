@@ -2,7 +2,6 @@
 
 #include <entt/entity/registry.hpp>
 
-#include <cstdint>
 #include <format>
 #include <ranges>
 

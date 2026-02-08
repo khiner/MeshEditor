@@ -79,6 +79,12 @@ struct MeshInstanceCreateInfo {
     bool Visible{true};
 };
 
+struct ObjectCreateInfo {
+    std::string Name{};
+    Transform Transform{};
+    MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
+};
+
 struct Mesh;
 struct MeshData;
 struct MeshStore;
@@ -118,6 +124,8 @@ struct Scene {
     // Imports glTF as a scene (may create multiple mesh + instance entities).
     std::pair<entt::entity, entt::entity> AddGltfScene(const std::filesystem::path &);
     entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
+    entt::entity AddEmpty(ObjectCreateInfo = {});
+    entt::entity AddArmature(ObjectCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshInstanceCreateInfo> = {});

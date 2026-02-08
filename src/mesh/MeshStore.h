@@ -3,7 +3,6 @@
 #include "../vulkan/BufferArena.h"
 #include "Mesh.h"
 
-#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <span>
