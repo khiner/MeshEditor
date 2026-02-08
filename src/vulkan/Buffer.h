@@ -125,6 +125,7 @@ struct Buffer {
     uint32_t Slot{InvalidSlot};
     vk::DeviceSize UsedSize{0};
     vk::BufferUsageFlags Usage{};
+    MemoryUsage Memory{MemoryUsage::Unknown};
     std::unique_ptr<VmaBuffer> DeviceBuffer;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     std::unique_ptr<VmaBuffer> HostBuffer;

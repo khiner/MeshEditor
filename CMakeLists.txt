@@ -131,7 +131,7 @@ elseif(CMAKE_BUILD_TYPE MATCHES Release)
 endif()
 
 # Use staging buffers for CPU->GPU transfers instead of direct-mapped memory.
-# Enable this for discrete GPUs or to test the staged transfer code path.
+# Enable this for discrete GPUs.
 option(MVK_FORCE_STAGED_TRANSFERS "Force staging buffer transfers (for discrete GPUs or testing)" OFF)
 if(MVK_FORCE_STAGED_TRANSFERS)
     target_compile_definitions(${PROJECT_NAME} PRIVATE MVK_FORCE_STAGED_TRANSFERS)

@@ -194,7 +194,7 @@ void BufferContext::CancelDeferredCopies(vk::Buffer src, vk::Buffer dst) {
 #endif
 
 Buffer::Buffer(BufferContext &ctx, vk::DeviceSize size, vk::BufferUsageFlags usage, SlotType slot_type)
-    : Ctx(ctx), Slot(ctx.Slots.Allocate(slot_type)), Usage(usage),
+    : Ctx(ctx), Slot(ctx.Slots.Allocate(slot_type)), Usage(usage), Memory(MemoryUsage::GpuOnly),
       DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, size, MemoryUsage::GpuOnly, usage | vk::BufferUsageFlagBits::eTransferDst)),
       Type(slot_type) {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
@@ -209,13 +209,19 @@ Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, vk::BufferUs
     : Buffer(ctx, data.size(), usage, slot_type) { Update(data); }
 
 Buffer::Buffer(BufferContext &ctx, vk::DeviceSize size, MemoryUsage mem, vk::BufferUsageFlags usage)
-    : Ctx(ctx), Usage(usage), DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, size, mem, usage)) {}
+    : Ctx(ctx), Usage(usage), Memory(mem), DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, size, mem, usage)) {
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    if (mem == MemoryUsage::GpuOnly) {
+        HostBuffer = std::make_unique<VmaBuffer>(Ctx.Vma, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
+    }
+#endif
+}
 
 Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, MemoryUsage mem, vk::BufferUsageFlags usage)
-    : Ctx(ctx), Usage(usage), DeviceBuffer(std::make_unique<VmaBuffer>(Ctx.Vma, data, mem, usage)) {}
+    : Buffer(ctx, data.size(), mem, usage) { Update(data); }
 
 Buffer::Buffer(Buffer &&other)
-    : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize), Usage(other.Usage),
+    : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize), Usage(other.Usage), Memory(other.Memory),
       DeviceBuffer(std::move(other.DeviceBuffer)),
 #ifdef MVK_FORCE_STAGED_TRANSFERS
       HostBuffer(std::move(other.HostBuffer)),
@@ -231,6 +237,7 @@ Buffer &Buffer::operator=(Buffer &&other) {
         Slot = other.Slot;
         UsedSize = other.UsedSize;
         Usage = other.Usage;
+        Memory = other.Memory;
         DeviceBuffer = std::move(other.DeviceBuffer);
 #ifdef MVK_FORCE_STAGED_TRANSFERS
         HostBuffer = std::move(other.HostBuffer);
@@ -249,9 +256,10 @@ Buffer::~Buffer() {
 void Buffer::Retire() {
     if (!DeviceBuffer) return; // Already moved-from
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    if (!HostBuffer) return;
-    Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
-    Ctx.Retired.emplace_back(std::move(HostBuffer));
+    if (HostBuffer) {
+        Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
+        Ctx.Retired.emplace_back(std::move(HostBuffer));
+    }
 #endif
     Ctx.Retired.emplace_back(std::move(DeviceBuffer));
     if (Slot != InvalidSlot) Ctx.CancelDeferredDescriptorUpdate({Type, Slot});
@@ -287,7 +295,7 @@ void Buffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) c
 
 std::span<std::byte> Buffer::GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    // Assume the whole range is modified and schedule a copy
+    // Assume the whole range is modified and schedule a copy.
     Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, size);
     return HostBuffer->GetMappedData().subspan(offset, size);
 #else
@@ -299,17 +307,24 @@ void Buffer::Reserve(vk::DeviceSize required_size) {
     if (required_size <= DeviceBuffer->GetAllocatedSize()) return;
     const auto new_size = NextPowerOfTwo(required_size);
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    auto new_host = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
-    auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::GpuOnly, Usage | vk::BufferUsageFlagBits::eTransferDst);
-    if (UsedSize > 0) {
-        new_host->Write(HostBuffer->GetData());
-        Ctx.DeferCopy(new_host->Get(), new_device->Get(), 0, UsedSize);
+    if (HostBuffer) {
+        auto new_host = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
+        auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::GpuOnly, Usage | vk::BufferUsageFlagBits::eTransferDst);
+        if (UsedSize > 0) {
+            new_host->Write(HostBuffer->GetData());
+            Ctx.DeferCopy(new_host->Get(), new_device->Get(), 0, UsedSize);
+        }
+        Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
+        Ctx.Retired.emplace_back(std::move(HostBuffer));
+        Ctx.Retired.emplace_back(std::move(DeviceBuffer));
+        HostBuffer = std::move(new_host);
+        DeviceBuffer = std::move(new_device);
+    } else {
+        auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, Memory, Usage);
+        if (UsedSize > 0) new_device->Write(DeviceBuffer->GetData());
+        Ctx.Retired.emplace_back(std::move(DeviceBuffer));
+        DeviceBuffer = std::move(new_device);
     }
-    Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
-    Ctx.Retired.emplace_back(std::move(HostBuffer));
-    Ctx.Retired.emplace_back(std::move(DeviceBuffer));
-    HostBuffer = std::move(new_host);
-    DeviceBuffer = std::move(new_device);
 #else
     auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::GpuOnly, Usage | vk::BufferUsageFlagBits::eTransferDst);
     if (UsedSize > 0) new_device->Write(DeviceBuffer->GetData());
@@ -326,8 +341,12 @@ void Buffer::Update(std::span<const std::byte> data, vk::DeviceSize offset) {
     Reserve(required_size);
     UsedSize = std::max(UsedSize, required_size);
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    HostBuffer->Write(data, offset);
-    Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, data.size());
+    if (HostBuffer) {
+        HostBuffer->Write(data, offset);
+        Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, data.size());
+    } else {
+        DeviceBuffer->Write(data, offset);
+    }
 #else
     DeviceBuffer->Write(data, offset);
 #endif
