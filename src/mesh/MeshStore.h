@@ -25,17 +25,17 @@ struct MeshStore {
 
     std::span<const Vertex> GetVertices(uint32_t id) const { return VerticesBuffer.Get(Entries.at(id).Vertices); }
     std::span<Vertex> GetVertices(uint32_t id) { return VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
-    SlottedBufferRange GetVerticesRange(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
+    SlottedRange GetVerticesRange(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
 
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
-    SlottedBufferRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceStateBuffer.Slot}; }
-    SlottedBufferRange GetEdgeStateRange(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
+    SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceStateBuffer.Slot}; }
+    SlottedRange GetEdgeStateRange(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
 
     std::span<const vec3> GetFaceNormals(uint32_t id) const { return FaceNormalBuffer.Get(Entries.at(id).FaceNormals); }
     std::span<vec3> GetFaceNormals(uint32_t id) { return FaceNormalBuffer.GetMutable(Entries.at(id).FaceNormals); }
-    SlottedBufferRange GetFaceNormalRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceNormalBuffer.Buffer.Slot}; }
+    SlottedRange GetFaceNormalRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceNormalBuffer.Buffer.Slot}; }
 
-    SlottedBufferRange GetFaceIdRange(uint32_t id) const { return {Entries.at(id).TriangleFaceIds, TriangleFaceIdBuffer.Buffer.Slot}; }
+    SlottedRange GetFaceIdRange(uint32_t id) const { return {Entries.at(id).TriangleFaceIds, TriangleFaceIdBuffer.Buffer.Slot}; }
 
     void UpdateElementStates(
         const Mesh &mesh,
@@ -61,9 +61,9 @@ private:
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
 
     struct Entry {
-        BufferRange Vertices, FaceNormals;
-        BufferRange EdgeStates;
-        BufferRange TriangleFaceIds;
+        Range Vertices, FaceNormals;
+        Range EdgeStates;
+        Range TriangleFaceIds;
         bool Alive{false};
     };
 
@@ -71,8 +71,8 @@ private:
     std::vector<uint32_t> FreeIds{};
 
     uint32_t AcquireId(Entry &&);
-    BufferRange AllocateVertices(uint32_t count);
-    BufferRange AllocateFaces(uint32_t count);
-    std::span<uint8_t> GetFaceStates(BufferRange);
-    std::span<uint8_t> GetVertexStates(BufferRange);
+    Range AllocateVertices(uint32_t count);
+    Range AllocateFaces(uint32_t count);
+    std::span<uint8_t> GetFaceStates(Range);
+    std::span<uint8_t> GetVertexStates(Range);
 };

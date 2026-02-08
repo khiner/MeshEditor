@@ -31,15 +31,15 @@ enum class IndexKind {
 };
 
 struct RenderBuffers {
-    RenderBuffers(BufferRange vertices, SlottedBufferRange indices, IndexKind index_type)
+    RenderBuffers(Range vertices, SlottedRange indices, IndexKind index_type)
         : Vertices(vertices), Indices(indices), IndexType(index_type) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers &operator=(RenderBuffers &&) = default;
     RenderBuffers(const RenderBuffers &) = delete;
     RenderBuffers &operator=(const RenderBuffers &) = delete;
 
-    BufferRange Vertices;
-    SlottedBufferRange Indices;
+    Range Vertices;
+    SlottedRange Indices;
     IndexKind IndexType;
 };
 
@@ -48,13 +48,13 @@ struct BoundingBoxesBuffers {
 };
 
 struct MeshBuffers {
-    MeshBuffers(SlottedBufferRange vertices, SlottedBufferRange face_indices, SlottedBufferRange edge_indices, SlottedBufferRange vertex_indices)
+    MeshBuffers(SlottedRange vertices, SlottedRange face_indices, SlottedRange edge_indices, SlottedRange vertex_indices)
         : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
     MeshBuffers(const MeshBuffers &) = delete;
     MeshBuffers &operator=(const MeshBuffers &) = delete;
 
-    SlottedBufferRange Vertices;
-    SlottedBufferRange FaceIndices, EdgeIndices, VertexIndices;
+    SlottedRange Vertices;
+    SlottedRange FaceIndices, EdgeIndices, VertexIndices;
     std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
 };
 

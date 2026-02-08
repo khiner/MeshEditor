@@ -1014,17 +1014,17 @@ void Scene::RecordRenderCommandBuffer() {
             const auto face_normal_buffer = Meshes->GetFaceNormalRange(mesh.GetStoreId());
             const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
             draw.ObjectIdSlot = face_id_buffer.Slot;
-            draw.FaceIdOffset = face_id_buffer.Range.Offset;
-            draw.FaceNormal = {settings.SmoothShading ? InvalidSlot : face_normal_buffer.Slot, face_normal_buffer.Range.Offset};
+            draw.FaceIdOffset = face_id_buffer.Offset;
+            draw.FaceNormal = settings.SmoothShading ? SlotOffset{} : SlotOffset(face_normal_buffer);
             set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                draw.ElementState = {face_state_buffer.Slot, face_state_buffer.Range.Offset};
+                draw.ElementState = face_state_buffer;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
                 draw.ElementState = {};
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             } else {
-                draw.ElementState = {face_state_buffer.Slot, face_state_buffer.Range.Offset};
+                draw.ElementState = face_state_buffer;
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
             }
         }
@@ -1035,7 +1035,7 @@ void Scene::RecordRenderCommandBuffer() {
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
-            draw.ElementState = {edge_state_buffer.Slot, edge_state_buffer.Range.Offset};
+            draw.ElementState = edge_state_buffer;
             set_edit_pending_local_transform(draw, entity);
             if (show_wireframe) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
@@ -1051,7 +1051,7 @@ void Scene::RecordRenderCommandBuffer() {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
-            draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Range.Offset};
+            draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
             set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
@@ -1352,7 +1352,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
             if (element == Element::Face) {
                 const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
                 draw.ObjectIdSlot = face_id_buffer.Slot;
-                draw.FaceIdOffset = face_id_buffer.Range.Offset;
+                draw.FaceIdOffset = face_id_buffer.Offset;
             } else {
                 draw.ObjectIdSlot = InvalidSlot;
                 draw.FaceIdOffset = 0;
@@ -1443,7 +1443,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         auto batch = draw_list.BeginBatch();
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
         draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Range.Offset};
+        draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return SelectionDrawInfo{SPT::SelectionElementVertex, batch}; }, *SelectionReadySemaphore);
     SelectionStale = true;

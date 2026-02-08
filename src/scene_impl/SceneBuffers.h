@@ -44,7 +44,7 @@ struct SceneBuffers {
     const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
     vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
-    SlottedBufferRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
+    SlottedRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
         auto &index_buffer = GetIndexBuffer(index_kind);
         return {index_buffer.Allocate(indices), index_buffer.Buffer.Slot};
     }
@@ -55,17 +55,17 @@ struct SceneBuffers {
     void Release(RenderBuffers &buffers) {
         VertexBuffer.Release(buffers.Vertices);
         buffers.Vertices = {};
-        GetIndexBuffer(buffers.IndexType).Release(buffers.Indices.Range);
-        buffers.Indices.Range = {};
+        GetIndexBuffer(buffers.IndexType).Release(buffers.Indices);
+        buffers.Indices = {};
     }
 
     void Release(MeshBuffers &buffers) {
-        FaceIndexBuffer.Release(buffers.FaceIndices.Range);
-        buffers.FaceIndices.Range = {};
-        EdgeIndexBuffer.Release(buffers.EdgeIndices.Range);
-        buffers.EdgeIndices.Range = {};
-        VertexIndexBuffer.Release(buffers.VertexIndices.Range);
-        buffers.VertexIndices.Range = {};
+        FaceIndexBuffer.Release(buffers.FaceIndices);
+        buffers.FaceIndices = {};
+        EdgeIndexBuffer.Release(buffers.EdgeIndices);
+        buffers.EdgeIndices = {};
+        VertexIndexBuffer.Release(buffers.VertexIndices);
+        buffers.VertexIndices = {};
         for (auto &[_, rb] : buffers.NormalIndicators) Release(rb);
         buffers.NormalIndicators.clear();
     }

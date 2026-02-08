@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "gpu/SlotOffset.h"
 
 #include <algorithm>
 #include <limits>
@@ -8,17 +9,21 @@
 #include <span>
 #include <vector>
 
-struct BufferRange {
+struct Range {
     uint32_t Offset{0}, Count{0};
 };
 
-struct SlottedBufferRange {
-    BufferRange Range;
-    uint32_t Slot{InvalidSlot};
+struct SlottedRange : SlotOffset {
+    uint32_t Count{0};
+
+    SlottedRange() = default;
+    SlottedRange(Range r, uint32_t slot) : SlotOffset{slot, r.Offset}, Count{r.Count} {}
+
+    operator struct Range() const { return {Offset, Count}; }
 };
 
 struct RangeAllocator {
-    BufferRange Allocate(uint32_t count) {
+    Range Allocate(uint32_t count) {
         if (count == 0) return {};
 
         auto it = std::ranges::min_element(FreeBlocks, {}, [count](const auto &b) {
@@ -33,10 +38,10 @@ struct RangeAllocator {
         return {std::exchange(EndOffset, EndOffset + count), count};
     }
 
-    void Free(BufferRange range) {
+    void Free(Range range) {
         if (range.Count == 0) return;
 
-        auto it = std::ranges::lower_bound(FreeBlocks, range.Offset, {}, &BufferRange::Offset);
+        auto it = std::ranges::lower_bound(FreeBlocks, range.Offset, {}, &Range::Offset);
         auto start = range.Offset, end = start + range.Count;
         if (it != FreeBlocks.begin()) {
             if (auto prev = std::prev(it); prev->Offset + prev->Count == start) {
@@ -52,7 +57,7 @@ struct RangeAllocator {
     }
 
 private:
-    std::vector<BufferRange> FreeBlocks;
+    std::vector<Range> FreeBlocks;
     uint32_t EndOffset{0};
 };
 
@@ -63,7 +68,7 @@ struct BufferArena {
     BufferArena(mvk::BufferContext &ctx, mvk::MemoryUsage mem, vk::BufferUsageFlags usage = {})
         : Buffer(ctx, 1, mem, usage) {}
 
-    BufferRange Allocate(uint32_t count) {
+    Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
         if (range.Count == 0) return range;
 
@@ -73,13 +78,13 @@ struct BufferArena {
         return range;
     }
 
-    BufferRange Allocate(std::span<const T> values) {
+    Range Allocate(std::span<const T> values) {
         const auto range = Allocate(values.size());
         WriteRange(range.Offset, values);
         return range;
     }
 
-    void Update(BufferRange &range, std::span<const T> values) {
+    void Update(Range &range, std::span<const T> values) {
         if (values.size() == range.Count) {
             WriteRange(range.Offset, values);
             return;
@@ -90,10 +95,10 @@ struct BufferArena {
         range = new_range;
     }
 
-    void Release(BufferRange range) { Allocator.Free(range); }
+    void Release(Range range) { Allocator.Free(range); }
 
-    std::span<const T> Get(BufferRange range) const { return SpanFromBytes<const T>(range); }
-    std::span<T> GetMutable(BufferRange range) {
+    std::span<const T> Get(Range range) const { return SpanFromBytes<const T>(range); }
+    std::span<T> GetMutable(Range range) {
         auto bytes = Buffer.GetMutableRange(range.Offset * sizeof(T), range.Count * sizeof(T));
         return {reinterpret_cast<T *>(bytes.data()), range.Count};
     }
@@ -103,14 +108,14 @@ struct BufferArena {
 private:
     void WriteRange(uint32_t offset, std::span<const T> values) { Buffer.Update(as_bytes(values), offset * sizeof(T)); }
 
-    static auto RangeBytes(auto bytes, BufferRange range) {
+    static auto RangeBytes(auto bytes, Range range) {
         const auto start = range.Offset * sizeof(T);
         const auto count_bytes = range.Count * sizeof(T);
         return start + count_bytes > bytes.size() ? bytes.subspan(0, 0) : bytes.subspan(start, count_bytes);
     }
 
     template<typename U>
-    std::span<const U> SpanFromBytes(BufferRange range) const {
+    std::span<const U> SpanFromBytes(Range range) const {
         if (const auto bytes = RangeBytes(Buffer.GetMappedData(), range); !bytes.empty()) {
             return {reinterpret_cast<const U *>(bytes.data()), range.Count};
         }

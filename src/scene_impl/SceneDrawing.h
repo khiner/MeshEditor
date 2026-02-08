@@ -52,22 +52,22 @@ void AppendDraw(
 }
 
 void AppendDraw(
-    DrawListBuilder &builder, DrawBatchInfo &batch, const SlottedBufferRange &indices, const ModelsBuffer &models,
+    DrawListBuilder &builder, DrawBatchInfo &batch, const SlottedRange &indices, const ModelsBuffer &models,
     DrawData draw, std::optional<uint> model_index = {}
 ) {
-    AppendDraw(builder, batch, indices.Range.Count, models, draw, model_index);
+    AppendDraw(builder, batch, indices.Count, models, draw, model_index);
 }
 
 DrawData MakeDrawData(
     uint32_t vertex_slot,
-    BufferRange vertices,
-    const SlottedBufferRange &indices,
+    Range vertices,
+    const SlottedRange &indices,
     uint32_t model_slot,
     uint32_t instance_state_slot = InvalidSlot
 ) {
     return {
         .VertexSlot = vertex_slot,
-        .Index = {indices.Slot, indices.Range.Offset},
+        .Index = indices,
         .ModelSlot = model_slot,
         .FirstInstance = 0,
         .ObjectIdSlot = InvalidSlot,
@@ -81,8 +81,8 @@ DrawData MakeDrawData(
         .VertexOffset = vertices.Offset,
     };
 }
-DrawData MakeDrawData(const SlottedBufferRange &vertices, const SlottedBufferRange &indices, const ModelsBuffer &mb) {
-    return MakeDrawData(vertices.Slot, vertices.Range, indices, mb.Buffer.Slot, mb.InstanceStates.Slot);
+DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const ModelsBuffer &mb) {
+    return MakeDrawData(vertices.Slot, vertices, indices, mb.Buffer.Slot, mb.InstanceStates.Slot);
 }
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {
     return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, mb.Buffer.Slot);
