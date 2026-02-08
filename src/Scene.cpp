@@ -1166,7 +1166,9 @@ void Scene::RecordRenderCommandBuffer() {
                 R.get<RenderInstance>(active_entity).ObjectId :
                 0;
         }
-        const SilhouetteEdgeColorPushConstants pc{TransformGizmo::IsUsing(), SelectionHandles->ObjectIdSampler, active_object_id};
+        const SilhouetteEdgeColorPushConstants pc{
+            TransformGizmo::IsUsing() && interaction_mode == InteractionMode::Object, SelectionHandles->ObjectIdSampler, active_object_id
+        };
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         silhouette_edc.RenderQuad(cb);
     }
@@ -2439,6 +2441,7 @@ void Scene::RenderControls() {
                 changed |= ColorEdit4("Element active", &theme.Colors.ElementActive.x);
                 changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
                 changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
+                changed |= ColorEdit3("Transform", &theme.Colors.Transform.x);
                 changed |= SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
                 if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
             }

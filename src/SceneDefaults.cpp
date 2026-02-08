@@ -27,6 +27,7 @@ SceneDefaults::SceneDefaults()
               .ElementActive{1, 1, 1, 0.2f},
               .FaceNormal{0.133f, 0.867f, 0.867f},
               .VertexNormal{0.137f, 0.380f, 0.867f},
+              .Transform{1, 1, 1},
           },
           .SilhouetteEdgeWidth = 1,
       } {}

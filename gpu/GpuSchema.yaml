@@ -122,6 +122,8 @@ structs:
         type: vec3
       - name: VertexNormal # Vertex Normal
         type: vec3
+      - name: Transform # Transform
+        type: vec3
   - name: ViewportTheme
     binding: ViewportThemeUBO
     fields:
