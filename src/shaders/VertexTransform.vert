@@ -17,7 +17,6 @@ void main() {
     const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
-    uint vertex_state = 0u;
     uint face_id = 0u;
     vec3 normal = vert.Normal;
     if (draw.ObjectIdSlot != INVALID_SLOT) {
@@ -31,10 +30,6 @@ void main() {
     } else if (draw.ElementStateSlot != INVALID_SLOT) {
         element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + gl_VertexIndex]);
     }
-    if (pc.TransformVertexStateSlot != INVALID_SLOT) {
-        vertex_state = uint(ElementStateBuffers[pc.TransformVertexStateSlot].States[draw.VertexOffset + idx]);
-    }
-
     uint instance_state = 0u;
     if (draw.InstanceStateSlot != INVALID_SLOT) {
         instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.InstanceStateOffset + draw.FirstInstance]);
@@ -42,14 +37,14 @@ void main() {
 
     vec3 local_pos = vert.Position;
     vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
-    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
-    if (should_apply_pending_transform(instance_state, vertex_state, is_edit_mode)) {
+    if (should_apply_pending_transform(instance_state, draw, idx)) {
         world_pos = apply_pending_transform(world_pos);
     }
 
     WorldNormal = mat3(world.MInv) * normal;
     WorldPosition = world_pos;
 
+    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
     const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == EditElementEdge;
     const vec4 edge_color = is_edit_mode ? vec4(ViewportTheme.Colors.WireEdit, 1.0) : vec4(ViewportTheme.Colors.Wire, 1.0);
     const vec4 object_base_color = vec4(0.7, 0.7, 0.7, 1);

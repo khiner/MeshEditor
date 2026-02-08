@@ -15,12 +15,8 @@ void main() {
     const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
-    uint vertex_state = 0u;
     if (draw.ElementStateSlot != INVALID_SLOT) {
         element_state = uint(ElementStateBuffers[draw.ElementStateSlot].States[draw.ElementStateOffset + idx]);
-    }
-    if (pc.TransformVertexStateSlot != INVALID_SLOT) {
-        vertex_state = uint(ElementStateBuffers[pc.TransformVertexStateSlot].States[draw.VertexOffset + idx]);
     }
 
     uint instance_state = 0u;
@@ -32,7 +28,7 @@ void main() {
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
     vec3 world_pos = vec3(world.M * vec4(vert.Position, 1.0));
-    if (should_apply_pending_transform(instance_state, vertex_state, SceneViewUBO.InteractionMode == InteractionModeEdit)) {
+    if (should_apply_pending_transform(instance_state, draw, idx)) {
         world_pos = apply_pending_transform(world_pos);
     }
 

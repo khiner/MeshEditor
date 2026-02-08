@@ -18,7 +18,7 @@ void main() {
     }
 
     vec3 world_pos = vec3(world.M * vec4(position, 1.0));
-    if (should_apply_pending_transform(instance_state, 0u, SceneViewUBO.InteractionMode == InteractionModeEdit)) {
+    if (should_apply_pending_transform(instance_state, draw, idx)) {
         world_pos = apply_pending_transform(world_pos);
     }
 
