@@ -839,38 +839,135 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
         if (first_mesh_entity == entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
     }
-    if (loaded_scene->Instances.empty()) return {first_mesh_entity, entt::null};
 
     const std::string name_prefix = path.stem().string();
-    std::vector<entt::entity> instance_entities(loaded_scene->Instances.size(), entt::entity{entt::null});
-    entt::entity first_instance_entity = entt::null;
-    for (size_t i = 0; i < loaded_scene->Instances.size(); ++i) {
-        const auto &instance = loaded_scene->Instances[i];
-        if (instance.MeshIndex >= mesh_entities.size()) continue;
+    std::unordered_map<uint32_t, entt::entity> object_entities_by_node;
+    object_entities_by_node.reserve(loaded_scene->Objects.size());
 
-        instance_entities[i] = AddMeshInstance(
-            mesh_entities[instance.MeshIndex],
-            {
-                .Name = instance.Name.empty() ? std::format("{}_{}", name_prefix, i) : instance.Name,
-                .Transform = MatrixToTransform(instance.WorldTransform),
-                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-                .Visible = true,
+    entt::entity first_object_entity = entt::null;
+    entt::entity first_mesh_object_entity = entt::null;
+    entt::entity first_root_empty_entity = entt::null;
+    entt::entity first_armature_entity = entt::null;
+    for (uint32_t i = 0; i < loaded_scene->Objects.size(); ++i) {
+        const auto &object = loaded_scene->Objects[i];
+        const auto object_name = object.Name.empty() ? std::format("{}_{}", name_prefix, i) : object.Name;
+
+        entt::entity object_entity = entt::null;
+        if (object.ObjectType == gltf::SceneObjectData::Type::Mesh &&
+            object.MeshIndex &&
+            *object.MeshIndex < mesh_entities.size()) {
+            object_entity = AddMeshInstance(
+                mesh_entities[*object.MeshIndex],
+                {
+                    .Name = object_name,
+                    .Transform = MatrixToTransform(object.WorldTransform),
+                    .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+                    .Visible = true,
+                }
+            );
+        } else {
+            object_entity = AddEmpty(
+                {
+                    .Name = object_name,
+                    .Transform = MatrixToTransform(object.WorldTransform),
+                    .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+                }
+            );
+        }
+
+        object_entities_by_node[object.NodeIndex] = object_entity;
+        if (first_object_entity == entt::null) first_object_entity = object_entity;
+        if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::SceneObjectData::Type::Mesh) {
+            first_mesh_object_entity = object_entity;
+        }
+        if (first_root_empty_entity == entt::null &&
+            object.ObjectType == gltf::SceneObjectData::Type::Empty &&
+            !object.ParentNodeIndex) {
+            first_root_empty_entity = object_entity;
+        }
+    }
+
+    for (const auto &object : loaded_scene->Objects) {
+        if (!object.ParentNodeIndex) continue;
+
+        const auto child_it = object_entities_by_node.find(object.NodeIndex);
+        if (child_it == object_entities_by_node.end()) continue;
+        const auto parent_it = object_entities_by_node.find(*object.ParentNodeIndex);
+        if (parent_it == object_entities_by_node.end()) continue;
+        SetParent(R, child_it->second, parent_it->second);
+    }
+
+    std::unordered_map<uint32_t, const gltf::SceneNodeData *> scene_nodes_by_index;
+    scene_nodes_by_index.reserve(loaded_scene->Nodes.size());
+    for (const auto &node : loaded_scene->Nodes) scene_nodes_by_index.emplace(node.NodeIndex, &node);
+
+    for (const auto &skin : loaded_scene->Skins) {
+        const auto armature_data_entity = R.create();
+        auto &armature_data = R.emplace<ArmatureData>(armature_data_entity);
+
+        ArmatureImportedSkin imported_skin{
+            .SkinIndex = skin.SkinIndex,
+            .SkeletonNodeIndex = skin.SkeletonNodeIndex,
+            .AnchorNodeIndex = skin.AnchorNodeIndex,
+            .OrderedJointNodeIndices = {},
+            .InverseBindMatrices = skin.InverseBindMatrices,
+        };
+        imported_skin.OrderedJointNodeIndices.reserve(skin.Joints.size());
+
+        std::unordered_map<uint32_t, BoneId> joint_node_to_bone_id;
+        joint_node_to_bone_id.reserve(skin.Joints.size());
+        for (const auto &joint : skin.Joints) {
+            std::optional<BoneId> parent_bone_id;
+            if (joint.ParentJointNodeIndex) {
+                if (const auto parent_it = joint_node_to_bone_id.find(*joint.ParentJointNodeIndex);
+                    parent_it != joint_node_to_bone_id.end()) {
+                    parent_bone_id = parent_it->second;
+                }
             }
+
+            const auto joint_name = joint.Name.empty() ? std::format("Joint{}", joint.JointNodeIndex) : joint.Name;
+            const auto bone_id = armature_data.AddBone(joint_name, parent_bone_id, joint.RestLocal, joint.JointNodeIndex);
+            joint_node_to_bone_id.emplace(joint.JointNodeIndex, bone_id);
+
+            imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
+        }
+        armature_data.FinalizeStructure();
+
+        imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
+        armature_data.ImportedSkin = std::move(imported_skin);
+
+        if (!skin.AnchorNodeIndex) continue;
+        const auto anchor_it = scene_nodes_by_index.find(*skin.AnchorNodeIndex);
+        if (anchor_it == scene_nodes_by_index.end() || !anchor_it->second->InScene) continue;
+
+        const auto armature_entity = R.create();
+        R.emplace<ObjectKind>(armature_entity, ObjectKind{ObjectType::Armature});
+        R.emplace<ArmatureObject>(armature_entity, armature_data_entity);
+        SetTransform(R, armature_entity, MatrixToTransform(anchor_it->second->WorldTransform));
+        R.emplace<Name>(
+            armature_entity,
+            CreateName(R, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name)
         );
-        if (first_instance_entity == entt::null) first_instance_entity = instance_entities[i];
-    }
-    for (size_t i = 0; i < loaded_scene->Instances.size(); ++i) {
-        const auto child_entity = instance_entities[i];
-        if (child_entity == entt::null) continue;
-        if (!loaded_scene->Instances[i].ParentInstanceIndex.has_value()) continue;
-        const auto parent_index = *loaded_scene->Instances[i].ParentInstanceIndex;
-        if (parent_index >= instance_entities.size()) continue;
-        const auto parent_entity = instance_entities[parent_index];
-        if (parent_entity != entt::null) SetParent(R, child_entity, parent_entity);
+
+        if (skin.ParentObjectNodeIndex) {
+            if (const auto parent_it = object_entities_by_node.find(*skin.ParentObjectNodeIndex);
+                parent_it != object_entities_by_node.end()) {
+                SetParent(R, armature_entity, parent_it->second);
+            }
+        }
+
+        if (first_armature_entity == entt::null) first_armature_entity = armature_entity;
+        if (first_object_entity == entt::null) first_object_entity = armature_entity;
     }
 
-    if (first_instance_entity != entt::null) Select(first_instance_entity);
-    return {first_mesh_entity, first_instance_entity};
+    const auto selected_entity =
+        first_mesh_object_entity != entt::null ? first_mesh_object_entity :
+        first_armature_entity != entt::null    ? first_armature_entity :
+        first_root_empty_entity != entt::null  ? first_root_empty_entity :
+                                                 first_object_entity;
+    if (selected_entity != entt::null) Select(selected_entity);
+
+    return {first_mesh_entity, selected_entity};
 }
 
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
