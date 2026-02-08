@@ -1715,17 +1715,25 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 };
 
 void Scene::Render(vk::Fence viewportConsumerFence) {
+    auto &dl = *GetWindowDrawList();
+    // Split draw list into two channels: one for the viewport texture (background) and one for overlay visuals (foreground).
+    // This allows doing overlay interact+draw in one pass, applying any changes to the current frame's viewport render.
+    // Channel 1: overlay, Channel 0: viewport
+    dl.ChannelsSplit(2);
+    dl.ChannelsSetCurrent(1);
+    RenderOverlay();
+
+    dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {
         // Recreate the ImGui texture wrapper for the new resolve image.
         ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->ResolveImage.View, vec2{0, 1}, vec2{1, 0});
     }
     if (ViewportTexture) {
-        const auto cursor = GetCursorPos();
+        const auto p = std::bit_cast<ImVec2>(ToGlm(GetCursorScreenPos()));
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-        ViewportTexture->Draw({float(extent.width), float(extent.height)});
-        SetCursorPos(cursor);
+        dl.AddImage(ImTextureID(VkDescriptorSet(ViewportTexture->GetDescriptorSet())), p, {p.x + float(extent.width), p.y + float(extent.height)}, {0, 1}, {1, 0}); // UV flip
     }
-    RenderOverlay();
+    dl.ChannelsMerge();
 }
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {

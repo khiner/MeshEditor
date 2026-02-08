@@ -19,6 +19,7 @@ struct ImGuiTexture {
     ~ImGuiTexture();
 
     void Draw(vec2 size) const; // ImGui draw
+    vk::DescriptorSet GetDescriptorSet() const { return DescriptorSet; }
 
 private:
     vk::UniqueSampler Sampler;
