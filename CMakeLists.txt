@@ -122,7 +122,7 @@ if(APPLE)
   target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
 endif()
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

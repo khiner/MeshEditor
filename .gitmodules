@@ -42,3 +42,6 @@
 [submodule "lib/tinyply"]
 	path = lib/tinyply
 	url = git@github.com:ddiakopoulos/tinyply.git
+[submodule "lib/fastgltf"]
+	path = lib/fastgltf
+	url = git@github.com:spnda/fastgltf.git

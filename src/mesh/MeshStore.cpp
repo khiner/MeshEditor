@@ -109,7 +109,7 @@ MeshData ReadPly(const std::filesystem::path &path) {
     return data;
 }
 
-MeshData DeduplicateVertices(const MeshData &mesh) {
+MeshData DeduplicateVertices(MeshData &&mesh) {
     struct VertexHash {
         constexpr size_t operator()(const vec3 &p) const noexcept {
             return std::hash<float>{}(p.x) ^ std::hash<float>{}(p.y) ^ std::hash<float>{}(p.z);
@@ -223,13 +223,17 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
 }
 
 std::expected<Mesh, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
+    auto ext = path.extension().string();
+    std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    MeshData data;
     try {
-        const auto ext = path.extension();
-        auto data = ext == ".ply" || ext == ".PLY" ? ReadPly(path) : ReadObj(path);
-        return CreateMesh(DeduplicateVertices(data));
+        if (ext == ".ply") data = ReadPly(path);
+        else if (ext == ".obj") data = ReadObj(path);
+        else return std::unexpected{"Unsupported file format: " + ext};
     } catch (const std::exception &e) {
         return std::unexpected{e.what()};
     }
+    return CreateMesh(DeduplicateVertices(std::move(data)));
 }
 
 void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) {

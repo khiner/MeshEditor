@@ -21,7 +21,6 @@
 #include <iostream>
 #include <numeric>
 #include <ranges>
-#include <stack>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::to;
 namespace fs = std::filesystem;
@@ -454,12 +453,14 @@ void run() {
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
                 if (MenuItem("Load mesh", nullptr)) {
-                    static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
+                    static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply,gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
                         const auto path = fs::path(nfd_path);
-                        scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.filename().string()});
                         NFD_FreePath(nfd_path);
+                        const auto ext = path.extension().string();
+                        if (ext == ".gltf" || ext == ".glb" || ext == ".GLTF" || ext == ".GLB") scene->AddGltfScene(path);
+                        else scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.filename().string()});
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));
                     }

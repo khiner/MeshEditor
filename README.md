@@ -131,7 +131,8 @@ $ cd build && ./MeshEditor
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [ImPlot](https://github.com/epezent/implot): Plotting
 - [fftw](https://www.fftw.org/) for computing spectrograms (visualized with ImPlot)
-- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): Load `.obj` and `.ply` mesh files 
+- [fastgltf](https://github.com/spnda/fastgltf) for gltf 2.0 scene loading
+- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): for `.obj` and `.ply` mesh loading
 - [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, parse SVG link bounding boxes, render SVG icons
 
 

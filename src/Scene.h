@@ -113,7 +113,10 @@ struct Scene {
     // Returns (mesh_entity, instance_entity) - instance_entity is entt::null if no instance info provided.
     std::pair<entt::entity, entt::entity> AddMesh(Mesh &&, std::optional<MeshInstanceCreateInfo> = {});
     std::pair<entt::entity, entt::entity> AddMesh(MeshData &&, std::optional<MeshInstanceCreateInfo> = {});
+    // Loads a single mesh from non-scene formats (e.g. OBJ/PLY).
     std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, std::optional<MeshInstanceCreateInfo> = {});
+    // Imports glTF as a scene (may create multiple mesh + instance entities).
+    std::pair<entt::entity, entt::entity> AddGltfScene(const std::filesystem::path &);
     entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
 
     entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});

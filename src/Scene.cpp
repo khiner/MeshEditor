@@ -10,12 +10,14 @@
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
+#include "gltf/GltfLoader.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 
 #include <entt/entity/registry.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <imgui_internal.h>
 
 #include "Variant.h"
@@ -62,6 +64,14 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 
 mat4 ComputePendingTransformMatrix(vec3 pivot, vec3 P, quat R, vec3 S) {
     return glm::translate(mat4{1}, pivot + P) * glm::mat4_cast(R) * glm::scale(mat4{1}, S) * glm::translate(mat4{1}, -pivot);
+}
+
+Transform MatrixToTransform(const mat4 &m) {
+    vec3 scale, translation, skew;
+    vec4 perspective;
+    quat rotation;
+    if (!glm::decompose(m, scale, rotation, translation, skew, perspective)) return {};
+    return {.P = translation, .R = glm::normalize(rotation), .S = scale};
 }
 } // namespace
 
@@ -755,9 +765,57 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, std::optio
 std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path &path, std::optional<MeshInstanceCreateInfo> info) {
     auto result = Meshes->LoadMesh(path);
     if (!result) throw std::runtime_error(result.error());
+
     const auto e = AddMesh(std::move(*result), std::move(info));
     R.emplace<Path>(e.first, path);
     return e;
+}
+
+std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem::path &path) {
+    auto loaded_scene = gltf::LoadSceneData(path);
+    if (!loaded_scene) throw std::runtime_error(loaded_scene.error());
+
+    std::vector<entt::entity> mesh_entities;
+    mesh_entities.reserve(loaded_scene->Meshes.size());
+    entt::entity first_mesh_entity = entt::null;
+    for (auto &scene_mesh : loaded_scene->Meshes) {
+        const auto [mesh_entity, _] = AddMesh(std::move(scene_mesh.Data), std::nullopt);
+        R.emplace<Path>(mesh_entity, path);
+        if (first_mesh_entity == entt::null) first_mesh_entity = mesh_entity;
+        mesh_entities.emplace_back(mesh_entity);
+    }
+    if (loaded_scene->Instances.empty()) return {first_mesh_entity, entt::null};
+
+    const std::string name_prefix = path.stem().string();
+    std::vector<entt::entity> instance_entities(loaded_scene->Instances.size(), entt::entity{entt::null});
+    entt::entity first_instance_entity = entt::null;
+    for (size_t i = 0; i < loaded_scene->Instances.size(); ++i) {
+        const auto &instance = loaded_scene->Instances[i];
+        if (instance.MeshIndex >= mesh_entities.size()) continue;
+
+        instance_entities[i] = AddMeshInstance(
+            mesh_entities[instance.MeshIndex],
+            {
+                .Name = instance.Name.empty() ? std::format("{}_{}", name_prefix, i) : instance.Name,
+                .Transform = MatrixToTransform(instance.WorldTransform),
+                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+                .Visible = true,
+            }
+        );
+        if (first_instance_entity == entt::null) first_instance_entity = instance_entities[i];
+    }
+    for (size_t i = 0; i < loaded_scene->Instances.size(); ++i) {
+        const auto child_entity = instance_entities[i];
+        if (child_entity == entt::null) continue;
+        if (!loaded_scene->Instances[i].ParentInstanceIndex.has_value()) continue;
+        const auto parent_index = *loaded_scene->Instances[i].ParentInstanceIndex;
+        if (parent_index >= instance_entities.size()) continue;
+        const auto parent_entity = instance_entities[parent_index];
+        if (parent_entity != entt::null) SetParent(R, child_entity, parent_entity);
+    }
+
+    if (first_instance_entity != entt::null) Select(first_instance_entity);
+    return {first_mesh_entity, first_instance_entity};
 }
 
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {

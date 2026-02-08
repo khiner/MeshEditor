@@ -4,6 +4,7 @@ add_subdirectory(tetgen)
 add_subdirectory(lunasvg)
 add_subdirectory(tinyobjloader)
 add_subdirectory(tinyply)
+add_subdirectory(fastgltf)
 
 #=================== faust ===================
 # See [the docs](https://faustdoc.grame.fr/manual/embedding/#using-libfaust-with-the-llvm-backend) for general help.
