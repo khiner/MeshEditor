@@ -746,7 +746,10 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
         mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
         mvk::Buffer{Buffers->Ctx, sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer}
     );
-    R.emplace<MeshSelection>(mesh_entity);
+    R.emplace<MeshSelection>(
+        mesh_entity,
+        iota(0u, GetElementCount(mesh, R.get<const SceneEditMode>(SceneEntity).Value)) | to<std::unordered_set>()
+    );
     R.emplace<MeshBuffers>(
         mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()),
         Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),

@@ -20,7 +20,7 @@ struct SceneInteraction {
 };
 
 struct SceneEditMode {
-    he::Element Value{he::Element::Face};
+    he::Element Value{he::Element::Vertex};
 };
 
 struct ViewportExtent {
