@@ -843,15 +843,16 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
     const std::string name_prefix = path.stem().string();
     std::unordered_map<uint32_t, entt::entity> object_entities_by_node;
     object_entities_by_node.reserve(loaded_scene->Objects.size());
+    std::unordered_map<uint32_t, std::vector<entt::entity>> skinned_mesh_instances_by_skin;
+    skinned_mesh_instances_by_skin.reserve(loaded_scene->Skins.size());
 
-    entt::entity first_object_entity = entt::null;
-    entt::entity first_mesh_object_entity = entt::null;
-    entt::entity first_root_empty_entity = entt::null;
-    entt::entity first_armature_entity = entt::null;
+    entt::entity first_object_entity = entt::null,
+                 first_mesh_object_entity = entt::null,
+                 first_root_empty_entity = entt::null,
+                 first_armature_entity = entt::null;
     for (uint32_t i = 0; i < loaded_scene->Objects.size(); ++i) {
         const auto &object = loaded_scene->Objects[i];
         const auto object_name = object.Name.empty() ? std::format("{}_{}", name_prefix, i) : object.Name;
-
         entt::entity object_entity = entt::null;
         if (object.ObjectType == gltf::SceneObjectData::Type::Mesh &&
             object.MeshIndex &&
@@ -876,13 +877,14 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
         }
 
         object_entities_by_node[object.NodeIndex] = object_entity;
+        if (object.SkinIndex && R.all_of<MeshInstance>(object_entity)) {
+            skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
+        }
         if (first_object_entity == entt::null) first_object_entity = object_entity;
         if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::SceneObjectData::Type::Mesh) {
             first_mesh_object_entity = object_entity;
         }
-        if (first_root_empty_entity == entt::null &&
-            object.ObjectType == gltf::SceneObjectData::Type::Empty &&
-            !object.ParentNodeIndex) {
+        if (first_root_empty_entity == entt::null && object.ObjectType == gltf::SceneObjectData::Type::Empty && !object.ParentNodeIndex) {
             first_root_empty_entity = object_entity;
         }
     }
@@ -934,26 +936,26 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
                 !R.all_of<BoneAttachment>(object_it->second)) {
                 R.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
             }
-
             imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
         }
         armature_data.FinalizeStructure();
 
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
         armature_data.ImportedSkin = std::move(imported_skin);
+        if (!skin.AnchorNodeIndex) {
+            throw std::runtime_error{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex)};
+        }
 
-        if (!skin.AnchorNodeIndex) continue;
         const auto anchor_it = scene_nodes_by_index.find(*skin.AnchorNodeIndex);
-        if (anchor_it == scene_nodes_by_index.end() || !anchor_it->second->InScene) continue;
+        if (anchor_it == scene_nodes_by_index.end() || !anchor_it->second->InScene) {
+            throw std::runtime_error{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", path.string(), skin.SkinIndex, *skin.AnchorNodeIndex)};
+        }
 
         const auto armature_entity = R.create();
         R.emplace<ObjectKind>(armature_entity, ObjectKind{ObjectType::Armature});
         R.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         SetTransform(R, armature_entity, MatrixToTransform(anchor_it->second->WorldTransform));
-        R.emplace<Name>(
-            armature_entity,
-            CreateName(R, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name)
-        );
+        R.emplace<Name>(armature_entity, CreateName(R, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
 
         if (skin.ParentObjectNodeIndex) {
             if (const auto parent_it = object_entities_by_node.find(*skin.ParentObjectNodeIndex);
@@ -964,6 +966,16 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
 
         if (first_armature_entity == entt::null) first_armature_entity = armature_entity;
         if (first_object_entity == entt::null) first_object_entity = armature_entity;
+
+        if (const auto skinned_it = skinned_mesh_instances_by_skin.find(skin.SkinIndex);
+            skinned_it != skinned_mesh_instances_by_skin.end()) {
+            for (const auto mesh_instance_entity : skinned_it->second) {
+                if (!R.valid(mesh_instance_entity) || !R.all_of<MeshInstance>(mesh_instance_entity)) continue;
+                R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
+            }
+        } else {
+            throw std::runtime_error{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
+        }
     }
 
     const auto selected_entity =
@@ -1008,6 +1020,8 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         })
     );
     if (auto primitive_type = R.try_get<PrimitiveType>(mesh_entity)) R.emplace<PrimitiveType>(e_new.first, *primitive_type);
+    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
+    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new.second, *bone_attachment);
     return e_new.second;
 }
 
@@ -1058,6 +1072,8 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     });
     SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
+    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new, *armature_modifier);
+    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new, *bone_attachment);
 
     if (!info || info->Select == MeshInstanceCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
     else if (info->Select == MeshInstanceCreateInfo::SelectBehavior::Exclusive) Select(e_new);
@@ -1129,8 +1145,24 @@ void Scene::Destroy(entt::entity e) {
         mesh_entity = R.get<MeshInstance>(e).MeshEntity;
         SetVisible(e, false);
     }
-    entt::entity armature_data_entity = entt::null;
-    if (const auto *armature = R.try_get<ArmatureObject>(e)) armature_data_entity = armature->DataEntity;
+    std::vector<entt::entity> armature_data_entities;
+    if (const auto *armature = R.try_get<ArmatureObject>(e); armature && R.valid(armature->DataEntity)) {
+        armature_data_entities.emplace_back(armature->DataEntity);
+    }
+    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e); armature_modifier && R.valid(armature_modifier->ArmatureDataEntity)) {
+        armature_data_entities.emplace_back(armature_modifier->ArmatureDataEntity);
+    }
+    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e); bone_attachment && R.valid(bone_attachment->ArmatureDataEntity)) {
+        armature_data_entities.emplace_back(bone_attachment->ArmatureDataEntity);
+    }
+    std::vector<entt::entity> unique_armature_data_entities;
+    unique_armature_data_entities.reserve(armature_data_entities.size());
+    for (const auto data_entity : armature_data_entities) {
+        if (find(unique_armature_data_entities, data_entity) == unique_armature_data_entities.end()) {
+            unique_armature_data_entities.emplace_back(data_entity);
+        }
+    }
+    armature_data_entities = std::move(unique_armature_data_entities);
 
     if (R.valid(e)) R.destroy(e);
 
@@ -1145,12 +1177,25 @@ void Scene::Destroy(entt::entity e) {
             R.destroy(mesh_entity);
         }
     }
-    if (R.valid(armature_data_entity)) {
-        const auto has_users = any_of(
+    for (const auto armature_data_entity : armature_data_entities) {
+        if (!R.valid(armature_data_entity)) continue;
+
+        const auto used_by_armature_object = any_of(
             R.view<ArmatureObject>().each(),
             [armature_data_entity](const auto &entry) { return std::get<1>(entry).DataEntity == armature_data_entity; }
         );
-        if (!has_users) R.destroy(armature_data_entity);
+        const auto used_by_armature_modifier = any_of(
+            R.view<ArmatureModifier>().each(),
+            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureDataEntity == armature_data_entity; }
+        );
+        const auto used_by_bone_attachment = any_of(
+            R.view<BoneAttachment>().each(),
+            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureDataEntity == armature_data_entity; }
+        );
+
+        if (!(used_by_armature_object || used_by_armature_modifier || used_by_bone_attachment)) {
+            R.destroy(armature_data_entity);
+        }
     }
 }
 
@@ -2361,6 +2406,15 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
     if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
         Text("Mesh entity: %s", GetName(R, mesh_instance->MeshEntity).c_str());
+    }
+    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(active_entity)) {
+        Text("Armature data: %s", GetName(R, armature_modifier->ArmatureDataEntity).c_str());
+        if (armature_modifier->ArmatureObjectEntity != entt::null) {
+            Text("Armature object: %s", GetName(R, armature_modifier->ArmatureObjectEntity).c_str());
+        }
+    }
+    if (const auto *bone_attachment = R.try_get<BoneAttachment>(active_entity)) {
+        Text("Attached bone ID: %u", bone_attachment->Bone);
     }
     const auto object_type = R.all_of<ObjectKind>(active_entity) ? R.get<const ObjectKind>(active_entity).Value : ObjectType::Empty;
     Text("Object type: %s", ObjectTypeName(object_type).data());

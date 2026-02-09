@@ -13,27 +13,27 @@ BoneId ArmatureData::AllocateBoneId() {
 }
 
 std::optional<uint32_t> ArmatureData::FindBoneIndex(BoneId bone_id) const {
-    if (bone_id == InvalidBoneId) return std::nullopt;
+    if (bone_id == InvalidBoneId) return {};
     if (const auto it = BoneIdToIndex.find(bone_id); it != BoneIdToIndex.end()) return it->second;
-    return std::nullopt;
+    return {};
 }
 
 std::optional<uint32_t> ArmatureData::FindJointNodeIndex(BoneId bone_id) const {
     const auto index = FindBoneIndex(bone_id);
-    if (!index) return std::nullopt;
+    if (!index) return {};
     return Bones[*index].JointNodeIndex;
 }
 
 std::optional<BoneId> ArmatureData::FindBoneIdByJointNodeIndex(uint32_t joint_node_index) const {
     if (!Dirty) {
         if (const auto it = JointNodeIndexToBoneId.find(joint_node_index); it != JointNodeIndexToBoneId.end()) return it->second;
-        return std::nullopt;
+        return {};
     }
 
     for (const auto &bone : Bones) {
         if (bone.JointNodeIndex && *bone.JointNodeIndex == joint_node_index) return bone.Id;
     }
-    return std::nullopt;
+    return {};
 }
 
 void ArmatureData::SetJointNodeMapping(BoneId bone_id, uint32_t joint_node_index) {
@@ -43,27 +43,21 @@ void ArmatureData::SetJointNodeMapping(BoneId bone_id, uint32_t joint_node_index
     Dirty = true;
 }
 
-BoneId ArmatureData::AddBone(
-    std::string_view name,
-    std::optional<BoneId> parent_bone_id,
-    const Transform &rest_local,
-    std::optional<uint32_t> joint_node_index
-) {
+BoneId ArmatureData::AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index) {
     if (parent_bone_id) {
         if (*parent_bone_id == InvalidBoneId) throw std::invalid_argument{"Invalid parent bone ID (InvalidBoneId)."};
         if (!FindBoneIndex(*parent_bone_id)) throw std::out_of_range{std::format("Parent bone ID {} does not exist.", *parent_bone_id)};
     }
 
-    ArmatureBone bone;
-    const BoneId bone_id = AllocateBoneId();
-    bone.Id = bone_id;
-    bone.ParentBoneId = parent_bone_id.value_or(InvalidBoneId);
-    bone.JointNodeIndex = joint_node_index;
-    bone.Name = name.empty() ? std::format("Bone{}", Bones.size()) : std::string(name);
-    bone.RestLocal = rest_local;
-
-    Bones.emplace_back(std::move(bone));
-    BoneIdToIndex[bone_id] = static_cast<uint32_t>(Bones.size() - 1);
+    const auto bone_id = AllocateBoneId();
+    Bones.emplace_back(ArmatureBone{
+        .Id = bone_id,
+        .ParentBoneId = parent_bone_id.value_or(InvalidBoneId),
+        .JointNodeIndex = joint_node_index,
+        .Name = name.empty() ? std::format("Bone{}", Bones.size()) : std::string(name),
+        .RestLocal = rest_local,
+    });
+    BoneIdToIndex[bone_id] = Bones.size() - 1;
     Dirty = true;
     return bone_id;
 }
@@ -132,11 +126,7 @@ void ArmatureData::FinalizeStructure() {
     JointNodeIndexToBoneId.clear();
     JointNodeIndexToBoneId.reserve(Bones.size());
 
-    for (auto &bone : Bones) {
-        bone.ParentIndex = InvalidBoneIndex;
-        bone.FirstChild = InvalidBoneIndex;
-        bone.NextSibling = InvalidBoneIndex;
-    }
+    for (auto &bone : Bones) bone.ParentIndex = bone.FirstChild = bone.NextSibling = InvalidBoneIndex;
 
     for (uint32_t i = 0; i < Bones.size(); ++i) {
         const auto id = Bones[i].Id;

@@ -11,26 +11,25 @@
 #include <unordered_map>
 #include <vector>
 
-using BoneId = uint32_t;
+using BoneId = uint32_t; // Stable identifier - never reused
 
 inline constexpr BoneId InvalidBoneId{0};
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};
 
 struct ArmatureBone {
-    BoneId Id{InvalidBoneId}; // Stable identifier - never reused
-    BoneId ParentBoneId{InvalidBoneId}; // Stable structural parent relation
-    std::optional<uint32_t> JointNodeIndex{}; // Optional imported glTF joint node binding
-    uint32_t ParentIndex{InvalidBoneIndex}, FirstChild{InvalidBoneIndex}, NextSibling{InvalidBoneIndex}; // Dense runtime caches
-
+    BoneId Id;
+    BoneId ParentBoneId; // Stable structural parent relation
+    std::optional<uint32_t> JointNodeIndex; // Optional imported glTF joint node binding
     std::string Name;
-    Transform RestLocal{};
+    Transform RestLocal;
     mat4 RestWorld{I4}, InvRestWorld{I4};
+    uint32_t ParentIndex{InvalidBoneIndex}, FirstChild{InvalidBoneIndex}, NextSibling{InvalidBoneIndex}; // Dense runtime caches
 };
 
 struct ArmatureImportedSkin {
-    uint32_t SkinIndex{};
-    std::optional<uint32_t> SkeletonNodeIndex{};
-    std::optional<uint32_t> AnchorNodeIndex{};
+    uint32_t SkinIndex;
+    std::optional<uint32_t> SkeletonNodeIndex;
+    std::optional<uint32_t> AnchorNodeIndex;
     std::vector<uint32_t> OrderedJointNodeIndices;
     std::vector<mat4> InverseBindMatrices;
 };
@@ -43,33 +42,36 @@ struct ArmatureData {
     std::vector<ArmatureBone> Bones;
     std::unordered_map<BoneId, uint32_t> BoneIdToIndex;
     std::unordered_map<uint32_t, BoneId> JointNodeIndexToBoneId; // Derived cache from ArmatureBone::JointNodeIndex
-    std::optional<ArmatureImportedSkin> ImportedSkin{};
+    std::optional<ArmatureImportedSkin> ImportedSkin;
 
     BoneId AllocateBoneId();
     std::optional<uint32_t> FindBoneIndex(BoneId) const;
     std::optional<uint32_t> FindJointNodeIndex(BoneId) const;
     std::optional<BoneId> FindBoneIdByJointNodeIndex(uint32_t) const;
     void SetJointNodeMapping(BoneId, uint32_t joint_node_index);
-    // Returns stable BoneId. Dense indices are runtime/evaluation details and may change across rebuilds.
-    BoneId AddBone(
-        std::string_view name = {},
-        std::optional<BoneId> parent_bone_id = {},
-        const Transform &rest_local = {},
-        std::optional<uint32_t> joint_node_index = {}
-    );
+    BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index);
     void FinalizeStructure(); // Validate/canonicalize + rebuild derived runtime caches.
 };
 
-// Component on armature object entities in the scene.
-// References a shared ArmatureData entity.
+// Scene-facing armature object (name/transform/selection).
+// References shared ArmatureData (bones, IDs, imported skin metadata).
 struct ArmatureObject {
-    entt::entity DataEntity{null_entity};
+    entt::entity DataEntity;
+};
+
+// Armature modifier linkage for mesh instances deformed by an armature.
+// Modifiers are optional, non-destructive object-level links that affect evaluated
+// mesh output (for armatures: skinned vertex deformation).
+struct ArmatureModifier {
+    entt::entity ArmatureDataEntity;
+    entt::entity ArmatureObjectEntity;
 };
 
 // Component on scene objects attached to a specific armature bone.
-// Uses stable BoneId to avoid durable dense-index coupling.
 // Source skin/node references remain recoverable via ArmatureData::ImportedSkin and BoneId mappings.
+// This is primarily for uncommon glTF joint+mesh nodes (direct per-bone attachment),
+// not the common skinned-mesh deformation path handled by ArmatureModifier.
 struct BoneAttachment {
-    entt::entity ArmatureDataEntity{null_entity};
-    BoneId Bone{InvalidBoneId};
+    entt::entity ArmatureDataEntity;
+    BoneId Bone;
 };

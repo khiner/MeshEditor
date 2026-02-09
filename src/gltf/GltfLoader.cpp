@@ -363,6 +363,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                     .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
                     .WorldTransform = node.WorldTransform,
                     .MeshIndex = node.MeshIndex,
+                    .SkinIndex = node.SkinIndex,
                     .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
                 }
             );

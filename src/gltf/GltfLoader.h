@@ -41,6 +41,7 @@ struct SceneObjectData {
     std::optional<uint32_t> ParentNodeIndex{};
     mat4 WorldTransform{1.f};
     std::optional<uint32_t> MeshIndex{};
+    std::optional<uint32_t> SkinIndex{};
     std::string Name;
 };
 
