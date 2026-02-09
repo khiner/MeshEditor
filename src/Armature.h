@@ -65,3 +65,11 @@ struct ArmatureData {
 struct ArmatureObject {
     entt::entity DataEntity{null_entity};
 };
+
+// Component on scene objects attached to a specific armature bone.
+// Uses stable BoneId to avoid durable dense-index coupling.
+// Source skin/node references remain recoverable via ArmatureData::ImportedSkin and BoneId mappings.
+struct BoneAttachment {
+    entt::entity ArmatureDataEntity{null_entity};
+    BoneId Bone{InvalidBoneId};
+};

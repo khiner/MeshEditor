@@ -16,12 +16,11 @@
 
 namespace gltf {
 namespace {
-constexpr uint32_t MaxU32 = std::numeric_limits<uint32_t>::max();
 
 mat4 ToGlmMatrix(const fastgltf::math::fmat4x4 &matrix) {
-    mat4 out{1.f};
-    for (uint32_t c = 0; c < 4; ++c) {
-        for (uint32_t r = 0; r < 4; ++r) out[c][r] = matrix[c][r];
+    mat4 out;
+    for (auto c = 0; c < 4; ++c) {
+        for (auto r = 0; r < 4; ++r) out[c][r] = matrix[c][r];
     }
     return out;
 }
@@ -38,11 +37,7 @@ Transform ToTransform(const fastgltf::TRS &trs) {
     const auto t = trs.translation;
     const auto r = trs.rotation;
     const auto s = trs.scale;
-    return {
-        .P = {t.x(), t.y(), t.z()},
-        .R = glm::normalize(quat{r.w(), r.x(), r.y(), r.z()}),
-        .S = {s.x(), s.y(), s.z()},
-    };
+    return {.P = {t.x(), t.y(), t.z()}, .R = glm::normalize(quat{r.w(), r.x(), r.y(), r.z()}), .S = {s.x(), s.y(), s.z()}};
 }
 
 Transform GetLocalTransform(const fastgltf::Node &node) {
@@ -51,12 +46,11 @@ Transform GetLocalTransform(const fastgltf::Node &node) {
 }
 
 std::optional<uint32_t> ToIndex(std::size_t index, std::size_t upper_bound) {
-    if (index >= upper_bound || index > MaxU32) return std::nullopt;
-    return static_cast<uint32_t>(index);
+    if (index >= upper_bound) return {};
+    return index;
 }
-
 std::optional<uint32_t> ToIndex(const fastgltf::Optional<std::size_t> &index, std::size_t upper_bound) {
-    if (!index) return std::nullopt;
+    if (!index) return {};
     return ToIndex(*index, upper_bound);
 }
 
@@ -65,9 +59,9 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
 
     const auto position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return;
+
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
     if (position_accessor.count == 0) return;
-    if (mesh_data.Positions.size() > MaxU32 || position_accessor.count > MaxU32) return;
 
     const uint32_t base_vertex = static_cast<uint32_t>(mesh_data.Positions.size());
     mesh_data.Positions.resize(static_cast<std::size_t>(base_vertex) + position_accessor.count);
@@ -101,14 +95,8 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     }
 
     fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization};
-    constexpr auto options =
-        fastgltf::Options::DontRequireValidAssetMember |
-        fastgltf::Options::AllowDouble |
-        fastgltf::Options::LoadExternalBuffers |
-        fastgltf::Options::GenerateMeshIndices |
-        fastgltf::Options::DecomposeNodeMatrices;
-
-    auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), options);
+    using fastgltf::Options;
+    auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices);
     if (parsed.error() != fastgltf::Error::None) {
         return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
     }
@@ -120,26 +108,19 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
     if (static_cast<std::size_t>(source_mesh_index) >= asset.meshes.size()) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
-        return std::nullopt;
+        return {};
     }
 
     const auto &source_mesh = asset.meshes[source_mesh_index];
     MeshData mesh_data;
-    for (const auto &primitive : source_mesh.primitives) {
-        AppendPrimitive(asset, primitive, mesh_data);
-    }
-
+    for (const auto &primitive : source_mesh.primitives) AppendPrimitive(asset, primitive, mesh_data);
     if (mesh_data.Positions.empty() || mesh_data.Faces.empty()) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
-        return std::nullopt;
+        return {};
     }
-    if (scene_data.Meshes.size() >= MaxU32) return std::nullopt;
 
-    const auto mesh_index = static_cast<uint32_t>(scene_data.Meshes.size());
-    SceneMeshData scene_mesh;
-    scene_mesh.Data = std::move(mesh_data);
-    scene_mesh.Name = source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name);
-    scene_data.Meshes.emplace_back(std::move(scene_mesh));
+    const auto mesh_index = scene_data.Meshes.size();
+    scene_data.Meshes.emplace_back(std::move(mesh_data), source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name));
     mesh_index_map.emplace(source_mesh_index, mesh_index);
     return mesh_index;
 }
@@ -147,7 +128,6 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
 std::vector<std::optional<uint32_t>> BuildNodeParentTable(const fastgltf::Asset &asset) {
     std::vector<std::optional<uint32_t>> parents(asset.nodes.size(), std::nullopt);
     for (std::size_t parent_idx = 0; parent_idx < asset.nodes.size(); ++parent_idx) {
-        if (parent_idx > MaxU32) break;
         const auto parent = static_cast<uint32_t>(parent_idx);
         for (const auto child_idx : asset.nodes[parent_idx].children) {
             const auto child = ToIndex(child_idx, asset.nodes.size());
@@ -178,7 +158,6 @@ SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, uint32_t sce
         const auto world_matrix = fastgltf::getTransformMatrix(node, parent_matrix);
         traversal.InScene[node_index] = true;
         traversal.WorldTransforms[node_index] = ToGlmMatrix(world_matrix);
-
         for (const auto child_idx : node.children) {
             if (const auto child = ToIndex(child_idx, asset.nodes.size())) self(*child, world_matrix, self);
         }
@@ -197,20 +176,20 @@ std::optional<uint32_t> FindNearestJointAncestor(uint32_t node_index, const std:
         if (is_joint_in_skin[*parent]) return parent;
         parent = parents[*parent];
     }
-    return std::nullopt;
+    return {};
 }
 
-std::optional<uint32_t> FindNearestObjectAncestor(uint32_t node_index, const std::vector<std::optional<uint32_t>> &parents, const std::vector<bool> &is_joint, const std::vector<bool> &is_in_scene) {
+std::optional<uint32_t> FindNearestEmittedObjectAncestor(uint32_t node_index, const std::vector<std::optional<uint32_t>> &parents, const std::vector<bool> &is_object_emitted) {
     auto parent = parents[node_index];
     while (parent) {
-        if (is_in_scene[*parent] && !is_joint[*parent]) return parent;
+        if (is_object_emitted[*parent]) return parent;
         parent = parents[*parent];
     }
-    return std::nullopt;
+    return {};
 }
 
 std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes, const std::vector<std::optional<uint32_t>> &parents) {
-    if (nodes.empty()) return std::nullopt;
+    if (nodes.empty()) return {};
 
     const auto build_root_path = [&](uint32_t node_index) {
         std::vector<uint32_t> path;
@@ -226,14 +205,14 @@ std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes
     auto common_path = build_root_path(nodes.front());
     for (uint32_t i = 1; i < nodes.size() && !common_path.empty(); ++i) {
         const auto path = build_root_path(nodes[i]);
-        const auto common_count = std::min(common_path.size(), path.size());
+        const auto common_count = static_cast<uint32_t>(std::min(common_path.size(), path.size()));
 
-        std::size_t prefix = 0;
+        uint32_t prefix = 0;
         while (prefix < common_count && common_path[prefix] == path[prefix]) ++prefix;
         common_path.resize(prefix);
     }
 
-    if (common_path.empty()) return std::nullopt;
+    if (common_path.empty()) return {};
     return common_path.back();
 }
 
@@ -290,7 +269,7 @@ std::vector<mat4> LoadInverseBindMatrices(
     return inverse_bind_matrices;
 }
 
-std::string MakeNodeName(const fastgltf::Asset &asset, uint32_t node_index, std::optional<uint32_t> source_mesh_index = std::nullopt) {
+std::string MakeNodeName(const fastgltf::Asset &asset, uint32_t node_index, std::optional<uint32_t> source_mesh_index = {}) {
     const auto &node = asset.nodes[node_index];
     if (!node.name.empty()) return std::string(node.name);
 
@@ -312,10 +291,6 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
 
     const auto scene_index = asset.defaultScene.value_or(0);
     if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", path.string())};
-
-    if (asset.nodes.size() > MaxU32 || asset.meshes.size() > MaxU32 || asset.skins.size() > MaxU32) {
-        return std::unexpected{std::format("glTF '{}' exceeds 32-bit scene index limits.", path.string())};
-    }
 
     SceneData scene_data;
     const auto parents = BuildNodeParentTable(asset);
@@ -353,13 +328,11 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         node.IsJoint = is_joint[node_index];
         node.SkinIndex = ToIndex(source_node.skinIndex, asset.skins.size());
         node.Name = MakeNodeName(asset, node_index, ToIndex(source_node.meshIndex, asset.meshes.size()));
-
         node.ChildrenNodeIndices.clear();
         node.ChildrenNodeIndices.reserve(source_node.children.size());
         for (const auto child_idx : source_node.children) {
             if (const auto child = ToIndex(child_idx, asset.nodes.size())) node.ChildrenNodeIndices.emplace_back(*child);
         }
-
         if (traversal.InScene[node_index]) {
             if (const auto source_mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size())) {
                 node.MeshIndex = EnsureMeshData(asset, *source_mesh_index, scene_data, mesh_index_map);
@@ -367,21 +340,33 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         }
     }
 
+    std::vector<bool> is_object_emitted(asset.nodes.size(), false);
     for (uint32_t node_index = 0; node_index < scene_data.Nodes.size(); ++node_index) {
-        const auto &node = scene_data.Nodes[node_index];
-        if (!traversal.InScene[node_index] || node.IsJoint) continue;
+        if (const auto &node = scene_data.Nodes[node_index]; node.InScene) {
+            // Joint nodes are bone-only unless they also carry renderable mesh data.
+            is_object_emitted[node_index] = node.MeshIndex.has_value() || !node.IsJoint;
+        }
+    }
 
-        const auto source_mesh_index = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size());
-        scene_data.Objects.emplace_back(
-            SceneObjectData{
-                .ObjectType = node.MeshIndex ? SceneObjectData::Type::Mesh : SceneObjectData::Type::Empty,
-                .NodeIndex = node.NodeIndex,
-                .ParentNodeIndex = FindNearestObjectAncestor(node.NodeIndex, parents, is_joint, traversal.InScene),
-                .WorldTransform = node.WorldTransform,
-                .MeshIndex = node.MeshIndex,
-                .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
-            }
-        );
+    std::vector<std::optional<uint32_t>> nearest_object_ancestor(asset.nodes.size());
+    for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+        nearest_object_ancestor[node_index] = FindNearestEmittedObjectAncestor(node_index, parents, is_object_emitted);
+    }
+
+    for (uint32_t node_index = 0; node_index < scene_data.Nodes.size(); ++node_index) {
+        if (const auto &node = scene_data.Nodes[node_index]; is_object_emitted[node_index]) {
+            const auto source_mesh_index = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size());
+            scene_data.Objects.emplace_back(
+                SceneObjectData{
+                    .ObjectType = node.MeshIndex ? SceneObjectData::Type::Mesh : SceneObjectData::Type::Empty,
+                    .NodeIndex = node.NodeIndex,
+                    .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
+                    .WorldTransform = node.WorldTransform,
+                    .MeshIndex = node.MeshIndex,
+                    .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
+                }
+            );
+        }
     }
 
     scene_data.Skins.reserve(asset.skins.size());
@@ -393,11 +378,10 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         source_joint_nodes.reserve(skin.joints.size());
         std::unordered_set<uint32_t> seen_joints;
         for (const auto joint_idx : skin.joints) {
-            const auto joint = ToIndex(joint_idx, asset.nodes.size());
-            if (!joint) continue;
-
-            if (const auto [it, inserted] = seen_joints.emplace(*joint); inserted) {
-                source_joint_nodes.emplace_back(*it);
+            if (const auto joint = ToIndex(joint_idx, asset.nodes.size())) {
+                if (const auto [it, inserted] = seen_joints.emplace(*joint); inserted) {
+                    source_joint_nodes.emplace_back(*it);
+                }
             }
         }
         if (source_joint_nodes.empty()) continue;
@@ -422,11 +406,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             .Name = skin.name.empty() ? std::format("Skin{}", skin_index) : std::string(skin.name),
             .SkeletonNodeIndex = skeleton_node_index,
             .AnchorNodeIndex = skeleton_node_index ? skeleton_node_index : ComputeCommonAncestor(*ordered_joint_nodes, parents),
-            .ParentObjectNodeIndex = {},
-            .Joints = {},
-            .InverseBindMatrices = {},
         };
-
         scene_skin.Joints.reserve(ordered_joint_nodes->size());
         for (const auto joint_node_index : *ordered_joint_nodes) {
             scene_skin.Joints.emplace_back(
@@ -441,11 +421,9 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             );
         }
         scene_skin.InverseBindMatrices = LoadInverseBindMatrices(asset, skin, static_cast<uint32_t>(scene_skin.Joints.size()));
-
         if (scene_skin.AnchorNodeIndex && traversal.InScene[*scene_skin.AnchorNodeIndex]) {
-            scene_skin.ParentObjectNodeIndex = FindNearestObjectAncestor(*scene_skin.AnchorNodeIndex, parents, is_joint, traversal.InScene);
+            scene_skin.ParentObjectNodeIndex = nearest_object_ancestor[*scene_skin.AnchorNodeIndex];
         }
-
         scene_data.Skins.emplace_back(std::move(scene_skin));
     }
 

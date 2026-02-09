@@ -57,8 +57,8 @@ struct SceneSkinData {
     std::optional<uint32_t> SkeletonNodeIndex{};
     std::optional<uint32_t> AnchorNodeIndex{};
     std::optional<uint32_t> ParentObjectNodeIndex{};
-    std::vector<SkinJointData> Joints; // Parent-before-child order
-    std::vector<mat4> InverseBindMatrices; // Order matches `Joints`
+    std::vector<SkinJointData> Joints{}; // Parent-before-child order
+    std::vector<mat4> InverseBindMatrices{}; // Order matches `Joints`
 };
 
 struct SceneData {

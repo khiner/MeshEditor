@@ -928,6 +928,12 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
             const auto joint_name = joint.Name.empty() ? std::format("Joint{}", joint.JointNodeIndex) : joint.Name;
             const auto bone_id = armature_data.AddBone(joint_name, parent_bone_id, joint.RestLocal, joint.JointNodeIndex);
             joint_node_to_bone_id.emplace(joint.JointNodeIndex, bone_id);
+            if (const auto object_it = object_entities_by_node.find(joint.JointNodeIndex);
+                object_it != object_entities_by_node.end() &&
+                R.all_of<MeshInstance>(object_it->second) &&
+                !R.all_of<BoneAttachment>(object_it->second)) {
+                R.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
+            }
 
             imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
         }
