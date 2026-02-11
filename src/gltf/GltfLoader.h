@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Transform.h"
+#include "mesh/ArmatureDeformData.h"
 #include "mesh/MeshData.h"
 #include "numeric/mat4.h"
 
@@ -14,6 +15,7 @@
 namespace gltf {
 struct SceneMeshData {
     MeshData Data;
+    std::optional<ArmatureDeformData> DeformData{};
     std::string Name;
 };
 

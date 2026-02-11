@@ -834,7 +834,8 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
     mesh_entities.reserve(loaded_scene->Meshes.size());
     entt::entity first_mesh_entity = entt::null;
     for (auto &scene_mesh : loaded_scene->Meshes) {
-        const auto [mesh_entity, _] = AddMesh(std::move(scene_mesh.Data), std::nullopt);
+        auto mesh = Meshes->CreateMesh(std::move(scene_mesh.Data), std::move(scene_mesh.DeformData));
+        const auto [mesh_entity, _] = AddMesh(std::move(mesh), std::nullopt);
         R.emplace<Path>(mesh_entity, path);
         if (first_mesh_entity == entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
@@ -878,6 +879,7 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
 
         object_entities_by_node[object.NodeIndex] = object_entity;
         if (object.SkinIndex && R.all_of<MeshInstance>(object_entity)) {
+            // glTF node.skin is deform linkage, not a transform-parent relationship.
             skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
         }
         if (first_object_entity == entt::null) first_object_entity = object_entity;

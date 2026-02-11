@@ -219,6 +219,7 @@ std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vec
     if (type == "u32") return "uint32_t";
     if (type == "float") return "float";
     if (type == "uvec2") return "glm::uvec2";
+    if (type == "uvec4") return "glm::uvec4";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
@@ -229,6 +230,7 @@ std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::ve
     if (type == "u32") return "uint";
     if (type == "float") return "float";
     if (type == "uvec2") return "uvec2";
+    if (type == "uvec4") return "uvec4";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
@@ -382,7 +384,7 @@ int main(int argc, char **argv) {
         glsl_out << "\n\n#endif\n";
 
         bool needs_array{false}, needs_cstdint{false},
-            needs_uvec2{false}, needs_vec3{false}, needs_vec4{false},
+            needs_uvec2{false}, needs_uvec4{false}, needs_vec3{false}, needs_vec4{false},
             needs_mat4{false}, needs_slots{false};
         std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
@@ -390,6 +392,7 @@ int main(int argc, char **argv) {
             if (spec.ArraySize) needs_array = true;
             if (spec.Base == "u32") needs_cstdint = true;
             if (spec.Base == "uvec2") needs_uvec2 = true;
+            if (spec.Base == "uvec4") needs_uvec4 = true;
             if (spec.Base == "vec3") needs_vec3 = true;
             if (spec.Base == "vec4") needs_vec4 = true;
             if (spec.Base == "mat4") needs_mat4 = true;
@@ -405,7 +408,7 @@ int main(int argc, char **argv) {
                 << GeneratedComment(schema_relative_path);
         if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
-        if (needs_uvec2) cpp_out << "#include \"glm/glm.hpp\"\n";
+        if (needs_uvec2 || needs_uvec4) cpp_out << "#include \"glm/glm.hpp\"\n";
         if (needs_mat4) cpp_out << "#include \"numeric/mat4.h\"\n";
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";

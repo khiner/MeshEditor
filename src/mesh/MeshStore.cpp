@@ -120,7 +120,7 @@ MeshData DeduplicateVertices(MeshData &&mesh) {
     deduped.Positions.reserve(mesh.Positions.size());
     std::unordered_map<vec3, uint, VertexHash> index_by_vertex;
     for (const auto &p : mesh.Positions) {
-        if (auto [it, inserted] = index_by_vertex.try_emplace(p, deduped.Positions.size()); inserted) {
+        if (const auto [it, inserted] = index_by_vertex.try_emplace(p, deduped.Positions.size()); inserted) {
             deduped.Positions.emplace_back(p);
         }
     }
@@ -176,10 +176,23 @@ void MeshStore::UpdateNormals(const Mesh &mesh) {
         for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
     }
 }
-Mesh MeshStore::CreateMesh(MeshData &&data) {
+
+Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> deform_data) {
+    if (deform_data && (deform_data->Joints.size() != data.Positions.size() || deform_data->Weights.size() != data.Positions.size())) {
+        throw std::runtime_error{"ArmatureDeformData channel counts must match the position count."};
+    }
     const auto vertices = AllocateVertices(data.Positions.size());
     auto vertex_span = VerticesBuffer.GetMutable(vertices);
-    for (size_t i = 0; i < data.Positions.size(); ++i) vertex_span[i].Position = data.Positions[i];
+    for (uint32_t i = 0, count = static_cast<uint32_t>(data.Positions.size()); i < count; ++i) {
+        auto &vertex = vertex_span[i];
+        vertex = Vertex{};
+        vertex.Position = data.Positions[i];
+        if (deform_data) {
+            const auto &joints = deform_data->Joints[i];
+            vertex.Joints = {joints[0], joints[1], joints[2], joints[3]};
+            vertex.Weights = deform_data->Weights[i];
+        }
+    }
     const auto face_normals = AllocateFaces(data.Faces.size());
     const auto id = AcquireId({
         .Vertices = vertices,

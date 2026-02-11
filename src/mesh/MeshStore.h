@@ -1,10 +1,12 @@
 #pragma once
 
 #include "../vulkan/BufferArena.h"
+#include "ArmatureDeformData.h"
 #include "Mesh.h"
 
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -15,7 +17,7 @@ struct MeshData;
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
 
-    Mesh CreateMesh(MeshData &&);
+    Mesh CreateMesh(MeshData &&, std::optional<ArmatureDeformData> = {});
     Mesh CloneMesh(const Mesh &);
     std::expected<Mesh, std::string> LoadMesh(const std::filesystem::path &);
 

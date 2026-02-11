@@ -33,6 +33,10 @@ Transform MatrixToTransform(const mat4 &m) {
     return {.P = translation, .R = glm::normalize(rotation), .S = scale};
 }
 
+mat4 ToMatrix(const Transform &t) {
+    return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
+}
+
 Transform ToTransform(const fastgltf::TRS &trs) {
     const auto t = trs.translation;
     const auto r = trs.rotation;
@@ -54,11 +58,18 @@ std::optional<uint32_t> ToIndex(const fastgltf::Optional<std::size_t> &index, st
     return ToIndex(*index, upper_bound);
 }
 
-void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, MeshData &mesh_data) {
+void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, MeshData &mesh_data, std::optional<ArmatureDeformData> &deform_data) {
     if (primitive.type != fastgltf::PrimitiveType::Triangles) return;
 
     const auto position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return;
+    const auto joints_it = primitive.findAttribute("JOINTS_0");
+    const auto weights_it = primitive.findAttribute("WEIGHTS_0");
+    const bool has_joints = joints_it != primitive.attributes.end();
+    const bool has_weights = weights_it != primitive.attributes.end();
+    if (has_joints != has_weights) {
+        throw std::runtime_error{"glTF primitive has JOINTS_0 without WEIGHTS_0 (or vice versa)."};
+    }
 
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
     if (position_accessor.count == 0) return;
@@ -71,6 +82,46 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             mesh_data.Positions[base_vertex + static_cast<uint32_t>(index)] = vec3{position.x(), position.y(), position.z()};
         }
     );
+
+    if (has_joints && !deform_data) deform_data.emplace();
+    const bool mesh_has_skin_data = deform_data && (!deform_data->Joints.empty() || !deform_data->Weights.empty());
+    if (mesh_has_skin_data &&
+        (deform_data->Joints.size() != static_cast<std::size_t>(base_vertex) ||
+         deform_data->Weights.size() != static_cast<std::size_t>(base_vertex))) {
+        throw std::runtime_error{"glTF primitive append encountered inconsistent skin channel sizes."};
+    }
+
+    if (has_joints || mesh_has_skin_data) {
+        deform_data->Joints.resize(mesh_data.Positions.size(), {0, 0, 0, 0});
+        deform_data->Weights.resize(mesh_data.Positions.size(), vec4{0.f, 0.f, 0.f, 0.f});
+    }
+
+    if (has_joints) {
+        const auto &joints_accessor = asset.accessors[joints_it->accessorIndex];
+        const auto &weights_accessor = asset.accessors[weights_it->accessorIndex];
+        if (joints_accessor.count != position_accessor.count || weights_accessor.count != position_accessor.count) {
+            throw std::runtime_error{
+                std::format(
+                    "glTF primitive skin attribute counts must match POSITION count (POSITION={}, JOINTS_0={}, WEIGHTS_0={}).",
+                    position_accessor.count,
+                    joints_accessor.count,
+                    weights_accessor.count
+                )
+            };
+        }
+
+        std::vector<fastgltf::math::u16vec4> joints(position_accessor.count);
+        fastgltf::copyFromAccessor<fastgltf::math::u16vec4>(asset, joints_accessor, joints.data());
+        std::vector<fastgltf::math::fvec4> weights(position_accessor.count);
+        fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, weights_accessor, weights.data());
+
+        for (uint32_t i = 0, count = static_cast<uint32_t>(joints.size()); i < count; ++i) {
+            const auto &joint = joints[i];
+            deform_data->Joints[base_vertex + i] = {joint.x(), joint.y(), joint.z(), joint.w()};
+            const auto &weight = weights[i];
+            deform_data->Weights[base_vertex + i] = {weight.x(), weight.y(), weight.z(), weight.w()};
+        }
+    }
 
     std::vector<uint32_t> indices;
     if (primitive.indicesAccessor) {
@@ -113,14 +164,21 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
 
     const auto &source_mesh = asset.meshes[source_mesh_index];
     MeshData mesh_data;
-    for (const auto &primitive : source_mesh.primitives) AppendPrimitive(asset, primitive, mesh_data);
+    std::optional<ArmatureDeformData> mesh_deform_data;
+    for (const auto &primitive : source_mesh.primitives) AppendPrimitive(asset, primitive, mesh_data, mesh_deform_data);
     if (mesh_data.Positions.empty() || mesh_data.Faces.empty()) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
         return {};
     }
 
     const auto mesh_index = scene_data.Meshes.size();
-    scene_data.Meshes.emplace_back(std::move(mesh_data), source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name));
+    scene_data.Meshes.emplace_back(
+        SceneMeshData{
+            .Data = std::move(mesh_data),
+            .DeformData = std::move(mesh_deform_data),
+            .Name = source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name),
+        }
+    );
     mesh_index_map.emplace(source_mesh_index, mesh_index);
     return mesh_index;
 }
@@ -214,6 +272,37 @@ std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes
 
     if (common_path.empty()) return {};
     return common_path.back();
+}
+
+std::expected<Transform, std::string> ComputeJointRestLocal(
+    uint32_t skin_index,
+    uint32_t joint_node_index,
+    std::optional<uint32_t> parent_joint_node_index,
+    std::optional<uint32_t> anchor_node_index,
+    const std::vector<std::optional<uint32_t>> &parents,
+    const std::vector<Transform> &local_transforms
+) {
+    const auto rebased_parent_node_index = parent_joint_node_index ? parent_joint_node_index : anchor_node_index;
+    if (!rebased_parent_node_index) return local_transforms[joint_node_index];
+    if (*rebased_parent_node_index == joint_node_index) return Transform{};
+
+    mat4 rebased_local{I4};
+    auto current = joint_node_index;
+    while (current != *rebased_parent_node_index) {
+        rebased_local = ToMatrix(local_transforms[current]) * rebased_local;
+        if (!parents[current]) {
+            return std::unexpected{
+                std::format(
+                    "glTF skin {} joint node {} cannot be rebased to ancestor node {}.",
+                    skin_index,
+                    joint_node_index,
+                    *rebased_parent_node_index
+                )
+            };
+        }
+        current = *parents[current];
+    }
+    return MatrixToTransform(rebased_local);
 }
 
 std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrder(const std::vector<uint32_t> &source_joint_nodes, const std::unordered_map<uint32_t, std::optional<uint32_t>> &joint_parent_map, uint32_t skin_index) {
@@ -410,13 +499,22 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         };
         scene_skin.Joints.reserve(ordered_joint_nodes->size());
         for (const auto joint_node_index : *ordered_joint_nodes) {
+            const auto parent_joint_node_index = joint_parent_map.at(joint_node_index);
+            auto rest_local = ComputeJointRestLocal(
+                skin_index,
+                joint_node_index,
+                parent_joint_node_index,
+                scene_skin.AnchorNodeIndex,
+                parents,
+                local_transforms
+            );
+            if (!rest_local) return std::unexpected{rest_local.error()};
+
             scene_skin.Joints.emplace_back(
                 SkinJointData{
                     .JointNodeIndex = joint_node_index,
-                    .ParentJointNodeIndex = joint_parent_map.at(joint_node_index),
-                    // RestLocal is interpreted in bone-parent space. If a non-joint node
-                    // exists between two joints, this must be rebased before pose eval.
-                    .RestLocal = local_transforms[joint_node_index],
+                    .ParentJointNodeIndex = parent_joint_node_index,
+                    .RestLocal = *rest_local,
                     .Name = MakeNodeName(asset, joint_node_index),
                 }
             );

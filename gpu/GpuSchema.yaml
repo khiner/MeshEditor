@@ -137,6 +137,10 @@ structs:
         type: vec3
       - name: Normal
         type: vec3
+      - name: Joints
+        type: uvec4
+      - name: Weights
+        type: vec4
   - name: WorldMatrix
     fields:
       - name: M
