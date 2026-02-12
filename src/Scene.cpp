@@ -141,6 +141,27 @@ constexpr auto
     TransformPending = "transform_pending_changes"_hs,
     TransformEnd = "transform_end_changes"_hs;
 } // namespace changes
+
+struct DeformSlots {
+    SlotOffset BoneDeform, ArmatureDeform;
+};
+
+std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes, const SceneBuffers &buffers) {
+    std::unordered_map<entt::entity, DeformSlots> result;
+    for (const auto [_, mi, modifier] : r.view<const MeshInstance, const ArmatureModifier>().each()) {
+        if (result.contains(mi.MeshEntity)) continue;
+        const auto &mesh = r.get<const Mesh>(mi.MeshEntity);
+        const auto bone_deform = meshes.GetBoneDeformRange(mesh.GetStoreId());
+        if (bone_deform.Count == 0) continue;
+        if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureDataEntity)) {
+            result[mi.MeshEntity] = {
+                bone_deform,
+                {buffers.ArmatureDeformBuffer.Buffer.Slot, pose_state->GpuDeformRange.Offset},
+            };
+        }
+    }
+    return result;
+}
 } // namespace
 
 struct Scene::SelectionSlotHandles {
@@ -656,6 +677,27 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
+    // Armature animation tick
+    for (auto [entity, anim_data, pose_state, armature_data] :
+         R.view<ArmatureAnimationData, ArmaturePoseState, ArmatureData>().each()) {
+        if (!anim_data.Playing || anim_data.Clips.empty()) continue;
+        if (anim_data.ActiveClipIndex >= anim_data.Clips.size()) continue;
+
+        const auto &clip = anim_data.Clips[anim_data.ActiveClipIndex];
+        anim_data.CurrentTimeSeconds += ImGui::GetIO().DeltaTime * anim_data.PlaybackSpeed;
+        if (anim_data.Loop && clip.DurationSeconds > 0) anim_data.CurrentTimeSeconds = std::fmod(anim_data.CurrentTimeSeconds, clip.DurationSeconds);
+        // Reset to rest pose, then evaluate
+        for (uint32_t i = 0; i < armature_data.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature_data.Bones[i].RestLocal;
+
+        EvaluateAnimation(clip, anim_data.CurrentTimeSeconds, pose_state.BonePoseLocal);
+
+        // Write deform matrices directly into mapped GPU buffer
+        auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
+        ComputeDeformMatrices(armature_data, pose_state.BonePoseLocal, armature_data.ImportedSkin->InverseBindMatrices, gpu_span);
+
+        request(RenderRequest::ReRecord);
+    }
+
     for (auto &&[id, storage] : R.storage()) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
@@ -978,6 +1020,59 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
         } else {
             throw std::runtime_error{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
         }
+
+        // Allocate pose state and GPU deform buffer for this armature
+        {
+            ArmaturePoseState pose_state;
+            pose_state.BonePoseLocal.resize(armature_data.Bones.size());
+            for (uint32_t i = 0; i < armature_data.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature_data.Bones[i].RestLocal;
+            pose_state.GpuDeformRange = Buffers->ArmatureDeformBuffer.Allocate(armature_data.ImportedSkin->OrderedJointNodeIndices.size());
+
+            // Compute initial rest-pose deform matrices
+            auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
+            ComputeDeformMatrices(armature_data, pose_state.BonePoseLocal, armature_data.ImportedSkin->InverseBindMatrices, gpu_span);
+
+            R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
+        }
+    }
+
+    // Resolve animation data: map glTF animation channels to bone indices
+    for (auto &anim_clip : loaded_scene->Animations) {
+        for (const auto &skin : loaded_scene->Skins) {
+            entt::entity target_data_entity = entt::null;
+            for (const auto [entity, ad] : R.view<ArmatureData>().each()) {
+                if (ad.ImportedSkin && ad.ImportedSkin->SkinIndex == skin.SkinIndex) {
+                    target_data_entity = entity;
+                    break;
+                }
+            }
+            if (target_data_entity == entt::null) continue;
+
+            const auto &ad = R.get<const ArmatureData>(target_data_entity);
+            AnimationClip resolved_clip{.Name = std::move(anim_clip.Name), .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}};
+
+            for (auto &ch : anim_clip.Channels) {
+                if (const auto bone_id = ad.FindBoneIdByJointNodeIndex(ch.TargetNodeIndex)) {
+                    if (const auto bone_index = ad.FindBoneIndex(*bone_id)) {
+                        resolved_clip.Channels.emplace_back(AnimationChannel{
+                            .BoneIndex = *bone_index,
+                            .Target = ch.Target,
+                            .Interp = ch.Interp,
+                            .TimesSeconds = std::move(ch.TimesSeconds),
+                            .Values = std::move(ch.Values),
+                        });
+                    }
+                }
+            }
+
+            if (!resolved_clip.Channels.empty()) {
+                if (auto *existing = R.try_get<ArmatureAnimationData>(target_data_entity)) {
+                    existing->Clips.emplace_back(std::move(resolved_clip));
+                } else {
+                    R.emplace<ArmatureAnimationData>(target_data_entity, ArmatureAnimationData{.Clips = {std::move(resolved_clip)}});
+                }
+            }
+        }
     }
 
     const auto selected_entity =
@@ -1259,6 +1354,13 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
+    // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)
+    const auto mesh_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes, *Buffers);
+    const auto get_deform_slots = [&](entt::entity mesh_entity) -> DeformSlots {
+        if (auto it = mesh_deform_slots.find(mesh_entity); it != mesh_deform_slots.end()) return it->second;
+        return {};
+    };
+
     const bool render_silhouette = !R.view<Selected>().empty() &&
         (interaction_mode == InteractionMode::Object || !silhouette_instances.empty());
 
@@ -1273,7 +1375,8 @@ void Scene::RecordRenderCommandBuffer() {
             const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
             const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
             const auto &models = R.get<ModelsBuffer>(mesh_entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
+            const auto deform = get_deform_slots(mesh_entity);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform);
             draw.ObjectIdSlot = models.ObjectIds.Slot;
             set_edit_pending_local_transform(draw, mesh_entity);
             AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(e).BufferIndex);
@@ -1288,7 +1391,8 @@ void Scene::RecordRenderCommandBuffer() {
     if (show_solid) {
         fill_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
+            const auto deform = get_deform_slots(entity);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform);
             const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
             const auto face_normal_buffer = Meshes->GetFaceNormalRange(mesh.GetStoreId());
             const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
@@ -1312,7 +1416,8 @@ void Scene::RecordRenderCommandBuffer() {
     if (show_wireframe || is_edit_mode || is_excite_mode) {
         line_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
+            const auto deform = get_deform_slots(entity);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeform, deform.ArmatureDeform);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             draw.ElementState = edge_state_buffer;
             set_edit_pending_local_transform(draw, entity);
@@ -1329,7 +1434,8 @@ void Scene::RecordRenderCommandBuffer() {
     if ((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode) {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
+            const auto deform = get_deform_slots(entity);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeform, deform.ArmatureDeform);
             draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
             set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
@@ -1478,13 +1584,19 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const auto primary_edit_instances = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit ?
         ComputePrimaryEditInstances(R) :
         std::unordered_map<entt::entity, entt::entity>{};
+    const bool is_edit_mode = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit;
+    const auto selection_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes, *Buffers);
+
     // Object selection never uses depth testing - we want all visible pixels regardless of occlusion
     RenderSelectionPassWith(
         false,
         [&](DrawListBuilder &draw_list) {
             auto batch = draw_list.BeginBatch();
             for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
+                const auto deform_it = selection_deform_slots.find(mesh_entity);
+                const auto bone_deform = deform_it != selection_deform_slots.end() ? deform_it->second.BoneDeform : SlotOffset{};
+                const auto armature_deform = deform_it != selection_deform_slots.end() ? deform_it->second.ArmatureDeform : SlotOffset{};
+                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, bone_deform, armature_deform);
                 draw.ObjectIdSlot = models.ObjectIds.Slot;
                 draw.VertexCountOrHeadImageSlot = 0;
                 if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {

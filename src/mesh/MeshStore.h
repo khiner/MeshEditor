@@ -3,6 +3,7 @@
 #include "../vulkan/BufferArena.h"
 #include "ArmatureDeformData.h"
 #include "Mesh.h"
+#include "gpu/BoneDeformVertex.h"
 
 #include <expected>
 #include <filesystem>
@@ -27,6 +28,12 @@ struct MeshStore {
     std::span<const Vertex> GetVertices(uint32_t id) const { return VerticesBuffer.Get(Entries.at(id).Vertices); }
     std::span<Vertex> GetVertices(uint32_t id) { return VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
     SlottedRange GetVerticesRange(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
+
+    SlottedRange GetBoneDeformRange(uint32_t id) const {
+        const auto &entry = Entries.at(id);
+        if (entry.BoneDeform.Count == 0) return {};
+        return {entry.BoneDeform, BoneDeformBuffer.Buffer.Slot};
+    }
 
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
     SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceStateBuffer.Slot}; }
@@ -60,11 +67,13 @@ private:
     BufferArena<uint8_t> EdgeStateBuffer;
 
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
+    BufferArena<BoneDeformVertex> BoneDeformBuffer;
 
     struct Entry {
         Range Vertices, FaceNormals;
         Range EdgeStates;
         Range TriangleFaceIds;
+        Range BoneDeform;
         bool Alive{false};
     };
 

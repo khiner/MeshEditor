@@ -1,6 +1,7 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
 
 layout(location = 0) out vec3 WorldNormal;
@@ -22,12 +23,14 @@ void main() {
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
-    vec3 world_pos = vec3(world.M * vec4(vert.Position, 1.0));
+    vec3 normal = vert.Normal;
+    const vec3 local_pos = ApplyArmatureDeform(draw, vert.Position, idx, normal);
+    vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
     if (should_apply_pending_transform(draw, idx)) {
-        world_pos = apply_pending_transform(vert.Position, world_pos, world, draw);
+        world_pos = apply_pending_transform(local_pos, world_pos, world, draw);
     }
 
-    WorldNormal = mat3(world.MInv) * vert.Normal;
+    WorldNormal = mat3(world.MInv) * normal;
     WorldPosition = world_pos;
     Color = is_active ? vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0) :
         is_selected  ? vec4(ViewportTheme.Colors.VertexSelected, 1.0) :

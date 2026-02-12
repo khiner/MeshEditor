@@ -1,10 +1,37 @@
 #include "Armature.h"
 
+#include <algorithm>
+#include <cmath>
 #include <format>
 #include <stdexcept>
 
 namespace {
 mat4 ToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
+
+// Binary search for the keyframe interval containing `t`. Returns the index of the left keyframe.
+uint32_t FindKeyframe(const std::vector<float> &times, float t) {
+    if (times.size() <= 1) return 0;
+    if (t <= times.front()) return 0;
+    if (t >= times.back()) return times.size() - 2;
+    auto it = std::upper_bound(times.begin(), times.end(), t);
+    if (it == times.begin()) return 0;
+    return std::distance(times.begin(), it) - 1;
+}
+
+vec3 ReadVec3(const float *data) { return {data[0], data[1], data[2]}; }
+quat ReadQuat(const float *data) { return {data[3], data[0], data[1], data[2]}; } // glTF: xyzw -> glm: wxyz
+
+// Cubic Hermite interpolation
+vec3 CubicHermite(vec3 p0, vec3 m0, vec3 p1, vec3 m1, float t) {
+    const float t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
+}
+
+quat CubicHermiteQuat(quat p0, quat m0, quat p1, quat m1, float t) {
+    const float t2 = t * t, t3 = t2 * t;
+    const quat result = (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
+    return glm::normalize(result);
+}
 } // namespace
 
 BoneId ArmatureData::AllocateBoneId() {
@@ -167,4 +194,96 @@ void ArmatureData::FinalizeStructure() {
     }
 
     Dirty = false;
+}
+
+void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<Transform> bone_pose_local) {
+    for (const auto &channel : clip.Channels) {
+        if (channel.BoneIndex >= bone_pose_local.size()) continue;
+        if (channel.TimesSeconds.empty()) continue;
+
+        const auto k = FindKeyframe(channel.TimesSeconds, time_seconds);
+        auto &pose = bone_pose_local[channel.BoneIndex];
+
+        const bool is_rotation = channel.Target == AnimationPath::Rotation;
+        const uint32_t comp = is_rotation ? 4 : 3;
+
+        const uint32_t last = channel.TimesSeconds.size() - 1;
+        const uint32_t k1 = std::min(k + 1, last);
+
+        if (channel.Interp == AnimationInterpolation::Step) {
+            const float *v = channel.Values.data() + k * comp;
+            switch (channel.Target) {
+                case AnimationPath::Translation: pose.P = ReadVec3(v); break;
+                case AnimationPath::Rotation: pose.R = ReadQuat(v); break;
+                case AnimationPath::Scale: pose.S = ReadVec3(v); break;
+            }
+        } else if (channel.Interp == AnimationInterpolation::Linear) {
+            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
+            const float alpha = (t1 > t0) ? std::clamp((time_seconds - t0) / (t1 - t0), 0.f, 1.f) : 0.f;
+            const float *v0 = channel.Values.data() + k * comp;
+            const float *v1 = channel.Values.data() + k1 * comp;
+            switch (channel.Target) {
+                case AnimationPath::Translation: pose.P = glm::mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
+                case AnimationPath::Rotation: pose.R = glm::slerp(ReadQuat(v0), ReadQuat(v1), alpha); break;
+                case AnimationPath::Scale: pose.S = glm::mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
+            }
+        } else { // CubicSpline
+            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
+            const float dt = t1 - t0;
+            const float alpha = (dt > 0) ? std::clamp((time_seconds - t0) / dt, 0.f, 1.f) : 0.f;
+            // CubicSpline: each keyframe stores [in-tangent, value, out-tangent], each of size `comp`
+            const uint32_t stride = comp * 3;
+            const float *kf0 = channel.Values.data() + k * stride;
+            const float *kf1 = channel.Values.data() + k1 * stride;
+            // in0 = kf0[0..comp-1], val0 = kf0[comp..2*comp-1], out0 = kf0[2*comp..3*comp-1]
+            const float *val0 = kf0 + comp;
+            const float *out0 = kf0 + 2 * comp;
+            const float *in1 = kf1;
+            const float *val1 = kf1 + comp;
+            switch (channel.Target) {
+                case AnimationPath::Translation:
+                    pose.P = CubicHermite(ReadVec3(val0), dt * ReadVec3(out0), ReadVec3(val1), dt * ReadVec3(in1), alpha);
+                    break;
+                case AnimationPath::Rotation:
+                    pose.R = CubicHermiteQuat(ReadQuat(val0), dt * ReadQuat(out0), ReadQuat(val1), dt * ReadQuat(in1), alpha);
+                    break;
+                case AnimationPath::Scale:
+                    pose.S = CubicHermite(ReadVec3(val0), dt * ReadVec3(out0), ReadVec3(val1), dt * ReadVec3(in1), alpha);
+                    break;
+            }
+        }
+    }
+}
+
+void ComputeDeformMatrices(
+    const ArmatureData &data,
+    std::span<const Transform> bone_pose_local, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
+) {
+    if (!data.ImportedSkin || data.Bones.empty()) return;
+
+    // Compute posed world transforms in parent-before-child order (bones are already sorted this way)
+    std::vector<mat4> pose_world(data.Bones.size());
+    for (uint32_t i = 0; i < data.Bones.size(); ++i) {
+        const auto local = ToMatrix(bone_pose_local[i]);
+        const auto parent = data.Bones[i].ParentIndex;
+        pose_world[i] = (parent == InvalidBoneIndex) ? local : pose_world[parent] * local;
+    }
+
+    // For each joint in the skin's ordering, compute the deform matrix.
+    const auto &ordered_joints = data.ImportedSkin->OrderedJointNodeIndices;
+    for (uint32_t j = 0; j < ordered_joints.size() && j < out_deform_matrices.size(); ++j) {
+        const auto joint_node_index = ordered_joints[j];
+        const auto bone_id = data.FindBoneIdByJointNodeIndex(joint_node_index);
+        if (!bone_id) {
+            out_deform_matrices[j] = I4;
+            continue;
+        }
+        const auto bone_index = data.FindBoneIndex(*bone_id);
+        if (!bone_index || *bone_index >= pose_world.size()) {
+            out_deform_matrices[j] = I4;
+            continue;
+        }
+        const auto &ibm = (j < inverse_bind_matrices.size()) ? inverse_bind_matrices[j] : I4;
+        out_deform_matrices[j] = pose_world[*bone_index] * ibm;
+    }
 }

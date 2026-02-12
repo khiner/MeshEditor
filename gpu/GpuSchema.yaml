@@ -23,6 +23,10 @@ bindings:
     kind: Buffer
   - name: InstanceStateBuffer
     kind: Buffer
+  - name: BoneDeformBuffer
+    kind: Buffer
+  - name: ArmatureDeformBuffer
+    kind: Buffer
 
 structs:
   - name: SlotOffset
@@ -63,6 +67,10 @@ structs:
         type: SlotOffset
       - name: VertexOffset
         type: u32
+      - name: BoneDeform
+        type: SlotOffset
+      - name: ArmatureDeform
+        type: SlotOffset
   - name: SceneViewUBO
     binding: SceneViewUBO
     fields:
@@ -137,6 +145,8 @@ structs:
         type: vec3
       - name: Normal
         type: vec3
+  - name: BoneDeformVertex
+    fields:
       - name: Joints
         type: uvec4
       - name: Weights

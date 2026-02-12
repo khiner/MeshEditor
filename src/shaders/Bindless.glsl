@@ -7,6 +7,7 @@
 #include "DrawData.glsl"
 #include "DrawPassPushConstants.glsl"
 #include "Vertex.glsl"
+#include "BoneDeformVertex.glsl"
 #include "WorldMatrix.glsl"
 
 layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBuffer {
@@ -42,6 +43,14 @@ layout(set = 0, binding = BINDING_DrawDataBuffer, scalar) readonly buffer DrawDa
 layout(set = 0, binding = BINDING_InstanceStateBuffer, scalar) readonly buffer InstanceStateBuffer {
     uint8_t States[];
 } InstanceStateBuffers[];
+
+layout(set = 0, binding = BINDING_BoneDeformBuffer, scalar) readonly buffer BoneDeformBuffer {
+    BoneDeformVertex Vertices[];
+} BoneDeformBuffers[];
+
+layout(set = 0, binding = BINDING_ArmatureDeformBuffer, scalar) readonly buffer ArmatureDeformBuffer {
+    mat4 Matrices[];
+} ArmatureDeformBuffers[];
 
 const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;

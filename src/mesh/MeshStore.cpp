@@ -154,7 +154,8 @@ MeshStore::MeshStore(mvk::BufferContext &ctx)
       VertexStateBuffer{ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
       FaceStateBuffer{ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
       EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-      TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer} {}
+      TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
+      BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer} {}
 
 void MeshStore::UpdateNormals(const Mesh &mesh) {
     const auto id = mesh.GetStoreId();
@@ -184,13 +185,18 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
     const auto vertices = AllocateVertices(data.Positions.size());
     auto vertex_span = VerticesBuffer.GetMutable(vertices);
     for (uint32_t i = 0, count = static_cast<uint32_t>(data.Positions.size()); i < count; ++i) {
-        auto &vertex = vertex_span[i];
-        vertex = Vertex{};
-        vertex.Position = data.Positions[i];
-        if (deform_data) {
+        vertex_span[i] = {.Position = data.Positions[i]};
+    }
+    Range bone_deform{};
+    if (deform_data) {
+        bone_deform = BoneDeformBuffer.Allocate(data.Positions.size());
+        auto bd_span = BoneDeformBuffer.GetMutable(bone_deform);
+        for (uint32_t i = 0, count = static_cast<uint32_t>(data.Positions.size()); i < count; ++i) {
             const auto &joints = deform_data->Joints[i];
-            vertex.Joints = {joints[0], joints[1], joints[2], joints[3]};
-            vertex.Weights = deform_data->Weights[i];
+            bd_span[i] = BoneDeformVertex{
+                .Joints = {joints[0], joints[1], joints[2], joints[3]},
+                .Weights = deform_data->Weights[i],
+            };
         }
     }
     const auto face_normals = AllocateFaces(data.Faces.size());
@@ -199,6 +205,7 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         .FaceNormals = face_normals,
         .EdgeStates = {},
         .TriangleFaceIds = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces)),
+        .BoneDeform = bone_deform,
         .Alive = true,
     });
     auto &entry = Entries[id];
@@ -221,11 +228,14 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     std::ranges::copy(GetFaceNormals(src_id), FaceNormalBuffer.GetMutable(face_normals).begin());
 
     const auto edge_states = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
+    // Clone bone deform data if present
+    const auto &src_entry = Entries.at(src_id);
     const auto id = AcquireId({
         .Vertices = vertices,
         .FaceNormals = face_normals,
         .EdgeStates = edge_states,
-        .TriangleFaceIds = TriangleFaceIdBuffer.Allocate(TriangleFaceIdBuffer.Get(Entries.at(src_id).TriangleFaceIds)),
+        .TriangleFaceIds = TriangleFaceIdBuffer.Allocate(TriangleFaceIdBuffer.Get(src_entry.TriangleFaceIds)),
+        .BoneDeform = src_entry.BoneDeform.Count > 0 ? BoneDeformBuffer.Allocate(BoneDeformBuffer.Get(src_entry.BoneDeform)) : Range{},
         .Alive = true,
     });
 
@@ -266,6 +276,7 @@ void MeshStore::Release(uint32_t id) {
     TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
     FaceNormalBuffer.Release(entry.FaceNormals);
     EdgeStateBuffer.Release(entry.EdgeStates);
+    if (entry.BoneDeform.Count > 0) BoneDeformBuffer.Release(entry.BoneDeform);
     entry = {};
     FreeIds.emplace_back(id);
 }

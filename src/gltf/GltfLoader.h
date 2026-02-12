@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Armature.h"
 #include "Transform.h"
 #include "mesh/ArmatureDeformData.h"
 #include "mesh/MeshData.h"
@@ -64,11 +65,26 @@ struct SceneSkinData {
     std::vector<mat4> InverseBindMatrices{}; // Order matches `Joints`
 };
 
+struct AnimationChannelData {
+    uint32_t TargetNodeIndex;
+    AnimationPath Target;
+    AnimationInterpolation Interp{AnimationInterpolation::Linear};
+    std::vector<float> TimesSeconds;
+    std::vector<float> Values; // Packed: vec3 for T/S, vec4(xyzw) for R
+};
+
+struct AnimationClipData {
+    std::string Name;
+    float DurationSeconds{0};
+    std::vector<AnimationChannelData> Channels;
+};
+
 struct SceneData {
     std::vector<SceneMeshData> Meshes;
     std::vector<SceneNodeData> Nodes;
     std::vector<SceneObjectData> Objects;
     std::vector<SceneSkinData> Skins;
+    std::vector<AnimationClipData> Animations;
 };
 
 std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path &path);

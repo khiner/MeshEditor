@@ -3,9 +3,11 @@
 #include "Transform.h"
 #include "entt_fwd.h"
 #include "numeric/mat4.h"
+#include "vulkan/BufferArena.h"
 
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -75,3 +77,53 @@ struct BoneAttachment {
     entt::entity ArmatureDataEntity;
     BoneId Bone;
 };
+
+enum class AnimationPath : uint8_t {
+    Translation,
+    Rotation,
+    Scale
+};
+enum class AnimationInterpolation : uint8_t {
+    Step,
+    Linear,
+    CubicSpline
+};
+
+// Resolved animation channel (bone-index-based, not node-index).
+struct AnimationChannel {
+    uint32_t BoneIndex;
+    AnimationPath Target;
+    AnimationInterpolation Interp{AnimationInterpolation::Linear};
+    std::vector<float> TimesSeconds;
+    std::vector<float> Values;
+};
+
+struct AnimationClip {
+    std::string Name;
+    float DurationSeconds{0};
+    std::vector<AnimationChannel> Channels;
+};
+
+// Component on armature data entities with imported skin data.
+struct ArmaturePoseState {
+    std::vector<Transform> BonePoseLocal; // CPU working storage (per-bone animated local transform)
+    Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena
+    bool Dirty{true};
+};
+
+// Component on armature data entities with animation data.
+struct ArmatureAnimationData {
+    std::vector<AnimationClip> Clips;
+    uint32_t ActiveClipIndex{0};
+    float CurrentTimeSeconds{0};
+    float PlaybackSpeed{1.0f};
+    bool Playing{true};
+    bool Loop{true};
+};
+
+// Interpolate animation channels at `time`, writing into pre-initialized rest-pose `local_transforms`.
+void EvaluateAnimation(const AnimationClip &, float time, std::span<Transform> local_transforms);
+
+// Compute final deform matrices from posed local transforms + inverse bind matrices.
+// Writes directly into `out` (mapped GPU memory).
+void ComputeDeformMatrices(const ArmatureData &, std::span<const Transform> local_transforms, std::span<const mat4> inverse_bind, std::span<mat4> out);

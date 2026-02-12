@@ -526,6 +526,86 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         scene_data.Skins.emplace_back(std::move(scene_skin));
     }
 
+    // Parse animations
+    for (uint32_t anim_index = 0; anim_index < asset.animations.size(); ++anim_index) {
+        const auto &anim = asset.animations[anim_index];
+        AnimationClipData clip;
+        clip.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name);
+        float max_time = 0;
+
+        for (const auto &channel : anim.channels) {
+            if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;
+            if (channel.samplerIndex >= anim.samplers.size()) continue;
+
+            AnimationPath target_path;
+            uint32_t component_count;
+            switch (channel.path) {
+                case fastgltf::AnimationPath::Translation:
+                    target_path = AnimationPath::Translation;
+                    component_count = 3;
+                    break;
+                case fastgltf::AnimationPath::Rotation:
+                    target_path = AnimationPath::Rotation;
+                    component_count = 4;
+                    break;
+                case fastgltf::AnimationPath::Scale:
+                    target_path = AnimationPath::Scale;
+                    component_count = 3;
+                    break;
+                default: continue; // Skip weights and other unsupported paths
+            }
+
+            const auto &sampler = anim.samplers[channel.samplerIndex];
+            if (sampler.inputAccessor >= asset.accessors.size() || sampler.outputAccessor >= asset.accessors.size()) continue;
+
+            const auto &input_accessor = asset.accessors[sampler.inputAccessor];
+            const auto &output_accessor = asset.accessors[sampler.outputAccessor];
+            if (input_accessor.count == 0) continue;
+
+            AnimationInterpolation interp;
+            switch (sampler.interpolation) {
+                case fastgltf::AnimationInterpolation::Step: interp = AnimationInterpolation::Step; break;
+                case fastgltf::AnimationInterpolation::Linear: interp = AnimationInterpolation::Linear; break;
+                case fastgltf::AnimationInterpolation::CubicSpline: interp = AnimationInterpolation::CubicSpline; break;
+                default: interp = AnimationInterpolation::Linear; break;
+            }
+
+            std::vector<float> times(input_accessor.count);
+            fastgltf::copyFromAccessor<float>(asset, input_accessor, times.data());
+
+            std::vector<float> values(output_accessor.count * component_count);
+            if (component_count == 4) {
+                fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, output_accessor, [&](const auto &v, std::size_t i) {
+                    const auto base = i * 4;
+                    values[base] = v.x();
+                    values[base + 1] = v.y();
+                    values[base + 2] = v.z();
+                    values[base + 3] = v.w();
+                });
+            } else {
+                fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, output_accessor, [&](const auto &v, std::size_t i) {
+                    const auto base = i * 3;
+                    values[base] = v.x();
+                    values[base + 1] = v.y();
+                    values[base + 2] = v.z();
+                });
+            }
+
+            if (!times.empty()) max_time = std::max(max_time, times.back());
+
+            clip.Channels.emplace_back(AnimationChannelData{
+                .TargetNodeIndex = uint32_t(*channel.nodeIndex),
+                .Target = target_path,
+                .Interp = interp,
+                .TimesSeconds = std::move(times),
+                .Values = std::move(values),
+            });
+        }
+
+        clip.DurationSeconds = max_time;
+        if (!clip.Channels.empty()) scene_data.Animations.emplace_back(std::move(clip));
+    }
+
     if (scene_data.Objects.empty() && scene_data.Skins.empty()) {
         return std::unexpected{std::format("glTF '{}' has no importable scene objects or skins.", path.string())};
     }

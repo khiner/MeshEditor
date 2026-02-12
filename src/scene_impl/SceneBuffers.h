@@ -5,6 +5,7 @@
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
 #include "gpu/WorldMatrix.h"
+#include "numeric/mat4.h"
 
 constexpr uint32_t
     ClickSelectRadiusPx = 50,
@@ -108,6 +109,7 @@ struct SceneBuffers {
     uint32_t IdentityIndexCount{0};
     uint32_t SelectionNodeCapacity{1};
     mvk::Buffer SelectionNodeBuffer;
+    BufferArena<mat4> ArmatureDeformBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ArmatureDeformBuffer};
     // CPU readback buffers (host-visible)
     mvk::Buffer SelectionCounterBuffer, ClickResultBuffer, ClickElementResultBuffer, BoxSelectBitsetBuffer;
 };

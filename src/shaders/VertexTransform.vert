@@ -1,6 +1,7 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
 
 layout(location = 0) out vec3 WorldNormal;
@@ -19,6 +20,7 @@ void main() {
     uint element_state = 0u;
     uint face_id = 0u;
     vec3 normal = vert.Normal;
+    const vec3 local_pos = ApplyArmatureDeform(draw, vert.Position, idx, normal);
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
         if (draw.FaceNormal.Slot != INVALID_SLOT && face_id != 0u) {
@@ -30,7 +32,6 @@ void main() {
     } else if (draw.ElementState.Slot != INVALID_SLOT) {
         element_state = uint(ElementStateBuffers[draw.ElementState.Slot].States[draw.ElementState.Offset + gl_VertexIndex]);
     }
-    vec3 local_pos = vert.Position;
     vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
     if (should_apply_pending_transform(draw, idx)) {
         world_pos = apply_pending_transform(local_pos, world_pos, world, draw);
