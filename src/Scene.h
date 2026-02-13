@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AnimationTimeline.h"
 #include "TransformGizmo.h"
 #include "World.h"
 #include "mesh/Handle.h"
@@ -158,6 +159,11 @@ struct Scene {
     void WaitForRender();
     void RenderControls();
 
+    const AnimationTimeline &GetTimeline() const;
+    AnimationTimelineView &GetTimelineView() { return TimelineView; }
+    const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
+    void ApplyTimelineAction(const AnimationTimelineAction &);
+
     mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
     void CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path);
 
@@ -213,6 +219,10 @@ private:
         std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
     };
     TransformIcons Icons;
+    AnimationIcons AnimIcons;
+    AnimationTimelineView TimelineView;
+    float PlaybackFrame{1.0f}; // Smooth float frame position for playback
+    int LastEvaluatedFrame{-1}; // Last frame where armature poses were evaluated
 
     static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
 

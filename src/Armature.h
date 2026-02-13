@@ -115,10 +115,6 @@ struct ArmaturePoseState {
 struct ArmatureAnimationData {
     std::vector<AnimationClip> Clips;
     uint32_t ActiveClipIndex{0};
-    float CurrentTimeSeconds{0};
-    float PlaybackSpeed{1.0f};
-    bool Playing{true};
-    bool Loop{true};
 };
 
 // Interpolate animation channels at `time`, writing into pre-initialized rest-pose `local_transforms`.

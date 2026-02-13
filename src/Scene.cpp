@@ -294,6 +294,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<Camera>(SceneEntity, Defaults.Camera);
     R.emplace<Lights>(SceneEntity, Defaults.Lights);
     R.emplace<ViewportExtent>(SceneEntity);
+    R.emplace<AnimationTimeline>(SceneEntity);
 
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
 
@@ -380,6 +381,31 @@ void Scene::LoadIcons() {
     CreateSvgResource(Icons.Rotate, svg_path / "rotate.svg");
     CreateSvgResource(Icons.Scale, svg_path / "scale.svg");
     CreateSvgResource(Icons.Universal, svg_path / "transform.svg");
+
+    CreateSvgResource(AnimIcons.Play, svg_path / "play.svg");
+    CreateSvgResource(AnimIcons.Pause, svg_path / "pause.svg");
+    CreateSvgResource(AnimIcons.JumpStart, svg_path / "jump_start.svg");
+    CreateSvgResource(AnimIcons.JumpEnd, svg_path / "jump_end.svg");
+}
+
+const AnimationTimeline &Scene::GetTimeline() const { return R.get<const AnimationTimeline>(SceneEntity); }
+
+void Scene::ApplyTimelineAction(const AnimationTimelineAction &action) {
+    auto set_frame = [&](int frame) {
+        R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
+        PlaybackFrame = frame;
+    };
+    std::visit(
+        overloaded{
+            [&](timeline_action::TogglePlay) { R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; }); },
+            [&](timeline_action::SetFrame a) { set_frame(a.Frame); },
+            [&](timeline_action::SetStartFrame a) { R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.StartFrame = a.Frame; }); },
+            [&](timeline_action::SetEndFrame a) { R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = a.Frame; }); },
+            [&](timeline_action::JumpToStart) { set_frame(R.get<AnimationTimeline>(SceneEntity).StartFrame); },
+            [&](timeline_action::JumpToEnd) { set_frame(R.get<AnimationTimeline>(SceneEntity).EndFrame); },
+        },
+        action
+    );
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
@@ -677,25 +703,32 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
-    // Armature animation tick
-    for (auto [entity, anim_data, pose_state, armature_data] :
-         R.view<ArmatureAnimationData, ArmaturePoseState, ArmatureData>().each()) {
-        if (!anim_data.Playing || anim_data.Clips.empty()) continue;
-        if (anim_data.ActiveClipIndex >= anim_data.Clips.size()) continue;
+    { // Animation timeline tick
+        auto &tl = R.get<AnimationTimeline>(SceneEntity);
+        if (tl.Playing) {
+            PlaybackFrame += ImGui::GetIO().DeltaTime * tl.Fps;
+            if (PlaybackFrame > float(tl.EndFrame)) PlaybackFrame = float(tl.StartFrame);
+            const int new_frame = int(std::floor(PlaybackFrame));
+            if (new_frame != tl.CurrentFrame) R.patch<AnimationTimeline>(SceneEntity, [&](auto &t) { t.CurrentFrame = new_frame; });
+        } else {
+            PlaybackFrame = float(tl.CurrentFrame);
+        }
+        if (tl.CurrentFrame != LastEvaluatedFrame) {
+            LastEvaluatedFrame = tl.CurrentFrame;
+            const float eval_seconds = float(tl.CurrentFrame) / tl.Fps;
+            for (auto [entity, anim_data, pose_state, armature_data] :
+                 R.view<const ArmatureAnimationData, ArmaturePoseState, ArmatureData>().each()) {
+                if (anim_data.Clips.empty() || anim_data.ActiveClipIndex >= anim_data.Clips.size()) continue;
+                const auto &clip = anim_data.Clips[anim_data.ActiveClipIndex];
+                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+                for (uint32_t i = 0; i < armature_data.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature_data.Bones[i].RestLocal;
+                EvaluateAnimation(clip, clip_time, pose_state.BonePoseLocal);
 
-        const auto &clip = anim_data.Clips[anim_data.ActiveClipIndex];
-        anim_data.CurrentTimeSeconds += ImGui::GetIO().DeltaTime * anim_data.PlaybackSpeed;
-        if (anim_data.Loop && clip.DurationSeconds > 0) anim_data.CurrentTimeSeconds = std::fmod(anim_data.CurrentTimeSeconds, clip.DurationSeconds);
-        // Reset to rest pose, then evaluate
-        for (uint32_t i = 0; i < armature_data.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature_data.Bones[i].RestLocal;
-
-        EvaluateAnimation(clip, anim_data.CurrentTimeSeconds, pose_state.BonePoseLocal);
-
-        // Write deform matrices directly into mapped GPU buffer
-        auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
-        ComputeDeformMatrices(armature_data, pose_state.BonePoseLocal, armature_data.ImportedSkin->InverseBindMatrices, gpu_span);
-
-        request(RenderRequest::ReRecord);
+                auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
+                ComputeDeformMatrices(armature_data, pose_state.BonePoseLocal, armature_data.ImportedSkin->InverseBindMatrices, gpu_span);
+                request(RenderRequest::ReRecord);
+            }
+        }
     }
 
     for (auto &&[id, storage] : R.storage()) {
@@ -1073,6 +1106,14 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
                 }
             }
         }
+    }
+
+    { // Get timeline range from imported animation durations
+        float max_dur = 0;
+        for (const auto [_, anim] : R.view<const ArmatureAnimationData>().each()) {
+            for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
+        }
+        if (max_dur > 0) R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = int(std::ceil(max_dur * tl.Fps)); });
     }
 
     const auto selected_entity =
@@ -1949,6 +1990,7 @@ void Scene::Interact() {
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Handle keyboard input.
     if (IsWindowFocused()) {
+        if (IsKeyPressed(ImGuiKey_Space, false)) R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
         if (IsKeyPressed(ImGuiKey_Tab)) {
             // Cycle to the next interaction mode, wrapping around to the first.
             auto it = find(InteractionModes, interaction_mode);

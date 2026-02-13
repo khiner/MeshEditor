@@ -443,10 +443,12 @@ void run() {
         if (GetFrameCount() == 1) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.35f, nullptr, &dockspace_id);
             auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
+            auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.2f, nullptr, &dockspace_id);
             DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
+            DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
             DockBuilderDockWindow(windows.Scene.Name, dockspace_id);
         }
 
@@ -491,6 +493,7 @@ void run() {
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
                 MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
                 MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
+                MenuItem(windows.Animation.Name, nullptr, &windows.Animation.Visible);
                 MenuItem(windows.Scene.Name, nullptr, &windows.Scene.Visible);
                 EndMenu();
             }
@@ -563,6 +566,17 @@ void run() {
                 EndTabBar();
             }
             End();
+        }
+
+        if (windows.Animation.Visible) {
+            PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+            if (Begin(windows.Animation.Name, &windows.Animation.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+                if (auto action = RenderAnimationTimeline(scene->GetTimeline(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
+                    scene->ApplyTimelineAction(*action);
+                }
+            }
+            End();
+            PopStyleVar();
         }
 
         if (windows.Scene.Visible) {

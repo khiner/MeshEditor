@@ -9,6 +9,7 @@ struct WindowsState {
     Window
         SceneControls{"Scene controls"},
         Scene{"Scene"},
+        Animation{"Animation"},
         ImGuiDemo{"Dear ImGui Demo", false},
         ImPlotDemo{"ImPlot Demo", false},
         Debug{"Debug", false};
