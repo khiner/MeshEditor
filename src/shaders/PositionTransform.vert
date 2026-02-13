@@ -1,6 +1,7 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "MorphDeform.glsl"
 #include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
 
@@ -14,7 +15,8 @@ void main() {
     ObjectId = (draw.ObjectIdSlot != INVALID_SLOT) ? ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FirstInstance] : 0u;
 
     vec3 normal = vert.Normal;
-    const vec3 local_pos = ApplyArmatureDeform(draw, vert.Position, idx, normal);
+    const vec3 morphed_pos = ApplyMorphDeform(draw, vert.Position, idx);
+    const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
     vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
     if (should_apply_pending_transform(draw, idx)) {
         world_pos = apply_pending_transform(local_pos, world_pos, world, draw);

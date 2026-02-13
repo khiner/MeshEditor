@@ -1,9 +1,18 @@
+// TODO: Unsupported geometry-affecting glTF features (roughly ordered by impact):
+//  - Morph target normal/tangent deltas (position deltas are supported)
+//  - Normals import: authored normals from glTF are discarded (only computed internally)
+//  - Non-triangle primitives: points, lines, line strips are silently skipped
+//  - Sparse accessors: mainly relevant for morph target deltas
+//  - Draco mesh compression
+//  - EXT_mesh_gpu_instancing
+
 #pragma once
 
 #include "Armature.h"
 #include "Transform.h"
 #include "mesh/ArmatureDeformData.h"
 #include "mesh/MeshData.h"
+#include "mesh/MorphTargetData.h"
 #include "numeric/mat4.h"
 
 #include <cstdint>
@@ -17,6 +26,7 @@ namespace gltf {
 struct SceneMeshData {
     MeshData Data;
     std::optional<ArmatureDeformData> DeformData{};
+    std::optional<MorphTargetData> MorphData{};
     std::string Name;
 };
 

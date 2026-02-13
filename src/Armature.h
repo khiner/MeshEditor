@@ -81,7 +81,8 @@ struct BoneAttachment {
 enum class AnimationPath : uint8_t {
     Translation,
     Rotation,
-    Scale
+    Scale,
+    Weights
 };
 enum class AnimationInterpolation : uint8_t {
     Step,
@@ -117,8 +118,37 @@ struct ArmatureAnimationData {
     uint32_t ActiveClipIndex{0};
 };
 
+// Morph weight animation channel — dedicated type (no BoneIndex/Target overhead).
+struct MorphWeightChannel {
+    AnimationInterpolation Interp{AnimationInterpolation::Linear};
+    std::vector<float> TimesSeconds;
+    std::vector<float> Values; // Packed: target_count floats per keyframe
+};
+
+struct MorphWeightClip {
+    std::string Name;
+    float DurationSeconds{0};
+    std::vector<MorphWeightChannel> Channels;
+};
+
+// Component on mesh instance entities with morph target animation data.
+struct MorphWeightAnimationData {
+    std::vector<MorphWeightClip> Clips;
+    uint32_t ActiveClipIndex{0};
+};
+
+// Component on mesh instance entities with morph targets (animated or static).
+// DefaultWeights and TargetCount are mesh-level data in MeshStore::Entry.
+struct MorphWeightState {
+    std::vector<float> Weights; // Current evaluated weights (CPU), size == target count
+    Range GpuWeightRange; // Allocation in MorphWeightBuffer
+};
+
 // Interpolate animation channels at `time`, writing into pre-initialized rest-pose `local_transforms`.
 void EvaluateAnimation(const AnimationClip &, float time, std::span<Transform> local_transforms);
+
+// Interpolate morph weight animation channels at `time`, writing into `weights`.
+void EvaluateMorphWeights(const MorphWeightClip &clip, float time, std::span<float> weights);
 
 // Compute final deform matrices from posed local transforms + inverse bind matrices.
 // Writes directly into `out` (mapped GPU memory).

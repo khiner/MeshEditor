@@ -65,7 +65,9 @@ DrawData MakeDrawData(
     uint32_t model_slot,
     uint32_t instance_state_slot = InvalidSlot,
     SlotOffset bone_deform = {},
-    SlotOffset armature_deform = {}
+    SlotOffset armature_deform = {},
+    SlotOffset morph_deform = {},
+    uint32_t morph_target_count = 0
 ) {
     return {
         .VertexSlot = vertex_slot,
@@ -83,10 +85,13 @@ DrawData MakeDrawData(
         .VertexOffset = vertices.Offset,
         .BoneDeform = bone_deform,
         .ArmatureDeform = armature_deform,
+        .MorphDeform = morph_deform,
+        .MorphWeights = {},
+        .MorphTargetCount = morph_target_count,
     };
 }
-DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const ModelsBuffer &mb, SlotOffset bone_deform = {}, SlotOffset armature_deform = {}) {
-    return MakeDrawData(vertices.Slot, vertices, indices, mb.Buffer.Slot, mb.InstanceStates.Slot, bone_deform, armature_deform);
+DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const ModelsBuffer &mb, SlotOffset bone_deform = {}, SlotOffset armature_deform = {}, SlotOffset morph_deform = {}, uint32_t morph_target_count = 0) {
+    return MakeDrawData(vertices.Slot, vertices, indices, mb.Buffer.Slot, mb.InstanceStates.Slot, bone_deform, armature_deform, morph_deform, morph_target_count);
 }
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {
     return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, mb.Buffer.Slot);

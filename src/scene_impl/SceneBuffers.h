@@ -110,6 +110,7 @@ struct SceneBuffers {
     uint32_t SelectionNodeCapacity{1};
     mvk::Buffer SelectionNodeBuffer;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ArmatureDeformBuffer};
+    BufferArena<float> MorphWeightBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer};
     // CPU readback buffers (host-visible)
     mvk::Buffer SelectionCounterBuffer, ClickResultBuffer, ClickElementResultBuffer, BoxSelectBitsetBuffer;
 };

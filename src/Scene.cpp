@@ -144,6 +144,10 @@ constexpr auto
 
 struct DeformSlots {
     SlotOffset BoneDeform, ArmatureDeform;
+    SlotOffset MorphDeform;
+    uint32_t MorphTargetCount{0};
+    // Per-instance morph weights: buffer_index -> SlotOffset (weights are per-node in glTF)
+    std::unordered_map<uint32_t, SlotOffset> MorphWeightsByBufferIndex;
 };
 
 std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes, const SceneBuffers &buffers) {
@@ -155,12 +159,35 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         if (bone_deform.Count == 0) continue;
         if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureDataEntity)) {
             result[mi.MeshEntity] = {
-                bone_deform,
-                {buffers.ArmatureDeformBuffer.Buffer.Slot, pose_state->GpuDeformRange.Offset},
+                .BoneDeform = bone_deform,
+                .ArmatureDeform = {buffers.ArmatureDeformBuffer.Buffer.Slot, pose_state->GpuDeformRange.Offset},
+                .MorphDeform = {},
+                .MorphTargetCount = 0,
+                .MorphWeightsByBufferIndex = {},
             };
         }
     }
+    // Add morph target slots for mesh instances with morph data (per-instance weights)
+    for (const auto [instance_entity, mi, morph_state, ri] : r.view<const MeshInstance, const MorphWeightState, const RenderInstance>().each()) {
+        const auto mesh_entity = mi.MeshEntity;
+        const auto &mesh = r.get<const Mesh>(mesh_entity);
+        const auto morph_range = meshes.GetMorphTargetRange(mesh.GetStoreId());
+        if (morph_range.Count == 0) continue;
+        auto &slots = result[mesh_entity];
+        slots.MorphDeform = morph_range;
+        slots.MorphTargetCount = meshes.GetMorphTargetCount(mesh.GetStoreId());
+        slots.MorphWeightsByBufferIndex[ri.BufferIndex] = {buffers.MorphWeightBuffer.Buffer.Slot, morph_state.GpuWeightRange.Offset};
+    }
     return result;
+}
+
+void PatchMorphWeights(DrawListBuilder &dl, size_t draws_before, const DeformSlots &deform) {
+    if (deform.MorphWeightsByBufferIndex.empty()) return;
+    for (size_t i = draws_before; i < dl.Draws.size(); ++i) {
+        if (auto it = deform.MorphWeightsByBufferIndex.find(dl.Draws[i].FirstInstance); it != deform.MorphWeightsByBufferIndex.end()) {
+            dl.Draws[i].MorphWeights = it->second;
+        }
+    }
 }
 } // namespace
 
@@ -728,6 +755,23 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 ComputeDeformMatrices(armature_data, pose_state.BonePoseLocal, armature_data.ImportedSkin->InverseBindMatrices, gpu_span);
                 request(RenderRequest::ReRecord);
             }
+
+            // Evaluate morph weight animations
+            for (auto [entity, morph_anim, morph_state, mi] :
+                 R.view<const MorphWeightAnimationData, MorphWeightState, const MeshInstance>().each()) {
+                if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
+                const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
+                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+                // Reset to default weights from mesh-level data
+                const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                const auto default_weights = Meshes->GetDefaultMorphWeights(mesh.GetStoreId());
+                std::copy(default_weights.begin(), default_weights.end(), morph_state.Weights.begin());
+                EvaluateMorphWeights(clip, clip_time, morph_state.Weights);
+                // Write to GPU
+                auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
+                std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
+                request(RenderRequest::ReRecord);
+            }
         }
     }
 
@@ -907,13 +951,18 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
 
     std::vector<entt::entity> mesh_entities;
     mesh_entities.reserve(loaded_scene->Meshes.size());
+    // Track morph data per mesh for later component setup
+    std::vector<std::optional<MorphTargetData>> mesh_morph_data;
+    mesh_morph_data.reserve(loaded_scene->Meshes.size());
     entt::entity first_mesh_entity = entt::null;
     for (auto &scene_mesh : loaded_scene->Meshes) {
-        auto mesh = Meshes->CreateMesh(std::move(scene_mesh.Data), std::move(scene_mesh.DeformData));
+        auto morph_data_copy = scene_mesh.MorphData; // Keep a copy for component setup
+        auto mesh = Meshes->CreateMesh(std::move(scene_mesh.Data), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
         const auto [mesh_entity, _] = AddMesh(std::move(mesh), std::nullopt);
         R.emplace<Path>(mesh_entity, path);
         if (first_mesh_entity == entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
+        mesh_morph_data.emplace_back(std::move(morph_data_copy));
     }
 
     const std::string name_prefix = path.stem().string();
@@ -1108,9 +1157,65 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
         }
     }
 
+    // Set up morph weight state for mesh instances with morph targets
+    // Build a map: node_index -> mesh instance entity, for resolving weight animation channels
+    std::unordered_map<uint32_t, entt::entity> morph_instance_by_node;
+    for (const auto &object : loaded_scene->Objects) {
+        if (object.ObjectType != gltf::SceneObjectData::Type::Mesh || !object.MeshIndex) continue;
+        if (*object.MeshIndex >= mesh_morph_data.size() || !mesh_morph_data[*object.MeshIndex]) continue;
+        const auto obj_it = object_entities_by_node.find(object.NodeIndex);
+        if (obj_it == object_entities_by_node.end()) continue;
+        const auto instance_entity = obj_it->second;
+        if (!R.all_of<MeshInstance>(instance_entity)) continue;
+
+        const auto &morph = *mesh_morph_data[*object.MeshIndex];
+        if (morph.TargetCount == 0) continue;
+
+        MorphWeightState state;
+        state.Weights = morph.DefaultWeights;
+        state.GpuWeightRange = Buffers->MorphWeightBuffer.Allocate(morph.TargetCount);
+        auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(state.GpuWeightRange);
+        std::copy(state.Weights.begin(), state.Weights.end(), gpu_weights.begin());
+        R.emplace<MorphWeightState>(instance_entity, std::move(state));
+        morph_instance_by_node[object.NodeIndex] = instance_entity;
+    }
+
+    // Resolve morph weight animation channels
+    for (auto &anim_clip : loaded_scene->Animations) {
+        // Group weight channels by target node
+        std::unordered_map<uint32_t, std::vector<gltf::AnimationChannelData *>> weight_channels_by_node;
+        for (auto &ch : anim_clip.Channels) {
+            if (ch.Target == AnimationPath::Weights) weight_channels_by_node[ch.TargetNodeIndex].emplace_back(&ch);
+        }
+        for (auto &[node_index, channels] : weight_channels_by_node) {
+            const auto inst_it = morph_instance_by_node.find(node_index);
+            if (inst_it == morph_instance_by_node.end()) continue;
+            const auto instance_entity = inst_it->second;
+
+            MorphWeightClip resolved_clip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}};
+            for (auto *ch : channels) {
+                resolved_clip.Channels.emplace_back(MorphWeightChannel{
+                    .Interp = ch->Interp,
+                    .TimesSeconds = std::move(ch->TimesSeconds),
+                    .Values = std::move(ch->Values),
+                });
+            }
+            if (!resolved_clip.Channels.empty()) {
+                if (auto *existing = R.try_get<MorphWeightAnimationData>(instance_entity)) {
+                    existing->Clips.emplace_back(std::move(resolved_clip));
+                } else {
+                    R.emplace<MorphWeightAnimationData>(instance_entity, MorphWeightAnimationData{.Clips = {std::move(resolved_clip)}});
+                }
+            }
+        }
+    }
+
     { // Get timeline range from imported animation durations
         float max_dur = 0;
         for (const auto [_, anim] : R.view<const ArmatureAnimationData>().each()) {
+            for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
+        }
+        for (const auto [_, anim] : R.view<const MorphWeightAnimationData>().each()) {
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
         if (max_dur > 0) R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = int(std::ceil(max_dur * tl.Fps)); });
@@ -1417,10 +1522,12 @@ void Scene::RecordRenderCommandBuffer() {
             const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
             const auto &models = R.get<ModelsBuffer>(mesh_entity);
             const auto deform = get_deform_slots(mesh_entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             draw.ObjectIdSlot = models.ObjectIds.Slot;
             set_edit_pending_local_transform(draw, mesh_entity);
+            const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(e).BufferIndex);
+            PatchMorphWeights(draw_list, draws_before, deform);
         };
         if (is_edit_mode) {
             for (const auto e : silhouette_instances) append_silhouette(e);
@@ -1433,7 +1540,7 @@ void Scene::RecordRenderCommandBuffer() {
         fill_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             const auto deform = get_deform_slots(entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
             const auto face_normal_buffer = Meshes->GetFaceNormalRange(mesh.GetStoreId());
             const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
@@ -1444,12 +1551,18 @@ void Scene::RecordRenderCommandBuffer() {
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)
                 draw.ElementState = face_state_buffer;
+                const auto db1 = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
+                PatchMorphWeights(draw_list, db1, deform);
                 draw.ElementState = {};
+                const auto db2 = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
+                PatchMorphWeights(draw_list, db2, deform);
             } else {
                 draw.ElementState = face_state_buffer;
+                const auto db = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
+                PatchMorphWeights(draw_list, db, deform);
             }
         }
     }
@@ -1458,10 +1571,11 @@ void Scene::RecordRenderCommandBuffer() {
         line_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             const auto deform = get_deform_slots(entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeform, deform.ArmatureDeform);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             draw.ElementState = edge_state_buffer;
             set_edit_pending_local_transform(draw, entity);
+            const auto db = draw_list.Draws.size();
             if (show_wireframe) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
@@ -1469,6 +1583,7 @@ void Scene::RecordRenderCommandBuffer() {
             } else if (excitable_mesh_entities.contains(entity)) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             }
+            PatchMorphWeights(draw_list, db, deform);
         }
     }
 
@@ -1476,14 +1591,16 @@ void Scene::RecordRenderCommandBuffer() {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
             const auto deform = get_deform_slots(entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeform, deform.ArmatureDeform);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
             set_edit_pending_local_transform(draw, entity);
+            const auto db = draw_list.Draws.size();
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
             } else if (excitable_mesh_entities.contains(entity)) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw);
             }
+            PatchMorphWeights(draw_list, db, deform);
         }
     }
 
@@ -1635,16 +1752,20 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
             auto batch = draw_list.BeginBatch();
             for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
                 const auto deform_it = selection_deform_slots.find(mesh_entity);
-                const auto bone_deform = deform_it != selection_deform_slots.end() ? deform_it->second.BoneDeform : SlotOffset{};
-                const auto armature_deform = deform_it != selection_deform_slots.end() ? deform_it->second.ArmatureDeform : SlotOffset{};
-                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, bone_deform, armature_deform);
+                const auto has_deform = deform_it != selection_deform_slots.end();
+                const auto bone_deform = has_deform ? deform_it->second.BoneDeform : SlotOffset{};
+                const auto armature_deform = has_deform ? deform_it->second.ArmatureDeform : SlotOffset{};
+                const auto morph_deform = has_deform ? deform_it->second.MorphDeform : SlotOffset{};
+                const auto morph_target_count = has_deform ? deform_it->second.MorphTargetCount : 0u;
+                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, bone_deform, armature_deform, morph_deform, morph_target_count);
                 draw.ObjectIdSlot = models.ObjectIds.Slot;
-                draw.VertexCountOrHeadImageSlot = 0;
+                const auto db = draw_list.Draws.size();
                 if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
                     AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
                 } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
                     AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw);
                 }
+                if (has_deform) PatchMorphWeights(draw_list, db, deform_it->second);
             }
             return SelectionDrawInfo{SPT::SelectionFragmentXRay, batch};
         },

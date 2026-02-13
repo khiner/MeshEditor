@@ -196,8 +196,50 @@ void ArmatureData::FinalizeStructure() {
     Dirty = false;
 }
 
+void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::span<float> weights) {
+    for (const auto &channel : clip.Channels) {
+        if (channel.TimesSeconds.empty()) continue;
+
+        const auto target_count = static_cast<uint32_t>(weights.size());
+        if (target_count == 0) continue;
+
+        const auto k = FindKeyframe(channel.TimesSeconds, time_seconds);
+        const uint32_t last = channel.TimesSeconds.size() - 1;
+        const uint32_t k1 = std::min(k + 1, last);
+
+        if (channel.Interp == AnimationInterpolation::Step) {
+            const float *v = channel.Values.data() + k * target_count;
+            for (uint32_t t = 0; t < target_count; ++t) weights[t] = v[t];
+        } else if (channel.Interp == AnimationInterpolation::Linear) {
+            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
+            const float alpha = (t1 > t0) ? std::clamp((time_seconds - t0) / (t1 - t0), 0.f, 1.f) : 0.f;
+            const float *v0 = channel.Values.data() + k * target_count;
+            const float *v1 = channel.Values.data() + k1 * target_count;
+            for (uint32_t t = 0; t < target_count; ++t) weights[t] = glm::mix(v0[t], v1[t], alpha);
+        } else { // CubicSpline
+            const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
+            const float dt = t1 - t0;
+            const float alpha = (dt > 0) ? std::clamp((time_seconds - t0) / dt, 0.f, 1.f) : 0.f;
+            const float t2 = alpha * alpha, t3 = t2 * alpha;
+            // CubicSpline: each keyframe stores [in-tangent, value, out-tangent], each of size target_count
+            const uint32_t stride = target_count * 3;
+            const float *kf0 = channel.Values.data() + k * stride;
+            const float *kf1 = channel.Values.data() + k1 * stride;
+            for (uint32_t tw = 0; tw < target_count; ++tw) {
+                const float val0 = kf0[target_count + tw];
+                const float out0 = kf0[2 * target_count + tw];
+                const float in1 = kf1[tw];
+                const float val1 = kf1[target_count + tw];
+                weights[tw] = (2 * t3 - 3 * t2 + 1) * val0 + (t3 - 2 * t2 + alpha) * dt * out0 +
+                    (-2 * t3 + 3 * t2) * val1 + (t3 - t2) * dt * in1;
+            }
+        }
+    }
+}
+
 void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<Transform> bone_pose_local) {
     for (const auto &channel : clip.Channels) {
+        if (channel.Target == AnimationPath::Weights) continue; // Handled by EvaluateMorphWeights
         if (channel.BoneIndex >= bone_pose_local.size()) continue;
         if (channel.TimesSeconds.empty()) continue;
 
@@ -216,6 +258,7 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
                 case AnimationPath::Translation: pose.P = ReadVec3(v); break;
                 case AnimationPath::Rotation: pose.R = ReadQuat(v); break;
                 case AnimationPath::Scale: pose.S = ReadVec3(v); break;
+                default: break;
             }
         } else if (channel.Interp == AnimationInterpolation::Linear) {
             const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
@@ -226,6 +269,7 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
                 case AnimationPath::Translation: pose.P = glm::mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
                 case AnimationPath::Rotation: pose.R = glm::slerp(ReadQuat(v0), ReadQuat(v1), alpha); break;
                 case AnimationPath::Scale: pose.S = glm::mix(ReadVec3(v0), ReadVec3(v1), alpha); break;
+                default: break;
             }
         } else { // CubicSpline
             const float t0 = channel.TimesSeconds[k], t1 = channel.TimesSeconds[k1];
@@ -250,6 +294,7 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
                 case AnimationPath::Scale:
                     pose.S = CubicHermite(ReadVec3(val0), dt * ReadVec3(out0), ReadVec3(val1), dt * ReadVec3(in1), alpha);
                     break;
+                default: break;
             }
         }
     }

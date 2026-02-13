@@ -8,6 +8,7 @@
 #include "DrawPassPushConstants.glsl"
 #include "Vertex.glsl"
 #include "BoneDeformVertex.glsl"
+#include "MorphTargetVertex.glsl"
 #include "WorldMatrix.glsl"
 
 layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBuffer {
@@ -51,6 +52,14 @@ layout(set = 0, binding = BINDING_BoneDeformBuffer, scalar) readonly buffer Bone
 layout(set = 0, binding = BINDING_ArmatureDeformBuffer, scalar) readonly buffer ArmatureDeformBuffer {
     mat4 Matrices[];
 } ArmatureDeformBuffers[];
+
+layout(set = 0, binding = BINDING_MorphTargetBuffer, scalar) readonly buffer MorphTargetBuffer {
+    MorphTargetVertex Vertices[];
+} MorphTargetBuffers[];
+
+layout(set = 0, binding = BINDING_MorphWeightBuffer, scalar) readonly buffer MorphWeightBuffer {
+    float Weights[];
+} MorphWeightBuffers[];
 
 const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;

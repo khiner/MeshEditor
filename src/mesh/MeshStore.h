@@ -3,7 +3,9 @@
 #include "../vulkan/BufferArena.h"
 #include "ArmatureDeformData.h"
 #include "Mesh.h"
+#include "MorphTargetData.h"
 #include "gpu/BoneDeformVertex.h"
+#include "gpu/MorphTargetVertex.h"
 
 #include <expected>
 #include <filesystem>
@@ -18,7 +20,7 @@ struct MeshData;
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
 
-    Mesh CreateMesh(MeshData &&, std::optional<ArmatureDeformData> = {});
+    Mesh CreateMesh(MeshData &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     Mesh CloneMesh(const Mesh &);
     std::expected<Mesh, std::string> LoadMesh(const std::filesystem::path &);
 
@@ -34,6 +36,14 @@ struct MeshStore {
         if (entry.BoneDeform.Count == 0) return {};
         return {entry.BoneDeform, BoneDeformBuffer.Buffer.Slot};
     }
+
+    SlottedRange GetMorphTargetRange(uint32_t id) const {
+        const auto &entry = Entries.at(id);
+        if (entry.MorphTargets.Count == 0) return {};
+        return {entry.MorphTargets, MorphTargetBuffer.Buffer.Slot};
+    }
+    uint32_t GetMorphTargetCount(uint32_t id) const { return Entries.at(id).MorphTargetCount; }
+    std::span<const float> GetDefaultMorphWeights(uint32_t id) const { return Entries.at(id).DefaultMorphWeights; }
 
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
     SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceStateBuffer.Slot}; }
@@ -68,12 +78,16 @@ private:
 
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
     BufferArena<BoneDeformVertex> BoneDeformBuffer;
+    BufferArena<MorphTargetVertex> MorphTargetBuffer;
 
     struct Entry {
         Range Vertices, FaceNormals;
         Range EdgeStates;
         Range TriangleFaceIds;
         Range BoneDeform;
+        Range MorphTargets;
+        uint32_t MorphTargetCount{0};
+        std::vector<float> DefaultMorphWeights;
         bool Alive{false};
     };
 

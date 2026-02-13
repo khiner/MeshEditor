@@ -27,6 +27,10 @@ bindings:
     kind: Buffer
   - name: ArmatureDeformBuffer
     kind: Buffer
+  - name: MorphTargetBuffer
+    kind: Buffer
+  - name: MorphWeightBuffer
+    kind: Buffer
 
 structs:
   - name: SlotOffset
@@ -71,6 +75,12 @@ structs:
         type: SlotOffset
       - name: ArmatureDeform
         type: SlotOffset
+      - name: MorphDeform
+        type: SlotOffset
+      - name: MorphWeights
+        type: SlotOffset
+      - name: MorphTargetCount
+        type: u32
   - name: SceneViewUBO
     binding: SceneViewUBO
     fields:
@@ -151,6 +161,10 @@ structs:
         type: uvec4
       - name: Weights
         type: vec4
+  - name: MorphTargetVertex
+    fields:
+      - name: PositionDelta
+        type: vec3
   - name: WorldMatrix
     fields:
       - name: M

@@ -1,6 +1,7 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "MorphDeform.glsl"
 #include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
 
@@ -20,7 +21,8 @@ void main() {
     uint element_state = 0u;
     uint face_id = 0u;
     vec3 normal = vert.Normal;
-    const vec3 local_pos = ApplyArmatureDeform(draw, vert.Position, idx, normal);
+    const vec3 morphed_pos = ApplyMorphDeform(draw, vert.Position, idx);
+    const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
         if (draw.FaceNormal.Slot != INVALID_SLOT && face_id != 0u) {
