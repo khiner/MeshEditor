@@ -12,6 +12,18 @@ layout(location = 3) flat out uint FaceOverlayFlags;
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
 
+vec3 ComputeWorldPos(DrawData draw, WorldMatrix world, uint vertex_index) {
+    vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[vertex_index + draw.VertexOffset].Position;
+    pos = ApplyMorphDeform(draw, pos, vertex_index);
+    vec3 n = vec3(0);
+    pos = ApplyArmatureDeform(draw, pos, vertex_index, n);
+    vec3 wp = vec3(world.M * vec4(pos, 1.0));
+    if (should_apply_pending_transform(draw, vertex_index)) {
+        wp = apply_pending_transform(pos, wp, world, draw);
+    }
+    return wp;
+}
+
 void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.Index.Slot].Indices[draw.Index.Offset + uint(gl_VertexIndex)];
@@ -23,10 +35,24 @@ void main() {
     vec3 normal = vert.Normal;
     const vec3 morphed_pos = ApplyMorphDeform(draw, vert.Position, idx);
     const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
+    bool computed_face_normal = false;
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
-        if (draw.FaceNormal.Slot != INVALID_SLOT && face_id != 0u) {
-            normal = FaceNormalBuffers[draw.FaceNormal.Slot].Normals[draw.FaceNormal.Offset + face_id - 1u];
+        if (draw.FaceFirstTri.Slot != INVALID_SLOT && face_id != 0u) {
+            // Compute full world position (morph, armature, pending transform) for all 3 verts of the first triangle of this face,
+            // to compute flat face normals from the first triangle's vertices.
+            // This duplicates per-vertex transform work (~3x for flat-shaded faces).
+            // These shenanigans won't be needed with mesh shaders, which have per-primitive outputs.
+            const uint first_tri = ObjectIdBuffers[draw.FaceFirstTri.Slot].Ids[draw.FaceFirstTri.Offset + face_id - 1u];
+            const uint base = draw.Index.Offset + first_tri * 3u;
+            const uint i0 = IndexBuffers[draw.Index.Slot].Indices[base];
+            const uint i1 = IndexBuffers[draw.Index.Slot].Indices[base + 1u];
+            const uint i2 = IndexBuffers[draw.Index.Slot].Indices[base + 2u];
+            const vec3 p0 = ComputeWorldPos(draw, world, i0);
+            const vec3 p1 = ComputeWorldPos(draw, world, i1);
+            const vec3 p2 = ComputeWorldPos(draw, world, i2);
+            WorldNormal = normalize(cross(p1 - p0, p2 - p0));
+            computed_face_normal = true;
         }
         if (draw.ElementState.Slot != INVALID_SLOT && face_id != 0u) {
             element_state = uint(ElementStateBuffers[draw.ElementState.Slot].States[draw.ElementState.Offset + face_id - 1u]);
@@ -39,7 +65,9 @@ void main() {
         world_pos = apply_pending_transform(local_pos, world_pos, world, draw);
     }
 
-    WorldNormal = mat3(world.MInv) * normal;
+    if (!computed_face_normal) {
+        WorldNormal = mat3(world.MInv) * normal;
+    }
     WorldPosition = world_pos;
 
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;

@@ -163,9 +163,12 @@ he::VH Mesh::FindNearestVertex(vec3 p) const {
 
 const vec3 &Mesh::GetPosition(VH vh) const { return GetVerticesSpan()[*vh].Position; }
 const vec3 &Mesh::GetNormal(VH vh) const { return GetVerticesSpan()[*vh].Normal; }
-const vec3 &Mesh::GetNormal(FH fh) const { return GetFaceNormalsSpan()[*fh]; }
+vec3 Mesh::GetNormal(FH fh) const {
+    auto it = cfv_iter(fh);
+    const auto p0 = GetPosition(*it), p1 = GetPosition(*++it), p2 = GetPosition(*++it);
+    return glm::normalize(glm::cross(p1 - p0, p2 - p0));
+}
 std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->GetVertices(StoreId); }
-std::span<const vec3> Mesh::GetFaceNormalsSpan() const { return Store->GetFaceNormals(StoreId); }
 
 bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
     return vh && fh && any_of(fv_range(fh), [vh](const auto &fv) { return fv == vh; });

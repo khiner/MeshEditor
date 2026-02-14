@@ -75,7 +75,7 @@ DrawData MakeDrawData(
         .ModelSlot = model_slot,
         .FirstInstance = 0,
         .ObjectIdSlot = InvalidSlot,
-        .FaceNormal = {},
+        .FaceFirstTri = {},
         .FaceIdOffset = 0,
         .VertexCountOrHeadImageSlot = vertices.Count,
         .ElementIdOffset = 0,

@@ -17,8 +17,6 @@ bindings:
     kind: Buffer
   - name: ObjectIdBuffer
     kind: Buffer
-  - name: FaceNormalBuffer
-    kind: Buffer
   - name: DrawDataBuffer
     kind: Buffer
   - name: InstanceStateBuffer
@@ -55,7 +53,7 @@ structs:
       - name: ObjectIdSlot
         type: u32
         default: InvalidSlot
-      - name: FaceNormal
+      - name: FaceFirstTri
         type: SlotOffset
       - name: FaceIdOffset
         type: u32

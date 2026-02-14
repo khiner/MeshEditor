@@ -46,12 +46,10 @@ struct MeshStore {
     std::span<const float> GetDefaultMorphWeights(uint32_t id) const { return Entries.at(id).DefaultMorphWeights; }
 
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
-    SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceStateBuffer.Slot}; }
+    SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceData, FaceStateBuffer.Slot}; }
     SlottedRange GetEdgeStateRange(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
 
-    std::span<const vec3> GetFaceNormals(uint32_t id) const { return FaceNormalBuffer.Get(Entries.at(id).FaceNormals); }
-    std::span<vec3> GetFaceNormals(uint32_t id) { return FaceNormalBuffer.GetMutable(Entries.at(id).FaceNormals); }
-    SlottedRange GetFaceNormalRange(uint32_t id) const { return {Entries.at(id).FaceNormals, FaceNormalBuffer.Buffer.Slot}; }
+    SlottedRange GetFaceFirstTriRange(uint32_t id) const { return {Entries.at(id).FaceData, FaceFirstTriangleBuffer.Buffer.Slot}; }
 
     SlottedRange GetFaceIdRange(uint32_t id) const { return {Entries.at(id).TriangleFaceIds, TriangleFaceIdBuffer.Buffer.Slot}; }
 
@@ -70,18 +68,19 @@ struct MeshStore {
 
 private:
     BufferArena<Vertex> VerticesBuffer;
-    BufferArena<vec3> FaceNormalBuffer;
 
     mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
-    mvk::Buffer FaceStateBuffer; // Mirrors FaceNormalBuffer
+    mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
     BufferArena<uint8_t> EdgeStateBuffer;
 
+    BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
     BufferArena<BoneDeformVertex> BoneDeformBuffer;
     BufferArena<MorphTargetVertex> MorphTargetBuffer;
 
     struct Entry {
-        Range Vertices, FaceNormals;
+        Range Vertices;
+        Range FaceData; // Per-face range shared by FaceFirstTriangleBuffer and FaceStateBuffer
         Range EdgeStates;
         Range TriangleFaceIds;
         Range BoneDeform;

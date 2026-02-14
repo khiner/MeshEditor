@@ -37,9 +37,8 @@ struct Mesh {
 
     const vec3 &GetPosition(VH vh) const;
     const vec3 &GetNormal(VH vh) const;
-    const vec3 &GetNormal(FH fh) const;
+    vec3 GetNormal(FH fh) const;
     std::span<const Vertex> GetVerticesSpan() const;
-    std::span<const vec3> GetFaceNormalsSpan() const;
 
     uint32_t GetStoreId() const { return StoreId; }
 

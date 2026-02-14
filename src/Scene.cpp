@@ -1542,11 +1542,11 @@ void Scene::RecordRenderCommandBuffer() {
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
-            const auto face_normal_buffer = Meshes->GetFaceNormalRange(mesh.GetStoreId());
+            const auto face_first_tri = Meshes->GetFaceFirstTriRange(mesh.GetStoreId());
             const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
             draw.ObjectIdSlot = face_id_buffer.Slot;
             draw.FaceIdOffset = face_id_buffer.Offset;
-            draw.FaceNormal = settings.SmoothShading ? SlotOffset{} : SlotOffset(face_normal_buffer);
+            draw.FaceFirstTri = settings.SmoothShading ? SlotOffset{} : SlotOffset(face_first_tri);
             set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)

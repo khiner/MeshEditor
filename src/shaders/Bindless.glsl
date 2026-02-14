@@ -33,10 +33,6 @@ layout(set = 0, binding = BINDING_ObjectIdBuffer, scalar) readonly buffer Object
     uint Ids[];
 } ObjectIdBuffers[];
 
-layout(set = 0, binding = BINDING_FaceNormalBuffer, scalar) readonly buffer FaceNormalBuffer {
-    vec3 Normals[];
-} FaceNormalBuffers[];
-
 layout(set = 0, binding = BINDING_DrawDataBuffer, scalar) readonly buffer DrawDataBuffer {
     DrawData Draws[];
 } DrawDataBuffers[];
