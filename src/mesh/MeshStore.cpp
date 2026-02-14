@@ -170,19 +170,33 @@ MeshStore::MeshStore(mvk::BufferContext &ctx)
       MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer} {}
 
 void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
-    auto vertices = GetVertices(mesh.GetStoreId());
-    for (auto &v : vertices) {
-        if (!skip_nonzero || glm::length(v.Normal) == 0.f) v.Normal = vec3{0};
-    }
-    for (uint fi = 0; fi < mesh.FaceCount(); ++fi) {
-        auto it = mesh.cfv_iter(Mesh::FH{fi});
+    const auto face_cross = [&](Mesh::FH fh) {
+        auto it = mesh.cfv_iter(fh);
         const auto p0 = mesh.GetPosition(*it), p1 = mesh.GetPosition(*++it), p2 = mesh.GetPosition(*++it);
-        const auto cross = glm::cross(p1 - p0, p2 - p0);
-        for (const auto vh : mesh.fv_range(Mesh::FH{fi})) {
-            if (!skip_nonzero || glm::length(vertices[*vh].Normal) == 0.f) vertices[*vh].Normal += cross;
+        return glm::cross(p1 - p0, p2 - p0);
+    };
+
+    auto vertices = GetVertices(mesh.GetStoreId());
+    if (skip_nonzero) {
+        std::vector<bool> needs_normal(vertices.size());
+        for (uint32_t i = 0; i < vertices.size(); ++i) needs_normal[i] = vertices[i].Normal == vec3{0};
+        for (const auto fh : mesh.faces()) {
+            const auto cross = face_cross(fh);
+            for (const auto vh : mesh.fv_range(fh)) {
+                if (needs_normal[*vh]) vertices[*vh].Normal += cross;
+            }
         }
+        for (uint32_t i = 0; i < vertices.size(); ++i) {
+            if (needs_normal[i]) vertices[i].Normal = glm::normalize(vertices[i].Normal);
+        }
+    } else {
+        for (auto &v : vertices) v.Normal = vec3{0};
+        for (const auto fh : mesh.faces()) {
+            const auto cross = face_cross(fh);
+            for (const auto vh : mesh.fv_range(fh)) vertices[*vh].Normal += cross;
+        }
+        for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
     }
-    for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
 }
 
 Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> deform_data, std::optional<MorphTargetData> morph_data) {
