@@ -462,7 +462,7 @@ void run() {
                         NFD_FreePath(nfd_path);
                         const auto ext = path.extension().string();
                         if (ext == ".gltf" || ext == ".glb" || ext == ".GLTF" || ext == ".GLB") scene->AddGltfScene(path);
-                        else scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.filename().string()});
+                        else scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.stem().string()});
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));
                     }

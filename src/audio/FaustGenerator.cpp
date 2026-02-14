@@ -124,8 +124,9 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
 
 void FaustGenerator::OnCreateModalSoundObject(const entt::registry &r, entt::entity e) {
     const auto &model = r.get<const ModalSoundObject>(e);
-    const auto name = GetName(r, e);
-    ModalDspByEntity[e] = GenerateModalDsp(name, model, true);
+    auto model_name = GetName(r, e);
+    std::ranges::replace(model_name, ' ', '_'); // Make sure name is a valid identifier for Faust (todo handle invalid characters)
+    ModalDspByEntity[e] = GenerateModalDsp(model_name, model, true);
     OnCodeChanged(GenerateDsp(ModalDspByEntity));
 }
 void FaustGenerator::OnDestroyModalSoundObject(const entt::registry &, entt::entity e) {
