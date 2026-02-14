@@ -120,7 +120,7 @@ std::optional<uint32_t> FindNearestSelectionElement(
     glm::uvec2 mouse_px, uint32_t max_element_id, Element element,
     vk::Semaphore wait_semaphore
 ) {
-    const uint32_t radius = element == Element::Face ? 0u : ClickSelectRadiusPx;
+    const uint32_t radius = element == Element::Face ? 0u : ElementSelectRadiusPx;
     const uint32_t group_count = element == Element::Face ? 1u : SceneBuffers::ClickSelectElementGroupCount;
     RunSelectionCompute(
         cb, queue, fence, device, compute,

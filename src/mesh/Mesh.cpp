@@ -61,6 +61,28 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
     }
 }
 
+Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::array<uint32_t, 2>> &&edges, uint32_t vertex_count)
+    : Store(&store), StoreId(store_id), VertexCountValue(vertex_count) {
+    OutgoingHalfedges.resize(VertexCountValue);
+
+    for (const auto &[a, b] : edges) {
+        const auto h0 = HH(Halfedges.size());
+        const auto h1 = HH(Halfedges.size() + 1);
+        Halfedges.emplace_back(Halfedge{.Vertex = VH(b), .Next = HH{}, .Opposite = h1, .Face = FH{}});
+        Halfedges.emplace_back(Halfedge{.Vertex = VH(a), .Next = HH{}, .Opposite = h0, .Face = FH{}});
+
+        Edges.emplace_back(h0);
+        HalfedgeToEdge.emplace_back(Edges.size() - 1);
+        HalfedgeToEdge.emplace_back(Edges.size() - 1);
+
+        if (!OutgoingHalfedges[a]) OutgoingHalfedges[a] = h0;
+        if (!OutgoingHalfedges[b]) OutgoingHalfedges[b] = h1;
+    }
+}
+
+Mesh::Mesh(MeshStore &store, uint32_t store_id, uint32_t vertex_count)
+    : Store(&store), StoreId(store_id), VertexCountValue(vertex_count) {}
+
 Mesh::Mesh(MeshStore &store, uint32_t store_id, const Mesh &src)
     : Store(&store), StoreId(store_id),
       VertexCountValue(src.VertexCountValue),

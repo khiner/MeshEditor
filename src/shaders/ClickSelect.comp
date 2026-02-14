@@ -2,16 +2,14 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
 
-// Bindless layout (set 0):
-// binding BINDING_Image: storage images (HeadImage)
-// binding BINDING_Buffer: storage buffers (SelectionNodes, ClickResult) via indices
-layout(local_size_x = 1) in;
+#define GROUP_SIZE 256
+layout(local_size_x = GROUP_SIZE) in;
 
 #include "ClickResult.glsl"
 #include "ClickSelectPushConstants.glsl"
 #include "SelectionNode.glsl"
 
-#define MAX_CLICK_RESULTS 64
+#define MAX_CLICK_RESULTS 256
 const uint INVALID_NODE = 0xffffffffu;
 
 layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
@@ -25,17 +23,29 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer ClickResultBlock {
 } ClickResults[];
 
 void main() {
-    // Single invocation does the traversal
-    if (gl_GlobalInvocationID.x != 0) return;
+    const uint local = gl_LocalInvocationID.x;
+    const uint diameter = pc.Radius * 2u + 1u;
+    const uint pixel_count = diameter * diameter;
+    const ivec2 size = imageSize(HeadImages[pc.HeadImageIndex]);
 
-    uint idx = imageLoad(HeadImages[pc.HeadImageIndex], ivec2(pc.TargetPx)).r;
-    while (idx != INVALID_NODE) {
-        const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
-        const uint write_idx = atomicAdd(ClickResults[pc.ClickResultIndex].Data.Count, 1);
-        if (write_idx < MAX_CLICK_RESULTS) {
-            ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Depth = node.Depth;
-            ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Id = node.Id;
+    for (uint i = local; i < pixel_count; i += GROUP_SIZE) {
+        const int dx = int(i % diameter) - int(pc.Radius);
+        const int dy = int(i / diameter) - int(pc.Radius);
+        const uint dist_sq = uint(dx * dx + dy * dy);
+        if (dist_sq > pc.Radius * pc.Radius) continue;
+        const ivec2 pixel = ivec2(pc.TargetPx) + ivec2(dx, dy);
+        if (pixel.x < 0 || pixel.y < 0 || pixel.x >= size.x || pixel.y >= size.y) continue;
+
+        uint node_idx = imageLoad(HeadImages[pc.HeadImageIndex], pixel).r;
+        while (node_idx != INVALID_NODE) {
+            const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[node_idx];
+            const uint write_idx = atomicAdd(ClickResults[pc.ClickResultIndex].Data.Count, 1);
+            if (write_idx < MAX_CLICK_RESULTS) {
+                ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Depth = node.Depth;
+                ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Id = node.Id;
+                ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].DistanceSq = dist_sq;
+            }
+            node_idx = node.Next;
         }
-        idx = node.Next;
     }
 }

@@ -1,9 +1,9 @@
-// TODO: Unsupported geometry-affecting glTF features (roughly ordered by impact):
-//  - Morph target tangent deltas (position and normal deltas are supported)
-//  - Non-triangle primitives: points, lines, line strips are silently skipped
-//  - Sparse accessors: mainly relevant for morph target deltas
-//  - Draco mesh compression
+// TODO:
 //  - EXT_mesh_gpu_instancing
+//  - Sparse accessors
+//  - Draco mesh compression
+
+// TODO: After adding materials/textures: Tangents import + morph target tangent deltas
 
 #pragma once
 
@@ -23,9 +23,11 @@
 
 namespace gltf {
 struct SceneMeshData {
-    MeshData Data;
+    std::optional<MeshData> Triangles{}; // Merged triangle primitives (Triangles/TriangleStrip/TriangleFan)
     std::optional<ArmatureDeformData> DeformData{};
     std::optional<MorphTargetData> MorphData{};
+    std::optional<MeshData> Lines{}; // Merged line primitives (Lines/LineStrip/LineLoop)
+    std::optional<MeshData> Points{}; // Merged point primitives
     std::string Name;
 };
 

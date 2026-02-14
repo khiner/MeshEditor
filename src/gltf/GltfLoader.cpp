@@ -58,8 +58,65 @@ std::optional<uint32_t> ToIndex(const fastgltf::Optional<std::size_t> &index, st
     return ToIndex(*index, upper_bound);
 }
 
+// Appends positions/edges from a non-triangle primitive into the target MeshData,
+// merging with any previously appended primitives of the same topology.
+void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, MeshData &target) {
+    const auto position_it = primitive.findAttribute("POSITION");
+    if (position_it == primitive.attributes.end()) return;
+
+    const auto &position_accessor = asset.accessors[position_it->accessorIndex];
+    if (position_accessor.count == 0) return;
+
+    const auto base_vertex = static_cast<uint32_t>(target.Positions.size());
+    target.Positions.resize(static_cast<std::size_t>(base_vertex) + position_accessor.count);
+    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
+        asset, position_accessor,
+        [&](fastgltf::math::fvec3 position, std::size_t index) {
+            target.Positions[base_vertex + index] = vec3{position.x(), position.y(), position.z()};
+        }
+    );
+
+    // Points have no indices to process — just positions
+    if (primitive.type == fastgltf::PrimitiveType::Points) return;
+
+    std::vector<uint32_t> indices;
+    if (primitive.indicesAccessor) {
+        const auto &index_accessor = asset.accessors[*primitive.indicesAccessor];
+        indices.resize(index_accessor.count);
+        fastgltf::copyFromAccessor<uint32_t>(asset, index_accessor, indices.data());
+    } else {
+        indices.resize(position_accessor.count);
+        std::iota(indices.begin(), indices.end(), 0u);
+    }
+
+    // Offset indices by base_vertex for merging
+    switch (primitive.type) {
+        case fastgltf::PrimitiveType::Lines:
+            for (uint32_t i = 0; i + 1 < indices.size(); i += 2) {
+                target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
+            }
+            break;
+        case fastgltf::PrimitiveType::LineStrip:
+            for (uint32_t i = 0; i + 1 < indices.size(); ++i) {
+                target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
+            }
+            break;
+        case fastgltf::PrimitiveType::LineLoop:
+            for (uint32_t i = 0; i + 1 < indices.size(); ++i) {
+                target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
+            }
+            if (indices.size() >= 2) {
+                target.Edges.push_back({base_vertex + indices.back(), base_vertex + indices.front()});
+            }
+            break;
+        default: break;
+    }
+}
+
 void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, MeshData &mesh_data, std::optional<ArmatureDeformData> &deform_data, std::optional<MorphTargetData> &morph_data) {
-    if (primitive.type != fastgltf::PrimitiveType::Triangles) return;
+    if (primitive.type != fastgltf::PrimitiveType::Triangles &&
+        primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
+        primitive.type != fastgltf::PrimitiveType::TriangleFan) return;
 
     const auto position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return;
@@ -234,8 +291,22 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
     }
     if (indices.size() < 3) return;
 
-    for (uint32_t i = 0; i + 2 < indices.size(); i += 3) {
-        mesh_data.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
+    if (primitive.type == fastgltf::PrimitiveType::TriangleStrip) {
+        for (uint32_t i = 0; i + 2 < indices.size(); ++i) {
+            if (i % 2 == 0) {
+                mesh_data.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
+            } else {
+                mesh_data.Faces.push_back({base_vertex + indices[i + 1], base_vertex + indices[i], base_vertex + indices[i + 2]});
+            }
+        }
+    } else if (primitive.type == fastgltf::PrimitiveType::TriangleFan) {
+        for (uint32_t i = 1; i + 1 < indices.size(); ++i) {
+            mesh_data.Faces.push_back({base_vertex + indices[0], base_vertex + indices[i], base_vertex + indices[i + 1]});
+        }
+    } else {
+        for (uint32_t i = 0; i + 2 < indices.size(); i += 3) {
+            mesh_data.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
+        }
     }
 }
 
@@ -266,14 +337,28 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
     MeshData mesh_data;
     std::optional<ArmatureDeformData> mesh_deform_data;
     std::optional<MorphTargetData> mesh_morph_data;
+    MeshData lines_data, points_data; // Merged across all line/point primitives
     // Track per-primitive vertex counts for morph target re-packing
     std::vector<uint32_t> prim_vertex_counts;
     for (const auto &primitive : source_mesh.primitives) {
+        if (primitive.type == fastgltf::PrimitiveType::Points) {
+            AppendNonTrianglePrimitive(asset, primitive, points_data);
+            continue;
+        }
+        if (primitive.type == fastgltf::PrimitiveType::Lines ||
+            primitive.type == fastgltf::PrimitiveType::LineStrip ||
+            primitive.type == fastgltf::PrimitiveType::LineLoop) {
+            AppendNonTrianglePrimitive(asset, primitive, lines_data);
+            continue;
+        }
         const auto prev_vertex_count = static_cast<uint32_t>(mesh_data.Positions.size());
         AppendPrimitive(asset, primitive, mesh_data, mesh_deform_data, mesh_morph_data);
         prim_vertex_counts.emplace_back(static_cast<uint32_t>(mesh_data.Positions.size()) - prev_vertex_count);
     }
-    if (mesh_data.Positions.empty() || mesh_data.Faces.empty()) {
+    const bool has_triangle_data = !mesh_data.Positions.empty() && !mesh_data.Faces.empty();
+    const bool has_lines = !lines_data.Positions.empty();
+    const bool has_points = !points_data.Positions.empty();
+    if (!has_triangle_data && !has_lines && !has_points) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
         return {};
     }
@@ -331,9 +416,11 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
     const auto mesh_index = scene_data.Meshes.size();
     scene_data.Meshes.emplace_back(
         SceneMeshData{
-            .Data = std::move(mesh_data),
+            .Triangles = has_triangle_data ? std::optional{std::move(mesh_data)} : std::nullopt,
             .DeformData = std::move(mesh_deform_data),
             .MorphData = std::move(mesh_morph_data),
+            .Lines = has_lines ? std::optional{std::move(lines_data)} : std::nullopt,
+            .Points = has_points ? std::optional{std::move(points_data)} : std::nullopt,
             .Name = source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name),
         }
     );

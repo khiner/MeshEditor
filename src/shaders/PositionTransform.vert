@@ -24,4 +24,5 @@ void main() {
     }
 
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
+    gl_PointSize = 6.0;
 }

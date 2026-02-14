@@ -239,33 +239,49 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         default_morph_weights = std::move(morph_data->DefaultWeights);
         default_morph_weights.resize(morph_target_count, 0.f);
     }
-    const auto first_tris = CreateFaceFirstTriIndices(data.Faces);
-    const auto faces = AllocateFaces(data.Faces.size());
-    std::ranges::copy(first_tris, FaceFirstTriangleBuffer.GetMutable(faces).begin());
+
+    Range faces{}, triangle_face_ids{};
+    if (!data.Faces.empty()) {
+        const auto first_tris = CreateFaceFirstTriIndices(data.Faces);
+        faces = AllocateFaces(data.Faces.size());
+        std::ranges::copy(first_tris, FaceFirstTriangleBuffer.GetMutable(faces).begin());
+        triangle_face_ids = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
+    }
+
     const auto id = AcquireId({
         .Vertices = vertices,
         .FaceData = faces,
         .EdgeStates = {},
-        .TriangleFaceIds = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces)),
+        .TriangleFaceIds = triangle_face_ids,
         .BoneDeform = bone_deform,
         .MorphTargets = morph_targets,
         .MorphTargetCount = morph_target_count,
         .DefaultMorphWeights = std::move(default_morph_weights),
         .Alive = true,
     });
+
+    auto mesh = [&]() -> Mesh {
+        if (!data.Faces.empty()) return {*this, id, std::move(data.Faces)};
+        if (!data.Edges.empty()) return {*this, id, std::move(data.Edges), vertex_count};
+        return {*this, id, vertex_count};
+    }();
+
     auto &entry = Entries[id];
-    Mesh mesh{*this, id, std::move(data.Faces)};
-    entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
-    if (data.Normals) {
-        auto vertices = GetVertices(id);
-        for (uint32_t i = 0; i < vertex_count; ++i) vertices[i].Normal = (*data.Normals)[i];
-        UpdateNormals(mesh, /*skip_nonzero=*/true);
-    } else {
-        UpdateNormals(mesh);
+
+    if (!data.Faces.empty()) {
+        if (data.Normals) {
+            auto verts = GetVertices(id);
+            for (uint32_t i = 0; i < vertex_count; ++i) verts[i].Normal = (*data.Normals)[i];
+            UpdateNormals(mesh, /*skip_nonzero=*/true);
+        } else {
+            UpdateNormals(mesh);
+        }
     }
+
+    entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     std::ranges::fill(GetVertexStates(vertices), 0);
-    std::ranges::fill(GetFaceStates(faces), 0);
-    std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
+    if (faces.Count > 0) std::ranges::fill(GetFaceStates(faces), 0);
+    if (entry.EdgeStates.Count > 0) std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
     return mesh;
 }
 

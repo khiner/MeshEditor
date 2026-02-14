@@ -8,8 +8,9 @@
 #include "numeric/mat4.h"
 
 constexpr uint32_t
-    ClickSelectRadiusPx = 50,
-    ClickSelectDiameterPx = ClickSelectRadiusPx * 2 + 1,
+    ObjectSelectRadiusPx = 15,
+    ElementSelectRadiusPx = 50,
+    ClickSelectDiameterPx = ElementSelectRadiusPx * 2 + 1,
     ClickSelectPixelCount = ClickSelectDiameterPx * ClickSelectDiameterPx;
 
 struct SceneBuffers {

@@ -955,14 +955,36 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
     std::vector<std::optional<MorphTargetData>> mesh_morph_data;
     mesh_morph_data.reserve(loaded_scene->Meshes.size());
     entt::entity first_mesh_entity = entt::null;
-    for (auto &scene_mesh : loaded_scene->Meshes) {
-        auto morph_data_copy = scene_mesh.MorphData; // Keep a copy for component setup
-        auto mesh = Meshes->CreateMesh(std::move(scene_mesh.Data), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
-        const auto [mesh_entity, _] = AddMesh(std::move(mesh), std::nullopt);
-        R.emplace<Path>(mesh_entity, path);
-        if (first_mesh_entity == entt::null) first_mesh_entity = mesh_entity;
+    // Per-mesh: optional line entity + optional point entity
+    struct ExtraPrimitiveEntities {
+        entt::entity Lines{entt::null}, Points{entt::null};
+    };
+    std::vector<ExtraPrimitiveEntities> extra_entities_per_mesh(loaded_scene->Meshes.size());
+    for (uint32_t mi = 0; mi < loaded_scene->Meshes.size(); ++mi) {
+        auto &scene_mesh = loaded_scene->Meshes[mi];
+        entt::entity mesh_entity = entt::null;
+        if (scene_mesh.Triangles) {
+            auto morph_data_copy = scene_mesh.MorphData; // Keep a copy for component setup
+            auto mesh = Meshes->CreateMesh(std::move(*scene_mesh.Triangles), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
+            const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
+            mesh_entity = me;
+            R.emplace<Path>(mesh_entity, path);
+            mesh_morph_data.emplace_back(std::move(morph_data_copy));
+        } else {
+            mesh_morph_data.emplace_back(std::nullopt);
+        }
+        if (first_mesh_entity == entt::null && mesh_entity != entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
-        mesh_morph_data.emplace_back(std::move(morph_data_copy));
+
+        auto create_extra = [&](std::optional<MeshData> &data) -> entt::entity {
+            if (!data) return entt::null;
+            auto m = Meshes->CreateMesh(std::move(*data));
+            const auto [e, _] = AddMesh(std::move(m), std::nullopt);
+            R.emplace<Path>(e, path);
+            if (first_mesh_entity == entt::null) first_mesh_entity = e;
+            return e;
+        };
+        extra_entities_per_mesh[mi] = {create_extra(scene_mesh.Lines), create_extra(scene_mesh.Points)};
     }
 
     const std::string name_prefix = path.stem().string();
@@ -981,7 +1003,8 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
         entt::entity object_entity = entt::null;
         if (object.ObjectType == gltf::SceneObjectData::Type::Mesh &&
             object.MeshIndex &&
-            *object.MeshIndex < mesh_entities.size()) {
+            *object.MeshIndex < mesh_entities.size() &&
+            mesh_entities[*object.MeshIndex] != entt::null) {
             object_entity = AddMeshInstance(
                 mesh_entities[*object.MeshIndex],
                 {
@@ -999,6 +1022,24 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
                     .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                 }
             );
+        }
+        // Create instances for non-triangle primitives (lines/points) associated with this mesh
+        if (object.ObjectType == gltf::SceneObjectData::Type::Mesh &&
+            object.MeshIndex &&
+            *object.MeshIndex < extra_entities_per_mesh.size()) {
+            const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
+            for (const auto extra_entity : {extras.Lines, extras.Points}) {
+                if (extra_entity == entt::null) continue;
+                AddMeshInstance(
+                    extra_entity,
+                    {
+                        .Name = object_name,
+                        .Transform = MatrixToTransform(object.WorldTransform),
+                        .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+                        .Visible = true,
+                    }
+                );
+            }
         }
 
         object_entities_by_node[object.NodeIndex] = object_entity;
@@ -1539,6 +1580,7 @@ void Scene::RecordRenderCommandBuffer() {
     if (show_solid) {
         fill_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
+            if (mesh.FaceCount() == 0) continue;
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
@@ -1567,16 +1609,19 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    if (show_wireframe || is_edit_mode || is_excite_mode) {
+    {
         line_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
+            if (mesh_buffers.EdgeIndices.Count == 0) continue;
+            const bool is_line_mesh = mesh.FaceCount() == 0 && mesh.EdgeCount() > 0;
+            if (!is_line_mesh && !show_wireframe && !is_edit_mode && !is_excite_mode) continue;
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             draw.ElementState = edge_state_buffer;
             set_edit_pending_local_transform(draw, entity);
             const auto db = draw_list.Draws.size();
-            if (show_wireframe) {
+            if (is_line_mesh || show_wireframe) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
@@ -1587,15 +1632,20 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    if ((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode) {
+    {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            const auto *mesh = R.try_get<Mesh>(entity);
+            const bool is_point_mesh = mesh && mesh->FaceCount() == 0 && mesh->EdgeCount() == 0;
+            if (!is_point_mesh && !((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode)) continue;
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
             set_edit_pending_local_transform(draw, entity);
             const auto db = draw_list.Draws.size();
-            if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
+            if (is_point_mesh) {
+                AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw);
+            } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
             } else if (excitable_mesh_entities.contains(entity)) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw);
@@ -1689,10 +1739,10 @@ void Scene::RecordRenderCommandBuffer() {
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         // Solid faces
         if (show_solid) record_draw_batch(main.Renderer, fill_pipeline, fill_batch);
-        // Wireframe edges
-        if (show_wireframe || is_edit_mode || is_excite_mode) record_draw_batch(main.Renderer, SPT::Line, line_batch);
-        // Vertex points
-        if ((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode) record_draw_batch(main.Renderer, SPT::Point, point_batch);
+        // Wireframe edges (always recorded — batch is empty when nothing qualifies)
+        record_draw_batch(main.Renderer, SPT::Line, line_batch);
+        // Vertex points (always recorded — batch is empty when nothing qualifies)
+        record_draw_batch(main.Renderer, SPT::Point, point_batch);
     }
 
     // Silhouette edge color (rendered ontop of meshes)
@@ -1745,29 +1795,50 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const bool is_edit_mode = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit;
     const auto selection_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes, *Buffers);
 
-    // Object selection never uses depth testing - we want all visible pixels regardless of occlusion
+    // Object selection never uses depth testing - we want all visible pixels regardless of occlusion.
+    // Build separate batches per topology since each requires a different pipeline primitive topology.
     RenderSelectionPassWith(
         false,
-        [&](DrawListBuilder &draw_list) {
-            auto batch = draw_list.BeginBatch();
-            for (auto [mesh_entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-                const auto deform_it = selection_deform_slots.find(mesh_entity);
-                const auto has_deform = deform_it != selection_deform_slots.end();
-                const auto bone_deform = has_deform ? deform_it->second.BoneDeform : SlotOffset{};
-                const auto armature_deform = has_deform ? deform_it->second.ArmatureDeform : SlotOffset{};
-                const auto morph_deform = has_deform ? deform_it->second.MorphDeform : SlotOffset{};
-                const auto morph_target_count = has_deform ? deform_it->second.MorphTargetCount : 0u;
-                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, bone_deform, armature_deform, morph_deform, morph_target_count);
-                draw.ObjectIdSlot = models.ObjectIds.Slot;
-                const auto db = draw_list.Draws.size();
-                if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
-                    AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
-                } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
-                    AppendDraw(draw_list, batch, mesh_buffers.FaceIndices, models, draw);
+        [&](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
+            auto append_topology_batch = [&](auto filter) {
+                auto batch = draw_list.BeginBatch();
+                for (auto [mesh_entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
+                    const auto *indices = filter(mesh, mesh_buffers);
+                    if (!indices || indices->Count == 0) continue;
+                    const auto deform_it = selection_deform_slots.find(mesh_entity);
+                    const auto has_deform = deform_it != selection_deform_slots.end();
+                    const auto bone_deform = has_deform ? deform_it->second.BoneDeform : SlotOffset{};
+                    const auto armature_deform = has_deform ? deform_it->second.ArmatureDeform : SlotOffset{};
+                    const auto morph_deform = has_deform ? deform_it->second.MorphDeform : SlotOffset{};
+                    const auto morph_target_count = has_deform ? deform_it->second.MorphTargetCount : 0u;
+                    auto draw = MakeDrawData(mesh_buffers.Vertices, *indices, models, bone_deform, armature_deform, morph_deform, morph_target_count);
+                    draw.ObjectIdSlot = models.ObjectIds.Slot;
+                    const auto db = draw_list.Draws.size();
+                    if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
+                        AppendDraw(draw_list, batch, *indices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
+                    } else {
+                        AppendDraw(draw_list, batch, *indices, models, draw);
+                    }
+                    if (has_deform) PatchMorphWeights(draw_list, db, deform_it->second);
                 }
-                if (has_deform) PatchMorphWeights(draw_list, db, deform_it->second);
-            }
-            return SelectionDrawInfo{SPT::SelectionFragmentXRay, batch};
+                return batch;
+            };
+
+            auto tri_batch = append_topology_batch([](const Mesh &m, const MeshBuffers &b) -> const SlottedRange * {
+                return m.FaceCount() > 0 ? &b.FaceIndices : nullptr;
+            });
+            auto line_batch = append_topology_batch([](const Mesh &m, const MeshBuffers &b) -> const SlottedRange * {
+                return m.FaceCount() == 0 && m.EdgeCount() > 0 ? &b.EdgeIndices : nullptr;
+            });
+            auto point_batch = append_topology_batch([](const Mesh &m, const MeshBuffers &b) -> const SlottedRange * {
+                return m.FaceCount() == 0 && m.EdgeCount() == 0 ? &b.VertexIndices : nullptr;
+            });
+
+            return {
+                {SPT::SelectionFragmentXRay, tri_batch},
+                {SPT::SelectionFragmentLineXRay, line_batch},
+                {SPT::SelectionFragmentPointXRay, point_batch},
+            };
         },
         signal_semaphore
     );
@@ -1775,7 +1846,7 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     SelectionStale = false;
 }
 
-void Scene::RenderSelectionPassWith(bool render_depth, const std::function<SelectionDrawInfo(DrawListBuilder &)> &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
+void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
     const Timer timer{"RenderSelectionPassWith"};
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
@@ -1796,7 +1867,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
             }
         }
     }
-    const auto selection_draw = build_fn(draw_list);
+    const auto selection_draws = build_fn(draw_list);
 
     if (!draw_list.Draws.empty()) Buffers->SelectionDrawData.Update(as_bytes(draw_list.Draws));
     if (!draw_list.IndirectCommands.empty()) Buffers->SelectionIndirect.Update(as_bytes(draw_list.IndirectCommands));
@@ -1858,7 +1929,9 @@ void Scene::RenderSelectionPassWith(bool render_depth, const std::function<Selec
     const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines->Silhouette.Resources->DepthImage.Extent)};
     cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, {}}, vk::SubpassContents::eInline);
     cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-    record_draw_batch(selection.Renderer, selection_draw.Pipeline, selection_draw.Batch);
+    for (const auto &selection_draw : selection_draws) {
+        record_draw_batch(selection.Renderer, selection_draw.Pipeline, selection_draw.Batch);
+    }
     cb.endRenderPass();
 
     cb.end();
@@ -1906,7 +1979,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
                 AppendDraw(draw_list, batch, indices, models, draw);
             }
         }
-        return SelectionDrawInfo{selection_pipeline(element), batch}; }, signal_semaphore, element != Element::Face);
+        return std::vector{SelectionDrawInfo{selection_pipeline(element), batch}}; }, signal_semaphore, element != Element::Face);
 
     // Edit selection pass overwrites the shared head image used for object selection.
     SelectionStale = true;
@@ -1988,7 +2061,7 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         draw.VertexCountOrHeadImageSlot = 0;
         draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
-        return SelectionDrawInfo{SPT::SelectionElementVertex, batch}; }, *SelectionReadySemaphore);
+        return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, batch}}; }, *SelectionReadySemaphore);
     SelectionStale = true;
 
     return FindNearestSelectionElement(
@@ -2013,31 +2086,38 @@ std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
         cb, Vk.Queue, *OneShotFence, Vk.Device, compute,
         ClickSelectPushConstants{
             .TargetPx = mouse_px,
+            .Radius = ObjectSelectRadiusPx,
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .ClickResultIndex = SelectionHandles->ClickResult,
         },
-        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); },
+        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }, // Single workgroup; threads cooperatively scan the radius
         selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{}
     );
 
-    // Convert click hits to entities.
+    // Convert click hits to entities, sorted by (distance, depth) with dedup keeping nearest per object.
     const auto &result = Buffers->GetClickResult();
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
+
+    struct SortedHit {
+        uint32_t DistanceSq, Id;
+        float Depth;
+        auto operator<=>(const SortedHit &) const = default;
+    };
     auto hits = result.Hits //
         | take(std::min<uint32_t>(result.Count, result.Hits.size())) //
         | filter([&](const auto &hit) { return object_id_to_entity.contains(hit.Id); }) //
-        | transform([](const auto &hit) { return std::pair{hit.Depth, hit.Id}; }) //
+        | transform([](const auto &hit) { return SortedHit{hit.DistanceSq, hit.Id, hit.Depth}; }) //
         | to<std::vector>();
     std::ranges::sort(hits);
 
     std::vector<entt::entity> entities;
     entities.reserve(hits.size());
     std::unordered_set<uint32_t> seen_object_ids;
-    for (const auto &[_, object_id] : hits) {
-        if (seen_object_ids.insert(object_id).second) {
-            entities.emplace_back(object_id_to_entity.at(object_id));
+    for (const auto &hit : hits) {
+        if (seen_object_ids.insert(hit.Id).second) {
+            entities.emplace_back(object_id_to_entity.at(hit.Id));
         }
     }
     return entities;

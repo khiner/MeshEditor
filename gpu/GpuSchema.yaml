@@ -191,12 +191,14 @@ structs:
         type: float
       - name: Id
         type: u32
+      - name: DistanceSq
+        type: u32
   - name: ClickResult
     fields:
       - name: Count
         type: u32
       - name: Hits
-        type: ClickHit[64]
+        type: ClickHit[256]
   - name: ClickElementCandidate
     fields:
       - name: Id
@@ -227,6 +229,8 @@ structs:
     fields:
       - name: TargetPx
         type: uvec2
+      - name: Radius
+        type: u32
       - name: HeadImageIndex
         type: u32
       - name: SelectionNodesIndex

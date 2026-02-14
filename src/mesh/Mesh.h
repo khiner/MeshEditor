@@ -4,6 +4,7 @@
 #include "gpu/Vertex.h"
 #include "numeric/vec4.h"
 
+#include <array>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -22,6 +23,8 @@ struct Mesh {
     using FH = he::FH;
 
     Mesh(MeshStore &, uint32_t store_id, std::vector<std::vector<uint>> &&faces);
+    Mesh(MeshStore &, uint32_t store_id, std::vector<std::array<uint32_t, 2>> &&edges, uint32_t vertex_count);
+    Mesh(MeshStore &, uint32_t store_id, uint32_t vertex_count);
     Mesh(MeshStore &, uint32_t store_id, const Mesh &src);
 
     Mesh(const Mesh &) = delete;

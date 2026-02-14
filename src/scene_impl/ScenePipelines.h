@@ -448,6 +448,24 @@ struct SelectionFragmentPipeline {
                 {}, CreateDepthStencil(false, false), draw_pc
             )
         );
+        pipelines.emplace(
+            SPT::SelectionFragmentLineXRay,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
+                {}, CreateDepthStencil(false, false), draw_pc
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionFragmentPointXRay,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
+                {}, CreateDepthStencil(false, false), draw_pc
+            )
+        );
         return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
     }
 
