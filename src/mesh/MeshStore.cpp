@@ -215,8 +215,12 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         const auto total = morph_target_count * vertex_count;
         morph_targets = MorphTargetBuffer.Allocate(total);
         auto mt_span = MorphTargetBuffer.GetMutable(morph_targets);
+        const bool has_normal_deltas = !morph_data->NormalDeltas.empty();
         for (uint32_t i = 0; i < total; ++i) {
-            mt_span[i] = MorphTargetVertex{.PositionDelta = morph_data->PositionDeltas[i]};
+            mt_span[i] = MorphTargetVertex{
+                .PositionDelta = morph_data->PositionDeltas[i],
+                .NormalDelta = has_normal_deltas ? morph_data->NormalDeltas[i] : vec3{0},
+            };
         }
         default_morph_weights = std::move(morph_data->DefaultWeights);
         default_morph_weights.resize(morph_target_count, 0.f);
@@ -238,7 +242,13 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
     auto &entry = Entries[id];
     Mesh mesh{*this, id, std::move(data.Faces)};
     entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
-    UpdateNormals(mesh);
+    if (data.Normals) {
+        auto vertices = GetVertices(id);
+        for (uint32_t i = 0; i < vertex_count; ++i) vertices[i].Normal = (*data.Normals)[i];
+        UpdateNormals(mesh, /*skip_nonzero=*/true);
+    } else {
+        UpdateNormals(mesh);
+    }
     std::ranges::fill(GetVertexStates(vertices), 0);
     std::ranges::fill(GetFaceStates(faces), 0);
     std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);

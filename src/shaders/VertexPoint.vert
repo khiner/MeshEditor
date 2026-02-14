@@ -25,7 +25,8 @@ void main() {
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
     vec3 normal = vert.Normal;
-    const vec3 morphed_pos = ApplyMorphDeform(draw, vert.Position, idx);
+    vec3 morphed_pos = vert.Position;
+    ApplyMorphDeform(draw, morphed_pos, idx, normal);
     const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
     vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
     if (should_apply_pending_transform(draw, idx)) {

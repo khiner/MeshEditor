@@ -83,6 +83,28 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
         }
     );
 
+    // Parse NORMAL attribute
+    const auto normal_it = primitive.findAttribute("NORMAL");
+    const bool has_normals = normal_it != primitive.attributes.end();
+    if (has_normals) {
+        if (!mesh_data.Normals) {
+            mesh_data.Normals.emplace();
+            // Backfill zeros for vertices from earlier primitives that lacked normals
+            mesh_data.Normals->resize(base_vertex, vec3{0.f});
+        }
+        const auto &normal_accessor = asset.accessors[normal_it->accessorIndex];
+        mesh_data.Normals->resize(static_cast<std::size_t>(base_vertex) + position_accessor.count, vec3{0.f});
+        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
+            asset, normal_accessor,
+            [&](fastgltf::math::fvec3 normal, std::size_t index) {
+                (*mesh_data.Normals)[base_vertex + static_cast<uint32_t>(index)] = vec3{normal.x(), normal.y(), normal.z()};
+            }
+        );
+    } else if (mesh_data.Normals) {
+        // Previous primitives had normals but this one doesn't — pad with zeros
+        mesh_data.Normals->resize(static_cast<std::size_t>(base_vertex) + position_accessor.count, vec3{0.f});
+    }
+
     if (has_joints && !deform_data) deform_data.emplace();
     const bool mesh_has_skin_data = deform_data && (!deform_data->Joints.empty() || !deform_data->Weights.empty());
     if (mesh_has_skin_data &&
@@ -137,20 +159,54 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             throw std::runtime_error{"glTF primitive morph target count mismatch between primitives of the same mesh."};
         }
         // Append this primitive's deltas for each target (interleaved: all targets for this prim appended together)
-        const auto prev_size = morph_data->PositionDeltas.size();
-        morph_data->PositionDeltas.resize(prev_size + static_cast<std::size_t>(target_count) * prim_vertex_count, vec3{0.f});
+        const auto prev_pos_size = morph_data->PositionDeltas.size();
+        morph_data->PositionDeltas.resize(prev_pos_size + static_cast<std::size_t>(target_count) * prim_vertex_count, vec3{0.f});
+        // Track whether any target in this primitive has normal deltas
+        bool prim_has_normal_deltas = false;
+        for (uint32_t t = 0; t < target_count; ++t) {
+            if (primitive.findTargetAttribute(t, "NORMAL") != primitive.targets[t].end()) {
+                prim_has_normal_deltas = true;
+                break;
+            }
+        }
+        if (prim_has_normal_deltas && morph_data->NormalDeltas.empty() && prev_pos_size > 0) {
+            // Backfill zeros for position deltas from earlier primitives that had no normal deltas
+            morph_data->NormalDeltas.resize(prev_pos_size, vec3{0.f});
+        }
+        if (prim_has_normal_deltas || !morph_data->NormalDeltas.empty()) {
+            const auto prev_norm_size = morph_data->NormalDeltas.size();
+            morph_data->NormalDeltas.resize(prev_norm_size + static_cast<std::size_t>(target_count) * prim_vertex_count, vec3{0.f});
+        }
         for (uint32_t t = 0; t < target_count; ++t) {
             auto pos_it = primitive.findTargetAttribute(t, "POSITION");
-            if (pos_it == primitive.targets[t].end()) continue;
-            const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
-            if (target_accessor.count != prim_vertex_count) continue;
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
-                asset, target_accessor,
-                [&](fastgltf::math::fvec3 delta, std::size_t index) {
-                    morph_data->PositionDeltas[prev_size + static_cast<std::size_t>(t) * prim_vertex_count + index] =
-                        vec3{delta.x(), delta.y(), delta.z()};
+            if (pos_it != primitive.targets[t].end()) {
+                const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
+                if (target_accessor.count == prim_vertex_count) {
+                    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
+                        asset, target_accessor,
+                        [&](fastgltf::math::fvec3 delta, std::size_t index) {
+                            morph_data->PositionDeltas[prev_pos_size + static_cast<std::size_t>(t) * prim_vertex_count + index] =
+                                vec3{delta.x(), delta.y(), delta.z()};
+                        }
+                    );
                 }
-            );
+            }
+            if (!morph_data->NormalDeltas.empty()) {
+                auto norm_it = primitive.findTargetAttribute(t, "NORMAL");
+                if (norm_it != primitive.targets[t].end()) {
+                    const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
+                    const auto prev_norm_size = morph_data->NormalDeltas.size() - static_cast<std::size_t>(target_count) * prim_vertex_count;
+                    if (norm_accessor.count == prim_vertex_count) {
+                        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
+                            asset, norm_accessor,
+                            [&](fastgltf::math::fvec3 delta, std::size_t index) {
+                                morph_data->NormalDeltas[prev_norm_size + static_cast<std::size_t>(t) * prim_vertex_count + index] =
+                                    vec3{delta.x(), delta.y(), delta.z()};
+                            }
+                        );
+                    }
+                }
+            }
         }
     } else if (morph_data) {
         // Previous primitives had targets but this one doesn't — pad with zeros
@@ -159,6 +215,12 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             morph_data->PositionDeltas.size() + static_cast<std::size_t>(morph_data->TargetCount) * prim_vertex_count,
             vec3{0.f}
         );
+        if (!morph_data->NormalDeltas.empty()) {
+            morph_data->NormalDeltas.resize(
+                morph_data->NormalDeltas.size() + static_cast<std::size_t>(morph_data->TargetCount) * prim_vertex_count,
+                vec3{0.f}
+            );
+        }
     }
 
     std::vector<uint32_t> indices;
@@ -237,6 +299,23 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
             dst_vert_offset += prim_verts;
         }
         mesh_morph_data->PositionDeltas = std::move(repacked);
+
+        if (!mesh_morph_data->NormalDeltas.empty()) {
+            std::vector<vec3> repacked_normals(static_cast<std::size_t>(target_count) * total_verts, vec3{0.f});
+            uint32_t norm_src_offset = 0;
+            uint32_t norm_dst_vert_offset = 0;
+            for (const auto prim_verts : prim_vertex_counts) {
+                for (uint32_t t = 0; t < target_count; ++t) {
+                    for (uint32_t v = 0; v < prim_verts; ++v) {
+                        repacked_normals[static_cast<std::size_t>(t) * total_verts + norm_dst_vert_offset + v] =
+                            mesh_morph_data->NormalDeltas[norm_src_offset + static_cast<std::size_t>(t) * prim_verts + v];
+                    }
+                }
+                norm_src_offset += target_count * prim_verts;
+                norm_dst_vert_offset += prim_verts;
+            }
+            mesh_morph_data->NormalDeltas = std::move(repacked_normals);
+        }
     }
 
     // Read default morph target weights from mesh

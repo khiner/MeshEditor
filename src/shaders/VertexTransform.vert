@@ -14,8 +14,8 @@ layout(constant_id = 0) const uint OverlayKind = 0u;
 
 vec3 ComputeWorldPos(DrawData draw, WorldMatrix world, uint vertex_index) {
     vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[vertex_index + draw.VertexOffset].Position;
-    pos = ApplyMorphDeform(draw, pos, vertex_index);
     vec3 n = vec3(0);
+    ApplyMorphDeform(draw, pos, vertex_index, n);
     pos = ApplyArmatureDeform(draw, pos, vertex_index, n);
     vec3 wp = vec3(world.M * vec4(pos, 1.0));
     if (should_apply_pending_transform(draw, vertex_index)) {
@@ -33,7 +33,8 @@ void main() {
     uint element_state = 0u;
     uint face_id = 0u;
     vec3 normal = vert.Normal;
-    const vec3 morphed_pos = ApplyMorphDeform(draw, vert.Position, idx);
+    vec3 morphed_pos = vert.Position;
+    ApplyMorphDeform(draw, morphed_pos, idx, normal);
     const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
     bool computed_face_normal = false;
     if (draw.ObjectIdSlot != INVALID_SLOT) {

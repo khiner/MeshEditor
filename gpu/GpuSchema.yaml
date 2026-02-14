@@ -163,6 +163,8 @@ structs:
     fields:
       - name: PositionDelta
         type: vec3
+      - name: NormalDelta
+        type: vec3
   - name: WorldMatrix
     fields:
       - name: M

@@ -1,6 +1,5 @@
 // TODO: Unsupported geometry-affecting glTF features (roughly ordered by impact):
-//  - Morph target normal/tangent deltas (position deltas are supported)
-//  - Normals import: authored normals from glTF are discarded (only computed internally)
+//  - Morph target tangent deltas (position and normal deltas are supported)
 //  - Non-triangle primitives: points, lines, line strips are silently skipped
 //  - Sparse accessors: mainly relevant for morph target deltas
 //  - Draco mesh compression
