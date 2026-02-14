@@ -110,7 +110,7 @@ add_custom_target(remove_svg_output_dir
 add_dependencies(${PROJECT_NAME} remove_svg_output_dir)
 
 if(APPLE)
-  target_include_directories(${PROJECT_NAME} PRIVATE /opt/homebrew/Cellar/eigen/3.4.1/include/eigen3)
+  target_include_directories(${PROJECT_NAME} PRIVATE /opt/homebrew/include/eigen3)
 else()
   target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/eigen3)
 endif()
