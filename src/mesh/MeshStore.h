@@ -62,7 +62,7 @@ struct MeshStore {
         const std::unordered_set<he::FH> &selected_faces,
         std::optional<uint32_t> active_handle
     );
-    void UpdateNormals(const Mesh &);
+    void UpdateNormals(const Mesh &, bool skip_nonzero = false);
 
     void Release(uint32_t id);
 

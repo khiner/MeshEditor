@@ -169,18 +169,18 @@ MeshStore::MeshStore(mvk::BufferContext &ctx)
       BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer},
       MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer} {}
 
-void MeshStore::UpdateNormals(const Mesh &mesh) {
-    const auto id = mesh.GetStoreId();
-    std::vector<vec3> face_normals(mesh.FaceCount());
+void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
+    auto vertices = GetVertices(mesh.GetStoreId());
+    for (auto &v : vertices) {
+        if (!skip_nonzero || glm::length(v.Normal) == 0.f) v.Normal = vec3{0};
+    }
     for (uint fi = 0; fi < mesh.FaceCount(); ++fi) {
         auto it = mesh.cfv_iter(Mesh::FH{fi});
         const auto p0 = mesh.GetPosition(*it), p1 = mesh.GetPosition(*++it), p2 = mesh.GetPosition(*++it);
-        face_normals[fi] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
-    }
-    auto vertices = GetVertices(id);
-    for (auto &v : vertices) v.Normal = vec3{0};
-    for (uint fi = 0; fi < mesh.FaceCount(); ++fi) {
-        for (const auto vh : mesh.fv_range(Mesh::FH{fi})) vertices[*vh].Normal += face_normals[fi];
+        const auto cross = glm::cross(p1 - p0, p2 - p0);
+        for (const auto vh : mesh.fv_range(Mesh::FH{fi})) {
+            if (!skip_nonzero || glm::length(vertices[*vh].Normal) == 0.f) vertices[*vh].Normal += cross;
+        }
     }
     for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
 }
