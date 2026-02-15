@@ -1,6 +1,9 @@
+// Note: Additional skin influence sets (JOINTS_1/WEIGHTS_1, etc.) are imported and compressed
+// to the top 4 influences per vertex (sorted by weight, renormalized). The spec permits
+// supporting only a single set of 4 (see glTF 2.0 §3.7.3.1); keeping the top 4 is strictly
+// better. Lossy for round-trip export but visually near-lossless.
+//
 // TODO (glTF 2.0 coverage, non-material-first):
-// - Support `node.weights` per-object morph defaults (currently only `mesh.weights` is imported).
-// - Support additional skin influence sets (`JOINTS_1`/`WEIGHTS_1`, etc.), not just set 0.
 // - Import cameras (`node.camera` + camera payload in SceneData).
 // - Support compressed geometry extensions (`EXT_meshopt_compression`, `KHR_draco_mesh_compression`):
 //   minimal decode path: meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
@@ -60,6 +63,7 @@ struct SceneObjectData {
     mat4 WorldTransform{1.f};
     std::optional<uint32_t> MeshIndex{};
     std::optional<uint32_t> SkinIndex{};
+    std::optional<std::vector<float>> NodeWeights{}; // Per-node morph weight overrides (glTF node.weights)
     std::string Name;
 };
 

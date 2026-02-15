@@ -1223,7 +1223,13 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
         if (morph.TargetCount == 0) continue;
 
         MorphWeightState state;
-        state.Weights = morph.DefaultWeights;
+        if (object.NodeWeights) {
+            // Per-node morph weight overrides (glTF node.weights) take priority over mesh.weights
+            state.Weights.resize(morph.TargetCount, 0.f);
+            std::copy_n(object.NodeWeights->begin(), std::min(uint32_t(object.NodeWeights->size()), morph.TargetCount), state.Weights.begin());
+        } else {
+            state.Weights = morph.DefaultWeights;
+        }
         state.GpuWeightRange = Buffers->MorphWeightBuffer.Allocate(morph.TargetCount);
         auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(state.GpuWeightRange);
         std::copy(state.Weights.begin(), state.Weights.end(), gpu_weights.begin());

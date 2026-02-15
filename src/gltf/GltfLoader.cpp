@@ -8,8 +8,8 @@
 
 #include <glm/gtx/matrix_decompose.hpp>
 
+#include <algorithm>
 #include <format>
-#include <limits>
 #include <numeric>
 #include <unordered_map>
 #include <unordered_set>
@@ -176,29 +176,75 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
     }
 
     if (has_joints) {
-        const auto &joints_accessor = asset.accessors[joints_it->accessorIndex];
-        const auto &weights_accessor = asset.accessors[weights_it->accessorIndex];
-        if (joints_accessor.count != position_accessor.count || weights_accessor.count != position_accessor.count) {
-            throw std::runtime_error{
-                std::format(
-                    "glTF primitive skin attribute counts must match POSITION count (POSITION={}, JOINTS_0={}, WEIGHTS_0={}).",
-                    position_accessor.count,
-                    joints_accessor.count,
-                    weights_accessor.count
-                )
-            };
+        // Collect all skin influence sets (JOINTS_0/WEIGHTS_0, JOINTS_1/WEIGHTS_1, ...)
+        struct InfluenceSet {
+            std::vector<fastgltf::math::u16vec4> Joints;
+            std::vector<fastgltf::math::fvec4> Weights;
+        };
+        std::vector<InfluenceSet> sets;
+
+        for (uint32_t set_index = 0;; ++set_index) {
+            const auto j_name = std::format("JOINTS_{}", set_index);
+            const auto w_name = std::format("WEIGHTS_{}", set_index);
+            const auto j_it = primitive.findAttribute(j_name);
+            const auto w_it = primitive.findAttribute(w_name);
+            if (j_it == primitive.attributes.end() && w_it == primitive.attributes.end()) break;
+            if ((j_it == primitive.attributes.end()) != (w_it == primitive.attributes.end())) {
+                throw std::runtime_error{std::format("glTF primitive has {} without {} (or vice versa).", j_name, w_name)};
+            }
+
+            const auto &j_acc = asset.accessors[j_it->accessorIndex];
+            const auto &w_acc = asset.accessors[w_it->accessorIndex];
+            if (j_acc.count != position_accessor.count || w_acc.count != position_accessor.count) {
+                throw std::runtime_error{
+                    std::format(
+                        "glTF primitive skin attribute counts must match POSITION count (POSITION={}, {}={}, {}={}).",
+                        position_accessor.count, j_name, j_acc.count, w_name, w_acc.count
+                    )
+                };
+            }
+
+            auto &s = sets.emplace_back();
+            s.Joints.resize(position_accessor.count);
+            fastgltf::copyFromAccessor<fastgltf::math::u16vec4>(asset, j_acc, s.Joints.data());
+            s.Weights.resize(position_accessor.count);
+            fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, w_acc, s.Weights.data());
         }
 
-        std::vector<fastgltf::math::u16vec4> joints(position_accessor.count);
-        fastgltf::copyFromAccessor<fastgltf::math::u16vec4>(asset, joints_accessor, joints.data());
-        std::vector<fastgltf::math::fvec4> weights(position_accessor.count);
-        fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, weights_accessor, weights.data());
+        if (sets.size() == 1) {
+            // Fast path: single influence set — no merging needed
+            for (uint32_t i = 0; i < static_cast<uint32_t>(position_accessor.count); ++i) {
+                const auto &j = sets[0].Joints[i];
+                deform_data->Joints[base_vertex + i] = {j.x(), j.y(), j.z(), j.w()};
+                const auto &w = sets[0].Weights[i];
+                deform_data->Weights[base_vertex + i] = {w.x(), w.y(), w.z(), w.w()};
+            }
+        } else {
+            // Multiple influence sets: merge all, keep top 4 by weight, renormalize.
+            // glTF 2.0 §3.7.3.1: implementations MAY support only 4 influences.
+            // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skinned-mesh-attributes
+            const auto total_influences = static_cast<uint32_t>(sets.size()) * 4u;
+            std::vector<std::pair<uint16_t, float>> all(total_influences);
+            const auto top4_end = all.begin() + 4;
+            const auto by_weight = [](const auto &a, const auto &b) { return a.second > b.second; };
 
-        for (uint32_t i = 0, count = static_cast<uint32_t>(joints.size()); i < count; ++i) {
-            const auto &joint = joints[i];
-            deform_data->Joints[base_vertex + i] = {joint.x(), joint.y(), joint.z(), joint.w()};
-            const auto &weight = weights[i];
-            deform_data->Weights[base_vertex + i] = {weight.x(), weight.y(), weight.z(), weight.w()};
+            for (uint32_t i = 0; i < static_cast<uint32_t>(position_accessor.count); ++i) {
+                uint32_t n = 0;
+                for (const auto &s : sets) {
+                    const auto &j = s.Joints[i];
+                    const auto &w = s.Weights[i];
+                    all[n++] = {j.x(), w.x()};
+                    all[n++] = {j.y(), w.y()};
+                    all[n++] = {j.z(), w.z()};
+                    all[n++] = {j.w(), w.w()};
+                }
+                std::partial_sort(all.begin(), top4_end, all.begin() + n, by_weight);
+
+                const float sum = all[0].second + all[1].second + all[2].second + all[3].second;
+                const float inv = sum > 0.f ? 1.f / sum : 0.f;
+                deform_data->Joints[base_vertex + i] = {all[0].first, all[1].first, all[2].first, all[3].first};
+                deform_data->Weights[base_vertex + i] = {all[0].second * inv, all[1].second * inv, all[2].second * inv, all[3].second * inv};
+            }
         }
     }
 
@@ -740,6 +786,8 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 !instance_transforms.empty() && node.MeshIndex) {
                 // EXT_mesh_gpu_instancing: emit one object per instance with baked world transform
                 const auto base_name = MakeNodeName(asset, node.NodeIndex, source_mesh_index);
+                const auto &source_weights = asset.nodes[node_index].weights;
+                auto node_weights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())};
                 for (uint32_t i = 0; i < instance_transforms.size(); ++i) {
                     scene_data.Objects.emplace_back(
                         SceneObjectData{
@@ -749,11 +797,13 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                             .WorldTransform = node.WorldTransform * ToMatrix(instance_transforms[i]),
                             .MeshIndex = node.MeshIndex,
                             .SkinIndex = node.SkinIndex,
+                            .NodeWeights = node_weights,
                             .Name = base_name + "." + std::to_string(i),
                         }
                     );
                 }
             } else {
+                const auto &source_weights = asset.nodes[node_index].weights;
                 scene_data.Objects.emplace_back(
                     SceneObjectData{
                         .ObjectType = node.MeshIndex ? SceneObjectData::Type::Mesh : SceneObjectData::Type::Empty,
@@ -762,6 +812,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                         .WorldTransform = node.WorldTransform,
                         .MeshIndex = node.MeshIndex,
                         .SkinIndex = node.SkinIndex,
+                        .NodeWeights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())},
                         .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
                     }
                 );
