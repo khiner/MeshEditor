@@ -1,5 +1,4 @@
 // TODO:
-//  - EXT_mesh_gpu_instancing
 //  - Sparse accessors
 //  - Draco mesh compression
 

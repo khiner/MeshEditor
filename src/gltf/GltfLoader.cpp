@@ -316,7 +316,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
         return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
     }
 
-    fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization};
+    fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing};
     using fastgltf::Options;
     auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices);
     if (parsed.error() != fastgltf::Error::None) {
@@ -614,6 +614,46 @@ std::string MakeNodeName(const fastgltf::Asset &asset, uint32_t node_index, std:
 
     return std::format("Node{}", node_index);
 }
+std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, const fastgltf::Node &node) {
+    if (node.instancingAttributes.empty()) return {};
+
+    const auto t_attr = node.findInstancingAttribute("TRANSLATION");
+    const auto r_attr = node.findInstancingAttribute("ROTATION");
+    const auto s_attr = node.findInstancingAttribute("SCALE");
+
+    // Determine instance count from the first present accessor
+    uint32_t instance_count = 0;
+    if (t_attr != node.instancingAttributes.end()) {
+        instance_count = static_cast<uint32_t>(asset.accessors[t_attr->accessorIndex].count);
+    } else if (r_attr != node.instancingAttributes.end()) {
+        instance_count = static_cast<uint32_t>(asset.accessors[r_attr->accessorIndex].count);
+    } else if (s_attr != node.instancingAttributes.end()) {
+        instance_count = static_cast<uint32_t>(asset.accessors[s_attr->accessorIndex].count);
+    }
+    if (instance_count == 0) return {};
+
+    std::vector<Transform> transforms(instance_count);
+    if (t_attr != node.instancingAttributes.end()) {
+        const auto &accessor = asset.accessors[t_attr->accessorIndex];
+        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, accessor, [&](auto v, auto i) {
+            transforms[i].P = vec3{v.x(), v.y(), v.z()};
+        });
+    }
+    if (r_attr != node.instancingAttributes.end()) {
+        const auto &accessor = asset.accessors[r_attr->accessorIndex];
+        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, accessor, [&](auto v, auto i) {
+            transforms[i].R = glm::normalize(quat{v.w(), v.x(), v.y(), v.z()});
+        });
+    }
+    if (s_attr != node.instancingAttributes.end()) {
+        const auto &accessor = asset.accessors[s_attr->accessorIndex];
+        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, accessor, [&](auto v, auto i) {
+            transforms[i].S = vec3{v.x(), v.y(), v.z()};
+        });
+    }
+
+    return transforms;
+}
 } // namespace
 
 std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path &path) {
@@ -687,20 +727,45 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         nearest_object_ancestor[node_index] = FindNearestEmittedObjectAncestor(node_index, parents, is_object_emitted);
     }
 
+    // Precompute per-node instance transforms for EXT_mesh_gpu_instancing
+    std::vector<std::vector<Transform>> node_instance_transforms(asset.nodes.size());
+    for (uint32_t ni = 0; ni < asset.nodes.size(); ++ni) {
+        if (traversal.InScene[ni]) node_instance_transforms[ni] = ReadInstanceTransforms(asset, asset.nodes[ni]);
+    }
+
     for (uint32_t node_index = 0; node_index < scene_data.Nodes.size(); ++node_index) {
         if (const auto &node = scene_data.Nodes[node_index]; is_object_emitted[node_index]) {
             const auto source_mesh_index = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size());
-            scene_data.Objects.emplace_back(
-                SceneObjectData{
-                    .ObjectType = node.MeshIndex ? SceneObjectData::Type::Mesh : SceneObjectData::Type::Empty,
-                    .NodeIndex = node.NodeIndex,
-                    .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
-                    .WorldTransform = node.WorldTransform,
-                    .MeshIndex = node.MeshIndex,
-                    .SkinIndex = node.SkinIndex,
-                    .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
+            if (const auto &instance_transforms = node_instance_transforms[node_index];
+                !instance_transforms.empty() && node.MeshIndex) {
+                // EXT_mesh_gpu_instancing: emit one object per instance with baked world transform
+                const auto base_name = MakeNodeName(asset, node.NodeIndex, source_mesh_index);
+                for (uint32_t i = 0; i < instance_transforms.size(); ++i) {
+                    scene_data.Objects.emplace_back(
+                        SceneObjectData{
+                            .ObjectType = SceneObjectData::Type::Mesh,
+                            .NodeIndex = node.NodeIndex,
+                            .ParentNodeIndex = std::nullopt,
+                            .WorldTransform = node.WorldTransform * ToMatrix(instance_transforms[i]),
+                            .MeshIndex = node.MeshIndex,
+                            .SkinIndex = node.SkinIndex,
+                            .Name = base_name + "." + std::to_string(i),
+                        }
+                    );
                 }
-            );
+            } else {
+                scene_data.Objects.emplace_back(
+                    SceneObjectData{
+                        .ObjectType = node.MeshIndex ? SceneObjectData::Type::Mesh : SceneObjectData::Type::Empty,
+                        .NodeIndex = node.NodeIndex,
+                        .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
+                        .WorldTransform = node.WorldTransform,
+                        .MeshIndex = node.MeshIndex,
+                        .SkinIndex = node.SkinIndex,
+                        .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
+                    }
+                );
+            }
         }
     }
 
