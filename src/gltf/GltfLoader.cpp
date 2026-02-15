@@ -85,21 +85,27 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
     }
 }
 
-void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, MeshData &mesh_data, std::optional<ArmatureDeformData> &deform_data, std::optional<MorphTargetData> &morph_data) {
+std::expected<void, std::string> AppendPrimitive(
+    const fastgltf::Asset &asset,
+    const fastgltf::Primitive &primitive,
+    MeshData &mesh_data,
+    std::optional<ArmatureDeformData> &deform_data,
+    std::optional<MorphTargetData> &morph_data
+) {
     if (primitive.type != fastgltf::PrimitiveType::Triangles &&
         primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
-        primitive.type != fastgltf::PrimitiveType::TriangleFan) return;
+        primitive.type != fastgltf::PrimitiveType::TriangleFan) return {};
 
     const auto position_it = primitive.findAttribute("POSITION");
-    if (position_it == primitive.attributes.end()) return;
+    if (position_it == primitive.attributes.end()) return {};
     const auto joints_it = primitive.findAttribute("JOINTS_0");
     const auto weights_it = primitive.findAttribute("WEIGHTS_0");
     const bool has_joints = joints_it != primitive.attributes.end();
     const bool has_weights = weights_it != primitive.attributes.end();
-    if (has_joints != has_weights) throw std::runtime_error{"glTF primitive has JOINTS_0 without WEIGHTS_0 (or vice versa)."};
+    if (has_joints != has_weights) return std::unexpected{"glTF primitive has JOINTS_0 without WEIGHTS_0 (or vice versa)."};
 
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
-    if (position_accessor.count == 0) return;
+    if (position_accessor.count == 0) return {};
 
     const uint32_t base_vertex = mesh_data.Positions.size();
     mesh_data.Positions.resize(base_vertex + position_accessor.count);
@@ -127,7 +133,7 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
     if (mesh_has_skin_data &&
         (deform_data->Joints.size() != base_vertex ||
          deform_data->Weights.size() != base_vertex)) {
-        throw std::runtime_error{"glTF primitive append encountered inconsistent skin channel sizes."};
+        return std::unexpected{"glTF primitive append encountered inconsistent skin channel sizes."};
     }
 
     if (has_joints || mesh_has_skin_data) {
@@ -145,13 +151,13 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             const auto w_it = primitive.findAttribute(w_name);
             if (j_it == primitive.attributes.end() && w_it == primitive.attributes.end()) break;
             if ((j_it == primitive.attributes.end()) != (w_it == primitive.attributes.end())) {
-                throw std::runtime_error{std::format("glTF primitive has {} without {} (or vice versa).", j_name, w_name)};
+                return std::unexpected{std::format("glTF primitive has {} without {} (or vice versa).", j_name, w_name)};
             }
 
             const auto &j_acc = asset.accessors[j_it->accessorIndex];
             const auto &w_acc = asset.accessors[w_it->accessorIndex];
             if (j_acc.count != position_accessor.count || w_acc.count != position_accessor.count) {
-                throw std::runtime_error{std::format(
+                return std::unexpected{std::format(
                     "glTF primitive skin attribute counts must match POSITION count (POSITION={}, {}={}, {}={}).",
                     position_accessor.count, j_name, j_acc.count, w_name, w_acc.count
                 )};
@@ -214,9 +220,8 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             // Backfill zeros for any vertices from earlier primitives
             morph_data->PositionDeltas.resize(std::size_t(target_count) * base_vertex, vec3{0.f});
         }
-        if (morph_data->TargetCount != target_count) {
-            throw std::runtime_error{"glTF primitive morph target count mismatch between primitives of the same mesh."};
-        }
+        if (morph_data->TargetCount != target_count) return std::unexpected{"glTF primitive morph target count mismatch between primitives of the same mesh."};
+
         // Append this primitive's deltas for each target (interleaved: all targets for this prim appended together)
         const auto prev_pos_size = morph_data->PositionDeltas.size();
         morph_data->PositionDeltas.resize(prev_pos_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
@@ -273,7 +278,7 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
         indices.resize(position_accessor.count);
         std::iota(indices.begin(), indices.end(), 0u);
     }
-    if (indices.size() < 3) return;
+    if (indices.size() < 3) return {};
 
     if (primitive.type == fastgltf::PrimitiveType::TriangleStrip) {
         for (uint32_t i = 0; i + 2 < indices.size(); ++i) {
@@ -292,29 +297,26 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             mesh_data.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
         }
     }
+    return {};
 }
 
 std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::path &path) {
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
-    if (gltf_file.error() != fastgltf::Error::None) {
-        return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
-    }
+    if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
     fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing};
     using fastgltf::Options;
     auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices);
-    if (parsed.error() != fastgltf::Error::None) {
-        return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
-    }
+    if (parsed.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
 
     return std::move(parsed.get());
 }
 
-std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, SceneData &scene_data, std::unordered_map<uint32_t, std::optional<uint32_t>> &mesh_index_map) {
+std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, SceneData &scene_data, std::unordered_map<uint32_t, std::optional<uint32_t>> &mesh_index_map) {
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
     if (source_mesh_index >= asset.meshes.size()) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
-        return {};
+        return std::optional<uint32_t>{};
     }
 
     const auto &source_mesh = asset.meshes[source_mesh_index];
@@ -334,7 +336,9 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
             continue;
         }
         const uint32_t prev_vertex_count = mesh_data.Positions.size();
-        AppendPrimitive(asset, primitive, mesh_data, mesh_deform_data, mesh_morph_data);
+        if (auto append_result = AppendPrimitive(asset, primitive, mesh_data, mesh_deform_data, mesh_morph_data); !append_result) {
+            return std::unexpected{std::move(append_result.error())};
+        }
         prim_vertex_counts.emplace_back(mesh_data.Positions.size() - prev_vertex_count);
     }
     const bool has_triangle_data = !mesh_data.Positions.empty() && !mesh_data.Faces.empty();
@@ -342,7 +346,7 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
     const bool has_points = !points_data.Positions.empty();
     if (!has_triangle_data && !has_lines && !has_points) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
-        return {};
+        return std::optional<uint32_t>{};
     }
 
     // Re-pack morph target deltas from per-primitive chunks to per-target contiguous layout
@@ -402,7 +406,7 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
         }
     );
     mesh_index_map.emplace(source_mesh_index, mesh_index);
-    return mesh_index;
+    return std::optional<uint32_t>{mesh_index};
 }
 
 std::vector<std::optional<uint32_t>> BuildNodeParentTable(const fastgltf::Asset &asset) {
@@ -528,9 +532,7 @@ std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrd
     const auto emit_joint = [&](uint32_t joint_node_index, const auto &self) -> std::expected<void, std::string> {
         const auto current_state = state[joint_node_index];
         if (current_state == 2) return {};
-        if (current_state == 1) {
-            return std::unexpected{std::format("glTF skin {} has a cycle in joint ancestry at node {}.", skin_index, joint_node_index)};
-        }
+        if (current_state == 1) return std::unexpected{std::format("glTF skin {} has a cycle in joint ancestry at node {}.", skin_index, joint_node_index)};
 
         state[joint_node_index] = 1;
         if (const auto it = joint_parent_map.find(joint_node_index);
@@ -652,7 +654,9 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         const auto source_mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
         auto mesh_index = std::optional<uint32_t>{};
         if (traversal.InScene[node_index] && source_mesh_index) {
-            mesh_index = EnsureMeshData(asset, *source_mesh_index, scene_data, mesh_index_map);
+            auto ensured_mesh = EnsureMeshData(asset, *source_mesh_index, scene_data, mesh_index_map);
+            if (!ensured_mesh) return std::unexpected{std::move(ensured_mesh.error())};
+            mesh_index = *ensured_mesh;
         }
         std::vector<uint32_t> children_node_indices;
         children_node_indices.reserve(source_node.children.size());
@@ -796,9 +800,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     // Parse animations
     for (uint32_t anim_index = 0; anim_index < asset.animations.size(); ++anim_index) {
         const auto &anim = asset.animations[anim_index];
-        AnimationClipData clip{
-            .Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name),
-        };
+        AnimationClipData clip{.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name), .Channels = {}};
         float max_time = 0;
         for (const auto &channel : anim.channels) {
             if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;

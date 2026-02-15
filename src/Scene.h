@@ -10,6 +10,7 @@
 #include "entt_fwd.h"
 #include <vulkan/vulkan.hpp>
 
+#include <expected>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -124,7 +125,7 @@ struct Scene {
     // Loads a single mesh from non-scene formats (e.g. OBJ/PLY).
     std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, std::optional<MeshInstanceCreateInfo> = {});
     // Imports glTF as a scene (may create multiple mesh + instance entities).
-    std::pair<entt::entity, entt::entity> AddGltfScene(const std::filesystem::path &);
+    std::expected<std::pair<entt::entity, entt::entity>, std::string> AddGltfScene(const std::filesystem::path &);
     entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
     entt::entity AddEmpty(ObjectCreateInfo = {});
     entt::entity AddArmature(ObjectCreateInfo = {});

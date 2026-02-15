@@ -955,9 +955,9 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
     return e;
 }
 
-std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem::path &path) {
+std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltfScene(const std::filesystem::path &path) {
     auto loaded_scene = gltf::LoadSceneData(path);
-    if (!loaded_scene) throw std::runtime_error(loaded_scene.error());
+    if (!loaded_scene) return std::unexpected{std::move(loaded_scene.error())};
 
     std::vector<entt::entity> mesh_entities;
     mesh_entities.reserve(loaded_scene->Meshes.size());
@@ -1120,12 +1120,12 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
         armature_data.ImportedSkin = std::move(imported_skin);
         if (!skin.AnchorNodeIndex) {
-            throw std::runtime_error{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex)};
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex)};
         }
 
         const auto anchor_it = scene_nodes_by_index.find(*skin.AnchorNodeIndex);
         if (anchor_it == scene_nodes_by_index.end() || !anchor_it->second->InScene) {
-            throw std::runtime_error{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", path.string(), skin.SkinIndex, *skin.AnchorNodeIndex)};
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", path.string(), skin.SkinIndex, *skin.AnchorNodeIndex)};
         }
 
         const auto armature_entity = R.create();
@@ -1151,7 +1151,7 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
                 R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
             }
         } else {
-            throw std::runtime_error{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
+            return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
         }
 
         // Allocate pose state and GPU deform buffer for this armature
@@ -1285,7 +1285,7 @@ std::pair<entt::entity, entt::entity> Scene::AddGltfScene(const std::filesystem:
                                                  first_object_entity;
     if (selected_entity != entt::null) Select(selected_entity);
 
-    return {first_mesh_entity, selected_entity};
+    return std::pair{first_mesh_entity, selected_entity};
 }
 
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
