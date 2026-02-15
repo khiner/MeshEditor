@@ -454,15 +454,24 @@ void run() {
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("Load mesh", nullptr)) {
-                    static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply,gltf,glb"}};
+                if (MenuItem("Load glTF", nullptr)) {
+                    static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
                         const auto path = fs::path(nfd_path);
                         NFD_FreePath(nfd_path);
-                        const auto ext = path.extension().string();
-                        if (ext == ".gltf" || ext == ".glb" || ext == ".GLTF" || ext == ".GLB") scene->AddGltfScene(path);
-                        else scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.stem().string()});
+                        scene->AddGltfScene(path);
+                    } else if (result != NFD_CANCEL) {
+                        throw std::runtime_error(std::format("Error loading glTF file: {}", NFD_GetError()));
+                    }
+                }
+                if (MenuItem("Load OBJ/PLY", nullptr)) {
+                    static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
+                    nfdchar_t *nfd_path;
+                    if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
+                        const auto path = fs::path(nfd_path);
+                        NFD_FreePath(nfd_path);
+                        scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.stem().string()});
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));
                     }
