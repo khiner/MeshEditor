@@ -1,6 +1,3 @@
-// TODO:
-//  - Sparse accessors
-//  - Draco mesh compression
 
 // TODO: After adding materials/textures: Tangents import + morph target tangent deltas
 

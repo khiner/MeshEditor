@@ -2621,21 +2621,13 @@ void Scene::RenderOverlay() {
         SetCursorScreenPos(saved_cursor_pos);
     }
 
-    if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
-        const auto &theme = R.get<const ViewportTheme>(SceneEntity);
-        const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
-        for (const auto [e, wm] : R.view<const WorldMatrix>().each()) {
-            if (!R.any_of<Active, Selected>(e)) continue;
-
-            const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
-            const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
-            const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
-            const auto p_px = std::bit_cast<ImVec2>(viewport.pos + p_uv * viewport.size); // UV to px
-            auto &dl = *GetWindowDrawList();
-            dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
-            dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
-        }
+    { // Orientation gizmo (drawn before tick so camera animations it initiates begin this frame)
+        static constexpr float OGizmoSize{90};
+        const float padding = GetTextLineHeightWithSpacing();
+        const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
+        OrientationGizmo::Draw(pos, OGizmoSize, camera);
     }
+    if (camera.Tick()) R.patch<Camera>(SceneEntity, [](auto &) {});
 
     const auto selected_view = R.view<const Selected>();
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -2699,12 +2691,14 @@ void Scene::RenderOverlay() {
         }
 
         const auto start_transform_view = R.view<const StartTransform>();
-        if (auto start_delta = TransformGizmo::Draw(
-                {{.P = pivot, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode},
-                MGizmo.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
-                StartScreenTransform
-            )) {
-            const auto &[ts, td] = *start_delta;
+        const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode};
+        auto interact_result = TransformGizmo::Interact(
+            gizmo_transform,
+            MGizmo.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
+            StartScreenTransform
+        );
+        if (interact_result) {
+            const auto &[ts, td] = *interact_result;
             if (start_transform_view.empty()) {
                 if (interaction_mode == InteractionMode::Edit) {
                     for (const auto &[_, instance_entity] : edit_transform_instances) {
@@ -2738,13 +2732,27 @@ void Scene::RenderOverlay() {
         } else if (!start_transform_view.empty()) {
             R.clear<StartTransform>(); // Transform ended - triggers commit in ProcessComponentEvents.
         }
+
+        // Render gizmo at the post-delta position so it matches the applied transform.
+        auto render_transform = gizmo_transform;
+        if (interact_result) render_transform.P = interact_result->Start.P + interact_result->Delta.P;
+        TransformGizmo::Render(render_transform, MGizmo.Config.Type, camera, viewport);
     }
-    { // Orientation gizmo
-        static constexpr float OGizmoSize{90};
-        const float padding = GetTextLineHeightWithSpacing();
-        const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-        OrientationGizmo::Draw(pos, OGizmoSize, camera);
-        if (camera.Tick()) R.patch<Camera>(SceneEntity, [](auto &) {});
+
+    if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
+        const auto &theme = R.get<const ViewportTheme>(SceneEntity);
+        const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
+        for (const auto [e, wm] : R.view<const WorldMatrix>().each()) {
+            if (!R.any_of<Active, Selected>(e)) continue;
+
+            const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
+            const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
+            const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
+            const auto p_px = std::bit_cast<ImVec2>(viewport.pos + p_uv * viewport.size); // UV to px
+            auto &dl = *GetWindowDrawList();
+            dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
+            dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
+        }
     }
 
     if (BoxSelectStart.has_value() && BoxSelectEnd.has_value()) {

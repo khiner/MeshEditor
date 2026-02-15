@@ -40,6 +40,14 @@ struct Interaction {
     bool operator==(const Interaction &) const = default;
 };
 
+// Local, non-snapped delta from interaction start.
+// The Transform delta is derived from this and the start Transform.
+struct LocalTransformDelta {
+    vec3 P{0}, S{1};
+    float RotationAngle{0};
+    vec2 RotationYawPitch{0};
+};
+
 namespace state {
 // Captured when an Interaction starts
 struct StartContext {
@@ -59,6 +67,8 @@ struct Context {
 
     std::optional<Interaction> Interaction; // If `Start` is present, active interaction. Otherwise, hovered interaction.
     std::optional<StartContext> Start; // Captured at mouse press on hovered Interaction.
+
+    LocalTransformDelta Dt{}; // Current frame's local delta, set by Interact() and read by Render().
 };
 
 struct Style {
@@ -487,15 +497,7 @@ void RenderMouseGuid(TransformGizmo::TransformType type, ImVec2 o_px) {
     DrawCursorDoubleArrow(dl, std::bit_cast<ImVec2>(g.MousePx), std::bit_cast<ImVec2>(g.MousePx) - o_px, type == TransformType::Rotate);
 }
 
-// Local, non-snapped delta from interaction start
-// The Transform delta is derived from this and the start Transform.
-struct LocalTransformDelta {
-    vec3 P{0}, S{1};
-    float RotationAngle{0};
-    vec2 RotationYawPitch{0};
-};
-
-void Render(const GizmoTransform &transform, const LocalTransformDelta &dt, TransformGizmo::Type type, const mat4 &vp, const ray &cam_ray) {
+void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, TransformGizmo::Type type, const mat4 &vp, const ray &cam_ray) {
     using TransformGizmo::Type;
     using enum TransformType;
 
@@ -855,9 +857,10 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
 } // namespace
 
 namespace TransformGizmo {
-std::optional<Result> Draw(const GizmoTransform &transform, Config config, const Camera &camera, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform) {
+std::optional<Result> Interact(const GizmoTransform &transform, Config config, const Camera &camera, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform) {
     g.ScreenRect = viewport;
     g.MousePx = mouse_px;
+    g.Dt = {};
 
     // Behind-camera cull
     if (!g.Start && !camera.IsInFront(transform.P)) {
@@ -875,7 +878,6 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
     g.WorldPerNdc = 2 * Style.SizeUv / glm::length(CsToNdc(vp * vec4{transform.P + cam_right_ws, 1}) - CsToNdc(vp * vec4{transform.P, 1}));
     if (g.Start && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         // Cancel - revert back to start transform
-        Render(transform, {}, config.Type, vp, cam_ray);
         Result ret{g.Start->Transform, {}};
         g.Start = {};
         g.Interaction = {};
@@ -885,7 +887,6 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
         // Mouse up - end interaction
         g.Start = {};
         g.Interaction = {};
-        Render(transform, {}, config.Type, vp, cam_ray);
         return {};
     }
 
@@ -893,9 +894,8 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
     if (g.Start) {
         const auto &ts = g.Start->Transform;
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray));
-        const auto dt = GetLocalTransformDelta(ts, *g.Interaction, vp, mouse_ray_ws, plane);
-        Render(transform, dt, config.Type, vp, cam_ray);
-        return Result{ts, GetDeltaTransform(ts, dt, *g.Interaction, plane, cam_basis, config.Snap, config.SnapValue)};
+        g.Dt = GetLocalTransformDelta(ts, *g.Interaction, vp, mouse_ray_ws, plane);
+        return Result{ts, GetDeltaTransform(ts, g.Dt, *g.Interaction, plane, cam_basis, config.Snap, config.SnapValue)};
     }
 
     g.Interaction = start_screen_transform ?
@@ -910,7 +910,11 @@ std::optional<Result> Draw(const GizmoTransform &transform, Config config, const
             .WorldPerNdc = g.WorldPerNdc,
         };
     }
-    Render(transform, {}, config.Type, vp, cam_ray);
     return {};
+}
+
+void Render(const GizmoTransform &transform, Type type, const Camera &camera, rect viewport) {
+    const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
+    RenderImpl(transform, g.Dt, type, vp, camera.Ray());
 }
 } // namespace TransformGizmo

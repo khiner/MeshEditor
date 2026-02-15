@@ -59,6 +59,11 @@ struct Result {
     Transform Delta; // Delta transform since interaction start
 };
 
-// start_screen_transform: If present, starts (non-click-initiated screen-space transform interaction immediately.)
-std::optional<Result> Draw(const GizmoTransform &, Config, const Camera &, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform = {});
+// Processes interaction (hover, click, drag) and returns the transform delta if actively dragging.
+// Does NOT render — call Render() afterward with the (potentially updated) transform.
+std::optional<Result> Interact(const GizmoTransform &, Config, const Camera &, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform = {});
+
+// Renders the gizmo using the interaction delta from the last Interact() call.
+// Call with the post-delta transform so the gizmo visual matches the applied transform.
+void Render(const GizmoTransform &, Type, const Camera &, rect viewport);
 } // namespace TransformGizmo
