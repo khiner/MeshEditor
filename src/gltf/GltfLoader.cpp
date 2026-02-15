@@ -71,6 +71,11 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
 
     // Offset indices by base_vertex for merging
     switch (primitive.type) {
+        case fastgltf::PrimitiveType::Points:
+        case fastgltf::PrimitiveType::Triangles:
+        case fastgltf::PrimitiveType::TriangleStrip:
+        case fastgltf::PrimitiveType::TriangleFan:
+            break;
         case fastgltf::PrimitiveType::Lines:
             for (uint32_t i = 0; i + 1 < indices.size(); i += 2) target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
             break;
@@ -81,7 +86,6 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
             for (uint32_t i = 0; i + 1 < indices.size(); ++i) target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
             if (indices.size() >= 2) target.Edges.push_back({base_vertex + indices.back(), base_vertex + indices.front()});
             break;
-        default: break;
     }
 }
 
@@ -314,10 +318,6 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
 
 std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, SceneData &scene_data, std::unordered_map<uint32_t, std::optional<uint32_t>> &mesh_index_map) {
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
-    if (source_mesh_index >= asset.meshes.size()) {
-        mesh_index_map.emplace(source_mesh_index, std::nullopt);
-        return std::optional<uint32_t>{};
-    }
 
     const auto &source_mesh = asset.meshes[source_mesh_index];
     MeshData mesh_data;
@@ -802,36 +802,31 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         const auto &anim = asset.animations[anim_index];
         AnimationClipData clip{.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name), .Channels = {}};
         float max_time = 0;
+        struct ChannelTargetSpec {
+            AnimationPath Path;
+            std::size_t ComponentCount;
+        };
         for (const auto &channel : anim.channels) {
             if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;
             if (channel.samplerIndex >= anim.samplers.size()) continue;
 
-            AnimationPath target_path;
-            uint32_t component_count;
-            switch (channel.path) {
-                case fastgltf::AnimationPath::Translation:
-                    target_path = AnimationPath::Translation;
-                    component_count = 3;
-                    break;
-                case fastgltf::AnimationPath::Rotation:
-                    target_path = AnimationPath::Rotation;
-                    component_count = 4;
-                    break;
-                case fastgltf::AnimationPath::Scale:
-                    target_path = AnimationPath::Scale;
-                    component_count = 3;
-                    break;
-                case fastgltf::AnimationPath::Weights: {
-                    target_path = AnimationPath::Weights;
-                    // Look up morph target count from the target node's mesh
-                    const auto &target_node = asset.nodes[*channel.nodeIndex];
-                    if (!target_node.meshIndex || *target_node.meshIndex >= asset.meshes.size()) continue;
-                    component_count = asset.meshes[*target_node.meshIndex].primitives.empty() ? 0 : asset.meshes[*target_node.meshIndex].primitives[0].targets.size();
-                    if (component_count == 0) continue;
-                    break;
+            const auto target_spec = [&]() -> std::optional<ChannelTargetSpec> {
+                switch (channel.path) {
+                    case fastgltf::AnimationPath::Translation: return ChannelTargetSpec{.Path = AnimationPath::Translation, .ComponentCount = 3};
+                    case fastgltf::AnimationPath::Rotation: return ChannelTargetSpec{.Path = AnimationPath::Rotation, .ComponentCount = 4};
+                    case fastgltf::AnimationPath::Scale: return ChannelTargetSpec{.Path = AnimationPath::Scale, .ComponentCount = 3};
+                    case fastgltf::AnimationPath::Weights: {
+                        // Look up morph target count from the target node's mesh
+                        const auto &target_node = asset.nodes[*channel.nodeIndex];
+                        if (!target_node.meshIndex || *target_node.meshIndex >= asset.meshes.size()) return std::nullopt;
+                        const auto component_count = asset.meshes[*target_node.meshIndex].primitives.empty() ? 0 : asset.meshes[*target_node.meshIndex].primitives[0].targets.size();
+                        if (component_count == 0) return std::nullopt;
+                        return ChannelTargetSpec{.Path = AnimationPath::Weights, .ComponentCount = component_count};
+                    }
                 }
-                default: continue; // Skip unsupported paths
-            }
+                return std::nullopt;
+            }();
+            if (!target_spec) continue;
 
             const auto &sampler = anim.samplers[channel.samplerIndex];
             if (sampler.inputAccessor >= asset.accessors.size() || sampler.outputAccessor >= asset.accessors.size()) continue;
@@ -840,25 +835,26 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             const auto &output_accessor = asset.accessors[sampler.outputAccessor];
             if (input_accessor.count == 0) continue;
 
-            AnimationInterpolation interp;
-            switch (sampler.interpolation) {
-                case fastgltf::AnimationInterpolation::Step: interp = AnimationInterpolation::Step; break;
-                case fastgltf::AnimationInterpolation::Linear: interp = AnimationInterpolation::Linear; break;
-                case fastgltf::AnimationInterpolation::CubicSpline: interp = AnimationInterpolation::CubicSpline; break;
-                default: interp = AnimationInterpolation::Linear; break;
-            }
+            const auto interp = [&]() {
+                switch (sampler.interpolation) {
+                    case fastgltf::AnimationInterpolation::Step: return AnimationInterpolation::Step;
+                    case fastgltf::AnimationInterpolation::Linear: return AnimationInterpolation::Linear;
+                    case fastgltf::AnimationInterpolation::CubicSpline: return AnimationInterpolation::CubicSpline;
+                }
+                return AnimationInterpolation::Linear;
+            }();
 
             std::vector<float> times(input_accessor.count);
             fastgltf::copyFromAccessor<float>(asset, input_accessor, times.data());
 
             std::vector<float> values;
-            if (target_path == AnimationPath::Weights) {
+            if (target_spec->Path == AnimationPath::Weights) {
                 // Weights: output accessor has keyframe_count * target_count scalar values
                 values.resize(output_accessor.count);
                 fastgltf::copyFromAccessor<float>(asset, output_accessor, values.data());
             } else {
-                values.resize(output_accessor.count * component_count);
-                if (component_count == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
+                values.resize(output_accessor.count * target_spec->ComponentCount);
+                if (target_spec->ComponentCount == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
                 else fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
             }
 
@@ -866,7 +862,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
 
             clip.Channels.emplace_back(AnimationChannelData{
                 .TargetNodeIndex = uint32_t(*channel.nodeIndex),
-                .Target = target_path,
+                .Target = target_spec->Path,
                 .Interp = interp,
                 .TimesSeconds = std::move(times),
                 .Values = std::move(values),
