@@ -1,5 +1,13 @@
-
-// TODO: After adding materials/textures: Tangents import + morph target tangent deltas
+// TODO (glTF 2.0 coverage, non-material-first):
+// - Support `node.weights` per-object morph defaults (currently only `mesh.weights` is imported).
+// - Support additional skin influence sets (`JOINTS_1`/`WEIGHTS_1`, etc.), not just set 0.
+// - Import cameras (`node.camera` + camera payload in SceneData).
+// - Support compressed geometry extensions (`EXT_meshopt_compression`, `KHR_draco_mesh_compression`):
+//   minimal decode path: meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
+//   draco decoder-only build (disable encoder/tools/tests, keep mesh decode path).
+// - Preserve `EXT_mesh_gpu_instancing` custom instance attributes (e.g. `_ID`), not only TRS.
+// - Add `KHR_animation_pointer` support (currently only core TRS/weights animation paths are handled).
+// - After adding materials/textures: tangents import + morph target tangent deltas.
 
 #pragma once
 

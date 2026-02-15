@@ -1845,9 +1845,9 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
             });
 
             return {
-                {SPT::SelectionFragmentXRay, tri_batch},
-                {SPT::SelectionFragmentLineXRay, line_batch},
-                {SPT::SelectionFragmentPointXRay, point_batch},
+                {SPT::SelectionFragmentTriangles, tri_batch},
+                {SPT::SelectionFragmentLines, line_batch},
+                {SPT::SelectionFragmentPoints, point_batch},
             };
         },
         signal_semaphore
@@ -2014,8 +2014,10 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
 
     RenderEditSelectionPass(ranges, element, *SelectionReadySemaphore);
 
-    const bool xray = SelectionXRay || R.get<SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe;
-    DispatchBoxSelect(box_min, box_max, element_count, xray, *SelectionReadySemaphore);
+    // Element occlusion semantics are determined by RenderEditSelectionPass depth state.
+    // Here we always accumulate all surviving fragments to avoid nondeterministic "one per pixel"
+    // drops for overlapping visible vertices/edges.
+    DispatchBoxSelect(box_min, box_max, element_count, *SelectionReadySemaphore);
 
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
     for (size_t i = 0; i < ranges.size(); ++i) {
@@ -2156,7 +2158,7 @@ std::vector<entt::entity> Scene::RunObjectPick(glm::uvec2 mouse_px, uint32_t rad
     return entities;
 }
 
-void Scene::DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t max_id, bool xray, vk::Semaphore wait_semaphore) {
+void Scene::DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const uint32_t bitset_words = (max_id + 31) / 32;
     const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
     Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
@@ -2171,7 +2173,6 @@ void Scene::DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t m
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .BoxResultIndex = SelectionHandles->SelectionBitset,
-            .XRay = uint32_t(xray),
         },
         [group_counts](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_counts.x, group_counts.y, 1); },
         wait_semaphore
@@ -2188,15 +2189,11 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
     const Timer timer{"RunBoxSelect"};
     const bool selection_rendered = SelectionStale;
     if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
-
-    // Object box-select is always x-ray (select all overlapped objects, not just nearest).
-    DispatchBoxSelect(box_min, box_max, max_object_id, true, selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{});
+    DispatchBoxSelect(box_min, box_max, max_object_id, selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{});
 
     // Build ObjectId -> entity map for lookup
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
-    for (const auto [e, ri] : R.view<RenderInstance>().each()) {
-        object_id_to_entity[ri.ObjectId] = e;
-    }
+    for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
 
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
     std::vector<entt::entity> entities;

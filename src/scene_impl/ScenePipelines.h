@@ -431,16 +431,7 @@ struct SelectionFragmentPipeline {
             )
         );
         pipelines.emplace(
-            SPT::SelectionFragment,
-            ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
-                {},
-                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(), draw_pc
-            )
-        );
-        pipelines.emplace(
-            SPT::SelectionFragmentXRay,
+            SPT::SelectionFragmentTriangles,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
                 {},
@@ -449,7 +440,7 @@ struct SelectionFragmentPipeline {
             )
         );
         pipelines.emplace(
-            SPT::SelectionFragmentLineXRay,
+            SPT::SelectionFragmentLines,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
                 {},
@@ -458,7 +449,7 @@ struct SelectionFragmentPipeline {
             )
         );
         pipelines.emplace(
-            SPT::SelectionFragmentPointXRay,
+            SPT::SelectionFragmentPoints,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
                 {},

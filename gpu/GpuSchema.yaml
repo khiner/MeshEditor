@@ -257,8 +257,6 @@ structs:
         type: u32
       - name: BoxResultIndex
         type: u32
-      - name: XRay
-        type: u32
   - name: SilhouetteEdgeDepthObjectPushConstants
     push_constant: true
     fields:

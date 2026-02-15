@@ -59,10 +59,9 @@ enum class ShaderPipelineType {
     SelectionElementFaceXRay,
     SelectionElementEdgeXRay,
     SelectionElementVertexXRay,
-    SelectionFragmentXRay,
-    SelectionFragment,
-    SelectionFragmentLineXRay,
-    SelectionFragmentPointXRay,
+    SelectionFragmentTriangles,
+    SelectionFragmentLines,
+    SelectionFragmentPoints,
     DebugNormals,
 };
 
@@ -264,7 +263,7 @@ private:
 
     std::vector<entt::entity> RunObjectPick(glm::uvec2 pixel, uint32_t radius_px = 0);
     std::vector<entt::entity> RunBoxSelect(std::pair<glm::uvec2, glm::uvec2>);
-    void DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t max_id, bool xray, vk::Semaphore wait_semaphore);
+    void DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore);
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
     void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);

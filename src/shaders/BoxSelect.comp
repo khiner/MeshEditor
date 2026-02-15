@@ -34,19 +34,12 @@ void main() {
     const uvec2 pixel = pc.BoxMin + local;
     if (pixel.x > pc.BoxMax.x || pixel.y > pc.BoxMax.y) return;
 
-    float min_depth = 1.0;
-    uint min_id = 0u;
     uint idx = imageLoad(HeadImages[pc.HeadImageIndex], ivec2(pixel)).r;
     while (idx != INVALID_NODE) {
         const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
         if (node.Id != 0 && node.Id <= pc.MaxId) {
-            if (node.Depth < min_depth) {
-                min_depth = node.Depth;
-                min_id = node.Id;
-            }
-            if (pc.XRay != 0u) markSelected(node.Id);
+            markSelected(node.Id);
         }
         idx = node.Next;
     }
-    if (pc.XRay == 0u && min_id != 0u) markSelected(min_id);
 }
