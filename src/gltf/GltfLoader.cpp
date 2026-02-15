@@ -146,13 +146,8 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
     }
 
     if (has_joints) {
-        // Collect all skin influence sets (JOINTS_0/WEIGHTS_0, JOINTS_1/WEIGHTS_1, ...)
-        struct InfluenceSet {
-            std::vector<glm::u16vec4> Joints;
-            std::vector<vec4> Weights;
-        };
-        std::vector<InfluenceSet> sets;
-
+        // Collect and validate all skin influence accessor pairs (JOINTS_n/WEIGHTS_n).
+        std::vector<std::pair<const fastgltf::Accessor *, const fastgltf::Accessor *>> influence_accessors;
         for (uint32_t set_index = 0;; ++set_index) {
             const auto j_name = std::format("JOINTS_{}", set_index);
             const auto w_name = std::format("WEIGHTS_{}", set_index);
@@ -173,26 +168,33 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
                     )
                 };
             }
-
-            auto &s = sets.emplace_back();
-            s.Joints.resize(position_accessor.count);
-            fastgltf::copyFromAccessor<glm::u16vec4>(asset, j_acc, s.Joints.data());
-            s.Weights.resize(position_accessor.count);
-            fastgltf::copyFromAccessor<vec4>(asset, w_acc, s.Weights.data());
+            influence_accessors.emplace_back(&j_acc, &w_acc);
         }
 
-        if (sets.size() == 1) {
-            // Fast path: single influence set — no merging needed
-            for (uint32_t i = 0; i < static_cast<uint32_t>(position_accessor.count); ++i) {
-                deform_data->Joints[base_vertex + i] = uvec4{sets[0].Joints[i]};
-                deform_data->Weights[base_vertex + i] = sets[0].Weights[i];
-            }
+        if (influence_accessors.size() == 1) {
+            fastgltf::copyFromAccessor<uvec4>(asset, *influence_accessors.front().first, &deform_data->Joints[base_vertex]);
+            fastgltf::copyFromAccessor<vec4>(asset, *influence_accessors.front().second, &deform_data->Weights[base_vertex]);
         } else {
+            struct InfluenceSet {
+                std::vector<uvec4> Joints;
+                std::vector<vec4> Weights;
+            };
+            std::vector<InfluenceSet> sets(influence_accessors.size());
+
+            for (std::size_t set_index = 0; set_index < sets.size(); ++set_index) {
+                auto &s = sets[set_index];
+                const auto [j_acc, w_acc] = influence_accessors[set_index];
+                s.Joints.resize(position_accessor.count);
+                fastgltf::copyFromAccessor<uvec4>(asset, *j_acc, s.Joints.data());
+                s.Weights.resize(position_accessor.count);
+                fastgltf::copyFromAccessor<vec4>(asset, *w_acc, s.Weights.data());
+            }
+
             // Multiple influence sets: merge all, keep top 4 by weight, renormalize.
             // glTF 2.0 §3.7.3.1: implementations MAY support only 4 influences.
             // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skinned-mesh-attributes
             const auto total_influences = static_cast<uint32_t>(sets.size()) * 4u;
-            std::vector<std::pair<uint16_t, float>> all(total_influences);
+            std::vector<std::pair<uint32_t, float>> all(total_influences);
             const auto top4_end = all.begin() + 4;
             const auto by_weight = [](const auto &a, const auto &b) { return a.second > b.second; };
 
@@ -408,9 +410,8 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
     // Read default morph target weights from mesh
     if (mesh_morph_data && !source_mesh.weights.empty()) {
         mesh_morph_data->DefaultWeights.resize(mesh_morph_data->TargetCount, 0.f);
-        for (uint32_t w = 0; w < std::min(static_cast<uint32_t>(source_mesh.weights.size()), mesh_morph_data->TargetCount); ++w) {
-            mesh_morph_data->DefaultWeights[w] = source_mesh.weights[w];
-        }
+        const auto copy_count = std::min(source_mesh.weights.size(), static_cast<std::size_t>(mesh_morph_data->TargetCount));
+        std::copy_n(source_mesh.weights.begin(), copy_count, mesh_morph_data->DefaultWeights.begin());
     } else if (mesh_morph_data) {
         mesh_morph_data->DefaultWeights.assign(mesh_morph_data->TargetCount, 0.f);
     }
@@ -449,7 +450,7 @@ struct SceneTraversalData {
 };
 
 // DecomposeNodeMatrices guarantees TRS, so we can compose world transforms in glm space directly.
-SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
+SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, const std::vector<Transform> &local_transforms, uint32_t scene_index) {
     SceneTraversalData traversal;
     traversal.InScene.assign(asset.nodes.size(), false);
     traversal.WorldTransforms.assign(asset.nodes.size(), I4);
@@ -461,7 +462,7 @@ SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, uint32_t sce
         if (static_cast<std::size_t>(node_index) >= asset.nodes.size()) return;
 
         const auto &node = asset.nodes[node_index];
-        const auto local = ToMatrix(ToTransform(std::get<fastgltf::TRS>(node.transform)));
+        const auto local = ToMatrix(local_transforms[node_index]);
         const auto world = parent_world * local;
         traversal.InScene[node_index] = true;
         traversal.WorldTransforms[node_index] = world;
@@ -598,12 +599,14 @@ std::vector<mat4> LoadInverseBindMatrices(
 
     const auto &accessor = asset.accessors[*skin.inverseBindMatrices];
     if (accessor.type != fastgltf::AccessorType::Mat4 || accessor.count == 0) return inverse_bind_matrices;
-
-    std::vector<mat4> ibm(accessor.count);
-    fastgltf::copyFromAccessor<mat4>(asset, accessor, ibm.data());
-
-    const auto count = std::min(ibm.size(), static_cast<std::size_t>(joint_count));
-    std::copy_n(ibm.begin(), count, inverse_bind_matrices.begin());
+    const auto joint_count_sz = static_cast<std::size_t>(joint_count);
+    if (accessor.count <= joint_count_sz) {
+        fastgltf::copyFromAccessor<mat4>(asset, accessor, inverse_bind_matrices.data());
+    } else {
+        std::vector<mat4> ibm(accessor.count);
+        fastgltf::copyFromAccessor<mat4>(asset, accessor, ibm.data());
+        std::copy_n(ibm.begin(), joint_count_sz, inverse_bind_matrices.begin());
+    }
     return inverse_bind_matrices;
 }
 
@@ -668,12 +671,12 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
 
     SceneData scene_data;
     const auto parents = BuildNodeParentTable(asset);
-    const auto traversal = TraverseSceneNodes(asset, static_cast<uint32_t>(scene_index));
     std::vector<Transform> local_transforms(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         // DecomposeNodeMatrices guarantees node.transform is always TRS.
         local_transforms[node_index] = ToTransform(std::get<fastgltf::TRS>(asset.nodes[node_index].transform));
     }
+    const auto traversal = TraverseSceneNodes(asset, local_transforms, static_cast<uint32_t>(scene_index));
 
     std::vector<bool> used_skin(asset.skins.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
