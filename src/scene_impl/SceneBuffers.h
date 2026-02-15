@@ -1,7 +1,6 @@
 #pragma once
 
-#include "gpu/ClickElementCandidate.h"
-#include "gpu/ClickResult.h"
+#include "gpu/ElementPickCandidate.h"
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
 #include "gpu/WorldMatrix.h"
@@ -10,14 +9,14 @@
 constexpr uint32_t
     ObjectSelectRadiusPx = 15,
     ElementSelectRadiusPx = 50,
-    ClickSelectDiameterPx = ElementSelectRadiusPx * 2 + 1,
-    ClickSelectPixelCount = ClickSelectDiameterPx * ClickSelectDiameterPx;
+    ElementPickDiameterPx = ElementSelectRadiusPx * 2 + 1,
+    ElementPickPixelCount = ElementPickDiameterPx * ElementPickDiameterPx;
 
 struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
     static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableObjects + 31) / 32};
-    static constexpr uint32_t ClickElementGroupSize{256};
-    static constexpr uint32_t ClickSelectElementGroupCount{(ClickSelectPixelCount + ClickElementGroupSize - 1) / ClickElementGroupSize};
+    static constexpr uint32_t ElementPickGroupSize{256};
+    static constexpr uint32_t ElementPickGroupCount{(ElementPickPixelCount + ElementPickGroupSize - 1) / ElementPickGroupSize};
     static constexpr uint32_t SelectionNodesPerPixel{10};
     static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
 
@@ -37,12 +36,11 @@ struct SceneBuffers {
           IdentityIndexBuffer{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
           SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ClickResultBuffer{Ctx, sizeof(ClickResult), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ClickElementResultBuffer{Ctx, ClickSelectElementGroupCount * sizeof(ClickElementCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          ObjectPickKeyBuffer{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          ElementPickCandidateBuffer{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           BoxSelectBitsetBuffer{Ctx, BoxSelectBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
 
-    const ClickResult &GetClickResult() const { return *reinterpret_cast<const ClickResult *>(ClickResultBuffer.GetData().data()); }
-    vk::DescriptorBufferInfo GetBoxSelectBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
+    vk::DescriptorBufferInfo GetSelectionBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
 
     SlottedRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
         auto &index_buffer = GetIndexBuffer(index_kind);
@@ -113,5 +111,5 @@ struct SceneBuffers {
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer};
     // CPU readback buffers (host-visible)
-    mvk::Buffer SelectionCounterBuffer, ClickResultBuffer, ClickElementResultBuffer, BoxSelectBitsetBuffer;
+    mvk::Buffer SelectionCounterBuffer, ObjectPickKeyBuffer, ElementPickCandidateBuffer, BoxSelectBitsetBuffer;
 };

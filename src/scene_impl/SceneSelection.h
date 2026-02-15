@@ -1,8 +1,7 @@
 #pragma once
 
 #include "gpu/BoxSelectPushConstants.h"
-#include "gpu/ClickSelectElementPushConstants.h"
-#include "gpu/ClickSelectPushConstants.h"
+#include "gpu/ElementPickPushConstants.h"
 
 namespace {
 
@@ -113,30 +112,30 @@ uint32_t GetElementCount(const Mesh &mesh, Element element) {
 
 // After rendering elements to selection buffer, dispatch compute shader to find the nearest element to mouse_px.
 // Returns 0-based element index, or nullopt if no element found.
-std::optional<uint32_t> FindNearestSelectionElement(
+std::optional<uint32_t> FindNearestPickedElement(
     const SceneBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
     vk::Queue queue, vk::Fence fence, vk::Device device,
-    uint32_t head_image_index, uint32_t selection_nodes_slot, uint32_t click_result_slot,
+    uint32_t head_image_index, uint32_t selection_nodes_slot, uint32_t element_candidate_buffer_slot,
     glm::uvec2 mouse_px, uint32_t max_element_id, Element element,
     vk::Semaphore wait_semaphore
 ) {
     const uint32_t radius = element == Element::Face ? 0u : ElementSelectRadiusPx;
-    const uint32_t group_count = element == Element::Face ? 1u : SceneBuffers::ClickSelectElementGroupCount;
+    const uint32_t group_count = element == Element::Face ? 1u : SceneBuffers::ElementPickGroupCount;
     RunSelectionCompute(
         cb, queue, fence, device, compute,
-        ClickSelectElementPushConstants{
+        ElementPickPushConstants{
             .TargetPx = mouse_px,
             .Radius = radius,
             .HeadImageIndex = head_image_index,
             .SelectionNodesIndex = selection_nodes_slot,
-            .ClickResultIndex = click_result_slot,
+            .ElementCandidateBufferIndex = element_candidate_buffer_slot,
         },
         [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); },
         wait_semaphore
     );
 
-    const auto *candidates = reinterpret_cast<const ClickElementCandidate *>(buffers.ClickElementResultBuffer.GetData().data());
-    ClickElementCandidate best{.Id = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
+    const auto *candidates = reinterpret_cast<const ElementPickCandidate *>(buffers.ElementPickCandidateBuffer.GetData().data());
+    ElementPickCandidate best{.Id = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
     for (uint32_t i = 0; i < group_count; ++i) {
         const auto &candidate = candidates[i];
         if (candidate.Id == 0) continue;

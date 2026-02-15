@@ -185,21 +185,7 @@ structs:
         type: u32
       - name: Overflow
         type: u32
-  - name: ClickHit
-    fields:
-      - name: Depth
-        type: float
-      - name: Id
-        type: u32
-      - name: DistanceSq
-        type: u32
-  - name: ClickResult
-    fields:
-      - name: Count
-        type: u32
-      - name: Hits
-        type: ClickHit[256]
-  - name: ClickElementCandidate
+  - name: ElementPickCandidate
     fields:
       - name: Id
         type: u32
@@ -224,7 +210,26 @@ structs:
       - name: SelectionCounterSlot
         type: u32
         default: InvalidSlot
-  - name: ClickSelectPushConstants
+  - name: ObjectPickPushConstants
+    push_constant: true
+    fields:
+      - name: TargetPx
+        type: uvec2
+      - name: Radius
+        type: u32
+      - name: MaxId
+        type: u32
+      - name: EpochInv
+        type: u32
+      - name: HeadImageIndex
+        type: u32
+      - name: SelectionNodesIndex
+        type: u32
+      - name: BestKeyIndex
+        type: u32
+      - name: SeenBitsIndex
+        type: u32
+  - name: ElementPickPushConstants
     push_constant: true
     fields:
       - name: TargetPx
@@ -235,20 +240,7 @@ structs:
         type: u32
       - name: SelectionNodesIndex
         type: u32
-      - name: ClickResultIndex
-        type: u32
-  - name: ClickSelectElementPushConstants
-    push_constant: true
-    fields:
-      - name: TargetPx
-        type: uvec2
-      - name: Radius
-        type: u32
-      - name: HeadImageIndex
-        type: u32
-      - name: SelectionNodesIndex
-        type: u32
-      - name: ClickResultIndex
+      - name: ElementCandidateBufferIndex
         type: u32
   - name: BoxSelectPushConstants
     push_constant: true

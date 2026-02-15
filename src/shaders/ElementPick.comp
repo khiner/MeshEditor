@@ -4,12 +4,12 @@
 
 // Bindless layout (set 0):
 // binding BINDING_Image: storage images (HeadImage)
-// binding BINDING_Buffer: storage buffers (SelectionNodes, ClickElementResult) via indices
+// binding BINDING_Buffer: storage buffers (SelectionNodes, ElementPickCandidateBuffer) via indices
 #define GROUP_SIZE 256
 layout(local_size_x = GROUP_SIZE) in;
 
-#include "ClickElementCandidate.glsl"
-#include "ClickSelectElementPushConstants.glsl"
+#include "ElementPickCandidate.glsl"
+#include "ElementPickPushConstants.glsl"
 #include "SelectionNode.glsl"
 
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
@@ -20,13 +20,13 @@ const uint INVALID_NODE = 0xffffffffu;
 
 layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
 
-layout(set = 0, binding = BINDING_Buffer, scalar) buffer ClickElementResult {
-    ClickElementCandidate Candidates[];
-} ClickResults[];
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer ElementPickCandidateBuffer {
+    ElementPickCandidate Candidates[];
+} ElementCandidateBuffers[];
 
-shared ClickElementCandidate SharedCandidates[GROUP_SIZE];
+shared ElementPickCandidate SharedCandidates[GROUP_SIZE];
 
-bool IsBetter(ClickElementCandidate a, ClickElementCandidate b) {
+bool IsBetter(ElementPickCandidate a, ElementPickCandidate b) {
     if (a.Id == 0u) return false;
     if (b.Id == 0u) return true;
     if (a.DistanceSq < b.DistanceSq) return true;
@@ -38,7 +38,7 @@ void main() {
     const uint idx = gl_GlobalInvocationID.x;
     const uint local = gl_LocalInvocationID.x;
 
-    ClickElementCandidate best;
+    ElementPickCandidate best;
     best.Id = 0u;
     best.Depth = 1.0;
     best.DistanceSq = 0xffffffffu;
@@ -72,8 +72,8 @@ void main() {
 
     for (uint offset = GROUP_SIZE / 2; offset > 0; offset >>= 1) {
         if (local < offset) {
-            const ClickElementCandidate other = SharedCandidates[local + offset];
-            const ClickElementCandidate current = SharedCandidates[local];
+            const ElementPickCandidate other = SharedCandidates[local + offset];
+            const ElementPickCandidate current = SharedCandidates[local];
             if (IsBetter(other, current)) {
                 SharedCandidates[local] = other;
             }
@@ -82,6 +82,6 @@ void main() {
     }
 
     if (local == 0) {
-        ClickResults[pc.ClickResultIndex].Candidates[gl_WorkGroupID.x] = SharedCandidates[0];
+        ElementCandidateBuffers[pc.ElementCandidateBufferIndex].Candidates[gl_WorkGroupID.x] = SharedCandidates[0];
     }
 }

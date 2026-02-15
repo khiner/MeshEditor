@@ -522,15 +522,15 @@ struct ScenePipelines {
         Silhouette{SilhouettePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
         SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
         SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
-        ClickSelect{
-            d, Shaders{{{ShaderType::eCompute, "ClickSelect.comp"}}},
-            vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectPushConstants)},
+        ObjectPick{
+            d, Shaders{{{ShaderType::eCompute, "ObjectPick.comp"}}},
+            vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ObjectPickPushConstants)},
             selection_layout,
             selection_set
         },
-        ClickSelectElement{
-            d, Shaders{{{ShaderType::eCompute, "ClickSelectElement.comp"}}},
-            vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ClickSelectElementPushConstants)},
+        ElementPick{
+            d, Shaders{{{ShaderType::eCompute, "ElementPick.comp"}}},
+            vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ElementPickPushConstants)},
             selection_layout,
             selection_set
         },
@@ -549,8 +549,8 @@ struct ScenePipelines {
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
-    ComputePipeline ClickSelect;
-    ComputePipeline ClickSelectElement;
+    ComputePipeline ObjectPick;
+    ComputePipeline ElementPick;
     ComputePipeline BoxSelect;
 
     void SetExtent(vk::Extent2D);
@@ -559,8 +559,8 @@ struct ScenePipelines {
         Silhouette.Renderer.CompileShaders();
         SilhouetteEdge.Renderer.CompileShaders();
         SelectionFragment.Renderer.CompileShaders();
-        ClickSelect.Compile();
-        ClickSelectElement.Compile();
+        ObjectPick.Compile();
+        ElementPick.Compile();
         BoxSelect.Compile();
     }
 };

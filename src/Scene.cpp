@@ -12,6 +12,7 @@
 #include "SvgResource.h"
 #include "Timer.h"
 #include "gltf/GltfLoader.h"
+#include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshStore.h"
@@ -22,7 +23,9 @@
 #include <imgui_internal.h>
 
 #include "Variant.h"
+#include <algorithm>
 #include <format>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -122,6 +125,12 @@ EditTransformContext BuildEditTransformContext(const entt::registry &r, bool bui
     return context;
 }
 
+void ResetObjectPickKeys(SceneBuffers &buffers) {
+    auto bytes = buffers.ObjectPickKeyBuffer.GetMappedData();
+    auto *keys = reinterpret_cast<uint32_t *>(bytes.data());
+    std::fill_n(keys, SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
+}
+
 namespace changes {
 using namespace entt::literals;
 constexpr auto
@@ -196,9 +205,9 @@ struct Scene::SelectionSlotHandles {
         : Slots(slots),
           HeadImage(slots.Allocate(SlotType::Image)),
           SelectionCounter(slots.Allocate(SlotType::Buffer)),
-          ClickResult(slots.Allocate(SlotType::Buffer)),
-          ClickElementResult(slots.Allocate(SlotType::Buffer)),
-          BoxResult(slots.Allocate(SlotType::Buffer)),
+          ObjectPickKey(slots.Allocate(SlotType::Buffer)),
+          ElementPickCandidates(slots.Allocate(SlotType::Buffer)),
+          SelectionBitset(slots.Allocate(SlotType::Buffer)),
           ObjectIdSampler(slots.Allocate(SlotType::Sampler)),
           DepthSampler(slots.Allocate(SlotType::Sampler)),
           SilhouetteSampler(slots.Allocate(SlotType::Sampler)) {}
@@ -206,16 +215,16 @@ struct Scene::SelectionSlotHandles {
     ~SelectionSlotHandles() {
         Slots.Release({SlotType::Image, HeadImage});
         Slots.Release({SlotType::Buffer, SelectionCounter});
-        Slots.Release({SlotType::Buffer, ClickResult});
-        Slots.Release({SlotType::Buffer, ClickElementResult});
-        Slots.Release({SlotType::Buffer, BoxResult});
+        Slots.Release({SlotType::Buffer, ObjectPickKey});
+        Slots.Release({SlotType::Buffer, ElementPickCandidates});
+        Slots.Release({SlotType::Buffer, SelectionBitset});
         Slots.Release({SlotType::Sampler, ObjectIdSampler});
         Slots.Release({SlotType::Sampler, DepthSampler});
         Slots.Release({SlotType::Sampler, SilhouetteSampler});
     }
 
     DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionCounter, ClickResult, ClickElementResult, BoxResult, ObjectIdSampler, DepthSampler, SilhouetteSampler;
+    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler;
 };
 
 // Unmanaged reactive storage to track entity destruction.
@@ -324,6 +333,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<AnimationTimeline>(SceneEntity);
 
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
+    ResetObjectPickKeys(*Buffers);
 
     Pipelines->CompileShaders();
 }
@@ -2021,32 +2031,37 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     return results;
 }
 
-std::optional<uint32_t> Scene::RunClickSelectElement(entt::entity mesh_entity, Element element, glm::uvec2 mouse_px) {
-    const auto &mesh = R.get<Mesh>(mesh_entity);
-    const uint32_t element_count = GetElementCount(mesh, element);
-    if (element_count == 0 || element == Element::None) return {};
+std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges(std::span<const ElementRange> ranges, Element element, glm::uvec2 mouse_px) {
+    if (ranges.empty() || element == Element::None) return {};
+    const auto element_count = fold_left(
+        ranges, uint32_t{0},
+        [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); }
+    );
+    if (element_count == 0) return {};
 
-    const Timer timer{"RunClickSelectElement"};
-    const ElementRange range{mesh_entity, 0, element_count};
-    RenderEditSelectionPass(std::span{&range, 1}, element, *SelectionReadySemaphore);
-    if (const auto index = FindNearestSelectionElement(
-            *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
+    const Timer timer{"RunElementPick"};
+    RenderEditSelectionPass(ranges, element, *SelectionReadySemaphore);
+    if (const auto index = FindNearestPickedElement(
+            *Buffers, Pipelines->ElementPick, *ClickCommandBuffer,
             Vk.Queue, *OneShotFence, Vk.Device,
-            SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult,
+            SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ElementPickCandidates,
             mouse_px, element_count, element,
             *SelectionReadySemaphore
         )) {
-        return *index;
+        for (const auto &range : ranges) {
+            if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
+            return std::pair{range.MeshEntity, *index - range.Offset};
+        }
     }
     return {};
 }
 
-std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instance_entity, glm::uvec2 mouse_px) {
+std::optional<uint32_t> Scene::RunExcitableVertexPick(entt::entity instance_entity, glm::uvec2 mouse_px) {
     if (!R.all_of<Excitable>(instance_entity)) return {};
     const auto *mesh_instance = R.try_get<MeshInstance>(instance_entity);
     if (!mesh_instance) return {};
 
-    const Timer timer{"RunClickSelectExcitableVertex"};
+    const Timer timer{"RunExcitableVertexPick"};
     const auto mesh_entity = mesh_instance->MeshEntity;
     const auto &mesh = R.get<Mesh>(mesh_entity);
     const uint32_t vertex_count = mesh.VertexCount();
@@ -2064,61 +2079,79 @@ std::optional<uint32_t> Scene::RunClickSelectExcitableVertex(entt::entity instan
         return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, batch}}; }, *SelectionReadySemaphore);
     SelectionStale = true;
 
-    return FindNearestSelectionElement(
-        *Buffers, Pipelines->ClickSelectElement, *ClickCommandBuffer,
+    return FindNearestPickedElement(
+        *Buffers, Pipelines->ElementPick, *ClickCommandBuffer,
         Vk.Queue, *OneShotFence, Vk.Device,
-        SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ClickElementResult,
+        SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ElementPickCandidates,
         mouse_px, vertex_count, Element::Vertex,
         *SelectionReadySemaphore
     );
 }
 
-// Returns entities hit at mouse_px, sorted by depth (near-to-far), with duplicates removed.
-std::vector<entt::entity> Scene::RunClickSelect(glm::uvec2 mouse_px) {
+// Returns unique object-hit entities sorted by (distance, depth, object id).
+std::vector<entt::entity> Scene::RunObjectPick(glm::uvec2 mouse_px, uint32_t radius_px) {
+    if (NextObjectId <= 1) return {}; // No objects have been assigned IDs yet
+    const uint32_t max_object_id = std::min(NextObjectId - 1, SceneBuffers::MaxSelectableObjects);
+    if (max_object_id == 0) return {};
+
     const bool selection_rendered = SelectionStale;
     if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
 
-    const Timer timer{"RunClickSelect"};
-    Buffers->ClickResultBuffer.Write(as_bytes(ClickResult{}));
+    const Timer timer{"RunObjectPick"};
+    // ObjectPickKeyBuffer is persistent across clicks: high 8 bits of each packed key store
+    // a per-click epoch tag. We therefore avoid clearing all keys every click and only do a
+    // full reset when the 8-bit epoch wraps; stale keys are filtered out by epoch on readback.
+    if (ObjectPickEpochTag == 0) {
+        ResetObjectPickKeys(*Buffers);
+        ObjectPickEpochTag = 255;
+    }
+    const uint32_t epoch_inv = ObjectPickEpochTag--;
+
     auto cb = *ClickCommandBuffer;
-    const auto &compute = Pipelines->ClickSelect;
     RunSelectionCompute(
-        cb, Vk.Queue, *OneShotFence, Vk.Device, compute,
-        ClickSelectPushConstants{
+        cb, Vk.Queue, *OneShotFence, Vk.Device, Pipelines->ObjectPick,
+        ObjectPickPushConstants{
             .TargetPx = mouse_px,
-            .Radius = ObjectSelectRadiusPx,
+            .Radius = radius_px,
+            .MaxId = max_object_id,
+            .EpochInv = epoch_inv,
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
-            .ClickResultIndex = SelectionHandles->ClickResult,
+            .BestKeyIndex = SelectionHandles->ObjectPickKey,
+            .SeenBitsIndex = SelectionHandles->SelectionBitset,
         },
-        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }, // Single workgroup; threads cooperatively scan the radius
+        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }, // Single workgroup; threads cooperatively scan the radius.
         selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{}
     );
 
-    // Convert click hits to entities, sorted by (distance, depth) with dedup keeping nearest per object.
-    const auto &result = Buffers->GetClickResult();
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
-    for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
+    for (const auto [e, ri] : R.view<RenderInstance>().each()) {
+        if (ri.ObjectId > 0 && ri.ObjectId <= max_object_id) object_id_to_entity[ri.ObjectId] = e;
+    }
 
     struct SortedHit {
-        uint32_t DistanceSq, Id;
-        float Depth;
+        uint32_t Key24;
+        uint32_t Id;
         auto operator<=>(const SortedHit &) const = default;
     };
-    auto hits = result.Hits //
-        | take(std::min<uint32_t>(result.Count, result.Hits.size())) //
-        | filter([&](const auto &hit) { return object_id_to_entity.contains(hit.Id); }) //
-        | transform([](const auto &hit) { return SortedHit{hit.DistanceSq, hit.Id, hit.Depth}; }) //
-        | to<std::vector>();
+
+    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
+    const auto *keys = reinterpret_cast<const uint32_t *>(Buffers->ObjectPickKeyBuffer.GetData().data());
+    std::vector<SortedHit> hits;
+    for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
+        const uint32_t idx = object_id - 1;
+        if ((bits[idx / 32] & (1u << (idx % 32))) == 0) continue;
+        if (!object_id_to_entity.contains(object_id)) continue;
+        const uint32_t packed_key = keys[idx];
+        if ((packed_key >> 24) != epoch_inv) continue;
+        hits.emplace_back(SortedHit{packed_key & 0x00ffffffu, object_id});
+    }
     std::ranges::sort(hits);
 
     std::vector<entt::entity> entities;
     entities.reserve(hits.size());
-    std::unordered_set<uint32_t> seen_object_ids;
     for (const auto &hit : hits) {
-        if (seen_object_ids.insert(hit.Id).second) {
-            entities.emplace_back(object_id_to_entity.at(hit.Id));
-        }
+        entities.emplace_back(object_id_to_entity.at(hit.Id));
     }
     return entities;
 }
@@ -2137,7 +2170,7 @@ void Scene::DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t m
             .MaxId = max_id,
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
-            .BoxResultIndex = SelectionHandles->BoxResult,
+            .BoxResultIndex = SelectionHandles->SelectionBitset,
             .XRay = uint32_t(xray),
         },
         [group_counts](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_counts.x, group_counts.y, 1); },
@@ -2156,7 +2189,8 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> 
     const bool selection_rendered = SelectionStale;
     if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
 
-    DispatchBoxSelect(box_min, box_max, max_object_id, false, selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{});
+    // Object box-select is always x-ray (select all overlapped objects, not just nearest).
+    DispatchBoxSelect(box_min, box_max, max_object_id, true, selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{});
 
     // Build ObjectId -> entity map for lookup
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
@@ -2309,9 +2343,9 @@ void Scene::Interact() {
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (const auto hit_entities = RunClickSelect(mouse_px); !hit_entities.empty()) {
+            if (const auto hit_entities = RunObjectPick(mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); R.all_of<Excitable>(hit_entity)) {
-                    if (const auto vertex = RunClickSelectExcitableVertex(hit_entity, mouse_px)) {
+                    if (const auto vertex = RunExcitableVertexPick(hit_entity, mouse_px)) {
                         R.emplace_or_replace<ExcitedVertex>(hit_entity, *vertex, 1.f);
                     }
                 }
@@ -2324,39 +2358,46 @@ void Scene::Interact() {
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
     if (interaction_mode == InteractionMode::Edit && edit_mode == Element::None) return;
 
-    const auto hit_entities = RunClickSelect(mouse_px);
     if (interaction_mode == InteractionMode::Edit) {
-        const auto hit_it = find_if(hit_entities, [&](auto e) { return R.all_of<Selected>(e); });
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
+        std::vector<ElementRange> ranges;
+        uint32_t offset = 0;
+        std::unordered_set<entt::entity> seen_meshes;
+        for (const auto [_, mesh_instance] : R.view<const MeshInstance, const Selected>().each()) {
+            if (!seen_meshes.emplace(mesh_instance.MeshEntity).second) continue;
+            const uint32_t count = GetElementCount(R.get<Mesh>(mesh_instance.MeshEntity), edit_mode);
+            if (count == 0) continue;
+            ranges.emplace_back(ElementRange{mesh_instance.MeshEntity, offset, count});
+            offset += count;
+        }
         if (!toggle) {
-            for (const auto mesh_entity : GetSelectedMeshEntities(R)) {
+            for (const auto mesh_entity : seen_meshes) {
                 if (!R.get<MeshSelection>(mesh_entity).Handles.empty()) {
                     R.replace<MeshSelection>(mesh_entity, MeshSelection{});
                 }
             }
         }
-        if (hit_it != hit_entities.end()) {
-            const auto mesh_entity = R.get<MeshInstance>(*hit_it).MeshEntity;
-            if (const auto element_index = RunClickSelectElement(mesh_entity, edit_mode, mouse_px)) {
-                const auto *current_active = R.try_get<MeshActiveElement>(mesh_entity);
-                const bool is_active = current_active && current_active->Handle == *element_index;
-                R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
-                    if (!toggle) selection = {};
-                    if (toggle && selection.Handles.contains(*element_index)) {
-                        selection.Handles.erase(*element_index);
-                    } else {
-                        selection.Handles.emplace(*element_index);
-                    }
-                });
-                if (toggle && is_active) {
-                    R.remove<MeshActiveElement>(mesh_entity);
+        if (const auto hit = RunElementPickFromRanges(ranges, edit_mode, mouse_px)) {
+            const auto [mesh_entity, element_index] = *hit;
+            const auto *current_active = R.try_get<MeshActiveElement>(mesh_entity);
+            const bool is_active = current_active && current_active->Handle == element_index;
+            R.patch<MeshSelection>(mesh_entity, [&](auto &selection) {
+                if (!toggle) selection = {};
+                if (toggle && selection.Handles.contains(element_index)) {
+                    selection.Handles.erase(element_index);
                 } else {
-                    R.emplace_or_replace<MeshActiveElement>(mesh_entity, *element_index);
+                    selection.Handles.emplace(element_index);
                 }
+            });
+            if (toggle && is_active) {
+                R.remove<MeshActiveElement>(mesh_entity);
+            } else {
+                R.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
             }
         }
     } else if (interaction_mode == InteractionMode::Object) {
-        // Cycle through hit entities.
+        const auto hit_entities = RunObjectPick(mouse_px, ObjectSelectRadiusPx);
+
         entt::entity hit = entt::null;
         if (!hit_entities.empty()) {
             auto it = find(hit_entities, active_entity);
@@ -2442,21 +2483,21 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
                 vk::ImageLayout::eGeneral
             };
             const vk::DescriptorBufferInfo selection_counter{*Buffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
-            const vk::DescriptorBufferInfo click_result{*Buffers->ClickResultBuffer, 0, sizeof(ClickResult)};
-            const vk::DescriptorBufferInfo click_element_result{*Buffers->ClickElementResultBuffer, 0, SceneBuffers::ClickSelectElementGroupCount * sizeof(ClickElementCandidate)};
+            const vk::DescriptorBufferInfo object_pick_key{*Buffers->ObjectPickKeyBuffer, 0, SceneBuffers::MaxSelectableObjects * sizeof(uint32_t)};
+            const vk::DescriptorBufferInfo element_pick_candidates{*Buffers->ElementPickCandidateBuffer, 0, SceneBuffers::ElementPickGroupCount * sizeof(ElementPickCandidate)};
             const auto &sil = Pipelines->Silhouette;
             const auto &sil_edge = Pipelines->SilhouetteEdge;
             const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
-            const auto box_result = Buffers->GetBoxSelectBitsetDescriptor();
+            const auto selection_bitset = Buffers->GetSelectionBitsetDescriptor();
             Vk.Device.updateDescriptorSets(
                 {
                     Slots->MakeImageWrite(SelectionHandles->HeadImage, head_image_info),
                     Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->SelectionCounter}, selection_counter),
-                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ClickResult}, click_result),
-                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ClickElementResult}, click_element_result),
-                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->BoxResult}, box_result),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ObjectPickKey}, object_pick_key),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ElementPickCandidates}, element_pick_candidates),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->SelectionBitset}, selection_bitset),
                     Slots->MakeSamplerWrite(SelectionHandles->ObjectIdSampler, object_id_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->DepthSampler, depth_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->SilhouetteSampler, silhouette_sampler),

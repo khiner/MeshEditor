@@ -5,11 +5,9 @@
 #define GROUP_SIZE 256
 layout(local_size_x = GROUP_SIZE) in;
 
-#include "ClickResult.glsl"
-#include "ClickSelectPushConstants.glsl"
+#include "ObjectPickPushConstants.glsl"
 #include "SelectionNode.glsl"
 
-#define MAX_CLICK_RESULTS 256
 const uint INVALID_NODE = 0xffffffffu;
 
 layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
@@ -18,12 +16,32 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
     SelectionNode Nodes[];
 } SelectionBuffers[];
 
-layout(set = 0, binding = BINDING_Buffer, scalar) buffer ClickResultBlock {
-    ClickResult Data;
-} ClickResults[];
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer ObjectBestKeys {
+    uint Keys[];
+} BestKeyBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer SeenObjectBits {
+    uint Bits[];
+} SeenBitsBuffers[];
+
+uint PackKey(uint dist_sq, float depth) {
+    const uint dist_u8 = min(dist_sq, 0xffu);
+    const uint depth_u16 = uint(clamp(depth, 0.0, 1.0) * 65535.0 + 0.5);
+    return (pc.EpochInv << 24u) | (dist_u8 << 16u) | depth_u16;
+}
 
 void main() {
     const uint local = gl_LocalInvocationID.x;
+    const uint max_id = pc.MaxId;
+    if (max_id == 0u) return;
+
+    // Clear this click's seen-object bitset.
+    const uint bit_words = (max_id + 31u) / 32u;
+    for (uint i = local; i < bit_words; i += GROUP_SIZE) {
+        atomicExchange(SeenBitsBuffers[pc.SeenBitsIndex].Bits[i], 0u);
+    }
+    barrier();
+
     const uint diameter = pc.Radius * 2u + 1u;
     const uint pixel_count = diameter * diameter;
     const ivec2 size = imageSize(HeadImages[pc.HeadImageIndex]);
@@ -39,11 +57,10 @@ void main() {
         uint node_idx = imageLoad(HeadImages[pc.HeadImageIndex], pixel).r;
         while (node_idx != INVALID_NODE) {
             const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[node_idx];
-            const uint write_idx = atomicAdd(ClickResults[pc.ClickResultIndex].Data.Count, 1);
-            if (write_idx < MAX_CLICK_RESULTS) {
-                ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Depth = node.Depth;
-                ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].Id = node.Id;
-                ClickResults[pc.ClickResultIndex].Data.Hits[write_idx].DistanceSq = dist_sq;
+            if (node.Id > 0u && node.Id <= max_id) {
+                const uint idx = node.Id - 1u;
+                atomicMin(BestKeyBuffers[pc.BestKeyIndex].Keys[idx], PackKey(dist_sq, node.Depth));
+                atomicOr(SeenBitsBuffers[pc.SeenBitsIndex].Bits[idx >> 5u], 1u << (idx & 31u));
             }
             node_idx = node.Next;
         }
