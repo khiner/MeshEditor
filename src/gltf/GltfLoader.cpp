@@ -4,7 +4,7 @@
 #include "numeric/vec4.h"
 
 #include <fastgltf/core.hpp>
-#include <fastgltf/tools.hpp>
+#include <fastgltf/glm_element_traits.hpp>
 
 #include <glm/gtx/matrix_decompose.hpp>
 
@@ -16,14 +16,6 @@
 
 namespace gltf {
 namespace {
-
-mat4 ToGlmMatrix(const fastgltf::math::fmat4x4 &matrix) {
-    mat4 out;
-    for (auto c = 0; c < 4; ++c) {
-        for (auto r = 0; r < 4; ++r) out[c][r] = matrix[c][r];
-    }
-    return out;
-}
 
 Transform MatrixToTransform(const mat4 &m) {
     vec3 scale, translation, skew;
@@ -62,12 +54,7 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
 
     const auto base_vertex = static_cast<uint32_t>(target.Positions.size());
     target.Positions.resize(static_cast<std::size_t>(base_vertex) + position_accessor.count);
-    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
-        asset, position_accessor,
-        [&](fastgltf::math::fvec3 position, std::size_t index) {
-            target.Positions[base_vertex + index] = vec3{position.x(), position.y(), position.z()};
-        }
-    );
+    fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &target.Positions[base_vertex]);
 
     // Points have no indices to process — just positions
     if (primitive.type == fastgltf::PrimitiveType::Points) return;
@@ -126,12 +113,7 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
 
     const uint32_t base_vertex = static_cast<uint32_t>(mesh_data.Positions.size());
     mesh_data.Positions.resize(static_cast<std::size_t>(base_vertex) + position_accessor.count);
-    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
-        asset, position_accessor,
-        [&](fastgltf::math::fvec3 position, std::size_t index) {
-            mesh_data.Positions[base_vertex + static_cast<uint32_t>(index)] = vec3{position.x(), position.y(), position.z()};
-        }
-    );
+    fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &mesh_data.Positions[base_vertex]);
 
     // Parse NORMAL attribute
     const auto normal_it = primitive.findAttribute("NORMAL");
@@ -144,12 +126,7 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
         }
         const auto &normal_accessor = asset.accessors[normal_it->accessorIndex];
         mesh_data.Normals->resize(static_cast<std::size_t>(base_vertex) + position_accessor.count, vec3{0.f});
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
-            asset, normal_accessor,
-            [&](fastgltf::math::fvec3 normal, std::size_t index) {
-                (*mesh_data.Normals)[base_vertex + static_cast<uint32_t>(index)] = vec3{normal.x(), normal.y(), normal.z()};
-            }
-        );
+        fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*mesh_data.Normals)[base_vertex]);
     } else if (mesh_data.Normals) {
         // Previous primitives had normals but this one doesn't — pad with zeros
         mesh_data.Normals->resize(static_cast<std::size_t>(base_vertex) + position_accessor.count, vec3{0.f});
@@ -171,8 +148,8 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
     if (has_joints) {
         // Collect all skin influence sets (JOINTS_0/WEIGHTS_0, JOINTS_1/WEIGHTS_1, ...)
         struct InfluenceSet {
-            std::vector<fastgltf::math::u16vec4> Joints;
-            std::vector<fastgltf::math::fvec4> Weights;
+            std::vector<glm::u16vec4> Joints;
+            std::vector<vec4> Weights;
         };
         std::vector<InfluenceSet> sets;
 
@@ -199,18 +176,16 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
 
             auto &s = sets.emplace_back();
             s.Joints.resize(position_accessor.count);
-            fastgltf::copyFromAccessor<fastgltf::math::u16vec4>(asset, j_acc, s.Joints.data());
+            fastgltf::copyFromAccessor<glm::u16vec4>(asset, j_acc, s.Joints.data());
             s.Weights.resize(position_accessor.count);
-            fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, w_acc, s.Weights.data());
+            fastgltf::copyFromAccessor<vec4>(asset, w_acc, s.Weights.data());
         }
 
         if (sets.size() == 1) {
             // Fast path: single influence set — no merging needed
             for (uint32_t i = 0; i < static_cast<uint32_t>(position_accessor.count); ++i) {
-                const auto &j = sets[0].Joints[i];
-                deform_data->Joints[base_vertex + i] = {j.x(), j.y(), j.z(), j.w()};
-                const auto &w = sets[0].Weights[i];
-                deform_data->Weights[base_vertex + i] = {w.x(), w.y(), w.z(), w.w()};
+                deform_data->Joints[base_vertex + i] = uvec4{sets[0].Joints[i]};
+                deform_data->Weights[base_vertex + i] = sets[0].Weights[i];
             }
         } else {
             // Multiple influence sets: merge all, keep top 4 by weight, renormalize.
@@ -226,10 +201,10 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
                 for (const auto &s : sets) {
                     const auto &j = s.Joints[i];
                     const auto &w = s.Weights[i];
-                    all[n++] = {j.x(), w.x()};
-                    all[n++] = {j.y(), w.y()};
-                    all[n++] = {j.z(), w.z()};
-                    all[n++] = {j.w(), w.w()};
+                    all[n++] = {j.x, w.x};
+                    all[n++] = {j.y, w.y};
+                    all[n++] = {j.z, w.z};
+                    all[n++] = {j.w, w.w};
                 }
                 std::partial_sort(all.begin(), top4_end, all.begin() + n, by_weight);
 
@@ -278,13 +253,7 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             if (pos_it != primitive.targets[t].end()) {
                 const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
                 if (target_accessor.count == prim_vertex_count) {
-                    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
-                        asset, target_accessor,
-                        [&](fastgltf::math::fvec3 delta, std::size_t index) {
-                            morph_data->PositionDeltas[prev_pos_size + static_cast<std::size_t>(t) * prim_vertex_count + index] =
-                                vec3{delta.x(), delta.y(), delta.z()};
-                        }
-                    );
+                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph_data->PositionDeltas[prev_pos_size + static_cast<std::size_t>(t) * prim_vertex_count]);
                 }
             }
             if (!morph_data->NormalDeltas.empty()) {
@@ -293,13 +262,7 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
                     const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
                     const auto prev_norm_size = morph_data->NormalDeltas.size() - static_cast<std::size_t>(target_count) * prim_vertex_count;
                     if (norm_accessor.count == prim_vertex_count) {
-                        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
-                            asset, norm_accessor,
-                            [&](fastgltf::math::fvec3 delta, std::size_t index) {
-                                morph_data->NormalDeltas[prev_norm_size + static_cast<std::size_t>(t) * prim_vertex_count + index] =
-                                    vec3{delta.x(), delta.y(), delta.z()};
-                            }
-                        );
+                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph_data->NormalDeltas[prev_norm_size + static_cast<std::size_t>(t) * prim_vertex_count]);
                     }
                 }
             }
@@ -485,6 +448,7 @@ struct SceneTraversalData {
     std::vector<mat4> WorldTransforms;
 };
 
+// DecomposeNodeMatrices guarantees TRS, so we can compose world transforms in glm space directly.
 SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
     SceneTraversalData traversal;
     traversal.InScene.assign(asset.nodes.size(), false);
@@ -493,20 +457,21 @@ SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, uint32_t sce
 
     const auto &scene = asset.scenes[scene_index];
     const auto traverse =
-        [&](uint32_t node_index, const fastgltf::math::fmat4x4 &parent_matrix, const auto &self) -> void {
+        [&](uint32_t node_index, const mat4 &parent_world, const auto &self) -> void {
         if (static_cast<std::size_t>(node_index) >= asset.nodes.size()) return;
 
         const auto &node = asset.nodes[node_index];
-        const auto world_matrix = fastgltf::getTransformMatrix(node, parent_matrix);
+        const auto local = ToMatrix(ToTransform(std::get<fastgltf::TRS>(node.transform)));
+        const auto world = parent_world * local;
         traversal.InScene[node_index] = true;
-        traversal.WorldTransforms[node_index] = ToGlmMatrix(world_matrix);
+        traversal.WorldTransforms[node_index] = world;
         for (const auto child_idx : node.children) {
-            if (const auto child = ToIndex(child_idx, asset.nodes.size())) self(*child, world_matrix, self);
+            if (const auto child = ToIndex(child_idx, asset.nodes.size())) self(*child, world, self);
         }
     };
 
     for (const auto root_idx : scene.nodeIndices) {
-        if (const auto root = ToIndex(root_idx, asset.nodes.size())) traverse(*root, fastgltf::math::fmat4x4(1.f), traverse);
+        if (const auto root = ToIndex(root_idx, asset.nodes.size())) traverse(*root, I4, traverse);
     }
 
     return traversal;
@@ -634,11 +599,11 @@ std::vector<mat4> LoadInverseBindMatrices(
     const auto &accessor = asset.accessors[*skin.inverseBindMatrices];
     if (accessor.type != fastgltf::AccessorType::Mat4 || accessor.count == 0) return inverse_bind_matrices;
 
-    std::vector<fastgltf::math::fmat4x4> ibm(accessor.count);
-    fastgltf::copyFromAccessor<fastgltf::math::fmat4x4>(asset, accessor, ibm.data());
+    std::vector<mat4> ibm(accessor.count);
+    fastgltf::copyFromAccessor<mat4>(asset, accessor, ibm.data());
 
     const auto count = std::min(ibm.size(), static_cast<std::size_t>(joint_count));
-    for (std::size_t i = 0; i < count; ++i) inverse_bind_matrices[i] = ToGlmMatrix(ibm[i]);
+    std::copy_n(ibm.begin(), count, inverse_bind_matrices.begin());
     return inverse_bind_matrices;
 }
 
@@ -674,21 +639,17 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
     std::vector<Transform> transforms(instance_count);
     if (t_attr != node.instancingAttributes.end()) {
         const auto &accessor = asset.accessors[t_attr->accessorIndex];
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, accessor, [&](auto v, auto i) {
-            transforms[i].P = vec3{v.x(), v.y(), v.z()};
-        });
+        fastgltf::iterateAccessorWithIndex<vec3>(asset, accessor, [&](const vec3 &v, auto i) { transforms[i].P = v; });
     }
     if (r_attr != node.instancingAttributes.end()) {
         const auto &accessor = asset.accessors[r_attr->accessorIndex];
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, accessor, [&](auto v, auto i) {
-            transforms[i].R = glm::normalize(quat{v.w(), v.x(), v.y(), v.z()});
+        fastgltf::iterateAccessorWithIndex<vec4>(asset, accessor, [&](const vec4 &v, auto i) {
+            transforms[i].R = glm::normalize(quat{v.w, v.x, v.y, v.z});
         });
     }
     if (s_attr != node.instancingAttributes.end()) {
         const auto &accessor = asset.accessors[s_attr->accessorIndex];
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, accessor, [&](auto v, auto i) {
-            transforms[i].S = vec3{v.x(), v.y(), v.z()};
-        });
+        fastgltf::iterateAccessorWithIndex<vec3>(asset, accessor, [&](const vec3 &v, auto i) { transforms[i].S = v; });
     }
 
     return transforms;
@@ -945,20 +906,9 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             } else {
                 values.resize(output_accessor.count * component_count);
                 if (component_count == 4) {
-                    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, output_accessor, [&](const auto &v, std::size_t i) {
-                        const auto base = i * 4;
-                        values[base] = v.x();
-                        values[base + 1] = v.y();
-                        values[base + 2] = v.z();
-                        values[base + 3] = v.w();
-                    });
+                    fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
                 } else {
-                    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, output_accessor, [&](const auto &v, std::size_t i) {
-                        const auto base = i * 3;
-                        values[base] = v.x();
-                        values[base + 1] = v.y();
-                        values[base + 2] = v.z();
-                    });
+                    fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
                 }
             }
 
