@@ -2001,7 +2001,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
     SelectionStale = true;
 }
 
-std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<glm::uvec2, glm::uvec2> box_px) {
+std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px) {
     if (ranges.empty()) return {};
 
     std::vector<std::vector<uint32_t>> results(ranges.size());
@@ -2039,7 +2039,7 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     return results;
 }
 
-std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges(std::span<const ElementRange> ranges, Element element, glm::uvec2 mouse_px) {
+std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges(std::span<const ElementRange> ranges, Element element, uvec2 mouse_px) {
     if (ranges.empty() || element == Element::None) return {};
     const auto element_count = fold_left(
         ranges, uint32_t{0},
@@ -2064,7 +2064,7 @@ std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges
     return {};
 }
 
-std::optional<uint32_t> Scene::RunExcitableVertexPick(entt::entity instance_entity, glm::uvec2 mouse_px) {
+std::optional<uint32_t> Scene::RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px) {
     if (!R.all_of<Excitable>(instance_entity)) return {};
     const auto *mesh_instance = R.try_get<MeshInstance>(instance_entity);
     if (!mesh_instance) return {};
@@ -2097,7 +2097,7 @@ std::optional<uint32_t> Scene::RunExcitableVertexPick(entt::entity instance_enti
 }
 
 // Returns unique object-hit entities sorted by (distance, depth, object id).
-std::vector<entt::entity> Scene::RunObjectPick(glm::uvec2 mouse_px, uint32_t radius_px) {
+std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_px) {
     if (NextObjectId <= 1) return {}; // No objects have been assigned IDs yet
     const uint32_t max_object_id = std::min(NextObjectId - 1, SceneBuffers::MaxSelectableObjects);
     if (max_object_id == 0) return {};
@@ -2164,12 +2164,12 @@ std::vector<entt::entity> Scene::RunObjectPick(glm::uvec2 mouse_px, uint32_t rad
     return entities;
 }
 
-void Scene::DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
+void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const uint32_t bitset_words = (max_id + 31) / 32;
     const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
     Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
 
-    const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, glm::uvec2{1, 1});
+    const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
     RunSelectionCompute(
         *ClickCommandBuffer, Vk.Queue, *OneShotFence, Vk.Device, Pipelines->BoxSelect,
         BoxSelectPushConstants{
@@ -2185,7 +2185,7 @@ void Scene::DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t m
     );
 }
 
-std::vector<entt::entity> Scene::RunBoxSelect(std::pair<glm::uvec2, glm::uvec2> box_px) {
+std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     if (NextObjectId <= 1) return {}; // No objects have been assigned IDs yet
@@ -2342,7 +2342,7 @@ void Scene::Interact() {
 
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
-    const glm::uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(extent.height - mouse_pos_rel.y)};
+    const uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(extent.height - mouse_pos_rel.y)};
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {

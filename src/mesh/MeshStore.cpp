@@ -214,9 +214,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         bone_deform = BoneDeformBuffer.Allocate(vertex_count);
         auto bd_span = BoneDeformBuffer.GetMutable(bone_deform);
         for (uint32_t i = 0; i < vertex_count; ++i) {
-            const auto &joints = deform_data->Joints[i];
             bd_span[i] = BoneDeformVertex{
-                .Joints = {joints[0], joints[1], joints[2], joints[3]},
+                .Joints = deform_data->Joints[i],
                 .Weights = deform_data->Weights[i],
             };
         }

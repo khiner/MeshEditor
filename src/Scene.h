@@ -261,16 +261,16 @@ private:
     void SetInteractionMode(InteractionMode);
     void SetEditMode(he::Element mode);
 
-    std::vector<entt::entity> RunObjectPick(glm::uvec2 pixel, uint32_t radius_px = 0);
-    std::vector<entt::entity> RunBoxSelect(std::pair<glm::uvec2, glm::uvec2>);
-    void DispatchBoxSelect(glm::uvec2 box_min, glm::uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore);
+    std::vector<entt::entity> RunObjectPick(uvec2 pixel, uint32_t radius_px = 0);
+    std::vector<entt::entity> RunBoxSelect(std::pair<uvec2, uvec2>);
+    void DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore);
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
     void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
     void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
-    std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<glm::uvec2, glm::uvec2>);
-    std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, he::Element, glm::uvec2 mouse_px);
-    std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, glm::uvec2 mouse_px);
+    std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<uvec2, uvec2>);
+    std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, he::Element, uvec2 mouse_px);
+    std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

@@ -21,7 +21,6 @@
 #include "mesh/MorphTargetData.h"
 #include "numeric/mat4.h"
 
-#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <optional>
@@ -77,9 +76,7 @@ struct SkinJointData {
 struct SceneSkinData {
     uint32_t SkinIndex{};
     std::string Name;
-    std::optional<uint32_t> SkeletonNodeIndex{};
-    std::optional<uint32_t> AnchorNodeIndex{};
-    std::optional<uint32_t> ParentObjectNodeIndex{};
+    std::optional<uint32_t> SkeletonNodeIndex{}, AnchorNodeIndex{}, ParentObjectNodeIndex{};
     std::vector<SkinJointData> Joints{}; // Parent-before-child order
     std::vector<mat4> InverseBindMatrices{}; // Order matches `Joints`
 };

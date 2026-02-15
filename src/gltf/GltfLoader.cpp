@@ -33,20 +33,13 @@ Transform MatrixToTransform(const mat4 &m) {
     return {.P = translation, .R = glm::normalize(rotation), .S = scale};
 }
 
-mat4 ToMatrix(const Transform &t) {
-    return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
-}
+mat4 ToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
 
 Transform ToTransform(const fastgltf::TRS &trs) {
     const auto t = trs.translation;
     const auto r = trs.rotation;
     const auto s = trs.scale;
     return {.P = {t.x(), t.y(), t.z()}, .R = glm::normalize(quat{r.w(), r.x(), r.y(), r.z()}), .S = {s.x(), s.y(), s.z()}};
-}
-
-Transform GetLocalTransform(const fastgltf::Node &node) {
-    if (const auto *trs = std::get_if<fastgltf::TRS>(&node.transform)) return ToTransform(*trs);
-    return MatrixToTransform(ToGlmMatrix(std::get<fastgltf::math::fmat4x4>(node.transform)));
 }
 
 std::optional<uint32_t> ToIndex(std::size_t index, std::size_t upper_bound) {
@@ -171,8 +164,8 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
     }
 
     if (has_joints || mesh_has_skin_data) {
-        deform_data->Joints.resize(mesh_data.Positions.size(), {0, 0, 0, 0});
-        deform_data->Weights.resize(mesh_data.Positions.size(), vec4{0.f, 0.f, 0.f, 0.f});
+        deform_data->Joints.resize(mesh_data.Positions.size(), uvec4{0});
+        deform_data->Weights.resize(mesh_data.Positions.size(), vec4{0});
     }
 
     if (has_joints) {
@@ -717,7 +710,8 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     const auto traversal = TraverseSceneNodes(asset, static_cast<uint32_t>(scene_index));
     std::vector<Transform> local_transforms(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        local_transforms[node_index] = GetLocalTransform(asset.nodes[node_index]);
+        // DecomposeNodeMatrices guarantees node.transform is always TRS.
+        local_transforms[node_index] = ToTransform(std::get<fastgltf::TRS>(asset.nodes[node_index].transform));
     }
 
     std::vector<bool> used_skin(asset.skins.size(), false);

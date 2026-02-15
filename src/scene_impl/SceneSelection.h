@@ -116,7 +116,7 @@ std::optional<uint32_t> FindNearestPickedElement(
     const SceneBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
     vk::Queue queue, vk::Fence fence, vk::Device device,
     uint32_t head_image_index, uint32_t selection_nodes_slot, uint32_t element_candidate_buffer_slot,
-    glm::uvec2 mouse_px, uint32_t max_element_id, Element element,
+    uvec2 mouse_px, uint32_t max_element_id, Element element,
     vk::Semaphore wait_semaphore
 ) {
     const uint32_t radius = element == Element::Face ? 0u : ElementSelectRadiusPx;

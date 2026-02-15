@@ -8,7 +8,7 @@ namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 rect GetViewportRect() { return {ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())}; }
 
-std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
+std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
     static constexpr float DragThresholdSq{2 * 2};
     if (glm::distance2(start, end) <= DragThresholdSq) return {};
 
@@ -17,8 +17,8 @@ std::optional<std::pair<glm::uvec2, glm::uvec2>> ComputeBoxSelectPixels(vec2 sta
     const auto box_max = glm::max(start, end) - window_pos;
     const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, extent_size);
     const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, extent_size);
-    const glm::uvec2 box_min_px{uint32_t(glm::floor(local_min.x)), uint32_t(glm::floor(extent_size.y - local_max.y))};
-    const glm::uvec2 box_max_px{uint32_t(glm::ceil(local_max.x)), uint32_t(glm::ceil(extent_size.y - local_min.y))};
+    const uvec2 box_min_px{uint32_t(glm::floor(local_min.x)), uint32_t(glm::floor(extent_size.y - local_max.y))};
+    const uvec2 box_max_px{uint32_t(glm::ceil(local_max.x)), uint32_t(glm::ceil(extent_size.y - local_min.y))};
     return std::pair{box_min_px, box_max_px};
 }
 
