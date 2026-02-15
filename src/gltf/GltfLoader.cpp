@@ -52,8 +52,8 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
     if (position_accessor.count == 0) return;
 
-    const auto base_vertex = static_cast<uint32_t>(target.Positions.size());
-    target.Positions.resize(static_cast<std::size_t>(base_vertex) + position_accessor.count);
+    const uint32_t base_vertex = target.Positions.size();
+    target.Positions.resize(base_vertex + position_accessor.count);
     fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &target.Positions[base_vertex]);
 
     // Points have no indices to process — just positions
@@ -72,22 +72,14 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
     // Offset indices by base_vertex for merging
     switch (primitive.type) {
         case fastgltf::PrimitiveType::Lines:
-            for (uint32_t i = 0; i + 1 < indices.size(); i += 2) {
-                target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
-            }
+            for (uint32_t i = 0; i + 1 < indices.size(); i += 2) target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
             break;
         case fastgltf::PrimitiveType::LineStrip:
-            for (uint32_t i = 0; i + 1 < indices.size(); ++i) {
-                target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
-            }
+            for (uint32_t i = 0; i + 1 < indices.size(); ++i) target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
             break;
         case fastgltf::PrimitiveType::LineLoop:
-            for (uint32_t i = 0; i + 1 < indices.size(); ++i) {
-                target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
-            }
-            if (indices.size() >= 2) {
-                target.Edges.push_back({base_vertex + indices.back(), base_vertex + indices.front()});
-            }
+            for (uint32_t i = 0; i + 1 < indices.size(); ++i) target.Edges.push_back({base_vertex + indices[i], base_vertex + indices[i + 1]});
+            if (indices.size() >= 2) target.Edges.push_back({base_vertex + indices.back(), base_vertex + indices.front()});
             break;
         default: break;
     }
@@ -104,15 +96,13 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
     const auto weights_it = primitive.findAttribute("WEIGHTS_0");
     const bool has_joints = joints_it != primitive.attributes.end();
     const bool has_weights = weights_it != primitive.attributes.end();
-    if (has_joints != has_weights) {
-        throw std::runtime_error{"glTF primitive has JOINTS_0 without WEIGHTS_0 (or vice versa)."};
-    }
+    if (has_joints != has_weights) throw std::runtime_error{"glTF primitive has JOINTS_0 without WEIGHTS_0 (or vice versa)."};
 
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
     if (position_accessor.count == 0) return;
 
-    const uint32_t base_vertex = static_cast<uint32_t>(mesh_data.Positions.size());
-    mesh_data.Positions.resize(static_cast<std::size_t>(base_vertex) + position_accessor.count);
+    const uint32_t base_vertex = mesh_data.Positions.size();
+    mesh_data.Positions.resize(base_vertex + position_accessor.count);
     fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &mesh_data.Positions[base_vertex]);
 
     // Parse NORMAL attribute
@@ -125,18 +115,18 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             mesh_data.Normals->resize(base_vertex, vec3{0.f});
         }
         const auto &normal_accessor = asset.accessors[normal_it->accessorIndex];
-        mesh_data.Normals->resize(static_cast<std::size_t>(base_vertex) + position_accessor.count, vec3{0.f});
+        mesh_data.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
         fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*mesh_data.Normals)[base_vertex]);
     } else if (mesh_data.Normals) {
         // Previous primitives had normals but this one doesn't — pad with zeros
-        mesh_data.Normals->resize(static_cast<std::size_t>(base_vertex) + position_accessor.count, vec3{0.f});
+        mesh_data.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
     }
 
     if (has_joints && !deform_data) deform_data.emplace();
     const bool mesh_has_skin_data = deform_data && (!deform_data->Joints.empty() || !deform_data->Weights.empty());
     if (mesh_has_skin_data &&
-        (deform_data->Joints.size() != static_cast<std::size_t>(base_vertex) ||
-         deform_data->Weights.size() != static_cast<std::size_t>(base_vertex))) {
+        (deform_data->Joints.size() != base_vertex ||
+         deform_data->Weights.size() != base_vertex)) {
         throw std::runtime_error{"glTF primitive append encountered inconsistent skin channel sizes."};
     }
 
@@ -161,12 +151,10 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             const auto &j_acc = asset.accessors[j_it->accessorIndex];
             const auto &w_acc = asset.accessors[w_it->accessorIndex];
             if (j_acc.count != position_accessor.count || w_acc.count != position_accessor.count) {
-                throw std::runtime_error{
-                    std::format(
-                        "glTF primitive skin attribute counts must match POSITION count (POSITION={}, {}={}, {}={}).",
-                        position_accessor.count, j_name, j_acc.count, w_name, w_acc.count
-                    )
-                };
+                throw std::runtime_error{std::format(
+                    "glTF primitive skin attribute counts must match POSITION count (POSITION={}, {}={}, {}={}).",
+                    position_accessor.count, j_name, j_acc.count, w_name, w_acc.count
+                )};
             }
             influence_accessors.emplace_back(&j_acc, &w_acc);
         }
@@ -180,7 +168,6 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
                 std::vector<vec4> Weights;
             };
             std::vector<InfluenceSet> sets(influence_accessors.size());
-
             for (std::size_t set_index = 0; set_index < sets.size(); ++set_index) {
                 auto &s = sets[set_index];
                 const auto [j_acc, w_acc] = influence_accessors[set_index];
@@ -193,12 +180,11 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
             // Multiple influence sets: merge all, keep top 4 by weight, renormalize.
             // glTF 2.0 §3.7.3.1: implementations MAY support only 4 influences.
             // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skinned-mesh-attributes
-            const auto total_influences = static_cast<uint32_t>(sets.size()) * 4u;
+            const auto total_influences = sets.size() * 4u;
             std::vector<std::pair<uint32_t, float>> all(total_influences);
             const auto top4_end = all.begin() + 4;
             const auto by_weight = [](const auto &a, const auto &b) { return a.second > b.second; };
-
-            for (uint32_t i = 0; i < static_cast<uint32_t>(position_accessor.count); ++i) {
+            for (std::size_t i = 0; i < position_accessor.count; ++i) {
                 uint32_t n = 0;
                 for (const auto &s : sets) {
                     const auto &j = s.Joints[i];
@@ -220,20 +206,20 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
 
     // Parse morph targets (blend shapes) — append per-vertex deltas for this primitive
     if (!primitive.targets.empty()) {
-        const auto target_count = static_cast<uint32_t>(primitive.targets.size());
-        const auto prim_vertex_count = static_cast<uint32_t>(position_accessor.count);
+        const uint32_t target_count = primitive.targets.size();
+        const uint32_t prim_vertex_count = position_accessor.count;
         if (!morph_data) {
             morph_data.emplace();
             morph_data->TargetCount = target_count;
             // Backfill zeros for any vertices from earlier primitives
-            morph_data->PositionDeltas.resize(static_cast<std::size_t>(target_count) * base_vertex, vec3{0.f});
+            morph_data->PositionDeltas.resize(std::size_t(target_count) * base_vertex, vec3{0.f});
         }
         if (morph_data->TargetCount != target_count) {
             throw std::runtime_error{"glTF primitive morph target count mismatch between primitives of the same mesh."};
         }
         // Append this primitive's deltas for each target (interleaved: all targets for this prim appended together)
         const auto prev_pos_size = morph_data->PositionDeltas.size();
-        morph_data->PositionDeltas.resize(prev_pos_size + static_cast<std::size_t>(target_count) * prim_vertex_count, vec3{0.f});
+        morph_data->PositionDeltas.resize(prev_pos_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
         // Track whether any target in this primitive has normal deltas
         bool prim_has_normal_deltas = false;
         for (uint32_t t = 0; t < target_count; ++t) {
@@ -248,39 +234,33 @@ void AppendPrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &pr
         }
         if (prim_has_normal_deltas || !morph_data->NormalDeltas.empty()) {
             const auto prev_norm_size = morph_data->NormalDeltas.size();
-            morph_data->NormalDeltas.resize(prev_norm_size + static_cast<std::size_t>(target_count) * prim_vertex_count, vec3{0.f});
+            morph_data->NormalDeltas.resize(prev_norm_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
         }
         for (uint32_t t = 0; t < target_count; ++t) {
             auto pos_it = primitive.findTargetAttribute(t, "POSITION");
             if (pos_it != primitive.targets[t].end()) {
                 const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
                 if (target_accessor.count == prim_vertex_count) {
-                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph_data->PositionDeltas[prev_pos_size + static_cast<std::size_t>(t) * prim_vertex_count]);
+                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph_data->PositionDeltas[prev_pos_size + std::size_t(t) * prim_vertex_count]);
                 }
             }
             if (!morph_data->NormalDeltas.empty()) {
                 auto norm_it = primitive.findTargetAttribute(t, "NORMAL");
                 if (norm_it != primitive.targets[t].end()) {
                     const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
-                    const auto prev_norm_size = morph_data->NormalDeltas.size() - static_cast<std::size_t>(target_count) * prim_vertex_count;
+                    const auto prev_norm_size = morph_data->NormalDeltas.size() - std::size_t(target_count) * prim_vertex_count;
                     if (norm_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph_data->NormalDeltas[prev_norm_size + static_cast<std::size_t>(t) * prim_vertex_count]);
+                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph_data->NormalDeltas[prev_norm_size + std::size_t(t) * prim_vertex_count]);
                     }
                 }
             }
         }
     } else if (morph_data) {
         // Previous primitives had targets but this one doesn't — pad with zeros
-        const auto prim_vertex_count = static_cast<uint32_t>(position_accessor.count);
-        morph_data->PositionDeltas.resize(
-            morph_data->PositionDeltas.size() + static_cast<std::size_t>(morph_data->TargetCount) * prim_vertex_count,
-            vec3{0.f}
-        );
+        const uint32_t prim_vertex_count = position_accessor.count;
+        morph_data->PositionDeltas.resize(morph_data->PositionDeltas.size() + std::size_t(morph_data->TargetCount) * prim_vertex_count, vec3{0.f});
         if (!morph_data->NormalDeltas.empty()) {
-            morph_data->NormalDeltas.resize(
-                morph_data->NormalDeltas.size() + static_cast<std::size_t>(morph_data->TargetCount) * prim_vertex_count,
-                vec3{0.f}
-            );
+            morph_data->NormalDeltas.resize(morph_data->NormalDeltas.size() + std::size_t(morph_data->TargetCount) * prim_vertex_count, vec3{0.f});
         }
     }
 
@@ -332,7 +312,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
 
 std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, SceneData &scene_data, std::unordered_map<uint32_t, std::optional<uint32_t>> &mesh_index_map) {
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
-    if (static_cast<std::size_t>(source_mesh_index) >= asset.meshes.size()) {
+    if (source_mesh_index >= asset.meshes.size()) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
         return {};
     }
@@ -349,15 +329,13 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
             AppendNonTrianglePrimitive(asset, primitive, points_data);
             continue;
         }
-        if (primitive.type == fastgltf::PrimitiveType::Lines ||
-            primitive.type == fastgltf::PrimitiveType::LineStrip ||
-            primitive.type == fastgltf::PrimitiveType::LineLoop) {
+        if (primitive.type == fastgltf::PrimitiveType::Lines || primitive.type == fastgltf::PrimitiveType::LineStrip || primitive.type == fastgltf::PrimitiveType::LineLoop) {
             AppendNonTrianglePrimitive(asset, primitive, lines_data);
             continue;
         }
-        const auto prev_vertex_count = static_cast<uint32_t>(mesh_data.Positions.size());
+        const uint32_t prev_vertex_count = mesh_data.Positions.size();
         AppendPrimitive(asset, primitive, mesh_data, mesh_deform_data, mesh_morph_data);
-        prim_vertex_counts.emplace_back(static_cast<uint32_t>(mesh_data.Positions.size()) - prev_vertex_count);
+        prim_vertex_counts.emplace_back(mesh_data.Positions.size() - prev_vertex_count);
     }
     const bool has_triangle_data = !mesh_data.Positions.empty() && !mesh_data.Faces.empty();
     const bool has_lines = !lines_data.Positions.empty();
@@ -371,17 +349,15 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
     // Input layout:  [prim0: t0_verts, t1_verts, ...], [prim1: t0_verts, t1_verts, ...], ...
     // Output layout: [t0: all_verts], [t1: all_verts], ...
     if (mesh_morph_data && mesh_morph_data->TargetCount > 0 && prim_vertex_counts.size() > 1) {
-        const auto total_verts = static_cast<uint32_t>(mesh_data.Positions.size());
+        const uint32_t total_verts = mesh_data.Positions.size();
         const auto target_count = mesh_morph_data->TargetCount;
-        std::vector<vec3> repacked(static_cast<std::size_t>(target_count) * total_verts, vec3{0.f});
+        std::vector<vec3> repacked(std::size_t(target_count) * total_verts, vec3{0.f});
 
-        uint32_t src_offset = 0;
-        uint32_t dst_vert_offset = 0;
+        uint32_t src_offset = 0, dst_vert_offset = 0;
         for (const auto prim_verts : prim_vertex_counts) {
             for (uint32_t t = 0; t < target_count; ++t) {
                 for (uint32_t v = 0; v < prim_verts; ++v) {
-                    repacked[static_cast<std::size_t>(t) * total_verts + dst_vert_offset + v] =
-                        mesh_morph_data->PositionDeltas[src_offset + static_cast<std::size_t>(t) * prim_verts + v];
+                    repacked[std::size_t(t) * total_verts + dst_vert_offset + v] = mesh_morph_data->PositionDeltas[src_offset + std::size_t(t) * prim_verts + v];
                 }
             }
             src_offset += target_count * prim_verts;
@@ -390,14 +366,12 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
         mesh_morph_data->PositionDeltas = std::move(repacked);
 
         if (!mesh_morph_data->NormalDeltas.empty()) {
-            std::vector<vec3> repacked_normals(static_cast<std::size_t>(target_count) * total_verts, vec3{0.f});
-            uint32_t norm_src_offset = 0;
-            uint32_t norm_dst_vert_offset = 0;
+            std::vector<vec3> repacked_normals(std::size_t(target_count) * total_verts, vec3{0.f});
+            uint32_t norm_src_offset = 0, norm_dst_vert_offset = 0;
             for (const auto prim_verts : prim_vertex_counts) {
                 for (uint32_t t = 0; t < target_count; ++t) {
                     for (uint32_t v = 0; v < prim_verts; ++v) {
-                        repacked_normals[static_cast<std::size_t>(t) * total_verts + norm_dst_vert_offset + v] =
-                            mesh_morph_data->NormalDeltas[norm_src_offset + static_cast<std::size_t>(t) * prim_verts + v];
+                        repacked_normals[std::size_t(t) * total_verts + norm_dst_vert_offset + v] = mesh_morph_data->NormalDeltas[norm_src_offset + std::size_t(t) * prim_verts + v];
                     }
                 }
                 norm_src_offset += target_count * prim_verts;
@@ -410,7 +384,7 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
     // Read default morph target weights from mesh
     if (mesh_morph_data && !source_mesh.weights.empty()) {
         mesh_morph_data->DefaultWeights.resize(mesh_morph_data->TargetCount, 0.f);
-        const auto copy_count = std::min(source_mesh.weights.size(), static_cast<std::size_t>(mesh_morph_data->TargetCount));
+        const auto copy_count = std::min(source_mesh.weights.size(), std::size_t(mesh_morph_data->TargetCount));
         std::copy_n(source_mesh.weights.begin(), copy_count, mesh_morph_data->DefaultWeights.begin());
     } else if (mesh_morph_data) {
         mesh_morph_data->DefaultWeights.assign(mesh_morph_data->TargetCount, 0.f);
@@ -434,7 +408,7 @@ std::optional<uint32_t> EnsureMeshData(const fastgltf::Asset &asset, uint32_t so
 std::vector<std::optional<uint32_t>> BuildNodeParentTable(const fastgltf::Asset &asset) {
     std::vector<std::optional<uint32_t>> parents(asset.nodes.size(), std::nullopt);
     for (std::size_t parent_idx = 0; parent_idx < asset.nodes.size(); ++parent_idx) {
-        const auto parent = static_cast<uint32_t>(parent_idx);
+        const uint32_t parent = parent_idx;
         for (const auto child_idx : asset.nodes[parent_idx].children) {
             const auto child = ToIndex(child_idx, asset.nodes.size());
             if (!child || parents[*child]) continue;
@@ -451,28 +425,25 @@ struct SceneTraversalData {
 
 // DecomposeNodeMatrices guarantees TRS, so we can compose world transforms in glm space directly.
 SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, const std::vector<Transform> &local_transforms, uint32_t scene_index) {
-    SceneTraversalData traversal;
-    traversal.InScene.assign(asset.nodes.size(), false);
-    traversal.WorldTransforms.assign(asset.nodes.size(), I4);
+    const auto nodes_count = asset.nodes.size();
+    SceneTraversalData traversal{.InScene = std::vector(nodes_count, false), .WorldTransforms = std::vector(nodes_count, I4)};
     if (scene_index >= asset.scenes.size()) return traversal;
 
     const auto &scene = asset.scenes[scene_index];
     const auto traverse =
-        [&](uint32_t node_index, const mat4 &parent_world, const auto &self) -> void {
-        if (static_cast<std::size_t>(node_index) >= asset.nodes.size()) return;
+        [&](uint32_t node_index, const mat4 &parent_world, const auto &self) {
+            if (node_index >= nodes_count) return;
 
-        const auto &node = asset.nodes[node_index];
-        const auto local = ToMatrix(local_transforms[node_index]);
-        const auto world = parent_world * local;
-        traversal.InScene[node_index] = true;
-        traversal.WorldTransforms[node_index] = world;
-        for (const auto child_idx : node.children) {
-            if (const auto child = ToIndex(child_idx, asset.nodes.size())) self(*child, world, self);
-        }
-    };
-
+            const auto &node = asset.nodes[node_index];
+            const auto world = parent_world * ToMatrix(local_transforms[node_index]);
+            traversal.InScene[node_index] = true;
+            traversal.WorldTransforms[node_index] = world;
+            for (const auto child_idx : node.children) {
+                if (const auto child = ToIndex(child_idx, nodes_count)) self(*child, world, self);
+            }
+        };
     for (const auto root_idx : scene.nodeIndices) {
-        if (const auto root = ToIndex(root_idx, asset.nodes.size())) traverse(*root, I4, traverse);
+        if (const auto root = ToIndex(root_idx, nodes_count)) traverse(*root, I4, traverse);
     }
 
     return traversal;
@@ -513,9 +484,8 @@ std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes
     auto common_path = build_root_path(nodes.front());
     for (uint32_t i = 1; i < nodes.size() && !common_path.empty(); ++i) {
         const auto path = build_root_path(nodes[i]);
-        const auto common_count = static_cast<uint32_t>(std::min(common_path.size(), path.size()));
-
-        uint32_t prefix = 0;
+        const auto common_count = std::min(common_path.size(), path.size());
+        std::size_t prefix = 0;
         while (prefix < common_count && common_path[prefix] == path[prefix]) ++prefix;
         common_path.resize(prefix);
     }
@@ -541,14 +511,7 @@ std::expected<Transform, std::string> ComputeJointRestLocal(
     while (current != *rebased_parent_node_index) {
         rebased_local = ToMatrix(local_transforms[current]) * rebased_local;
         if (!parents[current]) {
-            return std::unexpected{
-                std::format(
-                    "glTF skin {} joint node {} cannot be rebased to ancestor node {}.",
-                    skin_index,
-                    joint_node_index,
-                    *rebased_parent_node_index
-                )
-            };
+            return std::unexpected{std::format("glTF skin {} joint node {} cannot be rebased to ancestor node {}.", skin_index, joint_node_index, *rebased_parent_node_index)};
         }
         current = *parents[current];
     }
@@ -562,50 +525,43 @@ std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrd
     std::unordered_map<uint32_t, uint8_t> state;
     state.reserve(source_joint_nodes.size());
 
-    std::string error;
-    const std::function<bool(uint32_t)> emit_joint = [&](uint32_t joint_node_index) {
+    const auto emit_joint = [&](uint32_t joint_node_index, const auto &self) -> std::expected<void, std::string> {
         const auto current_state = state[joint_node_index];
-        if (current_state == 2) return true;
+        if (current_state == 2) return {};
         if (current_state == 1) {
-            error = std::format("glTF skin {} has a cycle in joint ancestry at node {}.", skin_index, joint_node_index);
-            return false;
+            return std::unexpected{std::format("glTF skin {} has a cycle in joint ancestry at node {}.", skin_index, joint_node_index)};
         }
 
         state[joint_node_index] = 1;
         if (const auto it = joint_parent_map.find(joint_node_index);
-            it != joint_parent_map.end() && it->second && !emit_joint(*it->second)) {
-            return false;
+            it != joint_parent_map.end() && it->second) {
+            if (auto parent_result = self(*it->second, self); !parent_result) return parent_result;
         }
 
         state[joint_node_index] = 2;
         ordered.emplace_back(joint_node_index);
-        return true;
+        return {};
     };
 
     for (const auto joint_node_index : source_joint_nodes) {
-        if (!emit_joint(joint_node_index)) return std::unexpected{error};
+        if (auto result = emit_joint(joint_node_index, emit_joint); !result) return std::unexpected{std::move(result.error())};
     }
 
     return ordered;
 }
 
-std::vector<mat4> LoadInverseBindMatrices(
-    const fastgltf::Asset &asset,
-    const fastgltf::Skin &skin,
-    uint32_t joint_count
-) {
+std::vector<mat4> LoadInverseBindMatrices(const fastgltf::Asset &asset, const fastgltf::Skin &skin, uint32_t joint_count) {
     std::vector<mat4> inverse_bind_matrices(joint_count, I4);
     if (!skin.inverseBindMatrices || *skin.inverseBindMatrices >= asset.accessors.size()) return inverse_bind_matrices;
 
     const auto &accessor = asset.accessors[*skin.inverseBindMatrices];
     if (accessor.type != fastgltf::AccessorType::Mat4 || accessor.count == 0) return inverse_bind_matrices;
-    const auto joint_count_sz = static_cast<std::size_t>(joint_count);
-    if (accessor.count <= joint_count_sz) {
+    if (accessor.count <= joint_count) {
         fastgltf::copyFromAccessor<mat4>(asset, accessor, inverse_bind_matrices.data());
     } else {
         std::vector<mat4> ibm(accessor.count);
         fastgltf::copyFromAccessor<mat4>(asset, accessor, ibm.data());
-        std::copy_n(ibm.begin(), joint_count_sz, inverse_bind_matrices.begin());
+        std::copy_n(ibm.begin(), joint_count, inverse_bind_matrices.begin());
     }
     return inverse_bind_matrices;
 }
@@ -614,7 +570,7 @@ std::string MakeNodeName(const fastgltf::Asset &asset, uint32_t node_index, std:
     const auto &node = asset.nodes[node_index];
     if (!node.name.empty()) return std::string(node.name);
 
-    if (source_mesh_index && static_cast<std::size_t>(*source_mesh_index) < asset.meshes.size()) {
+    if (source_mesh_index && *source_mesh_index < asset.meshes.size()) {
         const auto &mesh_name = asset.meshes[*source_mesh_index].name;
         if (!mesh_name.empty()) return std::string(mesh_name);
     }
@@ -629,14 +585,10 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
     const auto s_attr = node.findInstancingAttribute("SCALE");
 
     // Determine instance count from the first present accessor
-    uint32_t instance_count = 0;
-    if (t_attr != node.instancingAttributes.end()) {
-        instance_count = static_cast<uint32_t>(asset.accessors[t_attr->accessorIndex].count);
-    } else if (r_attr != node.instancingAttributes.end()) {
-        instance_count = static_cast<uint32_t>(asset.accessors[r_attr->accessorIndex].count);
-    } else if (s_attr != node.instancingAttributes.end()) {
-        instance_count = static_cast<uint32_t>(asset.accessors[s_attr->accessorIndex].count);
-    }
+    const uint32_t instance_count = t_attr != node.instancingAttributes.end() ? asset.accessors[t_attr->accessorIndex].count :
+        r_attr != node.instancingAttributes.end()                             ? asset.accessors[r_attr->accessorIndex].count :
+        s_attr != node.instancingAttributes.end()                             ? asset.accessors[s_attr->accessorIndex].count :
+                                                                                0;
     if (instance_count == 0) return {};
 
     std::vector<Transform> transforms(instance_count);
@@ -676,7 +628,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         // DecomposeNodeMatrices guarantees node.transform is always TRS.
         local_transforms[node_index] = ToTransform(std::get<fastgltf::TRS>(asset.nodes[node_index].transform));
     }
-    const auto traversal = TraverseSceneNodes(asset, local_transforms, static_cast<uint32_t>(scene_index));
+    const auto traversal = TraverseSceneNodes(asset, local_transforms, uint32_t(scene_index));
 
     std::vector<bool> used_skin(asset.skins.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
@@ -697,25 +649,28 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     scene_data.Nodes.resize(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         const auto &source_node = asset.nodes[node_index];
-        auto &node = scene_data.Nodes[node_index];
-        node.NodeIndex = node_index;
-        node.ParentNodeIndex = parents[node_index];
-        node.LocalTransform = local_transforms[node_index];
-        node.InScene = traversal.InScene[node_index];
-        node.WorldTransform = traversal.InScene[node_index] ? traversal.WorldTransforms[node_index] : I4;
-        node.IsJoint = is_joint[node_index];
-        node.SkinIndex = ToIndex(source_node.skinIndex, asset.skins.size());
-        node.Name = MakeNodeName(asset, node_index, ToIndex(source_node.meshIndex, asset.meshes.size()));
-        node.ChildrenNodeIndices.clear();
-        node.ChildrenNodeIndices.reserve(source_node.children.size());
+        const auto source_mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
+        auto mesh_index = std::optional<uint32_t>{};
+        if (traversal.InScene[node_index] && source_mesh_index) {
+            mesh_index = EnsureMeshData(asset, *source_mesh_index, scene_data, mesh_index_map);
+        }
+        std::vector<uint32_t> children_node_indices;
+        children_node_indices.reserve(source_node.children.size());
         for (const auto child_idx : source_node.children) {
-            if (const auto child = ToIndex(child_idx, asset.nodes.size())) node.ChildrenNodeIndices.emplace_back(*child);
+            if (const auto child = ToIndex(child_idx, asset.nodes.size())) children_node_indices.emplace_back(*child);
         }
-        if (traversal.InScene[node_index]) {
-            if (const auto source_mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size())) {
-                node.MeshIndex = EnsureMeshData(asset, *source_mesh_index, scene_data, mesh_index_map);
-            }
-        }
+        scene_data.Nodes[node_index] = SceneNodeData{
+            .NodeIndex = node_index,
+            .ParentNodeIndex = parents[node_index],
+            .ChildrenNodeIndices = std::move(children_node_indices),
+            .LocalTransform = local_transforms[node_index],
+            .WorldTransform = traversal.InScene[node_index] ? traversal.WorldTransforms[node_index] : I4,
+            .InScene = traversal.InScene[node_index],
+            .IsJoint = is_joint[node_index],
+            .MeshIndex = mesh_index,
+            .SkinIndex = ToIndex(source_node.skinIndex, asset.skins.size()),
+            .Name = MakeNodeName(asset, node_index, source_mesh_index),
+        };
     }
 
     std::vector<bool> is_object_emitted(asset.nodes.size(), false);
@@ -819,14 +774,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         scene_skin.Joints.reserve(ordered_joint_nodes->size());
         for (const auto joint_node_index : *ordered_joint_nodes) {
             const auto parent_joint_node_index = joint_parent_map.at(joint_node_index);
-            auto rest_local = ComputeJointRestLocal(
-                skin_index,
-                joint_node_index,
-                parent_joint_node_index,
-                scene_skin.AnchorNodeIndex,
-                parents,
-                local_transforms
-            );
+            auto rest_local = ComputeJointRestLocal(skin_index, joint_node_index, parent_joint_node_index, scene_skin.AnchorNodeIndex, parents, local_transforms);
             if (!rest_local) return std::unexpected{rest_local.error()};
 
             scene_skin.Joints.emplace_back(
@@ -838,7 +786,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 }
             );
         }
-        scene_skin.InverseBindMatrices = LoadInverseBindMatrices(asset, skin, static_cast<uint32_t>(scene_skin.Joints.size()));
+        scene_skin.InverseBindMatrices = LoadInverseBindMatrices(asset, skin, uint32_t(scene_skin.Joints.size()));
         if (scene_skin.AnchorNodeIndex && traversal.InScene[*scene_skin.AnchorNodeIndex]) {
             scene_skin.ParentObjectNodeIndex = nearest_object_ancestor[*scene_skin.AnchorNodeIndex];
         }
@@ -848,10 +796,10 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     // Parse animations
     for (uint32_t anim_index = 0; anim_index < asset.animations.size(); ++anim_index) {
         const auto &anim = asset.animations[anim_index];
-        AnimationClipData clip;
-        clip.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name);
+        AnimationClipData clip{
+            .Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name),
+        };
         float max_time = 0;
-
         for (const auto &channel : anim.channels) {
             if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;
             if (channel.samplerIndex >= anim.samplers.size()) continue;
@@ -876,7 +824,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                     // Look up morph target count from the target node's mesh
                     const auto &target_node = asset.nodes[*channel.nodeIndex];
                     if (!target_node.meshIndex || *target_node.meshIndex >= asset.meshes.size()) continue;
-                    component_count = static_cast<uint32_t>(asset.meshes[*target_node.meshIndex].primitives.empty() ? 0 : asset.meshes[*target_node.meshIndex].primitives[0].targets.size());
+                    component_count = asset.meshes[*target_node.meshIndex].primitives.empty() ? 0 : asset.meshes[*target_node.meshIndex].primitives[0].targets.size();
                     if (component_count == 0) continue;
                     break;
                 }
@@ -908,11 +856,8 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 fastgltf::copyFromAccessor<float>(asset, output_accessor, values.data());
             } else {
                 values.resize(output_accessor.count * component_count);
-                if (component_count == 4) {
-                    fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
-                } else {
-                    fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
-                }
+                if (component_count == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
+                else fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
             }
 
             if (!times.empty()) max_time = std::max(max_time, times.back());
