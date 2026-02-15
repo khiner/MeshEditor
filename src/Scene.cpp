@@ -2554,8 +2554,8 @@ void Scene::RenderOverlay() {
         const bool transform_enabled = !edit_transform_locked;
         const bool scale_enabled = transform_enabled && !has_frozen_selected;
         const ButtonInfo buttons[]{
-            {*Icons.Select, None, ImDrawFlags_RoundCornersTop, true},
-            {*Icons.SelectBox, None, ImDrawFlags_RoundCornersBottom, true},
+            {*Icons.SelectBox, None, ImDrawFlags_RoundCornersTop, true},
+            {*Icons.Select, None, ImDrawFlags_RoundCornersBottom, true},
             {*Icons.Move, Translate, ImDrawFlags_RoundCornersTop, transform_enabled},
             {*Icons.Rotate, Rotate, ImDrawFlags_RoundCornersNone, transform_enabled},
             {*Icons.Scale, Scale, ImDrawFlags_RoundCornersNone, scale_enabled},
@@ -2592,10 +2592,10 @@ void Scene::RenderOverlay() {
             if (hovered) TransformModePillsHovered = true;
             if (clicked) {
                 if (i == 0) {
-                    SelectionMode = SelectionMode::Click;
+                    SelectionMode = SelectionMode::Box;
                     transform_type = None;
                 } else if (i == 1) {
-                    SelectionMode = SelectionMode::Box;
+                    SelectionMode = SelectionMode::Click;
                     transform_type = None;
                 } else { // Transform buttons
                     transform_type = button_type;
@@ -2603,7 +2603,7 @@ void Scene::RenderOverlay() {
             }
 
             const bool is_active = i < 2 ?
-                (transform_type == None && ((i == 0 && SelectionMode == SelectionMode::Click) || (i == 1 && SelectionMode == SelectionMode::Box))) :
+                (transform_type == None && ((i == 0 && SelectionMode == SelectionMode::Box) || (i == 1 && SelectionMode == SelectionMode::Click))) :
                 transform_type == button_type;
             const auto bg_color = GetColorU32(
                 !enabled      ? ImGuiCol_FrameBg :

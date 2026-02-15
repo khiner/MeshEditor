@@ -204,7 +204,7 @@ private:
 
     enum class SelectionMode { Click,
                                Box };
-    SelectionMode SelectionMode{SelectionMode::Click};
+    SelectionMode SelectionMode{SelectionMode::Box};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
     bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
