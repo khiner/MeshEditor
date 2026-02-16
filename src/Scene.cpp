@@ -8,6 +8,7 @@
 #include "CameraData.h"
 #include "Entity.h"
 #include "Excitable.h"
+#include "LightData.h"
 #include "OrientationGizmo.h"
 #include "Shader.h"
 #include "SvgResource.h"
@@ -27,6 +28,7 @@
 #include <algorithm>
 #include <format>
 #include <limits>
+#include <numbers>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -35,6 +37,9 @@ using std::views::filter, std::views::iota, std::views::take, std::views::transf
 
 namespace {
 const SceneDefaults Defaults{};
+constexpr float Pi = std::numbers::pi_v<float>;
+constexpr float DefaultSpotSize = Pi / 4.f; // 45 deg
+constexpr float DefaultSpotBlend = 0.15f;
 
 using namespace he;
 
@@ -93,6 +98,49 @@ Transform MatrixToTransform(const mat4 &m) {
 #include "scene_impl/SceneTransformUtils.h"
 #include "scene_impl/SceneUI.h"
 
+struct ExtrasWireframe {
+    MeshData Data;
+    std::vector<uint8_t> VertexClasses{}; // Empty means all VCLASS_NONE (no buffer needed).
+
+    uint32_t AddVertex(vec3 pos, uint8_t vclass) {
+        const uint32_t i = uint32_t(Data.Positions.size());
+        Data.Positions.push_back(pos);
+        VertexClasses.push_back(vclass);
+        return i;
+    }
+    void AddEdge(uint32_t a, uint32_t b) { Data.Edges.push_back({a, b}); }
+
+    void AddCircle(float radius, uint32_t segments, float z, uint8_t vclass, uint32_t edge_stride = 1) {
+        const uint32_t base = uint32_t(Data.Positions.size());
+        for (uint32_t i = 0; i < segments; ++i) {
+            const float angle = float(i) * 2.f * Pi / float(segments);
+            AddVertex({radius * std::cos(angle), radius * std::sin(angle), z}, vclass);
+        }
+        for (uint32_t i = 0; i < segments; i += edge_stride) AddEdge(base + i, base + (i + 1) % segments);
+    }
+
+    void AddDiamond(float radius, uint8_t vclass, vec3 axis1, vec3 axis2, vec3 center = {}) {
+        const uint32_t base = uint32_t(Data.Positions.size());
+        for (auto a : {axis1, axis2, -axis1, -axis2}) AddVertex(center + radius * a, vclass);
+        for (uint32_t i = 0; i < 4; ++i) AddEdge(base + i, base + (i + 1) % 4);
+    }
+};
+
+constexpr uint8_t VClassNone = 0, VClassBillboard = 1, VClassSpotCone = 2, VClassScreenspace = 3, VClassGroundPoint = 4;
+constexpr uint32_t SpotConeSegments = 32;
+
+template<typename F>
+void AppendExtrasDraw(entt::registry &R, DrawListBuilder &dl, DrawBatchInfo &batch, F &&customize_draw) {
+    batch = dl.BeginBatch();
+    for (auto [entity, mesh_buffers, models] : R.view<ObjectExtrasTag, MeshBuffers, ModelsBuffer>().each()) {
+        if (mesh_buffers.EdgeIndices.Count == 0) continue;
+        auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
+        if (const auto *vcr = R.try_get<VertexClassRange>(entity)) draw.VertexClass = vcr->Value;
+        customize_draw(draw, models);
+        AppendDraw(dl, batch, mesh_buffers.EdgeIndices, models, draw);
+    }
+}
+
 namespace {
 // Build a wireframe frustum mesh in camera-local space (camera looks down -Z).
 // Returns positions + edges for a line-only mesh (no faces).
@@ -145,6 +193,67 @@ MeshData BuildCameraFrustumMesh(const CameraData &cd) {
     // clang-format on
 
     return {.Positions = std::move(positions), .Edges = std::move(edges)};
+}
+
+ExtrasWireframe BuildLightMesh(const LightVariant &type) {
+    ExtrasWireframe wf;
+
+    const auto add_range_circle = [&](std::optional<float> range) {
+        if (range && *range > 0.f) wf.AddCircle(*range, 32, 0.f, VClassBillboard);
+    };
+
+    std::visit(overloaded{
+                   [&](const PointLight &light) {
+                       add_range_circle(light.Range);
+                   },
+                   [&](const DirectionalLight &) {
+                       // Sun rays: 8 radial directions, each with two dashed line segments (screenspace units).
+                       constexpr uint32_t ray_count = 8;
+                       constexpr float d0s = 14.f, d0e = 16.f, d1s = 18.f, d1e = 20.f;
+                       for (uint32_t i = 0; i < ray_count; ++i) {
+                           const float angle = float(i) * 2.f * Pi / float(ray_count);
+                           const float dx = std::cos(angle), dy = std::sin(angle);
+                           const auto a = wf.AddVertex({d0s * dx, d0s * dy, 0.f}, VClassScreenspace);
+                           const auto b = wf.AddVertex({d0e * dx, d0e * dy, 0.f}, VClassScreenspace);
+                           const auto c = wf.AddVertex({d1s * dx, d1s * dy, 0.f}, VClassScreenspace);
+                           const auto d = wf.AddVertex({d1e * dx, d1e * dy, 0.f}, VClassScreenspace);
+                           wf.AddEdge(a, b);
+                           wf.AddEdge(c, d);
+                       }
+                   },
+                   [&](const SpotLight &light) {
+                       constexpr float depth = 2.f;
+                       const float outer_radius = depth * std::tan(light.Size);
+                       const float inner_angle = light.Size * (1.f - std::clamp(light.Blend, 0.f, 1.f));
+                       const float inner_radius = depth * std::tan(inner_angle);
+
+                       add_range_circle(light.Range);
+                       wf.AddCircle(outer_radius, SpotConeSegments, -depth, VClassNone);
+                       if (inner_radius > 0.f) wf.AddCircle(inner_radius, SpotConeSegments, -depth, VClassNone);
+
+                       // Cone spokes: apex (VCLASS_NONE) to base (VCLASS_SPOT_CONE).
+                       for (uint32_t i = 0; i < SpotConeSegments; ++i) {
+                           const float angle = float(i) * 2.f * Pi / float(SpotConeSegments);
+                           const auto ai = wf.AddVertex({0.f, 0.f, 0.f}, VClassNone);
+                           const auto bi = wf.AddVertex({outer_radius * std::cos(angle), outer_radius * std::sin(angle), -depth}, VClassSpotCone);
+                           wf.AddEdge(ai, bi);
+                       }
+                   },
+               },
+               type);
+
+    // Light icon shared by all types: center diamond, dashed indicator circles, ground line + diamond.
+    wf.AddDiamond(2.7f, VClassScreenspace, {1, 0, 0}, {0, 1, 0});
+    wf.AddCircle(9.f, 16, 0.f, VClassScreenspace, 2);
+    wf.AddCircle(9.f * 1.33f, 20, 0.f, VClassScreenspace, 2);
+
+    // Ground line from light origin (y=1) down to ground plane (y=0).
+    const auto top = wf.AddVertex({0.f, 1.f, 0.f}, VClassGroundPoint);
+    const auto bot = wf.AddVertex({0.f, 0.f, 0.f}, VClassGroundPoint);
+    wf.AddEdge(top, bot);
+    wf.AddDiamond(3.f, VClassGroundPoint, {1, 0, 0}, {0, 0, 1});
+
+    return wf;
 }
 
 // Fraction of viewport height the active camera's frame occupies.
@@ -284,6 +393,7 @@ constexpr auto
     ViewportTheme = "viewport_theme_changes"_hs,
     SceneView = "scene_view_changes"_hs,
     CameraLens = "camera_lens_changes"_hs,
+    LightProps = "light_props_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
     TransformEnd = "transform_end_changes"_hs;
 } // namespace changes
@@ -454,6 +564,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::CameraLens)
         .on_construct<CameraData>()
         .on_update<CameraData>();
+    R.storage<entt::reactive>(changes::LightProps)
+        .on_construct<LightData>()
+        .on_update<LightData>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -701,6 +814,39 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
     }
+    for (auto light_entity : R.storage<entt::reactive>(changes::LightProps)) {
+        const auto *ld = R.try_get<LightData>(light_entity);
+        if (!ld || !R.all_of<MeshInstance>(light_entity)) continue;
+
+        auto wireframe = BuildLightMesh(ld->Type);
+
+        const auto mesh_entity = R.get<MeshInstance>(light_entity).MeshEntity;
+
+        if (const auto *old_vcr = R.try_get<VertexClassRange>(mesh_entity)) {
+            const auto old_vertex_count = R.get<const Mesh>(mesh_entity).VertexCount();
+            Buffers->VertexClassBuffer.Release({old_vcr->Value.Offset, old_vertex_count});
+            R.remove<VertexClassRange>(mesh_entity);
+        }
+
+        R.replace<Mesh>(mesh_entity, Meshes->CreateMesh(std::move(wireframe.Data)));
+        const auto &mesh = R.get<const Mesh>(mesh_entity);
+
+        if (auto *mb = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mb);
+        R.erase<MeshBuffers>(mesh_entity);
+        R.emplace<MeshBuffers>(
+            mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()),
+            Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
+            Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
+            Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
+        );
+
+        if (!wireframe.VertexClasses.empty()) {
+            const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
+            R.emplace<VertexClassRange>(mesh_entity, SlotOffset{Buffers->VertexClassBuffer.Buffer.Slot, range.Offset});
+        }
+
+        request(RenderRequest::ReRecord);
+    }
     if (auto &tracker = R.storage<entt::reactive>(changes::MeshGeometry); !tracker.empty()) {
         for (auto mesh_entity : tracker) {
             if (HasSelectedInstance(R, mesh_entity)) dirty_overlay_meshes.insert(mesh_entity);
@@ -792,6 +938,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &lights = R.get<const Lights>(SceneEntity);
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+        const float viewport_height = extent.height > 0 ? float(extent.height) : 1.f;
+        // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
+        // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
+        float screen_pixel_scale = 1.f;
+        if (const auto *persp = std::get_if<Perspective>(&camera.Data)) {
+            screen_pixel_scale = 2.f * std::tan(persp->FieldOfViewRad * 0.5f) / viewport_height;
+        } else if (const auto *ortho = std::get_if<Orthographic>(&camera.Data)) {
+            screen_pixel_scale = -(2.f * ortho->Mag.y / viewport_height);
+        }
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .ViewProj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)) * camera.View(),
             .CameraPosition = camera.Position(),
@@ -806,6 +961,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
             .IsTransforming = pending ? 1u : 0u,
             .PendingTransform = pending ? ComputePendingTransformMatrix(pending->Pivot, pending->P, pending->R, pending->S) : mat4{1},
+            .ScreenPixelScale = screen_pixel_scale,
         }));
         request(RenderRequest::Submit);
     }
@@ -1056,26 +1212,14 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
 }
 
 entt::entity Scene::AddEmpty(ObjectCreateInfo info) {
-    const auto entity = R.create();
-    R.emplace<ObjectKind>(entity, ObjectType::Empty);
-    SetTransform(R, entity, info.Transform);
-    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Empty" : info.Name));
-
-    switch (info.Select) {
-        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
-            Select(entity);
-            break;
-        case MeshInstanceCreateInfo::SelectBehavior::Additive:
-            R.emplace<Selected>(entity);
-            // Fallthrough
-        case MeshInstanceCreateInfo::SelectBehavior::None:
-            if (R.storage<Active>().empty()) {
-                R.emplace<Active>(entity);
-                R.emplace_or_replace<Selected>(entity);
-            }
-            break;
-    }
-    return entity;
+    // Plain axes: 3 unit-length axes lines
+    return CreateExtrasObject(
+        {{
+            .Positions = {{0, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, -1}},
+            .Edges = {{0, 1}, {2, 3}, {4, 5}},
+        }},
+        ObjectType::Empty, info, "Empty"
+    );
 }
 
 entt::entity Scene::AddArmature(ObjectCreateInfo info) {
@@ -1105,16 +1249,24 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     return entity;
 }
 
-entt::entity Scene::AddCamera(ObjectCreateInfo info) {
-    CameraData cd{Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}};
-    const auto [mesh_entity, _] = AddMesh(BuildCameraFrustumMesh(cd), std::nullopt);
+entt::entity Scene::CreateExtrasMeshEntity(ExtrasWireframe &&wireframe) {
+    const auto [mesh_entity, _] = AddMesh(std::move(wireframe.Data), std::nullopt);
+    R.emplace<ObjectExtrasTag>(mesh_entity);
+    if (!wireframe.VertexClasses.empty()) {
+        const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
+        R.emplace<VertexClassRange>(mesh_entity, SlotOffset{Buffers->VertexClassBuffer.Buffer.Slot, range.Offset});
+    }
+    return mesh_entity;
+}
+
+entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType type, ObjectCreateInfo info, const std::string &default_name) {
+    const auto mesh_entity = CreateExtrasMeshEntity(std::move(wireframe));
 
     const auto entity = R.create();
-    R.emplace<ObjectKind>(entity, ObjectType::Camera);
-    R.emplace<CameraData>(entity, cd);
+    R.emplace<ObjectKind>(entity, type);
     R.emplace<MeshInstance>(entity, mesh_entity);
     SetTransform(R, entity, info.Transform);
-    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Camera" : info.Name));
+    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? default_name : info.Name));
 
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
         mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
@@ -1137,6 +1289,21 @@ entt::entity Scene::AddCamera(ObjectCreateInfo info) {
             }
             break;
     }
+    return entity;
+}
+
+entt::entity Scene::AddCamera(ObjectCreateInfo info) {
+    CameraData cd{Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}};
+    const auto entity = CreateExtrasObject({.Data = BuildCameraFrustumMesh(cd)}, ObjectType::Camera, info, "Camera");
+    R.emplace<CameraData>(entity, cd);
+    return entity;
+}
+
+entt::entity Scene::AddLight(ObjectCreateInfo info) {
+    LightData light{PointLight{.Range = std::nullopt}, {1.f, 1.f, 1.f}, 75.f};
+    auto wireframe = BuildLightMesh(light.Type);
+    const auto entity = CreateExtrasObject(std::move(wireframe), ObjectType::Light, info, "Light");
+    R.emplace<LightData>(entity, light);
     return entity;
 }
 
@@ -1232,6 +1399,16 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             });
             const auto &scd = loaded_scene->Cameras[*object.CameraIndex];
             R.patch<CameraData>(object_entity, [&scd](auto &cd) { cd = scd.Camera; });
+        } else if (object.ObjectType == gltf::SceneObjectData::Type::Light &&
+                   object.LightIndex &&
+                   *object.LightIndex < loaded_scene->Lights.size()) {
+            object_entity = AddLight({
+                .Name = object_name,
+                .Transform = MatrixToTransform(object.WorldTransform),
+                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+            });
+            const auto &sld = loaded_scene->Lights[*object.LightIndex];
+            R.patch<LightData>(object_entity, [&sld](auto &ld) { ld = sld.Light; });
         } else {
             object_entity = AddEmpty(
                 {
@@ -1497,14 +1674,14 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 }
 
 entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
-    if (!R.all_of<MeshInstance>(e)) {
-        const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
-        const ObjectCreateInfo create_info{
-            .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
-            .Transform = info ? info->Transform : GetTransform(R, e),
-            .Select = select_behavior,
-        };
+    const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
+    const ObjectCreateInfo create_info{
+        .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
+        .Transform = info ? info->Transform : GetTransform(R, e),
+        .Select = select_behavior,
+    };
 
+    if (!R.all_of<MeshInstance>(e)) {
         const auto object_type = R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value : ObjectType::Empty;
         if (object_type == ObjectType::Armature) {
             const auto copy_entity = AddArmature(create_info);
@@ -1517,16 +1694,19 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         return AddEmpty(create_info);
     }
 
-    // Camera objects have MeshInstance but use AddCamera to create their own frustum mesh.
-    if (const auto *src_cd = R.try_get<CameraData>(e)) {
-        const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
-        const auto copy_entity = AddCamera({
-            .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
-            .Transform = info ? info->Transform : GetTransform(R, e),
-            .Select = select_behavior,
-        });
-        R.patch<CameraData>(copy_entity, [&](auto &dst) { dst = *src_cd; });
-        return copy_entity;
+    // Object extras (Camera, Empty, Light) have MeshInstance but create their own wireframe mesh.
+    if (R.all_of<ObjectExtrasTag>(R.get<MeshInstance>(e).MeshEntity)) {
+        if (const auto *src_cd = R.try_get<CameraData>(e)) {
+            const auto copy_entity = AddCamera(create_info);
+            R.patch<CameraData>(copy_entity, [&](auto &dst) { dst = *src_cd; });
+            return copy_entity;
+        }
+        if (const auto *src_ld = R.try_get<LightData>(e)) {
+            const auto copy_entity = AddLight(create_info);
+            R.patch<LightData>(copy_entity, [&](auto &dst) { dst = *src_ld; });
+            return copy_entity;
+        }
+        return AddEmpty(create_info);
     }
 
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
@@ -1694,6 +1874,11 @@ void Scene::Destroy(entt::entity e) {
         );
         if (!has_instances) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
+            if (const auto *vcr = R.try_get<VertexClassRange>(mesh_entity)) {
+                if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
+                    Buffers->VertexClassBuffer.Release({vcr->Value.Offset, mesh->VertexCount()});
+                }
+            }
             R.destroy(mesh_entity);
         }
     }
@@ -1791,6 +1976,7 @@ void Scene::RecordRenderCommandBuffer() {
 
     DrawListBuilder draw_list;
     DrawBatchInfo fill_batch{}, line_batch{}, point_batch{};
+    DrawBatchInfo extras_line_batch{};
     DrawBatchInfo silhouette_batch{};
     DrawBatchInfo overlay_face_normals_batch{}, overlay_vertex_normals_batch{}, overlay_bbox_batch{};
 
@@ -1850,6 +2036,7 @@ void Scene::RecordRenderCommandBuffer() {
     {
         line_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
+            if (R.all_of<ObjectExtrasTag>(entity)) continue;
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
             const bool is_line_mesh = mesh.FaceCount() == 0 && mesh.EdgeCount() > 0;
             if (!is_line_mesh && !show_wireframe && !is_edit_mode && !is_excite_mode) continue;
@@ -1869,6 +2056,8 @@ void Scene::RecordRenderCommandBuffer() {
             PatchMorphWeights(draw_list, db, deform);
         }
     }
+
+    AppendExtrasDraw(R, draw_list, extras_line_batch, [](auto &, const auto &) {});
 
     {
         point_batch = draw_list.BeginBatch();
@@ -1981,6 +2170,8 @@ void Scene::RecordRenderCommandBuffer() {
         record_draw_batch(main.Renderer, SPT::Line, line_batch);
         // Vertex points (always recorded — batch is empty when nothing qualifies)
         record_draw_batch(main.Renderer, SPT::Point, point_batch);
+        // Object extras (cameras, lights, empties)
+        record_draw_batch(main.Renderer, SPT::ObjectExtrasLine, extras_line_batch);
     }
 
     // Silhouette edge color (rendered ontop of meshes)
@@ -2041,6 +2232,7 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
             auto append_topology_batch = [&](auto filter) {
                 auto batch = draw_list.BeginBatch();
                 for (auto [mesh_entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
+                    if (R.all_of<ObjectExtrasTag>(mesh_entity)) continue;
                     const auto *indices = filter(mesh, mesh_buffers);
                     if (!indices || indices->Count == 0) continue;
                     const auto deform_it = selection_deform_slots.find(mesh_entity);
@@ -2072,10 +2264,16 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
                 return m.FaceCount() == 0 && m.EdgeCount() == 0 ? &b.VertexIndices : nullptr;
             });
 
+            DrawBatchInfo extras_batch;
+            AppendExtrasDraw(R, draw_list, extras_batch, [](auto &draw, const auto &models) {
+                draw.ObjectIdSlot = models.ObjectIds.Slot;
+            });
+
             return {
                 {SPT::SelectionFragmentTriangles, tri_batch},
                 {SPT::SelectionFragmentLines, line_batch},
                 {SPT::SelectionFragmentPoints, point_batch},
+                {SPT::SelectionObjectExtrasLines, extras_batch},
             };
         },
         signal_semaphore
@@ -2469,6 +2667,9 @@ void Scene::Interact() {
             StartScreenTransform = TransformGizmo::TransformType::Translate;
         } else if (IsKeyPressed(ImGuiKey_C, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
             AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
+        } else if (IsKeyPressed(ImGuiKey_L, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+            AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
             StartScreenTransform = TransformGizmo::TransformType::Translate;
         }
         if (!R.storage<Selected>().empty()) {
@@ -3244,6 +3445,58 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
     }
+    if (auto *ld = R.try_get<LightData>(active_entity)) {
+        if (CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+            bool changed = false;
+            constexpr float MaxLightIntensity = 1000.f;
+            constexpr float MaxLightRange = 1000.f;
+
+            const char *type_names[]{"Point", "Directional", "Spot"};
+            int type_i = std::holds_alternative<PointLight>(ld->Type) ? 0 :
+                std::holds_alternative<DirectionalLight>(ld->Type)    ? 1 :
+                                                                        2;
+            if (Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
+                if (type_i == 0 && !std::holds_alternative<PointLight>(ld->Type)) {
+                    ld->Type = PointLight{.Range = std::nullopt};
+                    changed = true;
+                } else if (type_i == 1 && !std::holds_alternative<DirectionalLight>(ld->Type)) {
+                    ld->Type = DirectionalLight{};
+                    changed = true;
+                } else if (type_i == 2 && !std::holds_alternative<SpotLight>(ld->Type)) {
+                    ld->Type = SpotLight{
+                        .Range = std::nullopt,
+                        .Size = DefaultSpotSize,
+                        .Blend = DefaultSpotBlend,
+                    };
+                    changed = true;
+                }
+            }
+            changed |= ColorEdit3("Color", &ld->Color.x);
+            changed |= SliderFloat("Intensity", &ld->Intensity, 0.f, MaxLightIntensity, "%.2f");
+
+            auto range_controls = [&](std::optional<float> &range) {
+                bool infinite_range = !range.has_value();
+                if (Checkbox("Infinite range", &infinite_range)) {
+                    range = infinite_range ? std::nullopt : std::optional{10.f};
+                    changed = true;
+                }
+                if (range) changed |= SliderFloat("Range", &*range, 0.f, MaxLightRange, "%.2f");
+            };
+            if (auto *pl = std::get_if<PointLight>(&ld->Type)) {
+                range_controls(pl->Range);
+            } else if (auto *sl = std::get_if<SpotLight>(&ld->Type)) {
+                range_controls(sl->Range);
+                float size_deg = glm::degrees(sl->Size);
+                if (SliderFloat("Size", &size_deg, 0.f, 90.f, "%.1f deg")) {
+                    sl->Size = glm::radians(size_deg);
+                    changed = true;
+                }
+                changed |= SliderFloat("Blend", &sl->Blend, 0.f, 1.f, "%.2f");
+            }
+
+            if (changed) R.patch<LightData>(active_entity, [](auto &) {});
+        }
+    }
     PopID();
 
     if (activate_entity != entt::null) Select(activate_entity);
@@ -3345,6 +3598,11 @@ void Scene::RenderControls() {
                 SameLine();
                 if (Button("Add Camera")) {
                     AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
+                }
+                SameLine();
+                if (Button("Add Light")) {
+                    AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
             }

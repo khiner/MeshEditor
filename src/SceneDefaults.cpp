@@ -21,6 +21,7 @@ SceneDefaults::SceneDefaults()
               .WireEdit{0, 0, 0},
               .ObjectActive{1, 0.627f, 0.157f},
               .ObjectSelected{0.929f, 0.341f, 0},
+              .Light{0, 0, 0, 0.314f},
               .Vertex{0, 0, 0},
               .VertexSelected{1, 0.478f, 0},
               .EdgeSelectedIncidental{1, 0.6f, 0},

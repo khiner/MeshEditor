@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AnimationTimeline.h"
+#include "Entity.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
 #include "World.h"
@@ -64,6 +65,8 @@ enum class ShaderPipelineType {
     SelectionFragmentTriangles,
     SelectionFragmentLines,
     SelectionFragmentPoints,
+    ObjectExtrasLine,
+    SelectionObjectExtrasLines,
     DebugNormals,
 };
 
@@ -89,6 +92,7 @@ struct ObjectCreateInfo {
     MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
 };
 
+struct ExtrasWireframe;
 struct Mesh;
 struct MeshData;
 struct MeshStore;
@@ -131,6 +135,7 @@ struct Scene {
     entt::entity AddEmpty(ObjectCreateInfo = {});
     entt::entity AddArmature(ObjectCreateInfo = {});
     entt::entity AddCamera(ObjectCreateInfo = {});
+    entt::entity AddLight(ObjectCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
@@ -278,6 +283,9 @@ private:
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<uvec2, uvec2>);
     std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, he::Element, uvec2 mouse_px);
     std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);
+
+    entt::entity CreateExtrasMeshEntity(ExtrasWireframe &&);
+    entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
 
     void RenderEntityControls(entt::entity);
     void RenderEntitiesTable(std::string name, entt::entity parent);

@@ -57,6 +57,10 @@ layout(set = 0, binding = BINDING_MorphWeightBuffer, scalar) readonly buffer Mor
     float Weights[];
 } MorphWeightBuffers[];
 
+layout(set = 0, binding = BINDING_VertexClassBuffer, scalar) readonly buffer VertexClassBuffer {
+    uint8_t Classes[];
+} VertexClassBuffers[];
+
 const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;

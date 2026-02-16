@@ -216,6 +216,7 @@ bool IsStructType(std::string_view type, const std::vector<StructDef> &structs) 
 }
 
 std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
+    if (type == "u8") return "uint8_t";
     if (type == "u32") return "uint32_t";
     if (type == "float") return "float";
     if (type == "uvec2") return "glm::uvec2";
@@ -227,6 +228,7 @@ std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vec
     return {};
 }
 std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
+    if (type == "u8") return "uint8_t";
     if (type == "u32") return "uint";
     if (type == "float") return "float";
     if (type == "uvec2") return "uvec2";
@@ -390,7 +392,7 @@ int main(int argc, char **argv) {
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
             if (spec.ArraySize) needs_array = true;
-            if (spec.Base == "u32") needs_cstdint = true;
+            if (spec.Base == "u32" || spec.Base == "u8") needs_cstdint = true;
             if (spec.Base == "uvec2") needs_uvec2 = true;
             if (spec.Base == "uvec4") needs_uvec4 = true;
             if (spec.Base == "vec3") needs_vec3 = true;

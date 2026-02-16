@@ -24,6 +24,13 @@ struct MeshInstance {
     entt::entity MeshEntity;
 };
 
+// Cameras, lights, empties.
+struct ObjectExtrasTag {};
+
+struct VertexClassRange {
+    SlotOffset Value;
+};
+
 enum class IndexKind {
     Face,
     Edge,

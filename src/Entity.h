@@ -23,6 +23,7 @@ enum class ObjectType : uint8_t {
     Mesh,
     Armature,
     Camera,
+    Light,
 };
 
 struct ObjectKind {
@@ -35,6 +36,7 @@ constexpr std::string_view ObjectTypeName(ObjectType type) {
         case ObjectType::Mesh: return "Mesh";
         case ObjectType::Armature: return "Armature";
         case ObjectType::Camera: return "Camera";
+        case ObjectType::Light: return "Light";
     }
 }
 

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <format>
+#include <numbers>
 #include <numeric>
 #include <unordered_map>
 #include <unordered_set>
@@ -308,7 +309,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing};
+    fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual};
     using fastgltf::Options;
     auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices);
     if (parsed.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
@@ -655,6 +656,31 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         scene_data.Cameras.emplace_back(CameraData{std::move(projection)}, std::string{cam.name});
     }
 
+    // Parse KHR_lights_punctual lights
+    scene_data.Lights.reserve(asset.lights.size());
+    for (const auto &light : asset.lights) {
+        LightVariant type;
+        switch (light.type) {
+            case fastgltf::LightType::Directional:
+                type = DirectionalLight{};
+                break;
+            case fastgltf::LightType::Point:
+                type = PointLight{.Range = light.range ? std::optional{*light.range} : std::nullopt};
+                break;
+            case fastgltf::LightType::Spot: {
+                const float size = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
+                const float inner = light.innerConeAngle ? *light.innerConeAngle : 0.f;
+                const float blend = size > 0.f ? std::clamp(1.f - (inner / size), 0.f, 1.f) : 0.f;
+                type = SpotLight{.Range = light.range ? std::optional{*light.range} : std::nullopt, .Size = size, .Blend = blend};
+                break;
+            }
+        }
+        scene_data.Lights.emplace_back(
+            LightData{std::move(type), {light.color.x(), light.color.y(), light.color.z()}, light.intensity},
+            std::string{light.name}
+        );
+    }
+
     std::vector<bool> is_joint(asset.nodes.size(), false);
     for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
         if (!used_skin[skin_index]) continue;
@@ -691,6 +717,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             .MeshIndex = mesh_index,
             .SkinIndex = ToIndex(source_node.skinIndex, asset.skins.size()),
             .CameraIndex = ToIndex(source_node.cameraIndex, asset.cameras.size()),
+            .LightIndex = ToIndex(source_node.lightIndex, asset.lights.size()),
             .Name = MakeNodeName(asset, node_index, source_mesh_index),
         };
     }
@@ -741,6 +768,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 const auto &source_weights = asset.nodes[node_index].weights;
                 const auto object_type = node.MeshIndex ? SceneObjectData::Type::Mesh :
                     node.CameraIndex                    ? SceneObjectData::Type::Camera :
+                    node.LightIndex                     ? SceneObjectData::Type::Light :
                                                           SceneObjectData::Type::Empty;
                 scene_data.Objects.emplace_back(
                     SceneObjectData{
@@ -751,6 +779,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                         .MeshIndex = node.MeshIndex,
                         .SkinIndex = node.SkinIndex,
                         .CameraIndex = node.CameraIndex,
+                        .LightIndex = node.LightIndex,
                         .NodeWeights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())},
                         .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
                     }

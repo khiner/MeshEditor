@@ -76,6 +76,15 @@ struct MainPipeline {
                 CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
             )
         );
+        pipelines.emplace(
+            SPT::ObjectExtrasLine,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "ObjectExtras.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
+                {},
+                vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+                CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
+            )
+        );
         const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
             return ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "VertexTransform.vert", {{0, uint32_t(overlay_kind)}}},
@@ -443,6 +452,15 @@ struct SelectionFragmentPipeline {
             SPT::SelectionFragmentLines,
             ctx.CreateGraphics(
                 {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
+                {}, CreateDepthStencil(false, false), draw_pc
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionObjectExtrasLines,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "ObjectExtrasSelection.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
                 {}, CreateDepthStencil(false, false), draw_pc

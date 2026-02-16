@@ -29,6 +29,8 @@ bindings:
     kind: Buffer
   - name: MorphWeightBuffer
     kind: Buffer
+  - name: VertexClassBuffer
+    kind: Buffer
 
 structs:
   - name: SlotOffset
@@ -79,6 +81,8 @@ structs:
         type: SlotOffset
       - name: MorphTargetCount
         type: u32
+      - name: VertexClass
+        type: SlotOffset
   - name: SceneViewUBO
     binding: SceneViewUBO
     fields:
@@ -110,6 +114,8 @@ structs:
       - name: PendingTransform
         type: mat4
         default: 1
+      - name: ScreenPixelScale
+        type: float
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
       - name: Wire # Wire
@@ -120,6 +126,8 @@ structs:
         type: vec3
       - name: ObjectSelected # Object Selected
         type: vec3
+      - name: Light # Light
+        type: vec4
       - name: Vertex # Vertex
         type: vec3
       - name: VertexSelected # Vertex Select
