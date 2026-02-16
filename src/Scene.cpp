@@ -781,8 +781,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             if (const auto *cd = active_entity != entt::null ? R.try_get<CameraData>(active_entity) : nullptr) {
                 const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
                 const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
-                auto &vc = R.get<ViewCamera>(SceneEntity);
-                vc.SetData(WidenForLookThrough(*cd, viewport_aspect));
+                R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(*cd, viewport_aspect);
             }
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
@@ -3020,7 +3019,7 @@ void Scene::RenderOverlay() {
     // Camera look-through frame overlay: show the active camera's view as a centered frame.
     // The ViewCamera's FOV is widened so the active camera's view fits inside with padding.
     // The frame marks exactly what the active camera captures.
-    if (SavedViewCamera) {
+    if (SavedViewCamera && !camera.IsAnimating()) {
         const auto active_entity = FindActiveEntity(R);
         if (const auto *cd = active_entity != entt::null ? R.try_get<CameraData>(active_entity) : nullptr) {
             const float cam_aspect = AspectRatio(*cd);
@@ -3223,9 +3222,11 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     const auto &wm = R.get<WorldMatrix>(active_entity);
                     const vec3 cam_pos{wm.M[3]};
                     const vec3 cam_forward = -glm::normalize(vec3{wm.M[2]});
-                    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-                    const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
-                    R.replace<ViewCamera>(SceneEntity, ViewCamera{cam_pos, cam_pos + cam_forward, WidenForLookThrough(*cd, viewport_aspect)});
+                    const vec3 target = cam_pos + cam_forward;
+                    // Forward() points from target to position (away from view direction).
+                    const vec3 away = -cam_forward;
+                    const vec2 yaw_pitch{std::atan2(away.z, away.x), std::asin(away.y)};
+                    R.patch<ViewCamera>(SceneEntity, [&](auto &vc) { vc.AnimateTo(target, yaw_pitch, 1.f); });
                 }
             }
         }

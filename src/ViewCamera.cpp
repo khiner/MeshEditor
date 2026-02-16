@@ -73,11 +73,11 @@ void ViewCamera::SetTargetDirection(vec3 direction) {
 }
 void ViewCamera::SetTargetDistance(float distance) {
     StopMoving();
-    TargetDistance = std::max(distance, MinDistance);
+    GoalDistance = std::max(distance, MinDistance);
 }
 void ViewCamera::SetTargetYawPitch(vec2 yaw_pitch) {
     StopMoving();
-    TargetYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
+    GoalYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
 }
 
 void ViewCamera::SetData(const CameraData &camera_data) {
@@ -85,47 +85,66 @@ void ViewCamera::SetData(const CameraData &camera_data) {
     StopMoving();
 }
 
+void ViewCamera::AnimateTo(vec3 target, vec2 yaw_pitch, float distance) {
+    StopMoving();
+    GoalTarget = target;
+    GoalDistance = std::max(distance, MinDistance);
+    GoalYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
+}
+
 bool ViewCamera::Tick() {
     if (Changed) {
         Changed = false;
         return true;
     }
+    bool moved = false;
     if (YawPitchVelocity != vec2{0}) {
         _SetYawPitch(YawPitch + YawPitchVelocity);
         YawPitchVelocity *= 0.9f;
         if (LengthSq(YawPitchVelocity) < 0.00001) YawPitchVelocity = {};
-        return true;
+        moved = true;
     }
-    if (TargetDistance) {
-        const auto old_distance = Distance;
-        if (std::abs(old_distance - *TargetDistance) < 0.0001) {
-            Distance = *TargetDistance;
-            TargetDistance.reset();
+    if (GoalTarget) {
+        if (glm::length(*GoalTarget - Target) < 0.0001f) {
+            Target = *GoalTarget;
+            GoalTarget.reset();
         } else {
-            Distance = glm::mix(old_distance, *TargetDistance, TickSpeed);
+            Target = glm::mix(Target, *GoalTarget, TickSpeed);
+        }
+        moved = true;
+    }
+    if (GoalDistance) {
+        const auto old_distance = Distance;
+        if (std::abs(old_distance - *GoalDistance) < 0.0001) {
+            Distance = *GoalDistance;
+            GoalDistance.reset();
+        } else {
+            Distance = glm::mix(old_distance, *GoalDistance, TickSpeed);
         }
         if (auto *orthographic = std::get_if<Orthographic>(&Data)) {
-            const auto scale = Distance / old_distance;
-            orthographic->Mag *= scale;
+            orthographic->Mag *= Distance / old_distance;
         }
-        return true;
+        moved = true;
     }
-    if (TargetYawPitch) {
-        const vec2 delta{ShortestAngleDelta(YawPitch.x, TargetYawPitch->x), ShortestAngleDelta(YawPitch.y, TargetYawPitch->y)};
+    if (GoalYawPitch) {
+        const vec2 delta{ShortestAngleDelta(YawPitch.x, GoalYawPitch->x), ShortestAngleDelta(YawPitch.y, GoalYawPitch->y)};
         if (LengthSq(delta) < 0.0001f) {
-            _SetYawPitch(*TargetYawPitch);
-            TargetYawPitch.reset();
+            _SetYawPitch(*GoalYawPitch);
+            GoalYawPitch.reset();
         } else {
             _SetYawPitch(YawPitch + delta * TickSpeed); // minimal path step
         }
-        return true;
+        moved = true;
     }
-    return false;
+    return moved;
 }
 
+bool ViewCamera::IsAnimating() const { return GoalTarget || GoalDistance || GoalYawPitch || YawPitchVelocity != vec2{0}; }
+
 void ViewCamera::StopMoving() {
-    TargetDistance.reset();
-    TargetYawPitch.reset();
+    GoalTarget.reset();
+    GoalDistance.reset();
+    GoalYawPitch.reset();
     YawPitchVelocity = {};
 }
 

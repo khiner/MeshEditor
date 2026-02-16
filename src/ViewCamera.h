@@ -42,16 +42,19 @@ struct ViewCamera {
     void SetTargetYawPitch(vec2);
     void SetTargetDirection(vec3);
     void SetData(const CameraData &);
+    void AnimateTo(vec3 target, vec2 yaw_pitch, float distance);
 
     // Not currently used, since I need to figure out trackpad touch events.
     void SetYawPitchVelocity(vec2 vel) { YawPitchVelocity = vel; }
+    bool IsAnimating() const;
     void StopMoving();
 
     bool Tick();
 
 private:
-    std::optional<float> TargetDistance{};
-    std::optional<vec2> TargetYawPitch{};
+    std::optional<vec3> GoalTarget{};
+    std::optional<float> GoalDistance{};
+    std::optional<vec2> GoalYawPitch{};
     vec2 YawPitchVelocity{};
     bool Changed{false};
     float TickSpeed{0.25};
