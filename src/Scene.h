@@ -257,6 +257,8 @@ private:
     // Orientation/Transform gizmos, active object center-dot
     void RenderOverlay();
     void ExitLookThroughCamera();
+    void SnapToCamera(entt::entity camera_entity);
+    void AnimateToCamera(entt::entity camera_entity);
 
     void RecordRenderCommandBuffer();
 

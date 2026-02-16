@@ -648,6 +648,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         for (auto instance_entity : active_tracker) {
             update_instance_state(instance_entity);
+            // If looking through a camera and a different camera becomes active, snap to it.
+            if (SavedViewCamera && R.all_of<Active>(instance_entity) && R.all_of<CameraData>(instance_entity)) {
+                SnapToCamera(instance_entity);
+            }
         }
     }
     if (!R.storage<entt::reactive>(changes::Rerecord).empty() || !DestroyTracker->Storage.empty()) {
@@ -2770,6 +2774,22 @@ void Scene::ExitLookThroughCamera() {
     SavedViewCamera.reset();
 }
 
+void Scene::SnapToCamera(entt::entity camera_entity) {
+    const auto &wm = R.get<WorldMatrix>(camera_entity);
+    const vec3 pos{wm.M[3]};
+    const vec3 fwd = -glm::normalize(vec3{wm.M[2]});
+    R.replace<ViewCamera>(SceneEntity, ViewCamera{pos, pos + fwd, R.get<CameraData>(camera_entity)});
+}
+void Scene::AnimateToCamera(entt::entity camera_entity) {
+    const auto &wm = R.get<WorldMatrix>(camera_entity);
+    const vec3 pos{wm.M[3]};
+    const vec3 fwd = -glm::normalize(vec3{wm.M[2]});
+    const vec3 away = -fwd; // Forward() points from target to position
+    R.patch<ViewCamera>(SceneEntity, [&](auto &vc) {
+        vc.AnimateTo(pos + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f);
+    });
+}
+
 void Scene::RenderOverlay() {
     const auto viewport = GetViewportRect();
     { // Transform mode pill buttons (top-left overlay)
@@ -3219,14 +3239,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             } else {
                 if (Button("Look through")) {
                     SavedViewCamera = R.get<ViewCamera>(SceneEntity);
-                    const auto &wm = R.get<WorldMatrix>(active_entity);
-                    const vec3 cam_pos{wm.M[3]};
-                    const vec3 cam_forward = -glm::normalize(vec3{wm.M[2]});
-                    const vec3 target = cam_pos + cam_forward;
-                    // Forward() points from target to position (away from view direction).
-                    const vec3 away = -cam_forward;
-                    const vec2 yaw_pitch{std::atan2(away.z, away.x), std::asin(away.y)};
-                    R.patch<ViewCamera>(SceneEntity, [&](auto &vc) { vc.AnimateTo(target, yaw_pitch, 1.f); });
+                    AnimateToCamera(active_entity);
                 }
             }
         }
