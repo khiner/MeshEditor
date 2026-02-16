@@ -2475,7 +2475,7 @@ void Scene::Interact() {
     } else {
         AccumulatedWrapMouseDelta = {0, 0};
     }
-    if (!IsWindowHovered()) return;
+    if (!IsWindowHovered() && !BoxSelectStart) return;
 
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
