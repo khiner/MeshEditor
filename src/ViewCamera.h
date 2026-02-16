@@ -24,7 +24,6 @@ struct ViewCamera {
     float Distance;
     vec2 YawPitch; // Ranges ([0, 2π], [-π, π]) If pitch is in (wrapped) range [π/2, 3π/2], camera is flipped
 
-    bool IsPerspective() const { return std::holds_alternative<Perspective>(Data); }
     float NearClip() const;
     float FarClip() const; // Always finite (fallback when perspective far is infinite).
 

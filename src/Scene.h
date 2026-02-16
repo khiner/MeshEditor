@@ -256,6 +256,7 @@ private:
     // The overlay is everything drawn ontop of the viewport with ImGui, independent of the main scene vulkan pipeline:
     // Orientation/Transform gizmos, active object center-dot
     void RenderOverlay();
+    void ExitLookThroughCamera();
 
     void RecordRenderCommandBuffer();
 

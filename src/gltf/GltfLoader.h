@@ -4,7 +4,7 @@
 // better. Lossy for round-trip export but visually near-lossless.
 //
 // TODO (glTF 2.0 coverage, non-material-first):
-// - camera view "Look through" doesn't show the aspect ratio. be like blender here. also, animate the viewport camera to the camera's position/rotation instead of snapping.
+// - Animate the viewport camera to the camera's position/rotation instead of snapping when entering "Look through".
 // - Support compressed geometry extensions (`EXT_meshopt_compression`, `KHR_draco_mesh_compression`):
 //   minimal decode path: meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
 //   draco decoder-only build (disable encoder/tools/tests, keep mesh decode path).

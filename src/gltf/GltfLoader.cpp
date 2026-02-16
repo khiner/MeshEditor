@@ -647,7 +647,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 if constexpr (std::is_same_v<Projection, fastgltf::Camera::Perspective>) {
                     return Perspective{.FieldOfViewRad = source.yfov, .FarClip = source.zfar, .NearClip = source.znear, .AspectRatio = source.aspectRatio};
                 } else {
-                    return Orthographic{.XMag = source.xmag, .YMag = source.ymag, .FarClip = source.zfar, .NearClip = source.znear};
+                    return Orthographic{.Mag = {source.xmag, source.ymag}, .FarClip = source.zfar, .NearClip = source.znear};
                 }
             },
             cam.camera

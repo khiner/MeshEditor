@@ -11,8 +11,7 @@ constexpr float ShortestAngleDelta(float from, float to) {
     return std::atan2(std::sin(d), std::cos(d)); // in (-pi, pi]
 }
 
-constexpr float MinDistance{0.001f}, MinOrthoMag{1e-6f};
-constexpr float MaxFarClip{100.f};
+inline constexpr float MinDistance{0.001f};
 } // namespace
 
 bool ViewCamera::IsAligned(vec3 direction) const { return glm::dot(Forward(), glm::normalize(direction)) > 0.999f; }
@@ -42,9 +41,8 @@ ray ViewCamera::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
     const auto basis = Basis();
     const auto view_dir = -Forward();
     const auto aspect = viewport.size.x / viewport.size.y;
-    const float ymag = std::max(orthographic.YMag, MinOrthoMag);
-    const float xmag = std::max(ymag * aspect, MinOrthoMag);
-    return {Position() + view_dir * NearClip() + basis[0] * (ndc.x * xmag) + basis[1] * (ndc.y * ymag), view_dir};
+    const vec2 mag{orthographic.Mag.y * aspect, orthographic.Mag.y};
+    return {Position() + view_dir * NearClip() + basis[0] * (ndc.x * mag.x) + basis[1] * (ndc.y * mag.y), view_dir};
 }
 
 vec3 ViewCamera::YAxis() const {
@@ -60,9 +58,8 @@ mat4 ViewCamera::Projection(float aspect_ratio) const {
     }
 
     const auto &orthographic = std::get<Orthographic>(Data);
-    const float ymag = std::max(orthographic.YMag, MinOrthoMag);
-    const float xmag = std::max(ymag * aspect_ratio, MinOrthoMag);
-    return glm::orthoRH_ZO(-xmag, xmag, -ymag, ymag, orthographic.NearClip, orthographic.FarClip);
+    const vec2 mag{orthographic.Mag.y * aspect_ratio, orthographic.Mag.y};
+    return glm::orthoRH_ZO(-mag.x, mag.x, -mag.y, mag.y, orthographic.NearClip, orthographic.FarClip);
 }
 vec3 ViewCamera::Forward() const { return {glm::cos(YawPitch.x) * glm::cos(YawPitch.y), glm::sin(YawPitch.y), glm::sin(YawPitch.x) * glm::cos(YawPitch.y)}; }
 mat3 ViewCamera::Basis() const {
@@ -109,8 +106,7 @@ bool ViewCamera::Tick() {
         }
         if (auto *orthographic = std::get_if<Orthographic>(&Data)) {
             const auto scale = Distance / old_distance;
-            orthographic->XMag = std::max(orthographic->XMag * scale, MinOrthoMag);
-            orthographic->YMag = std::max(orthographic->YMag * scale, MinOrthoMag);
+            orthographic->Mag *= scale;
         }
         return true;
     }

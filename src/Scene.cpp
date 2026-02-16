@@ -104,7 +104,7 @@ MeshData BuildCameraFrustumMesh(const CameraData &cd) {
         display_near = perspective->NearClip;
         display_far = std::min(perspective->FarClip.value_or(5.f), 5.f);
 
-        const float aspect = perspective->AspectRatio.value_or(16.f / 9.f);
+        const float aspect = AspectRatio(cd);
         near_half_h = display_near * std::tan(perspective->FieldOfViewRad * 0.5f);
         near_half_w = near_half_h * aspect;
         far_half_h = display_far * std::tan(perspective->FieldOfViewRad * 0.5f);
@@ -112,8 +112,8 @@ MeshData BuildCameraFrustumMesh(const CameraData &cd) {
     } else if (const auto *orthographic = std::get_if<Orthographic>(&cd)) {
         display_near = orthographic->NearClip;
         display_far = std::min(orthographic->FarClip, 5.f);
-        near_half_w = far_half_w = orthographic->XMag;
-        near_half_h = far_half_h = orthographic->YMag;
+        near_half_w = far_half_w = orthographic->Mag.x;
+        near_half_h = far_half_h = orthographic->Mag.y;
     }
 
     // 8 corner vertices: near plane (0-3), far plane (4-7)
@@ -147,12 +147,30 @@ MeshData BuildCameraFrustumMesh(const CameraData &cd) {
     return {.Positions = std::move(positions), .Edges = std::move(edges)};
 }
 
-struct LensSwitchEquivalence {
-    float Distance, ViewportAspect;
+// Fraction of viewport height the active camera's frame occupies.
+float LookThroughFrameRatio(float cam_aspect, float viewport_aspect) {
+    static constexpr float LookThroughPadRatio{0.9f}; // 5% padding on each side
+    return cam_aspect > viewport_aspect ? viewport_aspect * LookThroughPadRatio / cam_aspect : LookThroughPadRatio;
+}
+
+// Widen CameraData so the active camera's view fits inside the viewport with padding around it.
+CameraData WidenForLookThrough(const CameraData &cd, float viewport_aspect) {
+    const float zoom = 1.f / LookThroughFrameRatio(AspectRatio(cd), viewport_aspect);
+    if (const auto *persp = std::get_if<Perspective>(&cd)) {
+        auto widened = *persp;
+        widened.FieldOfViewRad = std::min(2.f * std::atan(std::tan(persp->FieldOfViewRad * 0.5f) * zoom), glm::radians(179.f));
+        return widened;
+    }
+    auto widened = std::get<Orthographic>(cd);
+    widened.Mag *= zoom;
+    return widened;
+}
+
+struct ViewportContext {
+    float Distance, AspectRatio;
 };
 
-bool RenderCameraLensEditor(CameraData &camera_data, std::optional<LensSwitchEquivalence> switch_equivalence = {}) {
-    constexpr float MaxFarClip{100.f}, MinNearFarDelta{0.001f};
+bool RenderCameraLensEditor(CameraData &camera_data, std::optional<ViewportContext> viewport = {}) {
     bool lens_changed = false;
 
     int proj_i = std::holds_alternative<Orthographic>(camera_data) ? 1 : 0;
@@ -161,28 +179,19 @@ bool RenderCameraLensEditor(CameraData &camera_data, std::optional<LensSwitchEqu
         if (proj_i == 0 && !std::holds_alternative<Perspective>(camera_data)) {
             const auto &orthographic = std::get<Orthographic>(camera_data);
             float field_of_view_rad = glm::radians(60.f);
-            if (switch_equivalence) {
-                field_of_view_rad = glm::clamp(2.f * std::atan(orthographic.YMag / switch_equivalence->Distance), glm::radians(1.f), glm::radians(179.f));
+            if (viewport) {
+                field_of_view_rad = glm::clamp(2.f * std::atan(orthographic.Mag.y / viewport->Distance), glm::radians(1.f), glm::radians(179.f));
             }
-            camera_data = Perspective{
-                .FieldOfViewRad = field_of_view_rad,
-                .FarClip = orthographic.FarClip,
-                .NearClip = orthographic.NearClip,
-            };
+            camera_data = Perspective{.FieldOfViewRad = field_of_view_rad, .FarClip = orthographic.FarClip, .NearClip = orthographic.NearClip};
             lens_changed = true;
         } else if (proj_i == 1 && !std::holds_alternative<Orthographic>(camera_data)) {
             const auto &perspective = std::get<Perspective>(camera_data);
-            float xmag = 1.f, ymag = 1.f;
-            if (switch_equivalence) {
-                ymag = switch_equivalence->Distance * std::tan(perspective.FieldOfViewRad * 0.5f);
-                xmag = ymag * switch_equivalence->ViewportAspect;
+            vec2 mag{1.f};
+            if (viewport) {
+                mag.y = viewport->Distance * std::tan(perspective.FieldOfViewRad * 0.5f);
+                mag.x = mag.y * viewport->AspectRatio;
             }
-            camera_data = Orthographic{
-                .XMag = xmag,
-                .YMag = ymag,
-                .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip)),
-                .NearClip = perspective.NearClip,
-            };
+            camera_data = Orthographic{.Mag = mag, .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip)), .NearClip = perspective.NearClip};
             lens_changed = true;
         }
     }
@@ -204,9 +213,16 @@ bool RenderCameraLensEditor(CameraData &camera_data, std::optional<LensSwitchEqu
         if (perspective->FarClip) {
             lens_changed |= SliderFloat("Far clip", &*perspective->FarClip, perspective->NearClip + MinNearFarDelta, MaxFarClip);
         }
+        if (!viewport) {
+            float aspect = perspective->AspectRatio.value_or(DefaultAspectRatio);
+            if (SliderFloat("Aspect ratio", &aspect, 0.1f, 5.f)) {
+                perspective->AspectRatio = aspect;
+                lens_changed = true;
+            }
+        }
     } else if (auto *orthographic = std::get_if<Orthographic>(&camera_data)) {
-        lens_changed |= SliderFloat("X Mag", &orthographic->XMag, 0.01f, 100.f);
-        lens_changed |= SliderFloat("Y Mag", &orthographic->YMag, 0.01f, 100.f);
+        lens_changed |= SliderFloat("X Mag", &orthographic->Mag.x, 0.01f, 100.f);
+        lens_changed |= SliderFloat("Y Mag", &orthographic->Mag.y, 0.01f, 100.f);
         lens_changed |= SliderFloat("Near clip", &orthographic->NearClip, 0.001f, orthographic->FarClip - MinNearFarDelta);
         lens_changed |= SliderFloat("Far clip", &orthographic->FarClip, orthographic->NearClip + MinNearFarDelta, MaxFarClip);
     }
@@ -674,9 +690,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     for (auto camera_entity : R.storage<entt::reactive>(changes::CameraLens)) {
         if (const auto *cd = R.try_get<CameraData>(camera_entity)) {
             SetMeshPositions(R.get<MeshInstance>(camera_entity).MeshEntity, BuildCameraFrustumMesh(*cd).Positions);
-            // If looking through this camera, sync ViewCamera data.
+            // If looking through this camera, trigger a ViewCamera update so the SceneView
+            // handler re-derives the widened FOV from the updated CameraData.
             if (SavedViewCamera && R.all_of<Active>(camera_entity)) {
-                R.patch<ViewCamera>(SceneEntity, [&cd](auto &vc) { vc.SetData(*cd); });
+                R.patch<ViewCamera>(SceneEntity, [](auto &) {});
             }
         }
     }
@@ -757,6 +774,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         !R.storage<entt::reactive>(changes::SceneSettings).empty() ||
         !R.storage<entt::reactive>(changes::InteractionMode).empty() ||
         !R.storage<entt::reactive>(changes::TransformEnd).empty()) {
+        // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
+        // with the current viewport aspect ratio (handles viewport resize).
+        if (SavedViewCamera) {
+            const auto active_entity = FindActiveEntity(R);
+            if (const auto *cd = active_entity != entt::null ? R.try_get<CameraData>(active_entity) : nullptr) {
+                const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+                const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
+                auto &vc = R.get<ViewCamera>(SceneEntity);
+                vc.SetData(WidenForLookThrough(*cd, viewport_aspect));
+            }
+        }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
@@ -2481,10 +2509,7 @@ void Scene::Interact() {
     const auto &io = GetIO();
     if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
         // Exit "look through" camera view on any orbit/zoom interaction.
-        if (SavedViewCamera) {
-            R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
-            SavedViewCamera.reset();
-        }
+        ExitLookThroughCamera();
         if (io.KeyCtrl || io.KeySuper) {
             R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.SetTargetDistance(std::max(camera.Distance * (1 - wheel.y / 16.f), 0.01f)); });
         } else {
@@ -2740,6 +2765,12 @@ void Scene::WaitForRender() {
     RenderPending = false;
 }
 
+void Scene::ExitLookThroughCamera() {
+    if (!SavedViewCamera) return;
+    R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
+    SavedViewCamera.reset();
+}
+
 void Scene::RenderOverlay() {
     const auto viewport = GetViewportRect();
     { // Transform mode pill buttons (top-left overlay)
@@ -2823,10 +2854,7 @@ void Scene::RenderOverlay() {
     }
 
     // Exit "look through" camera view if the user interacts with the orientation gizmo.
-    if (SavedViewCamera && OrientationGizmo::IsActive()) {
-        R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
-        SavedViewCamera.reset();
-    }
+    if (OrientationGizmo::IsActive()) ExitLookThroughCamera();
     auto &camera = R.get<ViewCamera>(SceneEntity);
     { // Orientation gizmo (drawn before tick so camera animations it initiates begin this frame)
         static constexpr float OGizmoSize{90};
@@ -2986,6 +3014,30 @@ void Scene::RenderOverlay() {
         // Right
         for (float y = box_min.y; y < box_max.y; y += dash_size + gap_size) {
             dl.AddLine({box_max.x, y}, {box_max.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.0f);
+        }
+    }
+
+    // Camera look-through frame overlay: show the active camera's view as a centered frame.
+    // The ViewCamera's FOV is widened so the active camera's view fits inside with padding.
+    // The frame marks exactly what the active camera captures.
+    if (SavedViewCamera) {
+        const auto active_entity = FindActiveEntity(R);
+        if (const auto *cd = active_entity != entt::null ? R.try_get<CameraData>(active_entity) : nullptr) {
+            const float cam_aspect = AspectRatio(*cd);
+            const float frame_ratio = LookThroughFrameRatio(cam_aspect, viewport.size.x / viewport.size.y);
+            const vec2 frame_size{viewport.size.y * frame_ratio * cam_aspect, viewport.size.y * frame_ratio};
+            const vec2 vp_center = viewport.pos + viewport.size * 0.5f;
+            const vec2 fmin = vp_center - frame_size * 0.5f, fmax = vp_center + frame_size * 0.5f;
+            const auto vmin = viewport.pos, vmax = viewport.pos + viewport.size;
+
+            auto &dl = *GetWindowDrawList();
+            static constexpr auto dim = IM_COL32(0, 0, 0, 100);
+            auto iv = [](vec2 v) { return std::bit_cast<ImVec2>(v); };
+            dl.AddRectFilled(iv(vmin), iv({vmax.x, fmin.y}), dim);
+            dl.AddRectFilled(iv({vmin.x, fmax.y}), iv(vmax), dim);
+            dl.AddRectFilled(iv({vmin.x, fmin.y}), iv({fmin.x, fmax.y}), dim);
+            dl.AddRectFilled(iv({fmax.x, fmin.y}), iv({vmax.x, fmax.y}), dim);
+            dl.AddRect(iv(fmin), iv(fmax), IM_COL32(255, 255, 255, 140), 0.f, 0, 1.5f);
         }
     }
 
@@ -3164,17 +3216,16 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (RenderCameraLensEditor(*cd)) R.patch<CameraData>(active_entity, [](auto &) {});
             Separator();
             if (SavedViewCamera) {
-                if (Button("Exit camera view")) {
-                    R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
-                    SavedViewCamera.reset();
-                }
+                if (Button("Exit camera view")) ExitLookThroughCamera();
             } else {
                 if (Button("Look through")) {
                     SavedViewCamera = R.get<ViewCamera>(SceneEntity);
                     const auto &wm = R.get<WorldMatrix>(active_entity);
                     const vec3 cam_pos{wm.M[3]};
                     const vec3 cam_forward = -glm::normalize(vec3{wm.M[2]});
-                    R.replace<ViewCamera>(SceneEntity, ViewCamera{cam_pos, cam_pos + cam_forward, *cd});
+                    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+                    const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
+                    R.replace<ViewCamera>(SceneEntity, ViewCamera{cam_pos, cam_pos + cam_forward, WidenForLookThrough(*cd, viewport_aspect)});
                 }
             }
         }
@@ -3408,7 +3459,7 @@ void Scene::RenderControls() {
                 changed = true;
             }
             changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);
-            changed |= RenderCameraLensEditor(camera.Data, LensSwitchEquivalence{.Distance = camera.Distance, .ViewportAspect = viewport_aspect});
+            changed |= RenderCameraLensEditor(camera.Data, ViewportContext{.Distance = camera.Distance, .AspectRatio = viewport_aspect});
             if (changed) R.patch<ViewCamera>(SceneEntity, [](auto &camera) { camera.StopMoving(); });
             EndTabItem();
         }
