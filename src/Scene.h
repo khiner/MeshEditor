@@ -2,6 +2,7 @@
 
 #include "AnimationTimeline.h"
 #include "TransformGizmo.h"
+#include "ViewCamera.h"
 #include "World.h"
 #include "mesh/Handle.h"
 #include "numeric/vec2.h"
@@ -129,6 +130,7 @@ struct Scene {
     entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
     entt::entity AddEmpty(ObjectCreateInfo = {});
     entt::entity AddArmature(ObjectCreateInfo = {});
+    entt::entity AddCamera(ObjectCreateInfo = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
@@ -209,6 +211,7 @@ private:
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
     bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
+    std::optional<ViewCamera> SavedViewCamera; // Saved viewport state when looking through a scene camera.
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;

@@ -4,7 +4,7 @@
 // better. Lossy for round-trip export but visually near-lossless.
 //
 // TODO (glTF 2.0 coverage, non-material-first):
-// - Import cameras (`node.camera` + camera payload in SceneData).
+// - camera view "Look through" doesn't show the aspect ratio. be like blender here. also, animate the viewport camera to the camera's position/rotation instead of snapping.
 // - Support compressed geometry extensions (`EXT_meshopt_compression`, `KHR_draco_mesh_compression`):
 //   minimal decode path: meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
 //   draco decoder-only build (disable encoder/tools/tests, keep mesh decode path).
@@ -15,6 +15,7 @@
 #pragma once
 
 #include "Armature.h"
+#include "CameraData.h"
 #include "Transform.h"
 #include "mesh/ArmatureDeformData.h"
 #include "mesh/MeshData.h"
@@ -29,11 +30,15 @@
 
 namespace gltf {
 struct SceneMeshData {
-    std::optional<MeshData> Triangles{}; // Merged triangle primitives (Triangles/TriangleStrip/TriangleFan)
+    // Merged triangle/line/point primitives (Triangles/TriangleStrip/TriangleFan, Lines/LineStrip/LineLoop, Points)
+    std::optional<MeshData> Triangles{}, Lines{}, Points{};
     std::optional<ArmatureDeformData> DeformData{};
     std::optional<MorphTargetData> MorphData{};
-    std::optional<MeshData> Lines{}; // Merged line primitives (Lines/LineStrip/LineLoop)
-    std::optional<MeshData> Points{}; // Merged point primitives
+    std::string Name;
+};
+
+struct SceneCameraData {
+    CameraData Camera;
     std::string Name;
 };
 
@@ -45,8 +50,7 @@ struct SceneNodeData {
     mat4 WorldTransform{1.f};
     bool InScene{false};
     bool IsJoint{false};
-    std::optional<uint32_t> MeshIndex{};
-    std::optional<uint32_t> SkinIndex{};
+    std::optional<uint32_t> MeshIndex{}, SkinIndex{}, CameraIndex{};
     std::string Name;
 };
 
@@ -54,14 +58,14 @@ struct SceneObjectData {
     enum class Type : uint8_t {
         Empty,
         Mesh,
+        Camera,
     };
 
     Type ObjectType{Type::Empty};
     uint32_t NodeIndex{};
     std::optional<uint32_t> ParentNodeIndex{};
     mat4 WorldTransform{1.f};
-    std::optional<uint32_t> MeshIndex{};
-    std::optional<uint32_t> SkinIndex{};
+    std::optional<uint32_t> MeshIndex{}, SkinIndex{}, CameraIndex{};
     std::optional<std::vector<float>> NodeWeights{}; // Per-node morph weight overrides (glTF node.weights)
     std::string Name;
 };
@@ -101,6 +105,7 @@ struct SceneData {
     std::vector<SceneObjectData> Objects;
     std::vector<SceneSkinData> Skins;
     std::vector<AnimationClipData> Animations;
+    std::vector<SceneCameraData> Cameras;
 };
 
 std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path &path);

@@ -5,6 +5,7 @@
 #include "Armature.h"
 #include "BBox.h"
 #include "Bindless.h"
+#include "CameraData.h"
 #include "Entity.h"
 #include "Excitable.h"
 #include "OrientationGizmo.h"
@@ -93,6 +94,125 @@ Transform MatrixToTransform(const mat4 &m) {
 #include "scene_impl/SceneUI.h"
 
 namespace {
+// Build a wireframe frustum mesh in camera-local space (camera looks down -Z).
+// Returns positions + edges for a line-only mesh (no faces).
+MeshData BuildCameraFrustumMesh(const CameraData &cd) {
+    float display_near{0.01f}, display_far{5.f};
+    float near_half_w{0.f}, near_half_h{0.f}, far_half_w{0.f}, far_half_h{0.f};
+    if (const auto *perspective = std::get_if<Perspective>(&cd)) {
+        // Clamp far plane for display so wireframe doesn't extend to infinity.
+        display_near = perspective->NearClip;
+        display_far = std::min(perspective->FarClip.value_or(5.f), 5.f);
+
+        const float aspect = perspective->AspectRatio.value_or(16.f / 9.f);
+        near_half_h = display_near * std::tan(perspective->FieldOfViewRad * 0.5f);
+        near_half_w = near_half_h * aspect;
+        far_half_h = display_far * std::tan(perspective->FieldOfViewRad * 0.5f);
+        far_half_w = far_half_h * aspect;
+    } else if (const auto *orthographic = std::get_if<Orthographic>(&cd)) {
+        display_near = orthographic->NearClip;
+        display_far = std::min(orthographic->FarClip, 5.f);
+        near_half_w = far_half_w = orthographic->XMag;
+        near_half_h = far_half_h = orthographic->YMag;
+    }
+
+    // 8 corner vertices: near plane (0-3), far plane (4-7)
+    // Up-triangle indicator: 2 extra vertices (8-9)
+    std::vector<vec3> positions{
+        // Near plane (looking down -Z, so near is at -near)
+        {-near_half_w, -near_half_h, -display_near}, // near bottom-left
+        {near_half_w, -near_half_h, -display_near}, // near bottom-right
+        {near_half_w, near_half_h, -display_near}, // near top-right
+        {-near_half_w, near_half_h, -display_near}, // near top-left
+        // Far plane
+        {-far_half_w, -far_half_h, -display_far}, // far bottom-left
+        {far_half_w, -far_half_h, -display_far}, // far bottom-right
+        {far_half_w, far_half_h, -display_far}, // far top-right
+        {-far_half_w, far_half_h, -display_far}, // far top-left
+        // Up-triangle indicator (above far top edge)
+        {-far_half_w, far_half_h, -display_far}, // triangle base left
+        {far_half_w, far_half_h, -display_far}, // triangle base right
+        {0.f, far_half_h + far_half_h * 0.3f, -display_far}, // triangle apex
+    };
+
+    // clang-format off
+    std::vector<std::array<uint32_t, 2>> edges{
+        {0, 1}, {1, 2}, {2, 3}, {3, 0}, // Near plane quad
+        {4, 5}, {5, 6}, {6, 7}, {7, 4}, // Far plane quad
+        {0, 4}, {1, 5}, {2, 6}, {3, 7}, // Connecting edges (near to far)
+        {8, 10}, {10, 9}, // Up-triangle
+    };
+    // clang-format on
+
+    return {.Positions = std::move(positions), .Edges = std::move(edges)};
+}
+
+struct LensSwitchEquivalence {
+    float Distance, ViewportAspect;
+};
+
+bool RenderCameraLensEditor(CameraData &camera_data, std::optional<LensSwitchEquivalence> switch_equivalence = {}) {
+    constexpr float MaxFarClip{100.f}, MinNearFarDelta{0.001f};
+    bool lens_changed = false;
+
+    int proj_i = std::holds_alternative<Orthographic>(camera_data) ? 1 : 0;
+    const char *proj_names[]{"Perspective", "Orthographic"};
+    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) {
+        if (proj_i == 0 && !std::holds_alternative<Perspective>(camera_data)) {
+            const auto &orthographic = std::get<Orthographic>(camera_data);
+            float field_of_view_rad = glm::radians(60.f);
+            if (switch_equivalence) {
+                field_of_view_rad = glm::clamp(2.f * std::atan(orthographic.YMag / switch_equivalence->Distance), glm::radians(1.f), glm::radians(179.f));
+            }
+            camera_data = Perspective{
+                .FieldOfViewRad = field_of_view_rad,
+                .FarClip = orthographic.FarClip,
+                .NearClip = orthographic.NearClip,
+            };
+            lens_changed = true;
+        } else if (proj_i == 1 && !std::holds_alternative<Orthographic>(camera_data)) {
+            const auto &perspective = std::get<Perspective>(camera_data);
+            float xmag = 1.f, ymag = 1.f;
+            if (switch_equivalence) {
+                ymag = switch_equivalence->Distance * std::tan(perspective.FieldOfViewRad * 0.5f);
+                xmag = ymag * switch_equivalence->ViewportAspect;
+            }
+            camera_data = Orthographic{
+                .XMag = xmag,
+                .YMag = ymag,
+                .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip)),
+                .NearClip = perspective.NearClip,
+            };
+            lens_changed = true;
+        }
+    }
+
+    if (auto *perspective = std::get_if<Perspective>(&camera_data)) {
+        float fov_deg = glm::degrees(perspective->FieldOfViewRad);
+        if (SliderFloat("Field of view (deg)", &fov_deg, 1.f, 179.f)) {
+            perspective->FieldOfViewRad = glm::radians(fov_deg);
+            lens_changed = true;
+        }
+        const float near_max = perspective->FarClip ? std::max(*perspective->FarClip - MinNearFarDelta, MinNearFarDelta) : MaxFarClip;
+        lens_changed |= SliderFloat("Near clip", &perspective->NearClip, 0.001f, near_max);
+        bool infinite_far = !perspective->FarClip.has_value();
+        if (Checkbox("Infinite far clip", &infinite_far)) {
+            if (infinite_far) perspective->FarClip.reset();
+            else perspective->FarClip = std::max(perspective->NearClip + MinNearFarDelta, MaxFarClip);
+            lens_changed = true;
+        }
+        if (perspective->FarClip) {
+            lens_changed |= SliderFloat("Far clip", &*perspective->FarClip, perspective->NearClip + MinNearFarDelta, MaxFarClip);
+        }
+    } else if (auto *orthographic = std::get_if<Orthographic>(&camera_data)) {
+        lens_changed |= SliderFloat("X Mag", &orthographic->XMag, 0.01f, 100.f);
+        lens_changed |= SliderFloat("Y Mag", &orthographic->YMag, 0.01f, 100.f);
+        lens_changed |= SliderFloat("Near clip", &orthographic->NearClip, 0.001f, orthographic->FarClip - MinNearFarDelta);
+        lens_changed |= SliderFloat("Far clip", &orthographic->FarClip, orthographic->NearClip + MinNearFarDelta, MaxFarClip);
+    }
+    return lens_changed;
+}
+
 vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t handle) {
     if (element == Element::Vertex) return mesh.GetPosition(VH{handle});
     if (element == Element::Edge) {
@@ -147,6 +267,7 @@ constexpr auto
     InteractionMode = "interaction_mode_changes"_hs,
     ViewportTheme = "viewport_theme_changes"_hs,
     SceneView = "scene_view_changes"_hs,
+    CameraLens = "camera_lens_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
     TransformEnd = "transform_end_changes"_hs;
 } // namespace changes
@@ -306,14 +427,17 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
     R.storage<entt::reactive>(changes::SceneView)
-        .on_construct<Camera>()
-        .on_update<Camera>()
+        .on_construct<ViewCamera>()
+        .on_update<ViewCamera>()
         .on_construct<Lights>()
         .on_update<Lights>()
         .on_construct<ViewportExtent>()
         .on_update<ViewportExtent>()
         .on_construct<SceneEditMode>()
         .on_update<SceneEditMode>();
+    R.storage<entt::reactive>(changes::CameraLens)
+        .on_construct<CameraData>()
+        .on_update<CameraData>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -327,7 +451,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<SceneInteraction>(SceneEntity);
     R.emplace<SceneEditMode>(SceneEntity);
     R.emplace<ViewportTheme>(SceneEntity, Defaults.ViewportTheme);
-    R.emplace<Camera>(SceneEntity, Defaults.Camera);
+    R.emplace<ViewCamera>(SceneEntity, Defaults.ViewCamera);
     R.emplace<Lights>(SceneEntity, Defaults.Lights);
     R.emplace<ViewportExtent>(SceneEntity);
     R.emplace<AnimationTimeline>(SceneEntity);
@@ -521,7 +645,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     const auto orbit_to_active = [&](entt::entity instance_entity, Element element, uint32_t handle) {
         if (!OrbitToActive) return;
         const auto world_pos = ComputeElementWorldPosition(R, instance_entity, element, handle);
-        R.patch<Camera>(SceneEntity, [&](auto &camera) {
+        R.patch<ViewCamera>(SceneEntity, [&](auto &camera) {
             if (const auto dir = world_pos - camera.Target; glm::dot(dir, dir) >= 1e-6f) {
                 camera.SetTargetDirection(glm::normalize(dir));
             }
@@ -547,7 +671,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (const auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
         if (const auto *ev = R.try_get<ExcitedVertex>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
     }
-
+    for (auto camera_entity : R.storage<entt::reactive>(changes::CameraLens)) {
+        if (const auto *cd = R.try_get<CameraData>(camera_entity)) {
+            SetMeshPositions(R.get<MeshInstance>(camera_entity).MeshEntity, BuildCameraFrustumMesh(*cd).Positions);
+            // If looking through this camera, sync ViewCamera data.
+            if (SavedViewCamera && R.all_of<Active>(camera_entity)) {
+                R.patch<ViewCamera>(SceneEntity, [&cd](auto &vc) { vc.SetData(*cd); });
+            }
+        }
+    }
     if (auto &tracker = R.storage<entt::reactive>(changes::MeshGeometry); !tracker.empty()) {
         for (auto mesh_entity : tracker) {
             if (HasSelectedInstance(R, mesh_entity)) dirty_overlay_meshes.insert(mesh_entity);
@@ -625,15 +757,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         !R.storage<entt::reactive>(changes::SceneSettings).empty() ||
         !R.storage<entt::reactive>(changes::InteractionMode).empty() ||
         !R.storage<entt::reactive>(changes::TransformEnd).empty()) {
-        const auto &camera = R.get<const Camera>(SceneEntity);
+        const auto &camera = R.get<const ViewCamera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .ViewProj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)) * camera.View(),
             .CameraPosition = camera.Position(),
-            .CameraNear = camera.NearClip,
-            .CameraFar = camera.FarClip,
+            .CameraNear = camera.NearClip(),
+            .CameraFar = camera.FarClip(),
             .ViewColor = lights.ViewColor,
             .AmbientIntensity = lights.AmbientIntensity,
             .DirectionalColor = lights.DirectionalColor,
@@ -861,7 +993,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
 entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo info) {
     const auto instance_entity = R.create();
     R.emplace<MeshInstance>(instance_entity, mesh_entity);
-    R.emplace<ObjectKind>(instance_entity, ObjectKind{ObjectType::Mesh});
+    R.emplace<ObjectKind>(instance_entity, ObjectType::Mesh);
     SetTransform(R, instance_entity, info.Transform);
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
@@ -894,7 +1026,7 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
 
 entt::entity Scene::AddEmpty(ObjectCreateInfo info) {
     const auto entity = R.create();
-    R.emplace<ObjectKind>(entity, ObjectKind{ObjectType::Empty});
+    R.emplace<ObjectKind>(entity, ObjectType::Empty);
     SetTransform(R, entity, info.Transform);
     R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Empty" : info.Name));
 
@@ -920,10 +1052,45 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     R.emplace<ArmatureData>(data_entity);
 
     const auto entity = R.create();
-    R.emplace<ObjectKind>(entity, ObjectKind{ObjectType::Armature});
+    R.emplace<ObjectKind>(entity, ObjectType::Armature);
     R.emplace<ArmatureObject>(entity, data_entity);
     SetTransform(R, entity, info.Transform);
     R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Armature" : info.Name));
+
+    switch (info.Select) {
+        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
+            Select(entity);
+            break;
+        case MeshInstanceCreateInfo::SelectBehavior::Additive:
+            R.emplace<Selected>(entity);
+            // Fallthrough
+        case MeshInstanceCreateInfo::SelectBehavior::None:
+            if (R.storage<Active>().empty()) {
+                R.emplace<Active>(entity);
+                R.emplace_or_replace<Selected>(entity);
+            }
+            break;
+    }
+    return entity;
+}
+
+entt::entity Scene::AddCamera(ObjectCreateInfo info) {
+    CameraData cd{Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}};
+    const auto [mesh_entity, _] = AddMesh(BuildCameraFrustumMesh(cd), std::nullopt);
+
+    const auto entity = R.create();
+    R.emplace<ObjectKind>(entity, ObjectType::Camera);
+    R.emplace<CameraData>(entity, cd);
+    R.emplace<MeshInstance>(entity, mesh_entity);
+    SetTransform(R, entity, info.Transform);
+    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Camera" : info.Name));
+
+    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
+        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
+        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
+        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
+    });
+    SetVisible(entity, true);
 
     switch (info.Select) {
         case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
@@ -1024,6 +1191,16 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                     .Visible = true,
                 }
             );
+        } else if (object.ObjectType == gltf::SceneObjectData::Type::Camera &&
+                   object.CameraIndex &&
+                   *object.CameraIndex < loaded_scene->Cameras.size()) {
+            object_entity = AddCamera({
+                .Name = object_name,
+                .Transform = MatrixToTransform(object.WorldTransform),
+                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+            });
+            const auto &scd = loaded_scene->Cameras[*object.CameraIndex];
+            R.patch<CameraData>(object_entity, [&scd](auto &cd) { cd = scd.Camera; });
         } else {
             object_entity = AddEmpty(
                 {
@@ -1129,7 +1306,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         }
 
         const auto armature_entity = R.create();
-        R.emplace<ObjectKind>(armature_entity, ObjectKind{ObjectType::Armature});
+        R.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
         R.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         SetTransform(R, armature_entity, MatrixToTransform(anchor_it->second->WorldTransform));
         R.emplace<Name>(armature_entity, CreateName(R, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
@@ -1309,6 +1486,18 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         return AddEmpty(create_info);
     }
 
+    // Camera objects have MeshInstance but use AddCamera to create their own frustum mesh.
+    if (const auto *src_cd = R.try_get<CameraData>(e)) {
+        const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
+        const auto copy_entity = AddCamera({
+            .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
+            .Transform = info ? info->Transform : GetTransform(R, e),
+            .Select = select_behavior,
+        });
+        R.patch<CameraData>(copy_entity, [&](auto &dst) { dst = *src_cd; });
+        return copy_entity;
+    }
+
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
     const auto e_new = AddMesh(
         Meshes->CloneMesh(R.get<const Mesh>(mesh_entity)),
@@ -1332,7 +1521,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
         if (const auto *armature = R.try_get<ArmatureObject>(e)) {
             const auto e_new = R.create();
             R.emplace<Name>(e_new, !info || info->Name.empty() ? CreateName(R, std::format("{}_copy", GetName(R, e))) : CreateName(R, info->Name));
-            R.emplace<ObjectKind>(e_new, ObjectKind{ObjectType::Armature});
+            R.emplace<ObjectKind>(e_new, ObjectType::Armature);
             R.emplace<ArmatureObject>(e_new, armature->DataEntity);
             SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
 
@@ -1364,7 +1553,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
         R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
     }
     R.emplace<MeshInstance>(e_new, mesh_entity);
-    R.emplace<ObjectKind>(e_new, ObjectKind{ObjectType::Mesh});
+    R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
         mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
@@ -1501,6 +1690,8 @@ void Scene::Destroy(entt::entity e) {
 
 void Scene::SetInteractionMode(InteractionMode mode) {
     if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return;
+
+    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R)) return;
 
     R.patch<SceneInteraction>(SceneEntity, [mode](auto &s) { s.Mode = mode; });
     R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
@@ -2245,6 +2436,9 @@ void Scene::Interact() {
         } else if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
             AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
             StartScreenTransform = TransformGizmo::TransformType::Translate;
+        } else if (IsKeyPressed(ImGuiKey_C, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+            AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
         }
         if (!R.storage<Selected>().empty()) {
             if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
@@ -2286,10 +2480,15 @@ void Scene::Interact() {
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
     if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
+        // Exit "look through" camera view on any orbit/zoom interaction.
+        if (SavedViewCamera) {
+            R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
+            SavedViewCamera.reset();
+        }
         if (io.KeyCtrl || io.KeySuper) {
-            R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetDistance(std::max(camera.Distance * (1 - wheel.y / 16.f), 0.01f)); });
+            R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.SetTargetDistance(std::max(camera.Distance * (1 - wheel.y / 16.f), 0.01f)); });
         } else {
-            R.patch<Camera>(SceneEntity, [&](auto &camera) { camera.SetTargetYawPitch(camera.YawPitch + wheel * 0.15f); });
+            R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.SetTargetYawPitch(camera.YawPitch + wheel * 0.15f); });
         }
     }
     if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
@@ -2543,7 +2742,6 @@ void Scene::WaitForRender() {
 
 void Scene::RenderOverlay() {
     const auto viewport = GetViewportRect();
-    auto &camera = R.get<Camera>(SceneEntity);
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
             const SvgResource &Icon;
@@ -2624,13 +2822,19 @@ void Scene::RenderOverlay() {
         SetCursorScreenPos(saved_cursor_pos);
     }
 
+    // Exit "look through" camera view if the user interacts with the orientation gizmo.
+    if (SavedViewCamera && OrientationGizmo::IsActive()) {
+        R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
+        SavedViewCamera.reset();
+    }
+    auto &camera = R.get<ViewCamera>(SceneEntity);
     { // Orientation gizmo (drawn before tick so camera animations it initiates begin this frame)
         static constexpr float OGizmoSize{90};
         const float padding = GetTextLineHeightWithSpacing();
         const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
         OrientationGizmo::Draw(pos, OGizmoSize, camera);
     }
-    if (camera.Tick()) R.patch<Camera>(SceneEntity, [](auto &) {});
+    if (camera.Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
 
     const auto selected_view = R.view<const Selected>();
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -2955,6 +3159,26 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (frozen) EndDisabled();
         }
     }
+    if (auto *cd = R.try_get<CameraData>(active_entity)) {
+        if (CollapsingHeader("Camera")) {
+            if (RenderCameraLensEditor(*cd)) R.patch<CameraData>(active_entity, [](auto &) {});
+            Separator();
+            if (SavedViewCamera) {
+                if (Button("Exit camera view")) {
+                    R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
+                    SavedViewCamera.reset();
+                }
+            } else {
+                if (Button("Look through")) {
+                    SavedViewCamera = R.get<ViewCamera>(SceneEntity);
+                    const auto &wm = R.get<WorldMatrix>(active_entity);
+                    const vec3 cam_pos{wm.M[3]};
+                    const vec3 cam_forward = -glm::normalize(vec3{wm.M[2]});
+                    R.replace<ViewCamera>(SceneEntity, ViewCamera{cam_pos, cam_pos + cam_forward, *cd});
+                }
+            }
+        }
+    }
     PopID();
 
     if (activate_entity != entt::null) Select(activate_entity);
@@ -2972,7 +3196,9 @@ void Scene::RenderControls() {
                 TextUnformatted("Interaction mode:");
                 auto interaction_mode_value = int(interaction_mode);
                 bool interaction_mode_changed = false;
+                const bool edit_allowed = AllSelectedAreMeshes(R);
                 for (const auto mode : InteractionModes) {
+                    if (mode == InteractionMode::Edit && !edit_allowed) continue;
                     SameLine();
                     interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
                 }
@@ -3041,7 +3267,7 @@ void Scene::RenderControls() {
             RenderEntityControls(FindActiveEntity(R));
 
             if (CollapsingHeader("Add object")) {
-                TextDisabled("Shortcuts: Ctrl+Shift+E (Empty), Ctrl+Shift+A (Armature)");
+                TextDisabled("Shortcuts: Ctrl+Shift+E (Empty), Ctrl+Shift+A (Armature), Ctrl+Shift+C (Camera)");
                 if (Button("Add Empty")) {
                     AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
@@ -3049,6 +3275,11 @@ void Scene::RenderControls() {
                 SameLine();
                 if (Button("Add Armature")) {
                     AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
+                }
+                SameLine();
+                if (Button("Add Camera")) {
+                    AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
             }
@@ -3168,21 +3399,17 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Camera")) {
-            auto &camera = R.get<Camera>(SceneEntity);
+            auto &camera = R.get<ViewCamera>(SceneEntity);
             bool changed = false;
+            const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+            const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
             if (Button("Reset##Camera")) {
-                camera = Defaults.Camera;
+                camera = Defaults.ViewCamera;
                 changed = true;
             }
             changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);
-            float fov_deg = glm::degrees(camera.FieldOfViewRad);
-            if (SliderFloat("Field of view (deg)", &fov_deg, 1, 180)) {
-                camera.FieldOfViewRad = glm::radians(fov_deg);
-                changed = true;
-            }
-            changed |= SliderFloat("Near clip", &camera.NearClip, 0.001f, 10, "%.3f", ImGuiSliderFlags_Logarithmic);
-            changed |= SliderFloat("Far clip", &camera.FarClip, 10, 1000, "%.1f", ImGuiSliderFlags_Logarithmic);
-            if (changed) R.patch<Camera>(SceneEntity, [](auto &camera) { camera.StopMoving(); });
+            changed |= RenderCameraLensEditor(camera.Data, LensSwitchEquivalence{.Distance = camera.Distance, .ViewportAspect = viewport_aspect});
+            if (changed) R.patch<ViewCamera>(SceneEntity, [](auto &camera) { camera.StopMoving(); });
             EndTabItem();
         }
 
@@ -3227,9 +3454,10 @@ void Scene::RenderEntitiesTable(std::string name, entt::entity parent) {
             TableNextColumn();
             TextUnformatted(R.get<Name>(e).Value.c_str());
             TableNextColumn();
-            const auto type =
-                R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value :
-                                          (R.all_of<MeshInstance>(e) ? ObjectType::Mesh : ObjectType::Empty);
+            const auto type = R.all_of<ObjectKind>(e) ?
+                R.get<const ObjectKind>(e).Value :
+                R.all_of<MeshInstance>(e) ? ObjectType::Mesh :
+                                            ObjectType::Empty;
             TextUnformatted(ObjectTypeName(type).data());
             TableNextColumn();
             if (!R.all_of<Active>(e) && Button("Activate")) activate_entity = e;

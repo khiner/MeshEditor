@@ -3,7 +3,7 @@
 #endif
 
 #include "TransformGizmo.h"
-#include "Camera.h"
+#include "ViewCamera.h"
 #include "numeric/vec4.h"
 
 #include "imgui.h"
@@ -857,7 +857,7 @@ Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta 
 } // namespace
 
 namespace TransformGizmo {
-std::optional<Result> Interact(const GizmoTransform &transform, Config config, const Camera &camera, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform) {
+std::optional<Result> Interact(const GizmoTransform &transform, Config config, const ViewCamera &camera, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform) {
     g.ScreenRect = viewport;
     g.MousePx = mouse_px;
     g.Dt = {};
@@ -913,7 +913,7 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
     return {};
 }
 
-void Render(const GizmoTransform &transform, Type type, const Camera &camera, rect viewport) {
+void Render(const GizmoTransform &transform, Type type, const ViewCamera &camera, rect viewport) {
     const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
     RenderImpl(transform, g.Dt, type, vp, camera.Ray());
 }

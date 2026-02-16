@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Camera.h"
 #include "Lights.h"
+#include "ViewCamera.h"
 #include "World.h"
 
 #include "gpu/ViewportTheme.h"
@@ -10,7 +10,7 @@ struct SceneDefaults {
     SceneDefaults();
 
     const World World;
-    const Camera Camera;
+    const ViewCamera ViewCamera;
     const Lights Lights;
     const ViewportTheme ViewportTheme;
 };

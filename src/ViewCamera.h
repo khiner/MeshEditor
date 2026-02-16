@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CameraData.h"
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
 #include "numeric/ray.h"
@@ -8,20 +9,24 @@
 
 #include <optional>
 
-// This is specifically designed to be the view camera, not a free camera.
-struct Camera {
-    Camera(vec3 position, vec3 target, float field_of_view_rad, float near_clip, float far_clip)
-        : Target(target), Distance(glm::length(position - target)), FieldOfViewRad(field_of_view_rad), NearClip(near_clip), FarClip(far_clip) {
+// The viewport navigation camera (orbit/zoom around a target point).
+// Note: Aspect ratio of the provided data is ignored, as the ViewCamera follows the viewport aspect ratio.
+struct ViewCamera {
+    ViewCamera(vec3 position, vec3 target, CameraData data)
+        : Data{data}, Target{target}, Distance{glm::length(position - target)} {
         const auto direction = glm::normalize(position - target);
         YawPitch = {atan2(direction.z, direction.x), asin(direction.y)};
     }
-    ~Camera() = default;
+    ~ViewCamera() = default;
 
+    CameraData Data;
     vec3 Target;
     float Distance;
     vec2 YawPitch; // Ranges ([0, 2π], [-π, π]) If pitch is in (wrapped) range [π/2, 3π/2], camera is flipped
-    float FieldOfViewRad;
-    float NearClip, FarClip;
+
+    bool IsPerspective() const { return std::holds_alternative<Perspective>(Data); }
+    float NearClip() const;
+    float FarClip() const; // Always finite (fallback when perspective far is infinite).
 
     vec3 Forward() const;
     mat3 Basis() const; // Right, Up, -Forward
@@ -37,6 +42,7 @@ struct Camera {
     void SetTargetDistance(float);
     void SetTargetYawPitch(vec2);
     void SetTargetDirection(vec3);
+    void SetData(const CameraData &);
 
     // Not currently used, since I need to figure out trackpad touch events.
     void SetYawPitchVelocity(vec2 vel) { YawPitchVelocity = vel; }

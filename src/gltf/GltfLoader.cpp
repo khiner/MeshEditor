@@ -398,10 +398,10 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
     scene_data.Meshes.emplace_back(
         SceneMeshData{
             .Triangles = has_triangle_data ? std::optional{std::move(mesh_data)} : std::nullopt,
-            .DeformData = std::move(mesh_deform_data),
-            .MorphData = std::move(mesh_morph_data),
             .Lines = has_lines ? std::optional{std::move(lines_data)} : std::nullopt,
             .Points = has_points ? std::optional{std::move(points_data)} : std::nullopt,
+            .DeformData = std::move(mesh_deform_data),
+            .MorphData = std::move(mesh_morph_data),
             .Name = source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name),
         }
     );
@@ -638,6 +638,23 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         if (const auto skin_index = ToIndex(asset.nodes[node_index].skinIndex, asset.skins.size())) used_skin[*skin_index] = true;
     }
 
+    // Parse cameras
+    scene_data.Cameras.reserve(asset.cameras.size());
+    for (const auto &cam : asset.cameras) {
+        auto projection = std::visit(
+            [](const auto &source) -> CameraData {
+                using Projection = std::decay_t<decltype(source)>;
+                if constexpr (std::is_same_v<Projection, fastgltf::Camera::Perspective>) {
+                    return Perspective{.FieldOfViewRad = source.yfov, .FarClip = source.zfar, .NearClip = source.znear, .AspectRatio = source.aspectRatio};
+                } else {
+                    return Orthographic{.XMag = source.xmag, .YMag = source.ymag, .FarClip = source.zfar, .NearClip = source.znear};
+                }
+            },
+            cam.camera
+        );
+        scene_data.Cameras.emplace_back(CameraData{std::move(projection)}, std::string{cam.name});
+    }
+
     std::vector<bool> is_joint(asset.nodes.size(), false);
     for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
         if (!used_skin[skin_index]) continue;
@@ -673,6 +690,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             .IsJoint = is_joint[node_index],
             .MeshIndex = mesh_index,
             .SkinIndex = ToIndex(source_node.skinIndex, asset.skins.size()),
+            .CameraIndex = ToIndex(source_node.cameraIndex, asset.cameras.size()),
             .Name = MakeNodeName(asset, node_index, source_mesh_index),
         };
     }
@@ -721,14 +739,18 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 }
             } else {
                 const auto &source_weights = asset.nodes[node_index].weights;
+                const auto object_type = node.MeshIndex ? SceneObjectData::Type::Mesh :
+                    node.CameraIndex                    ? SceneObjectData::Type::Camera :
+                                                          SceneObjectData::Type::Empty;
                 scene_data.Objects.emplace_back(
                     SceneObjectData{
-                        .ObjectType = node.MeshIndex ? SceneObjectData::Type::Mesh : SceneObjectData::Type::Empty,
+                        .ObjectType = object_type,
                         .NodeIndex = node.NodeIndex,
                         .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
                         .WorldTransform = node.WorldTransform,
                         .MeshIndex = node.MeshIndex,
                         .SkinIndex = node.SkinIndex,
+                        .CameraIndex = node.CameraIndex,
                         .NodeWeights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())},
                         .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
                     }

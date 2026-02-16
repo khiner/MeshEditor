@@ -4,7 +4,7 @@
 #pragma once
 
 #include "AxisColors.h"
-#include "Camera.h"
+#include "ViewCamera.h"
 
 #include <algorithm>
 #include <optional>
@@ -23,6 +23,7 @@ struct Style {
 struct Color {
     ImU32 Hover{IM_COL32(120, 120, 120, 130)};
 };
+
 struct Context {
     std::optional<vec2> MouseDownPos; // Present if mouse was pressed in hover circle.
     std::optional<vec2> DragEndPos; // Present if mouse was dragged past click threshold.
@@ -36,7 +37,7 @@ static internal::Context Context;
 
 bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.DragEndPos; }
 
-void Draw(vec2 pos, float size, Camera &camera) {
+void Draw(vec2 pos, float size, ViewCamera &camera) {
     auto &dl = *ImGui::GetWindowDrawList();
 
     const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetMousePos());

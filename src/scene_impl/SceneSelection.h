@@ -55,15 +55,23 @@ std::unordered_set<uint32_t> ConvertSelectionElement(const MeshSelection &select
 }
 
 // Returns representative edit instance per selected mesh: active instance if selected, else first selected instance.
+// Only includes Mesh-type objects (excludes Cameras, etc. that also have MeshInstance).
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_frozen = true) {
     std::unordered_map<entt::entity, entt::entity> primaries;
     const auto active = FindActiveEntity(r);
-    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) {
+    for (const auto [e, mi, ok] : r.view<const MeshInstance, const Selected, const ObjectKind>().each()) {
+        if (ok.Value != ObjectType::Mesh) continue;
         if (!include_frozen && r.all_of<Frozen>(e)) continue;
         auto &primary = primaries[mi.MeshEntity];
         if (primary == entt::entity{} || e == active) primary = e;
     }
     return primaries;
+}
+bool AllSelectedAreMeshes(const entt::registry &r) {
+    for (const auto [e, ok] : r.view<const Selected, const ObjectKind>().each()) {
+        if (ok.Value != ObjectType::Mesh) return false;
+    }
+    return true;
 }
 bool HasSelectedInstance(const entt::registry &r, entt::entity mesh_entity) {
     return any_of(r.view<const MeshInstance, const Selected>().each(), [mesh_entity](const auto &t) { return std::get<1>(t).MeshEntity == mesh_entity; });

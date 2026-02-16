@@ -441,9 +441,9 @@ void run() {
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (GetFrameCount() == 1) {
-            auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.35f, nullptr, &dockspace_id);
+            auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
             auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-            auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.2f, nullptr, &dockspace_id);
+            auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
             DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
