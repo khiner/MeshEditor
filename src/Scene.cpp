@@ -58,6 +58,9 @@ struct MeshActiveElement {
 
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
+// Tags for light events.
+struct LightDataDirty {};
+struct LightWireframeDirty {};
 
 // Tracks pending transform for shader-based preview during Edit mode gizmo manipulation.
 // Presence indicates active transform; removal triggers UBO clear.
@@ -366,6 +369,13 @@ EditTransformContext BuildEditTransformContext(const entt::registry &r, bool bui
     return context;
 }
 
+PunctualLight GetLight(const SceneBuffers &buffers, uint32_t index) {
+    return reinterpret_cast<const PunctualLight *>(buffers.LightBuffer.GetMappedData().data())[index];
+}
+void SetLight(SceneBuffers &buffers, uint32_t index, const PunctualLight &light) {
+    buffers.LightBuffer.Update(as_bytes(light), vk::DeviceSize(index) * sizeof(PunctualLight));
+}
+
 void ResetObjectPickKeys(SceneBuffers &buffers) {
     auto bytes = buffers.ObjectPickKeyBuffer.GetMappedData();
     auto *keys = reinterpret_cast<uint32_t *>(bytes.data());
@@ -390,8 +400,6 @@ constexpr auto
     SceneView = "scene_view_changes"_hs,
     CameraLens = "camera_lens_changes"_hs,
     LightTransforms = "light_transform_changes"_hs,
-    LightBuffer = "light_buffer_changes"_hs,
-    LightWireframe = "light_wireframe_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
     TransformEnd = "transform_end_changes"_hs;
 } // namespace changes
@@ -531,8 +539,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<MeshActiveElement>()
         .on_update<MeshActiveElement>();
     R.storage<entt::reactive>(changes::MeshGeometry)
-        .on_construct<MeshGeometryDirty>()
-        .on_update<MeshGeometryDirty>();
+        .on_construct<MeshGeometryDirty>();
     R.storage<entt::reactive>(changes::Excitable)
         .on_construct<Excitable>()
         .on_destroy<Excitable>();
@@ -565,15 +572,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::LightTransforms)
         .on_construct<WorldMatrix>()
         .on_update<WorldMatrix>();
-    R.storage<entt::reactive>(changes::LightBuffer)
-        .on_construct<LightIndex>()
-        .on_update<LightIndex>()
-        .on_destroy<LightIndex>()
-        .on_construct<PunctualLight>()
-        .on_update<PunctualLight>();
-    R.storage<entt::reactive>(changes::LightWireframe)
-        .on_construct<LightIndex>()
-        .on_update<LightIndex>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -822,14 +820,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     bool light_count_changed = false;
-    std::unordered_set<entt::entity> dirty_lights;
-    for (auto entity : R.storage<entt::reactive>(changes::LightBuffer)) {
-        if (R.all_of<LightIndex, PunctualLight>(entity)) dirty_lights.insert(entity);
-    }
-    for (auto entity : R.storage<entt::reactive>(changes::LightTransforms)) {
-        if (R.all_of<LightIndex, PunctualLight>(entity)) dirty_lights.insert(entity);
-    }
-
     {
         const auto required_size = vk::DeviceSize(R.storage<LightIndex>().size()) * sizeof(PunctualLight);
         if (Buffers->LightBuffer.UsedSize != required_size) {
@@ -838,31 +828,24 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             light_count_changed = true;
         }
     }
-
-    bool light_data_changed = false;
-    for (const auto entity : dirty_lights) {
-        const auto &li = R.get<const LightIndex>(entity);
-        auto light = R.get<const PunctualLight>(entity);
+    for (auto entity : R.storage<entt::reactive>(changes::LightTransforms)) {
+        if (!R.all_of<LightIndex>(entity)) continue;
         if (const auto *world_matrix = R.try_get<WorldMatrix>(entity)) {
-            light.Position = world_matrix->M[3];
+            vec3 position = world_matrix->M[3];
             const vec3 forward = world_matrix->M[2];
             const float forward_len_sq = glm::dot(forward, forward);
-            light.Direction = forward_len_sq > 1e-8f ? -forward / std::sqrt(forward_len_sq) : vec3{0.f, 0.f, -1.f};
+            const vec3 direction = forward_len_sq > 1e-8f ? -forward / std::sqrt(forward_len_sq) : vec3{0.f, 0.f, -1.f};
+            const auto &li = R.get<const LightIndex>(entity);
+            const vk::DeviceSize offset = vk::DeviceSize(li.Value) * sizeof(PunctualLight);
+            Buffers->LightBuffer.Update(as_bytes(direction), offset + offsetof(PunctualLight, Direction));
+            Buffers->LightBuffer.Update(as_bytes(position), offset + offsetof(PunctualLight, Position));
         }
-
-        const auto offset = vk::DeviceSize(li.Value) * sizeof(PunctualLight);
-        Buffers->LightBuffer.Update(as_bytes(light), offset);
-        light_data_changed = true;
     }
-    if (light_data_changed || light_count_changed) request(RenderRequest::Submit);
-    for (auto light_entity : R.storage<entt::reactive>(changes::LightWireframe)) {
-        if (!R.all_of<LightIndex, PunctualLight, MeshInstance>(light_entity)) continue;
-        const auto &light = R.get<const PunctualLight>(light_entity);
-
+    if (!R.view<LightDataDirty>().empty() || light_count_changed) request(RenderRequest::Submit);
+    for (auto light_entity : R.view<LightWireframeDirty, LightIndex, MeshInstance>()) {
+        const auto light = GetLight(*Buffers, R.get<const LightIndex>(light_entity).Value);
         auto wireframe = BuildLightMesh(light);
-
         const auto mesh_entity = R.get<MeshInstance>(light_entity).MeshEntity;
-
         if (const auto *old_vcr = R.try_get<VertexClassRange>(mesh_entity)) {
             const auto old_vertex_count = R.get<const Mesh>(mesh_entity).VertexCount();
             Buffers->VertexClassBuffer.Release({old_vcr->Value.Offset, old_vertex_count});
@@ -892,7 +875,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         for (auto mesh_entity : tracker) {
             if (HasSelectedInstance(R, mesh_entity)) dirty_overlay_meshes.insert(mesh_entity);
         }
-        R.clear<MeshGeometryDirty>();
         request(RenderRequest::Submit);
     }
     if (!R.storage<entt::reactive>(changes::ModelsBuffer).empty()) request(RenderRequest::Submit);
@@ -1147,6 +1129,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     DestroyTracker->Storage.clear();
+    R.clear<MeshGeometryDirty>();
+    R.clear<LightDataDirty>();
+    R.clear<LightWireframeDirty>();
 
     return render_request;
 }
@@ -1343,8 +1328,10 @@ entt::entity Scene::AddLight(ObjectCreateInfo info) {
     auto wireframe = BuildLightMesh(light);
     const auto entity = CreateExtrasObject(std::move(wireframe), ObjectType::Light, info, "Light");
     const uint32_t light_index = uint32_t(R.storage<LightIndex>().size());
-    R.emplace<PunctualLight>(entity, light);
     R.emplace<LightIndex>(entity, light_index);
+    R.emplace<LightDataDirty>(entity);
+    R.emplace<LightWireframeDirty>(entity);
+    SetLight(*Buffers, light_index, light);
     return entity;
 }
 
@@ -1449,8 +1436,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             });
             const auto &sld = loaded_scene->Lights[*object.LightIndex];
-            R.replace<PunctualLight>(object_entity, sld.Light);
-            R.patch<LightIndex>(object_entity, [](auto &) {});
+            SetLight(*Buffers, R.get<const LightIndex>(object_entity).Value, sld.Light);
+            R.emplace_or_replace<LightDataDirty>(object_entity);
+            R.emplace_or_replace<LightWireframeDirty>(object_entity);
         } else {
             object_entity = AddEmpty(
                 {
@@ -1745,10 +1733,10 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         }
         if (R.all_of<LightIndex>(e)) {
             const auto copy_entity = AddLight(create_info);
-            if (const auto *src_light = R.try_get<PunctualLight>(e)) {
-                R.replace<PunctualLight>(copy_entity, *src_light);
-            }
-            R.patch<LightIndex>(copy_entity, [](auto &) {});
+            const auto src_light = GetLight(*Buffers, R.get<const LightIndex>(e).Value);
+            SetLight(*Buffers, R.get<const LightIndex>(copy_entity).Value, src_light);
+            R.emplace_or_replace<LightDataDirty>(copy_entity);
+            R.emplace_or_replace<LightWireframeDirty>(copy_entity);
             return copy_entity;
         }
         return AddEmpty(create_info);
@@ -1913,6 +1901,7 @@ void Scene::Destroy(entt::entity e) {
         const uint32_t remove_index = light_index->Value;
         const uint32_t last_index = uint32_t(R.storage<LightIndex>().size()) - 1u;
         if (remove_index != last_index) {
+            SetLight(*Buffers, remove_index, GetLight(*Buffers, last_index));
             for (const auto [other_entity, other_light_index] : R.view<LightIndex>().each()) {
                 if (other_entity != e && other_light_index.Value == last_index) {
                     R.replace<LightIndex>(other_entity, remove_index);
@@ -3532,73 +3521,73 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (R.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (auto *light = R.try_get<PunctualLight>(active_entity)) {
-            bool changed = false;
-            bool wireframe_changed = false;
-            constexpr float MaxLightIntensity = 1000.f;
-            constexpr float MaxLightRange = 1000.f;
+        auto light = GetLight(*Buffers, R.get<const LightIndex>(active_entity).Value);
+        bool changed = false;
+        bool wireframe_changed = false;
+        constexpr float MaxLightIntensity = 1000.f;
+        constexpr float MaxLightRange = 1000.f;
 
-            const char *type_names[]{"Directional", "Point", "Spot"};
-            int type_i = int(std::min(light->Type, LightTypeSpot));
-            if (Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-                auto next = MakeDefaultLight(uint32_t(type_i));
-                next.Color = light->Color;
-                next.Intensity = light->Intensity;
-                *light = next;
+        const char *type_names[]{"Directional", "Point", "Spot"};
+        int type_i = int(std::min(light.Type, LightTypeSpot));
+        if (Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
+            auto next = MakeDefaultLight(uint32_t(type_i));
+            next.Color = light.Color;
+            next.Intensity = light.Intensity;
+            light = next;
+            changed = true;
+            wireframe_changed = true;
+        }
+
+        changed |= ColorEdit3("Color", &light.Color.x);
+        changed |= SliderFloat("Intensity", &light.Intensity, 0.f, MaxLightIntensity, "%.2f");
+
+        if (light.Type == LightTypePoint || light.Type == LightTypeSpot) {
+            bool infinite_range = light.Range <= 0.f;
+            if (Checkbox("Infinite range", &infinite_range)) {
+                light.Range = infinite_range ? 0.f : std::max(light.Range, DefaultPointRange);
                 changed = true;
                 wireframe_changed = true;
             }
-
-            changed |= ColorEdit3("Color", &light->Color.x);
-            changed |= SliderFloat("Intensity", &light->Intensity, 0.f, MaxLightIntensity, "%.2f");
-
-            if (light->Type == LightTypePoint || light->Type == LightTypeSpot) {
-                bool infinite_range = light->Range <= 0.f;
-                if (Checkbox("Infinite range", &infinite_range)) {
-                    light->Range = infinite_range ? 0.f : std::max(light->Range, DefaultPointRange);
+            if (!infinite_range) {
+                if (SliderFloat("Range", &light.Range, 0.01f, MaxLightRange, "%.2f")) {
                     changed = true;
                     wireframe_changed = true;
                 }
-                if (!infinite_range) {
-                    if (SliderFloat("Range", &light->Range, 0.01f, MaxLightRange, "%.2f")) {
-                        changed = true;
-                        wireframe_changed = true;
-                    }
-                }
-            }
-
-            if (light->Type == LightTypeSpot) {
-                float outer_deg = glm::degrees(AngleFromCos(light->OuterConeCos));
-                outer_deg = std::clamp(outer_deg, 0.f, 90.f);
-                float inner_deg = glm::degrees(AngleFromCos(light->InnerConeCos));
-                inner_deg = std::clamp(inner_deg, 0.f, outer_deg);
-                float blend = outer_deg > 1e-4f ? std::clamp(1.f - inner_deg / outer_deg, 0.f, 1.f) : 0.f;
-
-                if (SliderFloat("Size", &outer_deg, 0.f, 90.f, "%.1f deg")) {
-                    outer_deg = std::clamp(outer_deg, 0.f, 90.f);
-                    const float outer_rad = glm::radians(outer_deg);
-                    const float inner_rad = outer_rad * (1.f - blend);
-                    light->OuterConeCos = std::cos(outer_rad);
-                    light->InnerConeCos = std::cos(inner_rad);
-                    changed = true;
-                    wireframe_changed = true;
-                }
-                if (SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f")) {
-                    blend = std::clamp(blend, 0.f, 1.f);
-                    const float outer_rad = glm::radians(std::clamp(outer_deg, 0.f, 90.f));
-                    const float inner_rad = outer_rad * (1.f - blend);
-                    light->OuterConeCos = std::cos(outer_rad);
-                    light->InnerConeCos = std::cos(inner_rad);
-                    changed = true;
-                    wireframe_changed = true;
-                }
-            }
-
-            if (changed) {
-                R.patch<PunctualLight>(active_entity, [](auto &) {});
-                if (wireframe_changed) R.patch<LightIndex>(active_entity, [](auto &) {});
             }
         }
+
+        if (light.Type == LightTypeSpot) {
+            float outer_deg = glm::degrees(AngleFromCos(light.OuterConeCos));
+            outer_deg = std::clamp(outer_deg, 0.f, 90.f);
+            float inner_deg = glm::degrees(AngleFromCos(light.InnerConeCos));
+            inner_deg = std::clamp(inner_deg, 0.f, outer_deg);
+            float blend = outer_deg > 1e-4f ? std::clamp(1.f - inner_deg / outer_deg, 0.f, 1.f) : 0.f;
+
+            if (SliderFloat("Size", &outer_deg, 0.f, 90.f, "%.1f deg")) {
+                outer_deg = std::clamp(outer_deg, 0.f, 90.f);
+                const float outer_rad = glm::radians(outer_deg);
+                const float inner_rad = outer_rad * (1.f - blend);
+                light.OuterConeCos = std::cos(outer_rad);
+                light.InnerConeCos = std::cos(inner_rad);
+                changed = true;
+                wireframe_changed = true;
+            }
+            if (SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f")) {
+                blend = std::clamp(blend, 0.f, 1.f);
+                const float outer_rad = glm::radians(std::clamp(outer_deg, 0.f, 90.f));
+                const float inner_rad = outer_rad * (1.f - blend);
+                light.OuterConeCos = std::cos(outer_rad);
+                light.InnerConeCos = std::cos(inner_rad);
+                changed = true;
+                wireframe_changed = true;
+            }
+        }
+
+        if (changed) {
+            SetLight(*Buffers, R.get<const LightIndex>(active_entity).Value, light);
+            R.emplace_or_replace<LightDataDirty>(active_entity);
+        }
+        if (wireframe_changed) R.emplace_or_replace<LightWireframeDirty>(active_entity);
     }
     PopID();
 
