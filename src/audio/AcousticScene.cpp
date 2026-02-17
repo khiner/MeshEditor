@@ -745,7 +745,7 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
 
 ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, entt::entity mesh_entity, const ModalModelCreateInfo &info) const {
     // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
-    // scene.AddMesh(tets->CreateMesh(), MeshInstanceCreateInfo{.Name = "Tet Mesh", R.get<WorldMatrix>(active_entity).M;, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = false});
+    // scene.AddMesh(tets->CreateMesh(), MeshInstanceCreateInfo{.Name = "Tet Mesh", ToMatrix(R.get<WorldTransform>(active_entity)), .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = false});
 
     // We rely on `PreserveSurface` behavior for excitable vertices;
     // Vertex indices on the surface mesh must match vertex indices on the tet mesh.

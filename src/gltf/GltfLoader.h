@@ -52,7 +52,7 @@ struct SceneNodeData {
     std::optional<uint32_t> ParentNodeIndex{};
     std::vector<uint32_t> ChildrenNodeIndices;
     Transform LocalTransform{};
-    mat4 WorldTransform{1.f};
+    Transform WorldTransform{};
     bool InScene{false};
     bool IsJoint{false};
     std::optional<uint32_t> MeshIndex{}, SkinIndex{}, CameraIndex{}, LightIndex{};
@@ -70,7 +70,7 @@ struct SceneObjectData {
     Type ObjectType{Type::Empty};
     uint32_t NodeIndex{};
     std::optional<uint32_t> ParentNodeIndex{};
-    mat4 WorldTransform{1.f};
+    Transform WorldTransform{};
     std::optional<uint32_t> MeshIndex{}, SkinIndex{}, CameraIndex{}, LightIndex{};
     std::optional<std::vector<float>> NodeWeights{}; // Per-node morph weight overrides (glTF node.weights)
     std::string Name;

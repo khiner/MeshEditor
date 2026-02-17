@@ -12,14 +12,14 @@ layout(location = 3) flat out uint FaceOverlayFlags;
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
 
-vec3 ComputeWorldPos(DrawData draw, WorldMatrix world, uint vertex_index) {
+vec3 ComputeWorldPos(DrawData draw, WorldTransform world, uint vertex_index) {
     vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[vertex_index + draw.VertexOffset].Position;
     vec3 n = vec3(0);
     ApplyMorphDeform(draw, pos, vertex_index, n);
     pos = ApplyArmatureDeform(draw, pos, vertex_index, n);
-    vec3 wp = vec3(world.M * vec4(pos, 1.0));
+    vec3 wp = trs_transform_point(world, pos);
     if (should_apply_pending_transform(draw, vertex_index)) {
-        wp = apply_pending_transform(pos, wp, world, draw);
+        wp = apply_pending_transform(wp);
     }
     return wp;
 }
@@ -28,7 +28,7 @@ void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.Index.Slot].Indices[draw.Index.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
     uint face_id = 0u;
@@ -61,13 +61,13 @@ void main() {
     } else if (draw.ElementState.Slot != INVALID_SLOT) {
         element_state = uint(ElementStateBuffers[draw.ElementState.Slot].States[draw.ElementState.Offset + gl_VertexIndex]);
     }
-    vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
+    vec3 world_pos = trs_transform_point(world, local_pos);
     if (should_apply_pending_transform(draw, idx)) {
-        world_pos = apply_pending_transform(local_pos, world_pos, world, draw);
+        world_pos = apply_pending_transform(world_pos);
     }
 
     if (!computed_face_normal) {
-        WorldNormal = mat3(world.MInv) * normal;
+        WorldNormal = trs_transform_normal(world, normal);
     }
     WorldPosition = world_pos;
 

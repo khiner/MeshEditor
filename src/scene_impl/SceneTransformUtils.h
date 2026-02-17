@@ -54,6 +54,6 @@ void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
     // Frozen entities can't have their scale changed.
     if (!r.all_of<Frozen>(e)) r.emplace_or_replace<Scale>(e, t.S);
 
-    UpdateWorldMatrix(r, e);
+    UpdateWorldTransform(r, e);
 }
 } // namespace

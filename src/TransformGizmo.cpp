@@ -8,7 +8,6 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
-#include <glm/gtx/matrix_decompose.hpp>
 
 #include "AxisColors.h" // Must be after imgui.h
 

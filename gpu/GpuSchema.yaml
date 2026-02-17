@@ -117,8 +117,15 @@ structs:
         type: u32
       - name: IsTransforming
         type: u32
-      - name: PendingTransform
-        type: mat4
+      - name: PendingPivot
+        type: vec3
+      - name: PendingTranslation
+        type: vec3
+      - name: PendingRotation
+        type: vec4
+        default: "0, 0, 0, 1"
+      - name: PendingScale
+        type: vec3
         default: 1
       - name: ScreenPixelScale
         type: float
@@ -179,12 +186,14 @@ structs:
         type: vec3
       - name: NormalDelta
         type: vec3
-  - name: WorldMatrix
+  - name: WorldTransform
     fields:
-      - name: M
-        type: mat4
-      - name: MInv
-        type: mat4
+      - name: Position
+        type: vec3
+      - name: Rotation
+        type: vec4
+      - name: Scale
+        type: vec3
   - name: PunctualLight
     fields:
       - name: Direction

@@ -47,7 +47,7 @@ void AppendDraw(
     DrawData draw, std::optional<uint> model_index = {}
 ) {
     draw.FirstInstance = model_index.value_or(0);
-    const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldMatrix);
+    const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldTransform);
     builder.Append(batch, draw, index_count, uint32_t(instance_count));
 }
 

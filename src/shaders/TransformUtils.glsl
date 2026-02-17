@@ -1,14 +1,10 @@
 // Shared pending-transform helpers.
 
-vec3 apply_pending_transform(vec3 local_pos, vec3 world_pos, WorldMatrix world, DrawData draw) {
-    // Edit preview is mesh-local with a precomputed per-mesh local pending matrix.
-    if (pc.TransformVertexStateSlot != INVALID_SLOT) {
-        const mat4 pending_local = ModelBuffers[draw.PendingLocalTransform.Slot].Models[draw.PendingLocalTransform.Offset].M;
-        return vec3(world.M * (pending_local * vec4(local_pos, 1.0)));
-    }
-
-    // Object preview is instance-local: transform current world position directly.
-    return (SceneViewUBO.PendingTransform * vec4(world_pos, 1.0)).xyz;
+vec3 apply_pending_transform(vec3 world_pos) {
+    vec3 offset = world_pos - SceneViewUBO.PendingPivot;
+    offset = SceneViewUBO.PendingScale * offset;
+    offset = quat_rotate(SceneViewUBO.PendingRotation, offset);
+    return SceneViewUBO.PendingPivot + offset + SceneViewUBO.PendingTranslation;
 }
 
 bool should_apply_pending_transform(DrawData draw, uint idx) {

@@ -11,16 +11,16 @@ void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.Index.Slot].Indices[draw.Index.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
     ObjectId = (draw.ObjectIdSlot != INVALID_SLOT) ? ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FirstInstance] : 0u;
 
     vec3 normal = vert.Normal;
     vec3 morphed_pos = vert.Position;
     ApplyMorphDeform(draw, morphed_pos, idx, normal);
     const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
-    vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
+    vec3 world_pos = trs_transform_point(world, local_pos);
     if (should_apply_pending_transform(draw, idx)) {
-        world_pos = apply_pending_transform(local_pos, world_pos, world, draw);
+        world_pos = apply_pending_transform(world_pos);
     }
 
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);

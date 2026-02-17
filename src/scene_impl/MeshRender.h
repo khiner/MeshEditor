@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gpu/WorldMatrix.h"
+#include "gpu/WorldTransform.h"
 
 #include <numeric>
 
@@ -11,7 +11,7 @@ struct RenderInstance {
 };
 
 // Stored on mesh entities.
-// Holds the `WorldMatrix` of all instances of the mesh.
+// Holds the `WorldTransform` of all instances of the mesh.
 struct ModelsBuffer {
     mvk::Buffer Buffer;
     mvk::Buffer ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
@@ -108,9 +108,9 @@ std::vector<Vertex> CreateNormalVertices(const Mesh &mesh, Element element) {
 }
 } // namespace
 
-void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldMatrix &m) {
+void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldTransform &wt) {
     if (const auto i = GetModelBufferIndex(r, e)) {
         const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
-        r.patch<ModelsBuffer>(mesh_entity, [&m, i](auto &mb) { mb.Buffer.Update(as_bytes(m), *i * sizeof(WorldMatrix)); });
+        r.patch<ModelsBuffer>(mesh_entity, [&wt, i](auto &mb) { mb.Buffer.Update(as_bytes(wt), *i * sizeof(WorldTransform)); });
     }
 }

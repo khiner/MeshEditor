@@ -14,7 +14,7 @@ void main() {
     const uint vertex_count = max(draw.VertexCountOrHeadImageSlot, 1u);
     const uint idx = min(gl_VertexIndex, vertex_count - 1);
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
     if (draw.ElementState.Slot != INVALID_SLOT) {
@@ -28,12 +28,12 @@ void main() {
     vec3 morphed_pos = vert.Position;
     ApplyMorphDeform(draw, morphed_pos, idx, normal);
     const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
-    vec3 world_pos = vec3(world.M * vec4(local_pos, 1.0));
+    vec3 world_pos = trs_transform_point(world, local_pos);
     if (should_apply_pending_transform(draw, idx)) {
-        world_pos = apply_pending_transform(local_pos, world_pos, world, draw);
+        world_pos = apply_pending_transform(world_pos);
     }
 
-    WorldNormal = mat3(world.MInv) * normal;
+    WorldNormal = trs_transform_normal(world, normal);
     WorldPosition = world_pos;
     Color = is_active ? vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0) :
         is_selected  ? vec4(ViewportTheme.Colors.VertexSelected, 1.0) :

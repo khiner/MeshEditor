@@ -104,12 +104,6 @@ std::optional<MeshData> PrimitiveEditor(PrimitiveType type, bool is_create = tru
     return {};
 }
 
-void RenderMat4(const mat4 &m) {
-    for (uint i = 0; i < 4; ++i) {
-        Text("%.2f, %.2f, %.2f, %.2f", m[0][i], m[1][i], m[2][i], m[3][i]);
-    }
-}
-
 bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
     return SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
 }

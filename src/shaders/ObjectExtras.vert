@@ -12,7 +12,7 @@ void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.Index.Slot].Indices[draw.Index.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     const vec3 world_pos = ObjectExtrasWorldPos(draw, vert, world, idx);
 

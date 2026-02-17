@@ -9,8 +9,8 @@ struct SceneNode {
 };
 
 // Inverse of parent's world matrix at the moment of parenting.
-// Used to compute world matrices that follow parent transforms.
-// WorldMatrix = ParentWorldMatrix * ParentInverse * LocalMatrix
+// Used to compute world transforms that follow parent transforms.
+// WorldTransform = decompose(ParentMatrix * ParentInverse * LocalMatrix)
 struct ParentInverse {
     mat4 M{I4};
 };
@@ -41,20 +41,36 @@ Transform GetTransform(const entt::registry &r, entt::entity e) {
     return {r.get<Position>(e).Value, r.get<Rotation>(e).Value, r.all_of<Scale>(e) ? r.get<Scale>(e).Value : vec3{1}};
 }
 
-WorldMatrix MakeWorldMatrix(mat4 m) { return {std::move(m), glm::transpose(glm::inverse(m))}; }
+mat4 ToMatrix(const WorldTransform &wt) {
+    return glm::translate(I4, wt.Position) * glm::mat4_cast(glm::normalize(Vec4ToQuat(wt.Rotation))) * glm::scale(I4, wt.Scale);
+}
 
-// Recursively update world matrices of entity and its children based on current transforms
-void UpdateWorldMatrix(entt::registry &r, entt::entity e) {
-    // How much the child's parent has transformed since parenting, or identity if no parent.
+WorldTransform MakeWorldTransform(mat4 m) {
+    vec3 scale, translation, skew;
+    vec4 perspective;
+    quat rotation;
+    glm::decompose(m, scale, rotation, translation, skew, perspective);
+    return {translation, QuatToVec4(glm::normalize(rotation)), scale};
+}
+
+WorldTransform MakeWorldTransform(const Transform &t) {
+    return {t.P, QuatToVec4(glm::normalize(t.R)), t.S};
+}
+
+// Recursively update world transforms of entity and its children based on current transforms
+void UpdateWorldTransform(entt::registry &r, entt::entity e) {
     static const auto GetParentDelta = [](const entt::registry &r, entt::entity child) -> mat4 {
         const auto *node = r.try_get<SceneNode>(child);
         if (!node || node->Parent == entt::null) return I4;
-        return r.get<WorldMatrix>(node->Parent).M * r.get<ParentInverse>(child).M;
+        return ToMatrix(r.get<WorldTransform>(node->Parent)) * r.get<ParentInverse>(child).M;
     };
-    static const auto ToMatrix = [](Transform &&t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); };
-    const auto &world_matrix = r.emplace_or_replace<WorldMatrix>(e, MakeWorldMatrix(GetParentDelta(r, e) * ToMatrix(GetTransform(r, e))));
-    UpdateModelBuffer(r, e, world_matrix);
-    for (const auto child : Children{&r, e}) UpdateWorldMatrix(r, child);
+    static const auto LocalToMatrix = [](Transform &&t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); };
+
+    const auto *node = r.try_get<SceneNode>(e);
+    const bool has_parent = node && node->Parent != entt::null;
+    const auto &wt = has_parent ? r.emplace_or_replace<WorldTransform>(e, MakeWorldTransform(GetParentDelta(r, e) * LocalToMatrix(GetTransform(r, e)))) : r.emplace_or_replace<WorldTransform>(e, MakeWorldTransform(GetTransform(r, e)));
+    UpdateModelBuffer(r, e, wt);
+    for (const auto child : Children{&r, e}) UpdateWorldTransform(r, child);
 }
 
 ChildrenIterator &ChildrenIterator::operator++() {
@@ -110,7 +126,7 @@ void ClearParent(entt::registry &r, entt::entity child) {
         n.NextSibling = entt::null;
     });
     r.remove<ParentInverse>(child);
-    UpdateWorldMatrix(r, child);
+    UpdateWorldTransform(r, child);
 }
 
 void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
@@ -127,5 +143,5 @@ void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
         n.NextSibling = first_child; // Add to parent's children list (at the beginning for simplicity)
     });
     r.patch<SceneNode>(parent, [child](auto &n) { n.FirstChild = child; });
-    r.emplace_or_replace<ParentInverse>(child, glm::inverse(r.get<WorldMatrix>(parent).M));
+    r.emplace_or_replace<ParentInverse>(child, glm::inverse(ToMatrix(r.get<WorldTransform>(parent))));
 }

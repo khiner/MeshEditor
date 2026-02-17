@@ -20,10 +20,10 @@ void main() {
     }
 
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldMatrix world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     ElementId = draw.ElementIdOffset + idx + 1;
 
-    gl_Position = SceneViewUBO.ViewProj * (world.M * vec4(vert.Position, 1.0));
+    gl_Position = SceneViewUBO.ViewProj * vec4(trs_transform_point(world, vert.Position), 1.0);
     gl_PointSize = 6.0;
 }

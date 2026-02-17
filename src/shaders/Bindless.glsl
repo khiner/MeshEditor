@@ -10,14 +10,15 @@
 #include "BoneDeformVertex.glsl"
 #include "MorphTargetVertex.glsl"
 #include "PunctualLight.glsl"
-#include "WorldMatrix.glsl"
+#include "WorldTransform.glsl"
+#include "TRSUtils.glsl"
 
 layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBuffer {
     Vertex Vertices[];
 } VertexBuffers[];
 
 layout(set = 0, binding = BINDING_ModelBuffer, scalar) readonly buffer ModelBuffer {
-    WorldMatrix Models[];
+    WorldTransform Models[];
 } ModelBuffers[];
 
 layout(set = 0, binding = BINDING_IndexBuffer, scalar) readonly buffer IndexBuffer {

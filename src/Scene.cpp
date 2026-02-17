@@ -79,18 +79,6 @@ void WaitFor(vk::Fence fence, vk::Device device) {
     device.resetFences(fence);
 }
 
-mat4 ComputePendingTransformMatrix(vec3 pivot, vec3 P, quat R, vec3 S) {
-    return glm::translate(mat4{1}, pivot + P) * glm::mat4_cast(R) * glm::scale(mat4{1}, S) * glm::translate(mat4{1}, -pivot);
-}
-
-Transform MatrixToTransform(const mat4 &m) {
-    vec3 scale, translation, skew;
-    vec4 perspective;
-    quat rotation;
-    if (!glm::decompose(m, scale, rotation, translation, skew, perspective)) return {};
-    return {.P = translation, .R = glm::normalize(rotation), .S = scale};
-}
-
 float ClampCos(float cos_theta) {
     return std::clamp(cos_theta, -1.f, 1.f);
 }
@@ -349,24 +337,16 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_entity, Element element, uint32_t handle) {
     const auto &mesh = r.get<Mesh>(r.get<MeshInstance>(instance_entity).MeshEntity);
     const auto local_pos = ComputeElementLocalPosition(mesh, element, handle);
-    return {r.get<WorldMatrix>(instance_entity).M * vec4{local_pos, 1.f}};
+    const auto &wt = r.get<WorldTransform>(instance_entity);
+    return {wt.Position + glm::rotate(Vec4ToQuat(wt.Rotation), wt.Scale * local_pos)};
 }
 
 struct EditTransformContext {
     std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
-    std::unordered_map<entt::entity, uint32_t> PendingLocalTransformOffsets;
 };
 
-EditTransformContext BuildEditTransformContext(const entt::registry &r, bool build_pending_local_transform_data) {
-    EditTransformContext context;
-    context.TransformInstances = ComputePrimaryEditInstances(r, false);
-    if (!build_pending_local_transform_data || context.TransformInstances.empty()) return context;
-
-    uint32_t offset = 0;
-    for (const auto &[mesh_entity, _] : context.TransformInstances) {
-        context.PendingLocalTransformOffsets.emplace(mesh_entity, offset++);
-    }
-    return context;
+EditTransformContext BuildEditTransformContext(const entt::registry &r) {
+    return {ComputePrimaryEditInstances(r, false)};
 }
 
 PunctualLight GetLight(const SceneBuffers &buffers, uint32_t index) {
@@ -570,8 +550,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<CameraData>()
         .on_update<CameraData>();
     R.storage<entt::reactive>(changes::LightTransforms)
-        .on_construct<WorldMatrix>()
-        .on_update<WorldMatrix>();
+        .on_construct<WorldTransform>()
+        .on_update<WorldTransform>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -778,8 +758,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
-    const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
-    const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R, has_pending_transform) : EditTransformContext{};
+    const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R) : EditTransformContext{};
     const auto orbit_to_active = [&](entt::entity instance_entity, Element element, uint32_t handle) {
         if (!OrbitToActive) return;
         const auto world_pos = ComputeElementWorldPosition(R, instance_entity, element, handle);
@@ -830,9 +809,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     for (auto entity : R.storage<entt::reactive>(changes::LightTransforms)) {
         if (!R.all_of<LightIndex>(entity)) continue;
-        if (const auto *world_matrix = R.try_get<WorldMatrix>(entity)) {
-            vec3 position = world_matrix->M[3];
-            const vec3 forward = world_matrix->M[2];
+        if (const auto *wt = R.try_get<WorldTransform>(entity)) {
+            const vec3 position = wt->Position;
+            const vec3 forward = glm::rotate(Vec4ToQuat(wt->Rotation), vec3{0.f, 0.f, 1.f});
             const float forward_len_sq = glm::dot(forward, forward);
             const vec3 direction = forward_len_sq > 1e-8f ? -forward / std::sqrt(forward_len_sq) : vec3{0.f, 0.f, -1.f};
             const auto &li = R.get<const LightIndex>(entity);
@@ -908,17 +887,19 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &selection = R.get<const MeshSelection>(mesh_entity);
                 if (selection.Handles.empty()) continue;
-                const auto &wm = R.get<const WorldMatrix>(instance_entity);
-                const auto world_to_local = glm::inverse(wm.M);
+                const auto &wt = R.get<const WorldTransform>(instance_entity);
+                const auto wt_rot = Vec4ToQuat(wt.Rotation);
+                const auto inv_rot = glm::conjugate(wt_rot);
+                const auto inv_scale = 1.f / wt.Scale;
                 const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex);
                 for (const auto vi : vertex_handles) {
                     const auto local_pos = vertices[vi].Position;
-                    const auto world_pos = vec3{wm.M * vec4{local_pos, 1.f}};
+                    const auto world_pos = wt.Position + glm::rotate(wt_rot, wt.Scale * local_pos);
                     auto offset = world_pos - pending.Pivot;
                     offset = pending.S * offset;
                     offset = glm::rotate(pending.R, offset);
                     const auto new_world = pending.Pivot + offset + pending.P;
-                    const auto new_local = vec3{world_to_local * vec4{new_world, 1.f}};
+                    const auto new_local = inv_scale * glm::rotate(inv_rot, new_world - wt.Position);
                     Meshes->SetPosition(mesh, vi, new_local);
                 }
                 Meshes->UpdateNormals(mesh);
@@ -926,21 +907,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         R.remove<PendingTransform>(SceneEntity);
-    }
-    if (is_edit_mode &&
-        R.all_of<PendingTransform>(SceneEntity) &&
-        !edit_transform_context.PendingLocalTransformOffsets.empty() &&
-        !R.storage<entt::reactive>(changes::TransformPending).empty()) {
-        const auto &pending = R.get<const PendingTransform>(SceneEntity);
-        const mat4 pending_world = ComputePendingTransformMatrix(pending.Pivot, pending.P, pending.R, pending.S);
-        std::vector<WorldMatrix> pending_local_transforms(edit_transform_context.TransformInstances.size(), MakeWorldMatrix(mat4{1}));
-        for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-            const auto offset = edit_transform_context.PendingLocalTransformOffsets.at(mesh_entity);
-            const auto &reference_world = R.get<const WorldMatrix>(instance_entity);
-            pending_local_transforms[offset] = MakeWorldMatrix(glm::transpose(reference_world.MInv) * pending_world * reference_world.M);
-        }
-        Buffers->EditPendingLocalTransforms.Update(as_bytes(pending_local_transforms));
-        request(RenderRequest::Submit);
     }
     if (!R.storage<entt::reactive>(changes::SceneView).empty() ||
         !R.storage<entt::reactive>(changes::TransformPending).empty() ||
@@ -981,7 +947,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .InteractionMode = uint32_t(interaction_mode),
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
             .IsTransforming = pending ? 1u : 0u,
-            .PendingTransform = pending ? ComputePendingTransformMatrix(pending->Pivot, pending->P, pending->R, pending->S) : mat4{1},
+            .PendingPivot = pending ? pending->Pivot : vec3{},
+            .PendingTranslation = pending ? pending->P : vec3{},
+            .PendingRotation = pending ? QuatToVec4(pending->R) : vec4{0, 0, 0, 1},
+            .PendingScale = pending ? pending->S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
         }));
         request(RenderRequest::Submit);
@@ -1145,12 +1114,12 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
     const auto mesh_entity = mesh_instance->MeshEntity;
     if (visible) {
-        const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldMatrix);
+        const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldTransform);
         const uint32_t object_id = NextObjectId++;
         R.emplace<RenderInstance>(entity, buffer_index, object_id);
         const uint8_t initial_state = R.all_of<Selected>(entity) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
         R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
-            mb.Buffer.Insert(as_bytes(R.get<WorldMatrix>(entity)), mb.Buffer.UsedSize);
+            mb.Buffer.Insert(as_bytes(R.get<WorldTransform>(entity)), mb.Buffer.UsedSize);
             mb.ObjectIds.Insert(as_bytes(object_id), mb.ObjectIds.UsedSize);
             mb.InstanceStates.Insert(as_bytes(initial_state), mb.InstanceStates.UsedSize);
         });
@@ -1158,7 +1127,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
         const uint old_model_index = R.get<const RenderInstance>(entity).BufferIndex;
         R.remove<RenderInstance>(entity);
         R.patch<ModelsBuffer>(mesh_entity, [old_model_index](auto &mb) {
-            mb.Buffer.Erase(old_model_index * sizeof(WorldMatrix), sizeof(WorldMatrix));
+            mb.Buffer.Erase(old_model_index * sizeof(WorldTransform), sizeof(WorldTransform));
             mb.ObjectIds.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
             mb.InstanceStates.Erase(old_model_index * sizeof(uint8_t), sizeof(uint8_t));
         });
@@ -1183,7 +1152,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
     const auto mesh_entity = R.create();
     R.emplace<ModelsBuffer>(
         mesh_entity,
-        mvk::Buffer{Buffers->Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
+        mvk::Buffer{Buffers->Ctx, sizeof(WorldTransform), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
         mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
         mvk::Buffer{Buffers->Ctx, sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer}
     );
@@ -1209,7 +1178,7 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
-        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
+        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
         mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
     });
@@ -1293,7 +1262,7 @@ entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType t
     R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? default_name : info.Name));
 
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
-        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
+        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
         mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
     });
@@ -1412,7 +1381,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 mesh_entities[*object.MeshIndex],
                 {
                     .Name = object_name,
-                    .Transform = MatrixToTransform(object.WorldTransform),
+                    .Transform = object.WorldTransform,
                     .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                     .Visible = true,
                 }
@@ -1422,7 +1391,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                    *object.CameraIndex < loaded_scene->Cameras.size()) {
             object_entity = AddCamera({
                 .Name = object_name,
-                .Transform = MatrixToTransform(object.WorldTransform),
+                .Transform = object.WorldTransform,
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             });
             const auto &scd = loaded_scene->Cameras[*object.CameraIndex];
@@ -1432,7 +1401,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                    *object.LightIndex < loaded_scene->Lights.size()) {
             object_entity = AddLight({
                 .Name = object_name,
-                .Transform = MatrixToTransform(object.WorldTransform),
+                .Transform = object.WorldTransform,
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             });
             const auto &sld = loaded_scene->Lights[*object.LightIndex];
@@ -1443,7 +1412,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             object_entity = AddEmpty(
                 {
                     .Name = object_name,
-                    .Transform = MatrixToTransform(object.WorldTransform),
+                    .Transform = object.WorldTransform,
                     .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                 }
             );
@@ -1459,7 +1428,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                     extra_entity,
                     {
                         .Name = object_name,
-                        .Transform = MatrixToTransform(object.WorldTransform),
+                        .Transform = object.WorldTransform,
                         .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                         .Visible = true,
                     }
@@ -1546,7 +1515,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         const auto armature_entity = R.create();
         R.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
         R.emplace<ArmatureObject>(armature_entity, armature_data_entity);
-        SetTransform(R, armature_entity, MatrixToTransform(anchor_it->second->WorldTransform));
+        SetTransform(R, armature_entity, anchor_it->second->WorldTransform);
         R.emplace<Name>(armature_entity, CreateName(R, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
 
         if (skin.ParentObjectNodeIndex) {
@@ -1799,7 +1768,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     R.emplace<MeshInstance>(e_new, mesh_entity);
     R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
-        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldMatrix));
+        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
         mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
     });
@@ -1988,12 +1957,12 @@ void Scene::RecordRenderCommandBuffer() {
                                               (settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals);
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
-    const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R, has_pending_transform) : EditTransformContext{};
+    const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R) : EditTransformContext{};
 
     const auto set_edit_pending_local_transform = [&](DrawData &draw, entt::entity mesh_entity) {
         if (!has_pending_transform) return;
-        if (auto it = edit_transform_context.PendingLocalTransformOffsets.find(mesh_entity); it != edit_transform_context.PendingLocalTransformOffsets.end()) {
-            draw.PendingLocalTransform = {Buffers->EditPendingLocalTransforms.Slot, it->second};
+        if (edit_transform_context.TransformInstances.contains(mesh_entity)) {
+            draw.PendingLocalTransform = {0, 0}; // Non-INVALID_SLOT signals participation in edit transform
         }
     };
     std::unordered_set<entt::entity> silhouette_instances;
@@ -3031,15 +3000,15 @@ void Scene::ExitLookThroughCamera() {
 }
 
 void Scene::SnapToCamera(entt::entity camera_entity) {
-    const auto &wm = R.get<WorldMatrix>(camera_entity);
-    const vec3 pos{wm.M[3]};
-    const vec3 fwd = -glm::normalize(vec3{wm.M[2]});
+    const auto &wt = R.get<WorldTransform>(camera_entity);
+    const vec3 pos = wt.Position;
+    const vec3 fwd = -glm::normalize(glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0.f, 0.f, 1.f}));
     R.replace<ViewCamera>(SceneEntity, ViewCamera{pos, pos + fwd, R.get<CameraData>(camera_entity)});
 }
 void Scene::AnimateToCamera(entt::entity camera_entity) {
-    const auto &wm = R.get<WorldMatrix>(camera_entity);
-    const vec3 pos{wm.M[3]};
-    const vec3 fwd = -glm::normalize(vec3{wm.M[2]});
+    const auto &wt = R.get<WorldTransform>(camera_entity);
+    const vec3 pos = wt.Position;
+    const vec3 fwd = -glm::normalize(glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0.f, 0.f, 1.f}));
     const vec3 away = -fwd; // Forward() points from target to position
     R.patch<ViewCamera>(SceneEntity, [&](auto &vc) {
         vc.AnimateTo(pos + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f);
@@ -3184,10 +3153,10 @@ void Scene::RenderOverlay() {
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &selection = R.get<const MeshSelection>(mesh_entity);
                 if (selection.Handles.empty()) continue;
-                const auto &wm = R.get<const WorldMatrix>(instance_entity);
+                const auto &wt = R.get<const WorldTransform>(instance_entity);
                 const auto vertex_handles = ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex);
                 for (const auto vi : vertex_handles) {
-                    pivot += vec3{wm.M * vec4{vertices[vi].Position, 1.f}};
+                    pivot += wt.Position + glm::rotate(Vec4ToQuat(wt.Rotation), wt.Scale * vertices[vi].Position);
                     ++vertex_count;
                 }
             }
@@ -3252,10 +3221,10 @@ void Scene::RenderOverlay() {
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
         const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
-        for (const auto [e, wm] : R.view<const WorldMatrix>().each()) {
+        for (const auto [e, wt] : R.view<const WorldTransform>().each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
 
-            const auto p_cs = vp * wm.M[3]; // World to clip space (4th column is translation)
+            const auto p_cs = vp * vec4{wt.Position, 1.f}; // World to clip space
             const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
             const auto p_px = std::bit_cast<ImVec2>(viewport.pos + p_uv * viewport.size); // UV to px
@@ -3452,7 +3421,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         model_changed |= scale_changed;
         if (frozen) EndDisabled();
         if (model_changed) {
-            UpdateWorldMatrix(R, active_entity);
+            UpdateWorldTransform(R, active_entity);
         }
         Spacing();
         {
@@ -3481,13 +3450,11 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
             TreePop();
         }
-        if (TreeNode("World matrix")) {
-            TextUnformatted("M");
-            const auto &world_matrix = R.get<WorldMatrix>(active_entity);
-            RenderMat4(world_matrix.M);
-            Spacing();
-            TextUnformatted("MInv");
-            RenderMat4(world_matrix.MInv);
+        if (TreeNode("World transform")) {
+            const auto &wt = R.get<WorldTransform>(active_entity);
+            Text("Position: %.3f, %.3f, %.3f", wt.Position.x, wt.Position.y, wt.Position.z);
+            Text("Rotation: %.3f, %.3f, %.3f, %.3f", wt.Rotation.x, wt.Rotation.y, wt.Rotation.z, wt.Rotation.w);
+            Text("Scale: %.3f, %.3f, %.3f", wt.Scale.x, wt.Scale.y, wt.Scale.z);
             TreePop();
         }
     }
