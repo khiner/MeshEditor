@@ -4,7 +4,6 @@
 // Lossy for round-trip export but visually near-lossless.
 //
 // TODO (glTF 2.0 coverage):
-// - Import `KHR_lights_punctual` (directional, point, spot).
 // - Implement materials, following https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/pbr.frag
 // - After adding materials/textures: tangents import + morph target tangent deltas.
 // - Add `KHR_animation_pointer` support (requires materials/lights; currently only core TRS/weights animation paths are handled).
@@ -16,8 +15,8 @@
 
 #include "Armature.h"
 #include "CameraData.h"
-#include "LightData.h"
 #include "Transform.h"
+#include "gpu/PunctualLight.h"
 #include "mesh/ArmatureDeformData.h"
 #include "mesh/MeshData.h"
 #include "mesh/MorphTargetData.h"
@@ -44,7 +43,7 @@ struct SceneCameraData {
 };
 
 struct SceneLightData {
-    LightData Light;
+    PunctualLight Light;
     std::string Name;
 };
 

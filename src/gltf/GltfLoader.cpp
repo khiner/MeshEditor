@@ -1,5 +1,6 @@
 #include "GltfLoader.h"
 
+#include "LightTypes.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
@@ -9,6 +10,7 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <numbers>
 #include <numeric>
@@ -17,7 +19,6 @@
 
 namespace gltf {
 namespace {
-
 Transform MatrixToTransform(const mat4 &m) {
     vec3 scale, translation, skew;
     vec4 perspective;
@@ -659,26 +660,35 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     // Parse KHR_lights_punctual lights
     scene_data.Lights.reserve(asset.lights.size());
     for (const auto &light : asset.lights) {
-        LightVariant type;
+        PunctualLight punctual_light{
+            .Direction = {0.f, 0.f, -1.f},
+            .Range = 0.f,
+            .Color = {light.color.x(), light.color.y(), light.color.z()},
+            .Intensity = light.intensity,
+            .Position = {0.f, 0.f, 0.f},
+            .InnerConeCos = 0.f,
+            .OuterConeCos = 0.f,
+            .Type = LightTypePoint,
+        };
         switch (light.type) {
             case fastgltf::LightType::Directional:
-                type = DirectionalLight{};
+                punctual_light.Type = LightTypeDirectional;
                 break;
             case fastgltf::LightType::Point:
-                type = PointLight{.Range = light.range ? std::optional{*light.range} : std::nullopt};
+                punctual_light.Type = LightTypePoint;
+                punctual_light.Range = light.range ? *light.range : 0.f;
                 break;
             case fastgltf::LightType::Spot: {
-                const float size = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
-                const float inner = light.innerConeAngle ? *light.innerConeAngle : 0.f;
-                const float blend = size > 0.f ? std::clamp(1.f - (inner / size), 0.f, 1.f) : 0.f;
-                type = SpotLight{.Range = light.range ? std::optional{*light.range} : std::nullopt, .Size = size, .Blend = blend};
+                const float outer = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
+                const float inner = std::clamp(light.innerConeAngle ? *light.innerConeAngle : 0.f, 0.f, outer);
+                punctual_light.Type = LightTypeSpot;
+                punctual_light.Range = light.range ? *light.range : 0.f;
+                punctual_light.InnerConeCos = std::cos(inner);
+                punctual_light.OuterConeCos = std::cos(outer);
                 break;
             }
         }
-        scene_data.Lights.emplace_back(
-            LightData{std::move(type), {light.color.x(), light.color.y(), light.color.z()}, light.intensity},
-            std::string{light.name}
-        );
+        scene_data.Lights.emplace_back(punctual_light, std::string{light.name});
     }
 
     std::vector<bool> is_joint(asset.nodes.size(), false);

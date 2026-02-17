@@ -9,6 +9,7 @@
 #include "Vertex.glsl"
 #include "BoneDeformVertex.glsl"
 #include "MorphTargetVertex.glsl"
+#include "PunctualLight.glsl"
 #include "WorldMatrix.glsl"
 
 layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBuffer {
@@ -60,6 +61,10 @@ layout(set = 0, binding = BINDING_MorphWeightBuffer, scalar) readonly buffer Mor
 layout(set = 0, binding = BINDING_VertexClassBuffer, scalar) readonly buffer VertexClassBuffer {
     uint8_t Classes[];
 } VertexClassBuffers[];
+
+layout(set = 0, binding = BINDING_LightBuffer, scalar) readonly buffer LightBufferBlock {
+    PunctualLight Lights[];
+} LightBuffers[];
 
 const uint INVALID_SLOT = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;

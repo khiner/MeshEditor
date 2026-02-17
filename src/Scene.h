@@ -12,6 +12,7 @@
 #include "entt_fwd.h"
 #include <vulkan/vulkan.hpp>
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <functional>
@@ -34,9 +35,9 @@ enum class InteractionMode {
     Excite,
 };
 
-enum class ViewportShadingMode {
-    Wireframe,
+enum class ViewportShadingMode : uint8_t {
     Solid,
+    Rendered,
 };
 
 enum class FaceColorMode {
@@ -46,6 +47,7 @@ enum class FaceColorMode {
 
 enum class ShaderPipelineType {
     Fill,
+    PBRFill,
     Line,
     LineOverlayFaceNormals,
     LineOverlayVertexNormals,

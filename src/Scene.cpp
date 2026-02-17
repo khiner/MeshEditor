@@ -8,13 +8,14 @@
 #include "CameraData.h"
 #include "Entity.h"
 #include "Excitable.h"
-#include "LightData.h"
+#include "LightTypes.h"
 #include "OrientationGizmo.h"
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
 #include "gltf/GltfLoader.h"
 #include "gpu/ObjectPickPushConstants.h"
+#include "gpu/PunctualLight.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshStore.h"
@@ -26,6 +27,7 @@
 
 #include "Variant.h"
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <limits>
 #include <numbers>
@@ -38,8 +40,10 @@ using std::views::filter, std::views::iota, std::views::take, std::views::transf
 namespace {
 const SceneDefaults Defaults{};
 constexpr float Pi = std::numbers::pi_v<float>;
-constexpr float DefaultSpotSize = Pi / 4.f; // 45 deg
+constexpr float DefaultSpotOuterAngle = Pi / 4.f; // 45 deg
 constexpr float DefaultSpotBlend = 0.15f;
+constexpr float DefaultLightIntensity = 75.f;
+constexpr float DefaultPointRange = 10.f;
 
 using namespace he;
 
@@ -82,6 +86,29 @@ Transform MatrixToTransform(const mat4 &m) {
     quat rotation;
     if (!glm::decompose(m, scale, rotation, translation, skew, perspective)) return {};
     return {.P = translation, .R = glm::normalize(rotation), .S = scale};
+}
+
+float ClampCos(float cos_theta) {
+    return std::clamp(cos_theta, -1.f, 1.f);
+}
+
+float AngleFromCos(float cos_theta) {
+    return std::acos(ClampCos(cos_theta));
+}
+
+PunctualLight MakeDefaultLight(uint32_t type = LightTypePoint) {
+    const float outer = DefaultSpotOuterAngle;
+    const float inner = outer * (1.f - DefaultSpotBlend);
+    return {
+        .Direction = {0.f, 0.f, -1.f},
+        .Range = type == LightTypeDirectional ? 0.f : DefaultPointRange,
+        .Color = {1.f, 1.f, 1.f},
+        .Intensity = DefaultLightIntensity,
+        .Position = {0.f, 0.f, 0.f},
+        .InnerConeCos = type == LightTypeSpot ? std::cos(inner) : 0.f,
+        .OuterConeCos = type == LightTypeSpot ? std::cos(outer) : 0.f,
+        .Type = type,
+    };
 }
 } // namespace
 
@@ -195,52 +222,47 @@ MeshData BuildCameraFrustumMesh(const CameraData &cd) {
     return {.Positions = std::move(positions), .Edges = std::move(edges)};
 }
 
-ExtrasWireframe BuildLightMesh(const LightVariant &type) {
+ExtrasWireframe BuildLightMesh(const PunctualLight &light) {
     ExtrasWireframe wf;
 
-    const auto add_range_circle = [&](std::optional<float> range) {
-        if (range && *range > 0.f) wf.AddCircle(*range, 32, 0.f, VClassBillboard);
+    const auto add_range_circle = [&](float range) {
+        if (range > 0.f) wf.AddCircle(range, 32, 0.f, VClassBillboard);
     };
 
-    std::visit(overloaded{
-                   [&](const PointLight &light) {
-                       add_range_circle(light.Range);
-                   },
-                   [&](const DirectionalLight &) {
-                       // Sun rays: 8 radial directions, each with two dashed line segments (screenspace units).
-                       constexpr uint32_t ray_count = 8;
-                       constexpr float d0s = 14.f, d0e = 16.f, d1s = 18.f, d1e = 20.f;
-                       for (uint32_t i = 0; i < ray_count; ++i) {
-                           const float angle = float(i) * 2.f * Pi / float(ray_count);
-                           const float dx = std::cos(angle), dy = std::sin(angle);
-                           const auto a = wf.AddVertex({d0s * dx, d0s * dy, 0.f}, VClassScreenspace);
-                           const auto b = wf.AddVertex({d0e * dx, d0e * dy, 0.f}, VClassScreenspace);
-                           const auto c = wf.AddVertex({d1s * dx, d1s * dy, 0.f}, VClassScreenspace);
-                           const auto d = wf.AddVertex({d1e * dx, d1e * dy, 0.f}, VClassScreenspace);
-                           wf.AddEdge(a, b);
-                           wf.AddEdge(c, d);
-                       }
-                   },
-                   [&](const SpotLight &light) {
-                       constexpr float depth = 2.f;
-                       const float outer_radius = depth * std::tan(light.Size);
-                       const float inner_angle = light.Size * (1.f - std::clamp(light.Blend, 0.f, 1.f));
-                       const float inner_radius = depth * std::tan(inner_angle);
+    if (light.Type == LightTypePoint) {
+        add_range_circle(light.Range);
+    } else if (light.Type == LightTypeDirectional) {
+        // Sun rays: 8 radial directions, each with two dashed line segments (screenspace units).
+        constexpr uint32_t ray_count = 8;
+        constexpr float d0s = 14.f, d0e = 16.f, d1s = 18.f, d1e = 20.f;
+        for (uint32_t i = 0; i < ray_count; ++i) {
+            const float angle = float(i) * 2.f * Pi / float(ray_count);
+            const float dx = std::cos(angle), dy = std::sin(angle);
+            const auto a = wf.AddVertex({d0s * dx, d0s * dy, 0.f}, VClassScreenspace);
+            const auto b = wf.AddVertex({d0e * dx, d0e * dy, 0.f}, VClassScreenspace);
+            const auto c = wf.AddVertex({d1s * dx, d1s * dy, 0.f}, VClassScreenspace);
+            const auto d = wf.AddVertex({d1e * dx, d1e * dy, 0.f}, VClassScreenspace);
+            wf.AddEdge(a, b);
+            wf.AddEdge(c, d);
+        }
+    } else if (light.Type == LightTypeSpot) {
+        constexpr float depth = 2.f;
+        const float outer_angle = std::min(AngleFromCos(light.OuterConeCos), glm::radians(89.f));
+        const float inner_angle = std::min(AngleFromCos(light.InnerConeCos), outer_angle);
+        const float outer_radius = depth * std::tan(outer_angle);
+        const float inner_radius = depth * std::tan(inner_angle);
+        add_range_circle(light.Range);
+        wf.AddCircle(outer_radius, SpotConeSegments, -depth, VClassNone);
+        if (inner_radius > 0.f) wf.AddCircle(inner_radius, SpotConeSegments, -depth, VClassNone);
 
-                       add_range_circle(light.Range);
-                       wf.AddCircle(outer_radius, SpotConeSegments, -depth, VClassNone);
-                       if (inner_radius > 0.f) wf.AddCircle(inner_radius, SpotConeSegments, -depth, VClassNone);
-
-                       // Cone spokes: apex (VCLASS_NONE) to base (VCLASS_SPOT_CONE).
-                       for (uint32_t i = 0; i < SpotConeSegments; ++i) {
-                           const float angle = float(i) * 2.f * Pi / float(SpotConeSegments);
-                           const auto ai = wf.AddVertex({0.f, 0.f, 0.f}, VClassNone);
-                           const auto bi = wf.AddVertex({outer_radius * std::cos(angle), outer_radius * std::sin(angle), -depth}, VClassSpotCone);
-                           wf.AddEdge(ai, bi);
-                       }
-                   },
-               },
-               type);
+        // Cone spokes: apex (VCLASS_NONE) to base (VCLASS_SPOT_CONE).
+        for (uint32_t i = 0; i < SpotConeSegments; ++i) {
+            const float angle = float(i) * 2.f * Pi / float(SpotConeSegments);
+            const auto ai = wf.AddVertex({0.f, 0.f, 0.f}, VClassNone);
+            const auto bi = wf.AddVertex({outer_radius * std::cos(angle), outer_radius * std::sin(angle), -depth}, VClassSpotCone);
+            wf.AddEdge(ai, bi);
+        }
+    }
 
     // Light icon shared by all types: center diamond, dashed indicator circles, ground line + diamond.
     wf.AddDiamond(2.7f, VClassScreenspace, {1, 0, 0}, {0, 1, 0});
@@ -256,25 +278,6 @@ ExtrasWireframe BuildLightMesh(const LightVariant &type) {
     return wf;
 }
 
-// Fraction of viewport height the active camera's frame occupies.
-float LookThroughFrameRatio(float cam_aspect, float viewport_aspect) {
-    static constexpr float LookThroughPadRatio{0.9f}; // 5% padding on each side
-    return cam_aspect > viewport_aspect ? viewport_aspect * LookThroughPadRatio / cam_aspect : LookThroughPadRatio;
-}
-
-// Widen CameraData so the active camera's view fits inside the viewport with padding around it.
-CameraData WidenForLookThrough(const CameraData &cd, float viewport_aspect) {
-    const float zoom = 1.f / LookThroughFrameRatio(AspectRatio(cd), viewport_aspect);
-    if (const auto *persp = std::get_if<Perspective>(&cd)) {
-        auto widened = *persp;
-        widened.FieldOfViewRad = std::min(2.f * std::atan(std::tan(persp->FieldOfViewRad * 0.5f) * zoom), glm::radians(179.f));
-        return widened;
-    }
-    auto widened = std::get<Orthographic>(cd);
-    widened.Mag *= zoom;
-    return widened;
-}
-
 struct ViewportContext {
     float Distance, AspectRatio;
 };
@@ -286,21 +289,14 @@ bool RenderCameraLensEditor(CameraData &camera_data, std::optional<ViewportConte
     const char *proj_names[]{"Perspective", "Orthographic"};
     if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) {
         if (proj_i == 0 && !std::holds_alternative<Perspective>(camera_data)) {
-            const auto &orthographic = std::get<Orthographic>(camera_data);
-            float field_of_view_rad = glm::radians(60.f);
-            if (viewport) {
-                field_of_view_rad = glm::clamp(2.f * std::atan(orthographic.Mag.y / viewport->Distance), glm::radians(1.f), glm::radians(179.f));
-            }
-            camera_data = Perspective{.FieldOfViewRad = field_of_view_rad, .FarClip = orthographic.FarClip, .NearClip = orthographic.NearClip};
+            camera_data = PerspectiveFromOrthographic(std::get<Orthographic>(camera_data), viewport ? std::optional<float>{viewport->Distance} : std::nullopt);
             lens_changed = true;
         } else if (proj_i == 1 && !std::holds_alternative<Orthographic>(camera_data)) {
-            const auto &perspective = std::get<Perspective>(camera_data);
-            vec2 mag{1.f};
-            if (viewport) {
-                mag.y = viewport->Distance * std::tan(perspective.FieldOfViewRad * 0.5f);
-                mag.x = mag.y * viewport->AspectRatio;
-            }
-            camera_data = Orthographic{.Mag = mag, .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip)), .NearClip = perspective.NearClip};
+            camera_data = OrthographicFromPerspective(
+                std::get<Perspective>(camera_data),
+                viewport ? std::optional<float>{viewport->Distance} : std::nullopt,
+                viewport ? std::optional<float>{viewport->AspectRatio} : std::nullopt
+            );
             lens_changed = true;
         }
     }
@@ -393,7 +389,9 @@ constexpr auto
     ViewportTheme = "viewport_theme_changes"_hs,
     SceneView = "scene_view_changes"_hs,
     CameraLens = "camera_lens_changes"_hs,
-    LightProps = "light_props_changes"_hs,
+    LightTransforms = "light_transform_changes"_hs,
+    LightBuffer = "light_buffer_changes"_hs,
+    LightWireframe = "light_wireframe_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
     TransformEnd = "transform_end_changes"_hs;
 } // namespace changes
@@ -564,9 +562,18 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::CameraLens)
         .on_construct<CameraData>()
         .on_update<CameraData>();
-    R.storage<entt::reactive>(changes::LightProps)
-        .on_construct<LightData>()
-        .on_update<LightData>();
+    R.storage<entt::reactive>(changes::LightTransforms)
+        .on_construct<WorldMatrix>()
+        .on_update<WorldMatrix>();
+    R.storage<entt::reactive>(changes::LightBuffer)
+        .on_construct<LightIndex>()
+        .on_update<LightIndex>()
+        .on_destroy<LightIndex>()
+        .on_construct<PunctualLight>()
+        .on_update<PunctualLight>();
+    R.storage<entt::reactive>(changes::LightWireframe)
+        .on_construct<LightIndex>()
+        .on_update<LightIndex>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -814,11 +821,45 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
     }
-    for (auto light_entity : R.storage<entt::reactive>(changes::LightProps)) {
-        const auto *ld = R.try_get<LightData>(light_entity);
-        if (!ld || !R.all_of<MeshInstance>(light_entity)) continue;
+    bool light_count_changed = false;
+    std::unordered_set<entt::entity> dirty_lights;
+    for (auto entity : R.storage<entt::reactive>(changes::LightBuffer)) {
+        if (R.all_of<LightIndex, PunctualLight>(entity)) dirty_lights.insert(entity);
+    }
+    for (auto entity : R.storage<entt::reactive>(changes::LightTransforms)) {
+        if (R.all_of<LightIndex, PunctualLight>(entity)) dirty_lights.insert(entity);
+    }
 
-        auto wireframe = BuildLightMesh(ld->Type);
+    {
+        const auto required_size = vk::DeviceSize(R.storage<LightIndex>().size()) * sizeof(PunctualLight);
+        if (Buffers->LightBuffer.UsedSize != required_size) {
+            Buffers->LightBuffer.Reserve(required_size);
+            Buffers->LightBuffer.UsedSize = required_size;
+            light_count_changed = true;
+        }
+    }
+
+    bool light_data_changed = false;
+    for (const auto entity : dirty_lights) {
+        const auto &li = R.get<const LightIndex>(entity);
+        auto light = R.get<const PunctualLight>(entity);
+        if (const auto *world_matrix = R.try_get<WorldMatrix>(entity)) {
+            light.Position = world_matrix->M[3];
+            const vec3 forward = world_matrix->M[2];
+            const float forward_len_sq = glm::dot(forward, forward);
+            light.Direction = forward_len_sq > 1e-8f ? -forward / std::sqrt(forward_len_sq) : vec3{0.f, 0.f, -1.f};
+        }
+
+        const auto offset = vk::DeviceSize(li.Value) * sizeof(PunctualLight);
+        Buffers->LightBuffer.Update(as_bytes(light), offset);
+        light_data_changed = true;
+    }
+    if (light_data_changed || light_count_changed) request(RenderRequest::Submit);
+    for (auto light_entity : R.storage<entt::reactive>(changes::LightWireframe)) {
+        if (!R.all_of<LightIndex, PunctualLight, MeshInstance>(light_entity)) continue;
+        const auto &light = R.get<const PunctualLight>(light_entity);
+
+        auto wireframe = BuildLightMesh(light);
 
         const auto mesh_entity = R.get<MeshInstance>(light_entity).MeshEntity;
 
@@ -923,7 +964,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         !R.storage<entt::reactive>(changes::TransformPending).empty() ||
         !R.storage<entt::reactive>(changes::SceneSettings).empty() ||
         !R.storage<entt::reactive>(changes::InteractionMode).empty() ||
-        !R.storage<entt::reactive>(changes::TransformEnd).empty()) {
+        !R.storage<entt::reactive>(changes::TransformEnd).empty() ||
+        light_count_changed) {
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).
         if (SavedViewCamera) {
@@ -941,12 +983,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const float viewport_height = extent.height > 0 ? float(extent.height) : 1.f;
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
-        float screen_pixel_scale = 1.f;
-        if (const auto *persp = std::get_if<Perspective>(&camera.Data)) {
-            screen_pixel_scale = 2.f * std::tan(persp->FieldOfViewRad * 0.5f) / viewport_height;
-        } else if (const auto *ortho = std::get_if<Orthographic>(&camera.Data)) {
-            screen_pixel_scale = -(2.f * ortho->Mag.y / viewport_height);
-        }
+        const float screen_pixel_scale = ScreenPixelScale(camera.Data, viewport_height);
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .ViewProj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)) * camera.View(),
             .CameraPosition = camera.Position(),
@@ -957,6 +994,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .DirectionalColor = lights.DirectionalColor,
             .DirectionalIntensity = lights.DirectionalIntensity,
             .LightDirection = lights.Direction,
+            .LightCount = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight)),
+            .LightSlot = Buffers->LightBuffer.Slot,
             .InteractionMode = uint32_t(interaction_mode),
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
             .IsTransforming = pending ? 1u : 0u,
@@ -1300,10 +1339,12 @@ entt::entity Scene::AddCamera(ObjectCreateInfo info) {
 }
 
 entt::entity Scene::AddLight(ObjectCreateInfo info) {
-    LightData light{PointLight{.Range = std::nullopt}, {1.f, 1.f, 1.f}, 75.f};
-    auto wireframe = BuildLightMesh(light.Type);
+    auto light = MakeDefaultLight(LightTypePoint);
+    auto wireframe = BuildLightMesh(light);
     const auto entity = CreateExtrasObject(std::move(wireframe), ObjectType::Light, info, "Light");
-    R.emplace<LightData>(entity, light);
+    const uint32_t light_index = uint32_t(R.storage<LightIndex>().size());
+    R.emplace<PunctualLight>(entity, light);
+    R.emplace<LightIndex>(entity, light_index);
     return entity;
 }
 
@@ -1398,7 +1439,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             });
             const auto &scd = loaded_scene->Cameras[*object.CameraIndex];
-            R.patch<CameraData>(object_entity, [&scd](auto &cd) { cd = scd.Camera; });
+            R.replace<CameraData>(object_entity, scd.Camera);
         } else if (object.ObjectType == gltf::SceneObjectData::Type::Light &&
                    object.LightIndex &&
                    *object.LightIndex < loaded_scene->Lights.size()) {
@@ -1408,7 +1449,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             });
             const auto &sld = loaded_scene->Lights[*object.LightIndex];
-            R.patch<LightData>(object_entity, [&sld](auto &ld) { ld = sld.Light; });
+            R.replace<PunctualLight>(object_entity, sld.Light);
+            R.patch<LightIndex>(object_entity, [](auto &) {});
         } else {
             object_entity = AddEmpty(
                 {
@@ -1698,12 +1740,15 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
     if (R.all_of<ObjectExtrasTag>(R.get<MeshInstance>(e).MeshEntity)) {
         if (const auto *src_cd = R.try_get<CameraData>(e)) {
             const auto copy_entity = AddCamera(create_info);
-            R.patch<CameraData>(copy_entity, [&](auto &dst) { dst = *src_cd; });
+            R.replace<CameraData>(copy_entity, *src_cd);
             return copy_entity;
         }
-        if (const auto *src_ld = R.try_get<LightData>(e)) {
+        if (R.all_of<LightIndex>(e)) {
             const auto copy_entity = AddLight(create_info);
-            R.patch<LightData>(copy_entity, [&](auto &dst) { dst = *src_ld; });
+            if (const auto *src_light = R.try_get<PunctualLight>(e)) {
+                R.replace<PunctualLight>(copy_entity, *src_light);
+            }
+            R.patch<LightIndex>(copy_entity, [](auto &) {});
             return copy_entity;
         }
         return AddEmpty(create_info);
@@ -1864,6 +1909,19 @@ void Scene::Destroy(entt::entity e) {
     }
     armature_data_entities = std::move(unique_armature_data_entities);
 
+    if (const auto *light_index = R.try_get<LightIndex>(e)) {
+        const uint32_t remove_index = light_index->Value;
+        const uint32_t last_index = uint32_t(R.storage<LightIndex>().size()) - 1u;
+        if (remove_index != last_index) {
+            for (const auto [other_entity, other_light_index] : R.view<LightIndex>().each()) {
+                if (other_entity != e && other_light_index.Value == last_index) {
+                    R.replace<LightIndex>(other_entity, remove_index);
+                    break;
+                }
+            }
+        }
+    }
+
     if (R.valid(e)) R.destroy(e);
 
     // If this was the last instance, destroy the mesh
@@ -1935,9 +1993,10 @@ void Scene::RecordRenderCommandBuffer() {
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
     const bool is_excite_mode = interaction_mode == InteractionMode::Excite;
-    const bool show_solid = settings.ViewportShading == ViewportShadingMode::Solid;
-    const bool show_wireframe = settings.ViewportShading == ViewportShadingMode::Wireframe;
-    const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+    const bool show_rendered = settings.ViewportShading == ViewportShadingMode::Rendered;
+    const bool show_fill = settings.ViewportShading == ViewportShadingMode::Solid || show_rendered;
+    const SPT fill_pipeline = show_rendered ? SPT::PBRFill :
+                                              (settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals);
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
     const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R, has_pending_transform) : EditTransformContext{};
@@ -2001,7 +2060,7 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    if (show_solid) {
+    if (show_fill) {
         fill_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             if (mesh.FaceCount() == 0) continue;
@@ -2039,14 +2098,14 @@ void Scene::RecordRenderCommandBuffer() {
             if (R.all_of<ObjectExtrasTag>(entity)) continue;
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
             const bool is_line_mesh = mesh.FaceCount() == 0 && mesh.EdgeCount() > 0;
-            if (!is_line_mesh && !show_wireframe && !is_edit_mode && !is_excite_mode) continue;
+            if (!is_line_mesh && !is_edit_mode && !is_excite_mode) continue;
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             draw.ElementState = edge_state_buffer;
             set_edit_pending_local_transform(draw, entity);
             const auto db = draw_list.Draws.size();
-            if (is_line_mesh || show_wireframe) {
+            if (is_line_mesh) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
@@ -2165,7 +2224,7 @@ void Scene::RecordRenderCommandBuffer() {
     { // Meshes
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         // Solid faces
-        if (show_solid) record_draw_batch(main.Renderer, fill_pipeline, fill_batch);
+        if (show_fill) record_draw_batch(main.Renderer, fill_pipeline, fill_batch);
         // Wireframe edges (always recorded — batch is empty when nothing qualifies)
         record_draw_batch(main.Renderer, SPT::Line, line_batch);
         // Vertex points (always recorded — batch is empty when nothing qualifies)
@@ -2383,7 +2442,7 @@ void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Elemen
 
     const auto primary_edit_instances = ComputePrimaryEditInstances(R);
     const Timer timer{"RenderEditSelectionPass"};
-    const bool xray_selection = SelectionXRay || R.get<SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe;
+    const bool xray_selection = SelectionXRay;
     const auto selection_pipeline = [xray_selection](Element el) -> SPT {
         if (el == Element::Vertex) return xray_selection ? SPT::SelectionElementVertexXRay : SPT::SelectionElementVertex;
         if (el == Element::Edge) return xray_selection ? SPT::SelectionElementEdgeXRay : SPT::SelectionElementEdge;
@@ -2649,6 +2708,13 @@ void Scene::Interact() {
     // Handle keyboard input.
     if (IsWindowFocused()) {
         if (IsKeyPressed(ImGuiKey_Space, false)) R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
+        if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && !GetIO().KeyShift && !GetIO().KeyAlt && !GetIO().KeySuper) {
+            R.patch<SceneSettings>(SceneEntity, [](auto &settings) {
+                settings.ViewportShading = settings.ViewportShading == ViewportShadingMode::Solid ?
+                    ViewportShadingMode::Rendered :
+                    ViewportShadingMode::Solid;
+            });
+        }
         if (IsKeyPressed(ImGuiKey_Tab)) {
             // Cycle to the next interaction mode, wrapping around to the first.
             auto it = find(InteractionModes, interaction_mode);
@@ -3261,6 +3327,25 @@ void Scene::RenderOverlay() {
         }
     }
 
+    { // Viewport info overlay
+        const auto &settings = R.get<const SceneSettings>(SceneEntity);
+        const char *label = settings.ViewportShading == ViewportShadingMode::Rendered ? "Rendered" : "Solid";
+        const auto text = std::format("Shading: {}", label);
+        const ImVec2 text_size = CalcTextSize(text.c_str());
+        const ImVec2 text_pos{
+            viewport.pos.x + viewport.size.x - text_size.x - 10.f,
+            viewport.pos.y + viewport.size.y - text_size.y - 10.f,
+        };
+        auto &dl = *GetWindowDrawList();
+        dl.AddRectFilled(
+            {text_pos.x - 6.f, text_pos.y - 4.f},
+            {text_pos.x + text_size.x + 6.f, text_pos.y + text_size.y + 4.f},
+            IM_COL32(0, 0, 0, 110),
+            4.f
+        );
+        dl.AddText(text_pos, IM_COL32(230, 230, 230, 255), text.c_str());
+    }
+
     StartScreenTransform = {};
 }
 
@@ -3445,56 +3530,74 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
     }
-    if (auto *ld = R.try_get<LightData>(active_entity)) {
-        if (CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (R.all_of<LightIndex>(active_entity) &&
+        CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (auto *light = R.try_get<PunctualLight>(active_entity)) {
             bool changed = false;
+            bool wireframe_changed = false;
             constexpr float MaxLightIntensity = 1000.f;
             constexpr float MaxLightRange = 1000.f;
 
-            const char *type_names[]{"Point", "Directional", "Spot"};
-            int type_i = std::holds_alternative<PointLight>(ld->Type) ? 0 :
-                std::holds_alternative<DirectionalLight>(ld->Type)    ? 1 :
-                                                                        2;
+            const char *type_names[]{"Directional", "Point", "Spot"};
+            int type_i = int(std::min(light->Type, LightTypeSpot));
             if (Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-                if (type_i == 0 && !std::holds_alternative<PointLight>(ld->Type)) {
-                    ld->Type = PointLight{.Range = std::nullopt};
-                    changed = true;
-                } else if (type_i == 1 && !std::holds_alternative<DirectionalLight>(ld->Type)) {
-                    ld->Type = DirectionalLight{};
-                    changed = true;
-                } else if (type_i == 2 && !std::holds_alternative<SpotLight>(ld->Type)) {
-                    ld->Type = SpotLight{
-                        .Range = std::nullopt,
-                        .Size = DefaultSpotSize,
-                        .Blend = DefaultSpotBlend,
-                    };
-                    changed = true;
-                }
+                auto next = MakeDefaultLight(uint32_t(type_i));
+                next.Color = light->Color;
+                next.Intensity = light->Intensity;
+                *light = next;
+                changed = true;
+                wireframe_changed = true;
             }
-            changed |= ColorEdit3("Color", &ld->Color.x);
-            changed |= SliderFloat("Intensity", &ld->Intensity, 0.f, MaxLightIntensity, "%.2f");
 
-            auto range_controls = [&](std::optional<float> &range) {
-                bool infinite_range = !range.has_value();
+            changed |= ColorEdit3("Color", &light->Color.x);
+            changed |= SliderFloat("Intensity", &light->Intensity, 0.f, MaxLightIntensity, "%.2f");
+
+            if (light->Type == LightTypePoint || light->Type == LightTypeSpot) {
+                bool infinite_range = light->Range <= 0.f;
                 if (Checkbox("Infinite range", &infinite_range)) {
-                    range = infinite_range ? std::nullopt : std::optional{10.f};
+                    light->Range = infinite_range ? 0.f : std::max(light->Range, DefaultPointRange);
                     changed = true;
+                    wireframe_changed = true;
                 }
-                if (range) changed |= SliderFloat("Range", &*range, 0.f, MaxLightRange, "%.2f");
-            };
-            if (auto *pl = std::get_if<PointLight>(&ld->Type)) {
-                range_controls(pl->Range);
-            } else if (auto *sl = std::get_if<SpotLight>(&ld->Type)) {
-                range_controls(sl->Range);
-                float size_deg = glm::degrees(sl->Size);
-                if (SliderFloat("Size", &size_deg, 0.f, 90.f, "%.1f deg")) {
-                    sl->Size = glm::radians(size_deg);
-                    changed = true;
+                if (!infinite_range) {
+                    if (SliderFloat("Range", &light->Range, 0.01f, MaxLightRange, "%.2f")) {
+                        changed = true;
+                        wireframe_changed = true;
+                    }
                 }
-                changed |= SliderFloat("Blend", &sl->Blend, 0.f, 1.f, "%.2f");
             }
 
-            if (changed) R.patch<LightData>(active_entity, [](auto &) {});
+            if (light->Type == LightTypeSpot) {
+                float outer_deg = glm::degrees(AngleFromCos(light->OuterConeCos));
+                outer_deg = std::clamp(outer_deg, 0.f, 90.f);
+                float inner_deg = glm::degrees(AngleFromCos(light->InnerConeCos));
+                inner_deg = std::clamp(inner_deg, 0.f, outer_deg);
+                float blend = outer_deg > 1e-4f ? std::clamp(1.f - inner_deg / outer_deg, 0.f, 1.f) : 0.f;
+
+                if (SliderFloat("Size", &outer_deg, 0.f, 90.f, "%.1f deg")) {
+                    outer_deg = std::clamp(outer_deg, 0.f, 90.f);
+                    const float outer_rad = glm::radians(outer_deg);
+                    const float inner_rad = outer_rad * (1.f - blend);
+                    light->OuterConeCos = std::cos(outer_rad);
+                    light->InnerConeCos = std::cos(inner_rad);
+                    changed = true;
+                    wireframe_changed = true;
+                }
+                if (SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f")) {
+                    blend = std::clamp(blend, 0.f, 1.f);
+                    const float outer_rad = glm::radians(std::clamp(outer_deg, 0.f, 90.f));
+                    const float inner_rad = outer_rad * (1.f - blend);
+                    light->OuterConeCos = std::cos(outer_rad);
+                    light->InnerConeCos = std::cos(inner_rad);
+                    changed = true;
+                    wireframe_changed = true;
+                }
+            }
+
+            if (changed) {
+                R.patch<PunctualLight>(active_entity, [](auto &) {});
+                if (wireframe_changed) R.patch<LightIndex>(active_entity, [](auto &) {});
+            }
         }
     }
     PopID();
@@ -3526,10 +3629,6 @@ void Scene::RenderControls() {
                 }
                 if (interaction_mode == InteractionMode::Edit) {
                     Checkbox("X-ray selection", &SelectionXRay);
-                    if (R.get<const SceneSettings>(SceneEntity).ViewportShading == ViewportShadingMode::Wireframe) {
-                        SameLine();
-                        TextDisabled("(wireframe)");
-                    }
                 }
                 if (interaction_mode == InteractionMode::Edit) {
                     AlignTextToFramePadding();
@@ -3646,8 +3745,9 @@ void Scene::RenderControls() {
             auto viewport_shading = int(settings.ViewportShading);
             bool viewport_shading_changed = RadioButton("Solid", &viewport_shading, int(ViewportShadingMode::Solid));
             SameLine();
-            viewport_shading_changed |= RadioButton("Wireframe", &viewport_shading, int(ViewportShadingMode::Wireframe));
+            viewport_shading_changed |= RadioButton("Rendered", &viewport_shading, int(ViewportShadingMode::Rendered));
             PopID();
+            TextDisabled("Shortcut: Z");
 
             bool smooth_shading_changed = false;
             bool smooth_shading = settings.SmoothShading;

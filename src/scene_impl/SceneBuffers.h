@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/ElementPickCandidate.h"
+#include "gpu/PunctualLight.h"
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
 #include "gpu/WorldMatrix.h"
@@ -33,6 +34,7 @@ struct SceneBuffers {
           SelectionDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
           SelectionIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
           EditPendingLocalTransforms{Ctx, sizeof(WorldMatrix), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
+          LightBuffer{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
           IdentityIndexBuffer{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
           SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
@@ -104,6 +106,7 @@ struct SceneBuffers {
     mvk::Buffer SelectionDrawData;
     mvk::Buffer SelectionIndirect;
     mvk::Buffer EditPendingLocalTransforms;
+    mvk::Buffer LightBuffer;
     mvk::Buffer IdentityIndexBuffer;
     uint32_t IdentityIndexCount{0};
     uint32_t SelectionNodeCapacity{1};

@@ -31,6 +31,8 @@ bindings:
     kind: Buffer
   - name: VertexClassBuffer
     kind: Buffer
+  - name: LightBuffer
+    kind: Buffer
 
 structs:
   - name: SlotOffset
@@ -105,6 +107,10 @@ structs:
         type: float
       - name: LightDirection
         type: vec3
+      - name: LightCount
+        type: u32
+      - name: LightSlot
+        type: u32
       - name: InteractionMode
         type: u32
       - name: EditElement
@@ -179,6 +185,24 @@ structs:
         type: mat4
       - name: MInv
         type: mat4
+  - name: PunctualLight
+    fields:
+      - name: Direction
+        type: vec3
+      - name: Range
+        type: float
+      - name: Color
+        type: vec3
+      - name: Intensity
+        type: float
+      - name: Position
+        type: vec3
+      - name: InnerConeCos
+        type: float
+      - name: OuterConeCos
+        type: float
+      - name: Type
+        type: u32
   - name: SelectionNode
     fields:
       - name: Depth

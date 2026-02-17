@@ -2,6 +2,7 @@
 
 #include "entt_fwd.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -28,6 +29,10 @@ enum class ObjectType : uint8_t {
 
 struct ObjectKind {
     ObjectType Value{ObjectType::Empty};
+};
+
+struct LightIndex {
+    uint32_t Value{0}; // Index into SceneBuffers::LightBuffer (PunctualLight[])
 };
 
 constexpr std::string_view ObjectTypeName(ObjectType type) {
