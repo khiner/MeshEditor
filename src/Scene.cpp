@@ -1943,12 +1943,6 @@ void Scene::RecordRenderCommandBuffer() {
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
     const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R) : EditTransformContext{};
 
-    const auto set_edit_pending_local_transform = [&](DrawData &draw, entt::entity mesh_entity) {
-        if (!has_pending_transform) return;
-        if (edit_transform_context.TransformInstances.contains(mesh_entity)) {
-            draw.HasPendingVertexTransform = 1;
-        }
-    };
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
         for (const auto [e, mi, ri] : R.view<const MeshInstance, const Selected, const RenderInstance>().each()) {
@@ -1980,6 +1974,17 @@ void Scene::RecordRenderCommandBuffer() {
     DrawBatchInfo extras_line_batch{};
     DrawBatchInfo silhouette_batch{};
     DrawBatchInfo overlay_face_normals_batch{}, overlay_vertex_normals_batch{}, overlay_bbox_batch{};
+    const auto patch_edit_pending_local_transform = [&](size_t draws_before, entt::entity mesh_entity) {
+        if (!has_pending_transform) return;
+        const auto context_it = edit_transform_context.TransformInstances.find(mesh_entity);
+        if (context_it == edit_transform_context.TransformInstances.end()) return;
+        const auto *primary_ri = R.try_get<const RenderInstance>(context_it->second);
+        if (!primary_ri) return;
+        for (size_t i = draws_before; i < draw_list.Draws.size(); ++i) {
+            draw_list.Draws[i].HasPendingVertexTransform = 1u;
+            draw_list.Draws[i].PrimaryEditInstanceIndex = primary_ri->BufferIndex;
+        }
+    };
 
     if (render_silhouette) {
         silhouette_batch = draw_list.BeginBatch();
@@ -1990,10 +1995,10 @@ void Scene::RecordRenderCommandBuffer() {
             const auto deform = get_deform_slots(mesh_entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             draw.ObjectIdSlot = models.ObjectIds.Slot;
-            set_edit_pending_local_transform(draw, mesh_entity);
             const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(e).BufferIndex);
             PatchMorphWeights(draw_list, draws_before, deform);
+            patch_edit_pending_local_transform(draws_before, mesh_entity);
         };
         if (is_edit_mode) {
             for (const auto e : silhouette_instances) append_silhouette(e);
@@ -2014,22 +2019,24 @@ void Scene::RecordRenderCommandBuffer() {
             draw.ObjectIdSlot = face_id_buffer.Slot;
             draw.FaceIdOffset = face_id_buffer.Offset;
             draw.FaceFirstTriOffset = settings.SmoothShading ? InvalidOffset : face_first_tri.Offset;
-            set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)
                 draw.ElementStateSlotOffset = face_state_buffer;
                 const auto db1 = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
                 PatchMorphWeights(draw_list, db1, deform);
+                patch_edit_pending_local_transform(db1, entity);
                 draw.ElementStateSlotOffset = {};
                 const auto db2 = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
                 PatchMorphWeights(draw_list, db2, deform);
+                patch_edit_pending_local_transform(db2, entity);
             } else {
                 draw.ElementStateSlotOffset = face_state_buffer;
                 const auto db = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
                 PatchMorphWeights(draw_list, db, deform);
+                patch_edit_pending_local_transform(db, entity);
             }
         }
     }
@@ -2045,7 +2052,6 @@ void Scene::RecordRenderCommandBuffer() {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             draw.ElementStateSlotOffset = edge_state_buffer;
-            set_edit_pending_local_transform(draw, entity);
             const auto db = draw_list.Draws.size();
             if (is_line_mesh) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
@@ -2055,6 +2061,7 @@ void Scene::RecordRenderCommandBuffer() {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             }
             PatchMorphWeights(draw_list, db, deform);
+            patch_edit_pending_local_transform(db, entity);
         }
     }
 
@@ -2069,7 +2076,6 @@ void Scene::RecordRenderCommandBuffer() {
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             draw.ElementStateSlotOffset = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
-            set_edit_pending_local_transform(draw, entity);
             const auto db = draw_list.Draws.size();
             if (is_point_mesh) {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw);
@@ -2079,6 +2085,7 @@ void Scene::RecordRenderCommandBuffer() {
                 AppendDraw(draw_list, point_batch, mesh_buffers.VertexIndices, models, draw);
             }
             PatchMorphWeights(draw_list, db, deform);
+            patch_edit_pending_local_transform(db, entity);
         }
     }
 

@@ -73,6 +73,9 @@ structs:
         default: InvalidSlot
       - name: HasPendingVertexTransform
         type: u32
+      - name: PrimaryEditInstanceIndex
+        type: u32
+        default: InvalidOffset
       - name: VertexOffset
         type: u32
       - name: BoneDeformOffset

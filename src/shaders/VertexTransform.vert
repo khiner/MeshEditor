@@ -17,11 +17,7 @@ vec3 ComputeWorldPos(DrawData draw, WorldTransform world, uint vertex_index) {
     vec3 n = vec3(0);
     ApplyMorphDeform(draw, pos, vertex_index, n);
     pos = ApplyArmatureDeform(draw, pos, vertex_index, n);
-    vec3 wp = trs_transform_point(world, pos);
-    if (should_apply_pending_transform(draw, vertex_index)) {
-        wp = apply_pending_transform(wp);
-    }
-    return wp;
+    return apply_pending_transform(draw, world, pos, vertex_index);
 }
 
 void main() {
@@ -61,10 +57,7 @@ void main() {
     } else if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
         element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + gl_VertexIndex]);
     }
-    vec3 world_pos = trs_transform_point(world, local_pos);
-    if (should_apply_pending_transform(draw, idx)) {
-        world_pos = apply_pending_transform(world_pos);
-    }
+    vec3 world_pos = apply_pending_transform(draw, world, local_pos, idx);
 
     if (!computed_face_normal) {
         WorldNormal = trs_transform_normal(world, normal);

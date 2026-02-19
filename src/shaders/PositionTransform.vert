@@ -18,10 +18,7 @@ void main() {
     vec3 morphed_pos = vert.Position;
     ApplyMorphDeform(draw, morphed_pos, idx, normal);
     const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
-    vec3 world_pos = trs_transform_point(world, local_pos);
-    if (should_apply_pending_transform(draw, idx)) {
-        world_pos = apply_pending_transform(world_pos);
-    }
+    vec3 world_pos = apply_pending_transform(draw, world, local_pos, idx);
 
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
     gl_PointSize = 6.0;
