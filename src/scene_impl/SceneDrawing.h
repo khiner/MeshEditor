@@ -3,7 +3,7 @@
 #include "gpu/DrawData.h"
 
 struct DrawBatchInfo {
-    uint32_t DrawDataOffset{0};
+    uint32_t DrawDataSlotOffset{0};
     uint32_t DrawCount{0};
     vk::DeviceSize IndirectOffset{0};
 };
@@ -26,7 +26,7 @@ struct DrawListBuilder {
             per_instance.FirstInstance = draw.FirstInstance + i;
             Draws.emplace_back(per_instance);
         }
-        const uint32_t first_instance = draw_data_start - batch.DrawDataOffset;
+        const uint32_t first_instance = draw_data_start - batch.DrawDataSlotOffset;
         IndirectCommands.emplace_back(vk::DrawIndexedIndirectCommand{index_count, instance_count, 0, 0, first_instance});
         MaxIndexCount = std::max(MaxIndexCount, index_count);
         ++batch.DrawCount;
@@ -64,33 +64,26 @@ DrawData MakeDrawData(
     const SlottedRange &indices,
     uint32_t model_slot,
     uint32_t instance_state_slot = InvalidSlot,
-    SlotOffset bone_deform = {},
-    SlotOffset armature_deform = {},
-    SlotOffset morph_deform = {},
+    uint32_t bone_deform = InvalidOffset,
+    uint32_t armature_deform = InvalidOffset,
+    uint32_t morph_deform = InvalidOffset,
     uint32_t morph_target_count = 0
 ) {
     return {
         .VertexSlot = vertex_slot,
-        .IndexOffset = indices,
+        .IndexSlotOffset = indices,
         .ModelSlot = model_slot,
-        .FirstInstance = 0,
         .ObjectIdSlot = InvalidSlot,
-        .FaceFirstTriOffset = {},
-        .FaceIdOffset = 0,
         .VertexCountOrHeadImageSlot = vertices.Count,
-        .ElementIdOffset = 0,
-        .ElementStateOffset = {},
-        .InstanceStateOffset = {instance_state_slot, 0},
-        .PendingLocalTransformOffset = {},
+        .InstanceStateSlot = instance_state_slot,
         .VertexOffset = vertices.Offset,
         .BoneDeformOffset = bone_deform,
         .ArmatureDeformOffset = armature_deform,
         .MorphDeformOffset = morph_deform,
-        .MorphWeightsOffset = {},
         .MorphTargetCount = morph_target_count,
     };
 }
-DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const ModelsBuffer &mb, SlotOffset bone_deform = {}, SlotOffset armature_deform = {}, SlotOffset morph_deform = {}, uint32_t morph_target_count = 0) {
+DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const ModelsBuffer &mb, uint32_t bone_deform = InvalidOffset, uint32_t armature_deform = InvalidOffset, uint32_t morph_deform = InvalidOffset, uint32_t morph_target_count = 0) {
     return MakeDrawData(vertices.Slot, vertices, indices, mb.Buffer.Slot, mb.InstanceStates.Slot, bone_deform, armature_deform, morph_deform, morph_target_count);
 }
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {

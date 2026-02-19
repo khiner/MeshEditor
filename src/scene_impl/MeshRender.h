@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/WorldTransform.h"
+#include "vulkan/Slots.h"
 
 #include <numeric>
 
@@ -28,7 +29,7 @@ struct MeshInstance {
 struct ObjectExtrasTag {};
 
 struct VertexClass {
-    SlotOffset Value;
+    uint32_t Offset{InvalidOffset};
 };
 
 enum class IndexKind {

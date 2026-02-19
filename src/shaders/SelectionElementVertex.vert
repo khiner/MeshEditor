@@ -5,11 +5,11 @@
 layout(location = 0) flat out uint ElementId;
 void main() {
     const DrawData draw = GetDrawData();
-    const uint idx = IndexBuffers[draw.IndexOffset.Slot].Indices[draw.IndexOffset.Offset + uint(gl_VertexIndex)];
+    const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + uint(gl_VertexIndex)];
 
     // If ElementState.Slot is set, filter to only selected vertices.
-    if (draw.ElementStateOffset.Slot != INVALID_SLOT) {
-        const uint state = uint(ElementStateBuffers[draw.ElementStateOffset.Slot].States[draw.ElementStateOffset.Offset + idx]);
+    if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
+        const uint state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + idx]);
         if ((state & STATE_SELECTED) == 0u) {
             // Clip non-selected vertices by placing them outside the frustum.
             gl_Position = vec4(0.0, 0.0, 0.0, 0.0);

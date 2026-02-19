@@ -66,6 +66,10 @@ struct MeshStore {
 
     void Release(uint32_t id);
 
+    BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
+    BufferArena<BoneDeformVertex> BoneDeformBuffer;
+    BufferArena<MorphTargetVertex> MorphTargetBuffer;
+
 private:
     BufferArena<Vertex> VerticesBuffer;
 
@@ -73,10 +77,7 @@ private:
     mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
     BufferArena<uint8_t> EdgeStateBuffer;
 
-    BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
-    BufferArena<BoneDeformVertex> BoneDeformBuffer;
-    BufferArena<MorphTargetVertex> MorphTargetBuffer;
 
     struct Entry {
         Range Vertices;

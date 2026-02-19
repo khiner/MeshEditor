@@ -47,7 +47,7 @@ structs:
       - name: VertexSlot
         type: u32
         default: InvalidSlot
-      - name: IndexOffset
+      - name: IndexSlotOffset
         type: SlotOffset
       - name: ModelSlot
         type: u32
@@ -58,33 +58,40 @@ structs:
         type: u32
         default: InvalidSlot
       - name: FaceFirstTriOffset
-        type: SlotOffset
+        type: u32
+        default: InvalidOffset
       - name: FaceIdOffset
         type: u32
       - name: VertexCountOrHeadImageSlot
         type: u32
       - name: ElementIdOffset
         type: u32
-      - name: ElementStateOffset
+      - name: ElementStateSlotOffset
         type: SlotOffset
-      - name: InstanceStateOffset
-        type: SlotOffset
-      - name: PendingLocalTransformOffset
-        type: SlotOffset
+      - name: InstanceStateSlot
+        type: u32
+        default: InvalidSlot
+      - name: HasPendingVertexTransform
+        type: u32
       - name: VertexOffset
         type: u32
       - name: BoneDeformOffset
-        type: SlotOffset
+        type: u32
+        default: InvalidOffset
       - name: ArmatureDeformOffset
-        type: SlotOffset
+        type: u32
+        default: InvalidOffset
       - name: MorphDeformOffset
-        type: SlotOffset
+        type: u32
+        default: InvalidOffset
       - name: MorphWeightsOffset
-        type: SlotOffset
+        type: u32
+        default: InvalidOffset
       - name: MorphTargetCount
         type: u32
       - name: VertexClassOffset
-        type: SlotOffset
+        type: u32
+        default: InvalidOffset
   - name: SceneViewUBO
     binding: SceneViewUBO
     fields:
@@ -129,6 +136,27 @@ structs:
         default: 1
       - name: ScreenPixelScale
         type: float
+      - name: FaceFirstTriSlot
+        type: u32
+        default: InvalidSlot
+      - name: BoneDeformSlot
+        type: u32
+        default: InvalidSlot
+      - name: ArmatureDeformSlot
+        type: u32
+        default: InvalidSlot
+      - name: MorphDeformSlot
+        type: u32
+        default: InvalidSlot
+      - name: MorphWeightsSlot
+        type: u32
+        default: InvalidSlot
+      - name: VertexClassSlot
+        type: u32
+        default: InvalidSlot
+      - name: DrawDataSlot
+        type: u32
+        default: InvalidSlot
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
       - name: Wire # Wire
@@ -196,7 +224,7 @@ structs:
         type: vec3
   - name: PunctualLight
     fields:
-      - name: TransformOffset
+      - name: TransformSlotOffset
         type: SlotOffset
       - name: Range
         type: float
@@ -236,7 +264,7 @@ structs:
     push_constant: true
     fields:
       - name: DrawDataOffset
-        type: SlotOffset
+        type: u32
       - name: TransformVertexStateSlot
         type: u32
         default: InvalidSlot

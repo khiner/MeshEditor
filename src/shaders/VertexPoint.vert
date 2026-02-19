@@ -17,8 +17,8 @@ void main() {
     const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
-    if (draw.ElementStateOffset.Slot != INVALID_SLOT) {
-        element_state = uint(ElementStateBuffers[draw.ElementStateOffset.Slot].States[draw.ElementStateOffset.Offset + idx]);
+    if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
+        element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + idx]);
     }
 
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;

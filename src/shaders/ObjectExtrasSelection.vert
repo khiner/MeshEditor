@@ -7,7 +7,7 @@ layout(location = 1) flat out uint ObjectId;
 
 void main() {
     const DrawData draw = GetDrawData();
-    const uint idx = IndexBuffers[draw.IndexOffset.Slot].Indices[draw.IndexOffset.Offset + uint(gl_VertexIndex)];
+    const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 

@@ -68,9 +68,10 @@ layout(set = 0, binding = BINDING_LightBuffer, scalar) readonly buffer LightBuff
 } LightBuffers[];
 
 const uint INVALID_SLOT = 0xffffffffu;
+const uint INVALID_OFFSET = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
 
 DrawData GetDrawData() {
-    return DrawDataBuffers[nonuniformEXT(pc.DrawDataOffset.Slot)].Draws[pc.DrawDataOffset.Offset + gl_InstanceIndex];
+    return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[pc.DrawDataOffset + gl_InstanceIndex];
 }

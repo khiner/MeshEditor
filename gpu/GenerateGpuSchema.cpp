@@ -398,7 +398,8 @@ int main(int argc, char **argv) {
             if (spec.Base == "vec3") needs_vec3 = true;
             if (spec.Base == "vec4") needs_vec4 = true;
             if (spec.Base == "mat4") needs_mat4 = true;
-            if (field.DefaultValue.find("InvalidSlot") != std::string::npos) needs_slots = true;
+            if (field.DefaultValue.find("InvalidSlot") != std::string::npos ||
+                field.DefaultValue.find("InvalidOffset") != std::string::npos) needs_slots = true;
             if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
                 if (find(cpp_includes, spec.Base) == cpp_includes.end()) {
                     cpp_includes.emplace_back(spec.Base);
