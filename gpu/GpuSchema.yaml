@@ -196,16 +196,14 @@ structs:
         type: vec3
   - name: PunctualLight
     fields:
-      - name: Direction
-        type: vec3
+      - name: Transform
+        type: SlotOffset
       - name: Range
         type: float
       - name: Color
         type: vec3
       - name: Intensity
         type: float
-      - name: Position
-        type: vec3
       - name: InnerConeCos
         type: float
       - name: OuterConeCos

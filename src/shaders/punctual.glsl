@@ -23,19 +23,21 @@ float getSpotAttenuation(vec3 pointToLight, vec3 spotDirection, float outerConeC
 }
 
 vec3 getLightIntensity(PunctualLight light, vec3 worldPosition, out vec3 L) {
+    const WorldTransform wt = ModelBuffers[nonuniformEXT(light.Transform.Slot)].Models[light.Transform.Offset];
+    const vec3 forward = quat_rotate(wt.Rotation, vec3(0.0, 0.0, 1.0));
+
     if (light.Type == 0u) {
-        const float len = length(light.Direction);
-        L = len > 1e-5 ? normalize(-light.Direction) : vec3(0.0, 0.0, 1.0);
+        L = normalize(forward);
         return light.Color * light.Intensity;
     }
 
-    const vec3 pointToLight = light.Position - worldPosition;
+    const vec3 pointToLight = wt.Position - worldPosition;
     const float distanceToLight = length(pointToLight);
     L = distanceToLight > 1e-5 ? pointToLight / distanceToLight : vec3(0.0, 0.0, 1.0);
 
     float attenuation = getRangeAttenuation(light.Range, distanceToLight);
     if (light.Type == 2u) {
-        attenuation *= getSpotAttenuation(L, light.Direction, light.OuterConeCos, light.InnerConeCos);
+        attenuation *= getSpotAttenuation(L, -forward, light.OuterConeCos, light.InnerConeCos);
     }
     return light.Color * light.Intensity * attenuation;
 }

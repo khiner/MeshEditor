@@ -661,11 +661,9 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     scene_data.Lights.reserve(asset.lights.size());
     for (const auto &light : asset.lights) {
         PunctualLight punctual_light{
-            .Direction = {0.f, 0.f, -1.f},
             .Range = 0.f,
             .Color = {light.color.x(), light.color.y(), light.color.z()},
             .Intensity = light.intensity,
-            .Position = {0.f, 0.f, 0.f},
             .InnerConeCos = 0.f,
             .OuterConeCos = 0.f,
             .Type = LightTypePoint,

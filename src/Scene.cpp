@@ -91,11 +91,9 @@ PunctualLight MakeDefaultLight(uint32_t type = LightTypePoint) {
     const float outer = DefaultSpotOuterAngle;
     const float inner = outer * (1.f - DefaultSpotBlend);
     return {
-        .Direction = {0.f, 0.f, -1.f},
         .Range = type == LightTypeDirectional ? 0.f : DefaultPointRange,
         .Color = {1.f, 1.f, 1.f},
         .Intensity = DefaultLightIntensity,
-        .Position = {0.f, 0.f, 0.f},
         .InnerConeCos = type == LightTypeSpot ? std::cos(inner) : 0.f,
         .OuterConeCos = type == LightTypeSpot ? std::cos(outer) : 0.f,
         .Type = type,
@@ -379,7 +377,6 @@ constexpr auto
     ViewportTheme = "viewport_theme_changes"_hs,
     SceneView = "scene_view_changes"_hs,
     CameraLens = "camera_lens_changes"_hs,
-    LightTransforms = "light_transform_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
     TransformEnd = "transform_end_changes"_hs;
 } // namespace changes
@@ -549,9 +546,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::CameraLens)
         .on_construct<CameraData>()
         .on_update<CameraData>();
-    R.storage<entt::reactive>(changes::LightTransforms)
-        .on_construct<WorldTransform>()
-        .on_update<WorldTransform>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -805,19 +799,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             Buffers->LightBuffer.Reserve(required_size);
             Buffers->LightBuffer.UsedSize = required_size;
             light_count_changed = true;
-        }
-    }
-    for (auto entity : R.storage<entt::reactive>(changes::LightTransforms)) {
-        if (!R.all_of<LightIndex>(entity)) continue;
-        if (const auto *wt = R.try_get<WorldTransform>(entity)) {
-            const vec3 position = wt->Position;
-            const vec3 forward = glm::rotate(Vec4ToQuat(wt->Rotation), vec3{0.f, 0.f, 1.f});
-            const float forward_len_sq = glm::dot(forward, forward);
-            const vec3 direction = forward_len_sq > 1e-8f ? -forward / std::sqrt(forward_len_sq) : vec3{0.f, 0.f, -1.f};
-            const auto &li = R.get<const LightIndex>(entity);
-            const vk::DeviceSize offset = vk::DeviceSize(li.Value) * sizeof(PunctualLight);
-            Buffers->LightBuffer.Update(as_bytes(direction), offset + offsetof(PunctualLight, Direction));
-            Buffers->LightBuffer.Update(as_bytes(position), offset + offsetof(PunctualLight, Position));
         }
     }
     if (!R.view<LightDataDirty>().empty() || light_count_changed) request(RenderRequest::Submit);
@@ -1292,14 +1273,17 @@ entt::entity Scene::AddCamera(ObjectCreateInfo info) {
     return entity;
 }
 
-entt::entity Scene::AddLight(ObjectCreateInfo info) {
-    auto light = MakeDefaultLight(LightTypePoint);
+entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight> props) {
+    auto light = props.value_or(MakeDefaultLight(LightTypePoint));
     auto wireframe = BuildLightMesh(light);
     const auto entity = CreateExtrasObject(std::move(wireframe), ObjectType::Light, info, "Light");
     const uint32_t light_index = uint32_t(R.storage<LightIndex>().size());
     R.emplace<LightIndex>(entity, light_index);
     R.emplace<LightDataDirty>(entity);
     R.emplace<LightWireframeDirty>(entity);
+    const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
+    const auto &ri = R.get<const RenderInstance>(entity);
+    light.Transform = {R.get<const ModelsBuffer>(mesh_entity).Buffer.Slot, ri.BufferIndex};
     SetLight(*Buffers, light_index, light);
     return entity;
 }
@@ -1399,13 +1383,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         } else if (object.ObjectType == gltf::SceneObjectData::Type::Light &&
                    object.LightIndex &&
                    *object.LightIndex < loaded_scene->Lights.size()) {
-            object_entity = AddLight({
-                .Name = object_name,
-                .Transform = object.WorldTransform,
-                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-            });
             const auto &sld = loaded_scene->Lights[*object.LightIndex];
-            SetLight(*Buffers, R.get<const LightIndex>(object_entity).Value, sld.Light);
+            object_entity = AddLight({.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, sld.Light);
             R.emplace_or_replace<LightDataDirty>(object_entity);
             R.emplace_or_replace<LightWireframeDirty>(object_entity);
         } else {
@@ -1701,9 +1680,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
             return copy_entity;
         }
         if (R.all_of<LightIndex>(e)) {
-            const auto copy_entity = AddLight(create_info);
-            const auto src_light = GetLight(*Buffers, R.get<const LightIndex>(e).Value);
-            SetLight(*Buffers, R.get<const LightIndex>(copy_entity).Value, src_light);
+            const auto copy_entity = AddLight(create_info, GetLight(*Buffers, R.get<const LightIndex>(e).Value));
             R.emplace_or_replace<LightDataDirty>(copy_entity);
             R.emplace_or_replace<LightWireframeDirty>(copy_entity);
             return copy_entity;
@@ -3498,6 +3475,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         int type_i = int(std::min(light.Type, LightTypeSpot));
         if (Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
             auto next = MakeDefaultLight(uint32_t(type_i));
+            next.Transform = light.Transform;
             next.Color = light.Color;
             next.Intensity = light.Intensity;
             light = next;

@@ -12,13 +12,20 @@
 #include "SceneUBO.glsl"
 #include "BindlessBindings.glsl"
 #include "PunctualLight.glsl"
+#include "WorldTransform.glsl"
+#include "TRSUtils.glsl"
 #include "brdf.glsl"
-#include "punctual.glsl"
 #include "tonemapping.glsl"
 
 layout(set = 0, binding = BINDING_LightBuffer, scalar) readonly buffer LightBufferBlock {
     PunctualLight Lights[];
 } LightBuffers[];
+
+layout(set = 0, binding = BINDING_ModelBuffer, scalar) readonly buffer ModelBuffer {
+    WorldTransform Models[];
+} ModelBuffers[];
+
+#include "punctual.glsl"
 
 layout(location = 0) in vec3 WorldNormal;
 layout(location = 1) in vec3 WorldPosition;
