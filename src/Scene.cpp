@@ -151,7 +151,7 @@ void AppendExtrasDraw(entt::registry &R, DrawListBuilder &dl, DrawBatchInfo &bat
     for (auto [entity, mesh_buffers, models] : R.view<ObjectExtrasTag, MeshBuffers, ModelsBuffer>().each()) {
         if (mesh_buffers.EdgeIndices.Count == 0) continue;
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
-        if (const auto *vcr = R.try_get<VertexClassRange>(entity)) draw.VertexClass = vcr->Value;
+        if (const auto *vcr = R.try_get<VertexClass>(entity)) draw.VertexClassOffset = vcr->Value;
         customize_draw(draw, models);
         AppendDraw(dl, batch, mesh_buffers.EdgeIndices, models, draw);
     }
@@ -382,8 +382,7 @@ constexpr auto
 } // namespace changes
 
 struct DeformSlots {
-    SlotOffset BoneDeform, ArmatureDeform;
-    SlotOffset MorphDeform;
+    SlotOffset BoneDeformOffset, ArmatureDeformOffset, MorphDeformOffset;
     uint32_t MorphTargetCount{0};
     // Per-instance morph weights: buffer_index -> SlotOffset (weights are per-node in glTF)
     std::unordered_map<uint32_t, SlotOffset> MorphWeightsByBufferIndex;
@@ -398,9 +397,9 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         if (bone_deform.Count == 0) continue;
         if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureDataEntity)) {
             result[mi.MeshEntity] = {
-                .BoneDeform = bone_deform,
-                .ArmatureDeform = {buffers.ArmatureDeformBuffer.Buffer.Slot, pose_state->GpuDeformRange.Offset},
-                .MorphDeform = {},
+                .BoneDeformOffset = bone_deform,
+                .ArmatureDeformOffset = {buffers.ArmatureDeformBuffer.Buffer.Slot, pose_state->GpuDeformRange.Offset},
+                .MorphDeformOffset = {},
                 .MorphTargetCount = 0,
                 .MorphWeightsByBufferIndex = {},
             };
@@ -413,7 +412,7 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         const auto morph_range = meshes.GetMorphTargetRange(mesh.GetStoreId());
         if (morph_range.Count == 0) continue;
         auto &slots = result[mesh_entity];
-        slots.MorphDeform = morph_range;
+        slots.MorphDeformOffset = morph_range;
         slots.MorphTargetCount = meshes.GetMorphTargetCount(mesh.GetStoreId());
         slots.MorphWeightsByBufferIndex[ri.BufferIndex] = {buffers.MorphWeightBuffer.Buffer.Slot, morph_state.GpuWeightRange.Offset};
     }
@@ -424,7 +423,7 @@ void PatchMorphWeights(DrawListBuilder &dl, size_t draws_before, const DeformSlo
     if (deform.MorphWeightsByBufferIndex.empty()) return;
     for (size_t i = draws_before; i < dl.Draws.size(); ++i) {
         if (auto it = deform.MorphWeightsByBufferIndex.find(dl.Draws[i].FirstInstance); it != deform.MorphWeightsByBufferIndex.end()) {
-            dl.Draws[i].MorphWeights = it->second;
+            dl.Draws[i].MorphWeightsOffset = it->second;
         }
     }
 }
@@ -806,10 +805,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto light = GetLight(*Buffers, R.get<const LightIndex>(light_entity).Value);
         auto wireframe = BuildLightMesh(light);
         const auto mesh_entity = R.get<MeshInstance>(light_entity).MeshEntity;
-        if (const auto *old_vcr = R.try_get<VertexClassRange>(mesh_entity)) {
+        if (const auto *old_vcr = R.try_get<VertexClass>(mesh_entity)) {
             const auto old_vertex_count = R.get<const Mesh>(mesh_entity).VertexCount();
             Buffers->VertexClassBuffer.Release({old_vcr->Value.Offset, old_vertex_count});
-            R.remove<VertexClassRange>(mesh_entity);
+            R.remove<VertexClass>(mesh_entity);
         }
 
         R.replace<Mesh>(mesh_entity, Meshes->CreateMesh(std::move(wireframe.Data)));
@@ -826,7 +825,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
         if (!wireframe.VertexClasses.empty()) {
             const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
-            R.emplace<VertexClassRange>(mesh_entity, SlotOffset{Buffers->VertexClassBuffer.Buffer.Slot, range.Offset});
+            R.emplace<VertexClass>(mesh_entity, SlotOffset{Buffers->VertexClassBuffer.Buffer.Slot, range.Offset});
         }
 
         request(RenderRequest::ReRecord);
@@ -1228,7 +1227,7 @@ entt::entity Scene::CreateExtrasMeshEntity(ExtrasWireframe &&wireframe) {
     R.emplace<ObjectExtrasTag>(mesh_entity);
     if (!wireframe.VertexClasses.empty()) {
         const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
-        R.emplace<VertexClassRange>(mesh_entity, SlotOffset{Buffers->VertexClassBuffer.Buffer.Slot, range.Offset});
+        R.emplace<VertexClass>(mesh_entity, SlotOffset{Buffers->VertexClassBuffer.Buffer.Slot, range.Offset});
     }
     return mesh_entity;
 }
@@ -1283,7 +1282,7 @@ entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight>
     R.emplace<LightWireframeDirty>(entity);
     const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
     const auto &ri = R.get<const RenderInstance>(entity);
-    light.Transform = {R.get<const ModelsBuffer>(mesh_entity).Buffer.Slot, ri.BufferIndex};
+    light.TransformOffset = {R.get<const ModelsBuffer>(mesh_entity).Buffer.Slot, ri.BufferIndex};
     SetLight(*Buffers, light_index, light);
     return entity;
 }
@@ -1867,7 +1866,7 @@ void Scene::Destroy(entt::entity e) {
         );
         if (!has_instances) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
-            if (const auto *vcr = R.try_get<VertexClassRange>(mesh_entity)) {
+            if (const auto *vcr = R.try_get<VertexClass>(mesh_entity)) {
                 if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
                     Buffers->VertexClassBuffer.Release({vcr->Value.Offset, mesh->VertexCount()});
                 }
@@ -1939,7 +1938,7 @@ void Scene::RecordRenderCommandBuffer() {
     const auto set_edit_pending_local_transform = [&](DrawData &draw, entt::entity mesh_entity) {
         if (!has_pending_transform) return;
         if (edit_transform_context.TransformInstances.contains(mesh_entity)) {
-            draw.PendingLocalTransform = {0, 0}; // Non-INVALID_SLOT signals participation in edit transform
+            draw.PendingLocalTransformOffset = {0, 0}; // Non-INVALID_SLOT signals participation in edit transform
         }
     };
     std::unordered_set<entt::entity> silhouette_instances;
@@ -1981,7 +1980,7 @@ void Scene::RecordRenderCommandBuffer() {
             const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
             const auto &models = R.get<ModelsBuffer>(mesh_entity);
             const auto deform = get_deform_slots(mesh_entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             draw.ObjectIdSlot = models.ObjectIds.Slot;
             set_edit_pending_local_transform(draw, mesh_entity);
             const auto draws_before = draw_list.Draws.size();
@@ -2000,26 +1999,26 @@ void Scene::RecordRenderCommandBuffer() {
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             if (mesh.FaceCount() == 0) continue;
             const auto deform = get_deform_slots(entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
             const auto face_first_tri = Meshes->GetFaceFirstTriRange(mesh.GetStoreId());
             const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
             draw.ObjectIdSlot = face_id_buffer.Slot;
             draw.FaceIdOffset = face_id_buffer.Offset;
-            draw.FaceFirstTri = settings.SmoothShading ? SlotOffset{} : SlotOffset(face_first_tri);
+            draw.FaceFirstTriOffset = settings.SmoothShading ? SlotOffset{} : SlotOffset(face_first_tri);
             set_edit_pending_local_transform(draw, entity);
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                draw.ElementState = face_state_buffer;
+                draw.ElementStateOffset = face_state_buffer;
                 const auto db1 = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
                 PatchMorphWeights(draw_list, db1, deform);
-                draw.ElementState = {};
+                draw.ElementStateOffset = {};
                 const auto db2 = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
                 PatchMorphWeights(draw_list, db2, deform);
             } else {
-                draw.ElementState = face_state_buffer;
+                draw.ElementStateOffset = face_state_buffer;
                 const auto db = draw_list.Draws.size();
                 AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
                 PatchMorphWeights(draw_list, db, deform);
@@ -2035,9 +2034,9 @@ void Scene::RecordRenderCommandBuffer() {
             const bool is_line_mesh = mesh.FaceCount() == 0 && mesh.EdgeCount() > 0;
             if (!is_line_mesh && !is_edit_mode && !is_excite_mode) continue;
             const auto deform = get_deform_slots(entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
-            draw.ElementState = edge_state_buffer;
+            draw.ElementStateOffset = edge_state_buffer;
             set_edit_pending_local_transform(draw, entity);
             const auto db = draw_list.Draws.size();
             if (is_line_mesh) {
@@ -2060,8 +2059,8 @@ void Scene::RecordRenderCommandBuffer() {
             const bool is_point_mesh = mesh && mesh->FaceCount() == 0 && mesh->EdgeCount() == 0;
             if (!is_point_mesh && !((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode)) continue;
             const auto deform = get_deform_slots(entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeform, deform.ArmatureDeform, deform.MorphDeform, deform.MorphTargetCount);
-            draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
+            draw.ElementStateOffset = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
             set_edit_pending_local_transform(draw, entity);
             const auto db = draw_list.Draws.size();
             if (is_point_mesh) {
@@ -2231,9 +2230,9 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
                     if (!indices || indices->Count == 0) continue;
                     const auto deform_it = selection_deform_slots.find(mesh_entity);
                     const auto has_deform = deform_it != selection_deform_slots.end();
-                    const auto bone_deform = has_deform ? deform_it->second.BoneDeform : SlotOffset{};
-                    const auto armature_deform = has_deform ? deform_it->second.ArmatureDeform : SlotOffset{};
-                    const auto morph_deform = has_deform ? deform_it->second.MorphDeform : SlotOffset{};
+                    const auto bone_deform = has_deform ? deform_it->second.BoneDeformOffset : SlotOffset{};
+                    const auto armature_deform = has_deform ? deform_it->second.ArmatureDeformOffset : SlotOffset{};
+                    const auto morph_deform = has_deform ? deform_it->second.MorphDeformOffset : SlotOffset{};
                     const auto morph_target_count = has_deform ? deform_it->second.MorphTargetCount : 0u;
                     auto draw = MakeDrawData(mesh_buffers.Vertices, *indices, models, bone_deform, armature_deform, morph_deform, morph_target_count);
                     draw.ObjectIdSlot = models.ObjectIds.Slot;
@@ -2496,7 +2495,7 @@ std::optional<uint32_t> Scene::RunExcitableVertexPick(entt::entity instance_enti
         auto batch = draw_list.BeginBatch();
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models);
         draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementState = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
+        draw.ElementStateOffset = {Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, batch}}; }, *SelectionReadySemaphore);
     SelectionStale = true;
@@ -3475,7 +3474,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         int type_i = int(std::min(light.Type, LightTypeSpot));
         if (Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
             auto next = MakeDefaultLight(uint32_t(type_i));
-            next.Transform = light.Transform;
+            next.TransformOffset = light.TransformOffset;
             next.Color = light.Color;
             next.Intensity = light.Intensity;
             light = next;

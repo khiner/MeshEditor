@@ -47,7 +47,7 @@ structs:
       - name: VertexSlot
         type: u32
         default: InvalidSlot
-      - name: Index
+      - name: IndexOffset
         type: SlotOffset
       - name: ModelSlot
         type: u32
@@ -57,7 +57,7 @@ structs:
       - name: ObjectIdSlot
         type: u32
         default: InvalidSlot
-      - name: FaceFirstTri
+      - name: FaceFirstTriOffset
         type: SlotOffset
       - name: FaceIdOffset
         type: u32
@@ -65,25 +65,25 @@ structs:
         type: u32
       - name: ElementIdOffset
         type: u32
-      - name: ElementState
+      - name: ElementStateOffset
         type: SlotOffset
-      - name: InstanceState
+      - name: InstanceStateOffset
         type: SlotOffset
-      - name: PendingLocalTransform
+      - name: PendingLocalTransformOffset
         type: SlotOffset
       - name: VertexOffset
         type: u32
-      - name: BoneDeform
+      - name: BoneDeformOffset
         type: SlotOffset
-      - name: ArmatureDeform
+      - name: ArmatureDeformOffset
         type: SlotOffset
-      - name: MorphDeform
+      - name: MorphDeformOffset
         type: SlotOffset
-      - name: MorphWeights
+      - name: MorphWeightsOffset
         type: SlotOffset
       - name: MorphTargetCount
         type: u32
-      - name: VertexClass
+      - name: VertexClassOffset
         type: SlotOffset
   - name: SceneViewUBO
     binding: SceneViewUBO
@@ -196,7 +196,7 @@ structs:
         type: vec3
   - name: PunctualLight
     fields:
-      - name: Transform
+      - name: TransformOffset
         type: SlotOffset
       - name: Range
         type: float
@@ -235,7 +235,7 @@ structs:
   - name: DrawPassPushConstants
     push_constant: true
     fields:
-      - name: DrawData
+      - name: DrawDataOffset
         type: SlotOffset
       - name: TransformVertexStateSlot
         type: u32

@@ -23,7 +23,7 @@ float getSpotAttenuation(vec3 pointToLight, vec3 spotDirection, float outerConeC
 }
 
 vec3 getLightIntensity(PunctualLight light, vec3 worldPosition, out vec3 L) {
-    const WorldTransform wt = ModelBuffers[nonuniformEXT(light.Transform.Slot)].Models[light.Transform.Offset];
+    const WorldTransform wt = ModelBuffers[nonuniformEXT(light.TransformOffset.Slot)].Models[light.TransformOffset.Offset];
     const vec3 forward = quat_rotate(wt.Rotation, vec3(0.0, 0.0, 1.0));
 
     if (light.Type == 0u) {

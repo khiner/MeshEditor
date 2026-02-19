@@ -10,7 +10,7 @@ layout(location = 3) flat out uint FaceOverlayFlags;
 
 void main() {
     const DrawData draw = GetDrawData();
-    const uint idx = IndexBuffers[draw.Index.Slot].Indices[draw.Index.Offset + uint(gl_VertexIndex)];
+    const uint idx = IndexBuffers[draw.IndexOffset.Slot].Indices[draw.IndexOffset.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
@@ -21,8 +21,8 @@ void main() {
     FaceOverlayFlags = 0u;
 
     uint instance_state = 0u;
-    if (draw.InstanceState.Slot != INVALID_SLOT) {
-        instance_state = uint(InstanceStateBuffers[draw.InstanceState.Slot].States[draw.InstanceState.Offset + draw.FirstInstance]);
+    if (draw.InstanceStateOffset.Slot != INVALID_SLOT) {
+        instance_state = uint(InstanceStateBuffers[draw.InstanceStateOffset.Slot].States[draw.InstanceStateOffset.Offset + draw.FirstInstance]);
     }
 
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;

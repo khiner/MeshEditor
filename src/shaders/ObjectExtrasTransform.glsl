@@ -8,8 +8,8 @@ const uint VCLASS_SCREENSPACE = 3u;
 const uint VCLASS_GROUNDPOINT = 4u;
 
 uint GetVertexClass(DrawData draw, uint idx) {
-    if (draw.VertexClass.Slot != INVALID_SLOT) {
-        return uint(VertexClassBuffers[draw.VertexClass.Slot].Classes[draw.VertexClass.Offset + idx]);
+    if (draw.VertexClassOffset.Slot != INVALID_SLOT) {
+        return uint(VertexClassBuffers[draw.VertexClassOffset.Slot].Classes[draw.VertexClassOffset.Offset + idx]);
     }
     return VCLASS_NONE;
 }

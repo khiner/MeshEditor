@@ -27,7 +27,7 @@ struct MeshInstance {
 // Cameras, lights, empties.
 struct ObjectExtrasTag {};
 
-struct VertexClassRange {
+struct VertexClass {
     SlotOffset Value;
 };
 

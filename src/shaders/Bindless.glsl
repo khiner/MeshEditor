@@ -72,5 +72,5 @@ const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
 
 DrawData GetDrawData() {
-    return DrawDataBuffers[nonuniformEXT(pc.DrawData.Slot)].Draws[pc.DrawData.Offset + gl_InstanceIndex];
+    return DrawDataBuffers[nonuniformEXT(pc.DrawDataOffset.Slot)].Draws[pc.DrawDataOffset.Offset + gl_InstanceIndex];
 }
