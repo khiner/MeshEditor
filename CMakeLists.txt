@@ -52,15 +52,46 @@ add_executable(${PROJECT_NAME}
 add_executable(gpu_schema_gen gpu/GenerateGpuSchema.cpp)
 target_include_directories(gpu_schema_gen PRIVATE src)
 
+set(GPU_SCHEMA_FILE "${CMAKE_SOURCE_DIR}/gpu/GpuSchema.yaml")
+# Regenerate build graph when schema shape changes (e.g. added/removed struct names).
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GPU_SCHEMA_FILE}")
+
+set(GPU_SCHEMA_GENERATED_HEADERS
+    "${CMAKE_BINARY_DIR}/gpu/BindlessBindings.h"
+)
+set(GPU_SCHEMA_GENERATED_GLSL
+    "${CMAKE_BINARY_DIR}/shaders/BindlessBindings.glsl"
+)
+
+# Mirror generator naming: each top-level struct emits <Name>.h and <Name>.glsl.
+file(STRINGS "${GPU_SCHEMA_FILE}" GPU_SCHEMA_LINES)
+set(GPU_SCHEMA_IN_STRUCTS OFF)
+foreach(line IN LISTS GPU_SCHEMA_LINES)
+    if(line MATCHES "^[ \t]*structs:[ \t]*$")
+        set(GPU_SCHEMA_IN_STRUCTS ON)
+        continue()
+    endif()
+    if(GPU_SCHEMA_IN_STRUCTS AND line MATCHES "^  - name:[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
+        set(GPU_STRUCT_NAME "${CMAKE_MATCH_1}")
+        list(APPEND GPU_SCHEMA_GENERATED_HEADERS "${CMAKE_BINARY_DIR}/gpu/${GPU_STRUCT_NAME}.h")
+        list(APPEND GPU_SCHEMA_GENERATED_GLSL "${CMAKE_BINARY_DIR}/shaders/${GPU_STRUCT_NAME}.glsl")
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES GPU_SCHEMA_GENERATED_HEADERS)
+list(REMOVE_DUPLICATES GPU_SCHEMA_GENERATED_GLSL)
+
 set(GPU_SCHEMA_STAMP "${CMAKE_BINARY_DIR}/gpu/gpu_schema.stamp")
 add_custom_command(
     OUTPUT ${GPU_SCHEMA_STAMP}
+    BYPRODUCTS
+        ${GPU_SCHEMA_GENERATED_HEADERS}
+        ${GPU_SCHEMA_GENERATED_GLSL}
     COMMAND $<TARGET_FILE:gpu_schema_gen>
         ${CMAKE_BINARY_DIR}
         ${CMAKE_SOURCE_DIR}
         gpu/GpuSchema.yaml
     COMMAND ${CMAKE_COMMAND} -E touch ${GPU_SCHEMA_STAMP}
-    DEPENDS gpu_schema_gen ${CMAKE_SOURCE_DIR}/gpu/GpuSchema.yaml
+    DEPENDS gpu_schema_gen ${GPU_SCHEMA_FILE}
     COMMENT "Generating GPU schema outputs"
 )
 add_custom_target(generate_gpu_schema DEPENDS ${GPU_SCHEMA_STAMP})
