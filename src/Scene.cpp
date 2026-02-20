@@ -80,23 +80,13 @@ void WaitFor(vk::Fence fence, vk::Device device) {
     device.resetFences(fence);
 }
 
-float ClampCos(float cos_theta) {
-    return std::clamp(cos_theta, -1.f, 1.f);
-}
-
-float AngleFromCos(float cos_theta) {
-    return std::acos(ClampCos(cos_theta));
-}
-
 PunctualLight MakeDefaultLight(uint32_t type = LightTypePoint) {
-    const float outer = DefaultSpotOuterAngle;
-    const float inner = outer * (1.f - DefaultSpotBlend);
     return {
         .Range = type == LightTypeDirectional ? 0.f : DefaultPointRange,
         .Color = {1.f, 1.f, 1.f},
         .Intensity = DefaultLightIntensity,
-        .InnerConeCos = type == LightTypeSpot ? std::cos(inner) : 0.f,
-        .OuterConeCos = type == LightTypeSpot ? std::cos(outer) : 0.f,
+        .InnerConeCos = type == LightTypeSpot ? std::cos(DefaultSpotOuterAngle * (1.f - DefaultSpotBlend)) : 0.f,
+        .OuterConeCos = type == LightTypeSpot ? std::cos(DefaultSpotOuterAngle) : 0.f,
         .Type = type,
     };
 }
@@ -211,6 +201,8 @@ MeshData BuildCameraFrustumMesh(const CameraData &cd) {
 
     return {.Positions = std::move(positions), .Edges = std::move(edges)};
 }
+
+float AngleFromCos(float cos_theta) { return std::acos(std::clamp(cos_theta, -1.f, 1.f)); }
 
 ExtrasWireframe BuildLightMesh(const PunctualLight &light) {
     ExtrasWireframe wf;
@@ -3302,13 +3294,9 @@ void Scene::RenderOverlay() {
 
     { // Viewport info overlay
         const auto &settings = R.get<const SceneSettings>(SceneEntity);
-        const char *label = settings.ViewportShading == ViewportShadingMode::Rendered ? "Rendered" : "Solid";
-        const auto text = std::format("Shading: {}", label);
-        const ImVec2 text_size = CalcTextSize(text.c_str());
-        const ImVec2 text_pos{
-            viewport.pos.x + viewport.size.x - text_size.x - 10.f,
-            viewport.pos.y + viewport.size.y - text_size.y - 10.f,
-        };
+        const auto text = std::format("Shading: {}", settings.ViewportShading == ViewportShadingMode::Rendered ? "Rendered" : "Solid");
+        const auto text_size = CalcTextSize(text.c_str());
+        const auto text_pos = std::bit_cast<ImVec2>(viewport.pos + viewport.size - vec2{10.f, 10.f}) - text_size;
         auto &dl = *GetWindowDrawList();
         dl.AddRectFilled(
             {text_pos.x - 6.f, text_pos.y - 4.f},
@@ -3495,11 +3483,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (R.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+        constexpr float MaxLightIntensity{1000.f}, MaxLightRange{1000.f};
         auto light = GetLight(*Buffers, R.get<const LightIndex>(active_entity).Value);
-        bool changed = false;
-        bool wireframe_changed = false;
-        constexpr float MaxLightIntensity = 1000.f;
-        constexpr float MaxLightRange = 1000.f;
+        bool changed{false}, wireframe_changed{false};
 
         const char *type_names[]{"Directional", "Point", "Spot"};
         int type_i = int(std::min(light.Type, LightTypeSpot));
@@ -3515,7 +3501,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
         changed |= ColorEdit3("Color", &light.Color.x);
         changed |= SliderFloat("Intensity", &light.Intensity, 0.f, MaxLightIntensity, "%.2f");
-
         if (light.Type == LightTypePoint || light.Type == LightTypeSpot) {
             bool infinite_range = light.Range <= 0.f;
             if (Checkbox("Infinite range", &infinite_range)) {
@@ -3530,14 +3515,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 }
             }
         }
-
         if (light.Type == LightTypeSpot) {
-            float outer_deg = glm::degrees(AngleFromCos(light.OuterConeCos));
-            outer_deg = std::clamp(outer_deg, 0.f, 90.f);
-            float inner_deg = glm::degrees(AngleFromCos(light.InnerConeCos));
-            inner_deg = std::clamp(inner_deg, 0.f, outer_deg);
+            float outer_deg = std::clamp(glm::degrees(AngleFromCos(light.OuterConeCos)), 0.f, 90.f);
+            float inner_deg = std::clamp(glm::degrees(AngleFromCos(light.InnerConeCos)), 0.f, outer_deg);
             float blend = outer_deg > 1e-4f ? std::clamp(1.f - inner_deg / outer_deg, 0.f, 1.f) : 0.f;
-
             if (SliderFloat("Size", &outer_deg, 0.f, 90.f, "%.1f deg")) {
                 outer_deg = std::clamp(outer_deg, 0.f, 90.f);
                 const float outer_rad = glm::radians(outer_deg);
@@ -3557,7 +3538,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 wireframe_changed = true;
             }
         }
-
         if (changed) {
             SetLight(*Buffers, R.get<const LightIndex>(active_entity).Value, light);
             R.emplace_or_replace<LightDataDirty>(active_entity);
