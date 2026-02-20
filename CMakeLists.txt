@@ -187,5 +187,4 @@ if(CMAKE_BUILD_TYPE MATCHES Release)
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/src/shaders ${CMAKE_BINARY_DIR}/shaders
     )
     add_dependencies(${PROJECT_NAME} copy_shaders)
-    add_dependencies(copy_shaders generate_drawdata_glsl)
 endif()
