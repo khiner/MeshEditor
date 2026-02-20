@@ -386,15 +386,10 @@ void PlotFrames(const std::vector<float> &frames, std::string_view label = "Wave
         ImPlot::SetupAxes("Frame", "Amplitude");
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, frames.size(), ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -1.1, 1.1, ImGuiCond_Always);
-
         if (highlight_frame) {
-            ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
-            ImPlot::PlotInfLines("##Highlight", &*highlight_frame, 1);
-            ImPlot::PopStyleColor();
+            ImPlot::PlotInfLines("##Highlight", &*highlight_frame, 1, {ImPlotProp_LineColor, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered)});
         }
-        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
         ImPlot::PlotLine("", frames.data(), frames.size());
-        ImPlot::PopStyleVar();
         ImPlot::EndPlot();
     }
 }
@@ -424,16 +419,10 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
         ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, fs / 2, ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, MinDb, 0, ImGuiCond_Always);
-        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_None);
-        ImPlot::PushStyleColor(ImPlotCol_Fill, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered));
         if (highlight_freq) {
-            ImPlot::PushStyleColor(ImPlotCol_Line, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered));
-            ImPlot::PlotInfLines("##Highlight", &(*highlight_freq), 1);
-            ImPlot::PopStyleColor();
+            ImPlot::PlotInfLines("##Highlight", &(*highlight_freq), 1, {ImPlotProp_LineColor, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered)});
         }
-        ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N2, MinDb);
-        ImPlot::PopStyleColor();
-        ImPlot::PopStyleVar();
+        ImPlot::PlotShaded("", frequency.data(), magnitude.data(), N2, MinDb, {ImPlotProp_FillColor, ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogramHovered)});
         ImPlot::EndPlot();
     }
 }
