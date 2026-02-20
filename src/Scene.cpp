@@ -3312,18 +3312,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     Text("Active entity: %s", GetName(R, active_entity).c_str());
     Indent();
 
-    entt::entity activate_entity = entt::null, toggle_selected = entt::null;
     if (const auto *node = R.try_get<SceneNode>(active_entity)) {
         if (auto parent_entity = node->Parent; parent_entity != entt::null) {
             AlignTextToFramePadding();
             Text("Parent: %s", GetName(R, parent_entity).c_str());
-            SameLine();
-            if (active_entity != parent_entity && Button("Activate##Parent")) activate_entity = parent_entity;
-            SameLine();
-            if (Button(R.all_of<Selected>(parent_entity) ? "Deselect##Parent" : "Select##Parent")) toggle_selected = parent_entity;
-        }
-        if (node->FirstChild != entt::null && CollapsingHeader("Children")) {
-            RenderEntitiesTable("Children", active_entity);
         }
     }
 
@@ -3553,9 +3545,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (wireframe_changed) R.emplace_or_replace<LightWireframeDirty>(active_entity);
     }
     PopID();
-
-    if (activate_entity != entt::null) Select(activate_entity);
-    else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
 }
 
 void Scene::RenderControls() {
@@ -3612,6 +3601,9 @@ void Scene::RenderControls() {
                     }
                 }
                 PopID();
+            }
+            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) {
+                RenderObjectTree();
             }
             if (!R.storage<Selected>().empty()) {
                 SeparatorText("Selection actions");
@@ -3671,10 +3663,6 @@ void Scene::RenderControls() {
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
                 PopID();
-            }
-
-            if (CollapsingHeader("All objects")) {
-                RenderEntitiesTable("All objects", entt::null);
             }
             EndTabItem();
         }
@@ -3810,48 +3798,112 @@ void Scene::RenderControls() {
     }
 }
 
-void Scene::RenderEntitiesTable(std::string name, entt::entity parent) {
-    if (MeshEditor::BeginTable(name.c_str(), 4)) {
-        static const float CharWidth = CalcTextSize("A").x;
-        TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
-        TableSetupColumn("Name");
-        TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
-        TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
-        TableHeadersRow();
-        entt::entity activate_entity = entt::null, toggle_selected = entt::null;
+void Scene::RenderObjectTree() {
+    PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 0.f});
 
-        auto render_entity = [&](entt::entity e) {
-            PushID(uint(e));
-            TableNextColumn();
-            AlignTextToFramePadding();
-            if (R.all_of<Active>(e)) TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_TextSelectedBg));
-            TextUnformatted(IdString(e).c_str());
-            TableNextColumn();
-            TextUnformatted(R.get<Name>(e).Value.c_str());
-            TableNextColumn();
-            const auto type = R.all_of<ObjectKind>(e) ?
-                R.get<const ObjectKind>(e).Value :
-                R.all_of<MeshInstance>(e) ? ObjectType::Mesh :
-                                            ObjectType::Empty;
-            TextUnformatted(ObjectTypeName(type).data());
-            TableNextColumn();
-            if (!R.all_of<Active>(e) && Button("Activate")) activate_entity = e;
-            SameLine();
-            if (Button(R.all_of<Selected>(e) ? "Deselect" : "Select")) toggle_selected = e;
-            PopID();
-        };
+    const auto ToSelectionUserData = [](entt::entity e) -> ImGuiSelectionUserData { return ImGuiSelectionUserData(uint32_t(e)); };
+    const auto FromSelectionUserData = [&](ImGuiSelectionUserData data) -> entt::entity {
+        if (data == ImGuiSelectionUserData_Invalid) return entt::null;
+        const auto e = entt::entity(uint32_t(data));
+        return R.valid(e) ? e : entt::null;
+    };
 
-        if (parent == entt::null) { // Iterate root entities
-            for (const auto &[entity, name] : R.view<const Name>().each()) {
-                const auto *node = R.try_get<SceneNode>(entity);
-                if (!node || node->Parent == entt::null) render_entity(entity);
+    const auto GetObjectType = [&](entt::entity e) {
+        if (R.all_of<ObjectKind>(e)) return R.get<const ObjectKind>(e).Value;
+        if (R.all_of<MeshInstance>(e)) return ObjectType::Mesh;
+        return ObjectType::Empty;
+    };
+    const auto SetSelectedState = [&](entt::entity e, bool selected) {
+        if (e == entt::null) return;
+        if (selected) {
+            if (!R.all_of<Selected>(e)) R.emplace<Selected>(e);
+        } else {
+            if (R.all_of<Selected>(e)) R.remove<Selected>(e);
+            if (R.all_of<Active>(e)) R.remove<Active>(e);
+        }
+    };
+
+    std::vector<entt::entity> visible_entities;
+    const auto ApplySelectionRequests = [&](std::span<const ImGuiSelectionRequest> requests, ImGuiSelectionUserData nav_item) {
+        for (const auto &request : requests) {
+            if (request.Type == ImGuiSelectionRequestType_SetAll) {
+                if (request.Selected) {
+                    for (const auto e : visible_entities) SetSelectedState(e, true);
+                } else {
+                    R.clear<Selected>();
+                    R.clear<Active>();
+                }
+                continue;
             }
-        } else { // Iterate children
-            for (const auto child : Children{&R, parent}) render_entity(child);
+            if (request.Type != ImGuiSelectionRequestType_SetRange) continue;
+
+            const auto first = FromSelectionUserData(request.RangeFirstItem), last = FromSelectionUserData(request.RangeLastItem);
+            const auto first_it = find(visible_entities, first), last_it = find(visible_entities, last);
+            if (first_it == visible_entities.end() || last_it == visible_entities.end()) {
+                SetSelectedState(first, request.Selected);
+                SetSelectedState(last, request.Selected);
+                continue;
+            }
+            const auto first_i = distance(visible_entities.begin(), first_it);
+            const auto last_i = distance(visible_entities.begin(), last_it);
+            const auto [i0, i1] = std::minmax(first_i, last_i);
+            for (auto i = i0; i <= i1; ++i) SetSelectedState(visible_entities[i], request.Selected);
         }
 
-        if (activate_entity != entt::null) Select(activate_entity);
-        else if (toggle_selected != entt::null) ToggleSelected(toggle_selected);
-        EndTable();
+        const auto active_entity = FindActiveEntity(R);
+        const auto nav_entity = FromSelectionUserData(nav_item);
+        if (nav_entity != entt::null && R.all_of<Selected>(nav_entity)) {
+            if (active_entity != nav_entity) {
+                if (active_entity != entt::null) R.remove<Active>(active_entity);
+                R.emplace_or_replace<Active>(nav_entity);
+            }
+        } else if (R.storage<Selected>().empty()) {
+            if (active_entity != entt::null) R.remove<Active>(active_entity);
+        } else if (active_entity != entt::null && !R.all_of<Selected>(active_entity)) {
+            R.remove<Active>(active_entity);
+        }
+    };
+
+    auto *ms_begin = BeginMultiSelect(ImGuiMultiSelectFlags_None, int(R.storage<Selected>().size()), -1);
+    std::vector<ImGuiSelectionRequest> begin_requests;
+    begin_requests.reserve(ms_begin->Requests.Size);
+    for (const auto &request : ms_begin->Requests) begin_requests.emplace_back(request);
+    const auto begin_nav_item = ms_begin->NavIdItem;
+
+    const auto render_entity = [&](const auto &self, entt::entity e) -> void {
+        const auto *node = R.try_get<SceneNode>(e);
+        const bool has_children = node && node->FirstChild != entt::null;
+
+        auto flags =
+            ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanFullWidth |
+            ImGuiTreeNodeFlags_FramePadding |
+            ImGuiTreeNodeFlags_NavLeftJumpsToParent;
+        if (!has_children) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        if (R.all_of<Selected>(e)) flags |= ImGuiTreeNodeFlags_Selected;
+
+        SetNextItemSelectionUserData(ToSelectionUserData(e));
+        const auto label = std::format("{} [{}]", GetName(R, e), ObjectTypeName(GetObjectType(e)));
+        const bool open = TreeNodeEx(reinterpret_cast<void *>(uintptr_t(uint32_t(e))), flags, "%s", label.c_str());
+        visible_entities.emplace_back(e);
+        if (open && has_children) {
+            for (const auto child : Children{&R, e}) self(self, child);
+            TreePop();
+        }
+    };
+
+    bool has_root = false;
+    for (const auto [entity, _] : R.view<const Name>().each()) {
+        const auto *node = R.try_get<SceneNode>(entity);
+        if (node && node->Parent != entt::null) continue;
+        has_root = true;
+        render_entity(render_entity, entity);
     }
+
+    if (!has_root) TextDisabled("No objects");
+
+    ApplySelectionRequests(begin_requests, begin_nav_item);
+    auto *ms_end = EndMultiSelect();
+    ApplySelectionRequests({ms_end->Requests.Data, size_t(ms_end->Requests.Size)}, ms_end->NavIdItem);
+
+    PopStyleVar();
 }

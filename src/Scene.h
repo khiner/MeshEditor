@@ -291,5 +291,5 @@ private:
     entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
 
     void RenderEntityControls(entt::entity);
-    void RenderEntitiesTable(std::string name, entt::entity parent);
+    void RenderObjectTree();
 };

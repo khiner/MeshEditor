@@ -369,7 +369,7 @@ FFTData ComputeFft(const std::vector<float> &frames) {
 }
 
 // If `normalize_max` is set, normalize the data to this maximum value.
-void WriteWav(const std::vector<float> &frames, fs::path file_path, std::optional<float> normalize_max = std::nullopt) {
+void WriteWav(const std::vector<float> &frames, fs::path file_path, std::optional<float> normalize_max = {}) {
     static ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
     static ma_encoder WavEncoder;
     if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
@@ -432,7 +432,7 @@ namespace {
 // Returns the index of the hovered mode, if any.
 std::optional<size_t> PlotModeData(
     const std::vector<float> &data, std::string_view label, std::string_view x_label, std::string_view y_label,
-    std::optional<size_t> highlight_index = std::nullopt, std::optional<float> max_value_opt = std::nullopt
+    std::optional<size_t> highlight_index = {}, std::optional<float> max_value_opt = {}
 ) {
     std::optional<size_t> hovered_index;
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
