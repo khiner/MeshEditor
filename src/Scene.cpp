@@ -2657,58 +2657,69 @@ void Scene::Interact() {
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Handle keyboard input.
     if (IsWindowFocused()) {
-        if (IsKeyPressed(ImGuiKey_Space, false)) R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
-        if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && !GetIO().KeyShift && !GetIO().KeyAlt && !GetIO().KeySuper) {
-            R.patch<SceneSettings>(SceneEntity, [](auto &settings) {
-                settings.ViewportShading = settings.ViewportShading == ViewportShadingMode::Solid ?
-                    ViewportShadingMode::Rendered :
-                    ViewportShadingMode::Solid;
-            });
-        }
-        if (IsKeyPressed(ImGuiKey_Tab)) {
-            // Cycle to the next interaction mode, wrapping around to the first.
-            auto it = find(InteractionModes, interaction_mode);
-            SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
-        }
-        if (interaction_mode == InteractionMode::Edit) {
-            if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
-            else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
-            else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
-        }
-        if (IsKeyPressed(ImGuiKey_E, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-            AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
-        } else if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-            AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
-        } else if (IsKeyPressed(ImGuiKey_C, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-            AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
-        } else if (IsKeyPressed(ImGuiKey_L, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-            AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
-        }
-        if (!R.storage<Selected>().empty()) {
-            if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
-            else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
-            else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
-            else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
-                // Start transform gizmo in both Object and Edit modes.
-                // In Edit mode, shader applies transform to selected vertices.
-                // In Object mode, shader applies transform to selected instances.
+        if (TransformGizmo::IsUsing()) {
+            // During an active transform, only allow transform switching shortcuts.
+            if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
                 StartScreenTransform = TransformGizmo::TransformType::Translate;
-            } else if (IsKeyPressed(ImGuiKey_R, false) && transform_shortcuts_enabled) StartScreenTransform = TransformGizmo::TransformType::Rotate;
-            else if (IsKeyPressed(ImGuiKey_S, false) && scale_shortcut_enabled) StartScreenTransform = TransformGizmo::TransformType::Scale;
-            else if (IsKeyPressed(ImGuiKey_H, false)) {
-                for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<RenderInstance>(e));
-            } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
-                if (active_entity != entt::null) {
-                    for (const auto e : R.view<Selected>()) {
-                        if (e != active_entity) SetParent(R, e, active_entity);
+            } else if (IsKeyPressed(ImGuiKey_R, false) && transform_shortcuts_enabled) {
+                StartScreenTransform = TransformGizmo::TransformType::Rotate;
+            } else if (IsKeyPressed(ImGuiKey_S, false) && scale_shortcut_enabled) {
+                StartScreenTransform = TransformGizmo::TransformType::Scale;
+            }
+        } else {
+            if (IsKeyPressed(ImGuiKey_Space, false)) R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
+            if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && !GetIO().KeyShift && !GetIO().KeyAlt && !GetIO().KeySuper) {
+                R.patch<SceneSettings>(SceneEntity, [](auto &settings) {
+                    settings.ViewportShading = settings.ViewportShading == ViewportShadingMode::Solid ?
+                        ViewportShadingMode::Rendered :
+                        ViewportShadingMode::Solid;
+                });
+            }
+            if (IsKeyPressed(ImGuiKey_Tab)) {
+                // Cycle to the next interaction mode, wrapping around to the first.
+                auto it = find(InteractionModes, interaction_mode);
+                SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
+            }
+            if (interaction_mode == InteractionMode::Edit) {
+                if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
+                else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
+                else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
+            }
+            if (IsKeyPressed(ImGuiKey_E, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+                AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                StartScreenTransform = TransformGizmo::TransformType::Translate;
+            } else if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+                AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                StartScreenTransform = TransformGizmo::TransformType::Translate;
+            } else if (IsKeyPressed(ImGuiKey_C, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+                AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                StartScreenTransform = TransformGizmo::TransformType::Translate;
+            } else if (IsKeyPressed(ImGuiKey_L, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
+                AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                StartScreenTransform = TransformGizmo::TransformType::Translate;
+            }
+            if (!R.storage<Selected>().empty()) {
+                if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
+                else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
+                else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
+                else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
+                    // Start transform gizmo in both Object and Edit modes.
+                    // In Edit mode, shader applies transform to selected vertices.
+                    // In Object mode, shader applies transform to selected instances.
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
+                } else if (IsKeyPressed(ImGuiKey_R, false) && transform_shortcuts_enabled) StartScreenTransform = TransformGizmo::TransformType::Rotate;
+                else if (IsKeyPressed(ImGuiKey_S, false) && scale_shortcut_enabled) StartScreenTransform = TransformGizmo::TransformType::Scale;
+                else if (IsKeyPressed(ImGuiKey_H, false)) {
+                    for (const auto e : R.view<Selected>()) SetVisible(e, !R.all_of<RenderInstance>(e));
+                } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
+                    if (active_entity != entt::null) {
+                        for (const auto e : R.view<Selected>()) {
+                            if (e != active_entity) SetParent(R, e, active_entity);
+                        }
                     }
+                } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
+                    for (const auto e : R.view<Selected>()) ClearParent(R, e);
                 }
-            } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
-                for (const auto e : R.view<Selected>()) ClearParent(R, e);
             }
         }
     }
@@ -2716,13 +2727,16 @@ void Scene::Interact() {
     // Handle mouse input.
     if (!IsMouseDown(ImGuiMouseButton_Left)) R.clear<ExcitedVertex>();
 
-    if (TransformGizmo::IsUsing()) {
+    const bool active_transform = TransformGizmo::IsUsing();
+    if (active_transform) {
         // TransformGizmo overrides this mouse cursor during some actions - this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
     } else {
         AccumulatedWrapMouseDelta = {0, 0};
     }
+    if (active_transform) return; // Only transform gizmo should consume viewport mouse input while active.
+
     if (!IsWindowHovered() && !BoxSelectStart) return;
 
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
@@ -2736,7 +2750,7 @@ void Scene::Interact() {
             R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.SetTargetYawPitch(camera.YawPitch + wheel * 0.15f); });
         }
     }
-    if (TransformGizmo::IsUsing() || OrientationGizmo::IsActive() || TransformModePillsHovered) return;
+    if (OrientationGizmo::IsActive() || TransformModePillsHovered) return;
 
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     if (SelectionMode == SelectionMode::Box && (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Object)) {
@@ -3012,6 +3026,7 @@ void Scene::AnimateToCamera(entt::entity camera_entity) {
 
 void Scene::RenderOverlay() {
     const auto viewport = GetViewportRect();
+    const bool active_transform = TransformGizmo::IsUsing();
     { // Transform mode pill buttons (top-left overlay)
         struct ButtonInfo {
             const SvgResource &Icon;
@@ -3054,15 +3069,20 @@ void Scene::RenderOverlay() {
             static constexpr float icon_dim{button_size.y * 0.75f};
             static constexpr ImVec2 icon_size{icon_dim, icon_dim};
             const float y_offset = i < 2 ? i * button_size.y : 2 * button_size.y + gap + (i - 2) * button_size.y;
-            SetCursorScreenPos({start_pos.x, start_pos.y + y_offset});
+            const ImVec2 button_min{start_pos.x, start_pos.y + y_offset};
+            const ImVec2 button_max = button_min + button_size;
 
-            if (!enabled) BeginDisabled();
-            PushID(i);
-            const bool clicked = InvisibleButton("##icon", button_size);
-            PopID();
-            if (!enabled) EndDisabled();
-
-            const bool hovered = IsItemHovered();
+            bool clicked = false;
+            bool hovered = false;
+            if (!active_transform) {
+                SetCursorScreenPos(button_min);
+                if (!enabled) BeginDisabled();
+                PushID(i);
+                clicked = InvisibleButton("##icon", button_size);
+                PopID();
+                if (!enabled) EndDisabled();
+                hovered = IsItemHovered();
+            }
             if (hovered) TransformModePillsHovered = true;
             if (clicked) {
                 if (i == 0) {
@@ -3085,21 +3105,21 @@ void Scene::RenderOverlay() {
                     hovered   ? ImGuiCol_ButtonHovered :
                                 ImGuiCol_Button
             );
-            dl.AddRectFilled(GetItemRectMin() + padding, GetItemRectMax() - padding, bg_color, 8.f, corners);
-            SetCursorScreenPos(GetItemRectMin() + (button_size - icon_size) * 0.5f);
+            dl.AddRectFilled(button_min + padding, button_max - padding, bg_color, 8.f, corners);
+            SetCursorScreenPos(button_min + (button_size - icon_size) * 0.5f);
             icon.DrawIcon(std::bit_cast<vec2>(icon_size));
         }
         SetCursorScreenPos(saved_cursor_pos);
     }
 
     // Exit "look through" camera view if the user interacts with the orientation gizmo.
-    if (OrientationGizmo::IsActive()) ExitLookThroughCamera();
+    if (!active_transform && OrientationGizmo::IsActive()) ExitLookThroughCamera();
     auto &camera = R.get<ViewCamera>(SceneEntity);
     { // Orientation gizmo (drawn before tick so camera animations it initiates begin this frame)
         static constexpr float OGizmoSize{90};
         const float padding = GetTextLineHeightWithSpacing();
         const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x, GetWindowContentRegionMin().y} - vec2{OGizmoSize, 0} + vec2{-padding, padding};
-        OrientationGizmo::Draw(pos, OGizmoSize, camera);
+        OrientationGizmo::Draw(pos, OGizmoSize, camera, !active_transform);
     }
     if (camera.Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
 

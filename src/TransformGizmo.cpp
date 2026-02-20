@@ -875,6 +875,16 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
     // 2xNDC spans screen width.
     const vec3 cam_right_ws = cam_basis[0];
     g.WorldPerNdc = 2 * Style.SizeUv / glm::length(CsToNdc(vp * vec4{transform.P + cam_right_ws, 1}) - CsToNdc(vp * vec4{transform.P, 1}));
+    const auto mouse_ray_ws = camera.PixelToWorldRay(mouse_px, viewport);
+
+    if (g.Start && start_screen_transform && *start_screen_transform != g.Interaction->Type) {
+        // Cancel the current transform and start the requested transform.
+        const auto start_transform = g.Start->Transform;
+        g.Interaction = {*start_screen_transform, InteractionOp::Action};
+        g.Start = {.Transform = start_transform, .MousePx = mouse_px, .MouseRayWs = mouse_ray_ws, .WorldPerNdc = g.WorldPerNdc};
+        return Result{start_transform, {}};
+    }
+
     if (g.Start && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         // Cancel - revert back to start transform
         Result ret{g.Start->Transform, {}};
@@ -889,7 +899,6 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
         return {};
     }
 
-    const auto mouse_ray_ws = camera.PixelToWorldRay(mouse_px, viewport);
     if (g.Start) {
         const auto &ts = g.Start->Transform;
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray));
@@ -902,12 +911,7 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
         ImGui::IsWindowHovered() ? FindHoveredInteraction(transform, config.Type, std::bit_cast<ImVec2>(mouse_px), mouse_ray_ws, vp, cam_ray) :
                                    std::nullopt;
     if (g.Interaction && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || g.Interaction->Op == InteractionOp::Action)) {
-        g.Start = state::StartContext{
-            .Transform = transform,
-            .MousePx = mouse_px,
-            .MouseRayWs = mouse_ray_ws,
-            .WorldPerNdc = g.WorldPerNdc,
-        };
+        g.Start = {.Transform = transform, .MousePx = mouse_px, .MouseRayWs = mouse_ray_ws, .WorldPerNdc = g.WorldPerNdc};
     }
     return {};
 }

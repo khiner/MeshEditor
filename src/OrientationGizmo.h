@@ -37,14 +37,19 @@ static internal::Context Context;
 
 bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.DragEndPos; }
 
-void Draw(vec2 pos, float size, ViewCamera &camera) {
+void Draw(vec2 pos, float size, ViewCamera &camera, bool interactive = true) {
     auto &dl = *ImGui::GetWindowDrawList();
 
     const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetMousePos());
     const auto hover_circle_r = size * Style.HoverCircleRad;
     const auto center = pos + vec2{size, size} * 0.5f;
-    Context.Hovered = glm::dot(mouse_pos - center, mouse_pos - center) <= hover_circle_r * hover_circle_r;
-    if (Context.Hovered || Context.DragEndPos) dl.AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
+    if (!interactive) {
+        Context.Hovered = false;
+        Context.MouseDownPos = std::nullopt;
+        Context.DragEndPos = std::nullopt;
+    }
+    Context.Hovered = interactive && glm::dot(mouse_pos - center, mouse_pos - center) <= hover_circle_r * hover_circle_r;
+    if (interactive && (Context.Hovered || Context.DragEndPos)) dl.AddCircleFilled({center.x, center.y}, hover_circle_r, Color.Hover);
 
     // Project camera-relative axes to screen space.
     const auto cam_transform = glm::transpose(camera.Basis());
@@ -63,7 +68,7 @@ void Draw(vec2 pos, float size, ViewCamera &camera) {
 
     // Find closest hovered axis.
     std::optional<size_t> hovered_i;
-    if (Context.Hovered && !Context.DragEndPos) {
+    if (interactive && Context.Hovered && !Context.DragEndPos) {
         hovered_i = std::ranges::min(SortedAxisIndices, {}, [&](size_t i) {
             const auto mouse_delta = mouse_pos - (center + AxisScreen(i));
             // Add z to avoid hovering (covered) back axes.
@@ -99,31 +104,33 @@ void Draw(vec2 pos, float size, ViewCamera &camera) {
         }
     }
 
-    if (Context.Hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        Context.MouseDownPos = mouse_pos;
-    } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && Context.MouseDownPos) {
-        if (!Context.DragEndPos) {
-            // Should we transition to dragging mode?
-            // Click threshold is an arbitrary smaller amount than a hovered circle,
-            // since we don't want to wait for that long of a drag to switch into drag behavior.
-            const auto click_threshold = 0.5f * size * Style.CircleRad;
-            const auto mouse_delta = mouse_pos - *Context.MouseDownPos;
-            if (glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
+    if (interactive) {
+        if (Context.Hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            Context.MouseDownPos = mouse_pos;
+        } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && Context.MouseDownPos) {
+            if (!Context.DragEndPos) {
+                // Should we transition to dragging mode?
+                // Click threshold is an arbitrary smaller amount than a hovered circle,
+                // since we don't want to wait for that long of a drag to switch into drag behavior.
+                const auto click_threshold = 0.5f * size * Style.CircleRad;
+                const auto mouse_delta = mouse_pos - *Context.MouseDownPos;
+                if (glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
+                    Context.DragEndPos = mouse_pos;
+                }
+            } else { // Dragging
+                const auto drag_delta = mouse_pos - *Context.DragEndPos;
                 Context.DragEndPos = mouse_pos;
+                camera.SetTargetYawPitch(camera.YawPitch + drag_delta * 0.02f);
             }
-        } else { // Dragging
-            const auto drag_delta = mouse_pos - *Context.DragEndPos;
-            Context.DragEndPos = mouse_pos;
-            camera.SetTargetYawPitch(camera.YawPitch + drag_delta * 0.02f);
+        } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            if (!Context.DragEndPos && hovered_i) { // Click
+                // If selecting the same axis, switch to the opposite axis.
+                if (IsAligned(*hovered_i)) hovered_i = (*hovered_i + 3) % 6;
+                camera.SetTargetDirection(Signed(I3, *hovered_i));
+            }
+            Context.MouseDownPos = std::nullopt;
+            Context.DragEndPos = std::nullopt;
         }
-    } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-        if (!Context.DragEndPos && hovered_i) { // Click
-            // If selecting the same axis, switch to the opposite axis.
-            if (IsAligned(*hovered_i)) hovered_i = (*hovered_i + 3) % 6;
-            camera.SetTargetDirection(Signed(I3, *hovered_i));
-        }
-        Context.MouseDownPos = std::nullopt;
-        Context.DragEndPos = std::nullopt;
     }
 }
 } // namespace OrientationGizmo
