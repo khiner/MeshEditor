@@ -9,6 +9,7 @@
 #include "Vertex.glsl"
 #include "BoneDeformVertex.glsl"
 #include "MorphTargetVertex.glsl"
+#include "PBRMaterial.glsl"
 #include "PunctualLight.glsl"
 #include "WorldTransform.glsl"
 #include "TRSUtils.glsl"
@@ -66,6 +67,18 @@ layout(set = 0, binding = BINDING_VertexClassBuffer, scalar) readonly buffer Ver
 layout(set = 0, binding = BINDING_LightBuffer, scalar) readonly buffer LightBufferBlock {
     PunctualLight Lights[];
 } LightBuffers[];
+
+layout(set = 0, binding = BINDING_MaterialBuffer, scalar) readonly buffer MaterialBufferBlock {
+    PBRMaterial Materials[];
+} MaterialBuffers[];
+
+layout(set = 0, binding = BINDING_PrimitiveMaterialBuffer, scalar) readonly buffer PrimitiveMaterialBufferBlock {
+    uint MaterialIndices[];
+} PrimitiveMaterialBuffers[];
+
+layout(set = 0, binding = BINDING_FacePrimitiveBuffer, scalar) readonly buffer FacePrimitiveBufferBlock {
+    uint PrimitiveIndices[];
+} FacePrimitiveBuffers[];
 
 const uint INVALID_SLOT = 0xffffffffu;
 const uint INVALID_OFFSET = 0xffffffffu;

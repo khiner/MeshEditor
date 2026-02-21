@@ -49,6 +49,7 @@ enum class FaceColorMode {
 enum class ShaderPipelineType {
     Fill,
     PBRFill,
+    PBRFillBlend,
     Line,
     LineOverlayFaceNormals,
     LineOverlayVertexNormals,
@@ -103,6 +104,7 @@ struct ScenePipelines;
 struct SceneBuffers;
 struct DescriptorSlots;
 struct SvgResource;
+struct TextureStore;
 
 namespace mvk {
 struct ImGuiTexture;
@@ -212,6 +214,7 @@ private:
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<SceneBuffers> Buffers;
     std::unique_ptr<MeshStore> Meshes;
+    std::unique_ptr<TextureStore> Textures;
 
     enum class SelectionMode { Click,
                                Box };

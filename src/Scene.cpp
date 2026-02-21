@@ -15,6 +15,7 @@
 #include "Timer.h"
 #include "gltf/GltfLoader.h"
 #include "gpu/ObjectPickPushConstants.h"
+#include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
@@ -27,16 +28,38 @@
 
 #include "Variant.h"
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <format>
+#include <iostream>
 #include <limits>
 #include <numbers>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+
+// Decode imported glTF image bytes (PNG/JPEG/etc.) to RGBA8 for GPU texture upload.
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include "../lib/lunasvg/plutovg/source/plutovg-stb-image.h"
 
 using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::iota, std::views::take, std::views::transform;
+
+struct TextureEntry {
+    mvk::ImageResource Image{};
+    vk::UniqueSampler Sampler{};
+    uint32_t SamplerSlot{InvalidSlot};
+    uint32_t Width{0}, Height{0}, MipLevels{1};
+    std::string Name;
+};
+
+struct TextureStore {
+    std::vector<TextureEntry> Textures;
+    uint32_t WhiteTextureSlot{InvalidSlot};
+};
 
 namespace {
 const SceneDefaults Defaults{};
@@ -59,6 +82,13 @@ struct MeshActiveElement {
 
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
+struct MeshMaterialAssignment {
+    uint32_t PrimitiveIndex{0};
+    uint32_t MaterialIndex{0};
+};
+struct MeshMaterialSlotSelection {
+    uint32_t PrimitiveIndex{0};
+};
 // Tags for light events.
 struct LightDataDirty {};
 struct LightWireframeDirty {};
@@ -72,6 +102,30 @@ struct PendingTransform {
     quat R{1, 0, 0, 0}; // Rotation delta
     vec3 S{1, 1, 1}; // Scale delta
 };
+
+struct MaterialStore {
+    std::vector<std::string> Names;
+};
+
+struct MaterialEdit {
+    uint32_t Index{0};
+    PBRMaterial Value{};
+};
+
+std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry> textures) {
+    std::vector<uint32_t> sampler_slots;
+    sampler_slots.reserve(textures.size());
+    for (const auto &texture : textures) {
+        if (texture.SamplerSlot != InvalidSlot) sampler_slots.emplace_back(texture.SamplerSlot);
+    }
+    return sampler_slots;
+}
+
+void ReleaseSamplerSlots(DescriptorSlots &slots, std::span<const uint32_t> sampler_slots) {
+    for (const auto sampler_slot : sampler_slots) {
+        slots.Release({SlotType::Sampler, sampler_slot});
+    }
+}
 
 void WaitFor(vk::Fence fence, vk::Device device) {
     if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
@@ -88,6 +142,313 @@ PunctualLight MakeDefaultLight(uint32_t type = LightTypePoint) {
         .InnerConeCos = type == LightTypeSpot ? std::cos(DefaultSpotOuterAngle * (1.f - DefaultSpotBlend)) : 0.f,
         .OuterConeCos = type == LightTypeSpot ? std::cos(DefaultSpotOuterAngle) : 0.f,
         .Type = type,
+    };
+}
+
+vk::SamplerAddressMode ToSamplerAddressMode(fastgltf::Wrap wrap) {
+    switch (wrap) {
+        case fastgltf::Wrap::ClampToEdge: return vk::SamplerAddressMode::eClampToEdge;
+        case fastgltf::Wrap::MirroredRepeat: return vk::SamplerAddressMode::eMirroredRepeat;
+        case fastgltf::Wrap::Repeat: return vk::SamplerAddressMode::eRepeat;
+    }
+    return vk::SamplerAddressMode::eRepeat;
+}
+
+struct SamplerConfig {
+    vk::Filter MinFilter{vk::Filter::eLinear};
+    vk::Filter MagFilter{vk::Filter::eLinear};
+    vk::SamplerMipmapMode MipmapMode{vk::SamplerMipmapMode::eLinear};
+    bool UsesMipmaps{true};
+};
+
+enum class TextureColorSpace : uint8_t {
+    Srgb,
+    Linear,
+};
+
+vk::Format ToTextureFormat(TextureColorSpace color_space) {
+    return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm;
+}
+
+SamplerConfig ToSamplerConfig(const gltf::SceneSamplerData *sampler) {
+    SamplerConfig config{};
+    if (sampler) {
+        if (sampler->MagFilter && *sampler->MagFilter == fastgltf::Filter::Nearest) config.MagFilter = vk::Filter::eNearest;
+        switch (sampler->MinFilter.value_or(fastgltf::Filter::LinearMipMapLinear)) {
+            case fastgltf::Filter::Nearest:
+                config.MinFilter = vk::Filter::eNearest;
+                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
+                config.UsesMipmaps = false;
+                break;
+            case fastgltf::Filter::Linear:
+                config.MinFilter = vk::Filter::eLinear;
+                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
+                config.UsesMipmaps = false;
+                break;
+            case fastgltf::Filter::NearestMipMapNearest:
+                config.MinFilter = vk::Filter::eNearest;
+                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
+                config.UsesMipmaps = true;
+                break;
+            case fastgltf::Filter::LinearMipMapNearest:
+                config.MinFilter = vk::Filter::eLinear;
+                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
+                config.UsesMipmaps = true;
+                break;
+            case fastgltf::Filter::NearestMipMapLinear:
+                config.MinFilter = vk::Filter::eNearest;
+                config.MipmapMode = vk::SamplerMipmapMode::eLinear;
+                config.UsesMipmaps = true;
+                break;
+            case fastgltf::Filter::LinearMipMapLinear:
+                config.MinFilter = vk::Filter::eLinear;
+                config.MipmapMode = vk::SamplerMipmapMode::eLinear;
+                config.UsesMipmaps = true;
+                break;
+        }
+    }
+    return config;
+}
+
+struct DecodedImage {
+    std::vector<std::byte> Pixels;
+    uint32_t Width{0}, Height{0};
+};
+
+std::expected<DecodedImage, std::string> DecodeImageRgba8(std::span<const std::byte> encoded, std::string_view image_name) {
+    if (encoded.empty()) return std::unexpected{std::format("Image '{}' has no encoded bytes.", image_name)};
+    int width = 0, height = 0, channels = 0;
+    stbi_uc *pixels = stbi_load_from_memory(
+        reinterpret_cast<const stbi_uc *>(encoded.data()),
+        int(encoded.size()),
+        &width,
+        &height,
+        &channels,
+        4
+    );
+    if (!pixels) {
+        const char *reason = stbi_failure_reason();
+        return std::unexpected{std::format("Failed to decode image '{}': {}", image_name, reason ? reason : "unknown stb_image error")};
+    }
+    if (width <= 0 || height <= 0) {
+        stbi_image_free(pixels);
+        return std::unexpected{std::format("Image '{}' decoded to invalid dimensions {}x{}.", image_name, width, height)};
+    }
+
+    DecodedImage decoded{};
+    decoded.Width = uint32_t(width);
+    decoded.Height = uint32_t(height);
+    decoded.Pixels.resize(size_t(decoded.Width) * decoded.Height * 4u);
+    std::memcpy(decoded.Pixels.data(), pixels, decoded.Pixels.size());
+    stbi_image_free(pixels);
+    return decoded;
+}
+
+uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
+    const auto max_dim = std::max(width, height);
+    return max_dim > 0 ? std::bit_width(max_dim) : 1u;
+}
+
+std::expected<TextureEntry, std::string> CreateTextureEntry(
+    const SceneVulkanResources &vk,
+    mvk::BufferContext &ctx,
+    vk::CommandPool command_pool,
+    vk::Fence one_shot_fence,
+    DescriptorSlots &slots,
+    std::span<const std::byte> pixels_rgba8,
+    uint32_t width,
+    uint32_t height,
+    std::string name,
+    TextureColorSpace color_space,
+    vk::SamplerAddressMode wrap_s,
+    vk::SamplerAddressMode wrap_t,
+    const SamplerConfig &sampler_cfg
+) {
+    if (width == 0 || height == 0 || pixels_rgba8.empty()) {
+        return std::unexpected{std::format("Cannot create texture '{}' with empty image data.", name)};
+    }
+
+    const vk::Format texture_format = ToTextureFormat(color_space);
+    const auto format_features = vk.PhysicalDevice.getFormatProperties(texture_format).optimalTilingFeatures;
+    const bool supports_linear_blit = bool(format_features & vk::FormatFeatureFlagBits::eSampledImageFilterLinear);
+    uint32_t mip_levels = sampler_cfg.UsesMipmaps && supports_linear_blit ? ComputeMipLevelCount(width, height) : 1u;
+    if (mip_levels == 0) mip_levels = 1u;
+
+    auto image = mvk::CreateImage(
+        vk.Device,
+        vk.PhysicalDevice,
+        {
+            {},
+            vk::ImageType::e2D,
+            texture_format,
+            vk::Extent3D{width, height, 1},
+            mip_levels,
+            1,
+            vk::SampleCountFlagBits::e1,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+            vk::SharingMode::eExclusive,
+        },
+        {
+            {},
+            {},
+            vk::ImageViewType::e2D,
+            texture_format,
+            {},
+            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1},
+        }
+    );
+
+    mvk::Buffer staging{ctx, pixels_rgba8, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eTransfer,
+        {},
+        {},
+        {},
+        vk::ImageMemoryBarrier{
+            {},
+            vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eTransferDstOptimal,
+            {},
+            {},
+            *image.Image,
+            full_range,
+        }
+    );
+
+    cb->copyBufferToImage(
+        *staging,
+        *image.Image,
+        vk::ImageLayout::eTransferDstOptimal,
+        vk::BufferImageCopy{
+            0,
+            0,
+            0,
+            vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            {0, 0, 0},
+            {width, height, 1},
+        }
+    );
+
+    int32_t mip_width = int32_t(width), mip_height = int32_t(height);
+    for (uint32_t mip = 1; mip < mip_levels; ++mip) {
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eTransfer,
+            {},
+            {},
+            {},
+            vk::ImageMemoryBarrier{
+                vk::AccessFlagBits::eTransferWrite,
+                vk::AccessFlagBits::eTransferRead,
+                vk::ImageLayout::eTransferDstOptimal,
+                vk::ImageLayout::eTransferSrcOptimal,
+                {},
+                {},
+                *image.Image,
+                vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1},
+            }
+        );
+
+        cb->blitImage(
+            *image.Image,
+            vk::ImageLayout::eTransferSrcOptimal,
+            *image.Image,
+            vk::ImageLayout::eTransferDstOptimal,
+            vk::ImageBlit{
+                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 1},
+                {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_width, mip_height, 1}},
+                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1},
+                {vk::Offset3D{0, 0, 0}, vk::Offset3D{std::max(1, mip_width / 2), std::max(1, mip_height / 2), 1}},
+            },
+            vk::Filter::eLinear
+        );
+
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eFragmentShader,
+            {},
+            {},
+            {},
+            vk::ImageMemoryBarrier{
+                vk::AccessFlagBits::eTransferRead,
+                vk::AccessFlagBits::eShaderRead,
+                vk::ImageLayout::eTransferSrcOptimal,
+                vk::ImageLayout::eShaderReadOnlyOptimal,
+                {},
+                {},
+                *image.Image,
+                vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1},
+            }
+        );
+
+        mip_width = std::max(1, mip_width / 2);
+        mip_height = std::max(1, mip_height / 2);
+    }
+
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eFragmentShader,
+        {},
+        {},
+        {},
+        vk::ImageMemoryBarrier{
+            vk::AccessFlagBits::eTransferWrite,
+            vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eTransferDstOptimal,
+            vk::ImageLayout::eShaderReadOnlyOptimal,
+            {},
+            {},
+            *image.Image,
+            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip_levels - 1, 1, 0, 1},
+        }
+    );
+
+    cb->end();
+    vk::SubmitInfo submit{};
+    submit.setCommandBuffers(*cb);
+    vk.Queue.submit(submit, one_shot_fence);
+    WaitFor(one_shot_fence, vk.Device);
+
+    auto sampler = vk.Device.createSamplerUnique(
+        vk::SamplerCreateInfo{
+            {},
+            sampler_cfg.MagFilter,
+            sampler_cfg.MinFilter,
+            sampler_cfg.MipmapMode,
+            wrap_s,
+            wrap_t,
+            vk::SamplerAddressMode::eRepeat,
+            0.f,
+            VK_FALSE,
+            1.f,
+            VK_FALSE,
+            vk::CompareOp::eNever,
+            0.f,
+            sampler_cfg.UsesMipmaps ? float(mip_levels) : 0.f,
+            vk::BorderColor::eIntOpaqueBlack,
+            VK_FALSE,
+        }
+    );
+
+    const auto sampler_slot = slots.Allocate(SlotType::Sampler);
+    const vk::DescriptorImageInfo sampler_info{*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+    vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(sampler_slot, sampler_info)}, {});
+
+    return TextureEntry{
+        .Image = std::move(image),
+        .Sampler = std::move(sampler),
+        .SamplerSlot = sampler_slot,
+        .Width = width,
+        .Height = height,
+        .MipLevels = mip_levels,
+        .Name = std::move(name),
     };
 }
 } // namespace
@@ -336,21 +697,25 @@ struct EditTransformContext {
     std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
 };
 
-EditTransformContext BuildEditTransformContext(const entt::registry &r) {
-    return {ComputePrimaryEditInstances(r, false)};
-}
+PunctualLight GetLight(const SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<const PunctualLight *>(buffers.LightBuffer.GetMappedData().data())[index]; }
+void SetLight(SceneBuffers &buffers, uint32_t index, const PunctualLight &light) { buffers.LightBuffer.Update(as_bytes(light), vk::DeviceSize(index) * sizeof(PunctualLight)); }
 
-PunctualLight GetLight(const SceneBuffers &buffers, uint32_t index) {
-    return reinterpret_cast<const PunctualLight *>(buffers.LightBuffer.GetMappedData().data())[index];
+uint32_t GetMaterialCount(const SceneBuffers &buffers) { return uint32_t(buffers.MaterialBuffer.UsedSize / sizeof(PBRMaterial)); }
+PBRMaterial GetMaterial(const SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<const PBRMaterial *>(buffers.MaterialBuffer.GetMappedData().data())[index]; }
+void SetMaterial(SceneBuffers &buffers, uint32_t index, const PBRMaterial &material) { buffers.MaterialBuffer.Update(as_bytes(material), vk::DeviceSize(index) * sizeof(PBRMaterial)); }
+uint32_t AppendMaterial(SceneBuffers &buffers, const PBRMaterial &material) {
+    const auto index = GetMaterialCount(buffers);
+    SetMaterial(buffers, index, material);
+    return index;
 }
-void SetLight(SceneBuffers &buffers, uint32_t index, const PunctualLight &light) {
-    buffers.LightBuffer.Update(as_bytes(light), vk::DeviceSize(index) * sizeof(PunctualLight));
+void SetMaterialCount(SceneBuffers &buffers, uint32_t count) {
+    buffers.MaterialBuffer.Reserve(vk::DeviceSize(count) * sizeof(PBRMaterial));
+    buffers.MaterialBuffer.UsedSize = vk::DeviceSize(count) * sizeof(PBRMaterial);
 }
 
 void ResetObjectPickKeys(SceneBuffers &buffers) {
     auto bytes = buffers.ObjectPickKeyBuffer.GetMappedData();
-    auto *keys = reinterpret_cast<uint32_t *>(bytes.data());
-    std::fill_n(keys, SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
+    std::fill_n(reinterpret_cast<uint32_t *>(bytes.data()), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
 namespace changes {
@@ -362,12 +727,14 @@ constexpr auto
     MeshSelection = "mesh_selection_changes"_hs,
     MeshActiveElement = "mesh_active_element_changes"_hs,
     MeshGeometry = "mesh_geometry_changes"_hs,
+    MeshMaterial = "mesh_material_changes"_hs,
     Excitable = "excitable_changes"_hs,
     ExcitedVertex = "excited_vertex_changes"_hs,
     ModelsBuffer = "models_buffer_changes"_hs,
     SceneSettings = "scene_settings_changes"_hs,
     InteractionMode = "interaction_mode_changes"_hs,
     ViewportTheme = "viewport_theme_changes"_hs,
+    Materials = "materials_changes"_hs,
     SceneView = "scene_view_changes"_hs,
     CameraLens = "camera_lens_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
@@ -481,7 +848,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
       Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots->GetSetLayout(), Slots->GetSet())},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
-      Meshes{std::make_unique<MeshStore>(Buffers->Ctx)} {
+      Meshes{std::make_unique<MeshStore>(Buffers->Ctx)},
+      Textures{std::make_unique<TextureStore>()} {
     // Reactive storage subscriptions for deferred once-per-frame processing
     using namespace entt::literals;
 
@@ -509,6 +877,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_update<MeshActiveElement>();
     R.storage<entt::reactive>(changes::MeshGeometry)
         .on_construct<MeshGeometryDirty>();
+    R.storage<entt::reactive>(changes::MeshMaterial)
+        .on_construct<MeshMaterialAssignment>()
+        .on_update<MeshMaterialAssignment>();
     R.storage<entt::reactive>(changes::Excitable)
         .on_construct<Excitable>()
         .on_destroy<Excitable>();
@@ -526,6 +897,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::ViewportTheme)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
+    R.storage<entt::reactive>(changes::Materials)
+        .on_construct<MaterialEdit>()
+        .on_update<MaterialEdit>();
     R.storage<entt::reactive>(changes::SceneView)
         .on_construct<ViewCamera>()
         .on_update<ViewCamera>()
@@ -555,14 +929,56 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<Lights>(SceneEntity, Defaults.Lights);
     R.emplace<ViewportExtent>(SceneEntity);
     R.emplace<AnimationTimeline>(SceneEntity);
+    R.emplace<MaterialStore>(SceneEntity);
 
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
     ResetObjectPickKeys(*Buffers);
+
+    auto &texture_store = *Textures;
+    constexpr std::array<std::byte, 4> white_pixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
+    auto white_texture = CreateTextureEntry(
+        Vk,
+        Buffers->Ctx,
+        *CommandPool,
+        *OneShotFence,
+        *Slots,
+        white_pixels,
+        1,
+        1,
+        "DefaultWhite",
+        TextureColorSpace::Srgb,
+        vk::SamplerAddressMode::eRepeat,
+        vk::SamplerAddressMode::eRepeat,
+        SamplerConfig{}
+    );
+    if (!white_texture) throw std::runtime_error(white_texture.error());
+    texture_store.WhiteTextureSlot = white_texture->SamplerSlot;
+    texture_store.Textures.emplace_back(std::move(*white_texture));
+
+    AppendMaterial(
+        *Buffers,
+        PBRMaterial{
+            .BaseColorFactor = vec4{1.f},
+            .MetallicFactor = 0.f,
+            .RoughnessFactor = 1.f,
+            .BaseColorTexture = texture_store.WhiteTextureSlot,
+            .BaseColorTexCoord = 0u,
+            .AlphaMode = uint32_t(fastgltf::AlphaMode::Opaque),
+            .AlphaCutoff = 0.5f,
+            .DoubleSided = 0u,
+        }
+    );
+    R.patch<MaterialStore>(SceneEntity, [](auto &material_store) { material_store.Names.emplace_back("Default"); });
 
     Pipelines->CompileShaders();
 }
 
 Scene::~Scene() {
+    if (R.valid(SceneEntity)) {
+        auto sampler_slots = CollectSamplerSlots(Textures->Textures);
+        ReleaseSamplerSlots(*Slots, sampler_slots);
+        R.remove<MaterialStore>(SceneEntity);
+    }
     R.clear<Mesh>();
 }
 
@@ -744,7 +1160,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
-    const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R) : EditTransformContext{};
+
+    const auto edit_transform_context = is_edit_mode ? EditTransformContext{ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
     const auto orbit_to_active = [&](entt::entity instance_entity, Element element, uint32_t handle) {
         if (!OrbitToActive) return;
         const auto world_pos = ComputeElementWorldPosition(R, instance_entity, element, handle);
@@ -829,9 +1246,29 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         request(RenderRequest::Submit);
     }
+    if (auto &tracker = R.storage<entt::reactive>(changes::MeshMaterial); !tracker.empty()) {
+        for (auto mesh_entity : tracker) {
+            const auto *assignment = R.try_get<const MeshMaterialAssignment>(mesh_entity);
+            const auto *mesh = R.try_get<const Mesh>(mesh_entity);
+            if (!assignment || !mesh) continue;
+            const auto material_count = GetMaterialCount(*Buffers);
+            if (material_count == 0u) continue;
+            auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh->GetStoreId());
+            if (assignment->PrimitiveIndex >= primitive_materials.size()) continue;
+            primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
+        }
+        request(RenderRequest::Submit);
+    }
     if (!R.storage<entt::reactive>(changes::ModelsBuffer).empty()) request(RenderRequest::Submit);
     if (!R.storage<entt::reactive>(changes::ViewportTheme).empty()) {
         Buffers->ViewportThemeUBO.Update(as_bytes(R.get<const ViewportTheme>(SceneEntity)));
+        request(RenderRequest::Submit);
+    }
+    if (!R.storage<entt::reactive>(changes::Materials).empty()) {
+        if (const auto *edit = R.try_get<const MaterialEdit>(SceneEntity);
+            edit && edit->Index < GetMaterialCount(*Buffers)) {
+            SetMaterial(*Buffers, edit->Index, edit->Value);
+        }
         request(RenderRequest::Submit);
     }
     if (!R.storage<entt::reactive>(changes::SceneSettings).empty()) {
@@ -931,6 +1368,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .MorphDeformSlot = Meshes->MorphTargetBuffer.Buffer.Slot,
             .MorphWeightsSlot = Buffers->MorphWeightBuffer.Buffer.Slot,
             .VertexClassSlot = Buffers->VertexClassBuffer.Buffer.Slot,
+            .MaterialSlot = Buffers->MaterialBuffer.Slot,
+            .PrimitiveMaterialSlot = Meshes->PrimitiveMaterialBuffer.Buffer.Slot,
+            .FacePrimitiveSlot = Meshes->FacePrimitiveBuffer.Buffer.Slot,
             .DrawDataSlot = Buffers->RenderDrawData.Slot,
         }));
         request(RenderRequest::Submit);
@@ -1079,6 +1519,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     DestroyTracker->Storage.clear();
     R.clear<MeshGeometryDirty>();
+    R.clear<MeshMaterialAssignment>();
+    R.clear<MaterialEdit>();
     R.clear<LightDataDirty>();
     R.clear<LightWireframeDirty>();
 
@@ -1295,7 +1737,49 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
     auto result = Meshes->LoadMesh(path);
     if (!result) throw std::runtime_error(result.error());
 
-    const auto e = AddMesh(std::move(*result), std::move(info));
+    if (!result->Materials.empty()) {
+        std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
+        std::vector<std::string> names;
+        names.reserve(result->Materials.size());
+        for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
+            const auto &source = result->Materials[material_index];
+            scene_material_indices[material_index] = AppendMaterial(
+                *Buffers,
+                PBRMaterial{
+                    .BaseColorFactor = source.BaseColorFactor,
+                    .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
+                    .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
+                    .BaseColorTexture = Textures->WhiteTextureSlot,
+                    .AlphaMode = source.BaseColorFactor.w < 1.f ?
+                        uint32_t(fastgltf::AlphaMode::Blend) :
+                        uint32_t(fastgltf::AlphaMode::Opaque),
+                }
+            );
+            names.emplace_back(source.Name.empty() ? std::format("Material{}", material_index) : source.Name);
+        }
+        R.patch<MaterialStore>(
+            SceneEntity,
+            [&](auto &material_store) {
+                material_store.Names.insert(
+                    material_store.Names.end(),
+                    std::make_move_iterator(names.begin()),
+                    std::make_move_iterator(names.end())
+                );
+            }
+        );
+
+        auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(result->Mesh.GetStoreId());
+        if (!primitive_materials.empty()) {
+            const auto fallback = scene_material_indices.front();
+            for (auto &primitive_material : primitive_materials) {
+                primitive_material = primitive_material < scene_material_indices.size() ?
+                    scene_material_indices[primitive_material] :
+                    fallback;
+            }
+        }
+    }
+
+    const auto e = AddMesh(std::move(result->Mesh), std::move(info));
     R.emplace<Path>(e.first, path);
     return e;
 }
@@ -1303,6 +1787,254 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
 std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltfScene(const std::filesystem::path &path) {
     auto loaded_scene = gltf::LoadSceneData(path);
     if (!loaded_scene) return std::unexpected{std::move(loaded_scene.error())};
+
+    auto &texture_store = *Textures;
+    const auto texture_start = texture_store.Textures.size();
+    const auto material_start = GetMaterialCount(*Buffers);
+    const auto material_name_start = R.get<const MaterialStore>(SceneEntity).Names.size();
+    const auto rollback_import_side_effects = [&] {
+        if (texture_store.Textures.size() > texture_start) {
+            const auto staged_textures = std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start);
+            const auto sampler_slots = CollectSamplerSlots(staged_textures);
+            ReleaseSamplerSlots(*Slots, sampler_slots);
+            texture_store.Textures.resize(texture_start);
+        }
+        if (GetMaterialCount(*Buffers) > material_start) SetMaterialCount(*Buffers, material_start);
+        R.patch<MaterialStore>(
+            SceneEntity,
+            [&](auto &store) {
+                if (store.Names.size() > material_name_start) store.Names.resize(material_name_start);
+            }
+        );
+    };
+    const auto import_fail = [&](std::string error) -> std::expected<std::pair<entt::entity, entt::entity>, std::string> {
+        rollback_import_side_effects();
+        return std::unexpected{std::move(error)};
+    };
+
+    const auto resolve_image_index = [&](const gltf::SceneTextureData &texture) -> std::optional<uint32_t> {
+        if (texture.ImageIndex) return texture.ImageIndex;
+        if (texture.WebpImageIndex) return texture.WebpImageIndex;
+        if (texture.BasisuImageIndex) return texture.BasisuImageIndex;
+        return texture.DdsImageIndex;
+    };
+
+    std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
+    const auto texture_cache_key = [](uint32_t texture_index, TextureColorSpace color_space) {
+        return (uint64_t(texture_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
+    };
+    const auto resolve_texture_slot = [&](uint32_t texture_index, TextureColorSpace color_space) -> std::expected<uint32_t, std::string> {
+        if (texture_index >= loaded_scene->Textures.size()) return InvalidSlot;
+        const auto cache_key = texture_cache_key(texture_index, color_space);
+        if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
+
+        const auto &src_texture = loaded_scene->Textures[texture_index];
+        const auto image_index = resolve_image_index(src_texture);
+        if (!image_index || *image_index >= loaded_scene->Images.size()) return InvalidSlot;
+
+        const auto &src_image = loaded_scene->Images[*image_index];
+        auto decoded = DecodeImageRgba8(src_image.Bytes, src_image.Name.empty() ? std::format("Image{}", *image_index) : src_image.Name);
+        if (!decoded) return std::unexpected{std::move(decoded.error())};
+
+        const gltf::SceneSamplerData *src_sampler = nullptr;
+        if (src_texture.SamplerIndex && *src_texture.SamplerIndex < loaded_scene->Samplers.size()) src_sampler = &loaded_scene->Samplers[*src_texture.SamplerIndex];
+        const auto sampler_config = ToSamplerConfig(src_sampler);
+        const auto wrap_s = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : vk::SamplerAddressMode::eRepeat;
+        const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : vk::SamplerAddressMode::eRepeat;
+        const auto texture_name = std::format(
+            "{} ({})",
+            src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name,
+            color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"
+        );
+
+        auto texture = CreateTextureEntry(
+            Vk,
+            Buffers->Ctx,
+            *CommandPool,
+            *OneShotFence,
+            *Slots,
+            decoded->Pixels,
+            decoded->Width,
+            decoded->Height,
+            texture_name,
+            color_space,
+            wrap_s,
+            wrap_t,
+            sampler_config
+        );
+        if (!texture) return std::unexpected{std::move(texture.error())};
+        const auto sampler_slot = texture->SamplerSlot;
+        texture_store.Textures.emplace_back(std::move(*texture));
+        texture_slot_cache.emplace(cache_key, sampler_slot);
+        return sampler_slot;
+    };
+
+    std::vector<uint32_t> material_indices_by_gltf_material(loaded_scene->Materials.size(), 0u);
+    const auto material_count = GetMaterialCount(*Buffers);
+    const auto default_material_index = material_count > 0 ? material_count - 1u : 0u;
+    std::vector<std::string> material_names;
+    material_names.reserve(loaded_scene->Materials.size());
+    for (uint32_t material_index = 0; material_index < loaded_scene->Materials.size(); ++material_index) {
+        const auto &src_material = loaded_scene->Materials[material_index];
+        const auto material_name = src_material.Name.empty() ? std::format("Material{}", material_index) : src_material.Name;
+        const auto clamp_uv_set = [&](uint32_t uv_set, std::string_view texture_label) {
+            if (uv_set <= 3u) return uv_set;
+            std::cerr << std::format(
+                "Warning: glTF material '{}' texture '{}' uses TEXCOORD_{}. MeshEditor currently supports TEXCOORD_0..3. Clamping to TEXCOORD_3.\n",
+                material_name,
+                texture_label,
+                uv_set
+            );
+            return 3u;
+        };
+        const auto assign_texture = [&](
+                                        const std::optional<gltf::TextureInfoData> &texture_info,
+                                        TextureColorSpace color_space,
+                                        std::string_view texture_label,
+                                        uint32_t &texture_slot,
+                                        uint32_t &tex_coord,
+                                        vec2 &uv_offset,
+                                        vec2 &uv_scale,
+                                        float &uv_rotation
+                                    ) -> std::expected<void, std::string> {
+            texture_slot = InvalidSlot;
+            tex_coord = 0u;
+            uv_offset = vec2{0.f};
+            uv_scale = vec2{1.f};
+            uv_rotation = 0.f;
+            if (!texture_info) return {};
+
+            const uint32_t uv_set = texture_info->Transform && texture_info->Transform->TexCoordIndex ?
+                *texture_info->Transform->TexCoordIndex :
+                texture_info->TexCoordIndex;
+            tex_coord = clamp_uv_set(uv_set, texture_label);
+            if (texture_info->Transform) {
+                uv_offset = texture_info->Transform->UvOffset;
+                uv_scale = texture_info->Transform->UvScale;
+                uv_rotation = texture_info->Transform->Rotation;
+            }
+            auto texture_slot_result = resolve_texture_slot(texture_info->TextureIndex, color_space);
+            if (!texture_slot_result) return std::unexpected{std::move(texture_slot_result.error())};
+            texture_slot = *texture_slot_result;
+            return {};
+        };
+        PBRMaterial gpu_material{
+            .BaseColorFactor = src_material.PbrData.BaseColorFactor,
+            .EmissiveFactor = src_material.PbrData.EmissiveFactor,
+            .MetallicFactor = src_material.PbrData.MetallicFactor,
+            .RoughnessFactor = src_material.PbrData.RoughnessFactor,
+            .NormalScale = src_material.PbrData.NormalScale,
+            .OcclusionStrength = src_material.PbrData.OcclusionStrength,
+            .BaseColorTexture = InvalidSlot,
+            .BaseColorTexCoord = 0u,
+            .BaseColorUvOffset = vec2{0.f},
+            .BaseColorUvScale = vec2{1.f},
+            .BaseColorUvRotation = 0.f,
+            .MetallicRoughnessTexture = InvalidSlot,
+            .MetallicRoughnessTexCoord = 0u,
+            .MetallicRoughnessUvOffset = vec2{0.f},
+            .MetallicRoughnessUvScale = vec2{1.f},
+            .MetallicRoughnessUvRotation = 0.f,
+            .NormalTexture = InvalidSlot,
+            .NormalTexCoord = 0u,
+            .NormalUvOffset = vec2{0.f},
+            .NormalUvScale = vec2{1.f},
+            .NormalUvRotation = 0.f,
+            .OcclusionTexture = InvalidSlot,
+            .OcclusionTexCoord = 0u,
+            .OcclusionUvOffset = vec2{0.f},
+            .OcclusionUvScale = vec2{1.f},
+            .OcclusionUvRotation = 0.f,
+            .EmissiveTexture = InvalidSlot,
+            .EmissiveTexCoord = 0u,
+            .EmissiveUvOffset = vec2{0.f},
+            .EmissiveUvScale = vec2{1.f},
+            .EmissiveUvRotation = 0.f,
+            .AlphaMode = uint32_t(src_material.AlphaMode),
+            .AlphaCutoff = src_material.AlphaCutoff,
+            .DoubleSided = src_material.DoubleSided ? 1u : 0u,
+        };
+        if (auto result = assign_texture(
+                src_material.PbrData.BaseColorTexture,
+                TextureColorSpace::Srgb,
+                "baseColor",
+                gpu_material.BaseColorTexture,
+                gpu_material.BaseColorTexCoord,
+                gpu_material.BaseColorUvOffset,
+                gpu_material.BaseColorUvScale,
+                gpu_material.BaseColorUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.MetallicRoughnessTexture,
+                TextureColorSpace::Linear,
+                "metallicRoughness",
+                gpu_material.MetallicRoughnessTexture,
+                gpu_material.MetallicRoughnessTexCoord,
+                gpu_material.MetallicRoughnessUvOffset,
+                gpu_material.MetallicRoughnessUvScale,
+                gpu_material.MetallicRoughnessUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.NormalTexture,
+                TextureColorSpace::Linear,
+                "normal",
+                gpu_material.NormalTexture,
+                gpu_material.NormalTexCoord,
+                gpu_material.NormalUvOffset,
+                gpu_material.NormalUvScale,
+                gpu_material.NormalUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.OcclusionTexture,
+                TextureColorSpace::Linear,
+                "occlusion",
+                gpu_material.OcclusionTexture,
+                gpu_material.OcclusionTexCoord,
+                gpu_material.OcclusionUvOffset,
+                gpu_material.OcclusionUvScale,
+                gpu_material.OcclusionUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.EmissiveTexture,
+                TextureColorSpace::Srgb,
+                "emissive",
+                gpu_material.EmissiveTexture,
+                gpu_material.EmissiveTexCoord,
+                gpu_material.EmissiveUvOffset,
+                gpu_material.EmissiveUvScale,
+                gpu_material.EmissiveUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        material_indices_by_gltf_material[material_index] = AppendMaterial(*Buffers, gpu_material);
+        material_names.emplace_back(material_name);
+    }
+    const auto fallback_material_index = material_indices_by_gltf_material.empty() ? default_material_index : material_indices_by_gltf_material.back();
+    if (!material_names.empty()) {
+        R.patch<MaterialStore>(
+            SceneEntity,
+            [&](auto &store) {
+                store.Names.insert(
+                    store.Names.end(),
+                    std::make_move_iterator(material_names.begin()),
+                    std::make_move_iterator(material_names.end())
+                );
+            }
+        );
+    }
 
     std::vector<entt::entity> mesh_entities;
     mesh_entities.reserve(loaded_scene->Meshes.size());
@@ -1319,27 +2051,46 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         auto &scene_mesh = loaded_scene->Meshes[mi];
         entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
+            if (scene_mesh.Triangles->PrimitiveMaterialIndices) {
+                for (auto &local_material_index : *scene_mesh.Triangles->PrimitiveMaterialIndices) {
+                    local_material_index = local_material_index < material_indices_by_gltf_material.size() ?
+                        material_indices_by_gltf_material[local_material_index] :
+                        fallback_material_index;
+                }
+            }
             auto morph_data_copy = scene_mesh.MorphData; // Keep a copy for component setup
-            auto mesh = Meshes->CreateMesh(std::move(*scene_mesh.Triangles), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
-            const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
-            mesh_entity = me;
-            R.emplace<Path>(mesh_entity, path);
-            mesh_morph_data.emplace_back(std::move(morph_data_copy));
+            try {
+                auto mesh = Meshes->CreateMesh(std::move(*scene_mesh.Triangles), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
+                const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
+                mesh_entity = me;
+                R.emplace<Path>(mesh_entity, path);
+                mesh_morph_data.emplace_back(std::move(morph_data_copy));
+            } catch (const std::exception &e) {
+                return import_fail(std::format("glTF import failed for '{}': {}", path.string(), e.what()));
+            }
         } else {
             mesh_morph_data.emplace_back(std::nullopt);
         }
         if (first_mesh_entity == entt::null && mesh_entity != entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
 
-        auto create_extra = [&](std::optional<MeshData> &data) -> entt::entity {
-            if (!data) return entt::null;
-            auto m = Meshes->CreateMesh(std::move(*data));
-            const auto [e, _] = AddMesh(std::move(m), std::nullopt);
-            R.emplace<Path>(e, path);
-            if (first_mesh_entity == entt::null) first_mesh_entity = e;
-            return e;
+        auto create_extra = [&](std::optional<MeshData> &data) -> std::expected<entt::entity, std::string> {
+            if (!data) return entt::entity{entt::null};
+            try {
+                auto m = Meshes->CreateMesh(std::move(*data));
+                const auto [e, _] = AddMesh(std::move(m), std::nullopt);
+                R.emplace<Path>(e, path);
+                if (first_mesh_entity == entt::null) first_mesh_entity = e;
+                return e;
+            } catch (const std::exception &e) {
+                return std::unexpected{std::format("glTF import failed for '{}': {}", path.string(), e.what())};
+            }
         };
-        extra_entities_per_mesh[mi] = {create_extra(scene_mesh.Lines), create_extra(scene_mesh.Points)};
+        auto lines_entity = create_extra(scene_mesh.Lines);
+        if (!lines_entity) return import_fail(std::move(lines_entity.error()));
+        auto points_entity = create_extra(scene_mesh.Points);
+        if (!points_entity) return import_fail(std::move(points_entity.error()));
+        extra_entities_per_mesh[mi] = {*lines_entity, *points_entity};
     }
 
     const std::string name_prefix = path.stem().string();
@@ -1482,12 +2233,12 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
         armature_data.ImportedSkin = std::move(imported_skin);
         if (!skin.AnchorNodeIndex) {
-            return std::unexpected{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex)};
+            return import_fail(std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex));
         }
 
         const auto anchor_it = scene_nodes_by_index.find(*skin.AnchorNodeIndex);
         if (anchor_it == scene_nodes_by_index.end() || !anchor_it->second->InScene) {
-            return std::unexpected{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", path.string(), skin.SkinIndex, *skin.AnchorNodeIndex)};
+            return import_fail(std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", path.string(), skin.SkinIndex, *skin.AnchorNodeIndex));
         }
 
         const auto armature_entity = R.create();
@@ -1513,7 +2264,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
             }
         } else {
-            return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
+            return import_fail(std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex));
         }
 
         // Allocate pose state and GPU deform buffer for this armature
@@ -1800,6 +2551,23 @@ void Scene::ClearMeshes() {
     std::vector<entt::entity> entities;
     for (const auto e : R.view<MeshInstance>()) entities.emplace_back(e);
     for (const auto e : entities) Destroy(e);
+
+    auto &texture_store = *Textures;
+    if (texture_store.Textures.size() > 1) {
+        const auto imported_textures = std::span<const TextureEntry>{texture_store.Textures}.subspan(1);
+        const auto imported_sampler_slots = CollectSamplerSlots(imported_textures);
+        ReleaseSamplerSlots(*Slots, imported_sampler_slots);
+        texture_store.Textures.erase(texture_store.Textures.begin() + 1, texture_store.Textures.end());
+    }
+    texture_store.WhiteTextureSlot = texture_store.Textures.empty() ? InvalidSlot : texture_store.Textures.front().SamplerSlot;
+
+    if (GetMaterialCount(*Buffers) > 1) SetMaterialCount(*Buffers, 1u);
+    R.patch<MaterialStore>(
+        SceneEntity,
+        [](auto &material_store) {
+            if (material_store.Names.size() > 1) material_store.Names.erase(material_store.Names.begin() + 1, material_store.Names.end());
+        }
+    );
 }
 
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
@@ -1929,11 +2697,10 @@ void Scene::RecordRenderCommandBuffer() {
     const bool is_excite_mode = interaction_mode == InteractionMode::Excite;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::Rendered;
     const bool show_fill = settings.ViewportShading == ViewportShadingMode::Solid || show_rendered;
-    const SPT fill_pipeline = show_rendered ? SPT::PBRFill :
-                                              (settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals);
+    const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
-    const auto edit_transform_context = is_edit_mode ? BuildEditTransformContext(R) : EditTransformContext{};
+    const auto edit_transform_context = is_edit_mode ? EditTransformContext{ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
 
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
@@ -1951,6 +2718,36 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
+    std::vector<entt::entity> blend_mesh_order;
+    if (show_rendered) {
+        // Transparent pass ordering: sort mesh draws back-to-front by camera distance.
+        // This is a mesh-level approximation; interpenetrating transparent geometry may still require
+        // per-primitive sorting or OIT for fully correct compositing.
+        const auto camera_position = R.get<const ViewCamera>(SceneEntity).Position();
+        std::unordered_map<entt::entity, float> farthest_distance2_by_mesh;
+        farthest_distance2_by_mesh.reserve(R.storage<RenderInstance>().size());
+        for (const auto [entity, _, wt] : R.view<const RenderInstance, const WorldTransform>().each()) {
+            entt::entity mesh_entity = entity;
+            if (const auto *mesh_instance = R.try_get<const MeshInstance>(entity)) mesh_entity = mesh_instance->MeshEntity;
+            if (!R.valid(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
+            const auto delta = wt.Position - camera_position;
+            const auto distance2 = dot(delta, delta);
+            if (const auto it = farthest_distance2_by_mesh.find(mesh_entity); it != farthest_distance2_by_mesh.end()) {
+                it->second = std::max(it->second, distance2);
+            } else {
+                farthest_distance2_by_mesh.emplace(mesh_entity, distance2);
+            }
+        }
+        blend_mesh_order.reserve(farthest_distance2_by_mesh.size());
+        for (const auto &[mesh_entity, _] : farthest_distance2_by_mesh) blend_mesh_order.emplace_back(mesh_entity);
+        std::ranges::sort(
+            blend_mesh_order,
+            [&](const auto a, const auto b) {
+                return farthest_distance2_by_mesh.at(a) > farthest_distance2_by_mesh.at(b);
+            }
+        );
+    }
+
     // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)
     const auto mesh_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes);
     const auto get_deform_slots = [&](entt::entity mesh_entity) -> DeformSlots {
@@ -1962,7 +2759,7 @@ void Scene::RecordRenderCommandBuffer() {
         (interaction_mode == InteractionMode::Object || !silhouette_instances.empty());
 
     DrawListBuilder draw_list;
-    DrawBatchInfo fill_batch{}, line_batch{}, point_batch{};
+    DrawBatchInfo fill_batch_opaque{}, fill_batch_blend{}, line_batch{}, point_batch{};
     DrawBatchInfo extras_line_batch{};
     DrawBatchInfo silhouette_batch{};
     DrawBatchInfo overlay_face_normals_batch{}, overlay_vertex_normals_batch{}, overlay_bbox_batch{};
@@ -2000,36 +2797,128 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     if (show_fill) {
-        fill_batch = draw_list.BeginBatch();
-        for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
-            if (mesh.FaceCount() == 0) continue;
-            const auto deform = get_deform_slots(entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-            const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
-            const auto face_first_tri = Meshes->GetFaceFirstTriRange(mesh.GetStoreId());
-            const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
-            draw.ObjectIdSlot = face_id_buffer.Slot;
-            draw.FaceIdOffset = face_id_buffer.Offset;
-            draw.FaceFirstTriOffset = settings.SmoothShading ? InvalidOffset : face_first_tri.Offset;
-            if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-                // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                draw.ElementStateSlotOffset = face_state_buffer;
-                const auto db1 = draw_list.Draws.size();
-                AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
-                PatchMorphWeights(draw_list, db1, deform);
-                patch_edit_pending_local_transform(db1, entity);
-                draw.ElementStateSlotOffset = {};
-                const auto db2 = draw_list.Draws.size();
-                AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
-                PatchMorphWeights(draw_list, db2, deform);
-                patch_edit_pending_local_transform(db2, entity);
+        const auto append_fill_phase = [&](DrawBatchInfo &batch, std::optional<bool> blend_target) {
+            batch = draw_list.BeginBatch();
+            const auto append_fill_mesh = [&](entt::entity entity, const MeshBuffers &mesh_buffers, const ModelsBuffer &models, const Mesh &mesh) {
+                if (mesh.FaceCount() == 0) return;
+                const auto deform = get_deform_slots(entity);
+                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
+                const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
+                const auto face_first_tri = Meshes->GetFaceFirstTriRange(mesh.GetStoreId());
+                const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
+                const auto face_primitive_buffer = Meshes->GetFacePrimitiveRange(mesh.GetStoreId());
+                const auto primitive_material_buffer = Meshes->GetPrimitiveMaterialRange(mesh.GetStoreId());
+                draw.ObjectIdSlot = face_id_buffer.Slot;
+                draw.FaceIdOffset = face_id_buffer.Offset;
+                draw.FaceFirstTriOffset = settings.SmoothShading ? InvalidOffset : face_first_tri.Offset;
+                draw.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
+                draw.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
+                const auto append_fill_draw = [&](const DrawData &draw_data, uint32_t index_count, std::optional<uint32_t> model_index) {
+                    const auto db = draw_list.Draws.size();
+                    AppendDraw(draw_list, batch, index_count, models, draw_data, model_index);
+                    PatchMorphWeights(draw_list, db, deform);
+                    patch_edit_pending_local_transform(db, entity);
+                };
+                const auto append_fill_for_instances = [&](const DrawData &draw_data, uint32_t index_count) {
+                    if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
+                        // Draw primary with element state first, then all without (depth LESS won't overwrite)
+                        auto primary_draw = draw_data;
+                        primary_draw.ElementStateSlotOffset = face_state_buffer;
+                        append_fill_draw(primary_draw, index_count, R.get<RenderInstance>(it->second).BufferIndex);
+                        auto other_draw = draw_data;
+                        other_draw.ElementStateSlotOffset = {};
+                        append_fill_draw(other_draw, index_count, std::nullopt);
+                    } else {
+                        auto all_draw = draw_data;
+                        all_draw.ElementStateSlotOffset = face_state_buffer;
+                        append_fill_draw(all_draw, index_count, std::nullopt);
+                    }
+                };
+
+                if (show_rendered) {
+                    const auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh.GetStoreId());
+                    const auto face_primitives = Meshes->GetFacePrimitiveIndices(mesh.GetStoreId());
+                    const auto triangle_face_ids = Meshes->GetTriangleFaceIds(mesh.GetStoreId());
+                    const auto material_count = GetMaterialCount(*Buffers);
+                    const auto material_is_blend = [&](uint32_t material_index) {
+                        return material_index < material_count &&
+                            GetMaterial(*Buffers, material_index).AlphaMode == uint32_t(fastgltf::AlphaMode::Blend);
+                    };
+                    const uint32_t triangle_count = mesh_buffers.FaceIndices.Count / 3u;
+                    if (!primitive_materials.empty() &&
+                        face_primitives.size() == mesh.FaceCount() &&
+                        triangle_face_ids.size() == triangle_count &&
+                        triangle_count > 0u) {
+                        const auto triangle_is_blend = [&](uint32_t triangle_index) {
+                            const auto face_id = triangle_face_ids[triangle_index];
+                            if (face_id == 0u || face_id > face_primitives.size()) return false;
+                            auto primitive_index = face_primitives[face_id - 1u];
+                            if (primitive_index >= primitive_materials.size()) primitive_index = uint32_t(primitive_materials.size() - 1u);
+                            return material_is_blend(primitive_materials[primitive_index]);
+                        };
+
+                        struct BlendDrawRange {
+                            bool Blend{false};
+                            uint32_t FirstTriangle{0};
+                            uint32_t TriangleCount{0};
+                        };
+                        std::vector<BlendDrawRange> blend_ranges;
+                        blend_ranges.reserve(16);
+
+                        auto active_blend = triangle_is_blend(0u);
+                        auto first_triangle = 0u;
+                        for (uint32_t tri = 1u; tri < triangle_count; ++tri) {
+                            const auto tri_blend = triangle_is_blend(tri);
+                            if (tri_blend == active_blend) continue;
+                            blend_ranges.emplace_back(
+                                BlendDrawRange{
+                                    .Blend = active_blend,
+                                    .FirstTriangle = first_triangle,
+                                    .TriangleCount = tri - first_triangle,
+                                }
+                            );
+                            active_blend = tri_blend;
+                            first_triangle = tri;
+                        }
+                        blend_ranges.emplace_back(
+                            BlendDrawRange{
+                                .Blend = active_blend,
+                                .FirstTriangle = first_triangle,
+                                .TriangleCount = triangle_count - first_triangle,
+                            }
+                        );
+
+                        for (const auto &range : blend_ranges) {
+                            if (blend_target && range.Blend != *blend_target) continue;
+                            if (range.TriangleCount == 0u) continue;
+                            auto range_draw = draw;
+                            range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
+                            range_draw.FaceIdOffset += range.FirstTriangle;
+                            append_fill_for_instances(range_draw, range.TriangleCount * 3u);
+                        }
+                        return;
+                    }
+                }
+
+                if (!blend_target || !*blend_target) append_fill_for_instances(draw, mesh_buffers.FaceIndices.Count);
+            };
+            if (blend_target && *blend_target && !blend_mesh_order.empty()) {
+                for (const auto entity : blend_mesh_order) {
+                    if (!R.valid(entity) || !R.all_of<MeshBuffers, ModelsBuffer, Mesh>(entity)) continue;
+                    append_fill_mesh(entity, R.get<const MeshBuffers>(entity), R.get<const ModelsBuffer>(entity), R.get<const Mesh>(entity));
+                }
             } else {
-                draw.ElementStateSlotOffset = face_state_buffer;
-                const auto db = draw_list.Draws.size();
-                AppendDraw(draw_list, fill_batch, mesh_buffers.FaceIndices, models, draw);
-                PatchMorphWeights(draw_list, db, deform);
-                patch_edit_pending_local_transform(db, entity);
+                for (const auto [entity, mesh_buffers, models, mesh] : R.view<const MeshBuffers, const ModelsBuffer, const Mesh>().each()) {
+                    append_fill_mesh(entity, mesh_buffers, models, mesh);
+                }
             }
+        };
+
+        if (show_rendered) {
+            append_fill_phase(fill_batch_opaque, false);
+            append_fill_phase(fill_batch_blend, true);
+        } else {
+            append_fill_phase(fill_batch_opaque, std::nullopt);
         }
     }
 
@@ -2164,7 +3053,14 @@ void Scene::RecordRenderCommandBuffer() {
     { // Meshes
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         // Solid faces
-        if (show_fill) record_draw_batch(main.Renderer, fill_pipeline, fill_batch);
+        if (show_fill) {
+            if (show_rendered) {
+                record_draw_batch(main.Renderer, SPT::PBRFill, fill_batch_opaque);
+                record_draw_batch(main.Renderer, SPT::PBRFillBlend, fill_batch_blend);
+            } else {
+                record_draw_batch(main.Renderer, fill_pipeline, fill_batch_opaque);
+            }
+        }
         // Wireframe edges (always recorded — batch is empty when nothing qualifies)
         record_draw_batch(main.Renderer, SPT::Line, line_batch);
         // Vertex points (always recorded — batch is empty when nothing qualifies)
@@ -3465,6 +4361,176 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 }
             }
             if (frozen) EndDisabled();
+        }
+
+        if (CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+            auto &material_store = R.get<MaterialStore>(SceneEntity);
+            auto &texture_store = *Textures;
+            const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
+            std::span<const uint32_t> primitive_materials = Meshes->GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
+            const auto material_count = GetMaterialCount(*Buffers);
+            const auto material_name = [&](uint32_t index) -> std::string {
+                if (index < material_store.Names.size() && !material_store.Names[index].empty()) return std::string{material_store.Names[index]};
+                return std::format("Material{}", index);
+            };
+            if (primitive_materials.empty()) {
+                TextUnformatted("No material slots on this mesh.");
+            } else if (material_count == 0) {
+                TextUnformatted("No materials.");
+            } else {
+                auto &slot_selection = R.get_or_emplace<MeshMaterialSlotSelection>(active_mesh_entity);
+                bool slot_selection_changed = false;
+                const auto max_primitive = uint32_t(primitive_materials.size() - 1);
+                if (slot_selection.PrimitiveIndex > max_primitive) {
+                    slot_selection.PrimitiveIndex = max_primitive;
+                    slot_selection_changed = true;
+                }
+
+                BeginChild("MaterialSlots", ImVec2(0, 110), true);
+                for (uint32_t primitive_index = 0; primitive_index < primitive_materials.size(); ++primitive_index) {
+                    const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
+                    const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
+                    if (Selectable(label.c_str(), slot_selection.PrimitiveIndex == primitive_index)) {
+                        slot_selection.PrimitiveIndex = primitive_index;
+                        slot_selection_changed = true;
+                    }
+                }
+                EndChild();
+                if (slot_selection_changed) R.patch<MeshMaterialSlotSelection>(active_mesh_entity, [](auto &) {});
+
+                uint32_t assigned_material = std::min(primitive_materials[slot_selection.PrimitiveIndex], material_count - 1);
+                if (const auto *pending = R.try_get<const MeshMaterialAssignment>(active_mesh_entity);
+                    pending && pending->PrimitiveIndex == slot_selection.PrimitiveIndex) {
+                    assigned_material = std::min(pending->MaterialIndex, material_count - 1);
+                }
+                int assigned_material_i = int(assigned_material);
+                const auto assigned_material_name = material_name(assigned_material);
+                if (BeginCombo("Assigned material", assigned_material_name.c_str())) {
+                    for (int i = 0; i < int(material_count); ++i) {
+                        const auto option_name = material_name(uint32_t(i));
+                        if (Selectable(option_name.c_str(), assigned_material_i == i)) {
+                            assigned_material_i = i;
+                            assigned_material = uint32_t(i);
+                            R.emplace_or_replace<MeshMaterialAssignment>(active_mesh_entity, slot_selection.PrimitiveIndex, uint32_t(i));
+                        }
+                    }
+                    EndCombo();
+                }
+
+                auto material = GetMaterial(*Buffers, assigned_material);
+                const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
+                    std::string preview = "None";
+                    bool has_match = false;
+                    for (const auto &texture : texture_store.Textures) {
+                        if (texture.SamplerSlot != slot) continue;
+                        preview = texture.Name;
+                        has_match = true;
+                        break;
+                    }
+                    if (!has_match && slot != InvalidSlot) preview = std::format("Missing slot {}", slot);
+
+                    bool changed = false;
+                    if (BeginCombo(label, preview.c_str())) {
+                        if (Selectable("None", slot == InvalidSlot)) {
+                            slot = InvalidSlot;
+                            changed = true;
+                        }
+                        for (const auto &texture : texture_store.Textures) {
+                            if (Selectable(texture.Name.c_str(), slot == texture.SamplerSlot)) {
+                                slot = texture.SamplerSlot;
+                                changed = true;
+                            }
+                        }
+                        EndCombo();
+                    }
+                    return changed;
+                };
+                const auto edit_uv_transform = [&](const char *offset_label, const char *scale_label, const char *rotation_label, vec2 &offset, vec2 &scale, float &rotation) {
+                    bool changed = false;
+                    changed |= DragFloat2(offset_label, &offset.x, 0.01f);
+                    changed |= DragFloat2(scale_label, &scale.x, 0.01f);
+                    changed |= DragFloat(rotation_label, &rotation, 0.01f);
+                    return changed;
+                };
+                bool material_changed = false;
+                material_changed |= ColorEdit4("Base color", &material.BaseColorFactor.x);
+                material_changed |= SliderFloat("Metallic", &material.MetallicFactor, 0.f, 1.f);
+                material_changed |= SliderFloat("Roughness", &material.RoughnessFactor, 0.f, 1.f);
+                material_changed |= edit_texture_slot("Base color texture", material.BaseColorTexture);
+                material_changed |= SliderUInt("Base color UV set", &material.BaseColorTexCoord, 0u, 3u);
+                material_changed |= edit_uv_transform(
+                    "Base color UV offset",
+                    "Base color UV scale",
+                    "Base color UV rotation",
+                    material.BaseColorUvOffset,
+                    material.BaseColorUvScale,
+                    material.BaseColorUvRotation
+                );
+
+                material_changed |= edit_texture_slot("Metallic-roughness texture", material.MetallicRoughnessTexture);
+                material_changed |= SliderUInt("Metallic-roughness UV set", &material.MetallicRoughnessTexCoord, 0u, 3u);
+                material_changed |= edit_uv_transform(
+                    "Metallic-roughness UV offset",
+                    "Metallic-roughness UV scale",
+                    "Metallic-roughness UV rotation",
+                    material.MetallicRoughnessUvOffset,
+                    material.MetallicRoughnessUvScale,
+                    material.MetallicRoughnessUvRotation
+                );
+
+                material_changed |= edit_texture_slot("Normal texture", material.NormalTexture);
+                material_changed |= SliderUInt("Normal UV set", &material.NormalTexCoord, 0u, 3u);
+                material_changed |= edit_uv_transform(
+                    "Normal UV offset",
+                    "Normal UV scale",
+                    "Normal UV rotation",
+                    material.NormalUvOffset,
+                    material.NormalUvScale,
+                    material.NormalUvRotation
+                );
+                material_changed |= SliderFloat("Normal scale", &material.NormalScale, -2.f, 2.f);
+
+                material_changed |= edit_texture_slot("Occlusion texture", material.OcclusionTexture);
+                material_changed |= SliderUInt("Occlusion UV set", &material.OcclusionTexCoord, 0u, 3u);
+                material_changed |= edit_uv_transform(
+                    "Occlusion UV offset",
+                    "Occlusion UV scale",
+                    "Occlusion UV rotation",
+                    material.OcclusionUvOffset,
+                    material.OcclusionUvScale,
+                    material.OcclusionUvRotation
+                );
+                material_changed |= SliderFloat("Occlusion strength", &material.OcclusionStrength, 0.f, 1.f);
+
+                material_changed |= ColorEdit3("Emissive", &material.EmissiveFactor.x);
+                material_changed |= edit_texture_slot("Emissive texture", material.EmissiveTexture);
+                material_changed |= SliderUInt("Emissive UV set", &material.EmissiveTexCoord, 0u, 3u);
+                material_changed |= edit_uv_transform(
+                    "Emissive UV offset",
+                    "Emissive UV scale",
+                    "Emissive UV rotation",
+                    material.EmissiveUvOffset,
+                    material.EmissiveUvScale,
+                    material.EmissiveUvRotation
+                );
+
+                static constexpr std::array alpha_mode_labels{"Opaque", "Mask", "Blend"};
+                int alpha_mode = std::clamp<int>(int(material.AlphaMode), 0, int(alpha_mode_labels.size() - 1));
+                if (Combo("Alpha mode", &alpha_mode, alpha_mode_labels.data(), int(alpha_mode_labels.size()))) {
+                    material.AlphaMode = uint32_t(alpha_mode);
+                    material_changed = true;
+                }
+                if (material.AlphaMode == uint32_t(fastgltf::AlphaMode::Mask)) {
+                    material_changed |= SliderFloat("Alpha cutoff", &material.AlphaCutoff, 0.f, 1.f);
+                }
+                bool double_sided = material.DoubleSided != 0u;
+                if (Checkbox("Double sided", &double_sided)) {
+                    material.DoubleSided = double_sided ? 1u : 0u;
+                    material_changed = true;
+                }
+
+                if (material_changed) R.emplace_or_replace<MaterialEdit>(SceneEntity, MaterialEdit{.Index = assigned_material, .Value = material});
+            }
         }
     }
     if (auto *cd = R.try_get<CameraData>(active_entity)) {

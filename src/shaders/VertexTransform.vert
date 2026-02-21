@@ -9,6 +9,13 @@ layout(location = 0) out vec3 WorldNormal;
 layout(location = 1) out vec3 WorldPosition;
 layout(location = 2) out vec4 Color;
 layout(location = 3) flat out uint FaceOverlayFlags;
+layout(location = 4) out vec2 TexCoord0;
+layout(location = 5) out vec2 TexCoord1;
+layout(location = 6) out vec2 TexCoord2;
+layout(location = 7) out vec2 TexCoord3;
+layout(location = 8) flat out uint MaterialIndex;
+layout(location = 9) out vec4 VertexColor;
+layout(location = 10) out vec4 WorldTangent;
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
 
@@ -28,6 +35,7 @@ void main() {
 
     uint element_state = 0u;
     uint face_id = 0u;
+    MaterialIndex = 0u;
     vec3 normal = vert.Normal;
     vec3 morphed_pos = vert.Position;
     ApplyMorphDeform(draw, morphed_pos, idx, normal);
@@ -63,6 +71,7 @@ void main() {
         WorldNormal = trs_transform_normal(world, normal);
     }
     WorldPosition = world_pos;
+    VertexColor = vert.Color;
 
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
     const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == EditElementEdge;
@@ -88,6 +97,10 @@ void main() {
     }
 
     if (is_face_draw) {
+        if (draw.FacePrimitiveOffset != INVALID_OFFSET && draw.PrimitiveMaterialOffset != INVALID_OFFSET && face_id != 0u) {
+            const uint primitive_index = FacePrimitiveBuffers[nonuniformEXT(SceneViewUBO.FacePrimitiveSlot)].PrimitiveIndices[draw.FacePrimitiveOffset + face_id - 1u];
+            MaterialIndex = PrimitiveMaterialBuffers[nonuniformEXT(SceneViewUBO.PrimitiveMaterialSlot)].MaterialIndices[draw.PrimitiveMaterialOffset + primitive_index];
+        }
         if (is_selected) FaceOverlayFlags |= 1u;
         if (is_active) FaceOverlayFlags |= 2u;
         Color = base_color;
@@ -95,6 +108,22 @@ void main() {
         vec4 final_color = is_selected ? selected_color : base_color;
         if (is_active) final_color = vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0);
         Color = final_color;
+    }
+    TexCoord0 = vert.TexCoord0;
+    TexCoord1 = vert.TexCoord1;
+    TexCoord2 = vert.TexCoord2;
+    TexCoord3 = vert.TexCoord3;
+    {
+        vec3 tangent = vert.Tangent.xyz;
+        if (dot(tangent, tangent) > 1e-8) {
+            tangent = normalize(tangent);
+            vec3 tangent_dummy_pos = vec3(0.0);
+            ApplyArmatureDeform(draw, tangent_dummy_pos, idx, tangent);
+            tangent = normalize(trs_transform_normal(world, tangent));
+            WorldTangent = vec4(tangent, vert.Tangent.w);
+        } else {
+            WorldTangent = vec4(0.0, 0.0, 0.0, 1.0);
+        }
     }
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
 }

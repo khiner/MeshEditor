@@ -33,6 +33,12 @@ bindings:
     kind: Buffer
   - name: LightBuffer
     kind: Buffer
+  - name: MaterialBuffer
+    kind: Buffer
+  - name: PrimitiveMaterialBuffer
+    kind: Buffer
+  - name: FacePrimitiveBuffer
+    kind: Buffer
 
 structs:
   - name: SlotOffset
@@ -93,6 +99,12 @@ structs:
       - name: MorphTargetCount
         type: u32
       - name: VertexClassOffset
+        type: u32
+        default: InvalidOffset
+      - name: PrimitiveMaterialOffset
+        type: u32
+        default: InvalidOffset
+      - name: FacePrimitiveOffset
         type: u32
         default: InvalidOffset
   - name: SceneViewUBO
@@ -157,6 +169,15 @@ structs:
       - name: VertexClassSlot
         type: u32
         default: InvalidSlot
+      - name: MaterialSlot
+        type: u32
+        default: InvalidSlot
+      - name: PrimitiveMaterialSlot
+        type: u32
+        default: InvalidSlot
+      - name: FacePrimitiveSlot
+        type: u32
+        default: InvalidSlot
       - name: DrawDataSlot
         type: u32
         default: InvalidSlot
@@ -205,6 +226,18 @@ structs:
         type: vec3
       - name: Normal
         type: vec3
+      - name: Tangent
+        type: vec4
+      - name: Color
+        type: vec4
+      - name: TexCoord0
+        type: vec2
+      - name: TexCoord1
+        type: vec2
+      - name: TexCoord2
+        type: vec2
+      - name: TexCoord3
+        type: vec2
   - name: BoneDeformVertex
     fields:
       - name: Joints
@@ -240,6 +273,103 @@ structs:
       - name: OuterConeCos
         type: float
       - name: Type
+        type: u32
+  - name: PBRMaterial
+    fields:
+      - name: BaseColorFactor
+        type: vec4
+        default: 1
+      - name: EmissiveFactor
+        type: vec3
+        default: 0
+      - name: MetallicFactor
+        type: float
+        default: 1
+      - name: RoughnessFactor
+        type: float
+        default: 1
+      - name: NormalScale
+        type: float
+        default: 1
+      - name: OcclusionStrength
+        type: float
+        default: 1
+      - name: BaseColorTexture
+        type: u32
+        default: InvalidSlot
+      - name: BaseColorTexCoord
+        type: u32
+      - name: BaseColorUvOffset
+        type: vec2
+        default: 0
+      - name: BaseColorUvScale
+        type: vec2
+        default: 1
+      - name: BaseColorUvRotation
+        type: float
+        default: 0
+      - name: MetallicRoughnessTexture
+        type: u32
+        default: InvalidSlot
+      - name: MetallicRoughnessTexCoord
+        type: u32
+      - name: MetallicRoughnessUvOffset
+        type: vec2
+        default: 0
+      - name: MetallicRoughnessUvScale
+        type: vec2
+        default: 1
+      - name: MetallicRoughnessUvRotation
+        type: float
+        default: 0
+      - name: NormalTexture
+        type: u32
+        default: InvalidSlot
+      - name: NormalTexCoord
+        type: u32
+      - name: NormalUvOffset
+        type: vec2
+        default: 0
+      - name: NormalUvScale
+        type: vec2
+        default: 1
+      - name: NormalUvRotation
+        type: float
+        default: 0
+      - name: OcclusionTexture
+        type: u32
+        default: InvalidSlot
+      - name: OcclusionTexCoord
+        type: u32
+      - name: OcclusionUvOffset
+        type: vec2
+        default: 0
+      - name: OcclusionUvScale
+        type: vec2
+        default: 1
+      - name: OcclusionUvRotation
+        type: float
+        default: 0
+      - name: EmissiveTexture
+        type: u32
+        default: InvalidSlot
+      - name: EmissiveTexCoord
+        type: u32
+      - name: EmissiveUvOffset
+        type: vec2
+        default: 0
+      - name: EmissiveUvScale
+        type: vec2
+        default: 1
+      - name: EmissiveUvRotation
+        type: float
+        default: 0
+      - name: AlphaMode
+        type: u32
+      - name: AlphaCutoff
+        type: float
+        default: 0.5
+      - name: DoubleSided
         type: u32
   - name: SelectionNode
     fields:

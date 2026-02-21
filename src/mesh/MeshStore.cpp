@@ -7,10 +7,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
+#include <cmath>
 #include <fstream>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -21,7 +25,48 @@
 namespace {
 constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
-MeshData ReadObj(const std::filesystem::path &path) {
+struct MeshDataWithMaterials {
+    MeshData Mesh;
+    std::vector<MaterialData> Materials;
+};
+
+vec3 ClampColor(vec3 c) {
+    c.x = std::clamp(c.x, 0.f, 1.f);
+    c.y = std::clamp(c.y, 0.f, 1.f);
+    c.z = std::clamp(c.z, 0.f, 1.f);
+    return c;
+}
+
+MaterialData ToPbrMaterial(const tinyobj::material_t &material, uint32_t index) {
+    // OBJ/MTL uses Phong terms; convert to glTF-style metallic-roughness with a common heuristic.
+    const vec3 kd = ClampColor({material.diffuse[0], material.diffuse[1], material.diffuse[2]});
+    const vec3 ks = ClampColor({material.specular[0], material.specular[1], material.specular[2]});
+
+    const float shininess = std::max(material.shininess, 0.f);
+    const float roughness = std::clamp(std::sqrt(2.f / (shininess + 2.f)), 0.04f, 1.f);
+    const float specular_strength = std::max(ks.x, std::max(ks.y, ks.z));
+    const float metallic = std::clamp((specular_strength - 0.04f) / (1.f - 0.04f), 0.f, 1.f);
+    const vec3 base_color = glm::mix(kd, ks, metallic);
+    const float alpha = std::clamp(material.dissolve, 0.f, 1.f);
+
+    return MaterialData{
+        .BaseColorFactor = {base_color.x, base_color.y, base_color.z, alpha},
+        .MetallicFactor = metallic,
+        .RoughnessFactor = roughness,
+        .Name = material.name.empty() ? "Material" + std::to_string(index) : material.name,
+    };
+}
+
+MaterialData DefaultMaterial(std::string name = "Default") {
+    return MaterialData{
+        .BaseColorFactor = {1.f, 1.f, 1.f, 1.f},
+        .MetallicFactor = 0.f,
+        .RoughnessFactor = 1.f,
+        .Name = std::move(name),
+    };
+}
+
+MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -30,11 +75,35 @@ MeshData ReadObj(const std::filesystem::path &path) {
         throw std::runtime_error{"Failed to load OBJ: " + err};
     }
 
-    MeshData data;
+    MeshDataWithMaterials result{};
+    auto &data = result.Mesh;
     data.Positions.reserve(attrib.vertices.size() / 3);
     for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
         data.Positions.emplace_back(attrib.vertices[i], attrib.vertices[i + 1], attrib.vertices[i + 2]);
     }
+
+    std::unordered_map<int, uint32_t> material_to_local_index;
+    std::unordered_map<int, uint32_t> material_to_primitive;
+    std::vector<uint32_t> face_primitive_indices;
+    std::vector<uint32_t> primitive_material_indices;
+    const auto local_material_index = [&](int material_id) -> uint32_t {
+        if (const auto it = material_to_local_index.find(material_id); it != material_to_local_index.end()) return it->second;
+        const auto local_index = static_cast<uint32_t>(result.Materials.size());
+        if (material_id >= 0 && material_id < static_cast<int>(materials.size())) {
+            result.Materials.emplace_back(ToPbrMaterial(materials[size_t(material_id)], uint32_t(material_id)));
+        } else {
+            result.Materials.emplace_back(DefaultMaterial());
+        }
+        material_to_local_index.emplace(material_id, local_index);
+        return local_index;
+    };
+    const auto primitive_index = [&](int material_id) -> uint32_t {
+        if (const auto it = material_to_primitive.find(material_id); it != material_to_primitive.end()) return it->second;
+        const auto index = static_cast<uint32_t>(primitive_material_indices.size());
+        primitive_material_indices.emplace_back(local_material_index(material_id));
+        material_to_primitive.emplace(material_id, index);
+        return index;
+    };
 
     for (const auto &shape : shapes) {
         size_t vi = 0;
@@ -46,14 +115,59 @@ MeshData ReadObj(const std::filesystem::path &path) {
                 face_verts.emplace_back(shape.mesh.indices[vi + vi_f].vertex_index);
             }
             data.Faces.emplace_back(std::move(face_verts));
+            const int material_id = f < shape.mesh.material_ids.size() ? shape.mesh.material_ids[f] : -1;
+            face_primitive_indices.emplace_back(primitive_index(material_id));
             vi += fv;
         }
     }
 
-    return data;
+    if (!face_primitive_indices.empty()) {
+        data.FacePrimitiveIndices = std::move(face_primitive_indices);
+        data.PrimitiveMaterialIndices = std::move(primitive_material_indices);
+    }
+    return result;
 }
 
-MeshData ReadPly(const std::filesystem::path &path) {
+template<typename T>
+float NormalizeColor(T value) {
+    if constexpr (std::is_floating_point_v<T>) {
+        return std::clamp(static_cast<float>(value), 0.f, 1.f);
+    } else if constexpr (std::is_signed_v<T>) {
+        const auto den = static_cast<float>(std::numeric_limits<T>::max());
+        return std::clamp(static_cast<float>(value) / den, 0.f, 1.f);
+    } else {
+        const auto den = static_cast<float>(std::numeric_limits<T>::max());
+        return std::clamp(static_cast<float>(value) / den, 0.f, 1.f);
+    }
+}
+
+template<typename T>
+vec3 AverageColor(tinyply::PlyData &colors) {
+    const auto *values = reinterpret_cast<const T *>(colors.buffer.get());
+    vec3 sum{0.f};
+    for (size_t i = 0; i < colors.count; ++i) {
+        sum.x += NormalizeColor(values[i * 3]);
+        sum.y += NormalizeColor(values[i * 3 + 1]);
+        sum.z += NormalizeColor(values[i * 3 + 2]);
+    }
+    return colors.count > 0 ? sum / static_cast<float>(colors.count) : vec3{1.f};
+}
+
+vec3 ComputeAverageVertexColor(tinyply::PlyData &colors) {
+    switch (colors.t) {
+        case tinyply::Type::UINT8: return AverageColor<uint8_t>(colors);
+        case tinyply::Type::UINT16: return AverageColor<uint16_t>(colors);
+        case tinyply::Type::UINT32: return AverageColor<uint32_t>(colors);
+        case tinyply::Type::INT8: return AverageColor<int8_t>(colors);
+        case tinyply::Type::INT16: return AverageColor<int16_t>(colors);
+        case tinyply::Type::INT32: return AverageColor<int32_t>(colors);
+        case tinyply::Type::FLOAT32: return AverageColor<float>(colors);
+        case tinyply::Type::FLOAT64: return AverageColor<double>(colors);
+        default: return {1.f, 1.f, 1.f};
+    }
+}
+
+MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
     std::ifstream file{path, std::ios::binary};
     if (!file) throw std::runtime_error{"Failed to open: " + path.string()};
 
@@ -61,6 +175,14 @@ MeshData ReadPly(const std::filesystem::path &path) {
     ply_file.parse_header(file);
 
     auto vertices = ply_file.request_properties_from_element("vertex", {"x", "y", "z"});
+    std::shared_ptr<tinyply::PlyData> colors;
+    try {
+        colors = ply_file.request_properties_from_element("vertex", {"red", "green", "blue"});
+    } catch (...) {
+        try {
+            colors = ply_file.request_properties_from_element("vertex", {"r", "g", "b"});
+        } catch (...) {}
+    }
     std::shared_ptr<tinyply::PlyData> faces;
     try {
         faces = ply_file.request_properties_from_element("face", {"vertex_indices"}, 0);
@@ -69,7 +191,8 @@ MeshData ReadPly(const std::filesystem::path &path) {
     }
     ply_file.read(file);
 
-    MeshData data;
+    MeshDataWithMaterials result{};
+    auto &data = result.Mesh;
     data.Positions.reserve(vertices->count);
     auto AddVertices = [&](const auto *raw) {
         for (size_t i = 0; i < vertices->count; ++i) {
@@ -107,7 +230,22 @@ MeshData ReadPly(const std::filesystem::path &path) {
         data.Faces.emplace_back(std::move(face_verts));
     }
 
-    return data;
+    if (colors && colors->count == vertices->count && !data.Faces.empty()) {
+        // Bake vertex colors down to one albedo value for now (no per-vertex color channel in the render path yet).
+        const auto avg = ComputeAverageVertexColor(*colors);
+        result.Materials.emplace_back(
+            MaterialData{
+                .BaseColorFactor = {avg.x, avg.y, avg.z, 1.f},
+                .MetallicFactor = 0.f,
+                .RoughnessFactor = 1.f,
+                .Name = "VertexColor",
+            }
+        );
+        data.FacePrimitiveIndices = std::vector<uint32_t>(data.Faces.size(), 0u);
+        data.PrimitiveMaterialIndices = std::vector<uint32_t>{0u};
+    }
+
+    return result;
 }
 
 MeshData DeduplicateVertices(MeshData &&mesh) {
@@ -119,10 +257,49 @@ MeshData DeduplicateVertices(MeshData &&mesh) {
 
     MeshData deduped;
     deduped.Positions.reserve(mesh.Positions.size());
+    if (mesh.Normals && mesh.Normals->size() == mesh.Positions.size()) {
+        deduped.Normals = std::vector<vec3>{};
+        deduped.Normals->reserve(mesh.Normals->size());
+    }
+    if (mesh.Tangents && mesh.Tangents->size() == mesh.Positions.size()) {
+        deduped.Tangents = std::vector<vec4>{};
+        deduped.Tangents->reserve(mesh.Tangents->size());
+    }
+    if (mesh.Colors0 && mesh.Colors0->size() == mesh.Positions.size()) {
+        deduped.Colors0 = std::vector<vec4>{};
+        deduped.Colors0->reserve(mesh.Colors0->size());
+    }
+    if (mesh.TexCoords0 && mesh.TexCoords0->size() == mesh.Positions.size()) {
+        deduped.TexCoords0 = std::vector<vec2>{};
+        deduped.TexCoords0->reserve(mesh.TexCoords0->size());
+    }
+    if (mesh.TexCoords1 && mesh.TexCoords1->size() == mesh.Positions.size()) {
+        deduped.TexCoords1 = std::vector<vec2>{};
+        deduped.TexCoords1->reserve(mesh.TexCoords1->size());
+    }
+    if (mesh.TexCoords2 && mesh.TexCoords2->size() == mesh.Positions.size()) {
+        deduped.TexCoords2 = std::vector<vec2>{};
+        deduped.TexCoords2->reserve(mesh.TexCoords2->size());
+    }
+    if (mesh.TexCoords3 && mesh.TexCoords3->size() == mesh.Positions.size()) {
+        deduped.TexCoords3 = std::vector<vec2>{};
+        deduped.TexCoords3->reserve(mesh.TexCoords3->size());
+    }
     std::unordered_map<vec3, uint, VertexHash> index_by_vertex;
-    for (const auto &p : mesh.Positions) {
-        if (const auto [it, inserted] = index_by_vertex.try_emplace(p, deduped.Positions.size()); inserted) {
+    std::vector<uint32_t> remap(mesh.Positions.size(), 0u);
+    for (uint32_t i = 0; i < mesh.Positions.size(); ++i) {
+        const auto &p = mesh.Positions[i];
+        const auto [it, inserted] = index_by_vertex.try_emplace(p, deduped.Positions.size());
+        remap[i] = it->second;
+        if (inserted) {
             deduped.Positions.emplace_back(p);
+            if (deduped.Normals) deduped.Normals->emplace_back((*mesh.Normals)[i]);
+            if (deduped.Tangents) deduped.Tangents->emplace_back((*mesh.Tangents)[i]);
+            if (deduped.Colors0) deduped.Colors0->emplace_back((*mesh.Colors0)[i]);
+            if (deduped.TexCoords0) deduped.TexCoords0->emplace_back((*mesh.TexCoords0)[i]);
+            if (deduped.TexCoords1) deduped.TexCoords1->emplace_back((*mesh.TexCoords1)[i]);
+            if (deduped.TexCoords2) deduped.TexCoords2->emplace_back((*mesh.TexCoords2)[i]);
+            if (deduped.TexCoords3) deduped.TexCoords3->emplace_back((*mesh.TexCoords3)[i]);
         }
     }
 
@@ -130,9 +307,13 @@ MeshData DeduplicateVertices(MeshData &&mesh) {
     for (const auto &face : mesh.Faces) {
         std::vector<uint> new_face;
         new_face.reserve(face.size());
-        for (const auto idx : face) new_face.emplace_back(index_by_vertex.at(mesh.Positions[idx]));
+        for (const auto idx : face) new_face.emplace_back(remap[idx]);
         deduped.Faces.emplace_back(std::move(new_face));
     }
+    deduped.Edges.reserve(mesh.Edges.size());
+    for (const auto &edge : mesh.Edges) deduped.Edges.emplace_back(std::array<uint32_t, 2>{remap[edge[0]], remap[edge[1]]});
+    deduped.FacePrimitiveIndices = std::move(mesh.FacePrimitiveIndices);
+    deduped.PrimitiveMaterialIndices = std::move(mesh.PrimitiveMaterialIndices);
 
     return deduped;
 }
@@ -161,6 +342,8 @@ std::vector<uint32_t> CreateFaceFirstTriIndices(const std::vector<std::vector<ui
 
 MeshStore::MeshStore(mvk::BufferContext &ctx)
     : FaceFirstTriangleBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
+      FacePrimitiveBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FacePrimitiveBuffer},
+      PrimitiveMaterialBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::PrimitiveMaterialBuffer},
       BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer},
       MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer},
       VerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
@@ -204,10 +387,25 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         throw std::runtime_error{"ArmatureDeformData channel counts must match the position count."};
     }
     const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
+    if (data.TexCoords0 && data.TexCoords0->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords0 must match vertex count."};
+    if (data.TexCoords1 && data.TexCoords1->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords1 must match vertex count."};
+    if (data.TexCoords2 && data.TexCoords2->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords2 must match vertex count."};
+    if (data.TexCoords3 && data.TexCoords3->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords3 must match vertex count."};
+    if (data.Tangents && data.Tangents->size() != vertex_count) throw std::runtime_error{"MeshData.Tangents must match vertex count."};
+    if (data.Colors0 && data.Colors0->size() != vertex_count) throw std::runtime_error{"MeshData.Colors0 must match vertex count."};
+    if (data.FacePrimitiveIndices && data.FacePrimitiveIndices->size() != data.Faces.size()) throw std::runtime_error{"MeshData.FacePrimitiveIndices must match face count."};
     const auto vertices = AllocateVertices(vertex_count);
     auto vertex_span = VerticesBuffer.GetMutable(vertices);
     for (uint32_t i = 0; i < vertex_count; ++i) {
-        vertex_span[i] = {.Position = data.Positions[i]};
+        vertex_span[i] = {
+            .Position = data.Positions[i],
+            .Tangent = data.Tangents ? (*data.Tangents)[i] : vec4{0.f, 0.f, 0.f, 1.f},
+            .Color = data.Colors0 ? (*data.Colors0)[i] : vec4{1.f},
+            .TexCoord0 = data.TexCoords0 ? (*data.TexCoords0)[i] : vec2{0},
+            .TexCoord1 = data.TexCoords1 ? (*data.TexCoords1)[i] : vec2{0},
+            .TexCoord2 = data.TexCoords2 ? (*data.TexCoords2)[i] : vec2{0},
+            .TexCoord3 = data.TexCoords3 ? (*data.TexCoords3)[i] : vec2{0},
+        };
     }
     Range bone_deform{};
     if (deform_data) {
@@ -239,12 +437,26 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         default_morph_weights.resize(morph_target_count, 0.f);
     }
 
-    Range faces{}, triangle_face_ids{};
+    Range faces{}, triangle_face_ids{}, face_primitives{}, primitive_materials{};
     if (!data.Faces.empty()) {
         const auto first_tris = CreateFaceFirstTriIndices(data.Faces);
         faces = AllocateFaces(data.Faces.size());
         std::ranges::copy(first_tris, FaceFirstTriangleBuffer.GetMutable(faces).begin());
         triangle_face_ids = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
+
+        std::vector<uint32_t> face_primitive_indices(data.Faces.size(), 0u);
+        if (data.FacePrimitiveIndices) face_primitive_indices = *data.FacePrimitiveIndices;
+        face_primitives = FacePrimitiveBuffer.Allocate(face_primitive_indices);
+
+        const auto primitive_count = data.FacePrimitiveIndices ?
+            (face_primitive_indices.empty() ? 0u : *std::ranges::max_element(face_primitive_indices) + 1u) :
+            1u;
+        if (data.PrimitiveMaterialIndices && data.PrimitiveMaterialIndices->size() != primitive_count) {
+            throw std::runtime_error{"MeshData.PrimitiveMaterialIndices must match primitive count."};
+        }
+        std::vector<uint32_t> primitive_material_indices(primitive_count, 0u);
+        if (data.PrimitiveMaterialIndices) primitive_material_indices = *data.PrimitiveMaterialIndices;
+        primitive_materials = PrimitiveMaterialBuffer.Allocate(primitive_material_indices);
     }
 
     const auto id = AcquireId({
@@ -252,6 +464,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         .FaceData = faces,
         .EdgeStates = {},
         .TriangleFaceIds = triangle_face_ids,
+        .FacePrimitives = face_primitives,
+        .PrimitiveMaterials = primitive_materials,
         .BoneDeform = bone_deform,
         .MorphTargets = morph_targets,
         .MorphTargetCount = morph_target_count,
@@ -300,6 +514,8 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         .FaceData = faces,
         .EdgeStates = edge_states,
         .TriangleFaceIds = TriangleFaceIdBuffer.Allocate(TriangleFaceIdBuffer.Get(src_entry.TriangleFaceIds)),
+        .FacePrimitives = src_entry.FacePrimitives.Count > 0 ? FacePrimitiveBuffer.Allocate(FacePrimitiveBuffer.Get(src_entry.FacePrimitives)) : Range{},
+        .PrimitiveMaterials = src_entry.PrimitiveMaterials.Count > 0 ? PrimitiveMaterialBuffer.Allocate(PrimitiveMaterialBuffer.Get(src_entry.PrimitiveMaterials)) : Range{},
         .BoneDeform = src_entry.BoneDeform.Count > 0 ? BoneDeformBuffer.Allocate(BoneDeformBuffer.Get(src_entry.BoneDeform)) : Range{},
         .MorphTargets = src_entry.MorphTargets.Count > 0 ? MorphTargetBuffer.Allocate(MorphTargetBuffer.Get(src_entry.MorphTargets)) : Range{},
         .MorphTargetCount = src_entry.MorphTargetCount,
@@ -313,18 +529,21 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     return {*this, id, mesh};
 }
 
-std::expected<Mesh, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
+std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
     auto ext = path.extension().string();
     std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    MeshData data;
+    MeshDataWithMaterials source_data;
     try {
-        if (ext == ".ply") data = ReadPly(path);
-        else if (ext == ".obj") data = ReadObj(path);
+        if (ext == ".ply") source_data = ReadPly(path);
+        else if (ext == ".obj") source_data = ReadObj(path);
         else return std::unexpected{"Unsupported file format: " + ext};
     } catch (const std::exception &e) {
         return std::unexpected{e.what()};
     }
-    return CreateMesh(DeduplicateVertices(std::move(data)));
+    return MeshWithMaterials{
+        .Mesh = CreateMesh(DeduplicateVertices(std::move(source_data.Mesh))),
+        .Materials = std::move(source_data.Materials),
+    };
 }
 
 void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) {
@@ -343,6 +562,8 @@ void MeshStore::Release(uint32_t id) {
     VerticesBuffer.Release(entry.Vertices);
     TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
     FaceFirstTriangleBuffer.Release(entry.FaceData);
+    FacePrimitiveBuffer.Release(entry.FacePrimitives);
+    PrimitiveMaterialBuffer.Release(entry.PrimitiveMaterials);
     EdgeStateBuffer.Release(entry.EdgeStates);
     if (entry.BoneDeform.Count > 0) BoneDeformBuffer.Release(entry.BoneDeform);
     if (entry.MorphTargets.Count > 0) MorphTargetBuffer.Release(entry.MorphTargets);

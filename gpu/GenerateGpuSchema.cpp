@@ -221,6 +221,7 @@ std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vec
     if (type == "float") return "float";
     if (type == "uvec2") return "glm::uvec2";
     if (type == "uvec4") return "glm::uvec4";
+    if (type == "vec2") return "vec2";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
@@ -233,6 +234,7 @@ std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::ve
     if (type == "float") return "float";
     if (type == "uvec2") return "uvec2";
     if (type == "uvec4") return "uvec4";
+    if (type == "vec2") return "vec2";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
@@ -386,7 +388,7 @@ int main(int argc, char **argv) {
         glsl_out << "\n\n#endif\n";
 
         bool needs_array{false}, needs_cstdint{false},
-            needs_uvec2{false}, needs_uvec4{false}, needs_vec3{false}, needs_vec4{false},
+            needs_uvec2{false}, needs_uvec4{false}, needs_vec2{false}, needs_vec3{false}, needs_vec4{false},
             needs_mat4{false}, needs_slots{false};
         std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
@@ -395,6 +397,7 @@ int main(int argc, char **argv) {
             if (spec.Base == "u32" || spec.Base == "u8") needs_cstdint = true;
             if (spec.Base == "uvec2") needs_uvec2 = true;
             if (spec.Base == "uvec4") needs_uvec4 = true;
+            if (spec.Base == "vec2") needs_vec2 = true;
             if (spec.Base == "vec3") needs_vec3 = true;
             if (spec.Base == "vec4") needs_vec4 = true;
             if (spec.Base == "mat4") needs_mat4 = true;
@@ -412,12 +415,13 @@ int main(int argc, char **argv) {
         if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
         if (needs_uvec2 || needs_uvec4) cpp_out << "#include \"glm/glm.hpp\"\n";
+        if (needs_vec2) cpp_out << "#include \"numeric/vec2.h\"\n";
         if (needs_mat4) cpp_out << "#include \"numeric/mat4.h\"\n";
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
         for (const auto &include : cpp_includes) cpp_out << "#include \"gpu/" << include << ".h\"\n";
-        if (needs_cstdint || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots || !cpp_includes.empty()) cpp_out << "\n";
+        if (needs_cstdint || needs_vec2 || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots || !cpp_includes.empty()) cpp_out << "\n";
 
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {

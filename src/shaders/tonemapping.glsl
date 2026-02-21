@@ -3,11 +3,11 @@
 #ifndef TONEMAPPING_GLSL
 #define TONEMAPPING_GLSL
 
+const float GAMMA = 2.2;
+const float INV_GAMMA = 1.0 / GAMMA;
+
 vec3 linearTosRGB(vec3 color) {
-    const vec3 cutoff = step(vec3(0.0031308), color);
-    const vec3 lower = color * 12.92;
-    const vec3 higher = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-    return mix(lower, higher, cutoff);
+    return pow(color, vec3(INV_GAMMA));
 }
 
 vec3 toneMapPBRNeutral(vec3 color) {

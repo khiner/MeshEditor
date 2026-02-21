@@ -4,7 +4,6 @@
 // Lossy for round-trip export but visually near-lossless.
 //
 // TODO (glTF 2.0 coverage):
-// - Implement materials, following https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/pbr.frag
 // - After adding materials/textures: tangents import + morph target tangent deltas.
 // - Add `KHR_animation_pointer` support (requires materials/lights; currently only core TRS/weights animation paths are handled).
 // - Support compressed geometry extensions (`EXT_meshopt_compression`, `KHR_draco_mesh_compression`):
@@ -21,7 +20,13 @@
 #include "mesh/MeshData.h"
 #include "mesh/MorphTargetData.h"
 #include "numeric/mat4.h"
+#include "numeric/vec2.h"
+#include "numeric/vec3.h"
+#include "numeric/vec4.h"
 
+#include <fastgltf/types.hpp>
+
+#include <cstddef>
 #include <expected>
 #include <filesystem>
 #include <optional>
@@ -29,6 +34,54 @@
 #include <vector>
 
 namespace gltf {
+struct TextureTransformData {
+    float Rotation{0.f};
+    vec2 UvOffset{0.f}, UvScale{1.f};
+    std::optional<uint32_t> TexCoordIndex{};
+};
+
+struct TextureInfoData {
+    uint32_t TextureIndex{};
+    uint32_t TexCoordIndex{};
+    std::optional<TextureTransformData> Transform{};
+};
+
+struct PBRData {
+    vec4 BaseColorFactor{1.f};
+    float MetallicFactor{1.f};
+    float RoughnessFactor{1.f};
+    vec3 EmissiveFactor{0.f};
+    float NormalScale{1.f};
+    float OcclusionStrength{1.f};
+    std::optional<TextureInfoData> BaseColorTexture{}, MetallicRoughnessTexture{};
+    std::optional<TextureInfoData> NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
+};
+
+struct SceneMaterialData {
+    PBRData PbrData{};
+    fastgltf::AlphaMode AlphaMode{fastgltf::AlphaMode::Opaque};
+    bool DoubleSided{false};
+    float AlphaCutoff{0.5f};
+    std::string Name;
+};
+
+struct SceneTextureData {
+    std::optional<uint32_t> SamplerIndex{}, ImageIndex{}, BasisuImageIndex{}, DdsImageIndex{}, WebpImageIndex{};
+    std::string Name;
+};
+
+struct SceneImageData {
+    std::vector<std::byte> Bytes;
+    fastgltf::MimeType MimeType{fastgltf::MimeType::None};
+    std::string Name;
+};
+
+struct SceneSamplerData {
+    std::optional<fastgltf::Filter> MagFilter{}, MinFilter{};
+    fastgltf::Wrap WrapS{fastgltf::Wrap::Repeat}, WrapT{fastgltf::Wrap::Repeat};
+    std::string Name;
+};
+
 struct SceneMeshData {
     // Merged triangle/line/point primitives (Triangles/TriangleStrip/TriangleFan, Lines/LineStrip/LineLoop, Points)
     std::optional<MeshData> Triangles{}, Lines{}, Points{};
@@ -107,6 +160,10 @@ struct AnimationClipData {
 
 struct SceneData {
     std::vector<SceneMeshData> Meshes;
+    std::vector<SceneMaterialData> Materials;
+    std::vector<SceneTextureData> Textures;
+    std::vector<SceneImageData> Images;
+    std::vector<SceneSamplerData> Samplers;
     std::vector<SceneNodeData> Nodes;
     std::vector<SceneObjectData> Objects;
     std::vector<SceneSkinData> Skins;

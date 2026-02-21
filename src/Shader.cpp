@@ -146,7 +146,7 @@ ShaderPipeline::ShaderPipeline(
     MultisampleState({{}, msaa_samples}),
     ColorBlendAttachment(std::move(color_blend_attachment)),
     DepthStencilState(std::move(depth_stencil_state)),
-    RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eCounterClockwise, depth_bias != 0.f, depth_bias, {}, {}, 1.f}),
+    RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eClockwise, depth_bias != 0.f, depth_bias, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}),
     DescriptorSetLayout(set_layout),
     DescriptorSet(set) {

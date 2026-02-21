@@ -1,17 +1,22 @@
 #include "GltfLoader.h"
 
 #include "LightTypes.h"
+#include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
+#include <fastgltf/tools.hpp>
 
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <format>
+#include <fstream>
+#include <limits>
 #include <numbers>
 #include <numeric>
 #include <unordered_map>
@@ -43,6 +48,154 @@ std::optional<uint32_t> ToIndex(std::size_t index, std::size_t upper_bound) {
 std::optional<uint32_t> ToIndex(const fastgltf::Optional<std::size_t> &index, std::size_t upper_bound) {
     if (!index) return {};
     return ToIndex(*index, upper_bound);
+}
+
+vec2 ToVec2(const fastgltf::math::nvec2 &v) { return {v.x(), v.y()}; }
+vec4 ToVec4(const fastgltf::math::nvec4 &v) { return {v.x(), v.y(), v.z(), v.w()}; }
+
+std::optional<TextureTransformData> ToTextureTransform(const std::unique_ptr<fastgltf::TextureTransform> &transform) {
+    if (!transform) return {};
+    return TextureTransformData{
+        .Rotation = transform->rotation,
+        .UvOffset = ToVec2(transform->uvOffset),
+        .UvScale = ToVec2(transform->uvScale),
+        .TexCoordIndex = ToIndex(transform->texCoordIndex, std::numeric_limits<uint32_t>::max()),
+    };
+}
+
+std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::TextureInfo> &texture_info, const fastgltf::Asset &asset) {
+    if (!texture_info) return {};
+    const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
+    if (!texture_index) return {};
+    return TextureInfoData{
+        .TextureIndex = *texture_index,
+        .TexCoordIndex = uint32_t(texture_info->texCoordIndex),
+        .Transform = ToTextureTransform(texture_info->transform),
+    };
+}
+std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::NormalTextureInfo> &texture_info, const fastgltf::Asset &asset) {
+    if (!texture_info) return {};
+    const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
+    if (!texture_index) return {};
+    return TextureInfoData{
+        .TextureIndex = *texture_index,
+        .TexCoordIndex = uint32_t(texture_info->texCoordIndex),
+        .Transform = ToTextureTransform(texture_info->transform),
+    };
+}
+std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::OcclusionTextureInfo> &texture_info, const fastgltf::Asset &asset) {
+    if (!texture_info) return {};
+    const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
+    if (!texture_index) return {};
+    return TextureInfoData{
+        .TextureIndex = *texture_index,
+        .TexCoordIndex = uint32_t(texture_info->texCoordIndex),
+        .Transform = ToTextureTransform(texture_info->transform),
+    };
+}
+
+SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf::Material &material, uint32_t material_index) {
+    SceneMaterialData material_data{
+        .PbrData = {
+            .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
+            .MetallicFactor = material.pbrData.metallicFactor,
+            .RoughnessFactor = material.pbrData.roughnessFactor,
+            .EmissiveFactor = {material.emissiveFactor.x(), material.emissiveFactor.y(), material.emissiveFactor.z()},
+            .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
+            .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
+            .BaseColorTexture = ToTextureInfo(material.pbrData.baseColorTexture, asset),
+            .MetallicRoughnessTexture = ToTextureInfo(material.pbrData.metallicRoughnessTexture, asset),
+            .NormalTexture = ToTextureInfo(material.normalTexture, asset),
+            .OcclusionTexture = ToTextureInfo(material.occlusionTexture, asset),
+            .EmissiveTexture = ToTextureInfo(material.emissiveTexture, asset),
+        },
+        .AlphaMode = material.alphaMode,
+        .DoubleSided = material.doubleSided,
+        .AlphaCutoff = material.alphaCutoff,
+        .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
+    };
+    return material_data;
+}
+
+std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::filesystem::path &path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) return std::unexpected{std::format("Failed to open image file '{}'.", path.string())};
+
+    const auto end = file.tellg();
+    if (end <= 0) return std::vector<std::byte>{};
+    const auto size = static_cast<std::size_t>(end);
+    std::vector<std::byte> bytes(size);
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(size));
+    if (!file) return std::unexpected{std::format("Failed to read image file '{}'.", path.string())};
+    return bytes;
+}
+
+std::expected<SceneImageData, std::string> ReadImageData(const fastgltf::Asset &asset, uint32_t image_index, const std::filesystem::path &base_dir) {
+    if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
+    const auto &image = asset.images[image_index];
+
+    SceneImageData image_data{
+        .Bytes = {},
+        .MimeType = fastgltf::MimeType::None,
+        .Name = image.name.empty() ? std::format("Image{}", image_index) : std::string(image.name),
+    };
+
+    const auto from_span = [&image_data](const auto &data, fastgltf::MimeType mime_type) {
+        image_data.Bytes.resize(data.size());
+        std::memcpy(image_data.Bytes.data(), data.data(), data.size());
+        image_data.MimeType = mime_type;
+    };
+
+    auto read_result = std::visit(
+        fastgltf::visitor{
+            [&](const fastgltf::sources::Array &array) -> std::expected<void, std::string> {
+                from_span(array.bytes, array.mimeType);
+                return {};
+            },
+            [&](const fastgltf::sources::Vector &vector) -> std::expected<void, std::string> {
+                from_span(vector.bytes, vector.mimeType);
+                return {};
+            },
+            [&](const fastgltf::sources::ByteView &view) -> std::expected<void, std::string> {
+                from_span(view.bytes, view.mimeType);
+                return {};
+            },
+            [&](const fastgltf::sources::BufferView &buffer_view) -> std::expected<void, std::string> {
+                if (buffer_view.bufferViewIndex >= asset.bufferViews.size()) {
+                    return std::unexpected{std::format("glTF image {} references invalid bufferView index {}.", image_index, buffer_view.bufferViewIndex)};
+                }
+                const auto bytes = fastgltf::DefaultBufferDataAdapter{}(asset, buffer_view.bufferViewIndex);
+                from_span(bytes, buffer_view.mimeType);
+                return {};
+            },
+            [&](const fastgltf::sources::URI &uri) -> std::expected<void, std::string> {
+                if (!uri.uri.isLocalPath()) {
+                    return std::unexpected{std::format("glTF image {} URI '{}' is not a local path.", image_index, uri.uri.string())};
+                }
+                auto image_path = uri.uri.fspath();
+                if (image_path.is_relative()) image_path = base_dir / image_path;
+                image_path = image_path.lexically_normal();
+                auto bytes = ReadFileBytes(image_path);
+                if (!bytes) return std::unexpected{std::move(bytes.error())};
+                image_data.Bytes = std::move(*bytes);
+                image_data.MimeType = uri.mimeType;
+                return {};
+            },
+            [&](const fastgltf::sources::CustomBuffer &) -> std::expected<void, std::string> {
+                return std::unexpected{std::format("glTF image {} uses unsupported custom buffer source.", image_index)};
+            },
+            [&](const fastgltf::sources::Fallback &) -> std::expected<void, std::string> {
+                return std::unexpected{std::format("glTF image {} resolved to fallback image source.", image_index)};
+            },
+            [&](const std::monostate &) -> std::expected<void, std::string> {
+                return std::unexpected{std::format("glTF image {} has no data source.", image_index)};
+            },
+        },
+        image.data
+    );
+    if (!read_result) return std::unexpected{std::move(read_result.error())};
+    return image_data;
 }
 
 // Appends positions/edges from a non-triangle primitive into the target MeshData,
@@ -133,6 +286,75 @@ std::expected<void, std::string> AppendPrimitive(
         // Previous primitives had normals but this one doesn't — pad with zeros
         mesh_data.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
     }
+
+    const auto tangent_it = primitive.findAttribute("TANGENT");
+    const bool has_tangents = tangent_it != primitive.attributes.end();
+    if (has_tangents) {
+        if (!mesh_data.Tangents) {
+            mesh_data.Tangents.emplace();
+            mesh_data.Tangents->resize(base_vertex, vec4{0.f, 0.f, 0.f, 1.f});
+        }
+        const auto &tangent_accessor = asset.accessors[tangent_it->accessorIndex];
+        if (tangent_accessor.count != position_accessor.count) {
+            return std::unexpected{std::format("glTF primitive TANGENT count ({}) must match POSITION count ({}).", tangent_accessor.count, position_accessor.count)};
+        }
+        mesh_data.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
+        fastgltf::copyFromAccessor<vec4>(asset, tangent_accessor, &(*mesh_data.Tangents)[base_vertex]);
+    } else if (mesh_data.Tangents) {
+        mesh_data.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
+    }
+
+    const auto color_it = primitive.findAttribute("COLOR_0");
+    const bool has_colors0 = color_it != primitive.attributes.end();
+    if (has_colors0) {
+        if (!mesh_data.Colors0) {
+            mesh_data.Colors0.emplace();
+            mesh_data.Colors0->resize(base_vertex, vec4{1.f});
+        }
+        const auto &color_accessor = asset.accessors[color_it->accessorIndex];
+        if (color_accessor.count != position_accessor.count) {
+            return std::unexpected{std::format("glTF primitive COLOR_0 count ({}) must match POSITION count ({}).", color_accessor.count, position_accessor.count)};
+        }
+        mesh_data.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
+        if (color_accessor.type == fastgltf::AccessorType::Vec3) {
+            std::vector<vec3> colors(position_accessor.count);
+            fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
+            for (uint32_t i = 0; i < position_accessor.count; ++i) {
+                (*mesh_data.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
+            }
+        } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
+            fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*mesh_data.Colors0)[base_vertex]);
+        } else {
+            return std::unexpected{std::format("glTF primitive COLOR_0 accessor type must be VEC3 or VEC4, got type {}.", int(color_accessor.type))};
+        }
+    } else if (mesh_data.Colors0) {
+        mesh_data.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
+    }
+
+    const auto append_uv_set = [&](uint32_t set_index, std::optional<std::vector<vec2>> &uv_set) -> std::expected<void, std::string> {
+        const auto uv_name = std::format("TEXCOORD_{}", set_index);
+        const auto uv_it = primitive.findAttribute(uv_name);
+        const bool has_uv = uv_it != primitive.attributes.end();
+        if (has_uv) {
+            if (!uv_set) {
+                uv_set.emplace();
+                uv_set->resize(base_vertex, vec2{0.f});
+            }
+            const auto &uv_accessor = asset.accessors[uv_it->accessorIndex];
+            if (uv_accessor.count != position_accessor.count) {
+                return std::unexpected{std::format("glTF primitive {} count ({}) must match POSITION count ({}).", uv_name, uv_accessor.count, position_accessor.count)};
+            }
+            uv_set->resize(base_vertex + position_accessor.count, vec2{0.f});
+            fastgltf::copyFromAccessor<vec2>(asset, uv_accessor, &(*uv_set)[base_vertex]);
+        } else if (uv_set) {
+            uv_set->resize(base_vertex + position_accessor.count, vec2{0.f});
+        }
+        return {};
+    };
+    if (auto uv_result = append_uv_set(0, mesh_data.TexCoords0); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(1, mesh_data.TexCoords1); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(2, mesh_data.TexCoords2); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(3, mesh_data.TexCoords3); !uv_result) return uv_result;
 
     if (has_joints && !deform_data) deform_data.emplace();
     const bool mesh_has_skin_data = deform_data && (!deform_data->Joints.empty() || !deform_data->Weights.empty());
@@ -310,9 +532,9 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual};
+    fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform};
     using fastgltf::Options;
-    auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices);
+    auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::LoadExternalImages | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices);
     if (parsed.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
 
     return std::move(parsed.get());
@@ -328,7 +550,16 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
     MeshData lines_data, points_data; // Merged across all line/point primitives
     // Track per-primitive vertex counts for morph target re-packing
     std::vector<uint32_t> prim_vertex_counts;
-    for (const auto &primitive : source_mesh.primitives) {
+    std::vector<uint32_t> face_primitive_indices;
+    std::vector<uint32_t> primitive_material_indices(
+        source_mesh.primitives.size(),
+        scene_data.Materials.empty() ? 0u : uint32_t(scene_data.Materials.size() - 1u)
+    );
+    for (uint32_t primitive_index = 0; primitive_index < source_mesh.primitives.size(); ++primitive_index) {
+        const auto &primitive = source_mesh.primitives[primitive_index];
+        if (const auto material_index = ToIndex(primitive.materialIndex, scene_data.Materials.size())) {
+            primitive_material_indices[primitive_index] = *material_index;
+        }
         if (primitive.type == fastgltf::PrimitiveType::Points) {
             AppendNonTrianglePrimitive(asset, primitive, points_data);
             continue;
@@ -338,10 +569,13 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
             continue;
         }
         const uint32_t prev_vertex_count = mesh_data.Positions.size();
+        const uint32_t prev_face_count = mesh_data.Faces.size();
         if (auto append_result = AppendPrimitive(asset, primitive, mesh_data, mesh_deform_data, mesh_morph_data); !append_result) {
             return std::unexpected{std::move(append_result.error())};
         }
         prim_vertex_counts.emplace_back(mesh_data.Positions.size() - prev_vertex_count);
+        const auto appended_face_count = mesh_data.Faces.size() - prev_face_count;
+        face_primitive_indices.insert(face_primitive_indices.end(), appended_face_count, primitive_index);
     }
     const bool has_triangle_data = !mesh_data.Positions.empty() && !mesh_data.Faces.empty();
     const bool has_lines = !lines_data.Positions.empty();
@@ -394,6 +628,11 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
         std::copy_n(source_mesh.weights.begin(), copy_count, mesh_morph_data->DefaultWeights.begin());
     } else if (mesh_morph_data) {
         mesh_morph_data->DefaultWeights.assign(mesh_morph_data->TargetCount, 0.f);
+    }
+
+    if (has_triangle_data) {
+        mesh_data.FacePrimitiveIndices = std::move(face_primitive_indices);
+        mesh_data.PrimitiveMaterialIndices = std::move(primitive_material_indices);
     }
 
     const auto mesh_index = scene_data.Meshes.size();
@@ -626,6 +865,61 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", path.string())};
 
     SceneData scene_data;
+    scene_data.Samplers.reserve(asset.samplers.size());
+    for (const auto &sampler : asset.samplers) {
+        scene_data.Samplers.emplace_back(
+            SceneSamplerData{
+                .MagFilter = sampler.magFilter,
+                .MinFilter = sampler.minFilter,
+                .WrapS = sampler.wrapS,
+                .WrapT = sampler.wrapT,
+                .Name = std::string(sampler.name),
+            }
+        );
+    }
+
+    scene_data.Images.reserve(asset.images.size());
+    for (uint32_t image_index = 0; image_index < asset.images.size(); ++image_index) {
+        auto image_data = ReadImageData(asset, image_index, path.parent_path());
+        if (!image_data) return std::unexpected{std::move(image_data.error())};
+        scene_data.Images.emplace_back(std::move(*image_data));
+    }
+
+    scene_data.Textures.reserve(asset.textures.size());
+    for (const auto &texture : asset.textures) {
+        scene_data.Textures.emplace_back(
+            SceneTextureData{
+                .SamplerIndex = ToIndex(texture.samplerIndex, asset.samplers.size()),
+                .ImageIndex = ToIndex(texture.imageIndex, asset.images.size()),
+                .BasisuImageIndex = ToIndex(texture.basisuImageIndex, asset.images.size()),
+                .DdsImageIndex = ToIndex(texture.ddsImageIndex, asset.images.size()),
+                .WebpImageIndex = ToIndex(texture.webpImageIndex, asset.images.size()),
+                .Name = std::string(texture.name),
+            }
+        );
+    }
+
+    scene_data.Materials.reserve(asset.materials.size() + 1u);
+    for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
+        scene_data.Materials.emplace_back(MakeMaterialData(asset, asset.materials[material_index], material_index));
+    }
+    scene_data.Materials.emplace_back(
+        SceneMaterialData{
+            .PbrData = {
+                .BaseColorFactor = vec4{1.f},
+                .MetallicFactor = 1.f,
+                .RoughnessFactor = 1.f,
+                .EmissiveFactor = vec3{0.f},
+                .NormalScale = 1.f,
+                .OcclusionStrength = 1.f,
+            },
+            .AlphaMode = fastgltf::AlphaMode::Opaque,
+            .DoubleSided = false,
+            .AlphaCutoff = 0.5f,
+            .Name = "DefaultMaterial",
+        }
+    );
+
     const auto parents = BuildNodeParentTable(asset);
     std::vector<Transform> local_transforms(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
