@@ -3,8 +3,9 @@
 // Adapted from Khronos glTF-Sample-Renderer shader logic, pulled 2026-02-16.
 //  - material graph subset: core glTF metallic-roughness (baseColor, MR, normal, occlusion, emissive)
 //  - loop over bindless LightBuffer (LightCount/LightSlot)
+//  - IBL block: diffuse env + specular prefiltered env + GGX BRDF LUT
 //  - MeshEditor face-overlay behavior
-//  - no IBL/material extensions yet (lighting-first validation)
+//  - no glTF material extensions yet (lighting-first validation)
 
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
@@ -31,8 +32,10 @@ layout(set = 0, binding = BINDING_MaterialBuffer, scalar) readonly buffer Materi
 } MaterialBuffers[];
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
+layout(set = 0, binding = BINDING_CubeSampler) uniform samplerCube CubeSamplers[];
 
 #include "punctual.glsl"
+#include "ibl.glsl"
 
 layout(location = 0) in vec3 WorldNormal;
 layout(location = 1) in vec3 WorldPosition;
@@ -187,29 +190,41 @@ void main() {
     const vec3 f90_dielectric = vec3(1.0);
 
     vec3 direct_color = vec3(0.0);
-    for (uint i = 0u; i < SceneViewUBO.LightCount; ++i) {
-        const PunctualLight light = LightBuffers[nonuniformEXT(SceneViewUBO.LightSlot)].Lights[i];
+    if (SceneViewUBO.UseSceneLightsRender != 0u) {
+        for (uint i = 0u; i < SceneViewUBO.LightCount; ++i) {
+            const PunctualLight light = LightBuffers[nonuniformEXT(SceneViewUBO.LightSlot)].Lights[i];
 
-        vec3 L;
-        const vec3 light_intensity = getLightIntensity(light, WorldPosition, L);
-        const vec3 H = normalize(L + v);
-        const float NdotL = clampedDot(n, L);
-        const float NdotH = clampedDot(n, H);
-        const float VdotH = clampedDot(v, H);
+            vec3 L;
+            const vec3 light_intensity = getLightIntensity(light, WorldPosition, L);
+            const vec3 H = normalize(L + v);
+            const float NdotL = clampedDot(n, L);
+            const float NdotH = clampedDot(n, H);
+            const float VdotH = clampedDot(v, H);
 
-        const vec3 dielectric_fresnel = F_Schlick(f0_dielectric * specularWeight, f90_dielectric, abs(VdotH));
-        const vec3 metal_fresnel = F_Schlick(base_color.rgb, vec3(1.0), abs(VdotH));
+            const vec3 dielectric_fresnel = F_Schlick(f0_dielectric * specularWeight, f90_dielectric, abs(VdotH));
+            const vec3 metal_fresnel = F_Schlick(base_color.rgb, vec3(1.0), abs(VdotH));
 
-        const vec3 l_diffuse = light_intensity * NdotL * BRDF_lambertian(base_color.rgb);
-        const vec3 l_specular = light_intensity * NdotL * BRDF_specularGGX(alphaRoughness, NdotL, NdotV, NdotH);
+            const vec3 l_diffuse = light_intensity * NdotL * BRDF_lambertian(base_color.rgb);
+            const vec3 l_specular = light_intensity * NdotL * BRDF_specularGGX(alphaRoughness, NdotL, NdotV, NdotH);
 
-        const vec3 l_metal_brdf = metal_fresnel * l_specular;
-        const vec3 l_dielectric_brdf = mix(l_diffuse, l_specular, dielectric_fresnel);
-        const vec3 l_color = mix(l_dielectric_brdf, l_metal_brdf, metallic);
-        direct_color += l_color;
+            const vec3 l_metal_brdf = metal_fresnel * l_specular;
+            const vec3 l_dielectric_brdf = mix(l_diffuse, l_specular, dielectric_fresnel);
+            const vec3 l_color = mix(l_dielectric_brdf, l_metal_brdf, metallic);
+            direct_color += l_color;
+        }
     }
 
-    vec3 indirect_color = vec3(0.0);
+    const vec3 f_diffuse = getDiffuseLight(n) * base_color.rgb;
+    const vec3 f_specular_dielectric = getIBLRadianceGGX(n, v, perceptualRoughness);
+    const vec3 f_specular_metal = f_specular_dielectric;
+
+    const vec3 f_metal_fresnel_ibl = getIBLGGXFresnel(n, v, perceptualRoughness, base_color.rgb, 1.0);
+    const vec3 f_metal_brdf_ibl = f_metal_fresnel_ibl * f_specular_metal;
+
+    const vec3 f_dielectric_fresnel_ibl = getIBLGGXFresnel(n, v, perceptualRoughness, f0_dielectric, specularWeight);
+    const vec3 f_dielectric_brdf_ibl = mix(f_diffuse, f_specular_dielectric, f_dielectric_fresnel_ibl);
+
+    vec3 indirect_color = mix(f_dielectric_brdf_ibl, f_metal_brdf_ibl, metallic);
     if (material.OcclusionTexture != INVALID_SLOT) {
         const vec2 occlusion_uv = GetUv(
             material.OcclusionTexCoord,

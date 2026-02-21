@@ -8,6 +8,7 @@
 #include "CameraData.h"
 #include "Entity.h"
 #include "Excitable.h"
+#include "File.h"
 #include "LightTypes.h"
 #include "OrientationGizmo.h"
 #include "Shader.h"
@@ -59,6 +60,31 @@ struct TextureEntry {
 struct TextureStore {
     std::vector<TextureEntry> Textures;
     uint32_t WhiteTextureSlot{InvalidSlot};
+};
+
+struct CubemapEntry {
+    mvk::ImageResource Image{};
+    vk::UniqueSampler Sampler{};
+    uint32_t SamplerSlot{InvalidSlot};
+    uint32_t Size{0};
+    uint32_t MipLevels{1};
+    std::string Name;
+};
+
+struct EnvironmentSelection {
+    uint32_t DiffuseEnvSamplerSlot{InvalidSlot};
+    uint32_t SpecularEnvSamplerSlot{InvalidSlot};
+    uint32_t BrdfLutSamplerSlot{InvalidSlot};
+    uint32_t SpecularEnvMipCount{1};
+    std::string Name;
+};
+
+struct EnvironmentStore {
+    CubemapEntry DiffuseEnv;
+    CubemapEntry SpecularEnv;
+    TextureEntry BrdfLut;
+    EnvironmentSelection SceneWorld;
+    EnvironmentSelection StudioWorld;
 };
 
 namespace {
@@ -124,6 +150,19 @@ std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry> textures
 void ReleaseSamplerSlots(DescriptorSlots &slots, std::span<const uint32_t> sampler_slots) {
     for (const auto sampler_slot : sampler_slots) {
         slots.Release({SlotType::Sampler, sampler_slot});
+    }
+}
+
+void ReleaseCubeSamplerSlot(DescriptorSlots &slots, uint32_t sampler_slot) {
+    if (sampler_slot == InvalidSlot) return;
+    slots.Release({SlotType::CubeSampler, sampler_slot});
+}
+
+void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentStore &environments) {
+    ReleaseCubeSamplerSlot(slots, environments.DiffuseEnv.SamplerSlot);
+    ReleaseCubeSamplerSlot(slots, environments.SpecularEnv.SamplerSlot);
+    if (environments.BrdfLut.SamplerSlot != InvalidSlot) {
+        slots.Release({SlotType::Sampler, environments.BrdfLut.SamplerSlot});
     }
 }
 
@@ -249,7 +288,161 @@ uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
     return max_dim > 0 ? std::bit_width(max_dim) : 1u;
 }
 
-std::expected<TextureEntry, std::string> CreateTextureEntry(
+CubemapEntry CreateSolidCubemapEntry(
+    const SceneVulkanResources &vk,
+    mvk::BufferContext &ctx,
+    vk::CommandPool command_pool,
+    vk::Fence one_shot_fence,
+    DescriptorSlots &slots,
+    vec3 color_linear,
+    uint32_t size,
+    uint32_t mip_levels,
+    std::string name
+) {
+    mip_levels = std::min(mip_levels, ComputeMipLevelCount(size, size));
+    if (mip_levels == 0u) mip_levels = 1u;
+
+    const auto to_byte = [](float x) { return uint8_t(std::round(std::clamp(x, 0.f, 1.f) * 255.f)); };
+    const uint8_t r = to_byte(color_linear.r), g = to_byte(color_linear.g), b = to_byte(color_linear.b), a = 255u;
+
+    std::vector<std::byte> pixels;
+    std::vector<vk::BufferImageCopy> copies;
+
+    size_t total_bytes = 0;
+    for (uint32_t mip = 0; mip < mip_levels; ++mip) {
+        const uint32_t mip_size = std::max(1u, size >> mip);
+        total_bytes += size_t(mip_size) * mip_size * 4u * 6u;
+    }
+    pixels.reserve(total_bytes);
+    copies.reserve(size_t(mip_levels) * 6u);
+
+    size_t offset = 0;
+    for (uint32_t mip = 0; mip < mip_levels; ++mip) {
+        const uint32_t mip_size = std::max(1u, size >> mip);
+        const size_t face_bytes = size_t(mip_size) * mip_size * 4u;
+        for (uint32_t face = 0; face < 6u; ++face) {
+            copies.emplace_back(
+                vk::BufferImageCopy{
+                    offset,
+                    0,
+                    0,
+                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, face, 1},
+                    {0, 0, 0},
+                    {mip_size, mip_size, 1},
+                }
+            );
+            for (size_t px = 0; px < size_t(mip_size) * mip_size; ++px) {
+                pixels.emplace_back(std::byte{r});
+                pixels.emplace_back(std::byte{g});
+                pixels.emplace_back(std::byte{b});
+                pixels.emplace_back(std::byte{a});
+            }
+            offset += face_bytes;
+        }
+    }
+
+    auto image = mvk::CreateImage(
+        vk.Device,
+        vk.PhysicalDevice,
+        {
+            vk::ImageCreateFlagBits::eCubeCompatible,
+            vk::ImageType::e2D,
+            vk::Format::eR8G8B8A8Unorm,
+            vk::Extent3D{size, size, 1},
+            mip_levels,
+            6,
+            vk::SampleCountFlagBits::e1,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+            vk::SharingMode::eExclusive,
+        },
+        {
+            {},
+            {},
+            vk::ImageViewType::eCube,
+            vk::Format::eR8G8B8A8Unorm,
+            {},
+            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 6},
+        }
+    );
+
+    mvk::Buffer staging{ctx, std::span<const std::byte>{pixels}, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 6};
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe,
+        vk::PipelineStageFlagBits::eTransfer,
+        {},
+        {},
+        {},
+        vk::ImageMemoryBarrier{
+            {},
+            vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eTransferDstOptimal,
+            {},
+            {},
+            *image.Image,
+            full_range,
+        }
+    );
+
+    cb->copyBufferToImage(*staging, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
+
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eFragmentShader,
+        {},
+        {},
+        {},
+        vk::ImageMemoryBarrier{
+            vk::AccessFlagBits::eTransferWrite,
+            vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eTransferDstOptimal,
+            vk::ImageLayout::eShaderReadOnlyOptimal,
+            {},
+            {},
+            *image.Image,
+            full_range,
+        }
+    );
+
+    cb->end();
+    vk::SubmitInfo submit{};
+    submit.setCommandBuffers(*cb);
+    vk.Queue.submit(submit, one_shot_fence);
+    WaitFor(one_shot_fence, vk.Device);
+
+    auto sampler = vk.Device.createSamplerUnique(
+        vk::SamplerCreateInfo{
+            {},
+            vk::Filter::eLinear,
+            vk::Filter::eLinear,
+            vk::SamplerMipmapMode::eLinear,
+            vk::SamplerAddressMode::eClampToEdge,
+            vk::SamplerAddressMode::eClampToEdge,
+            vk::SamplerAddressMode::eClampToEdge,
+            0.f,
+            VK_FALSE,
+            1.f,
+            VK_FALSE,
+            vk::CompareOp::eNever,
+            0.f,
+            float(mip_levels),
+            vk::BorderColor::eIntOpaqueBlack,
+            VK_FALSE,
+        }
+    );
+
+    const auto sampler_slot = slots.Allocate(SlotType::CubeSampler);
+    const vk::DescriptorImageInfo sampler_info{*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+    vk.Device.updateDescriptorSets({slots.MakeCubeSamplerWrite(sampler_slot, sampler_info)}, {});
+    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Size = size, .MipLevels = mip_levels, .Name = std::move(name)};
+}
+
+TextureEntry CreateTextureEntry(
     const SceneVulkanResources &vk,
     mvk::BufferContext &ctx,
     vk::CommandPool command_pool,
@@ -264,10 +457,6 @@ std::expected<TextureEntry, std::string> CreateTextureEntry(
     vk::SamplerAddressMode wrap_t,
     const SamplerConfig &sampler_cfg
 ) {
-    if (width == 0 || height == 0 || pixels_rgba8.empty()) {
-        return std::unexpected{std::format("Cannot create texture '{}' with empty image data.", name)};
-    }
-
     const vk::Format texture_format = ToTextureFormat(color_space);
     const auto format_features = vk.PhysicalDevice.getFormatProperties(texture_format).optimalTilingFeatures;
     const bool supports_linear_blit = bool(format_features & vk::FormatFeatureFlagBits::eSampledImageFilterLinear);
@@ -450,6 +639,33 @@ std::expected<TextureEntry, std::string> CreateTextureEntry(
         .MipLevels = mip_levels,
         .Name = std::move(name),
     };
+}
+
+TextureEntry CreateDefaultBrdfLutTexture(
+    const SceneVulkanResources &vk,
+    mvk::BufferContext &ctx,
+    vk::CommandPool command_pool,
+    vk::Fence one_shot_fence,
+    DescriptorSlots &slots
+) {
+    static constexpr std::string_view lut_path{"res/images/lut_ggx.png"};
+    const auto encoded = File::Read(std::filesystem::path{lut_path});
+    const auto decoded = DecodeImageRgba8(std::as_bytes(std::span{encoded}), lut_path).value();
+    return CreateTextureEntry(
+        vk,
+        ctx,
+        command_pool,
+        one_shot_fence,
+        slots,
+        decoded.Pixels,
+        decoded.Width,
+        decoded.Height,
+        std::string("DefaultGGXBRDFLUT"),
+        TextureColorSpace::Linear,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        SamplerConfig{.UsesMipmaps = false}
+    );
 }
 } // namespace
 
@@ -849,7 +1065,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots->GetSetLayout(), Slots->GetSet())},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
       Meshes{std::make_unique<MeshStore>(Buffers->Ctx)},
-      Textures{std::make_unique<TextureStore>()} {
+      Textures{std::make_unique<TextureStore>()},
+      Environments{std::make_unique<EnvironmentStore>()} {
     // Reactive storage subscriptions for deferred once-per-frame processing
     using namespace entt::literals;
 
@@ -905,6 +1122,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_update<ViewCamera>()
         .on_construct<Lights>()
         .on_update<Lights>()
+        .on_construct<RenderedLighting>()
+        .on_update<RenderedLighting>()
         .on_construct<ViewportExtent>()
         .on_update<ViewportExtent>()
         .on_construct<SceneEditMode>()
@@ -927,6 +1146,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<ViewportTheme>(SceneEntity, Defaults.ViewportTheme);
     R.emplace<ViewCamera>(SceneEntity, Defaults.ViewCamera);
     R.emplace<Lights>(SceneEntity, Defaults.Lights);
+    R.emplace<RenderedLighting>(SceneEntity);
     R.emplace<ViewportExtent>(SceneEntity);
     R.emplace<AnimationTimeline>(SceneEntity);
     R.emplace<MaterialStore>(SceneEntity);
@@ -951,9 +1171,57 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         vk::SamplerAddressMode::eRepeat,
         SamplerConfig{}
     );
-    if (!white_texture) throw std::runtime_error(white_texture.error());
-    texture_store.WhiteTextureSlot = white_texture->SamplerSlot;
-    texture_store.Textures.emplace_back(std::move(*white_texture));
+    texture_store.WhiteTextureSlot = white_texture.SamplerSlot;
+    texture_store.Textures.emplace_back(std::move(white_texture));
+
+    auto &environments = *Environments;
+    environments.DiffuseEnv = CreateSolidCubemapEntry(
+        Vk,
+        Buffers->Ctx,
+        *CommandPool,
+        *OneShotFence,
+        *Slots,
+        vec3{0.35f},
+        16u,
+        1u,
+        "DefaultDiffuseEnvironment"
+    );
+
+    environments.SpecularEnv = CreateSolidCubemapEntry(
+        Vk,
+        Buffers->Ctx,
+        *CommandPool,
+        *OneShotFence,
+        *Slots,
+        vec3{0.5f},
+        64u,
+        7u,
+        "DefaultSpecularEnvironment"
+    );
+
+    auto brdf_lut = CreateDefaultBrdfLutTexture(
+        Vk,
+        Buffers->Ctx,
+        *CommandPool,
+        *OneShotFence,
+        *Slots
+    );
+    environments.BrdfLut = std::move(brdf_lut);
+
+    environments.SceneWorld = {
+        .DiffuseEnvSamplerSlot = environments.DiffuseEnv.SamplerSlot,
+        .SpecularEnvSamplerSlot = environments.SpecularEnv.SamplerSlot,
+        .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
+        .SpecularEnvMipCount = environments.SpecularEnv.MipLevels,
+        .Name = "Scene World",
+    };
+    environments.StudioWorld = {
+        .DiffuseEnvSamplerSlot = environments.DiffuseEnv.SamplerSlot,
+        .SpecularEnvSamplerSlot = environments.SpecularEnv.SamplerSlot,
+        .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
+        .SpecularEnvMipCount = environments.SpecularEnv.MipLevels,
+        .Name = "Studio World",
+    };
 
     AppendMaterial(
         *Buffers,
@@ -974,6 +1242,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 }
 
 Scene::~Scene() {
+    if (Environments) {
+        ReleaseEnvironmentSamplerSlots(*Slots, *Environments);
+    }
     if (R.valid(SceneEntity)) {
         auto sampler_slots = CollectSamplerSlots(Textures->Textures);
         ReleaseSamplerSlots(*Slots, sampler_slots);
@@ -1336,6 +1607,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
+        const auto &rendered_lighting = R.get<const RenderedLighting>(SceneEntity);
+        const auto &active_environment = rendered_lighting.UseSceneWorldRender ? Environments->SceneWorld : Environments->StudioWorld;
+        const float env_intensity = rendered_lighting.UseSceneWorldRender ? 1.f : rendered_lighting.EnvIntensity;
+        const float env_rotation_radians = rendered_lighting.UseSceneWorldRender ? 0.f : rendered_lighting.EnvRotationDegrees * (Pi / 180.f);
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
         const float viewport_height = extent.height > 0 ? float(extent.height) : 1.f;
@@ -1354,6 +1629,14 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .LightDirection = lights.Direction,
             .LightCount = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight)),
             .LightSlot = Buffers->LightBuffer.Slot,
+            .UseSceneLightsRender = rendered_lighting.UseSceneLightsRender ? 1u : 0u,
+            .UseSceneWorldRender = rendered_lighting.UseSceneWorldRender ? 1u : 0u,
+            .EnvIntensity = env_intensity,
+            .EnvRotationRadians = env_rotation_radians,
+            .DiffuseEnvSamplerSlot = active_environment.DiffuseEnvSamplerSlot,
+            .SpecularEnvSamplerSlot = active_environment.SpecularEnvSamplerSlot,
+            .BrdfLutSamplerSlot = active_environment.BrdfLutSamplerSlot,
+            .SpecularEnvMipCount = active_environment.SpecularEnvMipCount,
             .InteractionMode = uint32_t(interaction_mode),
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
             .IsTransforming = pending ? 1u : 0u,
@@ -1862,9 +2145,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             wrap_t,
             sampler_config
         );
-        if (!texture) return std::unexpected{std::move(texture.error())};
-        const auto sampler_slot = texture->SamplerSlot;
-        texture_store.Textures.emplace_back(std::move(*texture));
+        const auto sampler_slot = texture.SamplerSlot;
+        texture_store.Textures.emplace_back(std::move(texture));
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };
@@ -4735,7 +5017,9 @@ void Scene::RenderControls() {
 
         if (BeginTabItem("Render")) {
             auto &settings = R.get<SceneSettings>(SceneEntity);
+            auto &rendered_lighting = R.get<RenderedLighting>(SceneEntity);
             bool settings_changed = false;
+            bool rendered_shading_changed = false;
             if (ColorEdit3("Background color", settings.ClearColor.float32)) {
                 settings.ClearColor.float32[3] = 1.f;
                 settings_changed = true;
@@ -4753,7 +5037,23 @@ void Scene::RenderControls() {
             SameLine();
             viewport_shading_changed |= RadioButton("Rendered", &viewport_shading, int(ViewportShadingMode::Rendered));
             PopID();
-            TextDisabled("Shortcut: Z");
+
+            if (viewport_shading == int(ViewportShadingMode::Rendered)) {
+                SeparatorText("Rendered shading");
+                if (Button("Reset##RenderedShading")) {
+                    rendered_lighting = {};
+                    rendered_shading_changed = true;
+                }
+                rendered_shading_changed |= Checkbox("Scene lights", &rendered_lighting.UseSceneLightsRender);
+                SameLine();
+                rendered_shading_changed |= Checkbox("Scene world", &rendered_lighting.UseSceneWorldRender);
+                if (!rendered_lighting.UseSceneWorldRender) {
+                    rendered_shading_changed |= SliderFloat("Studio world intensity", &rendered_lighting.EnvIntensity, 0.f, 8.f, "%.2f");
+                    rendered_shading_changed |= SliderFloat("Studio world rotation", &rendered_lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
+                }
+                const auto &active_environment = rendered_lighting.UseSceneWorldRender ? Environments->SceneWorld : Environments->StudioWorld;
+                TextDisabled("Active world: %s", active_environment.Name.c_str());
+            }
 
             bool smooth_shading_changed = false;
             bool smooth_shading = settings.SmoothShading;
@@ -4824,6 +5124,10 @@ void Scene::RenderControls() {
                 if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
             }
             if (settings_changed) R.patch<SceneSettings>(SceneEntity, [](auto &) {});
+            if (rendered_shading_changed) {
+                rendered_lighting.EnvIntensity = std::max(0.f, rendered_lighting.EnvIntensity);
+                R.patch<RenderedLighting>(SceneEntity, [](auto &) {});
+            }
             EndTabItem();
         }
 
@@ -4842,22 +5146,22 @@ void Scene::RenderControls() {
             EndTabItem();
         }
 
-        if (BeginTabItem("Lights")) {
+        // Note: Rendered world/light toggles are in Render -> Viewport shading.
+        if (BeginTabItem("Lighting")) {
             auto &lights = R.get<Lights>(SceneEntity);
-            bool changed = false;
-            if (Button("Reset##Lights")) {
+            bool solid_changed = false;
+            if (Button("Reset##Lighting")) {
                 lights = Defaults.Lights;
-                changed = true;
+                solid_changed = true;
             }
-            SeparatorText("View light");
-            changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
-            SeparatorText("Ambient light");
-            changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
-            SeparatorText("Directional light");
-            changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
-            changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
-            changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
-            if (changed) R.patch<Lights>(SceneEntity, [](auto &) {});
+
+            SeparatorText("Solid");
+            solid_changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
+            solid_changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
+            solid_changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
+            solid_changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
+            solid_changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
+            if (solid_changed) R.patch<Lights>(SceneEntity, [](auto &) {});
             EndTabItem();
         }
         EndTabBar();

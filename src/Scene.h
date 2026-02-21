@@ -105,6 +105,7 @@ struct SceneBuffers;
 struct DescriptorSlots;
 struct SvgResource;
 struct TextureStore;
+struct EnvironmentStore;
 
 namespace mvk {
 struct ImGuiTexture;
@@ -215,6 +216,7 @@ private:
     std::unique_ptr<SceneBuffers> Buffers;
     std::unique_ptr<MeshStore> Meshes;
     std::unique_ptr<TextureStore> Textures;
+    std::unique_ptr<EnvironmentStore> Environments;
 
     enum class SelectionMode { Click,
                                Box };

@@ -7,6 +7,8 @@ bindings:
     kind: Image
   - name: Sampler
     kind: Sampler
+  - name: CubeSampler
+    kind: Sampler
   - name: VertexBuffer
     kind: Buffer
   - name: IndexBuffer
@@ -133,6 +135,30 @@ structs:
         type: u32
       - name: LightSlot
         type: u32
+      - name: UseSceneLightsRender
+        type: u32
+        default: 1
+      - name: UseSceneWorldRender
+        type: u32
+        default: 1
+      - name: EnvIntensity
+        type: float
+        default: 1
+      - name: EnvRotationRadians
+        type: float
+        default: 0
+      - name: DiffuseEnvSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: SpecularEnvSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: BrdfLutSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: SpecularEnvMipCount
+        type: u32
+        default: 1
       - name: InteractionMode
         type: u32
       - name: EditElement

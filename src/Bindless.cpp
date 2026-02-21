@@ -145,3 +145,8 @@ vk::WriteDescriptorSet DescriptorSlots::MakeSamplerWrite(uint32_t slot, const vk
     const auto [binding, descriptor] = BindingFor(SlotType::Sampler);
     return {*DescriptorSet, binding, slot, 1, descriptor, &info, nullptr};
 }
+
+vk::WriteDescriptorSet DescriptorSlots::MakeCubeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
+    const auto [binding, descriptor] = BindingFor(SlotType::CubeSampler);
+    return {*DescriptorSet, binding, slot, 1, descriptor, &info, nullptr};
+}
