@@ -1061,6 +1061,8 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                             .WorldTransform = MatrixToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])),
                             .MeshIndex = node.MeshIndex,
                             .SkinIndex = node.SkinIndex,
+                            .CameraIndex = {},
+                            .LightIndex = {},
                             .NodeWeights = node_weights,
                             .Name = base_name + "." + std::to_string(i),
                         }
@@ -1127,6 +1129,8 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             .Name = skin.name.empty() ? std::format("Skin{}", skin_index) : std::string(skin.name),
             .SkeletonNodeIndex = skeleton_node_index,
             .AnchorNodeIndex = skeleton_node_index ? skeleton_node_index : ComputeCommonAncestor(*ordered_joint_nodes, parents),
+            .Joints = {},
+            .InverseBindMatrices = {},
         };
         scene_skin.Joints.reserve(ordered_joint_nodes->size());
         for (const auto joint_node_index : *ordered_joint_nodes) {
@@ -1153,7 +1157,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     // Parse animations
     for (uint32_t anim_index = 0; anim_index < asset.animations.size(); ++anim_index) {
         const auto &anim = asset.animations[anim_index];
-        AnimationClipData clip{.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name), .Channels = {}};
+        AnimationClipData clip{.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name), .DurationSeconds = 0, .Channels = {}};
         float max_time = 0;
         struct ChannelTargetSpec {
             AnimationPath Path;

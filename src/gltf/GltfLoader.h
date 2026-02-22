@@ -35,58 +35,57 @@
 
 namespace gltf {
 struct TextureTransformData {
-    float Rotation{0.f};
-    vec2 UvOffset{0.f}, UvScale{1.f};
-    std::optional<uint32_t> TexCoordIndex{};
+    float Rotation;
+    vec2 UvOffset, UvScale;
+    std::optional<uint32_t> TexCoordIndex;
 };
 
 struct TextureInfoData {
-    uint32_t TextureIndex{};
-    uint32_t TexCoordIndex{};
-    std::optional<TextureTransformData> Transform{};
+    uint32_t TextureIndex;
+    uint32_t TexCoordIndex;
+    std::optional<TextureTransformData> Transform;
 };
 
 struct PBRData {
-    vec4 BaseColorFactor{1.f};
-    float MetallicFactor{1.f};
-    float RoughnessFactor{1.f};
-    vec3 EmissiveFactor{0.f};
-    float NormalScale{1.f};
-    float OcclusionStrength{1.f};
+    vec4 BaseColorFactor;
+    float MetallicFactor, RoughnessFactor;
+    vec3 EmissiveFactor;
+    float NormalScale;
+    float OcclusionStrength;
     std::optional<TextureInfoData> BaseColorTexture{}, MetallicRoughnessTexture{};
     std::optional<TextureInfoData> NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
 };
 
 struct SceneMaterialData {
-    PBRData PbrData{};
-    fastgltf::AlphaMode AlphaMode{fastgltf::AlphaMode::Opaque};
-    bool DoubleSided{false};
-    float AlphaCutoff{0.5f};
+    PBRData PbrData;
+    fastgltf::AlphaMode AlphaMode;
+    bool DoubleSided;
+    float AlphaCutoff;
     std::string Name;
 };
 
 struct SceneTextureData {
-    std::optional<uint32_t> SamplerIndex{}, ImageIndex{}, BasisuImageIndex{}, DdsImageIndex{}, WebpImageIndex{};
+    std::optional<uint32_t> SamplerIndex, ImageIndex, BasisuImageIndex, DdsImageIndex, WebpImageIndex;
     std::string Name;
 };
 
 struct SceneImageData {
     std::vector<std::byte> Bytes;
-    fastgltf::MimeType MimeType{fastgltf::MimeType::None};
+    fastgltf::MimeType MimeType;
     std::string Name;
 };
 
 struct SceneSamplerData {
-    std::optional<fastgltf::Filter> MagFilter{}, MinFilter{};
-    fastgltf::Wrap WrapS{fastgltf::Wrap::Repeat}, WrapT{fastgltf::Wrap::Repeat};
+    std::optional<fastgltf::Filter> MagFilter, MinFilter;
+    fastgltf::Wrap WrapS, WrapT;
     std::string Name;
 };
 
 struct SceneMeshData {
     // Merged triangle/line/point primitives (Triangles/TriangleStrip/TriangleFan, Lines/LineStrip/LineLoop, Points)
-    std::optional<MeshData> Triangles{}, Lines{}, Points{};
-    std::optional<ArmatureDeformData> DeformData{};
-    std::optional<MorphTargetData> MorphData{};
+    std::optional<MeshData> Triangles, Lines, Points;
+    std::optional<ArmatureDeformData> DeformData;
+    std::optional<MorphTargetData> MorphData;
     std::string Name;
 };
 
@@ -101,14 +100,14 @@ struct SceneLightData {
 };
 
 struct SceneNodeData {
-    uint32_t NodeIndex{};
-    std::optional<uint32_t> ParentNodeIndex{};
+    uint32_t NodeIndex;
+    std::optional<uint32_t> ParentNodeIndex;
     std::vector<uint32_t> ChildrenNodeIndices;
-    Transform LocalTransform{};
-    Transform WorldTransform{};
-    bool InScene{false};
-    bool IsJoint{false};
-    std::optional<uint32_t> MeshIndex{}, SkinIndex{}, CameraIndex{}, LightIndex{};
+    Transform LocalTransform;
+    Transform WorldTransform;
+    bool InScene;
+    bool IsJoint;
+    std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
     std::string Name;
 };
 
@@ -120,41 +119,41 @@ struct SceneObjectData {
         Light,
     };
 
-    Type ObjectType{Type::Empty};
-    uint32_t NodeIndex{};
-    std::optional<uint32_t> ParentNodeIndex{};
-    Transform WorldTransform{};
-    std::optional<uint32_t> MeshIndex{}, SkinIndex{}, CameraIndex{}, LightIndex{};
-    std::optional<std::vector<float>> NodeWeights{}; // Per-node morph weight overrides (glTF node.weights)
+    Type ObjectType;
+    uint32_t NodeIndex;
+    std::optional<uint32_t> ParentNodeIndex;
+    Transform WorldTransform;
+    std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
+    std::optional<std::vector<float>> NodeWeights; // Per-node morph weight overrides (glTF node.weights)
     std::string Name;
 };
 
 struct SkinJointData {
-    uint32_t JointNodeIndex{};
-    std::optional<uint32_t> ParentJointNodeIndex{};
-    Transform RestLocal{};
+    uint32_t JointNodeIndex;
+    std::optional<uint32_t> ParentJointNodeIndex;
+    Transform RestLocal;
     std::string Name;
 };
 
 struct SceneSkinData {
-    uint32_t SkinIndex{};
+    uint32_t SkinIndex;
     std::string Name;
-    std::optional<uint32_t> SkeletonNodeIndex{}, AnchorNodeIndex{}, ParentObjectNodeIndex{};
-    std::vector<SkinJointData> Joints{}; // Parent-before-child order
-    std::vector<mat4> InverseBindMatrices{}; // Order matches `Joints`
+    std::optional<uint32_t> SkeletonNodeIndex, AnchorNodeIndex, ParentObjectNodeIndex{};
+    std::vector<SkinJointData> Joints; // Parent-before-child order
+    std::vector<mat4> InverseBindMatrices; // Order matches `Joints`
 };
 
 struct AnimationChannelData {
     uint32_t TargetNodeIndex;
     AnimationPath Target;
-    AnimationInterpolation Interp{AnimationInterpolation::Linear};
+    AnimationInterpolation Interp;
     std::vector<float> TimesSeconds;
     std::vector<float> Values; // Packed: vec3 for T/S, vec4(xyzw) for R
 };
 
 struct AnimationClipData {
     std::string Name;
-    float DurationSeconds{0};
+    float DurationSeconds;
     std::vector<AnimationChannelData> Channels;
 };
 

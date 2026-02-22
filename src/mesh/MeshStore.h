@@ -19,9 +19,8 @@
 struct MeshData;
 
 struct MaterialData {
-    vec4 BaseColorFactor{1};
-    float MetallicFactor{1};
-    float RoughnessFactor{1};
+    vec4 BaseColorFactor;
+    float MetallicFactor, RoughnessFactor;
     std::string Name;
 };
 

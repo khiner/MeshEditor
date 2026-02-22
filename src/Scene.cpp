@@ -1225,7 +1225,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     AppendMaterial(
         *Buffers,
-        PBRMaterial{
+        {
             .BaseColorFactor = vec4{1.f},
             .MetallicFactor = 0.f,
             .RoughnessFactor = 1.f,
@@ -2028,7 +2028,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
             const auto &source = result->Materials[material_index];
             scene_material_indices[material_index] = AppendMaterial(
                 *Buffers,
-                PBRMaterial{
+                {
                     .BaseColorFactor = source.BaseColorFactor,
                     .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
                     .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),

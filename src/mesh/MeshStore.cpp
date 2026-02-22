@@ -30,40 +30,23 @@ struct MeshDataWithMaterials {
     std::vector<MaterialData> Materials;
 };
 
-vec3 ClampColor(vec3 c) {
-    c.x = std::clamp(c.x, 0.f, 1.f);
-    c.y = std::clamp(c.y, 0.f, 1.f);
-    c.z = std::clamp(c.z, 0.f, 1.f);
-    return c;
-}
-
 MaterialData ToPbrMaterial(const tinyobj::material_t &material, uint32_t index) {
     // OBJ/MTL uses Phong terms; convert to glTF-style metallic-roughness with a common heuristic.
-    const vec3 kd = ClampColor({material.diffuse[0], material.diffuse[1], material.diffuse[2]});
-    const vec3 ks = ClampColor({material.specular[0], material.specular[1], material.specular[2]});
+    const vec3 kd{material.diffuse[0], material.diffuse[1], material.diffuse[2]};
+    const vec3 ks{material.specular[0], material.specular[1], material.specular[2]};
 
-    const float shininess = std::max(material.shininess, 0.f);
-    const float roughness = std::clamp(std::sqrt(2.f / (shininess + 2.f)), 0.04f, 1.f);
-    const float specular_strength = std::max(ks.x, std::max(ks.y, ks.z));
-    const float metallic = std::clamp((specular_strength - 0.04f) / (1.f - 0.04f), 0.f, 1.f);
-    const vec3 base_color = glm::mix(kd, ks, metallic);
-    const float alpha = std::clamp(material.dissolve, 0.f, 1.f);
-
-    return MaterialData{
-        .BaseColorFactor = {base_color.x, base_color.y, base_color.z, alpha},
-        .MetallicFactor = metallic,
-        .RoughnessFactor = roughness,
-        .Name = material.name.empty() ? "Material" + std::to_string(index) : material.name,
-    };
+    const auto shininess = std::max(material.shininess, 0.f);
+    const auto roughness = std::clamp(std::sqrt(2.f / (shininess + 2.f)), 0.04f, 1.f);
+    const auto specular_strength = std::max(ks.x, std::max(ks.y, ks.z));
+    const auto metallic = std::clamp((specular_strength - 0.04f) / (1.f - 0.04f), 0.f, 1.f);
+    const auto base_color = glm::mix(kd, ks, metallic);
+    const auto alpha = std::clamp(material.dissolve, 0.f, 1.f);
+    auto name = material.name.empty() ? "Material" + std::to_string(index) : material.name;
+    return {.BaseColorFactor = {base_color, alpha}, .MetallicFactor = metallic, .RoughnessFactor = roughness, .Name = std::move(name)};
 }
 
 MaterialData DefaultMaterial(std::string name = "Default") {
-    return MaterialData{
-        .BaseColorFactor = {1.f, 1.f, 1.f, 1.f},
-        .MetallicFactor = 0.f,
-        .RoughnessFactor = 1.f,
-        .Name = std::move(name),
-    };
+    return {.BaseColorFactor = {1.f, 1.f, 1.f, 1.f}, .MetallicFactor = 0.f, .RoughnessFactor = 1.f, .Name = std::move(name)};
 }
 
 MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
