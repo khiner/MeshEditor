@@ -79,7 +79,7 @@ std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::
 }
 
 SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf::Material &material, uint32_t material_index) {
-    return {
+    SceneMaterialData data{
         .PbrData = {
             .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
             .MetallicFactor = material.pbrData.metallicFactor,
@@ -99,6 +99,19 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         .AlphaCutoff = material.alphaCutoff,
         .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
     };
+    if (material.sheen) {
+        data.PbrData.SheenColorFactor = ToVec3(material.sheen->sheenColorFactor);
+        data.PbrData.SheenRoughnessFactor = material.sheen->sheenRoughnessFactor;
+        data.PbrData.SheenColorTexture = ToTextureInfo(material.sheen->sheenColorTexture, asset);
+        data.PbrData.SheenRoughnessTexture = ToTextureInfo(material.sheen->sheenRoughnessTexture, asset);
+    }
+    if (material.specular) {
+        data.PbrData.SpecularFactor = material.specular->specularFactor;
+        data.PbrData.SpecularColorFactor = ToVec3(material.specular->specularColorFactor);
+        data.PbrData.SpecularTexture = ToTextureInfo(material.specular->specularTexture, asset);
+        data.PbrData.SpecularColorTexture = ToTextureInfo(material.specular->specularColorTexture, asset);
+    }
+    return data;
 }
 
 std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::filesystem::path &path) {
@@ -516,7 +529,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen;
     fastgltf::Parser parser{EnabledExtensions};
     using fastgltf::Options;
     static constexpr auto ParseOptions = Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::LoadExternalImages | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices;

@@ -194,9 +194,33 @@ void main() {
     perceptualRoughness = clamp(perceptualRoughness, 0.0, 1.0);
     const float alphaRoughness = perceptualRoughness * perceptualRoughness;
 
-    const float specularWeight = 1.0;
-    const vec3 f0_dielectric = vec3(0.04);
-    const vec3 f90_dielectric = vec3(1.0);
+    // KHR_materials_sheen
+    vec3 sheenColor = material.SheenColorFactor;
+    if (material.SheenColorTexture != INVALID_SLOT) {
+        const vec2 uv = GetUv(material.SheenColorTexCoord, material.SheenColorUvOffset, material.SheenColorUvScale, material.SheenColorUvRotation);
+        sheenColor *= texture(Samplers[nonuniformEXT(material.SheenColorTexture)], uv).rgb;
+    }
+    float sheenRoughness = clamp(material.SheenRoughnessFactor, 0.0, 1.0);
+    if (material.SheenRoughnessTexture != INVALID_SLOT) {
+        const vec2 uv = GetUv(material.SheenRoughnessTexCoord, material.SheenRoughnessUvOffset, material.SheenRoughnessUvScale, material.SheenRoughnessUvRotation);
+        sheenRoughness *= texture(Samplers[nonuniformEXT(material.SheenRoughnessTexture)], uv).a;
+    }
+    const bool has_sheen = any(greaterThan(sheenColor, vec3(0.0)));
+
+    // KHR_materials_specular: specularWeight modulates dielectric F0 and F90.
+    // Defaults (specularFactor=1, specularColorFactor=vec3(1), no textures) reproduce the standard 0.04 F0.
+    float specularWeight = material.SpecularFactor;
+    if (material.SpecularTexture != INVALID_SLOT) {
+        const vec2 specular_uv = GetUv(material.SpecularTexCoord, material.SpecularUvOffset, material.SpecularUvScale, material.SpecularUvRotation);
+        specularWeight *= texture(Samplers[nonuniformEXT(material.SpecularTexture)], specular_uv).a;
+    }
+    vec3 f0_dielectric = vec3(0.04) * material.SpecularColorFactor;
+    if (material.SpecularColorTexture != INVALID_SLOT) {
+        const vec2 specular_color_uv = GetUv(material.SpecularColorTexCoord, material.SpecularColorUvOffset, material.SpecularColorUvScale, material.SpecularColorUvRotation);
+        f0_dielectric *= texture(Samplers[nonuniformEXT(material.SpecularColorTexture)], specular_color_uv).rgb;
+    }
+    f0_dielectric = min(f0_dielectric, vec3(1.0));
+    const vec3 f90_dielectric = vec3(specularWeight);
 
     vec3 direct_color = vec3(0.0);
     if (SceneViewUBO.UseSceneLightsRender != 0u) {
@@ -218,7 +242,15 @@ void main() {
 
             const vec3 l_metal_brdf = metal_fresnel * l_specular;
             const vec3 l_dielectric_brdf = mix(l_diffuse, l_specular, dielectric_fresnel);
-            const vec3 l_color = mix(l_dielectric_brdf, l_metal_brdf, metallic);
+            vec3 l_color = mix(l_dielectric_brdf, l_metal_brdf, metallic);
+            if (has_sheen) {
+                const float max_sheen = max(sheenColor.r, max(sheenColor.g, sheenColor.b));
+                const float l_albedo_sheen_scaling = min(
+                    1.0 - max_sheen * albedoSheenScalingLUT(NdotV, sheenRoughness),
+                    1.0 - max_sheen * albedoSheenScalingLUT(NdotL, sheenRoughness));
+                l_color = light_intensity * NdotL * BRDF_specularSheen(sheenColor, sheenRoughness, NdotL, NdotV, NdotH)
+                        + l_color * l_albedo_sheen_scaling;
+            }
             direct_color += l_color;
         }
     }
@@ -234,6 +266,12 @@ void main() {
     const vec3 f_dielectric_brdf_ibl = mix(f_diffuse, f_specular_dielectric, f_dielectric_fresnel_ibl);
 
     vec3 indirect_color = mix(f_dielectric_brdf_ibl, f_metal_brdf_ibl, metallic);
+    if (has_sheen) {
+        const vec3 f_sheen = getIBLRadianceCharlie(n, v, sheenRoughness, sheenColor);
+        const float max_sheen = max(sheenColor.r, max(sheenColor.g, sheenColor.b));
+        const float albedo_sheen_scaling = 1.0 - max_sheen * albedoSheenScalingLUT(NdotV, sheenRoughness);
+        indirect_color = f_sheen + indirect_color * albedo_sheen_scaling;
+    }
     if (material.OcclusionTexture != INVALID_SLOT) {
         const vec2 occlusion_uv = GetUv(
             material.OcclusionTexCoord,

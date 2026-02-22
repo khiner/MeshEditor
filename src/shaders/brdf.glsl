@@ -36,4 +36,40 @@ vec3 BRDF_specularGGX(float alphaRoughness, float NdotL, float NdotV, float Ndot
     return vec3(V * D);
 }
 
+// KHR_materials_sheen — Charlie sheen BRDF.
+// Estevez and Kulla, "Production Friendly Microfacet Sheen BRDF", SIGGRAPH 2017.
+float lambdaSheenNumericHelper(float x, float alphaG) {
+    const float oneMinusAlphaSq = (1.0 - alphaG) * (1.0 - alphaG);
+    const float a = mix(21.5473, 25.3245, oneMinusAlphaSq);
+    const float b = mix(3.82987, 3.32435, oneMinusAlphaSq);
+    const float c = mix(0.19823, 0.16801, oneMinusAlphaSq);
+    const float d = mix(-1.97760, -1.27393, oneMinusAlphaSq);
+    const float e = mix(-4.32054, -4.85967, oneMinusAlphaSq);
+    return a / (1.0 + b * pow(x, c)) + d * x + e;
+}
+
+float lambdaSheen(float cosTheta, float alphaG) {
+    if (abs(cosTheta) < 0.5) return exp(lambdaSheenNumericHelper(cosTheta, alphaG));
+    return exp(2.0 * lambdaSheenNumericHelper(0.5, alphaG) - lambdaSheenNumericHelper(1.0 - cosTheta, alphaG));
+}
+
+float V_Sheen(float NdotL, float NdotV, float sheenRoughness) {
+    sheenRoughness = max(sheenRoughness, 0.000001);
+    const float alphaG = sheenRoughness * sheenRoughness;
+    return clamp(1.0 / ((1.0 + lambdaSheen(NdotV, alphaG) + lambdaSheen(NdotL, alphaG)) * (4.0 * NdotV * NdotL)), 0.0, 1.0);
+}
+
+float D_Charlie(float sheenRoughness, float NdotH) {
+    sheenRoughness = max(sheenRoughness, 0.000001);
+    const float alphaG = sheenRoughness * sheenRoughness;
+    const float invR = 1.0 / alphaG;
+    const float cos2h = NdotH * NdotH;
+    const float sin2h = 1.0 - cos2h;
+    return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * M_PI);
+}
+
+vec3 BRDF_specularSheen(vec3 sheenColor, float sheenRoughness, float NdotL, float NdotV, float NdotH) {
+    return sheenColor * D_Charlie(sheenRoughness, NdotH) * V_Sheen(NdotL, NdotV, sheenRoughness);
+}
+
 #endif

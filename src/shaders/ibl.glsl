@@ -55,4 +55,25 @@ vec3 getIBLRadianceGGX(vec3 n, vec3 v, float roughness) {
     return getSpecularSample(reflection, lod).rgb;
 }
 
+vec4 getSheenSample(vec3 reflection, float lod) {
+    vec4 s = textureLod(CubeSamplers[nonuniformEXT(SceneViewUBO.SheenEnvSamplerSlot)],
+                        getEnvRotation() * reflection, lod);
+    s.rgb *= SceneViewUBO.EnvIntensity;
+    return s;
+}
+
+float albedoSheenScalingLUT(float NdotV, float sheenRoughness) {
+    return texture(Samplers[nonuniformEXT(SceneViewUBO.SheenELutSamplerSlot)],
+                   clamp(vec2(NdotV, sheenRoughness), vec2(0.0), vec2(1.0))).r;
+}
+
+vec3 getIBLRadianceCharlie(vec3 n, vec3 v, float sheenRoughness, vec3 sheenColor) {
+    const float NdotV = clamp(dot(n, v), 0.0, 1.0);
+    const float lod = sheenRoughness * float(max(SceneViewUBO.SheenEnvMipCount, 1u) - 1u);
+    const vec3 reflection = normalize(reflect(-v, n));
+    const float brdf = texture(Samplers[nonuniformEXT(SceneViewUBO.CharlieLutSamplerSlot)],
+                               clamp(vec2(NdotV, sheenRoughness), vec2(0.0), vec2(1.0))).b;
+    return getSheenSample(reflection, lod).rgb * sheenColor * brdf;
+}
+
 #endif

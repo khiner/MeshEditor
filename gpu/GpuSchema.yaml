@@ -159,6 +159,18 @@ structs:
       - name: SpecularEnvMipCount
         type: u32
         default: 1
+      - name: SheenEnvSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: SheenEnvMipCount
+        type: u32
+        default: 1
+      - name: SheenELutSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: CharlieLutSamplerSlot
+        type: u32
+        default: InvalidSlot
       - name: InteractionMode
         type: u32
       - name: EditElement
@@ -388,6 +400,74 @@ structs:
         type: vec2
         default: 1
       - name: EmissiveUvRotation
+        type: float
+        default: 0
+      - name: SheenColorFactor
+        type: vec3
+        default: 0
+      - name: SheenRoughnessFactor
+        type: float
+        default: 0
+      - name: SheenColorTexture
+        type: u32
+        default: InvalidSlot
+      - name: SheenColorTexCoord
+        type: u32
+      - name: SheenColorUvOffset
+        type: vec2
+        default: 0
+      - name: SheenColorUvScale
+        type: vec2
+        default: 1
+      - name: SheenColorUvRotation
+        type: float
+        default: 0
+      - name: SheenRoughnessTexture
+        type: u32
+        default: InvalidSlot
+      - name: SheenRoughnessTexCoord
+        type: u32
+      - name: SheenRoughnessUvOffset
+        type: vec2
+        default: 0
+      - name: SheenRoughnessUvScale
+        type: vec2
+        default: 1
+      - name: SheenRoughnessUvRotation
+        type: float
+        default: 0
+      - name: SpecularFactor
+        type: float
+        default: 1
+      - name: SpecularTexture
+        type: u32
+        default: InvalidSlot
+      - name: SpecularTexCoord
+        type: u32
+      - name: SpecularUvOffset
+        type: vec2
+        default: 0
+      - name: SpecularUvScale
+        type: vec2
+        default: 1
+      - name: SpecularUvRotation
+        type: float
+        default: 0
+      - name: SpecularColorFactor
+        type: vec3
+        default: 1
+      - name: SpecularColorTexture
+        type: u32
+        default: InvalidSlot
+      - name: SpecularColorTexCoord
+        type: u32
+      - name: SpecularColorUvOffset
+        type: vec2
+        default: 0
+      - name: SpecularColorUvScale
+        type: vec2
+        default: 1
+      - name: SpecularColorUvRotation
         type: float
         default: 0
       - name: AlphaMode

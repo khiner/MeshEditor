@@ -76,6 +76,10 @@ struct EnvironmentSelection {
     uint32_t SpecularEnvSamplerSlot{InvalidSlot};
     uint32_t BrdfLutSamplerSlot{InvalidSlot};
     uint32_t SpecularEnvMipCount{1};
+    uint32_t SheenEnvSamplerSlot{InvalidSlot};
+    uint32_t SheenEnvMipCount{1};
+    uint32_t SheenELutSamplerSlot{InvalidSlot};
+    uint32_t CharlieLutSamplerSlot{InvalidSlot};
     std::string Name;
 };
 
@@ -83,6 +87,9 @@ struct EnvironmentStore {
     CubemapEntry DiffuseEnv;
     CubemapEntry SpecularEnv;
     TextureEntry BrdfLut;
+    CubemapEntry SheenEnv;
+    TextureEntry SheenELut;
+    TextureEntry CharlieLut;
     EnvironmentSelection SceneWorld;
     EnvironmentSelection StudioWorld;
 };
@@ -669,6 +676,20 @@ TextureEntry CreateDefaultBrdfLutTexture(const SceneVulkanResources &vk, mvk::Bu
     if (!texture) throw std::runtime_error(std::format("Failed to initialize default BRDF LUT texture '{}': {}", lut_path, texture.error()));
     return std::move(*texture);
 }
+TextureEntry CreateDefaultSheenELutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots) {
+    static constexpr std::string_view lut_path{"res/images/lut_sheen_E.png"};
+    const auto encoded = File::Read(std::filesystem::path{lut_path});
+    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, "DefaultSheenELUT", TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
+    if (!texture) throw std::runtime_error(std::format("Failed to initialize default sheen E LUT texture '{}': {}", lut_path, texture.error()));
+    return std::move(*texture);
+}
+TextureEntry CreateDefaultCharlieLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots) {
+    static constexpr std::string_view lut_path{"res/images/lut_charlie.png"};
+    const auto encoded = File::Read(std::filesystem::path{lut_path});
+    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, "DefaultCharlieLUT", TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
+    if (!texture) throw std::runtime_error(std::format("Failed to initialize default Charlie LUT texture '{}': {}", lut_path, texture.error()));
+    return std::move(*texture);
+}
 } // namespace
 
 #include "scene_impl/MeshRender.h"
@@ -1204,20 +1225,31 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         "DefaultSpecularEnvironment"
     );
 
-    auto brdf_lut = CreateDefaultBrdfLutTexture(
+    environments.BrdfLut = CreateDefaultBrdfLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
+
+    environments.SheenEnv = CreateSolidCubemapEntry(
         Vk,
         Buffers->Ctx,
         *CommandPool,
         *OneShotFence,
-        *Slots
+        *Slots,
+        vec3{0.5f},
+        64u,
+        7u,
+        "DefaultSheenEnvironment"
     );
-    environments.BrdfLut = std::move(brdf_lut);
+    environments.SheenELut = CreateDefaultSheenELutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
+    environments.CharlieLut = CreateDefaultCharlieLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
 
     environments.SceneWorld = {
         .DiffuseEnvSamplerSlot = environments.DiffuseEnv.SamplerSlot,
         .SpecularEnvSamplerSlot = environments.SpecularEnv.SamplerSlot,
         .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
         .SpecularEnvMipCount = environments.SpecularEnv.MipLevels,
+        .SheenEnvSamplerSlot = environments.SheenEnv.SamplerSlot,
+        .SheenEnvMipCount = environments.SheenEnv.MipLevels,
+        .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
+        .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
         .Name = "Scene World",
     };
     environments.StudioWorld = {
@@ -1225,6 +1257,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .SpecularEnvSamplerSlot = environments.SpecularEnv.SamplerSlot,
         .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
         .SpecularEnvMipCount = environments.SpecularEnv.MipLevels,
+        .SheenEnvSamplerSlot = environments.SheenEnv.SamplerSlot,
+        .SheenEnvMipCount = environments.SheenEnv.MipLevels,
+        .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
+        .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
         .Name = "Studio World",
     };
 
@@ -1648,6 +1684,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .SpecularEnvSamplerSlot = active_environment.SpecularEnvSamplerSlot,
             .BrdfLutSamplerSlot = active_environment.BrdfLutSamplerSlot,
             .SpecularEnvMipCount = active_environment.SpecularEnvMipCount,
+            .SheenEnvSamplerSlot = active_environment.SheenEnvSamplerSlot,
+            .SheenEnvMipCount = active_environment.SheenEnvMipCount,
+            .SheenELutSamplerSlot = active_environment.SheenELutSamplerSlot,
+            .CharlieLutSamplerSlot = active_environment.CharlieLutSamplerSlot,
             .InteractionMode = uint32_t(interaction_mode),
             .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
             .IsTransforming = pending ? 1u : 0u,
@@ -2312,6 +2352,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             .EmissiveUvOffset = vec2{0.f},
             .EmissiveUvScale = vec2{1.f},
             .EmissiveUvRotation = 0.f,
+            .SheenColorFactor = src_material.PbrData.SheenColorFactor,
+            .SheenRoughnessFactor = src_material.PbrData.SheenRoughnessFactor,
+            .SpecularFactor = src_material.PbrData.SpecularFactor,
+            .SpecularColorFactor = src_material.PbrData.SpecularColorFactor,
             .AlphaMode = uint32_t(src_material.AlphaMode),
             .AlphaCutoff = src_material.AlphaCutoff,
             .DoubleSided = src_material.DoubleSided ? 1u : 0u,
@@ -2378,6 +2422,58 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 gpu_material.EmissiveUvOffset,
                 gpu_material.EmissiveUvScale,
                 gpu_material.EmissiveUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.SpecularTexture,
+                TextureColorSpace::Linear,
+                "specular",
+                gpu_material.SpecularTexture,
+                gpu_material.SpecularTexCoord,
+                gpu_material.SpecularUvOffset,
+                gpu_material.SpecularUvScale,
+                gpu_material.SpecularUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.SpecularColorTexture,
+                TextureColorSpace::Srgb,
+                "specularColor",
+                gpu_material.SpecularColorTexture,
+                gpu_material.SpecularColorTexCoord,
+                gpu_material.SpecularColorUvOffset,
+                gpu_material.SpecularColorUvScale,
+                gpu_material.SpecularColorUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.SheenColorTexture,
+                TextureColorSpace::Srgb,
+                "sheenColor",
+                gpu_material.SheenColorTexture,
+                gpu_material.SheenColorTexCoord,
+                gpu_material.SheenColorUvOffset,
+                gpu_material.SheenColorUvScale,
+                gpu_material.SheenColorUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.SheenRoughnessTexture,
+                TextureColorSpace::Linear,
+                "sheenRoughness",
+                gpu_material.SheenRoughnessTexture,
+                gpu_material.SheenRoughnessTexCoord,
+                gpu_material.SheenRoughnessUvOffset,
+                gpu_material.SheenRoughnessUvScale,
+                gpu_material.SheenRoughnessUvRotation
             );
             !result) {
             return import_fail(std::move(result.error()));
