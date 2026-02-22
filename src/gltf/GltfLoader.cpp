@@ -532,10 +532,32 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    fastgltf::Parser parser{fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform};
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform;
+    fastgltf::Parser parser{EnabledExtensions};
     using fastgltf::Options;
-    auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::LoadExternalImages | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices);
-    if (parsed.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
+    static constexpr auto ParseOptions = Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::LoadExternalImages | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices;
+    auto parsed = parser.loadGltf(gltf_file.get(), path.parent_path(), ParseOptions);
+    if (parsed.error() != fastgltf::Error::None) {
+        if (parsed.error() == fastgltf::Error::MissingExtensions) {
+            // fastgltf exits before populating asset.extensionsRequired when a required extension
+            // isn't enabled, so re-parse with all known extensions to get the full required list.
+            gltf_file.get().reset();
+            fastgltf::Parser probe{static_cast<fastgltf::Extensions>(~0U)};
+            if (auto probed = probe.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble);
+                probed.error() == fastgltf::Error::None) {
+                const auto enabled = fastgltf::stringifyExtensionBits(EnabledExtensions);
+                std::string missing;
+                for (const auto &req : probed.get().extensionsRequired) {
+                    if (!std::ranges::any_of(enabled, [&](const auto &n) { return n == req; })) {
+                        if (!missing.empty()) missing += ", ";
+                        missing += req;
+                    }
+                }
+                if (!missing.empty()) return std::unexpected{std::format("Failed to parse glTF '{}': Missing required extensions: {}", path.string(), missing)};
+            }
+        }
+        return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
+    }
 
     return std::move(parsed.get());
 }
