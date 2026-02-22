@@ -100,14 +100,10 @@ struct SceneBuffers {
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    mvk::Buffer SceneViewUBO;
-    mvk::Buffer ViewportThemeUBO;
-    mvk::Buffer RenderDrawData;
-    mvk::Buffer RenderIndirect;
-    mvk::Buffer SelectionDrawData;
-    mvk::Buffer SelectionIndirect;
-    mvk::Buffer LightBuffer;
-    mvk::Buffer MaterialBuffer;
+    mvk::Buffer SceneViewUBO, ViewportThemeUBO;
+    mvk::Buffer RenderDrawData, RenderIndirect;
+    mvk::Buffer SelectionDrawData, SelectionIndirect;
+    mvk::Buffer LightBuffer, MaterialBuffer;
     mvk::Buffer IdentityIndexBuffer;
     uint32_t IdentityIndexCount{0};
     uint32_t SelectionNodeCapacity{1};

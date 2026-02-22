@@ -68,6 +68,8 @@ enum class ShaderPipelineType {
     SelectionElementFaceXRay,
     SelectionElementEdgeXRay,
     SelectionElementVertexXRay,
+    SelectionElementEdgeXRayVerts, // ePointList pass paired with XRay edge lines to catch near/zero-length projected edges
+    SelectionElementFaceXRayVerts, // ePointList pass paired with XRay triangle pass to handle edge-on faces
     SelectionFragmentTriangles,
     SelectionFragmentLines,
     SelectionFragmentPoints,
@@ -290,6 +292,7 @@ private:
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
     void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
     void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
+    void RenderElementSelectionPass(std::span<const ElementRange>, he::Element, bool write_bitset, uvec2 box_min = {}, uvec2 box_max = {}, vk::Semaphore signal_semaphore = {});
     std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<uvec2, uvec2>);
     std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, he::Element, uvec2 mouse_px);
     std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);

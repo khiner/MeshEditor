@@ -94,6 +94,8 @@ constexpr float DefaultSpotOuterAngle = Pi / 4.f; // 45 deg
 constexpr float DefaultSpotBlend = 0.15f;
 constexpr float DefaultLightIntensity = 75.f;
 constexpr float DefaultPointRange = 10.f;
+constexpr uint32_t SelectionElementOutputBitset = 1u << 0;
+constexpr uint32_t SelectionElementClipToBox = 1u << 1;
 
 using namespace he;
 
@@ -3568,45 +3570,172 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
 }
 
 void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element, vk::Semaphore signal_semaphore) {
+    const Timer timer{"RenderEditSelectionPass"};
+    RenderElementSelectionPass(ranges, element, false, {}, {}, signal_semaphore);
+}
+
+void Scene::RenderElementSelectionPass(
+    std::span<const ElementRange> ranges, Element element, bool write_bitset,
+    uvec2 box_min, uvec2 box_max, vk::Semaphore signal_semaphore
+) {
     if (ranges.empty() || element == Element::None) return;
 
     const auto primary_edit_instances = ComputePrimaryEditInstances(R);
-    const Timer timer{"RenderEditSelectionPass"};
     const bool xray_selection = SelectionXRay;
-    const auto selection_pipeline = [xray_selection](Element el) -> SPT {
+    const auto element_pipeline = [xray_selection](Element el) -> SPT {
         if (el == Element::Vertex) return xray_selection ? SPT::SelectionElementVertexXRay : SPT::SelectionElementVertex;
         if (el == Element::Edge) return xray_selection ? SPT::SelectionElementEdgeXRay : SPT::SelectionElementEdge;
         return xray_selection ? SPT::SelectionElementFaceXRay : SPT::SelectionElementFace;
     };
-    RenderSelectionPassWith(!xray_selection, [&](DrawListBuilder &draw_list) {
-        auto batch = draw_list.BeginBatch();
-        for (const auto &r : ranges) {
-            const auto &mesh_buffers = R.get<MeshBuffers>(r.MeshEntity);
-            const auto &models = R.get<ModelsBuffer>(r.MeshEntity);
-            const auto &mesh = R.get<Mesh>(r.MeshEntity);
-            const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
-                element == Element::Edge                     ? mesh_buffers.EdgeIndices :
-                                                               mesh_buffers.FaceIndices;
-            auto draw = MakeDrawData(mesh_buffers.Vertices, indices, models);
-            if (element == Element::Face) {
-                const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
-                draw.ObjectIdSlot = face_id_buffer.Slot;
-                draw.FaceIdOffset = face_id_buffer.Offset;
-            } else {
-                draw.ObjectIdSlot = InvalidSlot;
-                draw.FaceIdOffset = 0;
-            }
-            draw.VertexCountOrHeadImageSlot = 0;
-            draw.ElementIdOffset = r.Offset;
-            if (auto it = primary_edit_instances.find(r.MeshEntity); it != primary_edit_instances.end()) {
-                AppendDraw(draw_list, batch, indices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
-            } else { // todo can we guarantee only selected instances are rendered here and thus we can drop this check?
-                AppendDraw(draw_list, batch, indices, models, draw);
+
+    DrawListBuilder draw_list;
+    DrawBatchInfo silhouette_batch{};
+    const bool render_depth = !xray_selection;
+    if (render_depth) {
+        silhouette_batch = draw_list.BeginBatch();
+        // For face selection, faces self-sort by depth (eLess + depthWrite against cleared depth 1.0).
+        // Drawing the silhouette would fill depth with mesh surface depth, causing face fragments at equal
+        // depth to fail the eLess test. For vertex/edge selection, we do render silhouette geometry so that
+        // elements at the surface pass (eLessOrEqual) while occluded elements behind it fail.
+        if (element != Element::Face) {
+            for (const auto e : R.view<Selected>()) {
+                const auto *mesh_instance = R.try_get<MeshInstance>(e);
+                if (!mesh_instance) continue;
+                const auto mesh_entity = mesh_instance->MeshEntity;
+                const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
+                const auto &models = R.get<ModelsBuffer>(mesh_entity);
+                if (const auto model_index = GetModelBufferIndex(R, e)) {
+                    auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
+                    draw.ObjectIdSlot = models.ObjectIds.Slot;
+                    AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
+                }
             }
         }
-        return std::vector{SelectionDrawInfo{selection_pipeline(element), batch}}; }, signal_semaphore, element != Element::Face);
+    }
+    auto element_batch = draw_list.BeginBatch();
+    for (const auto &r : ranges) {
+        const auto &mesh_buffers = R.get<MeshBuffers>(r.MeshEntity);
+        const auto &models = R.get<ModelsBuffer>(r.MeshEntity);
+        const auto &mesh = R.get<Mesh>(r.MeshEntity);
+        const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
+            element == Element::Edge                     ? mesh_buffers.EdgeIndices :
+                                                           mesh_buffers.FaceIndices;
+        auto draw = MakeDrawData(mesh_buffers.Vertices, indices, models);
+        if (element == Element::Face) {
+            const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
+            draw.ObjectIdSlot = face_id_buffer.Slot;
+            draw.FaceIdOffset = face_id_buffer.Offset;
+        } else {
+            draw.ObjectIdSlot = InvalidSlot;
+            draw.FaceIdOffset = 0;
+        }
+        draw.VertexCountOrHeadImageSlot = 0;
+        draw.ElementIdOffset = r.Offset;
+        if (auto it = primary_edit_instances.find(r.MeshEntity); it != primary_edit_instances.end()) {
+            AppendDraw(draw_list, element_batch, indices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
+        } else {
+            AppendDraw(draw_list, element_batch, indices, models, draw);
+        }
+    }
 
-    // Edit selection pass overwrites the shared head image used for object selection.
+    if (!draw_list.Draws.empty()) Buffers->SelectionDrawData.Update(as_bytes(draw_list.Draws));
+    if (!draw_list.IndirectCommands.empty()) Buffers->SelectionIndirect.Update(as_bytes(draw_list.IndirectCommands));
+    Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
+    if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
+        Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
+        Buffers->Ctx.ClearDeferredDescriptorUpdates();
+    }
+    Buffers->SceneViewUBO.Update(as_bytes(Buffers->SelectionDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+
+    auto cb = *ClickCommandBuffer;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    if (!write_bitset) {
+        // Reset linked-list state before writing selection fragments.
+        Buffers->SelectionCounterBuffer.Write(as_bytes(SelectionCounters{}));
+
+        const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+            vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
+        );
+        cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+            vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
+        );
+    }
+
+    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
+
+    if (render_depth) {
+        const auto &silhouette = Pipelines->Silhouette;
+        static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
+        const vk::Rect2D sil_rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
+        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, sil_rect, clear_values}, vk::SubpassContents::eInline);
+        cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+        if (silhouette_batch.DrawCount > 0) {
+            const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
+            const DrawPassPushConstants sil_pc{silhouette_batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter};
+            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
+            cb.drawIndexedIndirect(*Buffers->SelectionIndirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        }
+        cb.endRenderPass();
+    }
+
+    const auto &selection = Pipelines->SelectionFragment;
+    const vk::Rect2D sel_rect{{0, 0}, ToExtent2D(Pipelines->Silhouette.Resources->DepthImage.Extent)};
+    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, sel_rect, {}}, vk::SubpassContents::eInline);
+    cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+    if (element_batch.DrawCount > 0) {
+        const SelectionElementPushConstants element_pc{
+            element_batch.DrawDataSlotOffset,
+            InvalidSlot,
+            SelectionHandles->HeadImage,
+            Buffers->SelectionNodeBuffer.Slot,
+            SelectionHandles->SelectionCounter,
+            box_min.x,
+            box_min.y,
+            box_max.x,
+            box_max.y,
+            SelectionHandles->SelectionBitset,
+            write_bitset ? (SelectionElementOutputBitset | SelectionElementClipToBox) : 0u,
+        };
+        auto draw_with = [&](SPT spt) {
+            const auto &pipeline = selection.Renderer.Bind(cb, spt);
+            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(element_pc), &element_pc);
+            cb.drawIndexedIndirect(*Buffers->SelectionIndirect, element_batch.IndirectOffset, element_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        };
+        draw_with(element_pipeline(element));
+        if (write_bitset && xray_selection) {
+            // X-Ray face: point pass catches edge-on faces (zero projected triangle area).
+            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVerts);
+            // X-Ray edge: point pass catches near/zero-length projected edges.
+            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVerts);
+        }
+    }
+    cb.endRenderPass();
+
+    if (write_bitset) {
+        // Ensure fragment shader writes to the bitset are visible to the host after the fence.
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
+            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Buffers->BoxSelectBitsetBuffer, 0, VK_WHOLE_SIZE},
+            {}
+        );
+    }
+
+    cb.end();
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
+    Vk.Queue.submit(submit, *OneShotFence);
+    WaitFor(*OneShotFence, Vk.Device);
+
+    // Element selection pass overwrites the shared head image used for object selection.
     SelectionStale = true;
 }
 
@@ -3627,12 +3756,12 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     const uint32_t bitset_words = (element_count + 31) / 32;
     if (bitset_words > BoxSelectZeroBits.size()) return results;
 
-    RenderEditSelectionPass(ranges, element, *SelectionReadySemaphore);
-
-    // Element occlusion semantics are determined by RenderEditSelectionPass depth state.
-    // Here we always accumulate all surviving fragments to avoid nondeterministic "one per pixel"
-    // drops for overlapping visible vertices/edges.
-    DispatchBoxSelect(box_min, box_max, element_count, *SelectionReadySemaphore);
+    // Box-select writes element IDs directly from the selection fragment shader.
+    // This avoids linked-list overflow in heavy X-Ray overlap while keeping the same
+    // depth semantics as the element render pipeline in non-X-Ray mode.
+    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
+    Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
+    RenderElementSelectionPass(ranges, element, true, box_min, box_max);
 
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
     for (size_t i = 0; i < ranges.size(); ++i) {

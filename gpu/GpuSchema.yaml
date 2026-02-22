@@ -436,6 +436,36 @@ structs:
       - name: SelectionCounterSlot
         type: u32
         default: InvalidSlot
+  - name: SelectionElementPushConstants
+    push_constant: true
+    fields:
+      - name: DrawDataOffset
+        type: u32
+      - name: TransformVertexStateSlot
+        type: u32
+        default: InvalidSlot
+      - name: SelectionHeadImageSlot
+        type: u32
+        default: InvalidSlot
+      - name: SelectionNodesSlot
+        type: u32
+        default: InvalidSlot
+      - name: SelectionCounterSlot
+        type: u32
+        default: InvalidSlot
+      - name: BoxMinX
+        type: u32
+      - name: BoxMinY
+        type: u32
+      - name: BoxMaxX
+        type: u32
+      - name: BoxMaxY
+        type: u32
+      - name: BoxResultSlot
+        type: u32
+        default: InvalidSlot
+      - name: Flags
+        type: u32
   - name: ObjectPickPushConstants
     push_constant: true
     fields:

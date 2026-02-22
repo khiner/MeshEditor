@@ -1,5 +1,7 @@
 #version 450
 
+#define BINDLESS_CUSTOM_DRAW_PASS_PC 1
+#include "SelectionElementPushConstants.glsl"
 #include "Bindless.glsl"
 
 layout(location = 0) flat out uint ElementId;

@@ -5,7 +5,9 @@
 
 #include "SceneUBO.glsl"
 #include "DrawData.glsl"
+#ifndef BINDLESS_CUSTOM_DRAW_PASS_PC
 #include "DrawPassPushConstants.glsl"
+#endif
 #include "Vertex.glsl"
 #include "BoneDeformVertex.glsl"
 #include "MorphTargetVertex.glsl"

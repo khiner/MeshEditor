@@ -8,15 +8,7 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 #include "BoxSelectPushConstants.glsl"
-#include "SelectionNode.glsl"
-
-const uint INVALID_NODE = 0xffffffffu;
-
-layout(set = 0, binding = BINDING_Image, r32ui) uniform uimage2D HeadImages[];
-
-layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionNodes {
-    SelectionNode Nodes[];
-} SelectionBuffers[];
+#include "SelectionTraversal.glsl"
 
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer BoxSelectResult {
     uint Bits[];
@@ -34,10 +26,10 @@ void main() {
     const uvec2 pixel = pc.BoxMin + local;
     if (pixel.x > pc.BoxMax.x || pixel.y > pc.BoxMax.y) return;
 
-    uint idx = imageLoad(HeadImages[pc.HeadImageIndex], ivec2(pixel)).r;
-    while (idx != INVALID_NODE) {
-        const SelectionNode node = SelectionBuffers[pc.SelectionNodesIndex].Nodes[idx];
-        if (node.Id != 0 && node.Id <= pc.MaxId) {
+    uint idx = SelectionHeadAt(pc.HeadImageIndex, ivec2(pixel));
+    while (idx != INVALID_SELECTION_NODE) {
+        const SelectionNode node = SelectionNodeAt(pc.SelectionNodesIndex, idx);
+        if (SelectionIdInRange(node.Id, pc.MaxId)) {
             markSelected(node.Id);
         }
         idx = node.Next;

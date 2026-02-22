@@ -3,7 +3,9 @@
 
 #extension GL_EXT_scalar_block_layout : require
 
+#ifndef SELECTION_CUSTOM_DRAW_PASS_PC
 #include "DrawPassPushConstants.glsl"
+#endif
 #include "SelectionCounters.glsl"
 #include "SelectionNode.glsl"
 

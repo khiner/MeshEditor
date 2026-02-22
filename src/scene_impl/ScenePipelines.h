@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/SelectionElementPushConstants.h"
+
 using SPT = ShaderPipelineType;
 enum class OverlayKind : uint32_t {
     Edge = 0,
@@ -402,6 +404,7 @@ struct SelectionFragmentPipeline {
 
         const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
         const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
+        const vk::PushConstantRange element_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(SelectionElementPushConstants)};
         std::unordered_map<SPT, ShaderPipeline> pipelines;
         pipelines.emplace(
             SPT::SelectionElementFace,
@@ -409,7 +412,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(true, true, vk::CompareOp::eLess), draw_pc
+                {}, CreateDepthStencil(true, true, vk::CompareOp::eLess), element_pc
             )
         );
         pipelines.emplace(
@@ -418,7 +421,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-                {}, CreateDepthStencil(false, false), draw_pc
+                {}, CreateDepthStencil(false, false), element_pc
             )
         );
         pipelines.emplace(
@@ -427,7 +430,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), element_pc
             )
         );
         pipelines.emplace(
@@ -436,7 +439,16 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-                {}, CreateDepthStencil(false, false), draw_pc
+                {}, CreateDepthStencil(false, false), element_pc
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionElementEdgeXRayVerts,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
+                {}, CreateDepthStencil(false, false), element_pc
             )
         );
         pipelines.emplace(
@@ -445,7 +457,7 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+                {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), element_pc
             )
         );
         pipelines.emplace(
@@ -454,7 +466,16 @@ struct SelectionFragmentPipeline {
                 {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-                {}, CreateDepthStencil(false, false), draw_pc
+                {}, CreateDepthStencil(false, false), element_pc
+            )
+        );
+        pipelines.emplace(
+            SPT::SelectionElementFaceXRayVerts,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
+                {}, CreateDepthStencil(false, false), element_pc
             )
         );
         pipelines.emplace(
