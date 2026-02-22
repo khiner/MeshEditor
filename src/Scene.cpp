@@ -643,31 +643,31 @@ TextureEntry CreateTextureEntry(
     };
 }
 
-TextureEntry CreateDefaultBrdfLutTexture(
+std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
     const SceneVulkanResources &vk,
     mvk::BufferContext &ctx,
     vk::CommandPool command_pool,
     vk::Fence one_shot_fence,
-    DescriptorSlots &slots
+    DescriptorSlots &slots,
+    std::span<const std::byte> encoded_bytes,
+    std::string_view encoded_name,
+    std::string texture_name,
+    TextureColorSpace color_space,
+    vk::SamplerAddressMode wrap_s,
+    vk::SamplerAddressMode wrap_t,
+    const SamplerConfig &sampler_cfg
 ) {
+    auto decoded = DecodeImageRgba8(encoded_bytes, encoded_name);
+    if (!decoded) return std::unexpected{std::move(decoded.error())};
+    return CreateTextureEntry(vk, ctx, command_pool, one_shot_fence, slots, decoded->Pixels, decoded->Width, decoded->Height, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
+}
+
+TextureEntry CreateDefaultBrdfLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots) {
     static constexpr std::string_view lut_path{"res/images/lut_ggx.png"};
     const auto encoded = File::Read(std::filesystem::path{lut_path});
-    const auto decoded = DecodeImageRgba8(std::as_bytes(std::span{encoded}), lut_path).value();
-    return CreateTextureEntry(
-        vk,
-        ctx,
-        command_pool,
-        one_shot_fence,
-        slots,
-        decoded.Pixels,
-        decoded.Width,
-        decoded.Height,
-        std::string("DefaultGGXBRDFLUT"),
-        TextureColorSpace::Linear,
-        vk::SamplerAddressMode::eClampToEdge,
-        vk::SamplerAddressMode::eClampToEdge,
-        SamplerConfig{.UsesMipmaps = false}
-    );
+    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, "DefaultGGXBRDFLUT", TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
+    if (!texture) throw std::runtime_error(std::format("Failed to initialize default BRDF LUT texture '{}': {}", lut_path, texture.error()));
+    return std::move(*texture);
 }
 } // namespace
 
@@ -2032,24 +2032,95 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
     if (!result) throw std::runtime_error(result.error());
 
     if (!result->Materials.empty()) {
+        auto &texture_store = *Textures;
+        std::unordered_map<std::string, uint32_t> texture_slot_cache;
+        const auto resolve_texture_slot = [&](
+                                              const std::optional<std::filesystem::path> &source_texture_path,
+                                              TextureColorSpace color_space,
+                                              std::string_view material_name,
+                                              std::string_view texture_label
+                                          ) -> uint32_t {
+            if (!source_texture_path) return InvalidSlot;
+            auto texture_path = *source_texture_path;
+            if (texture_path.is_relative()) texture_path = path.parent_path() / texture_path;
+            texture_path = texture_path.lexically_normal();
+
+            const auto cache_key = std::format("{}|{}", texture_path.generic_string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
+            if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
+
+            std::string encoded;
+            try {
+                encoded = File::Read(texture_path);
+            } catch (const std::exception &e) {
+                std::cerr << std::format(
+                    "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
+                    texture_path.string(),
+                    material_name,
+                    texture_label,
+                    path.string(),
+                    e.what()
+                );
+                return InvalidSlot;
+            }
+
+            auto texture = CreateTextureEntryFromEncoded(
+                Vk,
+                Buffers->Ctx,
+                *CommandPool,
+                *OneShotFence,
+                *Slots,
+                std::as_bytes(std::span{encoded}),
+                texture_path.filename().string(),
+                std::format(
+                    "{} ({})",
+                    texture_path.filename().string(),
+                    color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"
+                ),
+                color_space,
+                vk::SamplerAddressMode::eRepeat,
+                vk::SamplerAddressMode::eRepeat,
+                SamplerConfig{}
+            );
+            if (!texture) {
+                std::cerr << std::format(
+                    "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
+                    texture_path.string(),
+                    material_name,
+                    texture_label,
+                    path.string(),
+                    texture.error()
+                );
+                return InvalidSlot;
+            }
+
+            const auto sampler_slot = texture->SamplerSlot;
+            texture_store.Textures.emplace_back(std::move(*texture));
+            texture_slot_cache.emplace(cache_key, sampler_slot);
+            return sampler_slot;
+        };
+
         std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
         std::vector<std::string> names;
         names.reserve(result->Materials.size());
         for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
             const auto &source = result->Materials[material_index];
+            const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
+            const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
+            const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
             scene_material_indices[material_index] = AppendMaterial(
                 *Buffers,
                 {
                     .BaseColorFactor = source.BaseColorFactor,
                     .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
                     .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-                    .BaseColorTexture = Textures->WhiteTextureSlot,
-                    .AlphaMode = source.BaseColorFactor.w < 1.f ?
+                    .BaseColorTexture = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot,
+                    .NormalTexture = normal_texture,
+                    .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
                         uint32_t(fastgltf::AlphaMode::Blend) :
                         uint32_t(fastgltf::AlphaMode::Opaque),
                 }
             );
-            names.emplace_back(source.Name.empty() ? std::format("Material{}", material_index) : source.Name);
+            names.emplace_back(material_name);
         }
         R.patch<MaterialStore>(
             SceneEntity,
@@ -2127,8 +2198,6 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         if (!image_index || *image_index >= loaded_scene->Images.size()) return InvalidSlot;
 
         const auto &src_image = loaded_scene->Images[*image_index];
-        auto decoded = DecodeImageRgba8(src_image.Bytes, src_image.Name.empty() ? std::format("Image{}", *image_index) : src_image.Name);
-        if (!decoded) return std::unexpected{std::move(decoded.error())};
 
         const gltf::SceneSamplerData *src_sampler = nullptr;
         if (src_texture.SamplerIndex && *src_texture.SamplerIndex < loaded_scene->Samplers.size()) src_sampler = &loaded_scene->Samplers[*src_texture.SamplerIndex];
@@ -2141,23 +2210,23 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"
         );
 
-        auto texture = CreateTextureEntry(
+        auto texture = CreateTextureEntryFromEncoded(
             Vk,
             Buffers->Ctx,
             *CommandPool,
             *OneShotFence,
             *Slots,
-            decoded->Pixels,
-            decoded->Width,
-            decoded->Height,
+            src_image.Bytes,
+            src_image.Name.empty() ? std::format("Image{}", *image_index) : src_image.Name,
             texture_name,
             color_space,
             wrap_s,
             wrap_t,
             sampler_config
         );
-        const auto sampler_slot = texture.SamplerSlot;
-        texture_store.Textures.emplace_back(std::move(texture));
+        if (!texture) return std::unexpected{std::move(texture.error())};
+        const auto sampler_slot = texture->SamplerSlot;
+        texture_store.Textures.emplace_back(std::move(*texture));
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };

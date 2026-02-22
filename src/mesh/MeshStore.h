@@ -16,18 +16,22 @@
 #include <unordered_set>
 #include <vector>
 
-struct MeshData;
-
 struct MaterialData {
     vec4 BaseColorFactor;
     float MetallicFactor, RoughnessFactor;
     std::string Name;
+
+    // OBJ fields
+    std::optional<std::filesystem::path> BaseColorTexturePath{}, NormalTexturePath{};
+    bool HasAlphaTexture{false};
 };
 
 struct MeshWithMaterials {
     Mesh Mesh;
     std::vector<MaterialData> Materials;
 };
+
+struct MeshData;
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {

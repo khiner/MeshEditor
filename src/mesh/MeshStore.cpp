@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cctype>
 #include <cmath>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <span>
@@ -30,7 +31,15 @@ struct MeshDataWithMaterials {
     std::vector<MaterialData> Materials;
 };
 
-MaterialData ToPbrMaterial(const tinyobj::material_t &material, uint32_t index) {
+std::optional<std::filesystem::path> ResolveTexturePath(const std::filesystem::path &base_dir, const std::string &texture_name) {
+    if (texture_name.empty()) return std::nullopt;
+    auto texture_path = std::filesystem::path{texture_name};
+    if (texture_path.is_relative()) texture_path = base_dir / texture_path;
+    if (texture_path.is_relative()) texture_path = std::filesystem::absolute(texture_path);
+    return texture_path.lexically_normal();
+}
+
+MaterialData ToPbrMaterial(const tinyobj::material_t &material, uint32_t index, const std::filesystem::path &base_dir) {
     // OBJ/MTL uses Phong terms; convert to glTF-style metallic-roughness with a common heuristic.
     const vec3 kd{material.diffuse[0], material.diffuse[1], material.diffuse[2]};
     const vec3 ks{material.specular[0], material.specular[1], material.specular[2]};
@@ -42,7 +51,15 @@ MaterialData ToPbrMaterial(const tinyobj::material_t &material, uint32_t index) 
     const auto base_color = glm::mix(kd, ks, metallic);
     const auto alpha = std::clamp(material.dissolve, 0.f, 1.f);
     auto name = material.name.empty() ? "Material" + std::to_string(index) : material.name;
-    return {.BaseColorFactor = {base_color, alpha}, .MetallicFactor = metallic, .RoughnessFactor = roughness, .Name = std::move(name)};
+    return {
+        .BaseColorFactor = {base_color, alpha},
+        .MetallicFactor = metallic,
+        .RoughnessFactor = roughness,
+        .Name = std::move(name),
+        .BaseColorTexturePath = ResolveTexturePath(base_dir, material.diffuse_texname),
+        .NormalTexturePath = ResolveTexturePath(base_dir, material.normal_texname.empty() ? material.bump_texname : material.normal_texname),
+        .HasAlphaTexture = !material.alpha_texname.empty(),
+    };
 }
 
 MaterialData DefaultMaterial(std::string name = "Default") {
@@ -54,16 +71,83 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.string().c_str())) {
+    const auto mtl_base_dir = path.parent_path().string();
+    if (!tinyobj::LoadObj(
+            &attrib,
+            &shapes,
+            &materials,
+            &warn,
+            &err,
+            path.string().c_str(),
+            mtl_base_dir.empty() ? nullptr : mtl_base_dir.c_str()
+        )) {
         throw std::runtime_error{"Failed to load OBJ: " + err};
     }
 
     MeshDataWithMaterials result{};
     auto &data = result.Mesh;
-    data.Positions.reserve(attrib.vertices.size() / 3);
-    for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
-        data.Positions.emplace_back(attrib.vertices[i], attrib.vertices[i + 1], attrib.vertices[i + 2]);
-    }
+    const bool has_normals = !attrib.normals.empty();
+    const bool has_texcoords = !attrib.texcoords.empty();
+    if (has_normals) data.Normals = std::vector<vec3>{};
+    if (has_texcoords) data.TexCoords0 = std::vector<vec2>{};
+
+    struct ObjVertexKey {
+        int PositionIndex;
+        int NormalIndex;
+        int TexCoordIndex;
+        bool operator==(const ObjVertexKey &other) const = default;
+    };
+    struct ObjVertexKeyHash {
+        size_t operator()(const ObjVertexKey &key) const noexcept {
+            size_t hash = std::hash<int>{}(key.PositionIndex);
+            hash ^= (std::hash<int>{}(key.NormalIndex) << 1u);
+            hash ^= (std::hash<int>{}(key.TexCoordIndex) << 2u);
+            return hash;
+        }
+    };
+
+    std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash> vertex_cache;
+    const auto FindOrAddVertex = [&](const tinyobj::index_t &index) -> uint32_t {
+        const ObjVertexKey key{.PositionIndex = index.vertex_index, .NormalIndex = index.normal_index, .TexCoordIndex = index.texcoord_index};
+        if (const auto it = vertex_cache.find(key); it != vertex_cache.end()) return it->second;
+
+        if (index.vertex_index < 0 || size_t(index.vertex_index) * 3u + 2u >= attrib.vertices.size()) {
+            throw std::runtime_error{std::format("OBJ '{}' references invalid vertex index {}.", path.string(), index.vertex_index)};
+        }
+
+        const auto vertex_index = static_cast<uint32_t>(data.Positions.size());
+        data.Positions.emplace_back(
+            attrib.vertices[size_t(index.vertex_index) * 3u],
+            attrib.vertices[size_t(index.vertex_index) * 3u + 1u],
+            attrib.vertices[size_t(index.vertex_index) * 3u + 2u]
+        );
+
+        if (data.Normals) {
+            if (index.normal_index >= 0 && size_t(index.normal_index) * 3u + 2u < attrib.normals.size()) {
+                data.Normals->emplace_back(
+                    attrib.normals[size_t(index.normal_index) * 3u],
+                    attrib.normals[size_t(index.normal_index) * 3u + 1u],
+                    attrib.normals[size_t(index.normal_index) * 3u + 2u]
+                );
+            } else {
+                data.Normals->emplace_back(vec3{0.f});
+            }
+        }
+
+        if (data.TexCoords0) {
+            if (index.texcoord_index >= 0 && size_t(index.texcoord_index) * 2u + 1u < attrib.texcoords.size()) {
+                data.TexCoords0->emplace_back(
+                    attrib.texcoords[size_t(index.texcoord_index) * 2u],
+                    attrib.texcoords[size_t(index.texcoord_index) * 2u + 1u]
+                );
+            } else {
+                data.TexCoords0->emplace_back(vec2{0.f});
+            }
+        }
+
+        vertex_cache.emplace(key, vertex_index);
+        return vertex_index;
+    };
 
     std::unordered_map<int, uint32_t> material_to_local_index;
     std::unordered_map<int, uint32_t> material_to_primitive;
@@ -73,7 +157,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
         if (const auto it = material_to_local_index.find(material_id); it != material_to_local_index.end()) return it->second;
         const auto local_index = static_cast<uint32_t>(result.Materials.size());
         if (material_id >= 0 && material_id < static_cast<int>(materials.size())) {
-            result.Materials.emplace_back(ToPbrMaterial(materials[size_t(material_id)], uint32_t(material_id)));
+            result.Materials.emplace_back(ToPbrMaterial(materials[size_t(material_id)], uint32_t(material_id), path.parent_path()));
         } else {
             result.Materials.emplace_back(DefaultMaterial());
         }
@@ -95,7 +179,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
             std::vector<uint> face_verts;
             face_verts.reserve(fv);
             for (size_t vi_f = 0; vi_f < fv; ++vi_f) {
-                face_verts.emplace_back(shape.mesh.indices[vi + vi_f].vertex_index);
+                face_verts.emplace_back(FindOrAddVertex(shape.mesh.indices[vi + vi_f]));
             }
             data.Faces.emplace_back(std::move(face_verts));
             const int material_id = f < shape.mesh.material_ids.size() ? shape.mesh.material_ids[f] : -1;
@@ -232,6 +316,20 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
 }
 
 MeshData DeduplicateVertices(MeshData &&mesh) {
+    // todo we shouldn't deduplicate vertices when textures are present.
+    // position-only merging split causes UV seams / hard normals get collapsed,
+    // which breaks texture mapping and shading.
+    // However, this breaks RealImpact/excitation behavior.
+    // const bool has_vertex_channels =
+    //     mesh.Normals.has_value() ||
+    //     mesh.Tangents.has_value() ||
+    //     mesh.Colors0.has_value() ||
+    //     mesh.TexCoords0.has_value() ||
+    //     mesh.TexCoords1.has_value() ||
+    //     mesh.TexCoords2.has_value() ||
+    //     mesh.TexCoords3.has_value();
+    // if (has_vertex_channels) return std::move(mesh);
+
     struct VertexHash {
         constexpr size_t operator()(const vec3 &p) const noexcept {
             return std::hash<float>{}(p.x) ^ std::hash<float>{}(p.y) ^ std::hash<float>{}(p.z);
