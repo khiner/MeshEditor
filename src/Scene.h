@@ -37,7 +37,9 @@ enum class InteractionMode {
 };
 
 enum class ViewportShadingMode : uint8_t {
+    Wireframe,
     Solid,
+    MaterialPreview,
     Rendered,
 };
 

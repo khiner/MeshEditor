@@ -1122,6 +1122,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_update<ViewCamera>()
         .on_construct<Lights>()
         .on_update<Lights>()
+        .on_construct<MaterialPreviewLighting>()
+        .on_update<MaterialPreviewLighting>()
         .on_construct<RenderedLighting>()
         .on_update<RenderedLighting>()
         .on_construct<ViewportExtent>()
@@ -1146,7 +1148,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<ViewportTheme>(SceneEntity, Defaults.ViewportTheme);
     R.emplace<ViewCamera>(SceneEntity, Defaults.ViewCamera);
     R.emplace<Lights>(SceneEntity, Defaults.Lights);
-    R.emplace<RenderedLighting>(SceneEntity);
+    R.emplace<MaterialPreviewLighting>(SceneEntity, false, false, 1.f, 0.f);
+    R.emplace<RenderedLighting>(SceneEntity, true, true, 1.f, 0.f);
     R.emplace<ViewportExtent>(SceneEntity);
     R.emplace<AnimationTimeline>(SceneEntity);
     R.emplace<MaterialStore>(SceneEntity);
@@ -1607,10 +1610,16 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
         const auto &lights = R.get<const Lights>(SceneEntity);
+        const auto &settings = R.get<const SceneSettings>(SceneEntity);
+        const auto &mat_preview_lighting = R.get<const MaterialPreviewLighting>(SceneEntity);
         const auto &rendered_lighting = R.get<const RenderedLighting>(SceneEntity);
-        const auto &active_environment = rendered_lighting.UseSceneWorldRender ? Environments->SceneWorld : Environments->StudioWorld;
-        const float env_intensity = rendered_lighting.UseSceneWorldRender ? 1.f : rendered_lighting.EnvIntensity;
-        const float env_rotation_radians = rendered_lighting.UseSceneWorldRender ? 0.f : rendered_lighting.EnvRotationDegrees * (Pi / 180.f);
+        const bool is_pbr_mode = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
+        const auto &active_lighting = (settings.ViewportShading == ViewportShadingMode::Rendered) ? static_cast<const PBRViewportLighting &>(rendered_lighting) : static_cast<const PBRViewportLighting &>(mat_preview_lighting);
+        const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
+        const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
+        const auto &active_environment = use_scene_world ? Environments->SceneWorld : Environments->StudioWorld;
+        const float env_intensity = use_scene_world ? 1.f : active_lighting.EnvIntensity;
+        const float env_rotation_radians = use_scene_world ? 0.f : active_lighting.EnvRotationDegrees * (Pi / 180.f);
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
         const float viewport_height = extent.height > 0 ? float(extent.height) : 1.f;
@@ -1629,8 +1638,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .LightDirection = lights.Direction,
             .LightCount = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight)),
             .LightSlot = Buffers->LightBuffer.Slot,
-            .UseSceneLightsRender = rendered_lighting.UseSceneLightsRender ? 1u : 0u,
-            .UseSceneWorldRender = rendered_lighting.UseSceneWorldRender ? 1u : 0u,
+            .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
+            .UseSceneWorldRender = use_scene_world ? 1u : 0u,
             .EnvIntensity = env_intensity,
             .EnvRotationRadians = env_rotation_radians,
             .DiffuseEnvSamplerSlot = active_environment.DiffuseEnvSamplerSlot,
@@ -2977,8 +2986,9 @@ void Scene::RecordRenderCommandBuffer() {
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
     const bool is_excite_mode = interaction_mode == InteractionMode::Excite;
-    const bool show_rendered = settings.ViewportShading == ViewportShadingMode::Rendered;
-    const bool show_fill = settings.ViewportShading == ViewportShadingMode::Solid || show_rendered;
+    const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
+    const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
+    const bool show_fill = !is_wireframe_mode;
     const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
@@ -3210,13 +3220,13 @@ void Scene::RecordRenderCommandBuffer() {
             if (R.all_of<ObjectExtrasTag>(entity)) continue;
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
             const bool is_line_mesh = mesh.FaceCount() == 0 && mesh.EdgeCount() > 0;
-            if (!is_line_mesh && !is_edit_mode && !is_excite_mode) continue;
+            if (!is_line_mesh && !is_edit_mode && !is_excite_mode && !is_wireframe_mode) continue;
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             draw.ElementStateSlotOffset = edge_state_buffer;
             const auto db = draw_list.Draws.size();
-            if (is_line_mesh) {
+            if (is_line_mesh || is_wireframe_mode) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
             } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
@@ -3839,11 +3849,18 @@ void Scene::Interact() {
         } else {
             if (IsKeyPressed(ImGuiKey_Space, false)) R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
             if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && !GetIO().KeyShift && !GetIO().KeyAlt && !GetIO().KeySuper) {
-                R.patch<SceneSettings>(SceneEntity, [](auto &settings) {
-                    settings.ViewportShading = settings.ViewportShading == ViewportShadingMode::Solid ?
-                        ViewportShadingMode::Rendered :
-                        ViewportShadingMode::Solid;
+                R.patch<SceneSettings>(SceneEntity, [](auto &s) {
+                    const auto next = s.ViewportShading == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview : s.ViewportShading == ViewportShadingMode::MaterialPreview ? ViewportShadingMode::Rendered :
+                                                                                                                                                                                           ViewportShadingMode::Solid;
+                    s.ViewportShading = next;
+                    s.FillMode = next;
                 });
+            } else if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && GetIO().KeyShift && !GetIO().KeyAlt && !GetIO().KeySuper) {
+                R.patch<SceneSettings>(SceneEntity, [](auto &s) {
+                    s.ViewportShading = s.ViewportShading == ViewportShadingMode::Wireframe ? s.FillMode : ViewportShadingMode::Wireframe;
+                });
+            } else if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && !GetIO().KeyShift && GetIO().KeyAlt && !GetIO().KeySuper) {
+                SelectionXRay = !SelectionXRay;
             }
             if (IsKeyPressed(ImGuiKey_Tab)) {
                 // Cycle to the next interaction mode, wrapping around to the first.
@@ -4472,7 +4489,10 @@ void Scene::RenderOverlay() {
 
     { // Viewport info overlay
         const auto &settings = R.get<const SceneSettings>(SceneEntity);
-        const auto text = std::format("Shading: {}", settings.ViewportShading == ViewportShadingMode::Rendered ? "Rendered" : "Solid");
+        const auto *mode_name = settings.ViewportShading == ViewportShadingMode::Wireframe ? "Wireframe" : settings.ViewportShading == ViewportShadingMode::Solid ? "Solid" :
+            settings.ViewportShading == ViewportShadingMode::MaterialPreview                                                                                      ? "Material Preview" :
+                                                                                                                                                                    "Rendered";
+        const auto text = std::format("Shading: {}", mode_name);
         const auto text_size = CalcTextSize(text.c_str());
         const auto text_pos = std::bit_cast<ImVec2>(viewport.pos + viewport.size - vec2{10.f, 10.f}) - text_size;
         auto &dl = *GetWindowDrawList();
@@ -5017,9 +5037,10 @@ void Scene::RenderControls() {
 
         if (BeginTabItem("Render")) {
             auto &settings = R.get<SceneSettings>(SceneEntity);
+            auto &mat_preview_lighting = R.get<MaterialPreviewLighting>(SceneEntity);
             auto &rendered_lighting = R.get<RenderedLighting>(SceneEntity);
             bool settings_changed = false;
-            bool rendered_shading_changed = false;
+            bool mat_preview_changed = false, rendered_changed = false;
             if (ColorEdit3("Background color", settings.ClearColor.float32)) {
                 settings.ClearColor.float32[3] = 1.f;
                 settings_changed = true;
@@ -5033,34 +5054,56 @@ void Scene::RenderControls() {
             SeparatorText("Viewport shading");
             PushID("ViewportShading");
             auto viewport_shading = int(settings.ViewportShading);
-            bool viewport_shading_changed = RadioButton("Solid", &viewport_shading, int(ViewportShadingMode::Solid));
+            bool viewport_shading_changed = RadioButton("Wireframe", &viewport_shading, int(ViewportShadingMode::Wireframe));
+            SameLine();
+            viewport_shading_changed |= RadioButton("Solid", &viewport_shading, int(ViewportShadingMode::Solid));
+            SameLine();
+            viewport_shading_changed |= RadioButton("Material Preview", &viewport_shading, int(ViewportShadingMode::MaterialPreview));
             SameLine();
             viewport_shading_changed |= RadioButton("Rendered", &viewport_shading, int(ViewportShadingMode::Rendered));
             PopID();
 
-            bool smooth_shading = settings.SmoothShading;
-            viewport_shading_changed |= Checkbox("Smooth shading", &smooth_shading);
+            const auto current_mode = ViewportShadingMode(viewport_shading);
 
-            if (viewport_shading == int(ViewportShadingMode::Rendered)) {
-                SeparatorText("Rendered shading");
-                if (Button("Reset##RenderedShading")) {
-                    rendered_lighting = {};
-                    rendered_shading_changed = true;
+            bool smooth_shading_changed = false;
+            if (current_mode != ViewportShadingMode::Wireframe) {
+                bool smooth_shading = settings.SmoothShading;
+                if (Checkbox("Smooth shading", &smooth_shading)) {
+                    settings.SmoothShading = smooth_shading;
+                    smooth_shading_changed = true;
                 }
-                rendered_shading_changed |= Checkbox("Scene lights", &rendered_lighting.UseSceneLightsRender);
+            }
+
+            const auto render_pbr_controls = [&](PBRViewportLighting &lighting, bool &lighting_changed, const char *id) {
+                PushID(id);
+                if (Button("Reset")) {
+                    lighting = {false, false, 1.f, 0.f};
+                    lighting_changed = true;
+                }
+                lighting_changed |= Checkbox("Scene lights", &lighting.UseSceneLights);
                 SameLine();
-                rendered_shading_changed |= Checkbox("Scene world", &rendered_lighting.UseSceneWorldRender);
-                if (!rendered_lighting.UseSceneWorldRender) {
-                    rendered_shading_changed |= SliderFloat("Studio world intensity", &rendered_lighting.EnvIntensity, 0.f, 8.f, "%.2f");
-                    rendered_shading_changed |= SliderFloat("Studio world rotation", &rendered_lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
+                lighting_changed |= Checkbox("Scene world", &lighting.UseSceneWorld);
+                if (!lighting.UseSceneWorld) {
+                    lighting_changed |= SliderFloat("Studio world intensity", &lighting.EnvIntensity, 0.f, 8.f, "%.2f");
+                    lighting_changed |= SliderFloat("Studio world rotation", &lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
                 }
-                const auto &active_environment = rendered_lighting.UseSceneWorldRender ? Environments->SceneWorld : Environments->StudioWorld;
-                TextDisabled("Active world: %s", active_environment.Name.c_str());
+                const auto &active_env = lighting.UseSceneWorld ? Environments->SceneWorld : Environments->StudioWorld;
+                TextDisabled("Active world: %s", active_env.Name.c_str());
+                PopID();
+            };
+
+            if (current_mode == ViewportShadingMode::MaterialPreview) {
+                SeparatorText("Material Preview lighting");
+                render_pbr_controls(mat_preview_lighting, mat_preview_changed, "MatPreviewLighting");
+            }
+            if (current_mode == ViewportShadingMode::Rendered) {
+                SeparatorText("Rendered lighting");
+                render_pbr_controls(rendered_lighting, rendered_changed, "RenderedLighting");
             }
 
             auto color_mode = int(settings.FaceColorMode);
             bool color_mode_changed = false;
-            if (settings.ViewportShading == ViewportShadingMode::Solid) {
+            if (current_mode == ViewportShadingMode::Solid) {
                 PushID("FaceColorMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Fill color mode");
@@ -5071,11 +5114,12 @@ void Scene::RenderControls() {
                 PopID();
             }
             if (viewport_shading_changed || color_mode_changed) {
-                settings.ViewportShading = ViewportShadingMode(viewport_shading);
+                settings.ViewportShading = current_mode;
+                if (current_mode != ViewportShadingMode::Wireframe) settings.FillMode = current_mode;
                 settings.FaceColorMode = FaceColorMode(color_mode);
-                settings.SmoothShading = smooth_shading;
                 settings_changed = true;
             }
+            if (smooth_shading_changed) settings_changed = true;
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
                 AlignTextToFramePadding();
@@ -5121,7 +5165,11 @@ void Scene::RenderControls() {
                 if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
             }
             if (settings_changed) R.patch<SceneSettings>(SceneEntity, [](auto &) {});
-            if (rendered_shading_changed) {
+            if (mat_preview_changed) {
+                mat_preview_lighting.EnvIntensity = std::max(0.f, mat_preview_lighting.EnvIntensity);
+                R.patch<MaterialPreviewLighting>(SceneEntity, [](auto &) {});
+            }
+            if (rendered_changed) {
                 rendered_lighting.EnvIntensity = std::max(0.f, rendered_lighting.EnvIntensity);
                 R.patch<RenderedLighting>(SceneEntity, [](auto &) {});
             }
