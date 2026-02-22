@@ -1143,8 +1143,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::SceneView)
         .on_construct<ViewCamera>()
         .on_update<ViewCamera>()
-        .on_construct<Lights>()
-        .on_update<Lights>()
         .on_construct<MaterialPreviewLighting>()
         .on_update<MaterialPreviewLighting>()
         .on_construct<RenderedLighting>()
@@ -1170,7 +1168,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<SceneEditMode>(SceneEntity);
     R.emplace<ViewportTheme>(SceneEntity, Defaults.ViewportTheme);
     R.emplace<ViewCamera>(SceneEntity, Defaults.ViewCamera);
-    R.emplace<Lights>(SceneEntity, Defaults.Lights);
+    WorkbenchLightingData = {.StudioLights = Defaults.StudioLights, .AmbientColor = Defaults.AmbientColor};
+    Buffers->WorkbenchLightingUBO.Update(as_bytes(WorkbenchLightingData));
     R.emplace<MaterialPreviewLighting>(SceneEntity, false, false, 1.f, 0.f);
     R.emplace<RenderedLighting>(SceneEntity, true, true, 1.f, 0.f);
     R.emplace<ViewportExtent>(SceneEntity);
@@ -1647,7 +1646,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
-        const auto &lights = R.get<const Lights>(SceneEntity);
         const auto &settings = R.get<const SceneSettings>(SceneEntity);
         const auto &mat_preview_lighting = R.get<const MaterialPreviewLighting>(SceneEntity);
         const auto &rendered_lighting = R.get<const RenderedLighting>(SceneEntity);
@@ -1664,16 +1662,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
         const float screen_pixel_scale = ScreenPixelScale(camera.Data, viewport_height);
+        const auto view = camera.View();
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
-            .ViewProj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)) * camera.View(),
+            .ViewProj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)) * view,
+            .ViewRotation = mat3(view),
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip(),
             .CameraFar = camera.FarClip(),
-            .ViewColor = lights.ViewColor,
-            .AmbientIntensity = lights.AmbientIntensity,
-            .DirectionalColor = lights.DirectionalColor,
-            .DirectionalIntensity = lights.DirectionalIntensity,
-            .LightDirection = lights.Direction,
             .LightCount = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight)),
             .LightSlot = Buffers->LightBuffer.Slot,
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
@@ -5488,20 +5483,28 @@ void Scene::RenderControls() {
 
         // Note: Rendered world/light toggles are in Render -> Viewport shading.
         if (BeginTabItem("Lighting")) {
-            auto &lights = R.get<Lights>(SceneEntity);
             bool solid_changed = false;
             if (Button("Reset##Lighting")) {
-                lights = Defaults.Lights;
+                WorkbenchLightingData = {.StudioLights = Defaults.StudioLights, .AmbientColor = Defaults.AmbientColor};
                 solid_changed = true;
             }
 
             SeparatorText("Solid");
-            solid_changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
-            solid_changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
-            solid_changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
-            solid_changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
-            solid_changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
-            if (solid_changed) R.patch<Lights>(SceneEntity, [](auto &) {});
+            solid_changed |= ColorEdit3("Ambient##AmbientColor", &WorkbenchLightingData.AmbientColor[0]);
+            for (int i = 0; i < 4; i++) {
+                auto &light = WorkbenchLightingData.StudioLights[i];
+                PushID(i);
+                SeparatorText(i == 0 ? "Key" : i == 1 ? "Fill" : i == 2 ? "Rim" : "Light 4");
+                solid_changed |= DragFloat3("Direction", &light.Direction[0], 0.01f, -1.f, 1.f);
+                solid_changed |= SliderFloat("Wrap", &light.Wrap, 0.f, 1.f);
+                solid_changed |= ColorEdit3("Diffuse", &light.DiffuseColor[0]);
+                solid_changed |= ColorEdit3("Specular", &light.SpecularColor[0]);
+                PopID();
+            }
+            if (solid_changed) {
+                Buffers->WorkbenchLightingUBO.Update(as_bytes(WorkbenchLightingData));
+                R.patch<ViewCamera>(SceneEntity, [](auto &) {});
+            }
             EndTabItem();
         }
         EndTabBar();

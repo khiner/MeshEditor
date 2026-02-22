@@ -16,6 +16,7 @@ layout(location = 7) out vec2 TexCoord3;
 layout(location = 8) flat out uint MaterialIndex;
 layout(location = 9) out vec4 VertexColor;
 layout(location = 10) out vec4 WorldTangent;
+layout(location = 11) out vec3 ViewNormal;
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
 
@@ -70,6 +71,7 @@ void main() {
     if (!computed_face_normal) {
         WorldNormal = trs_transform_normal(world, normal);
     }
+    ViewNormal = SceneViewUBO.ViewRotation * WorldNormal;
     WorldPosition = world_pos;
     VertexColor = vert.Color;
 

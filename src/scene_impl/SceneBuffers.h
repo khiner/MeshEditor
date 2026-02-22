@@ -3,6 +3,7 @@
 #include "gpu/ElementPickCandidate.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
+#include "gpu/WorkbenchLightingUBO.h"
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
 #include "gpu/WorldTransform.h"
@@ -30,6 +31,7 @@ struct SceneBuffers {
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
+          WorkbenchLightingUBO{Ctx, sizeof(::WorkbenchLightingUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::WorkbenchLightingUBO},
           RenderDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
           RenderIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
           SelectionDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
@@ -100,7 +102,7 @@ struct SceneBuffers {
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    mvk::Buffer SceneViewUBO, ViewportThemeUBO;
+    mvk::Buffer SceneViewUBO, ViewportThemeUBO, WorkbenchLightingUBO;
     mvk::Buffer RenderDrawData, RenderIndirect;
     mvk::Buffer SelectionDrawData, SelectionIndirect;
     mvk::Buffer LightBuffer, MaterialBuffer;

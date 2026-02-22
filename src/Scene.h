@@ -6,6 +6,7 @@
 #include "ViewCamera.h"
 #include "World.h"
 #include "gpu/PunctualLight.h"
+#include "gpu/WorkbenchLightingUBO.h"
 #include "mesh/Handle.h"
 #include "numeric/vec2.h"
 #include "vulkan/Image.h"
@@ -229,6 +230,8 @@ private:
     bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
     bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
     std::optional<ViewCamera> SavedViewCamera; // Saved viewport state when looking through a scene camera.
+
+    WorkbenchLightingUBO WorkbenchLightingData{};
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;

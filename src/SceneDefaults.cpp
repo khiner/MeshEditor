@@ -8,13 +8,13 @@ SceneDefaults::SceneDefaults()
           {0, 0, 0},
           {Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}},
       },
-      Lights{
-          .ViewColor = {1, 1, 1},
-          .AmbientIntensity = 0.1f,
-          .DirectionalColor = {1, 1, 1},
-          .DirectionalIntensity = 0.15f,
-          .Direction = {-1, -1, -1},
-      },
+      StudioLights{{
+          {.Direction = {-0.854701f, 0.111111f, 0.507091f}, .Wrap = 0.200f, .DiffuseColor = {0.723042f, 0.723042f, 0.723042f}, .SpecularColor = {0.685956f, 0.685956f, 0.685956f}},
+          {.Direction = {0.058607f, -0.987943f, -0.143295f}, .Wrap = 0.720f, .DiffuseColor = {0.063100f, 0.069978f, 0.067951f}, .SpecularColor = {0.145797f, 0.162642f, 0.157673f}},
+          {.Direction = {0.972202f, 0.075846f, -0.221518f}, .Wrap = 0.281f, .DiffuseColor = {0.157432f, 0.163405f, 0.214035f}, .SpecularColor = {0.246195f, 0.225308f, 0.225308f}},
+          {},
+      }},
+      AmbientColor{0, 0, 0},
       ViewportTheme{
           .Colors{
               .Wire{0, 0, 0},

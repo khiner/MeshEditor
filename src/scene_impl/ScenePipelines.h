@@ -63,7 +63,7 @@ struct MainPipeline {
         pipelines.emplace(
             SPT::Fill,
             ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Lighting.frag"}}},
+                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "WorkbenchLighting.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
                 CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
