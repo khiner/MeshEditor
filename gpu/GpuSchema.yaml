@@ -397,6 +397,8 @@ structs:
         default: 0.5
       - name: DoubleSided
         type: u32
+      - name: Unlit
+        type: u32
   - name: SelectionNode
     fields:
       - name: Depth

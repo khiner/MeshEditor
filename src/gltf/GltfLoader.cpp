@@ -34,13 +34,6 @@ Transform MatrixToTransform(const mat4 &m) {
 
 mat4 ToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
 
-Transform ToTransform(const fastgltf::TRS &trs) {
-    const auto t = trs.translation;
-    const auto r = trs.rotation;
-    const auto s = trs.scale;
-    return {.P = {t.x(), t.y(), t.z()}, .R = glm::normalize(quat{r.w(), r.x(), r.y(), r.z()}), .S = {s.x(), s.y(), s.z()}};
-}
-
 std::optional<uint32_t> ToIndex(std::size_t index, std::size_t upper_bound) {
     if (index >= upper_bound) return {};
     return index;
@@ -51,7 +44,10 @@ std::optional<uint32_t> ToIndex(const fastgltf::Optional<std::size_t> &index, st
 }
 
 vec2 ToVec2(const fastgltf::math::nvec2 &v) { return {v.x(), v.y()}; }
+vec3 ToVec3(const fastgltf::math::nvec3 &v) { return {v.x(), v.y(), v.z()}; }
 vec4 ToVec4(const fastgltf::math::nvec4 &v) { return {v.x(), v.y(), v.z(), v.w()}; }
+quat ToQuat(const fastgltf::math::fquat &q) { return {q.w(), q.x(), q.y(), q.z()}; }
+Transform ToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = glm::normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
 std::optional<TextureTransformData> ToTextureTransform(const std::unique_ptr<fastgltf::TextureTransform> &transform) {
     if (!transform) return {};
@@ -67,40 +63,28 @@ std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::
     if (!texture_info) return {};
     const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
     if (!texture_index) return {};
-    return TextureInfoData{
-        .TextureIndex = *texture_index,
-        .TexCoordIndex = uint32_t(texture_info->texCoordIndex),
-        .Transform = ToTextureTransform(texture_info->transform),
-    };
+    return TextureInfoData{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
 }
 std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::NormalTextureInfo> &texture_info, const fastgltf::Asset &asset) {
     if (!texture_info) return {};
     const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
     if (!texture_index) return {};
-    return TextureInfoData{
-        .TextureIndex = *texture_index,
-        .TexCoordIndex = uint32_t(texture_info->texCoordIndex),
-        .Transform = ToTextureTransform(texture_info->transform),
-    };
+    return TextureInfoData{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
 }
 std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::OcclusionTextureInfo> &texture_info, const fastgltf::Asset &asset) {
     if (!texture_info) return {};
     const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
     if (!texture_index) return {};
-    return TextureInfoData{
-        .TextureIndex = *texture_index,
-        .TexCoordIndex = uint32_t(texture_info->texCoordIndex),
-        .Transform = ToTextureTransform(texture_info->transform),
-    };
+    return TextureInfoData{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
 }
 
 SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf::Material &material, uint32_t material_index) {
-    SceneMaterialData material_data{
+    return {
         .PbrData = {
             .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
             .MetallicFactor = material.pbrData.metallicFactor,
             .RoughnessFactor = material.pbrData.roughnessFactor,
-            .EmissiveFactor = {material.emissiveFactor.x(), material.emissiveFactor.y(), material.emissiveFactor.z()},
+            .EmissiveFactor = ToVec3(material.emissiveFactor * material.emissiveStrength),
             .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
             .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
             .BaseColorTexture = ToTextureInfo(material.pbrData.baseColorTexture, asset),
@@ -111,10 +95,10 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         },
         .AlphaMode = material.alphaMode,
         .DoubleSided = material.doubleSided,
+        .Unlit = material.unlit,
         .AlphaCutoff = material.alphaCutoff,
         .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
     };
-    return material_data;
 }
 
 std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::filesystem::path &path) {
@@ -532,7 +516,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu;
     fastgltf::Parser parser{EnabledExtensions};
     using fastgltf::Options;
     static constexpr auto ParseOptions = Options::DontRequireValidAssetMember | Options::AllowDouble | Options::LoadExternalBuffers | Options::LoadExternalImages | Options::GenerateMeshIndices | Options::DecomposeNodeMatrices;
@@ -937,6 +921,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             },
             .AlphaMode = fastgltf::AlphaMode::Opaque,
             .DoubleSided = false,
+            .Unlit = false,
             .AlphaCutoff = 0.5f,
             .Name = "DefaultMaterial",
         }
@@ -978,7 +963,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     for (const auto &light : asset.lights) {
         PunctualLight punctual_light{
             .Range = 0.f,
-            .Color = {light.color.x(), light.color.y(), light.color.z()},
+            .Color = ToVec3(light.color),
             .Intensity = light.intensity,
             .InnerConeCos = 0.f,
             .OuterConeCos = 0.f,

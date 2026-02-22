@@ -2,10 +2,10 @@
 
 // Adapted from Khronos glTF-Sample-Renderer shader logic, pulled 2026-02-16.
 //  - material graph subset: core glTF metallic-roughness (baseColor, MR, normal, occlusion, emissive)
+//  - KHR_materials_unlit: baseColor-only path, no lighting or IBL
 //  - loop over bindless LightBuffer (LightCount/LightSlot)
 //  - IBL block: diffuse env + specular prefiltered env + GGX BRDF LUT
 //  - MeshEditor face-overlay behavior
-//  - no glTF material extensions yet (lighting-first validation)
 
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
@@ -161,6 +161,15 @@ void main() {
     base_color *= VertexColor;
     if (material.AlphaMode == ALPHA_OPAQUE) {
         base_color.a = 1.0;
+    }
+
+    if (material.Unlit != 0u) {
+        if (material.AlphaMode == ALPHA_MASK) {
+            if (base_color.a < material.AlphaCutoff) discard;
+            base_color.a = 1.0;
+        }
+        OutColor = vec4(linearTosRGB(toneMapPBRNeutral(base_color.rgb)), base_color.a);
+        return;
     }
 
     const vec3 v = normalize(SceneViewUBO.CameraPosition - WorldPosition);

@@ -2315,6 +2315,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             .AlphaMode = uint32_t(src_material.AlphaMode),
             .AlphaCutoff = src_material.AlphaCutoff,
             .DoubleSided = src_material.DoubleSided ? 1u : 0u,
+            .Unlit = src_material.Unlit ? 1u : 0u,
         };
         if (auto result = assign_texture(
                 src_material.PbrData.BaseColorTexture,

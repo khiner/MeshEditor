@@ -59,7 +59,7 @@ struct PBRData {
 struct SceneMaterialData {
     PBRData PbrData;
     fastgltf::AlphaMode AlphaMode;
-    bool DoubleSided;
+    bool DoubleSided, Unlit;
     float AlphaCutoff;
     std::string Name;
 };
