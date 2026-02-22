@@ -16,10 +16,10 @@ static const std::array ShaderIncludeDirs{ShadersDir};
 #else
 static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
 static const fs::path BuildShadersDir = "shaders";
-static const std::array ShaderIncludeDirs{BuildShadersDir, ShadersDir};
+static const std::array ShaderIncludeDirs{ShadersDir, BuildShadersDir};
 #endif
 
-static fs::path ResolveShaderPath(const fs::path &requested) {
+static fs::path ResolveIncludePath(const fs::path &requested) {
     for (const auto &dir : ShaderIncludeDirs) {
         const auto candidate = dir / requested;
         std::error_code ec;
@@ -36,7 +36,7 @@ public:
     ) override {
         auto *result = new shaderc_include_result;
         try {
-            const auto resolved_path = ResolveShaderPath(requested_source);
+            const auto resolved_path = ResolveIncludePath(requested_source);
             auto *include_data = new IncludeData{File::Read(resolved_path), resolved_path.string()};
             result->source_name = include_data->Name.c_str();
             result->source_name_length = include_data->Name.size();
@@ -104,7 +104,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
             compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
             compile_opts.SetIncluder(std::make_unique<ShaderIncluder>());
             const auto type = resource.TypePath.Type;
-            const auto path = ResolveShaderPath(resource.TypePath.Path);
+            const auto path = ShadersDir / resource.TypePath.Path;
             const auto kind = [type] {
                 switch (type) {
                     case ShaderType::eVertex: return shaderc_glsl_vertex_shader;
