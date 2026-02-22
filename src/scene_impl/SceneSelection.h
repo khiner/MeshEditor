@@ -59,7 +59,7 @@ std::unordered_set<uint32_t> ConvertSelectionElement(const MeshSelection &select
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_frozen = true) {
     std::unordered_map<entt::entity, entt::entity> primaries;
     const auto active = FindActiveEntity(r);
-    for (const auto [e, mi, ok] : r.view<const MeshInstance, const Selected, const ObjectKind>().each()) {
+    for (const auto [e, mi, ok, ri] : r.view<const MeshInstance, const Selected, const ObjectKind, const RenderInstance>().each()) {
         if (ok.Value != ObjectType::Mesh) continue;
         if (!include_frozen && r.all_of<Frozen>(e)) continue;
         auto &primary = primaries[mi.MeshEntity];
