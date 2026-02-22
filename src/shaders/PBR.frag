@@ -122,7 +122,7 @@ NormalInfo GetNormalInfo(const PBRMaterial material) {
         b = cross(ng, t);
     }
 
-    if (!gl_FrontFacing) {
+    if (!IsFrontFacing(ng, WorldPosition)) {
         t *= -1.0;
         b *= -1.0;
         ng *= -1.0;
@@ -146,7 +146,7 @@ NormalInfo GetNormalInfo(const PBRMaterial material) {
 
 void main() {
     const PBRMaterial material = MaterialBuffers[nonuniformEXT(SceneViewUBO.MaterialSlot)].Materials[MaterialIndex];
-    if (material.DoubleSided == 0u && !gl_FrontFacing) discard;
+    if (material.DoubleSided == 0u && !IsFrontFacing(WorldNormal, WorldPosition)) discard;
 
     vec4 base_color = material.BaseColorFactor;
     if (material.BaseColorTexture != INVALID_SLOT) {
