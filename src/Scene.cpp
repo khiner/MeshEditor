@@ -5038,6 +5038,9 @@ void Scene::RenderControls() {
             viewport_shading_changed |= RadioButton("Rendered", &viewport_shading, int(ViewportShadingMode::Rendered));
             PopID();
 
+            bool smooth_shading = settings.SmoothShading;
+            viewport_shading_changed |= Checkbox("Smooth shading", &smooth_shading);
+
             if (viewport_shading == int(ViewportShadingMode::Rendered)) {
                 SeparatorText("Rendered shading");
                 if (Button("Reset##RenderedShading")) {
@@ -5055,12 +5058,6 @@ void Scene::RenderControls() {
                 TextDisabled("Active world: %s", active_environment.Name.c_str());
             }
 
-            bool smooth_shading_changed = false;
-            bool smooth_shading = settings.SmoothShading;
-            if (settings.ViewportShading == ViewportShadingMode::Solid) {
-                smooth_shading_changed = Checkbox("Smooth shading", &smooth_shading);
-            }
-
             auto color_mode = int(settings.FaceColorMode);
             bool color_mode_changed = false;
             if (settings.ViewportShading == ViewportShadingMode::Solid) {
@@ -5073,7 +5070,7 @@ void Scene::RenderControls() {
                 color_mode_changed |= RadioButton("Normals", &color_mode, int(FaceColorMode::Normals));
                 PopID();
             }
-            if (viewport_shading_changed || color_mode_changed || smooth_shading_changed) {
+            if (viewport_shading_changed || color_mode_changed) {
                 settings.ViewportShading = ViewportShadingMode(viewport_shading);
                 settings.FaceColorMode = FaceColorMode(color_mode);
                 settings.SmoothShading = smooth_shading;
