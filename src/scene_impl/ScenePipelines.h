@@ -72,7 +72,7 @@ struct MainPipeline {
         pipelines.emplace(
             SPT::PBRFill,
             ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "PBR.frag"}}},
+                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "pbr.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
                 CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
@@ -81,7 +81,7 @@ struct MainPipeline {
         pipelines.emplace(
             SPT::PBRFillBlend,
             ctx.CreateGraphics(
-                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "PBR.frag"}}},
+                {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "pbr.frag"}}},
                 {},
                 vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
                 CreateColorBlendAttachment(true), CreateDepthStencil(true, false), draw_pc
