@@ -3,6 +3,8 @@ bindings:
     kind: Uniform
   - name: ViewportThemeUBO
     kind: Uniform
+  - name: WorkspaceLightsUBO
+    kind: Uniform
   - name: Image
     kind: Image
   - name: Sampler
@@ -121,16 +123,6 @@ structs:
         type: float
       - name: CameraFar
         type: float
-      - name: ViewColor
-        type: vec3
-      - name: AmbientIntensity
-        type: float
-      - name: DirectionalColor
-        type: vec3
-      - name: DirectionalIntensity
-        type: float
-      - name: LightDirection
-        type: vec3
       - name: LightCount
         type: u32
       - name: LightSlot
@@ -219,6 +211,19 @@ structs:
       - name: DrawDataSlot
         type: u32
         default: InvalidSlot
+  - name: WorkspaceLights
+    binding: WorkspaceLightsUBO
+    fields:
+      - name: ViewColor
+        type: vec3
+      - name: AmbientIntensity
+        type: float
+      - name: DirectionalColor
+        type: vec3
+      - name: DirectionalIntensity
+        type: float
+      - name: Direction
+        type: vec3
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
       - name: Wire # Wire

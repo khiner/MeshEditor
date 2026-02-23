@@ -20,6 +20,7 @@
 #include "gpu/PunctualLight.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
+#include "gpu/WorkspaceLights.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 
@@ -135,8 +136,8 @@ struct MeshMaterialAssignment {
 struct MeshMaterialSlotSelection {
     uint32_t PrimitiveIndex{0};
 };
-// Tags for light events.
-struct LightDataDirty {};
+// Generic tag for events that only require command buffer submission (not re-record).
+struct SubmitDirty {};
 struct LightWireframeDirty {};
 
 // Tracks pending transform for shader-based preview during Edit mode gizmo manipulation.
@@ -1305,6 +1306,7 @@ struct EditTransformContext {
 
 PunctualLight GetLight(const SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<const PunctualLight *>(buffers.LightBuffer.GetMappedData().data())[index]; }
 void SetLight(SceneBuffers &buffers, uint32_t index, const PunctualLight &light) { buffers.LightBuffer.Update(as_bytes(light), vk::DeviceSize(index) * sizeof(PunctualLight)); }
+WorkspaceLights &GetWorkspaceLights(SceneBuffers &buffers) { return *reinterpret_cast<WorkspaceLights *>(buffers.WorkspaceLightsUBO.GetMappedData().data()); }
 
 uint32_t GetMaterialCount(const SceneBuffers &buffers) { return uint32_t(buffers.MaterialBuffer.UsedSize / sizeof(PBRMaterial)); }
 PBRMaterial GetMaterial(const SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<const PBRMaterial *>(buffers.MaterialBuffer.GetMappedData().data())[index]; }
@@ -1339,6 +1341,7 @@ constexpr auto
     ModelsBuffer = "models_buffer_changes"_hs,
     SceneSettings = "scene_settings_changes"_hs,
     InteractionMode = "interaction_mode_changes"_hs,
+    Submit = "submit_changes"_hs,
     ViewportTheme = "viewport_theme_changes"_hs,
     Materials = "materials_changes"_hs,
     SceneView = "scene_view_changes"_hs,
@@ -1501,6 +1504,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::InteractionMode)
         .on_construct<SceneInteraction>()
         .on_update<SceneInteraction>();
+    R.storage<entt::reactive>(changes::Submit)
+        .on_construct<SubmitDirty>();
     R.storage<entt::reactive>(changes::ViewportTheme)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
@@ -1510,8 +1515,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::SceneView)
         .on_construct<ViewCamera>()
         .on_update<ViewCamera>()
-        .on_construct<Lights>()
-        .on_update<Lights>()
         .on_construct<MaterialPreviewLighting>()
         .on_update<MaterialPreviewLighting>()
         .on_construct<RenderedLighting>()
@@ -1537,12 +1540,12 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<SceneEditMode>(SceneEntity);
     R.emplace<ViewportTheme>(SceneEntity, Defaults.ViewportTheme);
     R.emplace<ViewCamera>(SceneEntity, Defaults.ViewCamera);
-    R.emplace<Lights>(SceneEntity, Defaults.Lights);
     R.emplace<MaterialPreviewLighting>(SceneEntity, false, false, 1.f, 0.f);
     R.emplace<RenderedLighting>(SceneEntity, true, true, 1.f, 0.f);
     R.emplace<ViewportExtent>(SceneEntity);
     R.emplace<AnimationTimeline>(SceneEntity);
     R.emplace<MaterialStore>(SceneEntity);
+    Buffers->WorkspaceLightsUBO.Update(as_bytes(Defaults.WorkspaceLights));
 
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
     ResetObjectPickKeys(*Buffers);
@@ -1881,7 +1884,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             light_count_changed = true;
         }
     }
-    if (!R.view<LightDataDirty>().empty() || light_count_changed) request(RenderRequest::Submit);
+    if (!R.storage<entt::reactive>(changes::Submit).empty() || light_count_changed) request(RenderRequest::Submit);
     for (auto light_entity : R.view<LightWireframeDirty, LightIndex, MeshInstance>()) {
         const auto light = GetLight(*Buffers, R.get<const LightIndex>(light_entity).Value);
         auto wireframe = BuildLightMesh(light);
@@ -2006,7 +2009,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
-        const auto &lights = R.get<const Lights>(SceneEntity);
         const auto &settings = R.get<const SceneSettings>(SceneEntity);
         const auto &mat_preview_lighting = R.get<const MaterialPreviewLighting>(SceneEntity);
         const auto &rendered_lighting = R.get<const RenderedLighting>(SceneEntity);
@@ -2029,11 +2031,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip(),
             .CameraFar = camera.FarClip(),
-            .ViewColor = lights.ViewColor,
-            .AmbientIntensity = lights.AmbientIntensity,
-            .DirectionalColor = lights.DirectionalColor,
-            .DirectionalIntensity = lights.DirectionalIntensity,
-            .LightDirection = lights.Direction,
             .LightCount = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight)),
             .LightSlot = Buffers->LightBuffer.Slot,
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
@@ -2215,7 +2212,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     R.clear<MeshGeometryDirty>();
     R.clear<MeshMaterialAssignment>();
     R.clear<MaterialEdit>();
-    R.clear<LightDataDirty>();
+    R.clear<SubmitDirty>();
     R.clear<LightWireframeDirty>();
 
     return render_request;
@@ -2414,7 +2411,7 @@ entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight>
     const auto entity = CreateExtrasObject(std::move(wireframe), ObjectType::Light, info, "Light");
     const uint32_t light_index = uint32_t(R.storage<LightIndex>().size());
     R.emplace<LightIndex>(entity, light_index);
-    R.emplace<LightDataDirty>(entity);
+    R.emplace<SubmitDirty>(entity);
     R.emplace<LightWireframeDirty>(entity);
     const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
     const auto &ri = R.get<const RenderInstance>(entity);
@@ -2954,7 +2951,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                    *object.LightIndex < loaded_scene->Lights.size()) {
             const auto &sld = loaded_scene->Lights[*object.LightIndex];
             object_entity = AddLight({.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, sld.Light);
-            R.emplace_or_replace<LightDataDirty>(object_entity);
+            R.emplace_or_replace<SubmitDirty>(object_entity);
             R.emplace_or_replace<LightWireframeDirty>(object_entity);
         } else {
             object_entity = AddEmpty(
@@ -3250,7 +3247,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         }
         if (R.all_of<LightIndex>(e)) {
             const auto copy_entity = AddLight(create_info, GetLight(*Buffers, R.get<const LightIndex>(e).Value));
-            R.emplace_or_replace<LightDataDirty>(copy_entity);
+            R.emplace_or_replace<SubmitDirty>(copy_entity);
             R.emplace_or_replace<LightWireframeDirty>(copy_entity);
             return copy_entity;
         }
@@ -5566,7 +5563,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
         if (changed) {
             SetLight(*Buffers, R.get<const LightIndex>(active_entity).Value, light);
-            R.emplace_or_replace<LightDataDirty>(active_entity);
+            R.emplace_or_replace<SubmitDirty>(active_entity);
         }
         if (wireframe_changed) R.emplace_or_replace<LightWireframeDirty>(active_entity);
     }
@@ -5863,20 +5860,18 @@ void Scene::RenderControls() {
 
         // Note: Rendered world/light toggles are in Render -> Viewport shading.
         if (BeginTabItem("Lighting")) {
-            auto &lights = R.get<Lights>(SceneEntity);
-            bool solid_changed = false;
+            auto &lights = GetWorkspaceLights(*Buffers);
+            bool changed = false;
             if (Button("Reset##Lighting")) {
-                lights = Defaults.Lights;
-                solid_changed = true;
+                lights = Defaults.WorkspaceLights;
+                changed = true;
             }
-
-            SeparatorText("Solid");
-            solid_changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
-            solid_changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
-            solid_changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
-            solid_changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
-            solid_changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
-            if (solid_changed) R.patch<Lights>(SceneEntity, [](auto &) {});
+            changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
+            changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
+            changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
+            changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
+            changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
+            if (changed) R.emplace_or_replace<SubmitDirty>(SceneEntity);
             EndTabItem();
         }
         EndTabBar();

@@ -8,7 +8,7 @@ SceneDefaults::SceneDefaults()
           {0, 0, 0},
           {Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}},
       },
-      Lights{
+      WorkspaceLights{
           .ViewColor = {1, 1, 1},
           .AmbientIntensity = 0.1f,
           .DirectionalColor = {1, 1, 1},
