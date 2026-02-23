@@ -22,6 +22,7 @@ struct PBRViewportLighting {
     bool UseSceneWorld;
     float EnvIntensity;
     float EnvRotationDegrees;
+    float WorldOpacity{0.f};
 };
 
 // Two distinct ECS component types sharing the same layout, with different defaults.

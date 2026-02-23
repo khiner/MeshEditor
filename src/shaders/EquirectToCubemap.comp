@@ -1,0 +1,40 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D EquirectMap;
+layout(rgba32f, binding = 1) writeonly uniform image2DArray CubeFace;
+
+layout(push_constant) uniform PC { uint FaceSize; };
+
+const float PI = 3.14159265358979323846;
+
+// OpenGL/Vulkan Y-up cubemap face convention (layer order: +X, -X, +Y, -Y, +Z, -Z).
+// uv is in [-1, 1] for the face's s/t axes.
+vec3 FaceDirection(uint face, vec2 uv) {
+    switch (face) {
+        case 0: return normalize(vec3(1.0, -uv.y, -uv.x));  // +X
+        case 1: return normalize(vec3(-1.0, -uv.y, uv.x));  // -X
+        case 2: return normalize(vec3(uv.x, 1.0, uv.y));    // +Y
+        case 3: return normalize(vec3(uv.x, -1.0, -uv.y));  // -Y
+        case 4: return normalize(vec3(uv.x, -uv.y, 1.0));   // +Z
+        default: return normalize(vec3(-uv.x, -uv.y, -1.0));// -Z
+    }
+}
+
+void main() {
+    const uint face = gl_GlobalInvocationID.z;
+    const ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(FaceSize) || px.y >= int(FaceSize)) return;
+
+    const vec2 uv = (vec2(px) + 0.5) / float(FaceSize) * 2.0 - 1.0;
+    const vec3 dir = FaceDirection(face, uv);
+
+    // Convert direction to equirectangular UV.
+    const float lon = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
+    const float lat = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
+
+    // Flip V: lat=0 is south pole, but equirect images have V=0 at top (north).
+    const vec4 color = textureLod(EquirectMap, vec2(lon, 1.0 - lat), 0.0);
+    imageStore(CubeFace, ivec3(px, face), color);
+}

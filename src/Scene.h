@@ -58,6 +58,7 @@ enum class ShaderPipelineType {
     LineOverlayBBox,
     Point,
     Grid,
+    Background,
     SilhouetteDepthObject,
     SilhouetteEdgeDepthObject,
     SilhouetteEdgeDepth,
@@ -299,6 +300,9 @@ private:
 
     entt::entity CreateExtrasMeshEntity(ExtrasWireframe &&);
     entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
+
+    // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
+    void SetStudioEnvironment(uint32_t index);
 
     void RenderEntityControls(entt::entity);
     void RenderObjectTree();

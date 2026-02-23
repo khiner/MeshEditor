@@ -71,6 +71,18 @@ struct CubemapEntry {
     std::string Name;
 };
 
+struct EnvironmentPrefiltered {
+    CubemapEntry DiffuseEnv; // 32×32, 1 mip
+    CubemapEntry SpecularEnv; // 256×256, 9 mips (sheen reuses this)
+    std::string Name;
+};
+
+struct HdriEntry {
+    std::string Name;
+    std::filesystem::path Path;
+    std::optional<EnvironmentPrefiltered> Prefiltered;
+};
+
 struct EnvironmentSelection {
     uint32_t DiffuseEnvSamplerSlot{InvalidSlot};
     uint32_t SpecularEnvSamplerSlot{InvalidSlot};
@@ -84,10 +96,9 @@ struct EnvironmentSelection {
 };
 
 struct EnvironmentStore {
-    CubemapEntry DiffuseEnv;
-    CubemapEntry SpecularEnv;
+    std::vector<HdriEntry> Hdris;
+    uint32_t ActiveHdriIndex{0};
     TextureEntry BrdfLut;
-    CubemapEntry SheenEnv;
     TextureEntry SheenELut;
     TextureEntry CharlieLut;
     EnvironmentSelection SceneWorld;
@@ -168,10 +179,14 @@ void ReleaseCubeSamplerSlot(DescriptorSlots &slots, uint32_t sampler_slot) {
 }
 
 void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentStore &environments) {
-    ReleaseCubeSamplerSlot(slots, environments.DiffuseEnv.SamplerSlot);
-    ReleaseCubeSamplerSlot(slots, environments.SpecularEnv.SamplerSlot);
-    if (environments.BrdfLut.SamplerSlot != InvalidSlot) {
-        slots.Release({SlotType::Sampler, environments.BrdfLut.SamplerSlot});
+    for (const auto &hdri : environments.Hdris) {
+        if (hdri.Prefiltered) {
+            ReleaseCubeSamplerSlot(slots, hdri.Prefiltered->DiffuseEnv.SamplerSlot);
+            ReleaseCubeSamplerSlot(slots, hdri.Prefiltered->SpecularEnv.SamplerSlot);
+        }
+    }
+    for (const auto *tex : {&environments.BrdfLut, &environments.SheenELut, &environments.CharlieLut}) {
+        if (tex->SamplerSlot != InvalidSlot) slots.Release({SlotType::Sampler, tex->SamplerSlot});
     }
 }
 
@@ -705,6 +720,358 @@ TextureEntry CreateDefaultCharlieLutTexture(const SceneVulkanResources &vk, mvk:
 #include "scene_impl/SceneTransformUtils.h"
 #include "scene_impl/SceneUI.h"
 
+// GPU-prefilters a Radiance HDR equirectangular image into a diffuse irradiance cubemap and a
+// GGX specular prefiltered cubemap using dedicated compute pipelines. Returns the two bindless
+// CubemapEntries. All temporary GPU resources (equirect image, raw cubemap, descriptor sets)
+// are destroyed before returning.
+static EnvironmentPrefiltered CreateIblFromHdri(
+    const SceneVulkanResources &vk,
+    mvk::BufferContext &ctx,
+    vk::CommandPool command_pool,
+    vk::Fence fence,
+    DescriptorSlots &slots,
+    const IblPrefilterPipelines &prefilter,
+    const std::filesystem::path &path,
+    const std::string &name
+) {
+    // 1. Load HDR equirectangular image into a CPU staging buffer.
+    int eq_w_i = 0, eq_h_i = 0, channels = 0;
+    const auto path_str = path.string();
+    float *raw_pixels = stbi_loadf(path_str.c_str(), &eq_w_i, &eq_h_i, &channels, 4);
+    if (!raw_pixels) {
+        throw std::runtime_error(std::format("Failed to load HDR '{}': {}", path_str, stbi_failure_reason() ? stbi_failure_reason() : "unknown error"));
+    }
+    const uint32_t eq_w = uint32_t(eq_w_i), eq_h = uint32_t(eq_h_i);
+
+    const size_t eq_bytes = size_t(eq_w) * eq_h * 4 * sizeof(float);
+    mvk::Buffer eq_staging{ctx, std::span<const std::byte>{reinterpret_cast<const std::byte *>(raw_pixels), eq_bytes}, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    stbi_image_free(raw_pixels);
+
+    // 2. Upload equirect pixels to a temporary GPU image.
+    constexpr auto rgba32f = vk::Format::eR32G32B32A32Sfloat;
+    const vk::ImageSubresourceRange one_2d{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+
+    auto equirect = mvk::CreateImage(
+        vk.Device, vk.PhysicalDevice,
+        {{}, vk::ImageType::e2D, rgba32f, vk::Extent3D{eq_w, eq_h, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, rgba32f, {}, one_2d}
+    );
+    {
+        auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+        cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+            vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, {}, {}, *equirect.Image, one_2d}
+        );
+        cb->copyBufferToImage(*eq_staging, *equirect.Image, vk::ImageLayout::eTransferDstOptimal, vk::BufferImageCopy{0, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}});
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+            vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *equirect.Image, one_2d}
+        );
+        cb->end();
+        vk::SubmitInfo si{};
+        si.setCommandBuffers(*cb);
+        vk.Queue.submit(si, fence);
+        WaitFor(fence, vk.Device);
+    }
+
+    // 3. Create raw cubemap (512×512, full mip chain, storage+sampled+transfer).
+    const uint32_t raw_size = 512;
+    const uint32_t raw_mips = ComputeMipLevelCount(raw_size, raw_size);
+    constexpr auto cube_flags = vk::ImageCreateFlagBits::eCubeCompatible;
+    const vk::ImageSubresourceRange raw_full{vk::ImageAspectFlagBits::eColor, 0, raw_mips, 0, 6};
+
+    auto raw_cube = mvk::CreateImage(
+        vk.Device, vk.PhysicalDevice,
+        {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{raw_size, raw_size, 1}, raw_mips, 6,
+         vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
+             vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+         vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, raw_full}
+    );
+    // e2DArray view covering mip 0 of the raw cube — used as storage image write target.
+    auto raw_cube_storage_view = vk.Device.createImageViewUnique(
+        {{}, *raw_cube.Image, vk::ImageViewType::e2DArray, rgba32f, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}}
+    );
+
+    // 4. Create diffuse irradiance cubemap (32×32, 1 mip).
+    const uint32_t diff_size = 32;
+    const vk::ImageSubresourceRange diff_range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6};
+    auto diff_cube = mvk::CreateImage(
+        vk.Device, vk.PhysicalDevice,
+        {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{diff_size, diff_size, 1}, 1, 6,
+         vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
+             vk::ImageUsageFlagBits::eTransferDst,
+         vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, diff_range}
+    );
+    auto diff_storage_view = vk.Device.createImageViewUnique(
+        {{}, *diff_cube.Image, vk::ImageViewType::e2DArray, rgba32f, {}, diff_range}
+    );
+
+    // 5. Create specular prefiltered cubemap (256×256, full mip chain).
+    const uint32_t spec_size = 256;
+    const uint32_t spec_mips = ComputeMipLevelCount(spec_size, spec_size);
+    const vk::ImageSubresourceRange spec_full{vk::ImageAspectFlagBits::eColor, 0, spec_mips, 0, 6};
+    auto spec_cube = mvk::CreateImage(
+        vk.Device, vk.PhysicalDevice,
+        {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{spec_size, spec_size, 1}, spec_mips, 6,
+         vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
+             vk::ImageUsageFlagBits::eTransferDst,
+         vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, spec_full}
+    );
+    // One e2DArray storage view per specular mip level.
+    std::vector<vk::UniqueImageView> spec_storage_views;
+    spec_storage_views.reserve(spec_mips);
+    for (uint32_t mip = 0; mip < spec_mips; ++mip) {
+        spec_storage_views.push_back(vk.Device.createImageViewUnique(
+            {{}, *spec_cube.Image, vk::ImageViewType::e2DArray, rgba32f, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}}
+        ));
+    }
+
+    // 6. Allocate local descriptor sets (one per dispatch variant).
+    //    Layout is owned by IblPrefilterPipelines; we only create the pool and sets.
+    const uint32_t num_sets = 2u + spec_mips; // equirect→cube, diffuse, specular×mips
+    const std::array pool_sizes{
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, num_sets},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, num_sets},
+    };
+    auto desc_pool = vk.Device.createDescriptorPoolUnique({{}, num_sets, pool_sizes});
+    const std::vector<vk::DescriptorSetLayout> layouts(num_sets, *prefilter.DescriptorSetLayout);
+    auto desc_sets = vk.Device.allocateDescriptorSets({*desc_pool, layouts});
+    // desc_sets[0]       = EquirectToCubemap (equirect in, raw cube mip0 out)
+    // desc_sets[1]       = DiffuseIrradiance (raw cube in, diffuse out)
+    // desc_sets[2+mip]   = SpecularPrefilter (raw cube in, specular mip N out)
+
+    // 7. Update all descriptor sets before recording.
+    const vk::SamplerCreateInfo linear_clamp_ci{
+        {},
+        vk::Filter::eLinear,
+        vk::Filter::eLinear,
+        vk::SamplerMipmapMode::eLinear,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        0.f,
+        VK_FALSE,
+        1.f,
+        VK_FALSE,
+        vk::CompareOp::eNever,
+        0.f,
+        1000.f,
+        vk::BorderColor::eIntOpaqueBlack,
+        VK_FALSE,
+    };
+    const vk::SamplerCreateInfo linear_repeat_ci{
+        {},
+        vk::Filter::eLinear,
+        vk::Filter::eLinear,
+        vk::SamplerMipmapMode::eLinear,
+        vk::SamplerAddressMode::eRepeat,
+        vk::SamplerAddressMode::eRepeat,
+        vk::SamplerAddressMode::eRepeat,
+        0.f,
+        VK_FALSE,
+        1.f,
+        VK_FALSE,
+        vk::CompareOp::eNever,
+        0.f,
+        1000.f,
+        vk::BorderColor::eIntOpaqueBlack,
+        VK_FALSE,
+    };
+    auto equirect_sampler = vk.Device.createSamplerUnique(linear_repeat_ci);
+    auto raw_cube_sampler = vk.Device.createSamplerUnique(linear_clamp_ci);
+
+    const vk::DescriptorImageInfo eq_info{*equirect_sampler, *equirect.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+    const vk::DescriptorImageInfo raw_mip0_info{{}, *raw_cube_storage_view, vk::ImageLayout::eGeneral};
+    vk.Device.updateDescriptorSets({
+                                       vk::WriteDescriptorSet{desc_sets[0], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &eq_info},
+                                       vk::WriteDescriptorSet{desc_sets[0], 1, 0, 1, vk::DescriptorType::eStorageImage, &raw_mip0_info},
+                                   },
+                                   {});
+
+    const vk::DescriptorImageInfo raw_cube_info{*raw_cube_sampler, *raw_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+    const vk::DescriptorImageInfo diff_info{{}, *diff_storage_view, vk::ImageLayout::eGeneral};
+    vk.Device.updateDescriptorSets({
+                                       vk::WriteDescriptorSet{desc_sets[1], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &raw_cube_info},
+                                       vk::WriteDescriptorSet{desc_sets[1], 1, 0, 1, vk::DescriptorType::eStorageImage, &diff_info},
+                                   },
+                                   {});
+
+    for (uint32_t mip = 0; mip < spec_mips; ++mip) {
+        const vk::DescriptorImageInfo spec_mip_info{{}, *spec_storage_views[mip], vk::ImageLayout::eGeneral};
+        vk.Device.updateDescriptorSets({
+                                           vk::WriteDescriptorSet{desc_sets[2 + mip], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &raw_cube_info},
+                                           vk::WriteDescriptorSet{desc_sets[2 + mip], 1, 0, 1, vk::DescriptorType::eStorageImage, &spec_mip_info},
+                                       },
+                                       {});
+    }
+
+    // 8. Record and submit the full prefiltering command buffer.
+    auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // --- Initial layout transitions ---
+    // raw cube mip 0: Undefined → General (storage write by EquirectToCubemap)
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}}
+    );
+    // raw cube mips 1..N: Undefined → TransferDstOptimal (blit targets for mipmap generation)
+    if (raw_mips > 1) {
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+            vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 1, raw_mips - 1, 0, 6}}
+        );
+    }
+    // diffuse: Undefined → General
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *diff_cube.Image, diff_range}
+    );
+    // specular all mips: Undefined → General
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *spec_cube.Image, spec_full}
+    );
+
+    // --- EquirectToCubemap pass ---
+    cb->bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.EquirectToCubemap);
+    cb->bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[0], {});
+    cb->pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &raw_size);
+    cb->dispatch((raw_size + 7) / 8, (raw_size + 7) / 8, 6);
+
+    // raw cube mip 0: General → TransferSrcOptimal (source for mipmap blit chain)
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+        vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}}
+    );
+
+    // --- Generate mip chain for raw cubemap ---
+    int32_t mip_size = int32_t(raw_size);
+    for (uint32_t mip = 1; mip < raw_mips; ++mip) {
+        const int32_t next_size = std::max(1, mip_size / 2);
+        // Blit all 6 faces: mip N-1 (TransferSrcOptimal) → mip N (TransferDstOptimal)
+        cb->blitImage(
+            *raw_cube.Image, vk::ImageLayout::eTransferSrcOptimal,
+            *raw_cube.Image, vk::ImageLayout::eTransferDstOptimal,
+            vk::ImageBlit{
+                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 6},
+                {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_size, mip_size, 1}},
+                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 6},
+                {vk::Offset3D{0, 0, 0}, vk::Offset3D{next_size, next_size, 1}},
+            },
+            vk::Filter::eLinear
+        );
+        // mip N-1: TransferSrcOptimal → ShaderReadOnlyOptimal (done as blit source)
+        cb->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+            vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 6}}
+        );
+        if (mip < raw_mips - 1) {
+            // mip N: TransferDstOptimal → TransferSrcOptimal (source for next blit)
+            cb->pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}}
+            );
+        } else {
+            // Last mip: TransferDstOptimal → ShaderReadOnlyOptimal
+            cb->pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+                vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}}
+            );
+        }
+        mip_size = next_size;
+    }
+
+    // --- DiffuseIrradiance pass ---
+    cb->bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.DiffuseIrradiance);
+    cb->bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[1], {});
+    cb->pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &diff_size);
+    cb->dispatch((diff_size + 7) / 8, (diff_size + 7) / 8, 6);
+
+    // diffuse: General → ShaderReadOnlyOptimal
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+        vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *diff_cube.Image, diff_range}
+    );
+
+    // --- SpecularPrefilter passes (one per roughness mip) ---
+    cb->bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.SpecularPrefilter);
+    for (uint32_t mip = 0; mip < spec_mips; ++mip) {
+        const uint32_t mip_face_size = std::max(1u, spec_size >> mip);
+        struct SpecPC {
+            uint32_t FaceSize;
+            uint32_t SourceSize;
+            float Roughness;
+        };
+        const SpecPC pc{
+            .FaceSize = mip_face_size,
+            .SourceSize = raw_size,
+            .Roughness = float(mip) / float(spec_mips - 1),
+        };
+        cb->bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[2 + mip], {});
+        cb->pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(SpecPC), &pc);
+        cb->dispatch((mip_face_size + 7) / 8, (mip_face_size + 7) / 8, 6);
+    }
+
+    // specular: General → ShaderReadOnlyOptimal
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+        vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *spec_cube.Image, spec_full}
+    );
+
+    cb->end();
+    {
+        vk::SubmitInfo si{};
+        si.setCommandBuffers(*cb);
+        vk.Queue.submit(si, fence);
+        WaitFor(fence, vk.Device);
+    }
+    // desc_pool destroyed here, freeing desc_sets. equirect, raw_cube, storage views, local samplers also destroyed.
+
+    // 9. Register diffuse and specular cubemaps in the global bindless CubeSamplers array.
+    auto diff_sampler = vk.Device.createSamplerUnique(linear_clamp_ci);
+    const uint32_t diff_slot = slots.Allocate(SlotType::CubeSampler);
+    vk.Device.updateDescriptorSets(
+        {slots.MakeCubeSamplerWrite(diff_slot, {*diff_sampler, *diff_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {}
+    );
+
+    auto spec_sampler = vk.Device.createSamplerUnique(vk::SamplerCreateInfo{
+        {},
+        vk::Filter::eLinear,
+        vk::Filter::eLinear,
+        vk::SamplerMipmapMode::eLinear,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        0.f,
+        VK_FALSE,
+        1.f,
+        VK_FALSE,
+        vk::CompareOp::eNever,
+        0.f,
+        float(spec_mips),
+        vk::BorderColor::eIntOpaqueBlack,
+        VK_FALSE,
+    });
+    const uint32_t spec_slot = slots.Allocate(SlotType::CubeSampler);
+    vk.Device.updateDescriptorSets(
+        {slots.MakeCubeSamplerWrite(spec_slot, {*spec_sampler, *spec_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {}
+    );
+
+    return {
+        .DiffuseEnv = {.Image = std::move(diff_cube), .Sampler = std::move(diff_sampler), .SamplerSlot = diff_slot, .Size = diff_size, .MipLevels = 1, .Name = name + "_diffuse"},
+        .SpecularEnv = {.Image = std::move(spec_cube), .Sampler = std::move(spec_sampler), .SamplerSlot = spec_slot, .Size = spec_size, .MipLevels = spec_mips, .Name = name + "_specular"},
+        .Name = name,
+    };
+}
+
 struct ExtrasWireframe {
     MeshData Data;
     std::vector<uint8_t> VertexClasses{}; // Empty means all VCLASS_NONE (no buffer needed).
@@ -1201,68 +1568,36 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     texture_store.Textures.emplace_back(std::move(white_texture));
 
     auto &environments = *Environments;
-    environments.DiffuseEnv = CreateSolidCubemapEntry(
-        Vk,
-        Buffers->Ctx,
-        *CommandPool,
-        *OneShotFence,
-        *Slots,
-        vec3{0.35f},
-        16u,
-        1u,
-        "DefaultDiffuseEnvironment"
-    );
-
-    environments.SpecularEnv = CreateSolidCubemapEntry(
-        Vk,
-        Buffers->Ctx,
-        *CommandPool,
-        *OneShotFence,
-        *Slots,
-        vec3{0.5f},
-        64u,
-        7u,
-        "DefaultSpecularEnvironment"
-    );
-
     environments.BrdfLut = CreateDefaultBrdfLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
-
-    environments.SheenEnv = CreateSolidCubemapEntry(
-        Vk,
-        Buffers->Ctx,
-        *CommandPool,
-        *OneShotFence,
-        *Slots,
-        vec3{0.5f},
-        64u,
-        7u,
-        "DefaultSheenEnvironment"
-    );
     environments.SheenELut = CreateDefaultSheenELutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
     environments.CharlieLut = CreateDefaultCharlieLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
 
-    environments.SceneWorld = {
-        .DiffuseEnvSamplerSlot = environments.DiffuseEnv.SamplerSlot,
-        .SpecularEnvSamplerSlot = environments.SpecularEnv.SamplerSlot,
-        .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
-        .SpecularEnvMipCount = environments.SpecularEnv.MipLevels,
-        .SheenEnvSamplerSlot = environments.SheenEnv.SamplerSlot,
-        .SheenEnvMipCount = environments.SheenEnv.MipLevels,
-        .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
-        .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
-        .Name = "Scene World",
-    };
-    environments.StudioWorld = {
-        .DiffuseEnvSamplerSlot = environments.DiffuseEnv.SamplerSlot,
-        .SpecularEnvSamplerSlot = environments.SpecularEnv.SamplerSlot,
-        .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
-        .SpecularEnvMipCount = environments.SpecularEnv.MipLevels,
-        .SheenEnvSamplerSlot = environments.SheenEnv.SamplerSlot,
-        .SheenEnvMipCount = environments.SheenEnv.MipLevels,
-        .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
-        .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
-        .Name = "Studio World",
-    };
+    // Discover HDR environment files, sorted by name for stable ordering.
+    static constexpr std::string_view HdriDir{"res/images/studiolights/world"};
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator{HdriDir, ec}) {
+        if (entry.path().extension() == ".hdr") {
+            const auto stem = entry.path().stem().string();
+            environments.Hdris.push_back({.Name = stem, .Path = entry.path(), .Prefiltered = {}});
+        }
+    }
+    std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
+
+    if (environments.Hdris.empty()) {
+        // Fallback when no HDR files are found: create solid-color placeholder environments.
+        EnvironmentPrefiltered placeholder;
+        placeholder.DiffuseEnv = CreateSolidCubemapEntry(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, vec3{0.35f}, 16u, 1u, "FallbackDiffuse");
+        placeholder.SpecularEnv = CreateSolidCubemapEntry(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, vec3{0.5f}, 64u, 7u, "FallbackSpecular");
+        placeholder.Name = "default";
+        environments.Hdris.push_back({"default", {}, std::move(placeholder)});
+    }
+
+    // Set the default HDRI: prefer "forest", otherwise use the first entry.
+    const auto forest_it = std::ranges::find(environments.Hdris, std::string{"forest"}, &HdriEntry::Name);
+    environments.ActiveHdriIndex = forest_it != environments.Hdris.end() ? uint32_t(std::distance(environments.Hdris.begin(), forest_it)) : 0u;
+
+    SetStudioEnvironment(environments.ActiveHdriIndex);
+    environments.SceneWorld = environments.StudioWorld;
 
     AppendMaterial(
         *Buffers,
@@ -1295,6 +1630,30 @@ Scene::~Scene() {
 }
 
 World Scene::GetWorld() const { return Defaults.World; }
+
+void Scene::SetStudioEnvironment(uint32_t index) {
+    auto &environments = *Environments;
+    auto &hdri = environments.Hdris[index];
+    if (!hdri.Prefiltered) {
+        hdri.Prefiltered = CreateIblFromHdri(
+            Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots,
+            Pipelines->IblPrefilter, hdri.Path, hdri.Name
+        );
+    }
+    const auto &pre = *hdri.Prefiltered;
+    environments.ActiveHdriIndex = index;
+    environments.StudioWorld = {
+        .DiffuseEnvSamplerSlot = pre.DiffuseEnv.SamplerSlot,
+        .SpecularEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
+        .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
+        .SpecularEnvMipCount = pre.SpecularEnv.MipLevels,
+        .SheenEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
+        .SheenEnvMipCount = pre.SpecularEnv.MipLevels,
+        .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
+        .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
+        .Name = hdri.Name,
+    };
+}
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
     if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) return mesh_instance->MeshEntity;
@@ -1658,6 +2017,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &active_environment = use_scene_world ? Environments->SceneWorld : Environments->StudioWorld;
         const float env_intensity = use_scene_world ? 1.f : active_lighting.EnvIntensity;
         const float env_rotation_radians = use_scene_world ? 0.f : active_lighting.EnvRotationDegrees * (Pi / 180.f);
+        const float world_opacity = is_pbr_mode ? (use_scene_world ? 1.f : active_lighting.WorldOpacity) : 0.f;
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
         const float viewport_height = extent.height > 0 ? float(extent.height) : 1.f;
@@ -1677,9 +2037,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .LightCount = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight)),
             .LightSlot = Buffers->LightBuffer.Slot,
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
-            .UseSceneWorldRender = use_scene_world ? 1u : 0u,
             .EnvIntensity = env_intensity,
             .EnvRotationRadians = env_rotation_radians,
+            .WorldOpacity = world_opacity,
             .DiffuseEnvSamplerSlot = active_environment.DiffuseEnvSamplerSlot,
             .SpecularEnvSamplerSlot = active_environment.SpecularEnvSamplerSlot,
             .BrdfLutSamplerSlot = active_environment.BrdfLutSamplerSlot,
@@ -3501,6 +3861,9 @@ void Scene::RecordRenderCommandBuffer() {
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
+
+    // Background environment (PBR modes only; shader discards when WorldOpacity == 0 or no env slot)
+    if (show_rendered) main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
 
     // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
     if (render_silhouette) {
@@ -5379,11 +5742,23 @@ void Scene::RenderControls() {
                 SameLine();
                 lighting_changed |= Checkbox("Scene world", &lighting.UseSceneWorld);
                 if (!lighting.UseSceneWorld) {
-                    lighting_changed |= SliderFloat("Studio world intensity", &lighting.EnvIntensity, 0.f, 8.f, "%.2f");
-                    lighting_changed |= SliderFloat("Studio world rotation", &lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
+                    auto &environments = *Environments;
+                    const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
+                    if (BeginCombo("Environment", current_name.c_str())) {
+                        for (uint32_t i = 0; i < uint32_t(environments.Hdris.size()); ++i) {
+                            const bool selected = (i == environments.ActiveHdriIndex);
+                            if (Selectable(environments.Hdris[i].Name.c_str(), selected)) {
+                                SetStudioEnvironment(i);
+                                lighting_changed = true;
+                            }
+                            if (selected) SetItemDefaultFocus();
+                        }
+                        EndCombo();
+                    }
+                    lighting_changed |= SliderFloat("Intensity", &lighting.EnvIntensity, 0.f, 2.f, "%.2f");
+                    lighting_changed |= SliderFloat("Rotation", &lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
+                    lighting_changed |= SliderFloat("World opacity", &lighting.WorldOpacity, 0.f, 1.f, "%.2f");
                 }
-                const auto &active_env = lighting.UseSceneWorld ? Environments->SceneWorld : Environments->StudioWorld;
-                TextDisabled("Active world: %s", active_env.Name.c_str());
                 PopID();
             };
 
