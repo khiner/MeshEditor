@@ -9,10 +9,10 @@ SceneDefaults::SceneDefaults()
           {Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}},
       },
       StudioLights{{
-          {.Direction = {-0.854701f, 0.111111f, 0.507091f}, .Wrap = 0.200f, .DiffuseColor = {0.723042f, 0.723042f, 0.723042f}, .SpecularColor = {0.685956f, 0.685956f, 0.685956f}},
-          {.Direction = {0.058607f, -0.987943f, -0.143295f}, .Wrap = 0.720f, .DiffuseColor = {0.063100f, 0.069978f, 0.067951f}, .SpecularColor = {0.145797f, 0.162642f, 0.157673f}},
-          {.Direction = {0.972202f, 0.075846f, -0.221518f}, .Wrap = 0.281f, .DiffuseColor = {0.157432f, 0.163405f, 0.214035f}, .SpecularColor = {0.246195f, 0.225308f, 0.225308f}},
-          {},
+          {.Direction = {0.000000f, 0.639175f, 0.769061f}, .Wrap = 0.100000f, .DiffuseColor = {0.507074f, 0.507074f, 0.507074f}, .SpecularColor = {0.666141f, 0.666141f, 0.666141f}},
+          {.Direction = {-0.846939f, -0.357143f, 0.393883f}, .Wrap = 0.340000f, .DiffuseColor = {0.021936f, 0.058160f, 0.063719f}, .SpecularColor = {0.033668f, 0.060061f, 0.063712f}},
+          {.Direction = {0.755102f, -0.530612f, 0.385060f}, .Wrap = 0.340000f, .DiffuseColor = {0.063721f, 0.040061f, 0.037017f}, .SpecularColor = {0.069396f, 0.046455f, 0.046455f}},
+          {.Direction = {0.034483f, 0.913793f, 0.404714f}, .Wrap = 0.724138f, .DiffuseColor = {0.000000f, 0.000000f, 0.000000f}, .SpecularColor = {0.023079f, 0.023393f, 0.025394f}},
       }},
       AmbientColor{0, 0, 0},
       ViewportTheme{
