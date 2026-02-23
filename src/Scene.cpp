@@ -102,6 +102,7 @@ struct EnvironmentStore {
     TextureEntry BrdfLut;
     TextureEntry SheenELut;
     TextureEntry CharlieLut;
+    std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
     EnvironmentSelection SceneWorld;
     EnvironmentSelection StudioWorld;
 };
@@ -130,8 +131,7 @@ struct MeshActiveElement {
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
 struct MeshMaterialAssignment {
-    uint32_t PrimitiveIndex{0};
-    uint32_t MaterialIndex{0};
+    uint32_t PrimitiveIndex, MaterialIndex;
 };
 struct MeshMaterialSlotSelection {
     uint32_t PrimitiveIndex{0};
@@ -186,6 +186,10 @@ void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentSto
             ReleaseCubeSamplerSlot(slots, hdri.Prefiltered->SpecularEnv.SamplerSlot);
         }
     }
+    if (environments.ImportedSceneWorld) {
+        ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
+        ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
+    }
     for (const auto *tex : {&environments.BrdfLut, &environments.SheenELut, &environments.CharlieLut}) {
         if (tex->SamplerSlot != InvalidSlot) slots.Release({SlotType::Sampler, tex->SamplerSlot});
     }
@@ -230,9 +234,7 @@ enum class TextureColorSpace : uint8_t {
     Linear,
 };
 
-vk::Format ToTextureFormat(TextureColorSpace color_space) {
-    return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm;
-}
+vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm; }
 
 SamplerConfig ToSamplerConfig(const gltf::SceneSamplerData *sampler) {
     SamplerConfig config{};
@@ -279,17 +281,15 @@ struct DecodedImage {
     uint32_t Width{0}, Height{0};
 };
 
+struct DecodedImageF32 {
+    std::vector<float> Pixels;
+    uint32_t Width{0}, Height{0};
+};
+
 std::expected<DecodedImage, std::string> DecodeImageRgba8(std::span<const std::byte> encoded, std::string_view image_name) {
     if (encoded.empty()) return std::unexpected{std::format("Image '{}' has no encoded bytes.", image_name)};
     int width = 0, height = 0, channels = 0;
-    stbi_uc *pixels = stbi_load_from_memory(
-        reinterpret_cast<const stbi_uc *>(encoded.data()),
-        int(encoded.size()),
-        &width,
-        &height,
-        &channels,
-        4
-    );
+    stbi_uc *pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc *>(encoded.data()), int(encoded.size()), &width, &height, &channels, 4);
     if (!pixels) {
         const char *reason = stbi_failure_reason();
         return std::unexpected{std::format("Failed to decode image '{}': {}", image_name, reason ? reason : "unknown stb_image error")};
@@ -299,11 +299,27 @@ std::expected<DecodedImage, std::string> DecodeImageRgba8(std::span<const std::b
         return std::unexpected{std::format("Image '{}' decoded to invalid dimensions {}x{}.", image_name, width, height)};
     }
 
-    DecodedImage decoded{};
-    decoded.Width = uint32_t(width);
-    decoded.Height = uint32_t(height);
-    decoded.Pixels.resize(size_t(decoded.Width) * decoded.Height * 4u);
+    DecodedImage decoded{.Pixels = std::vector<std::byte>(size_t(width) * height * 4u), .Width = uint32_t(width), .Height = uint32_t(height)};
     std::memcpy(decoded.Pixels.data(), pixels, decoded.Pixels.size());
+    stbi_image_free(pixels);
+    return decoded;
+}
+
+std::expected<DecodedImageF32, std::string> DecodeImageRgba32f(std::span<const std::byte> encoded, std::string_view image_name) {
+    if (encoded.empty()) return std::unexpected{std::format("Image '{}' has no encoded bytes.", image_name)};
+    int width = 0, height = 0, channels = 0;
+    float *pixels = stbi_loadf_from_memory(reinterpret_cast<const stbi_uc *>(encoded.data()), int(encoded.size()), &width, &height, &channels, 4);
+    if (!pixels) {
+        const char *reason = stbi_failure_reason();
+        return std::unexpected{std::format("Failed to decode image '{}' as float RGBA: {}", image_name, reason ? reason : "unknown stb_image error")};
+    }
+    if (width <= 0 || height <= 0) {
+        stbi_image_free(pixels);
+        return std::unexpected{std::format("Image '{}' decoded to invalid dimensions {}x{}.", image_name, width, height)};
+    }
+
+    DecodedImageF32 decoded{.Pixels = std::vector<float>(size_t(width) * height * 4u), .Width = uint32_t(width), .Height = uint32_t(height)};
+    std::memcpy(decoded.Pixels.data(), pixels, decoded.Pixels.size() * sizeof(float));
     stbi_image_free(pixels);
     return decoded;
 }
@@ -313,105 +329,95 @@ uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
     return max_dim > 0 ? std::bit_width(max_dim) : 1u;
 }
 
-CubemapEntry CreateSolidCubemapEntry(
+using CubemapMipFacesF32 = std::array<DecodedImageF32, 6>;
+
+std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
     const SceneVulkanResources &vk,
     mvk::BufferContext &ctx,
     vk::CommandPool command_pool,
     vk::Fence one_shot_fence,
     DescriptorSlots &slots,
-    vec3 color_linear,
-    uint32_t size,
-    uint32_t mip_levels,
+    const std::vector<CubemapMipFacesF32> &mip_faces,
     std::string name
 ) {
-    mip_levels = std::min(mip_levels, ComputeMipLevelCount(size, size));
-    if (mip_levels == 0u) mip_levels = 1u;
+    if (mip_faces.empty()) return std::unexpected{"Cubemap has no mip levels."};
 
-    const auto to_byte = [](float x) { return uint8_t(std::round(std::clamp(x, 0.f, 1.f) * 255.f)); };
-    const uint8_t r = to_byte(color_linear.r), g = to_byte(color_linear.g), b = to_byte(color_linear.b), a = 255u;
+    const uint32_t base_size = mip_faces.front()[0].Width;
+    if (base_size == 0u || mip_faces.front()[0].Height != base_size) return std::unexpected{"Cubemap base face dimensions must be square and non-zero."};
 
-    std::vector<std::byte> pixels;
-    std::vector<vk::BufferImageCopy> copies;
-
-    size_t total_bytes = 0;
-    for (uint32_t mip = 0; mip < mip_levels; ++mip) {
-        const uint32_t mip_size = std::max(1u, size >> mip);
-        total_bytes += size_t(mip_size) * mip_size * 4u * 6u;
-    }
-    pixels.reserve(total_bytes);
-    copies.reserve(size_t(mip_levels) * 6u);
-
-    size_t offset = 0;
-    for (uint32_t mip = 0; mip < mip_levels; ++mip) {
-        const uint32_t mip_size = std::max(1u, size >> mip);
-        const size_t face_bytes = size_t(mip_size) * mip_size * 4u;
+    for (uint32_t mip = 0; mip < mip_faces.size(); ++mip) {
+        const uint32_t expected = std::max(1u, base_size >> mip);
         for (uint32_t face = 0; face < 6u; ++face) {
+            const auto &image = mip_faces[mip][face];
+            if (image.Width != expected || image.Height != expected) {
+                return std::unexpected{std::format("Cubemap mip {} face {} has size {}x{}; expected {}x{}.", mip, face, image.Width, image.Height, expected, expected)};
+            }
+            if (image.Pixels.size() != size_t(expected) * expected * 4u) {
+                return std::unexpected{std::format("Cubemap mip {} face {} has invalid RGBA float payload size {}.", mip, face, image.Pixels.size())};
+            }
+        }
+    }
+
+    std::vector<float> pixels;
+    std::vector<vk::BufferImageCopy> copies;
+    size_t total_floats = 0;
+    for (const auto &mip : mip_faces) {
+        for (const auto &face : mip) {
+            total_floats += face.Pixels.size();
+        }
+    }
+    pixels.reserve(total_floats);
+    copies.reserve(mip_faces.size() * 6u);
+
+    size_t offset_bytes = 0;
+    for (uint32_t mip = 0; mip < mip_faces.size(); ++mip) {
+        const uint32_t size = std::max(1u, base_size >> mip);
+        for (uint32_t face = 0; face < 6u; ++face) {
+            const auto &src = mip_faces[mip][face].Pixels;
             copies.emplace_back(
                 vk::BufferImageCopy{
-                    offset,
+                    offset_bytes,
                     0,
                     0,
                     vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, face, 1},
                     {0, 0, 0},
-                    {mip_size, mip_size, 1},
+                    {size, size, 1},
                 }
             );
-            for (size_t px = 0; px < size_t(mip_size) * mip_size; ++px) {
-                pixels.emplace_back(std::byte{r});
-                pixels.emplace_back(std::byte{g});
-                pixels.emplace_back(std::byte{b});
-                pixels.emplace_back(std::byte{a});
-            }
-            offset += face_bytes;
+            pixels.insert(pixels.end(), src.begin(), src.end());
+            offset_bytes += src.size() * sizeof(float);
         }
     }
 
+    constexpr auto format = vk::Format::eR32G32B32A32Sfloat;
     auto image = mvk::CreateImage(
         vk.Device,
         vk.PhysicalDevice,
         {
             vk::ImageCreateFlagBits::eCubeCompatible,
             vk::ImageType::e2D,
-            vk::Format::eR8G8B8A8Unorm,
-            vk::Extent3D{size, size, 1},
-            mip_levels,
+            format,
+            vk::Extent3D{base_size, base_size, 1},
+            uint32_t(mip_faces.size()),
             6,
             vk::SampleCountFlagBits::e1,
             vk::ImageTiling::eOptimal,
             vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
             vk::SharingMode::eExclusive,
         },
-        {
-            {},
-            {},
-            vk::ImageViewType::eCube,
-            vk::Format::eR8G8B8A8Unorm,
-            {},
-            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 6},
-        }
+        {{}, {}, vk::ImageViewType::eCube, format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, uint32_t(mip_faces.size()), 0, 6}}
     );
 
-    mvk::Buffer staging{ctx, std::span<const std::byte>{pixels}, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    mvk::Buffer staging{ctx, as_bytes(std::span<const float>{pixels}), mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
     auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
     cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 6};
+    const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, uint32_t(mip_faces.size()), 0, 6};
     cb->pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eTransfer,
-        {},
-        {},
-        {},
-        vk::ImageMemoryBarrier{
-            {},
-            vk::AccessFlagBits::eTransferWrite,
-            vk::ImageLayout::eUndefined,
-            vk::ImageLayout::eTransferDstOptimal,
-            {},
-            {},
-            *image.Image,
-            full_range,
-        }
+        {}, {}, {},
+        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, {}, {}, *image.Image, full_range}
     );
 
     cb->copyBufferToImage(*staging, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
@@ -419,19 +425,8 @@ CubemapEntry CreateSolidCubemapEntry(
     cb->pipelineBarrier(
         vk::PipelineStageFlagBits::eTransfer,
         vk::PipelineStageFlagBits::eFragmentShader,
-        {},
-        {},
-        {},
-        vk::ImageMemoryBarrier{
-            vk::AccessFlagBits::eTransferWrite,
-            vk::AccessFlagBits::eShaderRead,
-            vk::ImageLayout::eTransferDstOptimal,
-            vk::ImageLayout::eShaderReadOnlyOptimal,
-            {},
-            {},
-            *image.Image,
-            full_range,
-        }
+        {}, {}, {},
+        vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *image.Image, full_range}
     );
 
     cb->end();
@@ -455,7 +450,7 @@ CubemapEntry CreateSolidCubemapEntry(
             VK_FALSE,
             vk::CompareOp::eNever,
             0.f,
-            float(mip_levels),
+            float(mip_faces.size()),
             vk::BorderColor::eIntOpaqueBlack,
             VK_FALSE,
         }
@@ -464,7 +459,7 @@ CubemapEntry CreateSolidCubemapEntry(
     const auto sampler_slot = slots.Allocate(SlotType::CubeSampler);
     const vk::DescriptorImageInfo sampler_info{*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     vk.Device.updateDescriptorSets({slots.MakeCubeSamplerWrite(sampler_slot, sampler_info)}, {});
-    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Size = size, .MipLevels = mip_levels, .Name = std::move(name)};
+    return CubemapEntry{.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Size = base_size, .MipLevels = uint32_t(mip_faces.size()), .Name = std::move(name)};
 }
 
 TextureEntry CreateTextureEntry(
@@ -503,14 +498,7 @@ TextureEntry CreateTextureEntry(
             vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
             vk::SharingMode::eExclusive,
         },
-        {
-            {},
-            {},
-            vk::ImageViewType::e2D,
-            texture_format,
-            {},
-            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1},
-        }
+        {{}, {}, vk::ImageViewType::e2D, texture_format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1}}
     );
 
     mvk::Buffer staging{ctx, pixels_rgba8, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
@@ -555,9 +543,7 @@ TextureEntry CreateTextureEntry(
         cb->pipelineBarrier(
             vk::PipelineStageFlagBits::eTransfer,
             vk::PipelineStageFlagBits::eTransfer,
-            {},
-            {},
-            {},
+            {}, {}, {},
             vk::ImageMemoryBarrier{
                 vk::AccessFlagBits::eTransferWrite,
                 vk::AccessFlagBits::eTransferRead,
@@ -587,9 +573,7 @@ TextureEntry CreateTextureEntry(
         cb->pipelineBarrier(
             vk::PipelineStageFlagBits::eTransfer,
             vk::PipelineStageFlagBits::eFragmentShader,
-            {},
-            {},
-            {},
+            {}, {}, {},
             vk::ImageMemoryBarrier{
                 vk::AccessFlagBits::eTransferRead,
                 vk::AccessFlagBits::eShaderRead,
@@ -609,9 +593,7 @@ TextureEntry CreateTextureEntry(
     cb->pipelineBarrier(
         vk::PipelineStageFlagBits::eTransfer,
         vk::PipelineStageFlagBits::eFragmentShader,
-        {},
-        {},
-        {},
+        {}, {}, {},
         vk::ImageMemoryBarrier{
             vk::AccessFlagBits::eTransferWrite,
             vk::AccessFlagBits::eShaderRead,
@@ -655,15 +637,7 @@ TextureEntry CreateTextureEntry(
     const vk::DescriptorImageInfo sampler_info{*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(sampler_slot, sampler_info)}, {});
 
-    return TextureEntry{
-        .Image = std::move(image),
-        .Sampler = std::move(sampler),
-        .SamplerSlot = sampler_slot,
-        .Width = width,
-        .Height = height,
-        .MipLevels = mip_levels,
-        .Name = std::move(name),
-    };
+    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Width = width, .Height = height, .MipLevels = mip_levels, .Name = std::move(name)};
 }
 
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
@@ -683,6 +657,131 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
     auto decoded = DecodeImageRgba8(encoded_bytes, encoded_name);
     if (!decoded) return std::unexpected{std::move(decoded.error())};
     return CreateTextureEntry(vk, ctx, command_pool, one_shot_fence, slots, decoded->Pixels, decoded->Width, decoded->Height, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
+}
+
+vec3 CubemapFaceDirection(uint32_t face, float u, float v) {
+    switch (face) {
+        case 0: return glm::normalize(vec3{1.f, -v, -u}); // +X
+        case 1: return glm::normalize(vec3{-1.f, -v, u}); // -X
+        case 2: return glm::normalize(vec3{u, 1.f, v}); // +Y
+        case 3: return glm::normalize(vec3{u, -1.f, -v}); // -Y
+        case 4: return glm::normalize(vec3{u, -v, 1.f}); // +Z
+        default: return glm::normalize(vec3{-u, -v, -1.f}); // -Z
+    }
+}
+
+// EXT_lights_image_based Appendix B (Romain Guy) irradiance reconstruction constants.
+vec3 EvaluateIrradianceSH(const std::array<vec3, 9> &l, vec3 n) {
+    static constexpr float c0 = 0.886227f;
+    static constexpr float c1 = 1.023327f;
+    static constexpr float c2 = 0.858086f;
+    static constexpr float c3 = 0.247708f;
+    static constexpr float c4 = 0.429043f;
+    const float x = n.x, y = n.y, z = n.z;
+    const vec3 irradiance =
+        c0 * l[0] -
+        c1 * y * l[1] +
+        c1 * z * l[2] -
+        c1 * x * l[3] +
+        c2 * x * y * l[4] -
+        c2 * y * z * l[5] +
+        c3 * (3.f * z * z - 1.f) * l[6] -
+        c2 * x * z * l[7] +
+        c4 * (x * x - y * y) * l[8];
+    return glm::max(irradiance, vec3{0.f});
+}
+
+CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &coefficients, float intensity, uint32_t size = 32u) {
+    CubemapMipFacesF32 mip{};
+    for (uint32_t face = 0; face < 6u; ++face) {
+        auto &image = mip[face];
+        image.Width = size;
+        image.Height = size;
+        image.Pixels.resize(size_t(size) * size * 4u, 1.f);
+        for (uint32_t y = 0; y < size; ++y) {
+            for (uint32_t x = 0; x < size; ++x) {
+                const float u = 2.f * (float(x) + 0.5f) / float(size) - 1.f;
+                const float v = 2.f * (float(y) + 0.5f) / float(size) - 1.f;
+                const vec3 rgb = intensity * EvaluateIrradianceSH(coefficients, CubemapFaceDirection(face, u, v));
+                const size_t offset = (size_t(y) * size + x) * 4u;
+                image.Pixels[offset + 0] = rgb.r;
+                image.Pixels[offset + 1] = rgb.g;
+                image.Pixels[offset + 2] = rgb.b;
+                image.Pixels[offset + 3] = 1.f;
+            }
+        }
+    }
+    return mip;
+}
+
+std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
+    const SceneVulkanResources &vk,
+    mvk::BufferContext &ctx,
+    vk::CommandPool command_pool,
+    vk::Fence one_shot_fence,
+    DescriptorSlots &slots,
+    const gltf::SceneData &scene_data,
+    const gltf::SceneImageBasedLightData &ibl
+) {
+    std::vector<CubemapMipFacesF32> specular_mips;
+    specular_mips.reserve(ibl.SpecularImageIndicesByMip.size());
+    uint32_t specular_base_size = 0u;
+    for (uint32_t mip = 0; mip < ibl.SpecularImageIndicesByMip.size(); ++mip) {
+        CubemapMipFacesF32 faces{};
+        for (uint32_t face = 0; face < 6u; ++face) {
+            const auto image_index = ibl.SpecularImageIndicesByMip[mip][face];
+            if (image_index >= scene_data.Images.size()) return std::unexpected{std::format("EXT_lights_image_based '{}' references image index {} (out of range).", ibl.Name, image_index)};
+
+            const auto &src_image = scene_data.Images[image_index];
+            auto decoded = DecodeImageRgba32f(
+                src_image.Bytes,
+                src_image.Name.empty() ? std::format("Image{}", image_index) : src_image.Name
+            );
+            if (!decoded) return std::unexpected{std::format("Failed to decode EXT_lights_image_based '{}' image {}: {}", ibl.Name, image_index, decoded.error())};
+            if (decoded->Width != decoded->Height) return std::unexpected{std::format("EXT_lights_image_based '{}' image {} must be square (got {}x{}).", ibl.Name, image_index, decoded->Width, decoded->Height)};
+            if (ibl.Intensity != 1.f) {
+                for (auto &px : decoded->Pixels) px *= ibl.Intensity;
+            }
+            faces[face] = std::move(*decoded);
+        }
+        // Normalize EXT_lights_image_based face data to our cubemap upload convention.
+        for (auto &face : faces) {
+            if (face.Width == 0u || face.Height < 2u) continue;
+            const size_t row_float_count = size_t(face.Width) * 4u;
+            for (uint32_t y = 0; y < face.Height / 2u; ++y) {
+                auto *row0 = face.Pixels.data() + size_t(y) * row_float_count;
+                auto *row1 = face.Pixels.data() + size_t(face.Height - 1u - y) * row_float_count;
+                std::swap_ranges(row0, row0 + row_float_count, row1);
+            }
+        }
+
+        if (mip == 0u) specular_base_size = faces[0].Width;
+        const uint32_t expected_size = std::max(1u, specular_base_size >> mip);
+        if (faces[0].Width != expected_size) {
+            return std::unexpected{std::format("EXT_lights_image_based '{}' mip {} has size {} but expected {}.", ibl.Name, mip, faces[0].Width, expected_size)};
+        }
+        specular_mips.emplace_back(std::move(faces));
+    }
+
+    auto specular_env = CreateCubemapEntryFromMipFacesF32(vk, ctx, command_pool, one_shot_fence, slots, specular_mips, ibl.Name + "_specular");
+    if (!specular_env) return std::unexpected{std::move(specular_env.error())};
+
+    std::vector<CubemapMipFacesF32> diffuse_mips;
+    diffuse_mips.reserve(1);
+    if (ibl.IrradianceCoefficients) diffuse_mips.emplace_back(BuildDiffuseCubemapFromIrradiance(*ibl.IrradianceCoefficients, ibl.Intensity));
+    else diffuse_mips.emplace_back(specular_mips.back());
+
+    auto diffuse_env = CreateCubemapEntryFromMipFacesF32(vk, ctx, command_pool, one_shot_fence, slots, diffuse_mips, ibl.Name + "_diffuse");
+    if (!diffuse_env) {
+        ReleaseCubeSamplerSlot(slots, specular_env->SamplerSlot);
+        return std::unexpected{std::move(diffuse_env.error())};
+    }
+
+    return EnvironmentPrefiltered{
+        .DiffuseEnv = std::move(*diffuse_env),
+        .SpecularEnv = std::move(*specular_env),
+        .Name = ibl.Name,
+    };
 }
 
 TextureEntry CreateDefaultBrdfLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots) {
@@ -1585,15 +1684,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         }
     }
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
-
-    if (environments.Hdris.empty()) {
-        // Fallback when no HDR files are found: create solid-color placeholder environments.
-        EnvironmentPrefiltered placeholder;
-        placeholder.DiffuseEnv = CreateSolidCubemapEntry(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, vec3{0.35f}, 16u, 1u, "FallbackDiffuse");
-        placeholder.SpecularEnv = CreateSolidCubemapEntry(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, vec3{0.5f}, 64u, 7u, "FallbackSpecular");
-        placeholder.Name = "default";
-        environments.Hdris.push_back({"default", {}, std::move(placeholder)});
-    }
 
     // Set the default HDRI: prefer "forest", otherwise use the first entry.
     const auto forest_it = std::ranges::find(environments.Hdris, std::string{"forest"}, &HdriEntry::Name);
@@ -3205,6 +3295,32 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
         if (max_dur > 0) R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = int(std::ceil(max_dur * tl.Fps)); });
+    }
+
+    if (loaded_scene->ImageBasedLight) {
+        auto scene_world = CreateIblFromExtIbl(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, *loaded_scene, *loaded_scene->ImageBasedLight);
+        if (!scene_world) {
+            std::cerr << std::format("Warning: Failed to import EXT_lights_image_based scene world from '{}': {}\n", path.string(), scene_world.error());
+        } else {
+            auto &environments = *Environments;
+            if (environments.ImportedSceneWorld) {
+                ReleaseCubeSamplerSlot(*Slots, environments.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
+                ReleaseCubeSamplerSlot(*Slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
+            }
+            environments.ImportedSceneWorld = std::move(*scene_world);
+            const auto &pre = *environments.ImportedSceneWorld;
+            environments.SceneWorld = {
+                .DiffuseEnvSamplerSlot = pre.DiffuseEnv.SamplerSlot,
+                .SpecularEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
+                .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
+                .SpecularEnvMipCount = pre.SpecularEnv.MipLevels,
+                .SheenEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
+                .SheenEnvMipCount = pre.SpecularEnv.MipLevels,
+                .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
+                .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
+                .Name = pre.Name,
+            };
+        }
     }
 
     const auto selected_entity =

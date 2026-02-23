@@ -26,6 +26,7 @@
 
 #include <fastgltf/types.hpp>
 
+#include <array>
 #include <cstddef>
 #include <expected>
 #include <filesystem>
@@ -105,6 +106,13 @@ struct SceneLightData {
     std::string Name;
 };
 
+struct SceneImageBasedLightData {
+    std::vector<std::array<uint32_t, 6>> SpecularImageIndicesByMip; // Mip-major; face order: +X, -X, +Y, -Y, +Z, -Z.
+    std::optional<std::array<vec3, 9>> IrradianceCoefficients; // L00, L1-1, L10, L11, L2-2, L2-1, L20, L21, L22.
+    float Intensity{1.f};
+    std::string Name;
+};
+
 struct SceneNodeData {
     uint32_t NodeIndex;
     std::optional<uint32_t> ParentNodeIndex;
@@ -175,6 +183,7 @@ struct SceneData {
     std::vector<AnimationClipData> Animations;
     std::vector<SceneCameraData> Cameras;
     std::vector<SceneLightData> Lights;
+    std::optional<SceneImageBasedLightData> ImageBasedLight;
 };
 
 std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path &path);

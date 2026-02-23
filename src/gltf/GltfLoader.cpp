@@ -8,6 +8,7 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
+#include <simdjson.h>
 
 #include <glm/gtx/matrix_decompose.hpp>
 
@@ -19,6 +20,7 @@
 #include <limits>
 #include <numbers>
 #include <numeric>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -193,6 +195,179 @@ std::expected<SceneImageData, std::string> ReadImageData(const fastgltf::Asset &
     );
     if (!read_result) return std::unexpected{std::move(read_result.error())};
     return image_data;
+}
+
+uint32_t ReadUint32LE(const std::byte *data) {
+    const auto *u8 = reinterpret_cast<const uint8_t *>(data);
+    return uint32_t(u8[0]) | (uint32_t(u8[1]) << 8u) | (uint32_t(u8[2]) << 16u) | (uint32_t(u8[3]) << 24u);
+}
+
+std::expected<std::span<const std::byte>, std::string> ExtractGltfJsonChunk(std::span<const std::byte> file_bytes, const std::filesystem::path &path) {
+    constexpr uint32_t GlbMagic = 0x46546C67u; // "glTF"
+    constexpr uint32_t JsonChunkMagic = 0x4E4F534Au; // "JSON"
+    constexpr size_t GlbHeaderSize = 12u;
+    constexpr size_t GlbChunkHeaderSize = 8u;
+
+    if (file_bytes.size() < GlbHeaderSize) return file_bytes;
+    const uint32_t magic = ReadUint32LE(file_bytes.data());
+    if (magic != GlbMagic) return file_bytes;
+
+    const uint32_t version = ReadUint32LE(file_bytes.data() + 4u);
+    const uint32_t length = ReadUint32LE(file_bytes.data() + 8u);
+    if (version != 2u || length > file_bytes.size()) {
+        return std::unexpected{std::format("Invalid GLB header while parsing '{}'.", path.string())};
+    }
+    if (file_bytes.size() < GlbHeaderSize + GlbChunkHeaderSize) {
+        return std::unexpected{std::format("GLB '{}' has no JSON chunk.", path.string())};
+    }
+
+    const uint32_t chunk_length = ReadUint32LE(file_bytes.data() + GlbHeaderSize);
+    const uint32_t chunk_type = ReadUint32LE(file_bytes.data() + GlbHeaderSize + 4u);
+    if (chunk_type != JsonChunkMagic) {
+        return std::unexpected{std::format("GLB '{}' has invalid first chunk type (expected JSON).", path.string())};
+    }
+
+    const size_t chunk_offset = GlbHeaderSize + GlbChunkHeaderSize;
+    if (chunk_offset + chunk_length > file_bytes.size()) {
+        return std::unexpected{std::format("GLB '{}' JSON chunk is out of bounds.", path.string())};
+    }
+    return file_bytes.subspan(chunk_offset, chunk_length);
+}
+
+std::expected<std::optional<SceneImageBasedLightData>, std::string> ReadImageBasedLightData(
+    const std::filesystem::path &path,
+    uint32_t scene_index,
+    size_t image_count
+) {
+    const auto file_bytes = ReadFileBytes(path);
+    if (!file_bytes) return std::unexpected{file_bytes.error()};
+
+    const auto json_bytes = ExtractGltfJsonChunk(*file_bytes, path);
+    if (!json_bytes) return std::unexpected{json_bytes.error()};
+
+    simdjson::dom::parser parser;
+    simdjson::dom::element root_element;
+    if (const auto err = parser.parse(reinterpret_cast<const uint8_t *>(json_bytes->data()), json_bytes->size(), true).get(root_element); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("Failed to parse glTF JSON while reading EXT_lights_image_based from '{}': {}", path.string(), simdjson::error_message(err))};
+    }
+
+    simdjson::dom::object root;
+    if (const auto err = root_element.get_object().get(root); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF root in '{}' is not a JSON object.", path.string())};
+    }
+
+    simdjson::dom::array scenes;
+    if (const auto err = root["scenes"].get_array().get(scenes); err != simdjson::SUCCESS) {
+        if (err == simdjson::NO_SUCH_FIELD) return std::optional<SceneImageBasedLightData>{};
+        return std::unexpected{std::format("glTF '{}' has invalid scenes array while reading EXT_lights_image_based.", path.string())};
+    }
+    if (scene_index >= scenes.size()) {
+        return std::unexpected{std::format("glTF '{}' scene index {} is out of range while reading EXT_lights_image_based.", path.string(), scene_index)};
+    }
+
+    simdjson::dom::object scene_obj;
+    if (const auto err = scenes.at(scene_index).get_object().get(scene_obj); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF '{}' scene {} is not an object.", path.string(), scene_index)};
+    }
+
+    simdjson::dom::object scene_extensions;
+    if (const auto err = scene_obj["extensions"].get_object().get(scene_extensions); err != simdjson::SUCCESS) {
+        if (err == simdjson::NO_SUCH_FIELD) return std::optional<SceneImageBasedLightData>{};
+        return std::unexpected{std::format("glTF '{}' scene {} has invalid extensions object.", path.string(), scene_index)};
+    }
+
+    simdjson::dom::object scene_ibl_ext;
+    if (const auto err = scene_extensions["EXT_lights_image_based"].get_object().get(scene_ibl_ext); err != simdjson::SUCCESS) {
+        if (err == simdjson::NO_SUCH_FIELD) return std::optional<SceneImageBasedLightData>{};
+        return std::unexpected{std::format("glTF '{}' scene {} has invalid EXT_lights_image_based extension object.", path.string(), scene_index)};
+    }
+
+    uint64_t light_index_u64 = 0;
+    if (const auto err = scene_ibl_ext["light"].get_uint64().get(light_index_u64); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF '{}' scene {} EXT_lights_image_based.light is missing or invalid.", path.string(), scene_index)};
+    }
+
+    simdjson::dom::object root_extensions;
+    if (const auto err = root["extensions"].get_object().get(root_extensions); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF '{}' uses EXT_lights_image_based on scene {} but root extensions are missing.", path.string(), scene_index)};
+    }
+    simdjson::dom::object root_ibl_ext;
+    if (const auto err = root_extensions["EXT_lights_image_based"].get_object().get(root_ibl_ext); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF '{}' uses EXT_lights_image_based on scene {} but root EXT_lights_image_based is missing.", path.string(), scene_index)};
+    }
+
+    simdjson::dom::array lights;
+    if (const auto err = root_ibl_ext["lights"].get_array().get(lights); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF '{}' root EXT_lights_image_based.lights is missing or invalid.", path.string())};
+    }
+    if (light_index_u64 >= lights.size()) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based.light index {} is out of range.", path.string(), light_index_u64)};
+    }
+
+    simdjson::dom::object light_obj;
+    if (const auto err = lights.at(size_t(light_index_u64)).get_object().get(light_obj); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based light {} is not an object.", path.string(), light_index_u64)};
+    }
+
+    SceneImageBasedLightData out{};
+    std::string_view name{};
+    if (light_obj["name"].get_string().get(name) == simdjson::SUCCESS) out.Name = std::string{name};
+
+    double intensity = 1.0;
+    if (const auto err = light_obj["intensity"].get_double().get(intensity); err != simdjson::SUCCESS && err != simdjson::NO_SUCH_FIELD) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based intensity is invalid.", path.string())};
+    }
+    out.Intensity = std::max(0.0, intensity);
+
+    simdjson::dom::array specular_images;
+    if (const auto err = light_obj["specularImages"].get_array().get(specular_images); err != simdjson::SUCCESS) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based specularImages is missing or invalid.", path.string())};
+    }
+
+    out.SpecularImageIndicesByMip.reserve(specular_images.size());
+    for (auto mip_value : specular_images) {
+        simdjson::dom::array face_indices;
+        if (const auto err = mip_value.get_array().get(face_indices); err != simdjson::SUCCESS || face_indices.size() != 6u) {
+            return std::unexpected{std::format("glTF '{}' EXT_lights_image_based specularImages must contain arrays of 6 image indices.", path.string())};
+        }
+        std::array<uint32_t, 6> mip_faces{};
+        for (size_t face = 0; face < 6u; ++face) {
+            uint64_t image_index = 0;
+            if (const auto err = face_indices.at(face).get_uint64().get(image_index); err != simdjson::SUCCESS || image_index >= image_count) {
+                return std::unexpected{std::format("glTF '{}' EXT_lights_image_based references invalid image index {}.", path.string(), image_index)};
+            }
+            mip_faces[face] = uint32_t(image_index);
+        }
+        out.SpecularImageIndicesByMip.emplace_back(mip_faces);
+    }
+    if (out.SpecularImageIndicesByMip.empty()) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based specularImages is empty.", path.string())};
+    }
+
+    simdjson::dom::array irradiance;
+    if (const auto err = light_obj["irradianceCoefficients"].get_array().get(irradiance); err == simdjson::SUCCESS) {
+        if (irradiance.size() != 9u) {
+            return std::unexpected{std::format("glTF '{}' EXT_lights_image_based irradianceCoefficients must have 9 entries.", path.string())};
+        }
+        std::array<vec3, 9> coefficients{};
+        for (size_t i = 0; i < 9u; ++i) {
+            simdjson::dom::array c;
+            if (const auto coeff_err = irradiance.at(i).get_array().get(c); coeff_err != simdjson::SUCCESS || c.size() != 3u) {
+                return std::unexpected{std::format("glTF '{}' EXT_lights_image_based irradiance coefficient {} must be a vec3 array.", path.string(), i)};
+            }
+            double x = 0.0, y = 0.0, z = 0.0;
+            if (c.at(0).get_double().get(x) != simdjson::SUCCESS || c.at(1).get_double().get(y) != simdjson::SUCCESS || c.at(2).get_double().get(z) != simdjson::SUCCESS) {
+                return std::unexpected{std::format("glTF '{}' EXT_lights_image_based irradiance coefficient {} has non-numeric values.", path.string(), i)};
+            }
+            coefficients[i] = vec3{float(x), float(y), float(z)};
+        }
+        out.IrradianceCoefficients = coefficients;
+    } else if (err != simdjson::NO_SUCH_FIELD) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based irradianceCoefficients is invalid.", path.string())};
+    }
+
+    if (out.Name.empty()) out.Name = std::format("ImageBasedLight{}", light_index_u64);
+    return std::optional<SceneImageBasedLightData>{std::move(out)};
 }
 
 // Appends positions/edges from a non-triangle primitive into the target MeshData,
@@ -884,6 +1059,10 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", path.string())};
 
     SceneData scene_data;
+    auto image_based_light = ReadImageBasedLightData(path, uint32_t(scene_index), asset.images.size());
+    if (!image_based_light) return std::unexpected{std::move(image_based_light.error())};
+    scene_data.ImageBasedLight = std::move(*image_based_light);
+
     scene_data.Samplers.reserve(asset.samplers.size());
     for (const auto &sampler : asset.samplers) {
         scene_data.Samplers.emplace_back(
