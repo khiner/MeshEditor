@@ -31,6 +31,7 @@ struct PipelineRenderer {
 
 namespace Format {
 constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
+constexpr auto HDRColor = vk::Format::eR16G16B16A16Sfloat;
 constexpr auto Depth = vk::Format::eD32Sfloat;
 constexpr auto Float = vk::Format::eR32Sfloat;
 constexpr auto Float2 = vk::Format::eR32G32Sfloat;
@@ -45,10 +46,10 @@ struct MainPipeline {
         const std::vector<vk::AttachmentDescription> attachments{
             // Depth attachment.
             {{}, Format::Depth, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-            // Multisampled offscreen image.
-            {{}, Format::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
-            // Single-sampled resolve target. UNDEFINED + DONT_CARE = discard previous contents, let render pass handle transition.
-            {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+            // Multisampled HDR offscreen image. eDontCare = discard MSAA samples after resolve (standard for tile-based GPUs).
+            {{}, Format::HDRColor, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal},
+            // Single-sampled HDR resolve target. UNDEFINED + DONT_CARE = discard previous contents, let render pass handle transition.
+            {{}, Format::HDRColor, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
         };
         const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
         const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -181,8 +182,32 @@ struct MainPipeline {
         return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
     }
 
+    static PipelineRenderer CreateTonemapRenderer(
+        vk::Device d, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}
+    ) {
+        const std::vector<vk::AttachmentDescription> attachments{
+            {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        };
+        const vk::AttachmentReference color_attachment_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+        const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, nullptr};
+
+        const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
+        std::unordered_map<SPT, ShaderPipeline> pipelines;
+        pipelines.emplace(
+            SPT::Tonemap,
+            ctx.CreateGraphics(
+                {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "Tonemap.frag"}}},
+                {},
+                vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+                CreateColorBlendAttachment(false), std::nullopt,
+                vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2}
+            )
+        );
+        return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    }
+
     struct ResourcesT {
-        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::SampleCountFlagBits msaa_samples, vk::RenderPass render_pass)
+        ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::SampleCountFlagBits msaa_samples, vk::RenderPass render_pass, vk::RenderPass tonemap_render_pass)
             : DepthImage{mvk::CreateImage(
                   d, pd,
                   {{},
@@ -201,17 +226,33 @@ struct MainPipeline {
                   d, pd,
                   {{},
                    vk::ImageType::e2D,
-                   Format::Color,
+                   Format::HDRColor,
                    vk::Extent3D{extent, 1},
                    1,
                    1,
                    msaa_samples,
                    vk::ImageTiling::eOptimal,
-                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+                   vk::ImageUsageFlagBits::eColorAttachment, // MSAA render target only — not sampled directly.
                    vk::SharingMode::eExclusive},
-                  {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
+                  {{}, {}, vk::ImageViewType::e2D, Format::HDRColor, {}, ColorSubresourceRange}
               )},
               ResolveImage{mvk::CreateImage(
+                  d, pd,
+                  {
+                      {},
+                      vk::ImageType::e2D,
+                      Format::HDRColor,
+                      vk::Extent3D{extent, 1},
+                      1,
+                      1,
+                      vk::SampleCountFlagBits::e1,
+                      vk::ImageTiling::eOptimal,
+                      vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+                      vk::SharingMode::eExclusive,
+                  },
+                  {{}, {}, vk::ImageViewType::e2D, Format::HDRColor, {}, ColorSubresourceRange}
+              )},
+              TonemapImage{mvk::CreateImage(
                   d, pd,
                   {
                       {},
@@ -226,20 +267,34 @@ struct MainPipeline {
                       vk::SharingMode::eExclusive,
                   },
                   {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
-              )} {
+              )},
+              HdrSampler{d.createSamplerUnique({
+                  {},
+                  vk::Filter::eLinear,
+                  vk::Filter::eLinear,
+                  vk::SamplerMipmapMode::eLinear,
+                  vk::SamplerAddressMode::eClampToEdge,
+                  vk::SamplerAddressMode::eClampToEdge,
+                  vk::SamplerAddressMode::eClampToEdge,
+              })} {
             const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
             Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+            const std::array tonemap_views{*TonemapImage.View};
+            TonemapFramebuffer = d.createFramebufferUnique({{}, tonemap_render_pass, tonemap_views, extent.width, extent.height, 1});
         }
 
-        // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
+        // Perform depth testing, render into a multisampled HDR offscreen image, and resolve into a single-sampled HDR image.
         mvk::ImageResource DepthImage, OffscreenImage, ResolveImage;
-        vk::UniqueFramebuffer Framebuffer;
+        // Display-ready LDR image produced by the tonemap post-process pass.
+        mvk::ImageResource TonemapImage;
+        vk::UniqueSampler HdrSampler; // Linear sampler for reading ResolveImage in the tonemap pass.
+        vk::UniqueFramebuffer Framebuffer, TonemapFramebuffer;
     };
 
     void SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::SampleCountFlagBits msaa_samples) {
-        Resources = std::make_unique<ResourcesT>(extent, d, pd, msaa_samples, *Renderer.RenderPass);
+        Resources = std::make_unique<ResourcesT>(extent, d, pd, msaa_samples, *Renderer.RenderPass, *TonemapRenderer.RenderPass);
     }
-    PipelineRenderer Renderer;
+    PipelineRenderer Renderer, TonemapRenderer;
     std::unique_ptr<ResourcesT> Resources;
 };
 
@@ -606,7 +661,7 @@ struct ScenePipelines {
         vk::Device d, vk::PhysicalDevice pd,
         vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {}
     ) : Device(d), PhysicalDevice(pd), Samples{GetMaxUsableSampleCount(pd)},
-        Main{MainPipeline::CreateRenderer(d, Samples, selection_layout, selection_set), nullptr},
+        Main{MainPipeline::CreateRenderer(d, Samples, selection_layout, selection_set), MainPipeline::CreateTonemapRenderer(d, selection_layout, selection_set), nullptr},
         Silhouette{SilhouettePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
         SilhouetteEdge{SilhouetteEdgePipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
         SelectionFragment{SelectionFragmentPipeline::CreateRenderer(d, selection_layout, selection_set), nullptr},
@@ -646,6 +701,7 @@ struct ScenePipelines {
     void SetExtent(vk::Extent2D);
     void CompileShaders() {
         Main.Renderer.CompileShaders();
+        Main.TonemapRenderer.CompileShaders();
         Silhouette.Renderer.CompileShaders();
         SilhouetteEdge.Renderer.CompileShaders();
         SelectionFragment.Renderer.CompileShaders();

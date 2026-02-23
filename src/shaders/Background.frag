@@ -4,7 +4,6 @@
 
 #include "SceneUBO.glsl"
 #include "BindlessBindings.glsl"
-#include "tonemapping.glsl"
 
 layout(set = 0, binding = BINDING_CubeSampler) uniform samplerCube CubeSamplers[];
 
@@ -27,5 +26,5 @@ void main() {
     const vec3 linear = textureLod(
         CubeSamplers[nonuniformEXT(SceneViewUBO.SpecularEnvSamplerSlot)], env_dir, 0.0
     ).rgb * SceneViewUBO.EnvIntensity;
-    OutColor = vec4(linearTosRGB(toneMapPBRNeutral(linear)), SceneViewUBO.WorldOpacity);
+    OutColor = vec4(linear, SceneViewUBO.WorldOpacity);
 }

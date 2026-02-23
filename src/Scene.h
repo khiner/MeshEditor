@@ -77,6 +77,7 @@ enum class ShaderPipelineType {
     ObjectExtrasLine,
     SelectionObjectExtrasLines,
     DebugNormals,
+    Tonemap,
 };
 
 struct DrawListBuilder;

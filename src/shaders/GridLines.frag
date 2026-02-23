@@ -46,6 +46,7 @@ float LinearDepth() {
 // Blend the two grids using their alpha values.
 vec4 BlendGrids(vec4 a, vec4 b) {
     const float alpha = 1.0 - (1.0 - a.a) * (1.0 - b.a);
+    if (alpha <= 0.0) return vec4(0.0);
     const vec3 c = (a.rgb * a.a + b.rgb * b.a * (1.0 - a.a)) / alpha;
     return vec4(c, alpha);
 }

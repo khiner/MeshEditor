@@ -1405,7 +1405,8 @@ struct Scene::SelectionSlotHandles {
           SelectionBitset(slots.Allocate(SlotType::Buffer)),
           ObjectIdSampler(slots.Allocate(SlotType::Sampler)),
           DepthSampler(slots.Allocate(SlotType::Sampler)),
-          SilhouetteSampler(slots.Allocate(SlotType::Sampler)) {}
+          SilhouetteSampler(slots.Allocate(SlotType::Sampler)),
+          HdrSamplerSlot(slots.Allocate(SlotType::Sampler)) {}
 
     ~SelectionSlotHandles() {
         Slots.Release({SlotType::Image, HeadImage});
@@ -1416,10 +1417,11 @@ struct Scene::SelectionSlotHandles {
         Slots.Release({SlotType::Sampler, ObjectIdSampler});
         Slots.Release({SlotType::Sampler, DepthSampler});
         Slots.Release({SlotType::Sampler, SilhouetteSampler});
+        Slots.Release({SlotType::Sampler, HdrSamplerSlot});
     }
 
     DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler;
+    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler, HdrSamplerSlot;
 };
 
 // Unmanaged reactive storage to track entity destruction.
@@ -3921,6 +3923,44 @@ void Scene::RecordRenderCommandBuffer() {
     if (settings.ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
 
     cb.endRenderPass();
+
+    // Ensure ResolveImage writes from the main pass are visible to tonemap shader reads.
+    const vk::ImageMemoryBarrier2 resolve_to_sample{
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::AccessFlagBits2::eColorAttachmentWrite,
+        vk::PipelineStageFlagBits2::eFragmentShader,
+        vk::AccessFlagBits2::eShaderSampledRead,
+        vk::ImageLayout::eShaderReadOnlyOptimal,
+        vk::ImageLayout::eShaderReadOnlyOptimal,
+        VK_QUEUE_FAMILY_IGNORED,
+        VK_QUEUE_FAMILY_IGNORED,
+        *main.Resources->ResolveImage.Image,
+        ColorSubresourceRange,
+    };
+    vk::DependencyInfo resolve_dependency{};
+    resolve_dependency.setImageMemoryBarriers(resolve_to_sample);
+    cb.pipelineBarrier2(resolve_dependency);
+
+    { // Post-process: resolve HDR -> LDR. Apply tone mapping only in rendered/PBR viewport modes.
+        const vk::ClearValue clear{settings.ClearColor};
+        const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->TonemapImage.Extent)};
+        cb.beginRenderPass({*main.TonemapRenderer.RenderPass, *main.Resources->TonemapFramebuffer, rect, clear}, vk::SubpassContents::eInline);
+        struct TonemapPushConstants {
+            uint32_t HdrSamplerSlot;
+            uint32_t ApplyTonemap;
+        };
+        const TonemapPushConstants pc{
+            SelectionHandles->HdrSamplerSlot,
+            show_rendered ? 1u : 0u,
+        };
+        const auto &tonemap = main.TonemapRenderer.ShaderPipelines.at(SPT::Tonemap);
+        cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *tonemap.Pipeline);
+        cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *tonemap.PipelineLayout, 0, tonemap.GetDescriptorSet(), {});
+        cb.pushConstants(*tonemap.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+        tonemap.RenderQuad(cb);
+        cb.endRenderPass();
+    }
+
     cb.end();
 }
 
@@ -4743,8 +4783,8 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
 
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {
-        // Recreate the ImGui texture wrapper for the new resolve image.
-        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->ResolveImage.View, vec2{0, 1}, vec2{1, 0});
+        // Recreate the ImGui texture wrapper for the new tonemap image.
+        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->TonemapImage.View, vec2{0, 1}, vec2{1, 0});
     }
     if (ViewportTexture) {
         const auto p = std::bit_cast<ImVec2>(ToGlm(GetCursorScreenPos()));
@@ -4797,6 +4837,11 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
             const auto selection_bitset = Buffers->GetSelectionBitsetDescriptor();
+            const vk::DescriptorImageInfo hdr_sampler_info{
+                *Pipelines->Main.Resources->HdrSampler,
+                *Pipelines->Main.Resources->ResolveImage.View,
+                vk::ImageLayout::eShaderReadOnlyOptimal
+            };
             Vk.Device.updateDescriptorSets(
                 {
                     Slots->MakeImageWrite(SelectionHandles->HeadImage, head_image_info),
@@ -4807,6 +4852,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
                     Slots->MakeSamplerWrite(SelectionHandles->ObjectIdSampler, object_id_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->DepthSampler, depth_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->SilhouetteSampler, silhouette_sampler),
+                    Slots->MakeSamplerWrite(SelectionHandles->HdrSamplerSlot, hdr_sampler_info),
                 },
                 {}
             );

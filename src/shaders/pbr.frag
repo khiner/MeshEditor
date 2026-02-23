@@ -17,7 +17,6 @@
 #include "WorldTransform.glsl"
 #include "TRSUtils.glsl"
 #include "brdf.glsl"
-#include "tonemapping.glsl"
 
 layout(set = 0, binding = BINDING_LightBuffer, scalar) readonly buffer LightBufferBlock {
     PunctualLight Lights[];
@@ -168,7 +167,7 @@ void main() {
             if (base_color.a < material.AlphaCutoff) discard;
             base_color.a = 1.0;
         }
-        OutColor = vec4(linearTosRGB(toneMapPBRNeutral(base_color.rgb)), base_color.a);
+        OutColor = vec4(base_color.rgb, base_color.a);
         return;
     }
 
@@ -311,7 +310,5 @@ void main() {
         color = mix(color, overlay, selected.a);
     }
 
-    color = toneMapPBRNeutral(color);
-    color = linearTosRGB(color);
     OutColor = vec4(color, base_color.a);
 }

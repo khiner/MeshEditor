@@ -166,11 +166,13 @@ struct VulkanContext {
         };
         const auto supported_features = PhysicalDevice.getFeatures2<
             vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceVulkan13Features,
             vk::PhysicalDeviceDescriptorIndexingFeatures,
             vk::PhysicalDeviceBufferDeviceAddressFeatures,
             vk::PhysicalDeviceScalarBlockLayoutFeatures,
             vk::PhysicalDevice8BitStorageFeatures,
             vk::PhysicalDeviceShaderFloat16Int8Features>();
+        const auto &supported_v13 = supported_features.get<vk::PhysicalDeviceVulkan13Features>();
         const auto &supported_indexing = supported_features.get<vk::PhysicalDeviceDescriptorIndexingFeatures>();
         const auto &supported_bda = supported_features.get<vk::PhysicalDeviceBufferDeviceAddressFeatures>();
         const auto &supported_scalar = supported_features.get<vk::PhysicalDeviceScalarBlockLayoutFeatures>();
@@ -216,6 +218,7 @@ struct VulkanContext {
         RequireFeature(supported_indexing.descriptorBindingSampledImageUpdateAfterBind, "descriptorBindingSampledImageUpdateAfterBind");
         RequireFeature(supported_indexing.descriptorBindingStorageBufferUpdateAfterBind, "descriptorBindingStorageBufferUpdateAfterBind");
         RequireFeature(supported_indexing.descriptorBindingStorageImageUpdateAfterBind, "descriptorBindingStorageImageUpdateAfterBind");
+        RequireFeature(supported_v13.synchronization2, "synchronization2");
         RequireFeature(supported_bda.bufferDeviceAddress, "bufferDeviceAddress");
         RequireFeature(supported_scalar.scalarBlockLayout, "scalarBlockLayout");
         RequireFeature(supported_8bit_storage.storageBuffer8BitAccess, "storageBuffer8BitAccess");
@@ -244,9 +247,12 @@ struct VulkanContext {
         descriptor_indexing_features.descriptorBindingStorageBufferUpdateAfterBind = supported_indexing.descriptorBindingStorageBufferUpdateAfterBind;
         descriptor_indexing_features.descriptorBindingStorageImageUpdateAfterBind = supported_indexing.descriptorBindingStorageImageUpdateAfterBind;
         descriptor_indexing_features.pNext = &shader_int8_features;
+        vk::PhysicalDeviceVulkan13Features vulkan13_features{};
+        vulkan13_features.synchronization2 = VK_TRUE;
+        vulkan13_features.pNext = &descriptor_indexing_features;
         vk::PhysicalDeviceFeatures2 features2{};
         features2.features = device_features;
-        features2.pNext = &descriptor_indexing_features;
+        features2.pNext = &vulkan13_features;
 
         static constexpr std::array queue_priority{1.0f};
         const vk::DeviceQueueCreateInfo queue_info{{}, QueueFamily, 1, queue_priority.data()};
