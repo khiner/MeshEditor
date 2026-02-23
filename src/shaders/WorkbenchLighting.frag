@@ -2,6 +2,7 @@
 
 #include "SceneUBO.glsl"
 #include "WorkbenchLightingUBO.glsl"
+#include "tonemapping.glsl"
 
 layout(location = 0) in vec3 WorldNormal;
 layout(location = 1) in vec3 WorldPosition;
@@ -28,11 +29,16 @@ float blinn_specular(float shininess, float spec_angle, float NL) {
     return pow(spec_angle, shininess) * NL * (shininess * 0.125 + 1.0);
 }
 
+vec3 safe_normalize(vec3 v) {
+    const float len2 = dot(v, v);
+    return len2 > 1e-12 ? v * inversesqrt(len2) : vec3(0.0);
+}
+
 void main() {
     const vec3 I_ws = normalize(SceneViewUBO.CameraPosition - WorldPosition);
     const vec3 I_vs = SceneViewUBO.ViewRotation * I_ws;
-    // Flip normal toward camera to handle back-faces correctly.
-    const vec3 N = faceforward(ViewNormal, -I_vs, ViewNormal);
+    const vec3 N0 = safe_normalize(ViewNormal);
+    const vec3 N = faceforward(N0, -I_vs, N0);
     // Perfect mirror reflection of view direction about N, for large-area specular simulation.
     const vec3 R = -reflect(I_vs, N);
 
@@ -48,7 +54,7 @@ void main() {
     vec3 specular = WorkbenchLightingUBO.AmbientColor;
 
     for (int i = 0; i < 4; i++) {
-        const vec3 L = WorkbenchLightingUBO.StudioLights[i].Direction;
+        const vec3 L = safe_normalize(WorkbenchLightingUBO.StudioLights[i].Direction);
         const float wrap = WorkbenchLightingUBO.StudioLights[i].Wrap;
 
         // Per-light shininess: softer lights (higher wrap) get lower gloss.
@@ -58,7 +64,7 @@ void main() {
 
         const float NL = dot(N, L);            // unclamped — wrapped_lighting handles negative values
         const float NL_c = max(NL, 0.0);       // clamped — Blinn-Phong needs non-negative
-        const vec3 half_dir = normalize(L + I_vs);
+        const vec3 half_dir = safe_normalize(L + I_vs);
         const float spec_angle = clamp(dot(half_dir, N), 0.0, 1.0);
 
         // Blend sharp Blinn-Phong with soft environment-like wrap on reflection vector.
@@ -86,5 +92,5 @@ void main() {
             selected.rgb;
         color = mix(color, overlay, selected.a);
     }
-    OutColor = vec4(color, InColor.a);
+    OutColor = vec4(linearTosRGB(color), InColor.a);
 }
