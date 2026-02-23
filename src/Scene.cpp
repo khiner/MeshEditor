@@ -3518,10 +3518,18 @@ void Scene::RecordRenderCommandBuffer() {
     const auto primary_edit_instances = is_edit_mode ? ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
     const auto edit_transform_context = is_edit_mode ? EditTransformContext{ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
+    const auto is_silhouette_eligible = [&](entt::entity e) {
+        if (!R.all_of<MeshInstance, RenderInstance>(e)) return false;
+        const auto mesh_entity = R.get<const MeshInstance>(e).MeshEntity;
+        if (!R.valid(mesh_entity) || R.all_of<ObjectExtrasTag>(mesh_entity)) return false;
+        const auto *mesh_buffers = R.try_get<const MeshBuffers>(mesh_entity);
+        return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
+    };
 
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
         for (const auto [e, mi, ri] : R.view<const MeshInstance, const Selected, const RenderInstance>().each()) {
+            if (!is_silhouette_eligible(e)) continue;
             if (auto it = primary_edit_instances.find(mi.MeshEntity); it == primary_edit_instances.end() || it->second != e) {
                 silhouette_instances.insert(e);
             }
@@ -3572,8 +3580,11 @@ void Scene::RecordRenderCommandBuffer() {
         return {};
     };
 
-    const bool render_silhouette = !R.view<Selected>().empty() &&
-        (interaction_mode == InteractionMode::Object || !silhouette_instances.empty());
+    const bool has_object_silhouette_selection = any_of(
+        R.view<const Selected, const MeshInstance, const RenderInstance>().each(),
+        [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); }
+    );
+    const bool render_silhouette = interaction_mode == InteractionMode::Object ? has_object_silhouette_selection : !silhouette_instances.empty();
 
     DrawListBuilder draw_list;
     DrawBatchInfo fill_batch_opaque{}, fill_batch_blend{}, line_batch{}, point_batch{};
@@ -3595,6 +3606,7 @@ void Scene::RecordRenderCommandBuffer() {
     if (render_silhouette) {
         silhouette_batch = draw_list.BeginBatch();
         auto append_silhouette = [&](entt::entity e) {
+            if (!is_silhouette_eligible(e)) return;
             const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
             const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
             const auto &models = R.get<ModelsBuffer>(mesh_entity);
@@ -3831,7 +3843,8 @@ void Scene::RecordRenderCommandBuffer() {
         cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
 
-    if (render_silhouette) { // Silhouette depth/object pass
+    const bool has_silhouette = render_silhouette && silhouette_batch.DrawCount > 0;
+    if (has_silhouette) { // Silhouette depth/object pass
         const auto &silhouette = Pipelines->Silhouette;
         static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
@@ -3863,7 +3876,7 @@ void Scene::RecordRenderCommandBuffer() {
     if (show_rendered) main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
 
     // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
-    if (render_silhouette) {
+    if (has_silhouette) {
         const auto &silhouette_depth = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
         const uint32_t depth_sampler_index = SelectionHandles->DepthSampler;
         cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
@@ -3890,7 +3903,7 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     // Silhouette edge color (rendered ontop of meshes)
-    if (render_silhouette) {
+    if (has_silhouette) {
         const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
         // In Edit mode, never show active silhouette - only selected (non-active) silhouettes
         uint32_t active_object_id = 0;
