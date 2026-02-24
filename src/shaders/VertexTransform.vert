@@ -16,6 +16,7 @@ layout(location = 7) out vec2 TexCoord3;
 layout(location = 8) flat out uint MaterialIndex;
 layout(location = 9) out vec4 VertexColor;
 layout(location = 10) out vec4 WorldTangent;
+layout(location = 11) flat out float WorldScale;
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
 
@@ -125,5 +126,6 @@ void main() {
             WorldTangent = vec4(0.0, 0.0, 0.0, 1.0);
         }
     }
+    WorldScale = (world.Scale.x + world.Scale.y + world.Scale.z) / 3.0;
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
 }

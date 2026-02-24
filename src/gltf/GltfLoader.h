@@ -61,6 +61,13 @@ struct PBRData {
     std::optional<TextureInfoData> NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
     std::optional<TextureInfoData> SpecularTexture{}, SpecularColorTexture{};
     std::optional<TextureInfoData> SheenColorTexture{}, SheenRoughnessTexture{};
+    float Ior{1.5f};
+    float TransmissionFactor{0.f};
+    std::optional<TextureInfoData> TransmissionTexture{};
+    float ThicknessFactor{0.f};
+    std::optional<TextureInfoData> ThicknessTexture{};
+    vec3 AttenuationColor{1.f, 1.f, 1.f};
+    float AttenuationDistance{0.f};
 };
 
 struct SceneMaterialData {

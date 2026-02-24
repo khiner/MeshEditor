@@ -47,6 +47,7 @@ layout(location = 7) in vec2 TexCoord3;
 layout(location = 8) flat in uint MaterialIndex;
 layout(location = 9) in vec4 VertexColor;
 layout(location = 10) in vec4 WorldTangent;
+layout(location = 11) flat in float WorldScale;
 
 layout(location = 0) out vec4 OutColor;
 
@@ -100,6 +101,21 @@ float clampedDot(vec3 x, vec3 y) {
     return clamp(dot(x, y), 0.0, 1.0);
 }
 
+// KHR_materials_volume: Beer's law. attenuationDistance<=0 means infinite (no attenuation).
+vec3 applyVolumeAttenuation(vec3 radiance, float dist, vec3 attenuationColor, float attenuationDistance) {
+    if (attenuationDistance <= 0.0) return radiance;
+    return pow(attenuationColor, vec3(dist / attenuationDistance)) * radiance;
+}
+
+// KHR_materials_transmission: direct-light BTDF.
+// No Fresnel term — transmission D*V only (per glTF Sample Renderer).
+vec3 getPunctualRadianceTransmission(vec3 n, vec3 v, vec3 l, float alphaRoughness, vec3 baseColor, float ior) {
+    float tr = applyIorToRoughness(alphaRoughness, ior);
+    vec3 l_mirror = normalize(l + 2.0 * n * dot(-l, n));
+    vec3 h = normalize(l_mirror + v);
+    return baseColor * D_GGX(clampedDot(n, h), tr) * V_GGX(clampedDot(n, l_mirror), clampedDot(n, v), tr);
+}
+
 NormalInfo GetNormalInfo(const PBRMaterial material) {
     const vec2 uv = GetUv(material.NormalTexCoord, material.NormalUvOffset, material.NormalUvScale, material.NormalUvRotation);
     vec3 ng = normalize(WorldNormal);
@@ -150,12 +166,7 @@ void main() {
 
     vec4 base_color = material.BaseColorFactor;
     if (material.BaseColorTexture != INVALID_SLOT) {
-        const vec2 base_color_uv = GetUv(
-            material.BaseColorTexCoord,
-            material.BaseColorUvOffset,
-            material.BaseColorUvScale,
-            material.BaseColorUvRotation
-        );
+        const vec2 base_color_uv = GetUv(material.BaseColorTexCoord, material.BaseColorUvOffset, material.BaseColorUvScale, material.BaseColorUvRotation);
         base_color *= texture(Samplers[nonuniformEXT(material.BaseColorTexture)], base_color_uv);
     }
     base_color *= VertexColor;
@@ -180,12 +191,7 @@ void main() {
     float metallic = material.MetallicFactor;
     float perceptualRoughness = material.RoughnessFactor;
     if (material.MetallicRoughnessTexture != INVALID_SLOT) {
-        const vec2 metallic_roughness_uv = GetUv(
-            material.MetallicRoughnessTexCoord,
-            material.MetallicRoughnessUvOffset,
-            material.MetallicRoughnessUvScale,
-            material.MetallicRoughnessUvRotation
-        );
+        const vec2 metallic_roughness_uv = GetUv(material.MetallicRoughnessTexCoord, material.MetallicRoughnessUvOffset, material.MetallicRoughnessUvScale, material.MetallicRoughnessUvRotation);
         const vec4 metallic_roughness = texture(Samplers[nonuniformEXT(material.MetallicRoughnessTexture)], metallic_roughness_uv);
         perceptualRoughness *= metallic_roughness.g;
         metallic *= metallic_roughness.b;
@@ -214,13 +220,27 @@ void main() {
         const vec2 specular_uv = GetUv(material.SpecularTexCoord, material.SpecularUvOffset, material.SpecularUvScale, material.SpecularUvRotation);
         specularWeight *= texture(Samplers[nonuniformEXT(material.SpecularTexture)], specular_uv).a;
     }
-    vec3 f0_dielectric = vec3(0.04) * material.SpecularColorFactor;
+    float f0_ior = pow((material.Ior - 1.0) / (material.Ior + 1.0), 2.0);
+    vec3 f0_dielectric = vec3(f0_ior) * material.SpecularColorFactor;
     if (material.SpecularColorTexture != INVALID_SLOT) {
         const vec2 specular_color_uv = GetUv(material.SpecularColorTexCoord, material.SpecularColorUvOffset, material.SpecularColorUvScale, material.SpecularColorUvRotation);
         f0_dielectric *= texture(Samplers[nonuniformEXT(material.SpecularColorTexture)], specular_color_uv).rgb;
     }
     f0_dielectric = min(f0_dielectric, vec3(1.0));
     const vec3 f90_dielectric = vec3(specularWeight);
+
+    // KHR_materials_transmission
+    float transmissionFactor = material.TransmissionFactor;
+    if (material.TransmissionTexture != INVALID_SLOT) {
+        transmissionFactor *= texture(Samplers[nonuniformEXT(material.TransmissionTexture)],
+            GetUv(material.TransmissionTexCoord, material.TransmissionUvOffset, material.TransmissionUvScale, material.TransmissionUvRotation)).r;
+    }
+    // KHR_materials_volume: ThicknessFactor is model-space; multiply by world scale for Beer's law.
+    float worldThickness = material.ThicknessFactor * WorldScale;
+    if (material.ThicknessTexture != INVALID_SLOT) {
+        worldThickness *= texture(Samplers[nonuniformEXT(material.ThicknessTexture)],
+            GetUv(material.ThicknessTexCoord, material.ThicknessUvOffset, material.ThicknessUvScale, material.ThicknessUvRotation)).g;
+    }
 
     vec3 direct_color = vec3(0.0);
     if (SceneViewUBO.UseSceneLightsRender != 0u) {
@@ -237,7 +257,12 @@ void main() {
             const vec3 dielectric_fresnel = F_Schlick(f0_dielectric * specularWeight, f90_dielectric, abs(VdotH));
             const vec3 metal_fresnel = F_Schlick(base_color.rgb, vec3(1.0), abs(VdotH));
 
-            const vec3 l_diffuse = light_intensity * NdotL * BRDF_lambertian(base_color.rgb);
+            vec3 l_diffuse = light_intensity * NdotL * BRDF_lambertian(base_color.rgb);
+            if (transmissionFactor > 0.0) {
+                vec3 l_transmit = light_intensity * getPunctualRadianceTransmission(n, v, L, alphaRoughness, base_color.rgb, material.Ior);
+                l_transmit = applyVolumeAttenuation(l_transmit, worldThickness, material.AttenuationColor, material.AttenuationDistance);
+                l_diffuse = mix(l_diffuse, l_transmit, transmissionFactor);
+            }
             const vec3 l_specular = light_intensity * NdotL * BRDF_specularGGX(alphaRoughness, NdotL, NdotV, NdotH);
 
             const vec3 l_metal_brdf = metal_fresnel * l_specular;
@@ -249,13 +274,18 @@ void main() {
                     1.0 - max_sheen * albedoSheenScalingLUT(NdotV, sheenRoughness),
                     1.0 - max_sheen * albedoSheenScalingLUT(NdotL, sheenRoughness));
                 l_color = light_intensity * NdotL * BRDF_specularSheen(sheenColor, sheenRoughness, NdotL, NdotV, NdotH)
-                        + l_color * l_albedo_sheen_scaling;
+                    + l_color * l_albedo_sheen_scaling;
             }
             direct_color += l_color;
         }
     }
 
-    const vec3 f_diffuse = getDiffuseLight(n) * base_color.rgb;
+    vec3 f_diffuse = getDiffuseLight(n) * base_color.rgb;
+    if (transmissionFactor > 0.0) {
+        vec3 f_transmission = getIBLVolumeRefraction(n, v, perceptualRoughness, material.Ior) * base_color.rgb;
+        f_transmission = applyVolumeAttenuation(f_transmission, worldThickness, material.AttenuationColor, material.AttenuationDistance);
+        f_diffuse = mix(f_diffuse, f_transmission, transmissionFactor);
+    }
     const vec3 f_specular_dielectric = getIBLRadianceGGX(n, v, perceptualRoughness);
     const vec3 f_specular_metal = f_specular_dielectric;
 
@@ -273,12 +303,7 @@ void main() {
         indirect_color = f_sheen + indirect_color * albedo_sheen_scaling;
     }
     if (material.OcclusionTexture != INVALID_SLOT) {
-        const vec2 occlusion_uv = GetUv(
-            material.OcclusionTexCoord,
-            material.OcclusionUvOffset,
-            material.OcclusionUvScale,
-            material.OcclusionUvRotation
-        );
+        const vec2 occlusion_uv = GetUv(material.OcclusionTexCoord, material.OcclusionUvOffset, material.OcclusionUvScale, material.OcclusionUvRotation);
         const float ao = texture(Samplers[nonuniformEXT(material.OcclusionTexture)], occlusion_uv).r;
         indirect_color *= (1.0 + material.OcclusionStrength * (ao - 1.0));
     }
@@ -286,12 +311,7 @@ void main() {
     vec3 color = direct_color + indirect_color;
     vec3 emissive = material.EmissiveFactor;
     if (material.EmissiveTexture != INVALID_SLOT) {
-        const vec2 emissive_uv = GetUv(
-            material.EmissiveTexCoord,
-            material.EmissiveUvOffset,
-            material.EmissiveUvScale,
-            material.EmissiveUvRotation
-        );
+        const vec2 emissive_uv = GetUv(material.EmissiveTexCoord, material.EmissiveUvOffset, material.EmissiveUvScale, material.EmissiveUvRotation);
         emissive *= texture(Samplers[nonuniformEXT(material.EmissiveTexture)], emissive_uv).rgb;
     }
     color += emissive;
@@ -302,12 +322,9 @@ void main() {
     }
 
     if (FaceOverlayFlags != 0u) {
-        const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionModeEdit &&
-            SceneViewUBO.EditElement == EditElementFace;
+        const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionModeEdit && SceneViewUBO.EditElement == EditElementFace;
         const vec4 selected = is_edit_face ? ViewportTheme.Colors.FaceSelected : ViewportTheme.Colors.FaceSelectedIncidental;
-        const vec3 overlay = (FaceOverlayFlags & 2u) != 0u ?
-            mix(selected.rgb, ViewportTheme.Colors.ElementActive.rgb, 0.5) :
-            selected.rgb;
+        const vec3 overlay = (FaceOverlayFlags & 2u) != 0u ? mix(selected.rgb, ViewportTheme.Colors.ElementActive.rgb, 0.5) : selected.rgb;
         color = mix(color, overlay, selected.a);
     }
 

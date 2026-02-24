@@ -67,6 +67,20 @@ float albedoSheenScalingLUT(float NdotV, float sheenRoughness) {
                    clamp(vec2(NdotV, sheenRoughness), vec2(0.0), vec2(1.0))).r;
 }
 
+// KHR_materials_ior / KHR_materials_transmission helpers.
+float applyIorToRoughness(float roughness, float ior) {
+    // IOR=1 → no microfacet roughening; IOR=1.5 → full roughness; per glTF Sample Renderer.
+    return roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0);
+}
+
+// Sample environment at refracted ray direction instead of reflected.
+// Approximation: uses the prefiltered specular environment (no separate scene render pass needed).
+vec3 getIBLVolumeRefraction(vec3 n, vec3 v, float perceptualRoughness, float ior) {
+    float lod = applyIorToRoughness(perceptualRoughness, ior) * float(max(SceneViewUBO.SpecularEnvMipCount, 1u) - 1u);
+    vec3 refracted = normalize(refract(-v, n, 1.0 / ior));
+    return getSpecularSample(refracted, lod).rgb;
+}
+
 vec3 getIBLRadianceCharlie(vec3 n, vec3 v, float sheenRoughness, vec3 sheenColor) {
     const float NdotV = clamp(dot(n, v), 0.0, 1.0);
     const float lod = sheenRoughness * float(max(SceneViewUBO.SheenEnvMipCount, 1u) - 1u);

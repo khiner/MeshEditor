@@ -2807,6 +2807,11 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             .AlphaCutoff = src_material.AlphaCutoff,
             .DoubleSided = src_material.DoubleSided ? 1u : 0u,
             .Unlit = src_material.Unlit ? 1u : 0u,
+            .Ior = src_material.PbrData.Ior,
+            .TransmissionFactor = src_material.PbrData.TransmissionFactor,
+            .ThicknessFactor = src_material.PbrData.ThicknessFactor,
+            .AttenuationColor = src_material.PbrData.AttenuationColor,
+            .AttenuationDistance = src_material.PbrData.AttenuationDistance,
         };
         if (auto result = assign_texture(
                 src_material.PbrData.BaseColorTexture,
@@ -2921,6 +2926,32 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 gpu_material.SheenRoughnessUvOffset,
                 gpu_material.SheenRoughnessUvScale,
                 gpu_material.SheenRoughnessUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.TransmissionTexture,
+                TextureColorSpace::Linear,
+                "transmission",
+                gpu_material.TransmissionTexture,
+                gpu_material.TransmissionTexCoord,
+                gpu_material.TransmissionUvOffset,
+                gpu_material.TransmissionUvScale,
+                gpu_material.TransmissionUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.ThicknessTexture,
+                TextureColorSpace::Linear,
+                "thickness",
+                gpu_material.ThicknessTexture,
+                gpu_material.ThicknessTexCoord,
+                gpu_material.ThicknessUvOffset,
+                gpu_material.ThicknessUvScale,
+                gpu_material.ThicknessUvRotation
             );
             !result) {
             return import_fail(std::move(result.error()));
@@ -5613,6 +5644,32 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 if (Checkbox("Double sided", &double_sided)) {
                     material.DoubleSided = double_sided ? 1u : 0u;
                     material_changed = true;
+                }
+
+                // IOR — always visible; affects Fresnel reflectance even for non-transmissive dielectrics.
+                material_changed |= SliderFloat("IOR", &material.Ior, 1.0f, 3.0f, "%.3f");
+
+                // Transmission
+                material_changed |= SliderFloat("Transmission", &material.TransmissionFactor, 0.f, 1.f);
+                if (material.TransmissionFactor > 0.f) {
+                    material_changed |= edit_texture_slot("Transmission texture", material.TransmissionTexture);
+                    material_changed |= SliderUInt("Transmission UV set", &material.TransmissionTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Transmission UV offset", "Transmission UV scale", "Transmission UV rotation",
+                        material.TransmissionUvOffset, material.TransmissionUvScale, material.TransmissionUvRotation
+                    );
+
+                    // Volume (only meaningful with transmission)
+                    material_changed |= SliderFloat("Thickness", &material.ThicknessFactor, 0.f, 10.f);
+                    material_changed |= edit_texture_slot("Thickness texture", material.ThicknessTexture);
+                    material_changed |= SliderUInt("Thickness UV set", &material.ThicknessTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Thickness UV offset", "Thickness UV scale", "Thickness UV rotation",
+                        material.ThicknessUvOffset, material.ThicknessUvScale, material.ThicknessUvRotation
+                    );
+                    material_changed |= ColorEdit3("Attenuation color", &material.AttenuationColor.x);
+                    // 0 = infinite/disabled; display "Infinite" when zero.
+                    material_changed |= DragFloat("Attenuation distance", &material.AttenuationDistance, 0.01f, 0.f, 0.f, material.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
                 }
 
                 if (material_changed) R.emplace_or_replace<MaterialEdit>(SceneEntity, MaterialEdit{.Index = assigned_material, .Value = material});

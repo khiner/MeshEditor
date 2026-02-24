@@ -484,6 +484,52 @@ structs:
         type: u32
       - name: Unlit
         type: u32
+      # KHR_materials_ior
+      - name: Ior
+        type: float
+        default: 1.5
+      # KHR_materials_transmission
+      - name: TransmissionFactor
+        type: float
+        default: 0
+      - name: TransmissionTexture
+        type: u32
+        default: InvalidSlot
+      - name: TransmissionTexCoord
+        type: u32
+      - name: TransmissionUvOffset
+        type: vec2
+        default: 0
+      - name: TransmissionUvScale
+        type: vec2
+        default: 1
+      - name: TransmissionUvRotation
+        type: float
+        default: 0
+      # KHR_materials_volume
+      - name: ThicknessFactor
+        type: float
+        default: 0
+      - name: ThicknessTexture
+        type: u32
+        default: InvalidSlot
+      - name: ThicknessTexCoord
+        type: u32
+      - name: ThicknessUvOffset
+        type: vec2
+        default: 0
+      - name: ThicknessUvScale
+        type: vec2
+        default: 1
+      - name: ThicknessUvRotation
+        type: float
+        default: 0
+      - name: AttenuationColor
+        type: vec3
+        default: 1
+      - name: AttenuationDistance
+        type: float
+        default: 0
   - name: SelectionNode
     fields:
       - name: Depth
