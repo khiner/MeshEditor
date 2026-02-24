@@ -71,9 +71,10 @@ struct PBRData {
     float ClearcoatFactor{0.f};
     std::optional<TextureInfoData> ClearcoatTexture{};
     float ClearcoatRoughnessFactor{0.f};
-    std::optional<TextureInfoData> ClearcoatRoughnessTexture{};
-    std::optional<TextureInfoData> ClearcoatNormalTexture{};
+    std::optional<TextureInfoData> ClearcoatRoughnessTexture{}, ClearcoatNormalTexture{};
     float ClearcoatNormalScale{1.f};
+    float AnisotropyStrength{0.f}, AnisotropyRotation{0.f};
+    std::optional<TextureInfoData> AnisotropyTexture{};
 };
 
 struct SceneMaterialData {

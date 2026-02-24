@@ -36,6 +36,32 @@ vec3 BRDF_specularGGX(float alphaRoughness, float NdotL, float NdotV, float Ndot
     return vec3(V * D);
 }
 
+// KHR_materials_anisotropy — anisotropic GGX BRDF.
+// Adapted from KhronosGroup/glTF-Sample-Renderer (brdf.glsl).
+float D_GGX_anisotropic(float NdotH, float TdotH, float BdotH, float at, float ab) {
+    const float a2 = at * ab;
+    const vec3 f = vec3(ab * TdotH, at * BdotH, a2 * NdotH);
+    const float w2 = a2 / dot(f, f);
+    return a2 * w2 * w2 / M_PI;
+}
+
+float V_GGX_anisotropic(float NdotL, float NdotV, float BdotV, float TdotV, float TdotL, float BdotL, float at, float ab) {
+    const float GGXV = NdotL * length(vec3(at * TdotV, ab * BdotV, NdotV));
+    const float GGXL = NdotV * length(vec3(at * TdotL, ab * BdotL, NdotL));
+    return clamp(0.5 / (GGXV + GGXL), 0.0, 1.0);
+}
+
+vec3 BRDF_specularGGXAnisotropy(float alphaRoughness, float anisotropy, vec3 n, vec3 v, vec3 l, vec3 h, vec3 t, vec3 b) {
+    const float at = mix(alphaRoughness, 1.0, anisotropy * anisotropy);
+    const float ab = clamp(alphaRoughness, 0.001, 1.0);
+    const float NdotL = clamp(dot(n, l), 0.0, 1.0);
+    const float NdotV = dot(n, v);
+    const float NdotH = clamp(dot(n, h), 0.001, 1.0);
+    const float V = V_GGX_anisotropic(NdotL, NdotV, dot(b, v), dot(t, v), dot(t, l), dot(b, l), at, ab);
+    const float D = D_GGX_anisotropic(NdotH, dot(t, h), dot(b, h), at, ab);
+    return vec3(V * D);
+}
+
 // KHR_materials_sheen — Charlie sheen BRDF.
 // Estevez and Kulla, "Production Friendly Microfacet Sheen BRDF", SIGGRAPH 2017.
 float lambdaSheenNumericHelper(float x, float alphaG) {

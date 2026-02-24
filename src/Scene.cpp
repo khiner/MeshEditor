@@ -2815,6 +2815,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             .ClearcoatFactor = src_material.PbrData.ClearcoatFactor,
             .ClearcoatRoughnessFactor = src_material.PbrData.ClearcoatRoughnessFactor,
             .ClearcoatNormalScale = src_material.PbrData.ClearcoatNormalScale,
+            .AnisotropyStrength = src_material.PbrData.AnisotropyStrength,
+            .AnisotropyRotation = src_material.PbrData.AnisotropyRotation,
         };
         if (auto result = assign_texture(
                 src_material.PbrData.BaseColorTexture,
@@ -2994,6 +2996,19 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 gpu_material.ClearcoatNormalUvOffset,
                 gpu_material.ClearcoatNormalUvScale,
                 gpu_material.ClearcoatNormalUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.AnisotropyTexture,
+                TextureColorSpace::Linear,
+                "anisotropy",
+                gpu_material.AnisotropyTexture,
+                gpu_material.AnisotropyTexCoord,
+                gpu_material.AnisotropyUvOffset,
+                gpu_material.AnisotropyUvScale,
+                gpu_material.AnisotropyUvRotation
             );
             !result) {
             return import_fail(std::move(result.error()));
@@ -5737,6 +5752,18 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                         material.ClearcoatNormalUvOffset, material.ClearcoatNormalUvScale, material.ClearcoatNormalUvRotation
                     );
                     material_changed |= SliderFloat("Clearcoat normal scale", &material.ClearcoatNormalScale, -2.f, 2.f);
+                }
+
+                // Anisotropy
+                material_changed |= SliderFloat("Anisotropy", &material.AnisotropyStrength, 0.f, 1.f);
+                if (material.AnisotropyStrength > 0.f) {
+                    material_changed |= SliderFloat("Anisotropy rotation", &material.AnisotropyRotation, 0.f, 6.2832f, "%.3f rad");
+                    material_changed |= edit_texture_slot("Anisotropy texture", material.AnisotropyTexture);
+                    material_changed |= SliderUInt("Anisotropy UV set", &material.AnisotropyTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Anisotropy UV offset", "Anisotropy UV scale", "Anisotropy UV rotation",
+                        material.AnisotropyUvOffset, material.AnisotropyUvScale, material.AnisotropyUvRotation
+                    );
                 }
 
                 if (material_changed) R.emplace_or_replace<MaterialEdit>(SceneEntity, MaterialEdit{.Index = assigned_material, .Value = material});

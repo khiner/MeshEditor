@@ -582,6 +582,27 @@ structs:
       - name: ClearcoatNormalScale
         type: float
         default: 1
+      # KHR_materials_anisotropy
+      - name: AnisotropyStrength
+        type: float
+        default: 0
+      - name: AnisotropyRotation
+        type: float
+        default: 0
+      - name: AnisotropyTexture
+        type: u32
+        default: InvalidSlot
+      - name: AnisotropyTexCoord
+        type: u32
+      - name: AnisotropyUvOffset
+        type: vec2
+        default: 0
+      - name: AnisotropyUvScale
+        type: vec2
+        default: 1
+      - name: AnisotropyUvRotation
+        type: float
+        default: 0
   - name: SelectionNode
     fields:
       - name: Depth

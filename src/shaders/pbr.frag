@@ -246,14 +246,12 @@ void main() {
     float clearcoatFactor = material.ClearcoatFactor;
     if (material.ClearcoatTexture != INVALID_SLOT) {
         clearcoatFactor *= texture(Samplers[nonuniformEXT(material.ClearcoatTexture)],
-            GetUv(material.ClearcoatTexCoord, material.ClearcoatUvOffset,
-                  material.ClearcoatUvScale, material.ClearcoatUvRotation)).r;
+            GetUv(material.ClearcoatTexCoord, material.ClearcoatUvOffset, material.ClearcoatUvScale, material.ClearcoatUvRotation)).r;
     }
     float ccPerceptualRoughness = clamp(material.ClearcoatRoughnessFactor, 0.0, 1.0);
     if (material.ClearcoatRoughnessTexture != INVALID_SLOT) {
         ccPerceptualRoughness *= texture(Samplers[nonuniformEXT(material.ClearcoatRoughnessTexture)],
-            GetUv(material.ClearcoatRoughnessTexCoord, material.ClearcoatRoughnessUvOffset,
-                  material.ClearcoatRoughnessUvScale, material.ClearcoatRoughnessUvRotation)).g;
+            GetUv(material.ClearcoatRoughnessTexCoord, material.ClearcoatRoughnessUvOffset, material.ClearcoatRoughnessUvScale, material.ClearcoatRoughnessUvRotation)).g;
     }
     ccPerceptualRoughness = clamp(ccPerceptualRoughness, 0.0, 1.0);
     const float ccAlphaRoughness = ccPerceptualRoughness * ccPerceptualRoughness;
@@ -262,14 +260,32 @@ void main() {
     // Uses the same tangent basis (t, b from normal_info) as the base material.
     vec3 n_cc = normal_info.ng;
     if (material.ClearcoatNormalTexture != INVALID_SLOT) {
-        const vec2 cc_normal_uv = GetUv(material.ClearcoatNormalTexCoord, material.ClearcoatNormalUvOffset,
-            material.ClearcoatNormalUvScale, material.ClearcoatNormalUvRotation);
+        const vec2 cc_normal_uv = GetUv(material.ClearcoatNormalTexCoord, material.ClearcoatNormalUvOffset, material.ClearcoatNormalUvScale, material.ClearcoatNormalUvRotation);
         vec3 cc_ntex = texture(Samplers[nonuniformEXT(material.ClearcoatNormalTexture)], cc_normal_uv).rgb * 2.0 - vec3(1.0);
         cc_ntex *= vec3(material.ClearcoatNormalScale, material.ClearcoatNormalScale, 1.0);
         n_cc = normalize(mat3(normal_info.t, normal_info.b, normal_info.ng) * normalize(cc_ntex));
     }
     const float NdotV_cc = clampedDot(n_cc, v);
     const bool has_clearcoat = clearcoatFactor > 0.0;
+
+    // KHR_materials_anisotropy
+    float anisotropyStrength = material.AnisotropyStrength;
+    // Pre-rotate the tangent-space direction by the material rotation angle.
+    vec2 anisotropyDirection = vec2(cos(material.AnisotropyRotation), sin(material.AnisotropyRotation));
+    if (material.AnisotropyTexture != INVALID_SLOT) {
+        const vec3 anisotropySample = texture(Samplers[nonuniformEXT(material.AnisotropyTexture)],
+            GetUv(material.AnisotropyTexCoord, material.AnisotropyUvOffset, material.AnisotropyUvScale, material.AnisotropyUvRotation)).rgb;
+        // Texture RG encodes direction in [0,1]; remap to [-1,1] then rotate by material angle.
+        const vec2 texDir = anisotropySample.xy * 2.0 - vec2(1.0);
+        const mat2 rotMatrix = mat2(anisotropyDirection.x, anisotropyDirection.y, -anisotropyDirection.y, anisotropyDirection.x);
+        anisotropyDirection = normalize(rotMatrix * texDir);
+        anisotropyStrength *= anisotropySample.z;
+    }
+    anisotropyStrength = clamp(anisotropyStrength, 0.0, 1.0);
+    // World-space anisotropy axes. anisotropicB uses the geometric normal (same as reference).
+    const vec3 anisotropicT = normalize(mat3(normal_info.t, normal_info.b, normal_info.n) * vec3(anisotropyDirection, 0.0));
+    const vec3 anisotropicB = cross(normal_info.ng, anisotropicT);
+    const bool has_anisotropy = anisotropyStrength > 0.0;
 
     vec3 direct_color = vec3(0.0);
     if (SceneViewUBO.UseSceneLightsRender != 0u) {
@@ -292,7 +308,9 @@ void main() {
                 l_transmit = applyVolumeAttenuation(l_transmit, worldThickness, material.AttenuationColor, material.AttenuationDistance);
                 l_diffuse = mix(l_diffuse, l_transmit, transmissionFactor);
             }
-            const vec3 l_specular = light_intensity * NdotL * BRDF_specularGGX(alphaRoughness, NdotL, NdotV, NdotH);
+            const vec3 l_specular = light_intensity * NdotL * (has_anisotropy
+                ? BRDF_specularGGXAnisotropy(alphaRoughness, anisotropyStrength, n, v, L, H, anisotropicT, anisotropicB)
+                : BRDF_specularGGX(alphaRoughness, NdotL, NdotV, NdotH));
 
             const vec3 l_metal_brdf = metal_fresnel * l_specular;
             const vec3 l_dielectric_brdf = mix(l_diffuse, l_specular, dielectric_fresnel);
@@ -324,7 +342,9 @@ void main() {
         f_transmission = applyVolumeAttenuation(f_transmission, worldThickness, material.AttenuationColor, material.AttenuationDistance);
         f_diffuse = mix(f_diffuse, f_transmission, transmissionFactor);
     }
-    const vec3 f_specular_dielectric = getIBLRadianceGGX(n, v, perceptualRoughness);
+    const vec3 f_specular_dielectric = has_anisotropy
+        ? getIBLRadianceAnisotropy(n, v, perceptualRoughness, anisotropyStrength, anisotropicB)
+        : getIBLRadianceGGX(n, v, perceptualRoughness);
     const vec3 f_specular_metal = f_specular_dielectric;
 
     const vec3 f_metal_fresnel_ibl = getIBLGGXFresnel(n, v, perceptualRoughness, base_color.rgb, 1.0);

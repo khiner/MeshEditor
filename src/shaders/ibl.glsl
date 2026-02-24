@@ -67,6 +67,22 @@ float albedoSheenScalingLUT(float NdotV, float sheenRoughness) {
                    clamp(vec2(NdotV, sheenRoughness), vec2(0.0), vec2(1.0))).r;
 }
 
+// KHR_materials_anisotropy: bends the reflection vector toward the anisotropic specular lobe
+// direction, then samples the prefiltered env map at that direction.
+// Adapted from KhronosGroup/glTF-Sample-Renderer (ibl.glsl).
+vec3 getIBLRadianceAnisotropy(vec3 n, vec3 v, float roughness, float anisotropy, vec3 anisotropyDirection) {
+    const vec3  anisotropicTangent = cross(anisotropyDirection, v);
+    const vec3  anisotropicNormal  = cross(anisotropicTangent, anisotropyDirection);
+    const float bendFactor         = 1.0 - anisotropy * (1.0 - roughness);
+    const float bendFactorPow4     = bendFactor * bendFactor * bendFactor * bendFactor;
+    const vec3  bentNormal         = normalize(mix(anisotropicNormal, n, bendFactorPow4));
+
+    const uint mip_count = max(SceneViewUBO.SpecularEnvMipCount, 1u);
+    const float lod = roughness * float(mip_count - 1u);
+    const vec3 reflection = normalize(reflect(-v, bentNormal));
+    return getSpecularSample(reflection, lod).rgb;
+}
+
 // KHR_materials_ior / KHR_materials_transmission helpers.
 float applyIorToRoughness(float roughness, float ior) {
     // IOR=1 → no microfacet roughening; IOR=1.5 → full roughness; per glTF Sample Renderer.
