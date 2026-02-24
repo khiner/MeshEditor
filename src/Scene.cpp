@@ -2812,6 +2812,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             .ThicknessFactor = src_material.PbrData.ThicknessFactor,
             .AttenuationColor = src_material.PbrData.AttenuationColor,
             .AttenuationDistance = src_material.PbrData.AttenuationDistance,
+            .ClearcoatFactor = src_material.PbrData.ClearcoatFactor,
+            .ClearcoatRoughnessFactor = src_material.PbrData.ClearcoatRoughnessFactor,
+            .ClearcoatNormalScale = src_material.PbrData.ClearcoatNormalScale,
         };
         if (auto result = assign_texture(
                 src_material.PbrData.BaseColorTexture,
@@ -2952,6 +2955,45 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 gpu_material.ThicknessUvOffset,
                 gpu_material.ThicknessUvScale,
                 gpu_material.ThicknessUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.ClearcoatTexture,
+                TextureColorSpace::Linear,
+                "clearcoat",
+                gpu_material.ClearcoatTexture,
+                gpu_material.ClearcoatTexCoord,
+                gpu_material.ClearcoatUvOffset,
+                gpu_material.ClearcoatUvScale,
+                gpu_material.ClearcoatUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.ClearcoatRoughnessTexture,
+                TextureColorSpace::Linear,
+                "clearcoatRoughness",
+                gpu_material.ClearcoatRoughnessTexture,
+                gpu_material.ClearcoatRoughnessTexCoord,
+                gpu_material.ClearcoatRoughnessUvOffset,
+                gpu_material.ClearcoatRoughnessUvScale,
+                gpu_material.ClearcoatRoughnessUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.ClearcoatNormalTexture,
+                TextureColorSpace::Linear,
+                "clearcoatNormal",
+                gpu_material.ClearcoatNormalTexture,
+                gpu_material.ClearcoatNormalTexCoord,
+                gpu_material.ClearcoatNormalUvOffset,
+                gpu_material.ClearcoatNormalUvScale,
+                gpu_material.ClearcoatNormalUvRotation
             );
             !result) {
             return import_fail(std::move(result.error()));
@@ -5670,6 +5712,31 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     material_changed |= ColorEdit3("Attenuation color", &material.AttenuationColor.x);
                     // 0 = infinite/disabled; display "Infinite" when zero.
                     material_changed |= DragFloat("Attenuation distance", &material.AttenuationDistance, 0.01f, 0.f, 0.f, material.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
+                }
+
+                // Clearcoat
+                material_changed |= SliderFloat("Clearcoat", &material.ClearcoatFactor, 0.f, 1.f);
+                if (material.ClearcoatFactor > 0.f) {
+                    material_changed |= edit_texture_slot("Clearcoat texture", material.ClearcoatTexture);
+                    material_changed |= SliderUInt("Clearcoat UV set", &material.ClearcoatTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Clearcoat UV offset", "Clearcoat UV scale", "Clearcoat UV rotation",
+                        material.ClearcoatUvOffset, material.ClearcoatUvScale, material.ClearcoatUvRotation
+                    );
+                    material_changed |= SliderFloat("Clearcoat roughness", &material.ClearcoatRoughnessFactor, 0.f, 1.f);
+                    material_changed |= edit_texture_slot("Clearcoat roughness texture", material.ClearcoatRoughnessTexture);
+                    material_changed |= SliderUInt("Clearcoat roughness UV set", &material.ClearcoatRoughnessTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Clearcoat roughness UV offset", "Clearcoat roughness UV scale", "Clearcoat roughness UV rotation",
+                        material.ClearcoatRoughnessUvOffset, material.ClearcoatRoughnessUvScale, material.ClearcoatRoughnessUvRotation
+                    );
+                    material_changed |= edit_texture_slot("Clearcoat normal texture", material.ClearcoatNormalTexture);
+                    material_changed |= SliderUInt("Clearcoat normal UV set", &material.ClearcoatNormalTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Clearcoat normal UV offset", "Clearcoat normal UV scale", "Clearcoat normal UV rotation",
+                        material.ClearcoatNormalUvOffset, material.ClearcoatNormalUvScale, material.ClearcoatNormalUvRotation
+                    );
+                    material_changed |= SliderFloat("Clearcoat normal scale", &material.ClearcoatNormalScale, -2.f, 2.f);
                 }
 
                 if (material_changed) R.emplace_or_replace<MaterialEdit>(SceneEntity, MaterialEdit{.Index = assigned_material, .Value = material});

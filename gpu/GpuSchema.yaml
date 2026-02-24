@@ -530,6 +530,58 @@ structs:
       - name: AttenuationDistance
         type: float
         default: 0
+      # KHR_materials_clearcoat
+      - name: ClearcoatFactor
+        type: float
+        default: 0
+      - name: ClearcoatTexture
+        type: u32
+        default: InvalidSlot
+      - name: ClearcoatTexCoord
+        type: u32
+      - name: ClearcoatUvOffset
+        type: vec2
+        default: 0
+      - name: ClearcoatUvScale
+        type: vec2
+        default: 1
+      - name: ClearcoatUvRotation
+        type: float
+        default: 0
+      - name: ClearcoatRoughnessFactor
+        type: float
+        default: 0
+      - name: ClearcoatRoughnessTexture
+        type: u32
+        default: InvalidSlot
+      - name: ClearcoatRoughnessTexCoord
+        type: u32
+      - name: ClearcoatRoughnessUvOffset
+        type: vec2
+        default: 0
+      - name: ClearcoatRoughnessUvScale
+        type: vec2
+        default: 1
+      - name: ClearcoatRoughnessUvRotation
+        type: float
+        default: 0
+      - name: ClearcoatNormalTexture
+        type: u32
+        default: InvalidSlot
+      - name: ClearcoatNormalTexCoord
+        type: u32
+      - name: ClearcoatNormalUvOffset
+        type: vec2
+        default: 0
+      - name: ClearcoatNormalUvScale
+        type: vec2
+        default: 1
+      - name: ClearcoatNormalUvRotation
+        type: float
+        default: 0
+      - name: ClearcoatNormalScale
+        type: float
+        default: 1
   - name: SelectionNode
     fields:
       - name: Depth

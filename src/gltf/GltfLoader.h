@@ -68,6 +68,12 @@ struct PBRData {
     std::optional<TextureInfoData> ThicknessTexture{};
     vec3 AttenuationColor{1.f, 1.f, 1.f};
     float AttenuationDistance{0.f};
+    float ClearcoatFactor{0.f};
+    std::optional<TextureInfoData> ClearcoatTexture{};
+    float ClearcoatRoughnessFactor{0.f};
+    std::optional<TextureInfoData> ClearcoatRoughnessTexture{};
+    std::optional<TextureInfoData> ClearcoatNormalTexture{};
+    float ClearcoatNormalScale{1.f};
 };
 
 struct SceneMaterialData {

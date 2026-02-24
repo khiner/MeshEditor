@@ -242,6 +242,35 @@ void main() {
             GetUv(material.ThicknessTexCoord, material.ThicknessUvOffset, material.ThicknessUvScale, material.ThicknessUvRotation)).g;
     }
 
+    // KHR_materials_clearcoat
+    float clearcoatFactor = material.ClearcoatFactor;
+    if (material.ClearcoatTexture != INVALID_SLOT) {
+        clearcoatFactor *= texture(Samplers[nonuniformEXT(material.ClearcoatTexture)],
+            GetUv(material.ClearcoatTexCoord, material.ClearcoatUvOffset,
+                  material.ClearcoatUvScale, material.ClearcoatUvRotation)).r;
+    }
+    float ccPerceptualRoughness = clamp(material.ClearcoatRoughnessFactor, 0.0, 1.0);
+    if (material.ClearcoatRoughnessTexture != INVALID_SLOT) {
+        ccPerceptualRoughness *= texture(Samplers[nonuniformEXT(material.ClearcoatRoughnessTexture)],
+            GetUv(material.ClearcoatRoughnessTexCoord, material.ClearcoatRoughnessUvOffset,
+                  material.ClearcoatRoughnessUvScale, material.ClearcoatRoughnessUvRotation)).g;
+    }
+    ccPerceptualRoughness = clamp(ccPerceptualRoughness, 0.0, 1.0);
+    const float ccAlphaRoughness = ccPerceptualRoughness * ccPerceptualRoughness;
+
+    // Clearcoat normal defaults to the geometric normal; optionally overridden by its own normal map.
+    // Uses the same tangent basis (t, b from normal_info) as the base material.
+    vec3 n_cc = normal_info.ng;
+    if (material.ClearcoatNormalTexture != INVALID_SLOT) {
+        const vec2 cc_normal_uv = GetUv(material.ClearcoatNormalTexCoord, material.ClearcoatNormalUvOffset,
+            material.ClearcoatNormalUvScale, material.ClearcoatNormalUvRotation);
+        vec3 cc_ntex = texture(Samplers[nonuniformEXT(material.ClearcoatNormalTexture)], cc_normal_uv).rgb * 2.0 - vec3(1.0);
+        cc_ntex *= vec3(material.ClearcoatNormalScale, material.ClearcoatNormalScale, 1.0);
+        n_cc = normalize(mat3(normal_info.t, normal_info.b, normal_info.ng) * normalize(cc_ntex));
+    }
+    const float NdotV_cc = clampedDot(n_cc, v);
+    const bool has_clearcoat = clearcoatFactor > 0.0;
+
     vec3 direct_color = vec3(0.0);
     if (SceneViewUBO.UseSceneLightsRender != 0u) {
         for (uint i = 0u; i < SceneViewUBO.LightCount; ++i) {
@@ -276,6 +305,15 @@ void main() {
                 l_color = light_intensity * NdotL * BRDF_specularSheen(sheenColor, sheenRoughness, NdotL, NdotV, NdotH)
                     + l_color * l_albedo_sheen_scaling;
             }
+            if (has_clearcoat) {
+                const float NdotL_cc = clampedDot(n_cc, L);
+                const float NdotH_cc = clampedDot(n_cc, H);
+                // Intentionally diverges from glTF-Sample-Viewer: Fresnel at the microfacet
+                // half-angle (VdotH) rather than a constant view-angle approximation (NdotV_cc).
+                const vec3 F_cc = F_Schlick(vec3(f0_ior), vec3(1.0), abs(VdotH));
+                const vec3 l_clearcoat = light_intensity * NdotL_cc * F_cc * BRDF_specularGGX(ccAlphaRoughness, NdotL_cc, NdotV_cc, NdotH_cc);
+                l_color = l_color * (1.0 - clearcoatFactor * F_cc) + clearcoatFactor * l_clearcoat;
+            }
             direct_color += l_color;
         }
     }
@@ -307,6 +345,14 @@ void main() {
         const float ao = texture(Samplers[nonuniformEXT(material.OcclusionTexture)], occlusion_uv).r;
         indirect_color *= (1.0 + material.OcclusionStrength * (ao - 1.0));
     }
+    vec3 cc_fresnel_ibl = vec3(0.0);
+    if (has_clearcoat) {
+        // Intentionally diverges from glTF-Sample-Viewer: split-sum BRDF LUT Fresnel
+        // (with multi-scattering energy compensation) rather than F_Schlick(F0, F90, NdotV_cc).
+        cc_fresnel_ibl = getIBLGGXFresnel(n_cc, v, ccPerceptualRoughness, vec3(f0_ior), 1.0);
+        const vec3 f_clearcoat_ibl = cc_fresnel_ibl * getIBLRadianceGGX(n_cc, v, ccPerceptualRoughness);
+        indirect_color = indirect_color * (1.0 - clearcoatFactor * cc_fresnel_ibl) + clearcoatFactor * f_clearcoat_ibl;
+    }
 
     vec3 color = direct_color + indirect_color;
     vec3 emissive = material.EmissiveFactor;
@@ -314,6 +360,7 @@ void main() {
         const vec2 emissive_uv = GetUv(material.EmissiveTexCoord, material.EmissiveUvOffset, material.EmissiveUvScale, material.EmissiveUvRotation);
         emissive *= texture(Samplers[nonuniformEXT(material.EmissiveTexture)], emissive_uv).rgb;
     }
+    if (has_clearcoat) emissive *= (1.0 - clearcoatFactor * cc_fresnel_ibl);
     color += emissive;
 
     if (material.AlphaMode == ALPHA_MASK) {
