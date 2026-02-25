@@ -2817,6 +2817,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             .ClearcoatNormalScale = src_material.PbrData.ClearcoatNormalScale,
             .AnisotropyStrength = src_material.PbrData.AnisotropyStrength,
             .AnisotropyRotation = src_material.PbrData.AnisotropyRotation,
+            .IridescenceFactor = src_material.PbrData.IridescenceFactor,
+            .IridescenceIor = src_material.PbrData.IridescenceIor,
+            .IridescenceThicknessMinimum = src_material.PbrData.IridescenceThicknessMinimum,
+            .IridescenceThicknessMaximum = src_material.PbrData.IridescenceThicknessMaximum,
         };
         if (auto result = assign_texture(
                 src_material.PbrData.BaseColorTexture,
@@ -3009,6 +3013,32 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 gpu_material.AnisotropyUvOffset,
                 gpu_material.AnisotropyUvScale,
                 gpu_material.AnisotropyUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.IridescenceTexture,
+                TextureColorSpace::Linear,
+                "iridescence",
+                gpu_material.IridescenceTexture,
+                gpu_material.IridescenceTexCoord,
+                gpu_material.IridescenceUvOffset,
+                gpu_material.IridescenceUvScale,
+                gpu_material.IridescenceUvRotation
+            );
+            !result) {
+            return import_fail(std::move(result.error()));
+        }
+        if (auto result = assign_texture(
+                src_material.PbrData.IridescenceThicknessTexture,
+                TextureColorSpace::Linear,
+                "iridescenceThickness",
+                gpu_material.IridescenceThicknessTexture,
+                gpu_material.IridescenceThicknessTexCoord,
+                gpu_material.IridescenceThicknessUvOffset,
+                gpu_material.IridescenceThicknessUvScale,
+                gpu_material.IridescenceThicknessUvRotation
             );
             !result) {
             return import_fail(std::move(result.error()));
@@ -5763,6 +5793,26 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     material_changed |= edit_uv_transform(
                         "Anisotropy UV offset", "Anisotropy UV scale", "Anisotropy UV rotation",
                         material.AnisotropyUvOffset, material.AnisotropyUvScale, material.AnisotropyUvRotation
+                    );
+                }
+
+                // Iridescence
+                material_changed |= SliderFloat("Iridescence", &material.IridescenceFactor, 0.f, 1.f);
+                if (material.IridescenceFactor > 0.f) {
+                    material_changed |= edit_texture_slot("Iridescence texture", material.IridescenceTexture);
+                    material_changed |= SliderUInt("Iridescence UV set", &material.IridescenceTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Iridescence UV offset", "Iridescence UV scale", "Iridescence UV rotation",
+                        material.IridescenceUvOffset, material.IridescenceUvScale, material.IridescenceUvRotation
+                    );
+                    material_changed |= SliderFloat("Iridescence IOR", &material.IridescenceIor, 1.0f, 5.0f);
+                    material_changed |= SliderFloat("Thickness min", &material.IridescenceThicknessMinimum, 0.f, 1000.f, "%.0f nm");
+                    material_changed |= SliderFloat("Thickness max", &material.IridescenceThicknessMaximum, 1.f, 1000.f, "%.0f nm");
+                    material_changed |= edit_texture_slot("Iridescence thickness texture", material.IridescenceThicknessTexture);
+                    material_changed |= SliderUInt("Iridescence thickness UV set", &material.IridescenceThicknessTexCoord, 0u, 3u);
+                    material_changed |= edit_uv_transform(
+                        "Iridescence thickness UV offset", "Iridescence thickness UV scale", "Iridescence thickness UV rotation",
+                        material.IridescenceThicknessUvOffset, material.IridescenceThicknessUvScale, material.IridescenceThicknessUvRotation
                     );
                 }
 

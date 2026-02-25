@@ -75,6 +75,12 @@ struct PBRData {
     float ClearcoatNormalScale{1.f};
     float AnisotropyStrength{0.f}, AnisotropyRotation{0.f};
     std::optional<TextureInfoData> AnisotropyTexture{};
+    float IridescenceFactor{0.f};
+    float IridescenceIor{1.3f};
+    float IridescenceThicknessMinimum{100.f};
+    float IridescenceThicknessMaximum{400.f};
+    std::optional<TextureInfoData> IridescenceTexture{};
+    std::optional<TextureInfoData> IridescenceThicknessTexture{};
 };
 
 struct SceneMaterialData {

@@ -603,6 +603,47 @@ structs:
       - name: AnisotropyUvRotation
         type: float
         default: 0
+      # KHR_materials_iridescence
+      - name: IridescenceFactor
+        type: float
+        default: 0
+      - name: IridescenceIor
+        type: float
+        default: 1.3
+      - name: IridescenceThicknessMinimum
+        type: float
+        default: 100
+      - name: IridescenceThicknessMaximum
+        type: float
+        default: 400
+      - name: IridescenceTexture
+        type: u32
+        default: InvalidSlot
+      - name: IridescenceTexCoord
+        type: u32
+      - name: IridescenceUvOffset
+        type: vec2
+        default: 0
+      - name: IridescenceUvScale
+        type: vec2
+        default: 1
+      - name: IridescenceUvRotation
+        type: float
+        default: 0
+      - name: IridescenceThicknessTexture
+        type: u32
+        default: InvalidSlot
+      - name: IridescenceThicknessTexCoord
+        type: u32
+      - name: IridescenceThicknessUvOffset
+        type: vec2
+        default: 0
+      - name: IridescenceThicknessUvScale
+        type: vec2
+        default: 1
+      - name: IridescenceThicknessUvRotation
+        type: float
+        default: 0
   - name: SelectionNode
     fields:
       - name: Depth

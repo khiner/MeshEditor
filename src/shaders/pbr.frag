@@ -36,6 +36,7 @@ layout(set = 0, binding = BINDING_CubeSampler) uniform samplerCube CubeSamplers[
 
 #include "punctual.glsl"
 #include "ibl.glsl"
+#include "iridescence.glsl"
 
 layout(location = 0) in vec3 WorldNormal;
 layout(location = 1) in vec3 WorldPosition;
@@ -287,6 +288,27 @@ void main() {
     const vec3 anisotropicB = cross(normal_info.ng, anisotropicT);
     const bool has_anisotropy = anisotropyStrength > 0.0;
 
+    // KHR_materials_iridescence
+    float iridescenceFactor = material.IridescenceFactor;
+    if (material.IridescenceTexture != INVALID_SLOT) {
+        iridescenceFactor *= texture(Samplers[nonuniformEXT(material.IridescenceTexture)],
+            GetUv(material.IridescenceTexCoord, material.IridescenceUvOffset,
+                  material.IridescenceUvScale, material.IridescenceUvRotation)).r;
+    }
+    iridescenceFactor = clamp(iridescenceFactor, 0.0, 1.0);
+    float iridescenceThickness = material.IridescenceThicknessMaximum;
+    if (material.IridescenceThicknessTexture != INVALID_SLOT) {
+        const float t = texture(Samplers[nonuniformEXT(material.IridescenceThicknessTexture)],
+            GetUv(material.IridescenceThicknessTexCoord, material.IridescenceThicknessUvOffset,
+                  material.IridescenceThicknessUvScale, material.IridescenceThicknessUvRotation)).g;
+        iridescenceThickness = mix(material.IridescenceThicknessMinimum, material.IridescenceThicknessMaximum, t);
+    }
+    // Iridescence Fresnel is precomputed once at NdotV (not per-light), consistent with reference.
+    const vec3 iridescenceFresnel_dielectric = evalIridescence(1.0, material.IridescenceIor, NdotV, iridescenceThickness, f0_dielectric);
+    const vec3 iridescenceFresnel_metallic   = evalIridescence(1.0, material.IridescenceIor, NdotV, iridescenceThickness, base_color.rgb);
+    if (iridescenceThickness == 0.0) iridescenceFactor = 0.0;
+    const bool has_iridescence = iridescenceFactor > 0.0;
+
     vec3 direct_color = vec3(0.0);
     if (SceneViewUBO.UseSceneLightsRender != 0u) {
         for (uint i = 0u; i < SceneViewUBO.LightCount; ++i) {
@@ -312,8 +334,12 @@ void main() {
                 ? BRDF_specularGGXAnisotropy(alphaRoughness, anisotropyStrength, n, v, L, H, anisotropicT, anisotropicB)
                 : BRDF_specularGGX(alphaRoughness, NdotL, NdotV, NdotH));
 
-            const vec3 l_metal_brdf = metal_fresnel * l_specular;
-            const vec3 l_dielectric_brdf = mix(l_diffuse, l_specular, dielectric_fresnel);
+            vec3 l_metal_brdf = metal_fresnel * l_specular;
+            vec3 l_dielectric_brdf = mix(l_diffuse, l_specular, dielectric_fresnel);
+            if (has_iridescence) {
+                l_metal_brdf = mix(l_metal_brdf, l_specular * iridescenceFresnel_metallic, iridescenceFactor);
+                l_dielectric_brdf = mix(l_dielectric_brdf, mix(l_diffuse, l_specular, iridescenceFresnel_dielectric), iridescenceFactor);
+            }
             vec3 l_color = mix(l_dielectric_brdf, l_metal_brdf, metallic);
             if (has_sheen) {
                 const float max_sheen = max(sheenColor.r, max(sheenColor.g, sheenColor.b));
@@ -348,11 +374,15 @@ void main() {
     const vec3 f_specular_metal = f_specular_dielectric;
 
     const vec3 f_metal_fresnel_ibl = getIBLGGXFresnel(n, v, perceptualRoughness, base_color.rgb, 1.0);
-    const vec3 f_metal_brdf_ibl = f_metal_fresnel_ibl * f_specular_metal;
+    vec3 f_metal_brdf_ibl = f_metal_fresnel_ibl * f_specular_metal;
 
     const vec3 f_dielectric_fresnel_ibl = getIBLGGXFresnel(n, v, perceptualRoughness, f0_dielectric, specularWeight);
-    const vec3 f_dielectric_brdf_ibl = mix(f_diffuse, f_specular_dielectric, f_dielectric_fresnel_ibl);
+    vec3 f_dielectric_brdf_ibl = mix(f_diffuse, f_specular_dielectric, f_dielectric_fresnel_ibl);
 
+    if (has_iridescence) {
+        f_metal_brdf_ibl = mix(f_metal_brdf_ibl, f_specular_metal * iridescenceFresnel_metallic, iridescenceFactor);
+        f_dielectric_brdf_ibl = mix(f_dielectric_brdf_ibl, mix(f_diffuse, f_specular_dielectric, iridescenceFresnel_dielectric), iridescenceFactor);
+    }
     vec3 indirect_color = mix(f_dielectric_brdf_ibl, f_metal_brdf_ibl, metallic);
     if (has_sheen) {
         const vec3 f_sheen = getIBLRadianceCharlie(n, v, sheenRoughness, sheenColor);
