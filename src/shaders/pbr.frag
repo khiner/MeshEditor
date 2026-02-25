@@ -13,6 +13,7 @@
 #include "SceneUBO.glsl"
 #include "BindlessBindings.glsl"
 #include "PBRMaterial.glsl"
+#include "MaterialAlphaMode.glsl"
 #include "PunctualLight.glsl"
 #include "WorldTransform.glsl"
 #include "TRSUtils.glsl"
@@ -53,8 +54,6 @@ layout(location = 11) flat in float WorldScale;
 layout(location = 0) out vec4 OutColor;
 
 const uint INVALID_SLOT = 0xffffffffu;
-const uint ALPHA_OPAQUE = 0u;
-const uint ALPHA_MASK = 1u;
 
 struct NormalInfo {
     vec3 ng;
@@ -174,12 +173,12 @@ void main() {
         base_color *= texture(Samplers[nonuniformEXT(material.BaseColorTexture.Slot)], GetUv(material.BaseColorTexture));
     }
     base_color *= VertexColor;
-    if (material.AlphaMode == ALPHA_OPAQUE) {
+    if (material.AlphaMode == MATERIAL_ALPHA_OPAQUE) {
         base_color.a = 1.0;
     }
 
     if (material.Unlit != 0u) {
-        if (material.AlphaMode == ALPHA_MASK) {
+        if (material.AlphaMode == MATERIAL_ALPHA_MASK) {
             if (base_color.a < material.AlphaCutoff) discard;
             base_color.a = 1.0;
         }
@@ -399,7 +398,7 @@ void main() {
     if (has_clearcoat) emissive *= (1.0 - clearcoatFactor * cc_fresnel_ibl);
     color += emissive;
 
-    if (material.AlphaMode == ALPHA_MASK) {
+    if (material.AlphaMode == MATERIAL_ALPHA_MASK) {
         if (base_color.a < material.AlphaCutoff) discard;
         base_color.a = 1.0;
     }

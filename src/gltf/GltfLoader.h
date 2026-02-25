@@ -14,7 +14,9 @@
 
 #include "Armature.h"
 #include "Camera.h"
+#include "MaterialAlphaMode.h"
 #include "Transform.h"
+#include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/ArmatureDeformData.h"
 #include "mesh/MeshData.h"
@@ -57,80 +59,43 @@ enum class MimeType : uint8_t {
     OctetStream,
     WEBP,
 };
-enum class AlphaMode : uint8_t {
-    Opaque,
-    Mask,
-    Blend,
-};
 
-struct TextureTransform {
-    float Rotation;
-    vec2 UvOffset, UvScale;
-    std::optional<uint32_t> TexCoordIndex;
-};
+using Sheen = ::Sheen;
+using Specular = ::Specular;
+using Transmission = ::Transmission;
+using Volume = ::Volume;
+using Clearcoat = ::Clearcoat;
+using Anisotropy = ::Anisotropy;
+using Iridescence = ::Iridescence;
+using PBRMaterial = ::PBRMaterial;
+
 struct TextureInfo {
-    uint32_t TextureIndex, TexCoordIndex;
-    std::optional<TextureTransform> Transform;
+    std::optional<uint32_t> TextureIndex{}; // Indexes into `Scene::Textures`
+    uint32_t TexCoord{};
+    vec2 UvOffset{0.f}, UvScale{1.f};
+    float UvRotation{0.f};
 };
 
-struct Sheen {
-    vec3 ColorFactor{0.f, 0.f, 0.f};
-    float RoughnessFactor{0.f};
-    std::optional<TextureInfo> ColorTexture{}, RoughnessTexture{};
-};
-struct Specular {
-    float Factor{1.f};
-    vec3 ColorFactor{1.f, 1.f, 1.f};
-    std::optional<TextureInfo> Texture{}, ColorTexture{};
-};
-struct Transmission {
-    float Factor{0.f};
-    std::optional<TextureInfo> Texture{};
-};
-struct Volume {
-    float ThicknessFactor{0.f};
-    vec3 AttenuationColor{1.f, 1.f, 1.f};
-    float AttenuationDistance{0.f};
-    std::optional<TextureInfo> ThicknessTexture{};
-};
-struct Clearcoat {
-    float Factor{0.f}, RoughnessFactor{0.f}, NormalScale{1.f};
-    std::optional<TextureInfo> Texture{}, RoughnessTexture{}, NormalTexture{};
-};
-struct Anisotropy {
-    float Strength{0.f}, Rotation{0.f};
-    std::optional<TextureInfo> Texture{};
-};
-struct Iridescence {
-    float Factor{0.f}, Ior{1.3f};
-    float ThicknessMinimum{100.f}, ThicknessMaximum{400.f};
-    std::optional<TextureInfo> Texture{}, ThicknessTexture{};
+struct ImportedMaterialTextures {
+    TextureInfo BaseColor{}, MetallicRoughness{};
+    TextureInfo Normal{}, Occlusion{}, Emissive{};
+    TextureInfo SheenColor{}, SheenRoughness{};
+    TextureInfo Specular{}, SpecularColor{};
+    TextureInfo Transmission{}, VolumeThickness{};
+    TextureInfo Clearcoat{}, ClearcoatRoughness{}, ClearcoatNormal{};
+    TextureInfo Anisotropy{};
+    TextureInfo Iridescence{}, IridescenceThickness{};
 };
 
-struct PBRMaterial {
-    vec4 BaseColorFactor;
-    float MetallicFactor, RoughnessFactor;
-    vec3 EmissiveFactor;
-    float NormalScale;
-    float OcclusionStrength;
-    float Ior{1.5f};
-    std::optional<TextureInfo> BaseColorTexture{}, MetallicRoughnessTexture{};
-    std::optional<TextureInfo> NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
-    Sheen Sheen;
-    Specular Specular;
-    Transmission Transmission;
-    Volume Volume;
-    Clearcoat Clearcoat;
-    Anisotropy Anisotropy;
-    Iridescence Iridescence;
-    AlphaMode AlphaMode;
-    bool DoubleSided, Unlit;
-    float AlphaCutoff;
+struct NamedMaterial {
+    PBRMaterial Value{};
+    ImportedMaterialTextures Textures{};
     std::string Name;
 };
 
 struct Texture {
-    std::optional<uint32_t> SamplerIndex, ImageIndex, BasisuImageIndex, DdsImageIndex, WebpImageIndex;
+    std::optional<uint32_t> SamplerIndex; // Index into `Scene::Samplers`
+    std::optional<uint32_t> ImageIndex, WebpImageIndex, BasisuImageIndex, DdsImageIndex; // Indexes into `Scene::Images` in resolution order.
     std::string Name;
 };
 
@@ -230,7 +195,7 @@ struct AnimationClip {
 
 struct Scene {
     std::vector<MeshData> Meshes;
-    std::vector<PBRMaterial> Materials;
+    std::vector<NamedMaterial> Materials;
     std::vector<Texture> Textures;
     std::vector<Image> Images;
     std::vector<Sampler> Samplers;

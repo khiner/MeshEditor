@@ -1,0 +1,8 @@
+#ifndef MATERIAL_ALPHA_MODE_GLSL
+#define MATERIAL_ALPHA_MODE_GLSL
+
+const uint MATERIAL_ALPHA_OPAQUE = 0u;
+const uint MATERIAL_ALPHA_MASK = 1u;
+const uint MATERIAL_ALPHA_BLEND = 2u;
+
+#endif

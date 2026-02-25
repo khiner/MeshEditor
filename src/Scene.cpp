@@ -11,6 +11,7 @@
 #include "File.h"
 #include "ImageDecode.h"
 #include "LightTypes.h"
+#include "MaterialAlphaMode.h"
 #include "OrientationGizmo.h"
 #include "Shader.h"
 #include "SvgResource.h"
@@ -1647,7 +1648,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
             .BaseColorFactor = vec4{1.f},
             .MetallicFactor = 0.f,
             .RoughnessFactor = 1.f,
-            .AlphaMode = uint32_t(gltf::AlphaMode::Opaque),
+            .AlphaMode = MaterialAlphaOpaque,
             .AlphaCutoff = 0.5f,
             .DoubleSided = 0u,
             .BaseColorTexture = {.Slot = texture_store.WhiteTextureSlot},
@@ -2549,8 +2550,8 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
                     .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
                     .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
                     .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                        uint32_t(gltf::AlphaMode::Blend) :
-                        uint32_t(gltf::AlphaMode::Opaque),
+                        MaterialAlphaBlend :
+                        MaterialAlphaOpaque,
                     .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot},
                     .NormalTexture = {.Slot = normal_texture},
                 }
@@ -2672,8 +2673,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     std::vector<std::string> material_names;
     material_names.reserve(scene->Materials.size());
     for (uint32_t material_index = 0; material_index < scene->Materials.size(); ++material_index) {
-        const auto &src_material = scene->Materials[material_index];
-        const auto material_name = src_material.Name.empty() ? std::format("Material{}", material_index) : src_material.Name;
+        const auto &src_named_material = scene->Materials[material_index];
+        const auto &src_material = src_named_material.Value;
+        const auto material_name = src_named_material.Name.empty() ? std::format("Material{}", material_index) : src_named_material.Name;
         const auto clamp_uv_set = [&](uint32_t uv_set, std::string_view texture_label) {
             if (uv_set <= 3u) return uv_set;
             std::cerr << std::format(
@@ -2685,96 +2687,50 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             return 3u;
         };
         const auto assign_texture = [&](
-                                        const std::optional<gltf::TextureInfo> &texture_info,
+                                        const gltf::TextureInfo &texture_info,
                                         TextureColorSpace color_space,
                                         std::string_view texture_label,
                                         TextureInfo &tex
                                     ) -> std::expected<void, std::string> {
             tex = {};
-            if (!texture_info) return {};
+            if (!texture_info.TextureIndex) return {};
 
-            const uint32_t uv_set = texture_info->Transform && texture_info->Transform->TexCoordIndex ?
-                *texture_info->Transform->TexCoordIndex :
-                texture_info->TexCoordIndex;
-            tex.TexCoord = clamp_uv_set(uv_set, texture_label);
-            if (texture_info->Transform) {
-                tex.UvOffset = texture_info->Transform->UvOffset;
-                tex.UvScale = texture_info->Transform->UvScale;
-                tex.UvRotation = texture_info->Transform->Rotation;
-            }
-            auto texture_slot_result = resolve_texture_slot(texture_info->TextureIndex, color_space);
+            tex.TexCoord = texture_info.TexCoord;
+            tex.UvOffset = texture_info.UvOffset;
+            tex.UvScale = texture_info.UvScale;
+            tex.UvRotation = texture_info.UvRotation;
+            tex.TexCoord = clamp_uv_set(tex.TexCoord, texture_label);
+            auto texture_slot_result = resolve_texture_slot(*texture_info.TextureIndex, color_space);
             if (!texture_slot_result) return std::unexpected{std::move(texture_slot_result.error())};
             tex.Slot = *texture_slot_result;
             return {};
         };
-        PBRMaterial gpu_material{
-            .BaseColorFactor = src_material.BaseColorFactor,
-            .EmissiveFactor = src_material.EmissiveFactor,
-            .MetallicFactor = src_material.MetallicFactor,
-            .RoughnessFactor = src_material.RoughnessFactor,
-            .NormalScale = src_material.NormalScale,
-            .OcclusionStrength = src_material.OcclusionStrength,
-            .AlphaMode = uint32_t(src_material.AlphaMode),
-            .AlphaCutoff = src_material.AlphaCutoff,
-            .DoubleSided = src_material.DoubleSided ? 1u : 0u,
-            .Unlit = src_material.Unlit ? 1u : 0u,
-            .Ior = src_material.Ior,
-            .Sheen = {
-                .ColorFactor = src_material.Sheen.ColorFactor,
-                .RoughnessFactor = src_material.Sheen.RoughnessFactor,
-            },
-            .Specular = {
-                .Factor = src_material.Specular.Factor,
-                .ColorFactor = src_material.Specular.ColorFactor,
-            },
-            .Transmission = {
-                .Factor = src_material.Transmission.Factor,
-            },
-            .Volume = {
-                .ThicknessFactor = src_material.Volume.ThicknessFactor,
-                .AttenuationColor = src_material.Volume.AttenuationColor,
-                .AttenuationDistance = src_material.Volume.AttenuationDistance,
-            },
-            .Clearcoat = {
-                .Factor = src_material.Clearcoat.Factor,
-                .RoughnessFactor = src_material.Clearcoat.RoughnessFactor,
-                .NormalScale = src_material.Clearcoat.NormalScale,
-            },
-            .Anisotropy = {
-                .Strength = src_material.Anisotropy.Strength,
-                .Rotation = src_material.Anisotropy.Rotation,
-            },
-            .Iridescence = {
-                .Factor = src_material.Iridescence.Factor,
-                .Ior = src_material.Iridescence.Ior,
-                .ThicknessMinimum = src_material.Iridescence.ThicknessMinimum,
-                .ThicknessMaximum = src_material.Iridescence.ThicknessMaximum,
-            },
-        };
+        PBRMaterial gpu_material = src_material;
+        const auto &src_textures = src_named_material.Textures;
         if (auto result = [&]() -> std::expected<void, std::string> {
                 std::expected<void, std::string> assign_result{};
-                const auto check = [&](const std::optional<gltf::TextureInfo> &texture_info, TextureColorSpace color_space, std::string_view texture_label, TextureInfo &tex) {
+                const auto check = [&](const gltf::TextureInfo &texture_info, TextureColorSpace color_space, std::string_view texture_label, TextureInfo &tex) {
                     assign_result = assign_texture(texture_info, color_space, texture_label, tex);
                     return assign_result.has_value();
                 };
                 if (
-                    !check(src_material.BaseColorTexture, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture) ||
-                    !check(src_material.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture) ||
-                    !check(src_material.NormalTexture, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture) ||
-                    !check(src_material.OcclusionTexture, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture) ||
-                    !check(src_material.EmissiveTexture, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture) ||
-                    !check(src_material.Specular.Texture, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture) ||
-                    !check(src_material.Specular.ColorTexture, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture) ||
-                    !check(src_material.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture) ||
-                    !check(src_material.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture) ||
-                    !check(src_material.Transmission.Texture, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture) ||
-                    !check(src_material.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture) ||
-                    !check(src_material.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture) ||
-                    !check(src_material.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture) ||
-                    !check(src_material.Clearcoat.NormalTexture, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture) ||
-                    !check(src_material.Anisotropy.Texture, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture) ||
-                    !check(src_material.Iridescence.Texture, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture) ||
-                    !check(src_material.Iridescence.ThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture)
+                    !check(src_textures.BaseColor, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture) ||
+                    !check(src_textures.MetallicRoughness, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture) ||
+                    !check(src_textures.Normal, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture) ||
+                    !check(src_textures.Occlusion, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture) ||
+                    !check(src_textures.Emissive, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture) ||
+                    !check(src_textures.Specular, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture) ||
+                    !check(src_textures.SpecularColor, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture) ||
+                    !check(src_textures.SheenColor, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture) ||
+                    !check(src_textures.SheenRoughness, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture) ||
+                    !check(src_textures.Transmission, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture) ||
+                    !check(src_textures.VolumeThickness, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture) ||
+                    !check(src_textures.Clearcoat, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture) ||
+                    !check(src_textures.ClearcoatRoughness, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture) ||
+                    !check(src_textures.ClearcoatNormal, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture) ||
+                    !check(src_textures.Anisotropy, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture) ||
+                    !check(src_textures.Iridescence, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture) ||
+                    !check(src_textures.IridescenceThickness, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture)
                 ) {
                     return std::unexpected{std::move(assign_result.error())};
                 }
@@ -3645,7 +3601,7 @@ void Scene::RecordRenderCommandBuffer() {
                     const auto material_count = GetMaterialCount(*Buffers);
                     const auto material_is_blend = [&](uint32_t material_index) {
                         return material_index < material_count &&
-                            GetMaterial(*Buffers, material_index).AlphaMode == uint32_t(gltf::AlphaMode::Blend);
+                            GetMaterial(*Buffers, material_index).AlphaMode == MaterialAlphaBlend;
                     };
                     const uint32_t triangle_count = mesh_buffers.FaceIndices.Count / 3u;
                     if (!primitive_materials.empty() &&
@@ -5421,13 +5377,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 material_changed |= ColorEdit3("Emissive", &material.EmissiveFactor.x);
                 material_changed |= edit_texture_info("Emissive", material.EmissiveTexture);
 
-                static constexpr std::array alpha_mode_labels{"Opaque", "Mask", "Blend"};
-                int alpha_mode = std::clamp<int>(int(material.AlphaMode), 0, int(alpha_mode_labels.size() - 1));
-                if (Combo("Alpha mode", &alpha_mode, alpha_mode_labels.data(), int(alpha_mode_labels.size()))) {
-                    material.AlphaMode = uint32_t(alpha_mode);
+                int alpha_mode = std::clamp<int>(int(material.AlphaMode), 0, int(MaterialAlphaModeLabels.size() - 1));
+                if (Combo("Alpha mode", &alpha_mode, MaterialAlphaModeLabels.data(), int(MaterialAlphaModeLabels.size()))) {
+                    material.AlphaMode = ToMaterialAlphaModeValue(MaterialAlphaMode(alpha_mode));
                     material_changed = true;
                 }
-                if (material.AlphaMode == uint32_t(gltf::AlphaMode::Mask)) {
+                if (material.AlphaMode == MaterialAlphaMask) {
                     material_changed |= SliderFloat("Alpha cutoff", &material.AlphaCutoff, 0.f, 1.f);
                 }
                 bool double_sided = material.DoubleSided != 0u;
