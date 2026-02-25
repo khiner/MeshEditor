@@ -10,16 +10,17 @@
 #include "Excitable.h"
 #include "File.h"
 #include "ImageDecode.h"
-#include "LightTypes.h"
-#include "MaterialAlphaMode.h"
 #include "OrientationGizmo.h"
 #include "Shader.h"
 #include "SvgResource.h"
 #include "Timer.h"
 #include "gltf/GltfLoader.h"
+#include "gpu/MaterialAlphaMode.h"
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
+#include "gpu/PunctualLightType.h"
+#include "gpu/SelectionElementFlags.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "gpu/WorkspaceLights.h"
@@ -111,8 +112,10 @@ constexpr float DefaultSpotOuterAngle = Pi / 4.f; // 45 deg
 constexpr float DefaultSpotBlend = 0.15f;
 constexpr float DefaultLightIntensity = 75.f;
 constexpr float DefaultPointRange = 10.f;
-constexpr uint32_t SelectionElementOutputBitset = 1u << 0;
-constexpr uint32_t SelectionElementClipToBox = 1u << 1;
+
+constexpr SelectionElementFlags operator|(SelectionElementFlags a, SelectionElementFlags b) {
+    return static_cast<SelectionElementFlags>(uint32_t(a) | uint32_t(b));
+}
 
 using namespace he;
 
@@ -199,13 +202,13 @@ void WaitFor(vk::Fence fence, vk::Device device) {
     device.resetFences(fence);
 }
 
-PunctualLight MakeDefaultLight(uint32_t type = LightTypePoint) {
+PunctualLight MakeDefaultLight(PunctualLightType type = PunctualLightType::Point) {
     return {
-        .Range = type == LightTypeDirectional ? 0.f : DefaultPointRange,
+        .Range = type == PunctualLightType::Directional ? 0.f : DefaultPointRange,
         .Color = {1.f, 1.f, 1.f},
         .Intensity = DefaultLightIntensity,
-        .InnerConeCos = type == LightTypeSpot ? std::cos(DefaultSpotOuterAngle * (1.f - DefaultSpotBlend)) : 0.f,
-        .OuterConeCos = type == LightTypeSpot ? std::cos(DefaultSpotOuterAngle) : 0.f,
+        .InnerConeCos = type == PunctualLightType::Spot ? std::cos(DefaultSpotOuterAngle * (1.f - DefaultSpotBlend)) : 0.f,
+        .OuterConeCos = type == PunctualLightType::Spot ? std::cos(DefaultSpotOuterAngle) : 0.f,
         .Type = type,
     };
 }
@@ -1228,9 +1231,9 @@ ExtrasWireframe BuildLightMesh(const PunctualLight &light) {
         if (range > 0.f) wf.AddCircle(range, 32, 0.f, VClassBillboard);
     };
 
-    if (light.Type == LightTypePoint) {
+    if (light.Type == PunctualLightType::Point) {
         add_range_circle(light.Range);
-    } else if (light.Type == LightTypeDirectional) {
+    } else if (light.Type == PunctualLightType::Directional) {
         // Sun rays: 8 radial directions, each with two dashed line segments (screenspace units).
         constexpr uint32_t ray_count = 8;
         constexpr float d0s = 14.f, d0e = 16.f, d1s = 18.f, d1e = 20.f;
@@ -1244,7 +1247,7 @@ ExtrasWireframe BuildLightMesh(const PunctualLight &light) {
             wf.AddEdge(a, b);
             wf.AddEdge(c, d);
         }
-    } else if (light.Type == LightTypeSpot) {
+    } else if (light.Type == PunctualLightType::Spot) {
         constexpr float depth = 2.f;
         const float outer_angle = std::min(AngleFromCos(light.OuterConeCos), glm::radians(89.f));
         const float inner_angle = std::min(AngleFromCos(light.InnerConeCos), outer_angle);
@@ -1648,7 +1651,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
             .BaseColorFactor = vec4{1.f},
             .MetallicFactor = 0.f,
             .RoughnessFactor = 1.f,
-            .AlphaMode = MaterialAlphaOpaque,
+            .AlphaMode = MaterialAlphaMode::Opaque,
             .AlphaCutoff = 0.5f,
             .DoubleSided = 0u,
             .BaseColorTexture = {.Slot = texture_store.WhiteTextureSlot},
@@ -2084,8 +2087,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .SheenEnvMipCount = active_environment.SheenEnvMipCount,
             .SheenELutSamplerSlot = active_environment.SheenELutSamplerSlot,
             .CharlieLutSamplerSlot = active_environment.CharlieLutSamplerSlot,
-            .InteractionMode = uint32_t(interaction_mode),
-            .EditElement = uint32_t(R.get<const SceneEditMode>(SceneEntity).Value),
+            .InteractionMode = interaction_mode,
+            .EditElement = R.get<const SceneEditMode>(SceneEntity).Value,
             .IsTransforming = pending ? 1u : 0u,
             .PendingPivot = pending ? pending->Pivot : vec3{},
             .PendingTranslation = pending ? pending->P : vec3{},
@@ -2445,7 +2448,7 @@ entt::entity Scene::AddCamera(ObjectCreateInfo info) {
 }
 
 entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight> props) {
-    auto light = props.value_or(MakeDefaultLight(LightTypePoint));
+    auto light = props.value_or(MakeDefaultLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);
     const auto entity = CreateExtrasObject(std::move(wireframe), ObjectType::Light, info, "Light");
     const uint32_t light_index = uint32_t(R.storage<LightIndex>().size());
@@ -2550,8 +2553,8 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
                     .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
                     .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
                     .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                        MaterialAlphaBlend :
-                        MaterialAlphaOpaque,
+                        MaterialAlphaMode::Blend :
+                        MaterialAlphaMode::Opaque,
                     .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot},
                     .NormalTexture = {.Slot = normal_texture},
                 }
@@ -3601,7 +3604,7 @@ void Scene::RecordRenderCommandBuffer() {
                     const auto material_count = GetMaterialCount(*Buffers);
                     const auto material_is_blend = [&](uint32_t material_index) {
                         return material_index < material_count &&
-                            GetMaterial(*Buffers, material_index).AlphaMode == MaterialAlphaBlend;
+                            GetMaterial(*Buffers, material_index).AlphaMode == MaterialAlphaMode::Blend;
                     };
                     const uint32_t triangle_count = mesh_buffers.FaceIndices.Count / 3u;
                     if (!primitive_materials.empty() &&
@@ -4171,7 +4174,7 @@ void Scene::RenderElementSelectionPass(
             box_max.x,
             box_max.y,
             SelectionHandles->SelectionBitset,
-            write_bitset ? (SelectionElementOutputBitset | SelectionElementClipToBox) : 0u,
+            write_bitset ? (SelectionElementFlags::OutputBitset | SelectionElementFlags::ClipToBox) : SelectionElementFlags::None,
         };
         auto draw_with = [&](SPT spt) {
             const auto &pipeline = selection.Renderer.Bind(cb, spt);
@@ -5377,12 +5380,13 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 material_changed |= ColorEdit3("Emissive", &material.EmissiveFactor.x);
                 material_changed |= edit_texture_info("Emissive", material.EmissiveTexture);
 
-                int alpha_mode = std::clamp<int>(int(material.AlphaMode), 0, int(MaterialAlphaModeLabels.size() - 1));
-                if (Combo("Alpha mode", &alpha_mode, MaterialAlphaModeLabels.data(), int(MaterialAlphaModeLabels.size()))) {
-                    material.AlphaMode = ToMaterialAlphaModeValue(MaterialAlphaMode(alpha_mode));
+                static constexpr std::array alpha_mode_labels{"Opaque", "Mask", "Blend"};
+                int alpha_mode = std::clamp<int>(int(material.AlphaMode), 0, int(alpha_mode_labels.size() - 1));
+                if (Combo("Alpha mode", &alpha_mode, alpha_mode_labels.data(), int(alpha_mode_labels.size()))) {
+                    material.AlphaMode = MaterialAlphaMode(alpha_mode);
                     material_changed = true;
                 }
-                if (material.AlphaMode == MaterialAlphaMask) {
+                if (material.AlphaMode == MaterialAlphaMode::Mask) {
                     material_changed |= SliderFloat("Alpha cutoff", &material.AlphaCutoff, 0.f, 1.f);
                 }
                 bool double_sided = material.DoubleSided != 0u;
@@ -5459,9 +5463,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         bool changed{false}, wireframe_changed{false};
 
         const char *type_names[]{"Directional", "Point", "Spot"};
-        int type_i = int(std::min(light.Type, LightTypeSpot));
+        int type_i = std::clamp(static_cast<int>(light.Type), 0, 2);
         if (Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-            auto next = MakeDefaultLight(uint32_t(type_i));
+            auto next = MakeDefaultLight(static_cast<PunctualLightType>(type_i));
             next.TransformSlotOffset = light.TransformSlotOffset;
             next.Color = light.Color;
             next.Intensity = light.Intensity;
@@ -5472,7 +5476,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
         changed |= ColorEdit3("Color", &light.Color.x);
         changed |= SliderFloat("Intensity", &light.Intensity, 0.f, MaxLightIntensity, "%.2f");
-        if (light.Type == LightTypePoint || light.Type == LightTypeSpot) {
+        if (light.Type == PunctualLightType::Point || light.Type == PunctualLightType::Spot) {
             bool infinite_range = light.Range <= 0.f;
             if (Checkbox("Infinite range", &infinite_range)) {
                 light.Range = infinite_range ? 0.f : std::max(light.Range, DefaultPointRange);
@@ -5486,7 +5490,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 }
             }
         }
-        if (light.Type == LightTypeSpot) {
+        if (light.Type == PunctualLightType::Spot) {
             float outer_deg = std::clamp(glm::degrees(AngleFromCos(light.OuterConeCos)), 0.f, 90.f);
             float inner_deg = std::clamp(glm::degrees(AngleFromCos(light.InnerConeCos)), 0.f, outer_deg);
             float blend = outer_deg > 1e-4f ? std::clamp(1.f - inner_deg / outer_deg, 0.f, 1.f) : 0.f;

@@ -25,7 +25,7 @@ void main() {
         instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.FirstInstance]);
     }
 
-    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
+    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionMode_Edit;
     const vec4 wire_color = is_edit_mode ? vec4(ViewportTheme.Colors.WireEdit, 1.0) : vec4(ViewportTheme.Colors.Wire, 1.0);
     const bool is_selected = (instance_state & STATE_SELECTED) != 0u;
     const bool is_active = (instance_state & STATE_ACTIVE) != 0u;

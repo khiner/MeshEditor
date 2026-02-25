@@ -44,6 +44,46 @@ bindings:
   - name: FacePrimitiveBuffer
     kind: Buffer
 
+enums:
+  - name: MaterialAlphaMode
+    type: u32
+    values:
+      - name: Opaque
+      - name: Mask
+      - name: Blend
+  - name: PunctualLightType
+    type: u32
+    values:
+      - name: Directional
+      - name: Point
+      - name: Spot
+  - name: InteractionMode
+    type: u32
+    values:
+      - name: Object
+      - name: Edit
+      - name: Excite
+  - name: Element
+    type: u32
+    values:
+      - name: None
+        value: 0
+      - name: Vertex
+        value: 1
+      - name: Edge
+        value: 2
+      - name: Face
+        value: 4
+  - name: SelectionElementFlags
+    type: u32
+    values:
+      - name: None
+        value: 0
+      - name: OutputBitset
+        value: 1
+      - name: ClipToBox
+        value: 2
+
 structs:
   - name: SlotOffset
     fields:
@@ -164,9 +204,9 @@ structs:
         type: u32
         default: InvalidSlot
       - name: InteractionMode
-        type: u32
+        type: InteractionMode
       - name: EditElement
-        type: u32
+        type: Element
       - name: IsTransforming
         type: u32
       - name: PendingPivot
@@ -316,7 +356,7 @@ structs:
       - name: OuterConeCos
         type: float
       - name: Type
-        type: u32
+        type: PunctualLightType
   - name: TextureInfo
     fields:
       - name: Slot
@@ -443,7 +483,8 @@ structs:
         type: float
         default: 1
       - name: AlphaMode
-        type: u32
+        type: MaterialAlphaMode
+        default: MaterialAlphaMode::Opaque
       - name: AlphaCutoff
         type: float
         default: 0.5
@@ -546,7 +587,7 @@ structs:
         type: u32
         default: InvalidSlot
       - name: Flags
-        type: u32
+        type: SelectionElementFlags
   - name: ObjectPickPushConstants
     push_constant: true
     fields:

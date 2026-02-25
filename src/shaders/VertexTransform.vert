@@ -74,8 +74,8 @@ void main() {
     WorldPosition = world_pos;
     VertexColor = vert.Color;
 
-    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionModeEdit;
-    const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == EditElementEdge;
+    const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionMode_Edit;
+    const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == Element_Edge;
     const vec4 edge_color = is_edit_mode ? vec4(ViewportTheme.Colors.WireEdit, 1.0) : vec4(ViewportTheme.Colors.Wire, 1.0);
     const vec4 object_base_color = vec4(0.7, 0.7, 0.7, 1);
     const vec4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color :

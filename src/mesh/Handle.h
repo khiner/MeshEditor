@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/Element.h"
+
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -10,12 +12,7 @@ using uint = uint32_t;
 
 constexpr uint null{std::numeric_limits<uint>::max()};
 
-enum class Element : uint8_t {
-    None = 0,
-    Vertex = 1 << 0,
-    Edge = 1 << 1,
-    Face = 1 << 2,
-};
+using Element = ::Element;
 constexpr uint8_t ElementMask(he::Element element) { return uint8_t(element); }
 constexpr bool ElementMaskContains(uint8_t mask, he::Element element) { return (mask & ElementMask(element)) != 0; }
 constexpr void SetElementMask(uint8_t &mask, he::Element element, bool enabled) {

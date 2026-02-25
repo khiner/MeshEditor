@@ -24,8 +24,8 @@ void main() {
     const vec3 lighting = view_lighting + directional_lighting;
     vec3 color = InColor.rgb * lighting;
     if (FaceOverlayFlags != 0u) {
-        const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionModeEdit &&
-            SceneViewUBO.EditElement == EditElementFace;
+        const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionMode_Edit &&
+            SceneViewUBO.EditElement == Element_Face;
         const vec4 selected = is_edit_face ? ViewportTheme.Colors.FaceSelected : ViewportTheme.Colors.FaceSelectedIncidental;
         const vec3 overlay = (FaceOverlayFlags & 2u) != 0u ?
             mix(selected.rgb, ViewportTheme.Colors.ElementActive.rgb, 0.5) :

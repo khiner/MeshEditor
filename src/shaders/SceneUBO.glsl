@@ -1,8 +1,7 @@
 #include "SceneViewUBO.glsl"
 #include "ViewportTheme.glsl"
-
-const uint InteractionModeObject = 0u, InteractionModeEdit = 1u, InteractionModeExcite = 2u;
-const uint EditElementNone = 0u, EditElementVertex = 1u, EditElementEdge = 2u, EditElementFace = 4u;
+#include "InteractionMode.glsl"
+#include "Element.glsl"
 
 bool IsFrontFacing(vec3 normal, vec3 world_pos) {
     return dot(normal, SceneViewUBO.CameraPosition - world_pos) >= 0.0;

@@ -173,12 +173,12 @@ void main() {
         base_color *= texture(Samplers[nonuniformEXT(material.BaseColorTexture.Slot)], GetUv(material.BaseColorTexture));
     }
     base_color *= VertexColor;
-    if (material.AlphaMode == MATERIAL_ALPHA_OPAQUE) {
+    if (material.AlphaMode == MaterialAlphaMode_Opaque) {
         base_color.a = 1.0;
     }
 
     if (material.Unlit != 0u) {
-        if (material.AlphaMode == MATERIAL_ALPHA_MASK) {
+        if (material.AlphaMode == MaterialAlphaMode_Mask) {
             if (base_color.a < material.AlphaCutoff) discard;
             base_color.a = 1.0;
         }
@@ -398,13 +398,13 @@ void main() {
     if (has_clearcoat) emissive *= (1.0 - clearcoatFactor * cc_fresnel_ibl);
     color += emissive;
 
-    if (material.AlphaMode == MATERIAL_ALPHA_MASK) {
+    if (material.AlphaMode == MaterialAlphaMode_Mask) {
         if (base_color.a < material.AlphaCutoff) discard;
         base_color.a = 1.0;
     }
 
     if (FaceOverlayFlags != 0u) {
-        const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionModeEdit && SceneViewUBO.EditElement == EditElementFace;
+        const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionMode_Edit && SceneViewUBO.EditElement == Element_Face;
         const vec4 selected = is_edit_face ? ViewportTheme.Colors.FaceSelected : ViewportTheme.Colors.FaceSelectedIncidental;
         const vec3 overlay = (FaceOverlayFlags & 2u) != 0u ? mix(selected.rgb, ViewportTheme.Colors.ElementActive.rgb, 0.5) : selected.rgb;
         color = mix(color, overlay, selected.a);

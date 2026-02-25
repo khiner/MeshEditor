@@ -5,6 +5,7 @@
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
 #include "World.h"
+#include "gpu/InteractionMode.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/Handle.h"
 #include "numeric/vec2.h"
@@ -26,14 +27,6 @@ using uint = uint32_t;
 
 struct Path {
     std::filesystem::path Value;
-};
-
-enum class InteractionMode {
-    Object, // Select objects
-    Edit, // Select individual mesh elements (vertices, edges, faces)
-    // Available when any `Excitable` objects are present.
-    // Mouse-down on an excitable object adds an `ExcitedVertex` component to the object entity, and mouse-up removes it.
-    Excite,
 };
 
 enum class ViewportShadingMode : uint8_t {

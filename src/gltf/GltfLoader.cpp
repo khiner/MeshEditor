@@ -1,6 +1,5 @@
 #include "GltfLoader.h"
 
-#include "LightTypes.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
@@ -1126,7 +1125,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                         .RoughnessFactor = material.pbrData.roughnessFactor,
                         .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
                         .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
-                        .AlphaMode = ToMaterialAlphaModeValue(ToAlphaMode(material.alphaMode)),
+                        .AlphaMode = ToAlphaMode(material.alphaMode),
                         .AlphaCutoff = material.alphaCutoff,
                         .DoubleSided = material.doubleSided ? 1u : 0u,
                         .Unlit = material.unlit ? 1u : 0u,
@@ -1213,7 +1212,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                     .RoughnessFactor = 1.f,
                     .NormalScale = 1.f,
                     .OcclusionStrength = 1.f,
-                    .AlphaMode = MaterialAlphaOpaque,
+                    .AlphaMode = MaterialAlphaMode::Opaque,
                     .AlphaCutoff = 0.5f,
                     .DoubleSided = 0u,
                     .Unlit = 0u,
@@ -1275,20 +1274,20 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             .Intensity = light.intensity,
             .InnerConeCos = 0.f,
             .OuterConeCos = 0.f,
-            .Type = LightTypePoint,
+            .Type = PunctualLightType::Point,
         };
         switch (light.type) {
             case fastgltf::LightType::Directional:
-                punctual_light.Type = LightTypeDirectional;
+                punctual_light.Type = PunctualLightType::Directional;
                 break;
             case fastgltf::LightType::Point:
-                punctual_light.Type = LightTypePoint;
+                punctual_light.Type = PunctualLightType::Point;
                 punctual_light.Range = light.range ? *light.range : 0.f;
                 break;
             case fastgltf::LightType::Spot: {
                 const float outer = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
                 const float inner = std::clamp(light.innerConeAngle ? *light.innerConeAngle : 0.f, 0.f, outer);
-                punctual_light.Type = LightTypeSpot;
+                punctual_light.Type = PunctualLightType::Spot;
                 punctual_light.Range = light.range ? *light.range : 0.f;
                 punctual_light.InnerConeCos = std::cos(inner);
                 punctual_light.OuterConeCos = std::cos(outer);

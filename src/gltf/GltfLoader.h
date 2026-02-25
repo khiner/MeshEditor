@@ -14,8 +14,8 @@
 
 #include "Armature.h"
 #include "Camera.h"
-#include "MaterialAlphaMode.h"
 #include "Transform.h"
+#include "gpu/MaterialAlphaMode.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/ArmatureDeformData.h"

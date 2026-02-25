@@ -11,17 +11,14 @@
 #include <string_view>
 #include <vector>
 
-using std::ranges::any_of, std::ranges::find, std::ranges::find_if_not;
+using std::ranges::any_of, std::ranges::find, std::ranges::find_if, std::ranges::find_if_not;
 
 struct Binding {
-    std::string Name;
-    std::string Kind;
+    std::string Name, Kind;
 };
 
 struct Field {
-    std::string Name;
-    std::string Type;
-    std::string DefaultValue;
+    std::string Name, Type, DefaultValue;
 };
 
 struct StructDef {
@@ -29,6 +26,15 @@ struct StructDef {
     std::string Binding; // References a binding name (for uniforms)
     bool IsPushConstant = false;
     std::vector<Field> Fields;
+};
+
+struct EnumValue {
+    std::string Name, Value;
+};
+
+struct EnumDef {
+    std::string Name, Type; // Underlying type (e.g. u32)
+    std::vector<EnumValue> Values;
 };
 
 [[noreturn]] void Fail(std::string_view message) {
@@ -74,6 +80,7 @@ bool ParseKeyValue(std::string_view line, std::string &key, std::string &value) 
 enum class Section {
     None,
     Bindings,
+    Enums,
     Structs,
 };
 
@@ -97,33 +104,57 @@ TypeSpec ParseType(std::string_view type) {
     return {.Base = Trim(type.substr(0, open)), .ArraySize = size};
 }
 
-bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindings, std::vector<StructDef> &structs) {
+bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindings, std::vector<EnumDef> &enums, std::vector<StructDef> &structs) {
     std::ifstream in{path};
     if (!in) return false;
 
     Section section = Section::None;
     Binding current_binding{};
+    EnumDef current_enum{};
+    EnumValue current_enum_value{};
     StructDef current_struct{};
     Field current_field{};
     bool has_binding = false;
+    bool has_enum = false;
+    bool has_enum_value = false;
     bool has_struct = false;
     bool has_field = false;
+    bool in_values = false;
     bool in_fields = false;
+    size_t values_parent_indent = 0;
     size_t fields_parent_indent = 0;
 
     auto commit_binding = [&]() {
         if (!has_binding) return;
         if (current_binding.Name.empty() || current_binding.Kind.empty()) Fail("Invalid binding entry in schema.");
-        bindings.push_back(current_binding);
+        bindings.emplace_back(current_binding);
         current_binding = {};
         has_binding = false;
+    };
+
+    auto commit_enum_value = [&]() {
+        if (!has_enum_value) return;
+        if (current_enum_value.Name.empty()) Fail("Invalid enum value entry in schema.");
+        if (current_enum_value.Value.empty()) current_enum_value.Value = std::to_string(current_enum.Values.size());
+        current_enum.Values.emplace_back(current_enum_value);
+        current_enum_value = {};
+        has_enum_value = false;
+    };
+
+    auto commit_enum = [&]() {
+        if (!has_enum) return;
+        commit_enum_value();
+        if (current_enum.Name.empty() || current_enum.Type.empty() || current_enum.Values.empty()) Fail("Invalid enum entry in schema.");
+        enums.emplace_back(current_enum);
+        current_enum = {};
+        has_enum = false;
     };
 
     auto commit_field = [&]() {
         if (!has_field) return;
         if (current_field.Name.empty() || current_field.Type.empty()) Fail("Invalid field entry in schema.");
 
-        current_struct.Fields.push_back(current_field);
+        current_struct.Fields.emplace_back(current_field);
         current_field = {};
         has_field = false;
     };
@@ -132,7 +163,7 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
         if (!has_struct) return;
         commit_field();
         if (current_struct.Name.empty() || current_struct.Fields.empty()) Fail("Invalid struct entry in schema.");
-        structs.push_back(current_struct);
+        structs.emplace_back(current_struct);
         current_struct = {};
         has_struct = false;
     };
@@ -145,6 +176,10 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
         auto trimmed = Trim(stripped);
         if (trimmed.empty()) continue;
 
+        if (section == Section::Enums && in_values && indent_count <= values_parent_indent) {
+            commit_enum_value();
+            in_values = false;
+        }
         if (section == Section::Structs && in_fields && indent_count <= fields_parent_indent) {
             commit_field();
             in_fields = false;
@@ -153,11 +188,24 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
         if (trimmed.starts_with("bindings:")) {
             commit_field();
             commit_struct();
+            commit_enum_value();
+            commit_enum();
             commit_binding();
             section = Section::Bindings;
             continue;
         }
+        if (trimmed.starts_with("enums:")) {
+            commit_field();
+            commit_struct();
+            commit_binding();
+            commit_enum_value();
+            commit_enum();
+            section = Section::Enums;
+            continue;
+        }
         if (trimmed.starts_with("structs:")) {
+            commit_enum_value();
+            commit_enum();
             commit_field();
             commit_struct();
             commit_binding();
@@ -168,6 +216,9 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
         if (trimmed.starts_with("- ")) {
             if (section == Section::Bindings) {
                 commit_binding();
+            } else if (section == Section::Enums) {
+                if (in_values) commit_enum_value();
+                else commit_enum();
             } else if (section == Section::Structs) {
                 if (in_fields) commit_field();
                 else commit_struct();
@@ -183,6 +234,23 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
             if (key == "name") current_binding.Name = value;
             else if (key == "kind") current_binding.Kind = value;
             else Fail("Unknown bindings key: " + key);
+        } else if (section == Section::Enums) {
+            if (key == "values" && value.empty()) {
+                in_values = true;
+                values_parent_indent = indent_count;
+                continue;
+            }
+            if (in_values) {
+                has_enum_value = true;
+                if (key == "name") current_enum_value.Name = value;
+                else if (key == "value") current_enum_value.Value = value;
+                else Fail("Unknown enum value key: " + key);
+            } else {
+                has_enum = true;
+                if (key == "name") current_enum.Name = value;
+                else if (key == "type") current_enum.Type = value;
+                else Fail("Unknown enum key: " + key);
+            }
         } else if (section == Section::Structs) {
             if (key == "fields" && value.empty()) {
                 in_fields = true;
@@ -205,7 +273,9 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
         } else Fail("Item defined outside of a section.");
     }
 
+    if (section == Section::Enums && in_values) commit_enum_value();
     if (section == Section::Structs && in_fields) commit_field();
+    commit_enum();
     commit_struct();
     commit_binding();
     return true;
@@ -215,29 +285,42 @@ bool IsStructType(std::string_view type, const std::vector<StructDef> &structs) 
     return any_of(structs, [&](const auto &def) { return def.Name == type; });
 }
 
-std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
+const EnumDef *FindEnumDef(std::string_view type, const std::vector<EnumDef> &enums) {
+    const auto it = find_if(enums, [&](const auto &def) { return def.Name == type; });
+    return it == enums.end() ? nullptr : &*it;
+}
+
+bool IsEnumType(std::string_view type, const std::vector<EnumDef> &enums) {
+    return FindEnumDef(type, enums) != nullptr;
+}
+
+enum class TargetLang {
+    Cpp,
+    Glsl,
+};
+
+std::optional<std::string_view> BuiltinTypeFor(std::string_view type, TargetLang target) {
     if (type == "u8") return "uint8_t";
-    if (type == "u32") return "uint32_t";
+    if (type == "u32") return target == TargetLang::Cpp ? "uint32_t" : "uint";
     if (type == "float") return "float";
-    if (type == "uvec2") return "glm::uvec2";
-    if (type == "uvec4") return "glm::uvec4";
+    if (type == "uvec2") return target == TargetLang::Cpp ? "glm::uvec2" : "uvec2";
+    if (type == "uvec4") return target == TargetLang::Cpp ? "glm::uvec4" : "uvec4";
     if (type == "vec2") return "vec2";
     if (type == "vec3") return "vec3";
     if (type == "vec4") return "vec4";
     if (type == "mat4") return "mat4";
+    return {};
+}
+
+std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
+    if (const auto builtin = BuiltinTypeFor(type, TargetLang::Cpp)) return builtin;
+    if (IsEnumType(type, enums)) return type;
     if (IsStructType(type, structs)) return type;
     return {};
 }
-std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::vector<StructDef> &structs) {
-    if (type == "u8") return "uint8_t";
-    if (type == "u32") return "uint";
-    if (type == "float") return "float";
-    if (type == "uvec2") return "uvec2";
-    if (type == "uvec4") return "uvec4";
-    if (type == "vec2") return "vec2";
-    if (type == "vec3") return "vec3";
-    if (type == "vec4") return "vec4";
-    if (type == "mat4") return "mat4";
+std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
+    if (const auto builtin = BuiltinTypeFor(type, TargetLang::Glsl)) return builtin;
+    if (const auto *enum_def = FindEnumDef(type, enums)) return BuiltinTypeFor(enum_def->Type, TargetLang::Glsl);
     if (IsStructType(type, structs)) return type;
     return {};
 }
@@ -268,6 +351,50 @@ std::string ToMacroName(const std::string &name, std::string_view suffix) {
     return out;
 }
 
+std::string ToIdentifier(std::string_view name) {
+    std::string out;
+    out.reserve(name.size());
+    for (const char ch : name) {
+        const auto uch = static_cast<unsigned char>(ch);
+        out.push_back(std::isalnum(uch) ? ch : '_');
+    }
+    return out;
+}
+
+void EmitEnum(
+    const EnumDef &def,
+    const std::filesystem::path &glsl_dir,
+    const std::filesystem::path &cpp_dir,
+    const std::filesystem::path &schema_relative_path
+) {
+    const auto glsl_path = glsl_dir / (def.Name + ".glsl");
+    const auto cpp_path = cpp_dir / (def.Name + ".h");
+    std::ofstream glsl_out{glsl_path, std::ios::binary};
+    std::ofstream cpp_out{cpp_path, std::ios::binary};
+    if (!glsl_out || !cpp_out) Fail("Failed to open enum output files for: " + def.Name);
+
+    const auto guard = ToMacroName(def.Name, "GLSL");
+    const auto enum_token = ToIdentifier(def.Name);
+    const auto cpp_type = BuiltinTypeFor(def.Type, TargetLang::Cpp);
+    const auto glsl_type = BuiltinTypeFor(def.Type, TargetLang::Glsl);
+    if (!cpp_type || !glsl_type) Fail("Unknown enum underlying type: " + def.Type);
+
+    glsl_out << "#ifndef " << guard << "\n"
+             << "#define " << guard << "\n\n"
+             << GeneratedComment(schema_relative_path);
+    for (const auto &value : def.Values) {
+        glsl_out << "const " << *glsl_type << " " << enum_token << "_" << ToIdentifier(value.Name) << " = " << value.Value << ";\n";
+    }
+    glsl_out << "\n#endif\n";
+
+    cpp_out << "#pragma once\n\n"
+            << GeneratedComment(schema_relative_path)
+            << "#include <cstdint>\n\n"
+            << "enum class " << def.Name << " : " << *cpp_type << " {\n";
+    for (const auto &value : def.Values) cpp_out << "    " << value.Name << " = " << value.Value << ",\n";
+    cpp_out << "};\n";
+}
+
 // args: <binary_dir> <source_dir> <schema_relative_path>
 int main(int argc, char **argv) {
     if (argc != 4) return 1;
@@ -286,8 +413,9 @@ int main(int argc, char **argv) {
     if (fs_error) return 1;
 
     std::vector<Binding> bindings;
+    std::vector<EnumDef> enums;
     std::vector<StructDef> structs;
-    if (!ParseSchema(schema_path, bindings, structs)) return 1;
+    if (!ParseSchema(schema_path, bindings, enums, structs)) return 1;
 
     const auto bindless_glsl_path = glsl_dir / "BindlessBindings.glsl";
     const auto bindless_header_path = cpp_dir / "BindlessBindings.h";
@@ -335,6 +463,8 @@ int main(int argc, char **argv) {
     }
     bindless_header << "}};\n";
 
+    for (const auto &def : enums) EmitEnum(def, glsl_dir, cpp_dir, schema_relative_path);
+
     for (const auto &def : structs) {
         const auto glsl_path = glsl_dir / (def.Name + ".glsl");
         const auto cpp_path = cpp_dir / (def.Name + ".h");
@@ -375,7 +505,7 @@ int main(int argc, char **argv) {
 
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
-            if (const auto glsl_type = GlslTypeFor(spec.Base, structs)) {
+            if (const auto glsl_type = GlslTypeFor(spec.Base, structs, enums)) {
                 glsl_out << "    " << *glsl_type << " " << field.Name;
                 if (spec.ArraySize) glsl_out << "[" << *spec.ArraySize << "]";
                 glsl_out << ";\n";
@@ -408,6 +538,11 @@ int main(int argc, char **argv) {
                     cpp_includes.emplace_back(spec.Base);
                 }
             }
+            if (IsEnumType(spec.Base, enums) && spec.Base != def.Name) {
+                if (find(cpp_includes, spec.Base) == cpp_includes.end()) {
+                    cpp_includes.emplace_back(spec.Base);
+                }
+            }
         }
 
         cpp_out << "#pragma once\n\n"
@@ -426,7 +561,7 @@ int main(int argc, char **argv) {
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
-            if (const auto cpp_type = CppTypeFor(spec.Base, structs)) {
+            if (const auto cpp_type = CppTypeFor(spec.Base, structs, enums)) {
                 cpp_out << "    ";
                 if (spec.ArraySize) {
                     cpp_out << "std::array<" << *cpp_type << ", " << *spec.ArraySize << "> " << field.Name << "{};\n";

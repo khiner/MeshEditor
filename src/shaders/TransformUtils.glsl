@@ -23,7 +23,7 @@ bool should_apply_pending_transform(DrawData draw, uint idx) {
         const uint vertex_state = uint(ElementStateBuffers[pc.TransformVertexStateSlot].States[draw.VertexOffset + idx]);
         return (vertex_state & STATE_SELECTED) != 0u;
     }
-    if (SceneViewUBO.InteractionMode == InteractionModeEdit || draw.InstanceStateSlot == INVALID_SLOT) return false;
+    if (SceneViewUBO.InteractionMode == InteractionMode_Edit || draw.InstanceStateSlot == INVALID_SLOT) return false;
     const uint instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.FirstInstance]);
     return (instance_state & STATE_SELECTED) != 0u;
 }

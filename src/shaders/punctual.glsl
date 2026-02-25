@@ -3,9 +3,9 @@
 #ifndef PUNCTUAL_GLSL
 #define PUNCTUAL_GLSL
 
+#include "PunctualLightType.glsl"
+
 const float LIGHT_EPSILON = 1e-4;
-const uint LIGHT_TYPE_DIRECTIONAL = 0u;
-const uint LIGHT_TYPE_SPOT = 2u;
 
 // Guard zero-length vectors / zero distance to avoid NaN/Inf.
 vec3 safeNormalize(vec3 v, vec3 fallback) {
@@ -41,7 +41,7 @@ vec3 getLightEmissionDirection(const WorldTransform wt) {
 
 vec3 getPointToLight(PunctualLight light, const WorldTransform wt, vec3 world_position, vec3 emission_direction) {
     // Directional point-to-light vectors are opposite emission direction.
-    if (light.Type == LIGHT_TYPE_DIRECTIONAL) return -emission_direction;
+    if (light.Type == PunctualLightType_Directional) return -emission_direction;
     return wt.Position - world_position;
 }
 
@@ -54,10 +54,10 @@ vec3 getLightIntensity(PunctualLight light, vec3 worldPosition, out vec3 L) {
 
     float range_attenuation = 1.0;
     float spot_attenuation = 1.0;
-    if (light.Type != LIGHT_TYPE_DIRECTIONAL) {
+    if (light.Type != PunctualLightType_Directional) {
         range_attenuation = getRangeAttenuation(light.Range, length(point_to_light));
     }
-    if (light.Type == LIGHT_TYPE_SPOT) {
+    if (light.Type == PunctualLightType_Spot) {
         spot_attenuation = getSpotAttenuation(point_to_light, emission_direction, light.OuterConeCos, light.InnerConeCos);
     }
     return range_attenuation * spot_attenuation * light.Intensity * light.Color;

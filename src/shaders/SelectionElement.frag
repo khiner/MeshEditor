@@ -4,15 +4,13 @@
 
 #define SELECTION_CUSTOM_DRAW_PASS_PC 1
 #include "SelectionElementPushConstants.glsl"
+#include "SelectionElementFlags.glsl"
 #include "SelectionShared.glsl"
 #include "BindlessBindings.glsl"
 
 layout(location = 0) flat in uint ElementId;
 
 const uint INVALID_NODE = 0xffffffffu;
-const uint SELECTION_ELEMENT_OUTPUT_BITSET = 1u << 0u;
-const uint SELECTION_ELEMENT_CLIP_TO_BOX = 1u << 1u;
-
 layout(early_fragment_tests) in;
 
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer BoxSelectResult {
@@ -42,7 +40,7 @@ void WriteLinkedList() {
 
 void WriteBitset() {
     if (ElementId == 0u) return;
-    if ((pc.Flags & SELECTION_ELEMENT_CLIP_TO_BOX) != 0u) {
+    if ((pc.Flags & SelectionElementFlags_ClipToBox) != 0u) {
         const uvec2 frag_px = uvec2(gl_FragCoord.xy);
         if (frag_px.x < pc.BoxMinX || frag_px.x > pc.BoxMaxX ||
             frag_px.y < pc.BoxMinY || frag_px.y > pc.BoxMaxY) return;
@@ -53,7 +51,7 @@ void WriteBitset() {
 }
 
 void main() {
-    if ((pc.Flags & SELECTION_ELEMENT_OUTPUT_BITSET) != 0u) {
+    if ((pc.Flags & SelectionElementFlags_OutputBitset) != 0u) {
         WriteBitset();
     } else {
         WriteLinkedList();
