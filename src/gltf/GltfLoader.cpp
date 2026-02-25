@@ -130,87 +130,6 @@ std::optional<TextureInfo> ToTextureInfo(const fastgltf::Optional<fastgltf::Occl
     return TextureInfo{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
 }
 
-PBRMaterial MakePBRMaterial(const fastgltf::Asset &asset, const fastgltf::Material &material, uint32_t material_index) {
-    PBRMaterial data{
-        .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
-        .MetallicFactor = material.pbrData.metallicFactor,
-        .RoughnessFactor = material.pbrData.roughnessFactor,
-        .EmissiveFactor = ToVec3(material.emissiveFactor * material.emissiveStrength),
-        .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
-        .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
-        .Ior = material.ior,
-        .BaseColorTexture = ToTextureInfo(material.pbrData.baseColorTexture, asset),
-        .MetallicRoughnessTexture = ToTextureInfo(material.pbrData.metallicRoughnessTexture, asset),
-        .NormalTexture = ToTextureInfo(material.normalTexture, asset),
-        .OcclusionTexture = ToTextureInfo(material.occlusionTexture, asset),
-        .EmissiveTexture = ToTextureInfo(material.emissiveTexture, asset),
-        .AlphaMode = ToAlphaMode(material.alphaMode),
-        .DoubleSided = material.doubleSided,
-        .Unlit = material.unlit,
-        .AlphaCutoff = material.alphaCutoff,
-        .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
-    };
-    if (material.sheen) {
-        data.Sheen = {
-            .ColorFactor = ToVec3(material.sheen->sheenColorFactor),
-            .RoughnessFactor = material.sheen->sheenRoughnessFactor,
-            .ColorTexture = ToTextureInfo(material.sheen->sheenColorTexture, asset),
-            .RoughnessTexture = ToTextureInfo(material.sheen->sheenRoughnessTexture, asset),
-        };
-    }
-    if (material.specular) {
-        data.Specular = {
-            .Factor = material.specular->specularFactor,
-            .ColorFactor = ToVec3(material.specular->specularColorFactor),
-            .Texture = ToTextureInfo(material.specular->specularTexture, asset),
-            .ColorTexture = ToTextureInfo(material.specular->specularColorTexture, asset),
-        };
-    }
-    if (material.transmission) {
-        data.Transmission = {
-            .Factor = material.transmission->transmissionFactor,
-            .Texture = ToTextureInfo(material.transmission->transmissionTexture, asset),
-        };
-    }
-    if (material.volume) {
-        const float ad = material.volume->attenuationDistance;
-        data.Volume = {
-            .ThicknessFactor = material.volume->thicknessFactor,
-            .AttenuationColor = ToVec3(material.volume->attenuationColor),
-            .AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad,
-            .ThicknessTexture = ToTextureInfo(material.volume->thicknessTexture, asset),
-        };
-    }
-    if (material.clearcoat) {
-        data.Clearcoat = {
-            .Factor = material.clearcoat->clearcoatFactor,
-            .RoughnessFactor = material.clearcoat->clearcoatRoughnessFactor,
-            .NormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f,
-            .Texture = ToTextureInfo(material.clearcoat->clearcoatTexture, asset),
-            .RoughnessTexture = ToTextureInfo(material.clearcoat->clearcoatRoughnessTexture, asset),
-            .NormalTexture = ToTextureInfo(material.clearcoat->clearcoatNormalTexture, asset),
-        };
-    }
-    if (material.anisotropy) {
-        data.Anisotropy = {
-            .Strength = material.anisotropy->anisotropyStrength,
-            .Rotation = material.anisotropy->anisotropyRotation,
-            .Texture = ToTextureInfo(material.anisotropy->anisotropyTexture, asset),
-        };
-    }
-    if (material.iridescence) {
-        data.Iridescence = {
-            .Factor = material.iridescence->iridescenceFactor,
-            .Ior = material.iridescence->iridescenceIor,
-            .ThicknessMinimum = material.iridescence->iridescenceThicknessMinimum,
-            .ThicknessMaximum = material.iridescence->iridescenceThicknessMaximum,
-            .Texture = ToTextureInfo(material.iridescence->iridescenceTexture, asset),
-            .ThicknessTexture = ToTextureInfo(material.iridescence->iridescenceThicknessTexture, asset),
-        };
-    }
-    return data;
-}
-
 std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) return std::unexpected{std::format("Failed to open image file '{}'.", path.string())};
@@ -1194,7 +1113,87 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
 
     scene.Materials.reserve(asset.materials.size() + 1u);
     for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
-        scene.Materials.emplace_back(MakePBRMaterial(asset, asset.materials[material_index], material_index));
+        const auto &material = asset.materials[material_index];
+        scene.Materials.emplace_back(
+            PBRMaterial{
+                .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
+                .MetallicFactor = material.pbrData.metallicFactor,
+                .RoughnessFactor = material.pbrData.roughnessFactor,
+                .EmissiveFactor = ToVec3(material.emissiveFactor * material.emissiveStrength),
+                .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
+                .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
+                .Ior = material.ior,
+                .BaseColorTexture = ToTextureInfo(material.pbrData.baseColorTexture, asset),
+                .MetallicRoughnessTexture = ToTextureInfo(material.pbrData.metallicRoughnessTexture, asset),
+                .NormalTexture = ToTextureInfo(material.normalTexture, asset),
+                .OcclusionTexture = ToTextureInfo(material.occlusionTexture, asset),
+                .EmissiveTexture = ToTextureInfo(material.emissiveTexture, asset),
+                .Sheen = material.sheen ?
+                    Sheen{
+                        .ColorFactor = ToVec3(material.sheen->sheenColorFactor),
+                        .RoughnessFactor = material.sheen->sheenRoughnessFactor,
+                        .ColorTexture = ToTextureInfo(material.sheen->sheenColorTexture, asset),
+                        .RoughnessTexture = ToTextureInfo(material.sheen->sheenRoughnessTexture, asset),
+                    } :
+                    Sheen{},
+                .Specular = material.specular ?
+                    Specular{
+                        .Factor = material.specular->specularFactor,
+                        .ColorFactor = ToVec3(material.specular->specularColorFactor),
+                        .Texture = ToTextureInfo(material.specular->specularTexture, asset),
+                        .ColorTexture = ToTextureInfo(material.specular->specularColorTexture, asset),
+                    } :
+                    Specular{},
+                .Transmission = material.transmission ?
+                    Transmission{
+                        .Factor = material.transmission->transmissionFactor,
+                        .Texture = ToTextureInfo(material.transmission->transmissionTexture, asset),
+                    } :
+                    Transmission{},
+                .Volume = [&]() -> Volume {
+                    if (!material.volume) return {};
+                    const float ad = material.volume->attenuationDistance;
+                    return Volume{
+                        .ThicknessFactor = material.volume->thicknessFactor,
+                        .AttenuationColor = ToVec3(material.volume->attenuationColor),
+                        .AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad,
+                        .ThicknessTexture = ToTextureInfo(material.volume->thicknessTexture, asset),
+                    };
+                }(),
+                .Clearcoat = material.clearcoat ?
+                    Clearcoat{
+                        .Factor = material.clearcoat->clearcoatFactor,
+                        .RoughnessFactor = material.clearcoat->clearcoatRoughnessFactor,
+                        .NormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f,
+                        .Texture = ToTextureInfo(material.clearcoat->clearcoatTexture, asset),
+                        .RoughnessTexture = ToTextureInfo(material.clearcoat->clearcoatRoughnessTexture, asset),
+                        .NormalTexture = ToTextureInfo(material.clearcoat->clearcoatNormalTexture, asset),
+                    } :
+                    Clearcoat{},
+                .Anisotropy = material.anisotropy ?
+                    Anisotropy{
+                        .Strength = material.anisotropy->anisotropyStrength,
+                        .Rotation = material.anisotropy->anisotropyRotation,
+                        .Texture = ToTextureInfo(material.anisotropy->anisotropyTexture, asset),
+                    } :
+                    Anisotropy{},
+                .Iridescence = material.iridescence ?
+                    Iridescence{
+                        .Factor = material.iridescence->iridescenceFactor,
+                        .Ior = material.iridescence->iridescenceIor,
+                        .ThicknessMinimum = material.iridescence->iridescenceThicknessMinimum,
+                        .ThicknessMaximum = material.iridescence->iridescenceThicknessMaximum,
+                        .Texture = ToTextureInfo(material.iridescence->iridescenceTexture, asset),
+                        .ThicknessTexture = ToTextureInfo(material.iridescence->iridescenceThicknessTexture, asset),
+                    } :
+                    Iridescence{},
+                .AlphaMode = ToAlphaMode(material.alphaMode),
+                .DoubleSided = material.doubleSided,
+                .Unlit = material.unlit,
+                .AlphaCutoff = material.alphaCutoff,
+                .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
+            }
+        );
     }
     scene.Materials.emplace_back(
         PBRMaterial{
@@ -1204,6 +1203,19 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             .EmissiveFactor = vec3{0.f},
             .NormalScale = 1.f,
             .OcclusionStrength = 1.f,
+            .Ior = 1.5f,
+            .BaseColorTexture = {},
+            .MetallicRoughnessTexture = {},
+            .NormalTexture = {},
+            .OcclusionTexture = {},
+            .EmissiveTexture = {},
+            .Sheen = {},
+            .Specular = {},
+            .Transmission = {},
+            .Volume = {},
+            .Clearcoat = {},
+            .Anisotropy = {},
+            .Iridescence = {},
             .AlphaMode = AlphaMode::Opaque,
             .DoubleSided = false,
             .Unlit = false,
