@@ -47,40 +47,61 @@ struct TextureInfoData {
     std::optional<TextureTransformData> Transform;
 };
 
+struct Sheen {
+    vec3 ColorFactor{0.f, 0.f, 0.f};
+    float RoughnessFactor{0.f};
+    std::optional<TextureInfoData> ColorTexture{}, RoughnessTexture{};
+};
+struct Specular {
+    float Factor{1.f};
+    vec3 ColorFactor{1.f, 1.f, 1.f};
+    std::optional<TextureInfoData> Texture{}, ColorTexture{};
+};
+struct Transmission {
+    float Factor{0.f};
+    std::optional<TextureInfoData> Texture{};
+};
+struct Volume {
+    float ThicknessFactor{0.f};
+    vec3 AttenuationColor{1.f, 1.f, 1.f};
+    float AttenuationDistance{0.f};
+    std::optional<TextureInfoData> ThicknessTexture{};
+};
+struct Clearcoat {
+    float Factor{0.f};
+    float RoughnessFactor{0.f};
+    float NormalScale{1.f};
+    std::optional<TextureInfoData> Texture{}, RoughnessTexture{}, NormalTexture{};
+};
+struct Anisotropy {
+    float Strength{0.f};
+    float Rotation{0.f};
+    std::optional<TextureInfoData> Texture{};
+};
+struct Iridescence {
+    float Factor{0.f};
+    float Ior{1.3f};
+    float ThicknessMinimum{100.f};
+    float ThicknessMaximum{400.f};
+    std::optional<TextureInfoData> Texture{}, ThicknessTexture{};
+};
+
 struct PBRData {
     vec4 BaseColorFactor;
     float MetallicFactor, RoughnessFactor;
     vec3 EmissiveFactor;
     float NormalScale;
     float OcclusionStrength;
-    vec3 SheenColorFactor{0.f, 0.f, 0.f};
-    float SheenRoughnessFactor{0.f};
-    float SpecularFactor{1.f};
-    vec3 SpecularColorFactor{1.f, 1.f, 1.f};
+    float Ior{1.5f};
     std::optional<TextureInfoData> BaseColorTexture{}, MetallicRoughnessTexture{};
     std::optional<TextureInfoData> NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
-    std::optional<TextureInfoData> SpecularTexture{}, SpecularColorTexture{};
-    std::optional<TextureInfoData> SheenColorTexture{}, SheenRoughnessTexture{};
-    float Ior{1.5f};
-    float TransmissionFactor{0.f};
-    std::optional<TextureInfoData> TransmissionTexture{};
-    float ThicknessFactor{0.f};
-    std::optional<TextureInfoData> ThicknessTexture{};
-    vec3 AttenuationColor{1.f, 1.f, 1.f};
-    float AttenuationDistance{0.f};
-    float ClearcoatFactor{0.f};
-    std::optional<TextureInfoData> ClearcoatTexture{};
-    float ClearcoatRoughnessFactor{0.f};
-    std::optional<TextureInfoData> ClearcoatRoughnessTexture{}, ClearcoatNormalTexture{};
-    float ClearcoatNormalScale{1.f};
-    float AnisotropyStrength{0.f}, AnisotropyRotation{0.f};
-    std::optional<TextureInfoData> AnisotropyTexture{};
-    float IridescenceFactor{0.f};
-    float IridescenceIor{1.3f};
-    float IridescenceThicknessMinimum{100.f};
-    float IridescenceThicknessMaximum{400.f};
-    std::optional<TextureInfoData> IridescenceTexture{};
-    std::optional<TextureInfoData> IridescenceThicknessTexture{};
+    Sheen Sheen;
+    Specular Specular;
+    Transmission Transmission;
+    Volume Volume;
+    Clearcoat Clearcoat;
+    Anisotropy Anisotropy;
+    Iridescence Iridescence;
 };
 
 struct SceneMaterialData {

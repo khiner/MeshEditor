@@ -89,6 +89,7 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
             .EmissiveFactor = ToVec3(material.emissiveFactor * material.emissiveStrength),
             .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
             .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
+            .Ior = material.ior,
             .BaseColorTexture = ToTextureInfo(material.pbrData.baseColorTexture, asset),
             .MetallicRoughnessTexture = ToTextureInfo(material.pbrData.metallicRoughnessTexture, asset),
             .NormalTexture = ToTextureInfo(material.normalTexture, asset),
@@ -102,49 +103,62 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
     };
     if (material.sheen) {
-        data.PbrData.SheenColorFactor = ToVec3(material.sheen->sheenColorFactor);
-        data.PbrData.SheenRoughnessFactor = material.sheen->sheenRoughnessFactor;
-        data.PbrData.SheenColorTexture = ToTextureInfo(material.sheen->sheenColorTexture, asset);
-        data.PbrData.SheenRoughnessTexture = ToTextureInfo(material.sheen->sheenRoughnessTexture, asset);
+        data.PbrData.Sheen = {
+            .ColorFactor = ToVec3(material.sheen->sheenColorFactor),
+            .RoughnessFactor = material.sheen->sheenRoughnessFactor,
+            .ColorTexture = ToTextureInfo(material.sheen->sheenColorTexture, asset),
+            .RoughnessTexture = ToTextureInfo(material.sheen->sheenRoughnessTexture, asset),
+        };
     }
     if (material.specular) {
-        data.PbrData.SpecularFactor = material.specular->specularFactor;
-        data.PbrData.SpecularColorFactor = ToVec3(material.specular->specularColorFactor);
-        data.PbrData.SpecularTexture = ToTextureInfo(material.specular->specularTexture, asset);
-        data.PbrData.SpecularColorTexture = ToTextureInfo(material.specular->specularColorTexture, asset);
+        data.PbrData.Specular = {
+            .Factor = material.specular->specularFactor,
+            .ColorFactor = ToVec3(material.specular->specularColorFactor),
+            .Texture = ToTextureInfo(material.specular->specularTexture, asset),
+            .ColorTexture = ToTextureInfo(material.specular->specularColorTexture, asset),
+        };
     }
-    data.PbrData.Ior = material.ior;
     if (material.transmission) {
-        data.PbrData.TransmissionFactor = material.transmission->transmissionFactor;
-        data.PbrData.TransmissionTexture = ToTextureInfo(material.transmission->transmissionTexture, asset);
+        data.PbrData.Transmission = {
+            .Factor = material.transmission->transmissionFactor,
+            .Texture = ToTextureInfo(material.transmission->transmissionTexture, asset),
+        };
     }
     if (material.volume) {
-        data.PbrData.ThicknessFactor = material.volume->thicknessFactor;
-        data.PbrData.ThicknessTexture = ToTextureInfo(material.volume->thicknessTexture, asset);
-        data.PbrData.AttenuationColor = ToVec3(material.volume->attenuationColor);
         const float ad = material.volume->attenuationDistance;
-        data.PbrData.AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad;
+        data.PbrData.Volume = {
+            .ThicknessFactor = material.volume->thicknessFactor,
+            .AttenuationColor = ToVec3(material.volume->attenuationColor),
+            .AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad,
+            .ThicknessTexture = ToTextureInfo(material.volume->thicknessTexture, asset),
+        };
     }
     if (material.clearcoat) {
-        data.PbrData.ClearcoatFactor = material.clearcoat->clearcoatFactor;
-        data.PbrData.ClearcoatTexture = ToTextureInfo(material.clearcoat->clearcoatTexture, asset);
-        data.PbrData.ClearcoatRoughnessFactor = material.clearcoat->clearcoatRoughnessFactor;
-        data.PbrData.ClearcoatRoughnessTexture = ToTextureInfo(material.clearcoat->clearcoatRoughnessTexture, asset);
-        data.PbrData.ClearcoatNormalTexture = ToTextureInfo(material.clearcoat->clearcoatNormalTexture, asset);
-        data.PbrData.ClearcoatNormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f;
+        data.PbrData.Clearcoat = {
+            .Factor = material.clearcoat->clearcoatFactor,
+            .RoughnessFactor = material.clearcoat->clearcoatRoughnessFactor,
+            .NormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f,
+            .Texture = ToTextureInfo(material.clearcoat->clearcoatTexture, asset),
+            .RoughnessTexture = ToTextureInfo(material.clearcoat->clearcoatRoughnessTexture, asset),
+            .NormalTexture = ToTextureInfo(material.clearcoat->clearcoatNormalTexture, asset),
+        };
     }
     if (material.anisotropy) {
-        data.PbrData.AnisotropyStrength = material.anisotropy->anisotropyStrength;
-        data.PbrData.AnisotropyRotation = material.anisotropy->anisotropyRotation;
-        data.PbrData.AnisotropyTexture = ToTextureInfo(material.anisotropy->anisotropyTexture, asset);
+        data.PbrData.Anisotropy = {
+            .Strength = material.anisotropy->anisotropyStrength,
+            .Rotation = material.anisotropy->anisotropyRotation,
+            .Texture = ToTextureInfo(material.anisotropy->anisotropyTexture, asset),
+        };
     }
     if (material.iridescence) {
-        data.PbrData.IridescenceFactor = material.iridescence->iridescenceFactor;
-        data.PbrData.IridescenceIor = material.iridescence->iridescenceIor;
-        data.PbrData.IridescenceThicknessMinimum = material.iridescence->iridescenceThicknessMinimum;
-        data.PbrData.IridescenceThicknessMaximum = material.iridescence->iridescenceThicknessMaximum;
-        data.PbrData.IridescenceTexture = ToTextureInfo(material.iridescence->iridescenceTexture, asset);
-        data.PbrData.IridescenceThicknessTexture = ToTextureInfo(material.iridescence->iridescenceThicknessTexture, asset);
+        data.PbrData.Iridescence = {
+            .Factor = material.iridescence->iridescenceFactor,
+            .Ior = material.iridescence->iridescenceIor,
+            .ThicknessMinimum = material.iridescence->iridescenceThicknessMinimum,
+            .ThicknessMaximum = material.iridescence->iridescenceThicknessMaximum,
+            .Texture = ToTextureInfo(material.iridescence->iridescenceTexture, asset),
+            .ThicknessTexture = ToTextureInfo(material.iridescence->iridescenceThicknessTexture, asset),
+        };
     }
     return data;
 }
