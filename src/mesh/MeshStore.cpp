@@ -456,8 +456,8 @@ void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
     }
 }
 
-Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> deform_data, std::optional<MorphTargetData> morph_data) {
-    if (deform_data && (deform_data->Joints.size() != data.Positions.size() || deform_data->Weights.size() != data.Positions.size())) {
+Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
+    if (deform && (deform->Joints.size() != data.Positions.size() || deform->Weights.size() != data.Positions.size())) {
         throw std::runtime_error{"ArmatureDeformData channel counts must match the position count."};
     }
     const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
@@ -482,32 +482,32 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         };
     }
     Range bone_deform{};
-    if (deform_data) {
+    if (deform) {
         bone_deform = BoneDeformBuffer.Allocate(vertex_count);
         auto bd_span = BoneDeformBuffer.GetMutable(bone_deform);
         for (uint32_t i = 0; i < vertex_count; ++i) {
             bd_span[i] = BoneDeformVertex{
-                .Joints = deform_data->Joints[i],
-                .Weights = deform_data->Weights[i],
+                .Joints = deform->Joints[i],
+                .Weights = deform->Weights[i],
             };
         }
     }
     Range morph_targets{};
     uint32_t morph_target_count{0};
     std::vector<float> default_morph_weights;
-    if (morph_data && morph_data->TargetCount > 0 && vertex_count > 0) {
-        morph_target_count = morph_data->TargetCount;
+    if (morph && morph->TargetCount > 0 && vertex_count > 0) {
+        morph_target_count = morph->TargetCount;
         const auto total = morph_target_count * vertex_count;
         morph_targets = MorphTargetBuffer.Allocate(total);
         auto mt_span = MorphTargetBuffer.GetMutable(morph_targets);
-        const bool has_normal_deltas = !morph_data->NormalDeltas.empty();
+        const bool has_normal_deltas = !morph->NormalDeltas.empty();
         for (uint32_t i = 0; i < total; ++i) {
             mt_span[i] = MorphTargetVertex{
-                .PositionDelta = morph_data->PositionDeltas[i],
-                .NormalDelta = has_normal_deltas ? morph_data->NormalDeltas[i] : vec3{0},
+                .PositionDelta = morph->PositionDeltas[i],
+                .NormalDelta = has_normal_deltas ? morph->NormalDeltas[i] : vec3{0},
             };
         }
-        default_morph_weights = std::move(morph_data->DefaultWeights);
+        default_morph_weights = std::move(morph->DefaultWeights);
         default_morph_weights.resize(morph_target_count, 0.f);
     }
 
@@ -606,17 +606,17 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
 std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
     auto ext = path.extension().string();
     std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    MeshDataWithMaterials source_data;
+    MeshDataWithMaterials source;
     try {
-        if (ext == ".ply") source_data = ReadPly(path);
-        else if (ext == ".obj") source_data = ReadObj(path);
+        if (ext == ".ply") source = ReadPly(path);
+        else if (ext == ".obj") source = ReadObj(path);
         else return std::unexpected{"Unsupported file format: " + ext};
     } catch (const std::exception &e) {
         return std::unexpected{e.what()};
     }
     return MeshWithMaterials{
-        .Mesh = CreateMesh(DeduplicateVertices(std::move(source_data.Mesh))),
-        .Materials = std::move(source_data.Materials),
+        .Mesh = CreateMesh(DeduplicateVertices(std::move(source.Mesh))),
+        .Materials = std::move(source.Materials),
     };
 }
 

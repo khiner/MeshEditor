@@ -37,19 +37,19 @@ public:
         auto *result = new shaderc_include_result;
         try {
             const auto resolved_path = ResolveIncludePath(requested_source);
-            auto *include_data = new IncludeData{File::Read(resolved_path), resolved_path.string()};
-            result->source_name = include_data->Name.c_str();
-            result->source_name_length = include_data->Name.size();
-            result->content = include_data->Content.c_str();
-            result->content_length = include_data->Content.size();
-            result->user_data = include_data;
+            auto *include = new IncludeData{File::Read(resolved_path), resolved_path.string()};
+            result->source_name = include->Name.c_str();
+            result->source_name_length = include->Name.size();
+            result->content = include->Content.c_str();
+            result->content_length = include->Content.size();
+            result->user_data = include;
         } catch (...) {
-            auto *include_data = new IncludeData{std::format("Failed to include '{}'", requested_source), ""};
+            auto *include = new IncludeData{std::format("Failed to include '{}'", requested_source), ""};
             result->source_name = "";
             result->source_name_length = 0;
-            result->content = include_data->Content.c_str();
-            result->content_length = include_data->Content.size();
-            result->user_data = include_data;
+            result->content = include->Content.c_str();
+            result->content_length = include->Content.size();
+            result->user_data = include;
         }
         return result;
     }

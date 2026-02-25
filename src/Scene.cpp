@@ -2262,16 +2262,16 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (tl.CurrentFrame != LastEvaluatedFrame) {
             LastEvaluatedFrame = tl.CurrentFrame;
             const float eval_seconds = float(tl.CurrentFrame) / tl.Fps;
-            for (auto [entity, anim_data, pose_state, armature_data] :
+            for (auto [entity, anim, pose_state, armature] :
                  R.view<const ArmatureAnimation, ArmaturePoseState, Armature>().each()) {
-                if (anim_data.Clips.empty() || anim_data.ActiveClipIndex >= anim_data.Clips.size()) continue;
-                const auto &clip = anim_data.Clips[anim_data.ActiveClipIndex];
+                if (anim.Clips.empty() || anim.ActiveClipIndex >= anim.Clips.size()) continue;
+                const auto &clip = anim.Clips[anim.ActiveClipIndex];
                 const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
-                for (uint32_t i = 0; i < armature_data.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature_data.Bones[i].RestLocal;
+                for (uint32_t i = 0; i < armature.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature.Bones[i].RestLocal;
                 EvaluateAnimation(clip, clip_time, pose_state.BonePoseLocal);
 
                 auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
-                ComputeDeformMatrices(armature_data, pose_state.BonePoseLocal, armature_data.ImportedSkin->InverseBindMatrices, gpu_span);
+                ComputeDeformMatrices(armature, pose_state.BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
                 request(RenderRequest::ReRecord);
             }
 
@@ -2873,8 +2873,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     std::vector<entt::entity> mesh_entities;
     mesh_entities.reserve(scene->Meshes.size());
     // Track morph data per mesh for later component setup
-    std::vector<std::optional<MorphTargetData>> mesh_morph_data;
-    mesh_morph_data.reserve(scene->Meshes.size());
+    std::vector<std::optional<MorphTargetData>> mesh_morphs;
+    mesh_morphs.reserve(scene->Meshes.size());
     entt::entity first_mesh_entity = entt::null;
     // Per-mesh: optional line entity + optional point entity
     struct ExtraPrimitiveEntities {
@@ -2898,12 +2898,12 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
                 mesh_entity = me;
                 R.emplace<Path>(mesh_entity, path);
-                mesh_morph_data.emplace_back(std::move(morph_data_copy));
+                mesh_morphs.emplace_back(std::move(morph_data_copy));
             } catch (const std::exception &e) {
                 return import_fail(std::format("glTF import failed for '{}': {}", path.string(), e.what()));
             }
         } else {
-            mesh_morph_data.emplace_back(std::nullopt);
+            mesh_morphs.emplace_back(std::nullopt);
         }
         if (first_mesh_entity == entt::null && mesh_entity != entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
@@ -3029,7 +3029,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
     for (const auto &skin : scene->Skins) {
         const auto armature_data_entity = R.create();
-        auto &armature_data = R.emplace<Armature>(armature_data_entity);
+        auto &armature = R.emplace<Armature>(armature_data_entity);
 
         ArmatureImportedSkin imported_skin{
             .SkinIndex = skin.SkinIndex,
@@ -3052,7 +3052,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
 
             const auto joint_name = joint.Name.empty() ? std::format("Joint{}", joint.JointNodeIndex) : joint.Name;
-            const auto bone_id = armature_data.AddBone(joint_name, parent_bone_id, joint.RestLocal, joint.JointNodeIndex);
+            const auto bone_id = armature.AddBone(joint_name, parent_bone_id, joint.RestLocal, joint.JointNodeIndex);
             joint_node_to_bone_id.emplace(joint.JointNodeIndex, bone_id);
             if (const auto object_it = object_entities_by_node.find(joint.JointNodeIndex);
                 object_it != object_entities_by_node.end() &&
@@ -3062,10 +3062,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
         }
-        armature_data.FinalizeStructure();
+        armature.FinalizeStructure();
 
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
-        armature_data.ImportedSkin = std::move(imported_skin);
+        armature.ImportedSkin = std::move(imported_skin);
         if (!skin.AnchorNodeIndex) {
             return import_fail(std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex));
         }
@@ -3104,13 +3104,13 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         // Allocate pose state and GPU deform buffer for this armature
         {
             ArmaturePoseState pose_state;
-            pose_state.BonePoseLocal.resize(armature_data.Bones.size());
-            for (uint32_t i = 0; i < armature_data.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature_data.Bones[i].RestLocal;
-            pose_state.GpuDeformRange = Buffers->ArmatureDeformBuffer.Allocate(armature_data.ImportedSkin->OrderedJointNodeIndices.size());
+            pose_state.BonePoseLocal.resize(armature.Bones.size());
+            for (uint32_t i = 0; i < armature.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature.Bones[i].RestLocal;
+            pose_state.GpuDeformRange = Buffers->ArmatureDeformBuffer.Allocate(armature.ImportedSkin->OrderedJointNodeIndices.size());
 
             // Compute initial rest-pose deform matrices
             auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
-            ComputeDeformMatrices(armature_data, pose_state.BonePoseLocal, armature_data.ImportedSkin->InverseBindMatrices, gpu_span);
+            ComputeDeformMatrices(armature, pose_state.BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
 
             R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
         }
@@ -3160,13 +3160,13 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     std::unordered_map<uint32_t, entt::entity> morph_instance_by_node;
     for (const auto &object : scene->Objects) {
         if (object.ObjectType != gltf::Object::Type::Mesh || !object.MeshIndex) continue;
-        if (*object.MeshIndex >= mesh_morph_data.size() || !mesh_morph_data[*object.MeshIndex]) continue;
+        if (*object.MeshIndex >= mesh_morphs.size() || !mesh_morphs[*object.MeshIndex]) continue;
         const auto obj_it = object_entities_by_node.find(object.NodeIndex);
         if (obj_it == object_entities_by_node.end()) continue;
         const auto instance_entity = obj_it->second;
         if (!R.all_of<MeshInstance>(instance_entity)) continue;
 
-        const auto &morph = *mesh_morph_data[*object.MeshIndex];
+        const auto &morph = *mesh_morphs[*object.MeshIndex];
         if (morph.TargetCount == 0) continue;
 
         MorphWeightState state;
@@ -3274,8 +3274,8 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         if (object_type == ObjectType::Armature) {
             const auto copy_entity = AddArmature(create_info);
             if (const auto *src_armature = R.try_get<ArmatureObject>(e)) {
-                auto &dst_data = R.get<Armature>(R.get<ArmatureObject>(copy_entity).Entity);
-                dst_data = R.get<const Armature>(src_armature->Entity);
+                auto &dst = R.get<Armature>(R.get<ArmatureObject>(copy_entity).Entity);
+                dst = R.get<const Armature>(src_armature->Entity);
             }
             return copy_entity;
         }
@@ -3686,23 +3686,23 @@ void Scene::RecordRenderCommandBuffer() {
                 draw.FaceFirstTriOffset = settings.SmoothShading ? InvalidOffset : face_first_tri.Offset;
                 draw.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
                 draw.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
-                const auto append_fill_draw = [&](const DrawData &draw_data, uint32_t index_count, std::optional<uint32_t> model_index) {
+                const auto append_fill_draw = [&](const DrawData &draw, uint32_t index_count, std::optional<uint32_t> model_index) {
                     const auto db = draw_list.Draws.size();
-                    AppendDraw(draw_list, batch, index_count, models, draw_data, model_index);
+                    AppendDraw(draw_list, batch, index_count, models, draw, model_index);
                     PatchMorphWeights(draw_list, db, deform);
                     patch_edit_pending_local_transform(db, entity);
                 };
-                const auto append_fill_for_instances = [&](const DrawData &draw_data, uint32_t index_count) {
+                const auto append_fill_for_instances = [&](const DrawData &draw, uint32_t index_count) {
                     if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                         // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                        auto primary_draw = draw_data;
+                        auto primary_draw = draw;
                         primary_draw.ElementStateSlotOffset = face_state_buffer;
                         append_fill_draw(primary_draw, index_count, R.get<RenderInstance>(it->second).BufferIndex);
-                        auto other_draw = draw_data;
+                        auto other_draw = draw;
                         other_draw.ElementStateSlotOffset = {};
                         append_fill_draw(other_draw, index_count, std::nullopt);
                     } else {
-                        auto all_draw = draw_data;
+                        auto all_draw = draw;
                         all_draw.ElementStateSlotOffset = face_state_buffer;
                         append_fill_draw(all_draw, index_count, std::nullopt);
                     }
@@ -5262,9 +5262,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         TextUnformatted(
             std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
         );
-    } else if (const auto *armature = R.try_get<ArmatureObject>(active_entity)) {
-        const auto &armature_data = R.get<const Armature>(armature->Entity);
-        Text("Bones: %zu", armature_data.Bones.size());
+    } else if (const auto *armature_object = R.try_get<ArmatureObject>(active_entity)) {
+        const auto &armature = R.get<const Armature>(armature_object->Entity);
+        Text("Bones: %zu", armature.Bones.size());
     }
     Unindent();
     if (CollapsingHeader("Transform")) {
@@ -5370,8 +5370,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (frozen) BeginDisabled();
             const auto update_label = std::format("Update primitive{}", frozen ? " (frozen)" : "");
             if (CollapsingHeader(update_label.c_str()) && !frozen) {
-                if (auto mesh_data = PrimitiveEditor(*primitive_type, false)) {
-                    SetMeshPositions(active_mesh_entity, std::move(mesh_data->Positions));
+                if (auto primitive_mesh = PrimitiveEditor(*primitive_type, false)) {
+                    SetMeshPositions(active_mesh_entity, std::move(primitive_mesh->Positions));
                 }
             }
             if (frozen) EndDisabled();
@@ -5744,8 +5744,8 @@ void Scene::RenderControls() {
                     RadioButton(ToString(PrimitiveTypes[i]).c_str(), &selected_type_i, i);
                 }
                 const auto selected_type = PrimitiveType(selected_type_i);
-                if (auto mesh_data = PrimitiveEditor(selected_type, true)) {
-                    R.emplace<PrimitiveType>(AddMesh(std::move(*mesh_data), MeshInstanceCreateInfo{.Name = ToString(selected_type)}).first, selected_type);
+                if (auto primitive_mesh = PrimitiveEditor(selected_type, true)) {
+                    R.emplace<PrimitiveType>(AddMesh(std::move(*primitive_mesh), MeshInstanceCreateInfo{.Name = ToString(selected_type)}).first, selected_type);
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 }
                 PopID();

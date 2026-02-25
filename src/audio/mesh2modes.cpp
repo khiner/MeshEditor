@@ -47,13 +47,13 @@ struct ElementData {
 
 // Computes the St.Venant-Kirchhoff coefficients for each tetrahedral element.
 std::vector<ElementData> StVKABCD(const tetgenio &tets) {
-    std::vector<ElementData> elements_data(tets.numberoftetrahedra);
+    std::vector<ElementData> elements(tets.numberoftetrahedra);
     dvec3 columns[2];
-    for (uint el = 0; el < elements_data.size(); ++el) {
-        auto &element_data = elements_data[el];
+    for (uint el = 0; el < elements.size(); ++el) {
+        auto &element = elements[el];
         // Create the element data structure for a tet
         const double det = GetElementDeterminant(tets, el);
-        element_data.volume = fabs(det / 6);
+        element.volume = fabs(det / 6);
         for (uint i = 0; i < NEV; ++i) {
             for (uint j = 0; j < 3; ++j) {
                 uint ni = 0;
@@ -68,13 +68,13 @@ std::vector<ElementData> StVKABCD(const tetgenio &tets) {
                         }
                     }
                     const int sign = (i + j) % 2 == 0 ? -1 : 1;
-                    element_data.Phig[i][j] = sign * dot(dvec3{1}, cross(columns[0], columns[1])) / det;
+                    element.Phig[i][j] = sign * dot(dvec3{1}, cross(columns[0], columns[1])) / det;
                     ++ni;
                 }
             }
         }
     }
-    return elements_data;
+    return elements;
 }
 
 // Compute the tangent stiffness matrix of a StVK elastic deformable object.

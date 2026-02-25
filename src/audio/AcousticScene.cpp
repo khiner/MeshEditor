@@ -320,14 +320,14 @@ constexpr std::vector<float> CreateBlackmanHarris(uint n) {
 }
 
 constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const float *data) {
-    std::vector<float> windowed_data(window.size());
-    for (uint i = 0; i < window.size(); ++i) windowed_data[i] = window[i] * data[i];
-    return windowed_data;
+    std::vector<float> windowed(window.size());
+    for (uint i = 0; i < window.size(); ++i) windowed[i] = window[i] * data[i];
+    return windowed;
 }
 
-std::optional<float> EstimateFundamentalFrequency(const FFTData &fft_data) {
-    const auto *data = fft_data.Complex;
-    const size_t n_bins = fft_data.NumReal / 2 + 1;
+std::optional<float> EstimateFundamentalFrequency(const FFTData &fft) {
+    const auto *data = fft.Complex;
+    const size_t n_bins = fft.NumReal / 2 + 1;
 
     std::vector<float> mag_db(n_bins);
     for (size_t i = 0; i < n_bins; ++i) {
@@ -341,7 +341,7 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft_data) {
     const float threshold = upper[upper.size() / 2] + 15.f;
 
     constexpr size_t W = 15; // Prominence window
-    const size_t min_bin = static_cast<size_t>(50.0f * fft_data.NumReal / SampleRate);
+    const size_t min_bin = static_cast<size_t>(50.0f * fft.NumReal / SampleRate);
     for (size_t i = std::max(min_bin, W); i < n_bins - W; ++i) {
         // Local maximum?
         if (mag_db[i] <= mag_db[i - 1] || mag_db[i] <= mag_db[i + 1]) continue;
@@ -353,7 +353,7 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft_data) {
         for (size_t j = i - W; j <= i + W; ++j) local_sum += mag_db[j];
         const float local_mean = local_sum / (2 * W + 1);
         if (mag_db[i] - local_mean < ProminenceThresholdDb) continue;
-        return float(i) * SampleRate / fft_data.NumReal;
+        return float(i) * SampleRate / fft.NumReal;
     }
     return std::nullopt;
 }
@@ -396,21 +396,21 @@ void PlotFrames(const std::vector<float> &frames, std::string_view label = "Wave
 
 void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view label = "Magnitude spectrum", std::optional<float> highlight_freq = {}) {
     static const std::vector<float> *frames_ptr{&frames};
-    static FFTData fft_data{ComputeFft(frames)};
+    static FFTData fft{ComputeFft(frames)};
     if (&frames != frames_ptr) {
-        fft_data = ComputeFft(frames);
+        fft = ComputeFft(frames);
         frames_ptr = &frames;
     }
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         static constexpr float MinDb = -200;
-        const uint N = fft_data.NumReal, N2 = N / 2;
+        const uint N = fft.NumReal, N2 = N / 2;
         const float fs = SampleRate; // todo flexible sample rate
         const float fs_n = SampleRate / float(N);
         static std::vector<float> frequency(N2), magnitude(N2);
         frequency.resize(N2);
         magnitude.resize(N2);
 
-        const auto *data = fft_data.Complex;
+        const auto *data = fft.Complex;
         for (uint i = 0; i < N2; i++) {
             frequency[i] = fs_n * float(i);
             magnitude[i] = LinearToDb(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));

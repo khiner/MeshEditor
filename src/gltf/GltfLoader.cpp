@@ -148,16 +148,16 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
     if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
     const auto &image = asset.images[image_index];
 
-    Image image_data{
+    Image image_result{
         .Bytes = {},
         .MimeType = MimeType::None,
         .Name = image.name.empty() ? std::format("Image{}", image_index) : std::string(image.name),
     };
 
-    const auto from_span = [&image_data](const auto &data, fastgltf::MimeType mime_type) {
-        image_data.Bytes.resize(data.size());
-        std::memcpy(image_data.Bytes.data(), data.data(), data.size());
-        image_data.MimeType = ToMimeType(mime_type);
+    const auto from_span = [&image_result](const auto &data, fastgltf::MimeType mime_type) {
+        image_result.Bytes.resize(data.size());
+        std::memcpy(image_result.Bytes.data(), data.data(), data.size());
+        image_result.MimeType = ToMimeType(mime_type);
     };
 
     auto read_result = std::visit(
@@ -191,8 +191,8 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
                 image_path = image_path.lexically_normal();
                 auto bytes = ReadFileBytes(image_path);
                 if (!bytes) return std::unexpected{std::move(bytes.error())};
-                image_data.Bytes = std::move(*bytes);
-                image_data.MimeType = ToMimeType(uri.mimeType);
+                image_result.Bytes = std::move(*bytes);
+                image_result.MimeType = ToMimeType(uri.mimeType);
                 return {};
             },
             [&](const fastgltf::sources::CustomBuffer &) -> std::expected<void, std::string> {
@@ -208,7 +208,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
         image.data
     );
     if (!read_result) return std::unexpected{std::move(read_result.error())};
-    return image_data;
+    return image_result;
 }
 
 uint32_t ReadUint32LE(const std::byte *data) {
@@ -433,9 +433,9 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
 std::expected<void, std::string> AppendPrimitive(
     const fastgltf::Asset &asset,
     const fastgltf::Primitive &primitive,
-    ::MeshData &mesh_data,
-    std::optional<ArmatureDeformData> &deform_data,
-    std::optional<MorphTargetData> &morph_data
+    ::MeshData &mesh,
+    std::optional<ArmatureDeformData> &deform,
+    std::optional<MorphTargetData> &morph
 ) {
     if (primitive.type != fastgltf::PrimitiveType::Triangles &&
         primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
@@ -452,69 +452,69 @@ std::expected<void, std::string> AppendPrimitive(
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
     if (position_accessor.count == 0) return {};
 
-    const uint32_t base_vertex = mesh_data.Positions.size();
-    mesh_data.Positions.resize(base_vertex + position_accessor.count);
-    fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &mesh_data.Positions[base_vertex]);
+    const uint32_t base_vertex = mesh.Positions.size();
+    mesh.Positions.resize(base_vertex + position_accessor.count);
+    fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &mesh.Positions[base_vertex]);
 
     // Parse NORMAL attribute
     const auto normal_it = primitive.findAttribute("NORMAL");
     const bool has_normals = normal_it != primitive.attributes.end();
     if (has_normals) {
-        if (!mesh_data.Normals) {
-            mesh_data.Normals.emplace();
+        if (!mesh.Normals) {
+            mesh.Normals.emplace();
             // Backfill zeros for vertices from earlier primitives that lacked normals
-            mesh_data.Normals->resize(base_vertex, vec3{0.f});
+            mesh.Normals->resize(base_vertex, vec3{0.f});
         }
         const auto &normal_accessor = asset.accessors[normal_it->accessorIndex];
-        mesh_data.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
-        fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*mesh_data.Normals)[base_vertex]);
-    } else if (mesh_data.Normals) {
+        mesh.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
+        fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*mesh.Normals)[base_vertex]);
+    } else if (mesh.Normals) {
         // Previous primitives had normals but this one doesn't — pad with zeros
-        mesh_data.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
+        mesh.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
     }
 
     const auto tangent_it = primitive.findAttribute("TANGENT");
     const bool has_tangents = tangent_it != primitive.attributes.end();
     if (has_tangents) {
-        if (!mesh_data.Tangents) {
-            mesh_data.Tangents.emplace();
-            mesh_data.Tangents->resize(base_vertex, vec4{0.f, 0.f, 0.f, 1.f});
+        if (!mesh.Tangents) {
+            mesh.Tangents.emplace();
+            mesh.Tangents->resize(base_vertex, vec4{0.f, 0.f, 0.f, 1.f});
         }
         const auto &tangent_accessor = asset.accessors[tangent_it->accessorIndex];
         if (tangent_accessor.count != position_accessor.count) {
             return std::unexpected{std::format("glTF primitive TANGENT count ({}) must match POSITION count ({}).", tangent_accessor.count, position_accessor.count)};
         }
-        mesh_data.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
-        fastgltf::copyFromAccessor<vec4>(asset, tangent_accessor, &(*mesh_data.Tangents)[base_vertex]);
-    } else if (mesh_data.Tangents) {
-        mesh_data.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
+        mesh.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
+        fastgltf::copyFromAccessor<vec4>(asset, tangent_accessor, &(*mesh.Tangents)[base_vertex]);
+    } else if (mesh.Tangents) {
+        mesh.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
     }
 
     const auto color_it = primitive.findAttribute("COLOR_0");
     const bool has_colors0 = color_it != primitive.attributes.end();
     if (has_colors0) {
-        if (!mesh_data.Colors0) {
-            mesh_data.Colors0.emplace();
-            mesh_data.Colors0->resize(base_vertex, vec4{1.f});
+        if (!mesh.Colors0) {
+            mesh.Colors0.emplace();
+            mesh.Colors0->resize(base_vertex, vec4{1.f});
         }
         const auto &color_accessor = asset.accessors[color_it->accessorIndex];
         if (color_accessor.count != position_accessor.count) {
             return std::unexpected{std::format("glTF primitive COLOR_0 count ({}) must match POSITION count ({}).", color_accessor.count, position_accessor.count)};
         }
-        mesh_data.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
+        mesh.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
         if (color_accessor.type == fastgltf::AccessorType::Vec3) {
             std::vector<vec3> colors(position_accessor.count);
             fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
             for (uint32_t i = 0; i < position_accessor.count; ++i) {
-                (*mesh_data.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
+                (*mesh.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
             }
         } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
-            fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*mesh_data.Colors0)[base_vertex]);
+            fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*mesh.Colors0)[base_vertex]);
         } else {
             return std::unexpected{std::format("glTF primitive COLOR_0 accessor type must be VEC3 or VEC4, got type {}.", int(color_accessor.type))};
         }
-    } else if (mesh_data.Colors0) {
-        mesh_data.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
+    } else if (mesh.Colors0) {
+        mesh.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
     }
 
     const auto append_uv_set = [&](uint32_t set_index, std::optional<std::vector<vec2>> &uv_set) -> std::expected<void, std::string> {
@@ -537,22 +537,22 @@ std::expected<void, std::string> AppendPrimitive(
         }
         return {};
     };
-    if (auto uv_result = append_uv_set(0, mesh_data.TexCoords0); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(1, mesh_data.TexCoords1); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(2, mesh_data.TexCoords2); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(3, mesh_data.TexCoords3); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(0, mesh.TexCoords0); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(1, mesh.TexCoords1); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(2, mesh.TexCoords2); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(3, mesh.TexCoords3); !uv_result) return uv_result;
 
-    if (has_joints && !deform_data) deform_data.emplace();
-    const bool mesh_has_skin_data = deform_data && (!deform_data->Joints.empty() || !deform_data->Weights.empty());
-    if (mesh_has_skin_data &&
-        (deform_data->Joints.size() != base_vertex ||
-         deform_data->Weights.size() != base_vertex)) {
+    if (has_joints && !deform) deform.emplace();
+    const bool mesh_has_skin = deform && (!deform->Joints.empty() || !deform->Weights.empty());
+    if (mesh_has_skin &&
+        (deform->Joints.size() != base_vertex ||
+         deform->Weights.size() != base_vertex)) {
         return std::unexpected{"glTF primitive append encountered inconsistent skin channel sizes."};
     }
 
-    if (has_joints || mesh_has_skin_data) {
-        deform_data->Joints.resize(mesh_data.Positions.size(), uvec4{0});
-        deform_data->Weights.resize(mesh_data.Positions.size(), vec4{0});
+    if (has_joints || mesh_has_skin) {
+        deform->Joints.resize(mesh.Positions.size(), uvec4{0});
+        deform->Weights.resize(mesh.Positions.size(), vec4{0});
     }
 
     if (has_joints) {
@@ -580,8 +580,8 @@ std::expected<void, std::string> AppendPrimitive(
         }
 
         if (influence_accessors.size() == 1) {
-            fastgltf::copyFromAccessor<uvec4>(asset, *influence_accessors.front().first, &deform_data->Joints[base_vertex]);
-            fastgltf::copyFromAccessor<vec4>(asset, *influence_accessors.front().second, &deform_data->Weights[base_vertex]);
+            fastgltf::copyFromAccessor<uvec4>(asset, *influence_accessors.front().first, &deform->Joints[base_vertex]);
+            fastgltf::copyFromAccessor<vec4>(asset, *influence_accessors.front().second, &deform->Weights[base_vertex]);
         } else {
             struct InfluenceSet {
                 std::vector<uvec4> Joints;
@@ -618,8 +618,8 @@ std::expected<void, std::string> AppendPrimitive(
 
                 const float sum = all[0].second + all[1].second + all[2].second + all[3].second;
                 const float inv = sum > 0.f ? 1.f / sum : 0.f;
-                deform_data->Joints[base_vertex + i] = {all[0].first, all[1].first, all[2].first, all[3].first};
-                deform_data->Weights[base_vertex + i] = {all[0].second * inv, all[1].second * inv, all[2].second * inv, all[3].second * inv};
+                deform->Joints[base_vertex + i] = {all[0].first, all[1].first, all[2].first, all[3].first};
+                deform->Weights[base_vertex + i] = {all[0].second * inv, all[1].second * inv, all[2].second * inv, all[3].second * inv};
             }
         }
     }
@@ -628,17 +628,17 @@ std::expected<void, std::string> AppendPrimitive(
     if (!primitive.targets.empty()) {
         const uint32_t target_count = primitive.targets.size();
         const uint32_t prim_vertex_count = position_accessor.count;
-        if (!morph_data) {
-            morph_data.emplace();
-            morph_data->TargetCount = target_count;
+        if (!morph) {
+            morph.emplace();
+            morph->TargetCount = target_count;
             // Backfill zeros for any vertices from earlier primitives
-            morph_data->PositionDeltas.resize(std::size_t(target_count) * base_vertex, vec3{0.f});
+            morph->PositionDeltas.resize(std::size_t(target_count) * base_vertex, vec3{0.f});
         }
-        if (morph_data->TargetCount != target_count) return std::unexpected{"glTF primitive morph target count mismatch between primitives of the same mesh."};
+        if (morph->TargetCount != target_count) return std::unexpected{"glTF primitive morph target count mismatch between primitives of the same mesh."};
 
         // Append this primitive's deltas for each target (interleaved: all targets for this prim appended together)
-        const auto prev_pos_size = morph_data->PositionDeltas.size();
-        morph_data->PositionDeltas.resize(prev_pos_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
+        const auto prev_pos_size = morph->PositionDeltas.size();
+        morph->PositionDeltas.resize(prev_pos_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
         // Track whether any target in this primitive has normal deltas
         bool prim_has_normal_deltas = false;
         for (uint32_t t = 0; t < target_count; ++t) {
@@ -647,39 +647,39 @@ std::expected<void, std::string> AppendPrimitive(
                 break;
             }
         }
-        if (prim_has_normal_deltas && morph_data->NormalDeltas.empty() && prev_pos_size > 0) {
+        if (prim_has_normal_deltas && morph->NormalDeltas.empty() && prev_pos_size > 0) {
             // Backfill zeros for position deltas from earlier primitives that had no normal deltas
-            morph_data->NormalDeltas.resize(prev_pos_size, vec3{0.f});
+            morph->NormalDeltas.resize(prev_pos_size, vec3{0.f});
         }
-        if (prim_has_normal_deltas || !morph_data->NormalDeltas.empty()) {
-            const auto prev_norm_size = morph_data->NormalDeltas.size();
-            morph_data->NormalDeltas.resize(prev_norm_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
+        if (prim_has_normal_deltas || !morph->NormalDeltas.empty()) {
+            const auto prev_norm_size = morph->NormalDeltas.size();
+            morph->NormalDeltas.resize(prev_norm_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
         }
         for (uint32_t t = 0; t < target_count; ++t) {
             auto pos_it = primitive.findTargetAttribute(t, "POSITION");
             if (pos_it != primitive.targets[t].end()) {
                 const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
                 if (target_accessor.count == prim_vertex_count) {
-                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph_data->PositionDeltas[prev_pos_size + std::size_t(t) * prim_vertex_count]);
+                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + std::size_t(t) * prim_vertex_count]);
                 }
             }
-            if (!morph_data->NormalDeltas.empty()) {
+            if (!morph->NormalDeltas.empty()) {
                 auto norm_it = primitive.findTargetAttribute(t, "NORMAL");
                 if (norm_it != primitive.targets[t].end()) {
                     const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
-                    const auto prev_norm_size = morph_data->NormalDeltas.size() - std::size_t(target_count) * prim_vertex_count;
+                    const auto prev_norm_size = morph->NormalDeltas.size() - std::size_t(target_count) * prim_vertex_count;
                     if (norm_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph_data->NormalDeltas[prev_norm_size + std::size_t(t) * prim_vertex_count]);
+                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph->NormalDeltas[prev_norm_size + std::size_t(t) * prim_vertex_count]);
                     }
                 }
             }
         }
-    } else if (morph_data) {
+    } else if (morph) {
         // Previous primitives had targets but this one doesn't — pad with zeros
         const uint32_t prim_vertex_count = position_accessor.count;
-        morph_data->PositionDeltas.resize(morph_data->PositionDeltas.size() + std::size_t(morph_data->TargetCount) * prim_vertex_count, vec3{0.f});
-        if (!morph_data->NormalDeltas.empty()) {
-            morph_data->NormalDeltas.resize(morph_data->NormalDeltas.size() + std::size_t(morph_data->TargetCount) * prim_vertex_count, vec3{0.f});
+        morph->PositionDeltas.resize(morph->PositionDeltas.size() + std::size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
+        if (!morph->NormalDeltas.empty()) {
+            morph->NormalDeltas.resize(morph->NormalDeltas.size() + std::size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
         }
     }
 
@@ -697,18 +697,18 @@ std::expected<void, std::string> AppendPrimitive(
     if (primitive.type == fastgltf::PrimitiveType::TriangleStrip) {
         for (uint32_t i = 0; i + 2 < indices.size(); ++i) {
             if (i % 2 == 0) {
-                mesh_data.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
+                mesh.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
             } else {
-                mesh_data.Faces.push_back({base_vertex + indices[i + 1], base_vertex + indices[i], base_vertex + indices[i + 2]});
+                mesh.Faces.push_back({base_vertex + indices[i + 1], base_vertex + indices[i], base_vertex + indices[i + 2]});
             }
         }
     } else if (primitive.type == fastgltf::PrimitiveType::TriangleFan) {
         for (uint32_t i = 1; i + 1 < indices.size(); ++i) {
-            mesh_data.Faces.push_back({base_vertex + indices[0], base_vertex + indices[i], base_vertex + indices[i + 1]});
+            mesh.Faces.push_back({base_vertex + indices[0], base_vertex + indices[i], base_vertex + indices[i + 1]});
         }
     } else {
         for (uint32_t i = 0; i + 2 < indices.size(); i += 3) {
-            mesh_data.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
+            mesh.Faces.push_back({base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
         }
     }
     return {};
@@ -752,10 +752,10 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
 
     const auto &source_mesh = asset.meshes[source_mesh_index];
-    ::MeshData mesh_data;
-    std::optional<ArmatureDeformData> mesh_deform_data;
-    std::optional<MorphTargetData> mesh_morph_data;
-    ::MeshData lines_data, points_data; // Merged across all line/point primitives
+    ::MeshData mesh;
+    std::optional<ArmatureDeformData> mesh_deform;
+    std::optional<MorphTargetData> mesh_morph;
+    ::MeshData lines, points; // Merged across all line/point primitives
     // Track per-primitive vertex counts for morph target re-packing
     std::vector<uint32_t> prim_vertex_counts;
     std::vector<uint32_t> face_primitive_indices;
@@ -769,26 +769,26 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
             primitive_material_indices[primitive_index] = *material_index;
         }
         if (primitive.type == fastgltf::PrimitiveType::Points) {
-            AppendNonTrianglePrimitive(asset, primitive, points_data);
+            AppendNonTrianglePrimitive(asset, primitive, points);
             continue;
         }
         if (primitive.type == fastgltf::PrimitiveType::Lines || primitive.type == fastgltf::PrimitiveType::LineStrip || primitive.type == fastgltf::PrimitiveType::LineLoop) {
-            AppendNonTrianglePrimitive(asset, primitive, lines_data);
+            AppendNonTrianglePrimitive(asset, primitive, lines);
             continue;
         }
-        const uint32_t prev_vertex_count = mesh_data.Positions.size();
-        const uint32_t prev_face_count = mesh_data.Faces.size();
-        if (auto append_result = AppendPrimitive(asset, primitive, mesh_data, mesh_deform_data, mesh_morph_data); !append_result) {
+        const uint32_t prev_vertex_count = mesh.Positions.size();
+        const uint32_t prev_face_count = mesh.Faces.size();
+        if (auto append_result = AppendPrimitive(asset, primitive, mesh, mesh_deform, mesh_morph); !append_result) {
             return std::unexpected{std::move(append_result.error())};
         }
-        prim_vertex_counts.emplace_back(mesh_data.Positions.size() - prev_vertex_count);
-        const auto appended_face_count = mesh_data.Faces.size() - prev_face_count;
+        prim_vertex_counts.emplace_back(mesh.Positions.size() - prev_vertex_count);
+        const auto appended_face_count = mesh.Faces.size() - prev_face_count;
         face_primitive_indices.insert(face_primitive_indices.end(), appended_face_count, primitive_index);
     }
-    const bool has_triangle_data = !mesh_data.Positions.empty() && !mesh_data.Faces.empty();
-    const bool has_lines = !lines_data.Positions.empty();
-    const bool has_points = !points_data.Positions.empty();
-    if (!has_triangle_data && !has_lines && !has_points) {
+    const bool has_triangles = !mesh.Positions.empty() && !mesh.Faces.empty();
+    const bool has_lines = !lines.Positions.empty();
+    const bool has_points = !points.Positions.empty();
+    if (!has_triangles && !has_lines && !has_points) {
         mesh_index_map.emplace(source_mesh_index, std::nullopt);
         return std::optional<uint32_t>{};
     }
@@ -796,61 +796,61 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
     // Re-pack morph target deltas from per-primitive chunks to per-target contiguous layout
     // Input layout:  [prim0: t0_verts, t1_verts, ...], [prim1: t0_verts, t1_verts, ...], ...
     // Output layout: [t0: all_verts], [t1: all_verts], ...
-    if (mesh_morph_data && mesh_morph_data->TargetCount > 0 && prim_vertex_counts.size() > 1) {
-        const uint32_t total_verts = mesh_data.Positions.size();
-        const auto target_count = mesh_morph_data->TargetCount;
+    if (mesh_morph && mesh_morph->TargetCount > 0 && prim_vertex_counts.size() > 1) {
+        const uint32_t total_verts = mesh.Positions.size();
+        const auto target_count = mesh_morph->TargetCount;
         std::vector<vec3> repacked(std::size_t(target_count) * total_verts, vec3{0.f});
 
         uint32_t src_offset = 0, dst_vert_offset = 0;
         for (const auto prim_verts : prim_vertex_counts) {
             for (uint32_t t = 0; t < target_count; ++t) {
                 for (uint32_t v = 0; v < prim_verts; ++v) {
-                    repacked[std::size_t(t) * total_verts + dst_vert_offset + v] = mesh_morph_data->PositionDeltas[src_offset + std::size_t(t) * prim_verts + v];
+                    repacked[std::size_t(t) * total_verts + dst_vert_offset + v] = mesh_morph->PositionDeltas[src_offset + std::size_t(t) * prim_verts + v];
                 }
             }
             src_offset += target_count * prim_verts;
             dst_vert_offset += prim_verts;
         }
-        mesh_morph_data->PositionDeltas = std::move(repacked);
+        mesh_morph->PositionDeltas = std::move(repacked);
 
-        if (!mesh_morph_data->NormalDeltas.empty()) {
+        if (!mesh_morph->NormalDeltas.empty()) {
             std::vector<vec3> repacked_normals(std::size_t(target_count) * total_verts, vec3{0.f});
             uint32_t norm_src_offset = 0, norm_dst_vert_offset = 0;
             for (const auto prim_verts : prim_vertex_counts) {
                 for (uint32_t t = 0; t < target_count; ++t) {
                     for (uint32_t v = 0; v < prim_verts; ++v) {
-                        repacked_normals[std::size_t(t) * total_verts + norm_dst_vert_offset + v] = mesh_morph_data->NormalDeltas[norm_src_offset + std::size_t(t) * prim_verts + v];
+                        repacked_normals[std::size_t(t) * total_verts + norm_dst_vert_offset + v] = mesh_morph->NormalDeltas[norm_src_offset + std::size_t(t) * prim_verts + v];
                     }
                 }
                 norm_src_offset += target_count * prim_verts;
                 norm_dst_vert_offset += prim_verts;
             }
-            mesh_morph_data->NormalDeltas = std::move(repacked_normals);
+            mesh_morph->NormalDeltas = std::move(repacked_normals);
         }
     }
 
     // Read default morph target weights from mesh
-    if (mesh_morph_data && !source_mesh.weights.empty()) {
-        mesh_morph_data->DefaultWeights.resize(mesh_morph_data->TargetCount, 0.f);
-        const auto copy_count = std::min(source_mesh.weights.size(), std::size_t(mesh_morph_data->TargetCount));
-        std::copy_n(source_mesh.weights.begin(), copy_count, mesh_morph_data->DefaultWeights.begin());
-    } else if (mesh_morph_data) {
-        mesh_morph_data->DefaultWeights.assign(mesh_morph_data->TargetCount, 0.f);
+    if (mesh_morph && !source_mesh.weights.empty()) {
+        mesh_morph->DefaultWeights.resize(mesh_morph->TargetCount, 0.f);
+        const auto copy_count = std::min(source_mesh.weights.size(), std::size_t(mesh_morph->TargetCount));
+        std::copy_n(source_mesh.weights.begin(), copy_count, mesh_morph->DefaultWeights.begin());
+    } else if (mesh_morph) {
+        mesh_morph->DefaultWeights.assign(mesh_morph->TargetCount, 0.f);
     }
 
-    if (has_triangle_data) {
-        mesh_data.FacePrimitiveIndices = std::move(face_primitive_indices);
-        mesh_data.PrimitiveMaterialIndices = std::move(primitive_material_indices);
+    if (has_triangles) {
+        mesh.FacePrimitiveIndices = std::move(face_primitive_indices);
+        mesh.PrimitiveMaterialIndices = std::move(primitive_material_indices);
     }
 
     const auto mesh_index = scene.Meshes.size();
     scene.Meshes.emplace_back(
         MeshData{
-            .Triangles = has_triangle_data ? std::optional{std::move(mesh_data)} : std::nullopt,
-            .Lines = has_lines ? std::optional{std::move(lines_data)} : std::nullopt,
-            .Points = has_points ? std::optional{std::move(points_data)} : std::nullopt,
-            .DeformData = std::move(mesh_deform_data),
-            .MorphData = std::move(mesh_morph_data),
+            .Triangles = has_triangles ? std::optional{std::move(mesh)} : std::nullopt,
+            .Lines = has_lines ? std::optional{std::move(lines)} : std::nullopt,
+            .Points = has_points ? std::optional{std::move(points)} : std::nullopt,
+            .DeformData = std::move(mesh_deform),
+            .MorphData = std::move(mesh_morph),
             .Name = source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name),
         }
     );
@@ -1092,9 +1092,9 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
 
     scene.Images.reserve(asset.images.size());
     for (uint32_t image_index = 0; image_index < asset.images.size(); ++image_index) {
-        auto image_data = ReadImage(asset, image_index, path.parent_path());
-        if (!image_data) return std::unexpected{std::move(image_data.error())};
-        scene.Images.emplace_back(std::move(*image_data));
+        auto image_result = ReadImage(asset, image_index, path.parent_path());
+        if (!image_result) return std::unexpected{std::move(image_result.error())};
+        scene.Images.emplace_back(std::move(*image_result));
     }
 
     scene.Textures.reserve(asset.textures.size());
