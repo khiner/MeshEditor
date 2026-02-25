@@ -34,24 +34,24 @@ quat CubicHermiteQuat(quat p0, quat m0, quat p1, quat m1, float t) {
 }
 } // namespace
 
-BoneId ArmatureData::AllocateBoneId() {
+BoneId Armature::AllocateBoneId() {
     if (NextBoneId == InvalidBoneId) throw std::runtime_error{"Armature bone ID allocator overflowed."};
     return NextBoneId++;
 }
 
-std::optional<uint32_t> ArmatureData::FindBoneIndex(BoneId bone_id) const {
+std::optional<uint32_t> Armature::FindBoneIndex(BoneId bone_id) const {
     if (bone_id == InvalidBoneId) return {};
     if (const auto it = BoneIdToIndex.find(bone_id); it != BoneIdToIndex.end()) return it->second;
     return {};
 }
 
-std::optional<uint32_t> ArmatureData::FindJointNodeIndex(BoneId bone_id) const {
+std::optional<uint32_t> Armature::FindJointNodeIndex(BoneId bone_id) const {
     const auto index = FindBoneIndex(bone_id);
     if (!index) return {};
     return Bones[*index].JointNodeIndex;
 }
 
-std::optional<BoneId> ArmatureData::FindBoneIdByJointNodeIndex(uint32_t joint_node_index) const {
+std::optional<BoneId> Armature::FindBoneIdByJointNodeIndex(uint32_t joint_node_index) const {
     if (!Dirty) {
         if (const auto it = JointNodeIndexToBoneId.find(joint_node_index); it != JointNodeIndexToBoneId.end()) return it->second;
         return {};
@@ -63,14 +63,14 @@ std::optional<BoneId> ArmatureData::FindBoneIdByJointNodeIndex(uint32_t joint_no
     return {};
 }
 
-void ArmatureData::SetJointNodeMapping(BoneId bone_id, uint32_t joint_node_index) {
+void Armature::SetJointNodeMapping(BoneId bone_id, uint32_t joint_node_index) {
     const auto index = FindBoneIndex(bone_id);
     if (!index) throw std::out_of_range{std::format("Bone ID {} does not exist.", bone_id)};
     Bones[*index].JointNodeIndex = joint_node_index;
     Dirty = true;
 }
 
-BoneId ArmatureData::AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index) {
+BoneId Armature::AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index) {
     if (parent_bone_id) {
         if (*parent_bone_id == InvalidBoneId) throw std::invalid_argument{"Invalid parent bone ID (InvalidBoneId)."};
         if (!FindBoneIndex(*parent_bone_id)) throw std::out_of_range{std::format("Parent bone ID {} does not exist.", *parent_bone_id)};
@@ -89,7 +89,7 @@ BoneId ArmatureData::AddBone(std::string_view name, std::optional<BoneId> parent
     return bone_id;
 }
 
-void ArmatureData::FinalizeStructure() {
+void Armature::FinalizeStructure() {
     if (!Dirty) return;
 
     ++Version;
@@ -301,7 +301,7 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
 }
 
 void ComputeDeformMatrices(
-    const ArmatureData &data,
+    const Armature &data,
     std::span<const Transform> bone_pose_local, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
 ) {
     if (!data.ImportedSkin || data.Bones.empty()) return;

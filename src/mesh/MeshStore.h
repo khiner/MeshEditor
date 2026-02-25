@@ -16,7 +16,7 @@
 #include <unordered_set>
 #include <vector>
 
-struct MaterialData {
+struct ObjPlyMaterial {
     vec4 BaseColorFactor;
     float MetallicFactor, RoughnessFactor;
     std::string Name;
@@ -28,7 +28,7 @@ struct MaterialData {
 
 struct MeshWithMaterials {
     Mesh Mesh;
-    std::vector<MaterialData> Materials;
+    std::vector<ObjPlyMaterial> Materials;
 };
 
 struct MeshData;

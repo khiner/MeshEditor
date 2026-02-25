@@ -25,11 +25,11 @@ struct Perspective {
     std::optional<float> AspectRatio{};
 };
 
-using CameraData = std::variant<Perspective, Orthographic>;
+using Camera = std::variant<Perspective, Orthographic>;
 
-inline float AspectRatio(const CameraData &cd) {
-    if (const auto *persp = std::get_if<Perspective>(&cd)) return persp->AspectRatio.value_or(DefaultAspectRatio);
-    const auto &mag = std::get<Orthographic>(cd).Mag;
+inline float AspectRatio(const Camera &camera) {
+    if (const auto *persp = std::get_if<Perspective>(&camera)) return persp->AspectRatio.value_or(DefaultAspectRatio);
+    const auto &mag = std::get<Orthographic>(camera).Mag;
     return mag.x / mag.y;
 }
 
@@ -55,10 +55,10 @@ inline float LookThroughFrameRatio(float camera_aspect, float viewport_aspect, f
     return camera_aspect > viewport_aspect ? viewport_aspect * pad_ratio / camera_aspect : pad_ratio;
 }
 
-inline CameraData WidenForLookThrough(const CameraData &camera_data, float viewport_aspect, float pad_ratio = 0.9f) {
-    const float zoom = 1.f / LookThroughFrameRatio(AspectRatio(camera_data), viewport_aspect, pad_ratio);
+inline Camera WidenForLookThrough(const Camera &camera, float viewport_aspect, float pad_ratio = 0.9f) {
+    const float zoom = 1.f / LookThroughFrameRatio(AspectRatio(camera), viewport_aspect, pad_ratio);
     return std::visit(
-        [zoom](const auto &projection) -> CameraData {
+        [zoom](const auto &projection) -> Camera {
             using Projection = std::decay_t<decltype(projection)>;
             if constexpr (std::is_same_v<Projection, Perspective>) {
                 auto widened = projection;
@@ -70,17 +70,17 @@ inline CameraData WidenForLookThrough(const CameraData &camera_data, float viewp
                 return widened;
             }
         },
-        camera_data
+        camera
     );
 }
 
-inline float ScreenPixelScale(const CameraData &camera_data, float viewport_height) {
+inline float ScreenPixelScale(const Camera &camera, float viewport_height) {
     return std::visit(
         [viewport_height](const auto &projection) -> float {
             using Projection = std::decay_t<decltype(projection)>;
             if constexpr (std::is_same_v<Projection, Perspective>) return 2.f * std::tan(projection.FieldOfViewRad * 0.5f) / viewport_height;
             else return -(2.f * projection.Mag.y / viewport_height);
         },
-        camera_data
+        camera
     );
 }

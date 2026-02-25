@@ -28,7 +28,7 @@ constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
 struct MeshDataWithMaterials {
     MeshData Mesh;
-    std::vector<MaterialData> Materials;
+    std::vector<ObjPlyMaterial> Materials;
 };
 
 std::optional<std::filesystem::path> ResolveTexturePath(const std::filesystem::path &base_dir, const std::string &texture_name) {
@@ -39,8 +39,8 @@ std::optional<std::filesystem::path> ResolveTexturePath(const std::filesystem::p
     return texture_path.lexically_normal();
 }
 
-MaterialData ToPbrMaterial(const tinyobj::material_t &material, uint32_t index, const std::filesystem::path &base_dir) {
-    // OBJ/MTL uses Phong terms; convert to glTF-style metallic-roughness with a common heuristic.
+ObjPlyMaterial ToObjPlyMaterial(const tinyobj::material_t &material, uint32_t index, const std::filesystem::path &base_dir) {
+    // OBJ/MTL uses Phong terms; convert to metallic-roughness with a common heuristic.
     const vec3 kd{material.diffuse[0], material.diffuse[1], material.diffuse[2]};
     const vec3 ks{material.specular[0], material.specular[1], material.specular[2]};
 
@@ -62,7 +62,7 @@ MaterialData ToPbrMaterial(const tinyobj::material_t &material, uint32_t index, 
     };
 }
 
-MaterialData DefaultMaterial(std::string name = "Default") {
+ObjPlyMaterial DefaultMaterial(std::string name = "Default") {
     return {.BaseColorFactor = {1.f, 1.f, 1.f, 1.f}, .MetallicFactor = 0.f, .RoughnessFactor = 1.f, .Name = std::move(name)};
 }
 
@@ -157,7 +157,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
         if (const auto it = material_to_local_index.find(material_id); it != material_to_local_index.end()) return it->second;
         const auto local_index = static_cast<uint32_t>(result.Materials.size());
         if (material_id >= 0 && material_id < static_cast<int>(materials.size())) {
-            result.Materials.emplace_back(ToPbrMaterial(materials[size_t(material_id)], uint32_t(material_id), path.parent_path()));
+            result.Materials.emplace_back(ToObjPlyMaterial(materials[size_t(material_id)], uint32_t(material_id), path.parent_path()));
         } else {
             result.Materials.emplace_back(DefaultMaterial());
         }
@@ -300,14 +300,7 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
     if (colors && colors->count == vertices->count && !data.Faces.empty()) {
         // Bake vertex colors down to one albedo value for now (no per-vertex color channel in the render path yet).
         const auto avg = ComputeAverageVertexColor(*colors);
-        result.Materials.emplace_back(
-            MaterialData{
-                .BaseColorFactor = {avg.x, avg.y, avg.z, 1.f},
-                .MetallicFactor = 0.f,
-                .RoughnessFactor = 1.f,
-                .Name = "VertexColor",
-            }
-        );
+        result.Materials.emplace_back(ObjPlyMaterial{.BaseColorFactor = {avg.x, avg.y, avg.z, 1.f}, .MetallicFactor = 0.f, .RoughnessFactor = 1.f, .Name = "VertexColor"});
         data.FacePrimitiveIndices = std::vector<uint32_t>(data.Faces.size(), 0u);
         data.PrimitiveMaterialIndices = std::vector<uint32_t>{0u};
     }

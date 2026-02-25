@@ -36,7 +36,7 @@ struct ArmatureImportedSkin {
     std::vector<mat4> InverseBindMatrices;
 };
 
-struct ArmatureData {
+struct Armature {
     uint32_t Version{1}; // Increments when structure changes
     BoneId NextBoneId{1}; // Monotonic allocator state
     bool Dirty{false}; // True when structural edits need finalization.
@@ -56,25 +56,25 @@ struct ArmatureData {
 };
 
 // Scene-facing armature object (name/transform/selection).
-// References shared ArmatureData (bones, IDs, imported skin metadata).
+// References shared Armature (bones, IDs, imported skin metadata).
 struct ArmatureObject {
-    entt::entity DataEntity;
+    entt::entity Entity;
 };
 
 // Armature modifier linkage for mesh instances deformed by an armature.
 // Modifiers are optional, non-destructive object-level links that affect evaluated
 // mesh output (for armatures: skinned vertex deformation).
 struct ArmatureModifier {
-    entt::entity ArmatureDataEntity;
+    entt::entity ArmatureEntity;
     entt::entity ArmatureObjectEntity;
 };
 
 // Component on scene objects attached to a specific armature bone.
-// Source skin/node references remain recoverable via ArmatureData::ImportedSkin and BoneId mappings.
+// Source skin/node references remain recoverable via Armature::ImportedSkin and BoneId mappings.
 // This is primarily for uncommon glTF joint+mesh nodes (direct per-bone attachment),
 // not the common skinned-mesh deformation path handled by ArmatureModifier.
 struct BoneAttachment {
-    entt::entity ArmatureDataEntity;
+    entt::entity ArmatureEntity;
     BoneId Bone;
 };
 
@@ -113,7 +113,7 @@ struct ArmaturePoseState {
 };
 
 // Component on armature data entities with animation data.
-struct ArmatureAnimationData {
+struct ArmatureAnimation {
     std::vector<AnimationClip> Clips;
     uint32_t ActiveClipIndex{0};
 };
@@ -132,7 +132,7 @@ struct MorphWeightClip {
 };
 
 // Component on mesh instance entities with morph target animation data.
-struct MorphWeightAnimationData {
+struct MorphWeightAnimation {
     std::vector<MorphWeightClip> Clips;
     uint32_t ActiveClipIndex{0};
 };
@@ -152,4 +152,4 @@ void EvaluateMorphWeights(const MorphWeightClip &clip, float time, std::span<flo
 
 // Compute final deform matrices from posed local transforms + inverse bind matrices.
 // Writes directly into `out` (mapped GPU memory).
-void ComputeDeformMatrices(const ArmatureData &, std::span<const Transform> local_transforms, std::span<const mat4> inverse_bind, std::span<mat4> out);
+void ComputeDeformMatrices(const Armature &, std::span<const Transform> local_transforms, std::span<const mat4> inverse_bind, std::span<mat4> out);

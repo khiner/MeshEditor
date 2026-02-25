@@ -51,9 +51,9 @@ vec4 ToVec4(const fastgltf::math::nvec4 &v) { return {v.x(), v.y(), v.z(), v.w()
 quat ToQuat(const fastgltf::math::fquat &q) { return {q.w(), q.x(), q.y(), q.z()}; }
 Transform ToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = glm::normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
-std::optional<TextureTransformData> ToTextureTransform(const std::unique_ptr<fastgltf::TextureTransform> &transform) {
+std::optional<TextureTransform> ToTextureTransform(const std::unique_ptr<fastgltf::TextureTransform> &transform) {
     if (!transform) return {};
-    return TextureTransformData{
+    return TextureTransform{
         .Rotation = transform->rotation,
         .UvOffset = ToVec2(transform->uvOffset),
         .UvScale = ToVec2(transform->uvScale),
@@ -61,41 +61,39 @@ std::optional<TextureTransformData> ToTextureTransform(const std::unique_ptr<fas
     };
 }
 
-std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::TextureInfo> &texture_info, const fastgltf::Asset &asset) {
+std::optional<TextureInfo> ToTextureInfo(const fastgltf::Optional<fastgltf::TextureInfo> &texture_info, const fastgltf::Asset &asset) {
     if (!texture_info) return {};
     const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
     if (!texture_index) return {};
-    return TextureInfoData{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
+    return TextureInfo{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
 }
-std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::NormalTextureInfo> &texture_info, const fastgltf::Asset &asset) {
+std::optional<TextureInfo> ToTextureInfo(const fastgltf::Optional<fastgltf::NormalTextureInfo> &texture_info, const fastgltf::Asset &asset) {
     if (!texture_info) return {};
     const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
     if (!texture_index) return {};
-    return TextureInfoData{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
+    return TextureInfo{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
 }
-std::optional<TextureInfoData> ToTextureInfo(const fastgltf::Optional<fastgltf::OcclusionTextureInfo> &texture_info, const fastgltf::Asset &asset) {
+std::optional<TextureInfo> ToTextureInfo(const fastgltf::Optional<fastgltf::OcclusionTextureInfo> &texture_info, const fastgltf::Asset &asset) {
     if (!texture_info) return {};
     const auto texture_index = ToIndex(texture_info->textureIndex, asset.textures.size());
     if (!texture_index) return {};
-    return TextureInfoData{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
+    return TextureInfo{.TextureIndex = *texture_index, .TexCoordIndex = uint32_t(texture_info->texCoordIndex), .Transform = ToTextureTransform(texture_info->transform)};
 }
 
-SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf::Material &material, uint32_t material_index) {
-    SceneMaterialData data{
-        .PbrData = {
-            .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
-            .MetallicFactor = material.pbrData.metallicFactor,
-            .RoughnessFactor = material.pbrData.roughnessFactor,
-            .EmissiveFactor = ToVec3(material.emissiveFactor * material.emissiveStrength),
-            .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
-            .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
-            .Ior = material.ior,
-            .BaseColorTexture = ToTextureInfo(material.pbrData.baseColorTexture, asset),
-            .MetallicRoughnessTexture = ToTextureInfo(material.pbrData.metallicRoughnessTexture, asset),
-            .NormalTexture = ToTextureInfo(material.normalTexture, asset),
-            .OcclusionTexture = ToTextureInfo(material.occlusionTexture, asset),
-            .EmissiveTexture = ToTextureInfo(material.emissiveTexture, asset),
-        },
+PBRMaterial MakePBRMaterial(const fastgltf::Asset &asset, const fastgltf::Material &material, uint32_t material_index) {
+    PBRMaterial data{
+        .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
+        .MetallicFactor = material.pbrData.metallicFactor,
+        .RoughnessFactor = material.pbrData.roughnessFactor,
+        .EmissiveFactor = ToVec3(material.emissiveFactor * material.emissiveStrength),
+        .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
+        .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
+        .Ior = material.ior,
+        .BaseColorTexture = ToTextureInfo(material.pbrData.baseColorTexture, asset),
+        .MetallicRoughnessTexture = ToTextureInfo(material.pbrData.metallicRoughnessTexture, asset),
+        .NormalTexture = ToTextureInfo(material.normalTexture, asset),
+        .OcclusionTexture = ToTextureInfo(material.occlusionTexture, asset),
+        .EmissiveTexture = ToTextureInfo(material.emissiveTexture, asset),
         .AlphaMode = material.alphaMode,
         .DoubleSided = material.doubleSided,
         .Unlit = material.unlit,
@@ -103,7 +101,7 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
     };
     if (material.sheen) {
-        data.PbrData.Sheen = {
+        data.Sheen = {
             .ColorFactor = ToVec3(material.sheen->sheenColorFactor),
             .RoughnessFactor = material.sheen->sheenRoughnessFactor,
             .ColorTexture = ToTextureInfo(material.sheen->sheenColorTexture, asset),
@@ -111,7 +109,7 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         };
     }
     if (material.specular) {
-        data.PbrData.Specular = {
+        data.Specular = {
             .Factor = material.specular->specularFactor,
             .ColorFactor = ToVec3(material.specular->specularColorFactor),
             .Texture = ToTextureInfo(material.specular->specularTexture, asset),
@@ -119,14 +117,14 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         };
     }
     if (material.transmission) {
-        data.PbrData.Transmission = {
+        data.Transmission = {
             .Factor = material.transmission->transmissionFactor,
             .Texture = ToTextureInfo(material.transmission->transmissionTexture, asset),
         };
     }
     if (material.volume) {
         const float ad = material.volume->attenuationDistance;
-        data.PbrData.Volume = {
+        data.Volume = {
             .ThicknessFactor = material.volume->thicknessFactor,
             .AttenuationColor = ToVec3(material.volume->attenuationColor),
             .AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad,
@@ -134,7 +132,7 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         };
     }
     if (material.clearcoat) {
-        data.PbrData.Clearcoat = {
+        data.Clearcoat = {
             .Factor = material.clearcoat->clearcoatFactor,
             .RoughnessFactor = material.clearcoat->clearcoatRoughnessFactor,
             .NormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f,
@@ -144,14 +142,14 @@ SceneMaterialData MakeMaterialData(const fastgltf::Asset &asset, const fastgltf:
         };
     }
     if (material.anisotropy) {
-        data.PbrData.Anisotropy = {
+        data.Anisotropy = {
             .Strength = material.anisotropy->anisotropyStrength,
             .Rotation = material.anisotropy->anisotropyRotation,
             .Texture = ToTextureInfo(material.anisotropy->anisotropyTexture, asset),
         };
     }
     if (material.iridescence) {
-        data.PbrData.Iridescence = {
+        data.Iridescence = {
             .Factor = material.iridescence->iridescenceFactor,
             .Ior = material.iridescence->iridescenceIor,
             .ThicknessMinimum = material.iridescence->iridescenceThicknessMinimum,
@@ -177,11 +175,11 @@ std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::file
     return bytes;
 }
 
-std::expected<SceneImageData, std::string> ReadImageData(const fastgltf::Asset &asset, uint32_t image_index, const std::filesystem::path &base_dir) {
+std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32_t image_index, const std::filesystem::path &base_dir) {
     if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
     const auto &image = asset.images[image_index];
 
-    SceneImageData image_data{
+    Image image_data{
         .Bytes = {},
         .MimeType = fastgltf::MimeType::None,
         .Name = image.name.empty() ? std::format("Image{}", image_index) : std::string(image.name),
@@ -281,7 +279,7 @@ std::expected<std::span<const std::byte>, std::string> ExtractGltfJsonChunk(std:
     return file_bytes.subspan(chunk_offset, chunk_length);
 }
 
-std::expected<std::optional<SceneImageBasedLightData>, std::string> ReadImageBasedLightData(
+std::expected<std::optional<ImageBasedLight>, std::string> ReadImageBasedLight(
     const std::filesystem::path &path,
     uint32_t scene_index,
     size_t image_count
@@ -305,7 +303,7 @@ std::expected<std::optional<SceneImageBasedLightData>, std::string> ReadImageBas
 
     simdjson::dom::array scenes;
     if (const auto err = root["scenes"].get_array().get(scenes); err != simdjson::SUCCESS) {
-        if (err == simdjson::NO_SUCH_FIELD) return std::optional<SceneImageBasedLightData>{};
+        if (err == simdjson::NO_SUCH_FIELD) return std::optional<ImageBasedLight>{};
         return std::unexpected{std::format("glTF '{}' has invalid scenes array while reading EXT_lights_image_based.", path.string())};
     }
     if (scene_index >= scenes.size()) {
@@ -319,13 +317,13 @@ std::expected<std::optional<SceneImageBasedLightData>, std::string> ReadImageBas
 
     simdjson::dom::object scene_extensions;
     if (const auto err = scene_obj["extensions"].get_object().get(scene_extensions); err != simdjson::SUCCESS) {
-        if (err == simdjson::NO_SUCH_FIELD) return std::optional<SceneImageBasedLightData>{};
+        if (err == simdjson::NO_SUCH_FIELD) return std::optional<ImageBasedLight>{};
         return std::unexpected{std::format("glTF '{}' scene {} has invalid extensions object.", path.string(), scene_index)};
     }
 
     simdjson::dom::object scene_ibl_ext;
     if (const auto err = scene_extensions["EXT_lights_image_based"].get_object().get(scene_ibl_ext); err != simdjson::SUCCESS) {
-        if (err == simdjson::NO_SUCH_FIELD) return std::optional<SceneImageBasedLightData>{};
+        if (err == simdjson::NO_SUCH_FIELD) return std::optional<ImageBasedLight>{};
         return std::unexpected{std::format("glTF '{}' scene {} has invalid EXT_lights_image_based extension object.", path.string(), scene_index)};
     }
 
@@ -356,7 +354,7 @@ std::expected<std::optional<SceneImageBasedLightData>, std::string> ReadImageBas
         return std::unexpected{std::format("glTF '{}' EXT_lights_image_based light {} is not an object.", path.string(), light_index_u64)};
     }
 
-    SceneImageBasedLightData out{};
+    ImageBasedLight out{};
     std::string_view name{};
     if (light_obj["name"].get_string().get(name) == simdjson::SUCCESS) out.Name = std::string{name};
 
@@ -414,12 +412,12 @@ std::expected<std::optional<SceneImageBasedLightData>, std::string> ReadImageBas
     }
 
     if (out.Name.empty()) out.Name = std::format("ImageBasedLight{}", light_index_u64);
-    return std::optional<SceneImageBasedLightData>{std::move(out)};
+    return std::optional<ImageBasedLight>{std::move(out)};
 }
 
 // Appends positions/edges from a non-triangle primitive into the target MeshData,
 // merging with any previously appended primitives of the same topology.
-void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, MeshData &target) {
+void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshData &target) {
     const auto position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return;
 
@@ -466,7 +464,7 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
 std::expected<void, std::string> AppendPrimitive(
     const fastgltf::Asset &asset,
     const fastgltf::Primitive &primitive,
-    MeshData &mesh_data,
+    ::MeshData &mesh_data,
     std::optional<ArmatureDeformData> &deform_data,
     std::optional<MorphTargetData> &morph_data
 ) {
@@ -781,24 +779,24 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     return std::move(parsed.get());
 }
 
-std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, SceneData &scene_data, std::unordered_map<uint32_t, std::optional<uint32_t>> &mesh_index_map) {
+std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, Scene &scene, std::unordered_map<uint32_t, std::optional<uint32_t>> &mesh_index_map) {
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
 
     const auto &source_mesh = asset.meshes[source_mesh_index];
-    MeshData mesh_data;
+    ::MeshData mesh_data;
     std::optional<ArmatureDeformData> mesh_deform_data;
     std::optional<MorphTargetData> mesh_morph_data;
-    MeshData lines_data, points_data; // Merged across all line/point primitives
+    ::MeshData lines_data, points_data; // Merged across all line/point primitives
     // Track per-primitive vertex counts for morph target re-packing
     std::vector<uint32_t> prim_vertex_counts;
     std::vector<uint32_t> face_primitive_indices;
     std::vector<uint32_t> primitive_material_indices(
         source_mesh.primitives.size(),
-        scene_data.Materials.empty() ? 0u : uint32_t(scene_data.Materials.size() - 1u)
+        scene.Materials.empty() ? 0u : uint32_t(scene.Materials.size() - 1u)
     );
     for (uint32_t primitive_index = 0; primitive_index < source_mesh.primitives.size(); ++primitive_index) {
         const auto &primitive = source_mesh.primitives[primitive_index];
-        if (const auto material_index = ToIndex(primitive.materialIndex, scene_data.Materials.size())) {
+        if (const auto material_index = ToIndex(primitive.materialIndex, scene.Materials.size())) {
             primitive_material_indices[primitive_index] = *material_index;
         }
         if (primitive.type == fastgltf::PrimitiveType::Points) {
@@ -876,9 +874,9 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
         mesh_data.PrimitiveMaterialIndices = std::move(primitive_material_indices);
     }
 
-    const auto mesh_index = scene_data.Meshes.size();
-    scene_data.Meshes.emplace_back(
-        SceneMeshData{
+    const auto mesh_index = scene.Meshes.size();
+    scene.Meshes.emplace_back(
+        MeshData{
             .Triangles = has_triangle_data ? std::optional{std::move(mesh_data)} : std::nullopt,
             .Lines = has_lines ? std::optional{std::move(lines_data)} : std::nullopt,
             .Points = has_points ? std::optional{std::move(points_data)} : std::nullopt,
@@ -1095,7 +1093,7 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
 }
 } // namespace
 
-std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path &path) {
+std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
     auto parsed_asset = ParseAsset(path);
     if (!parsed_asset) return std::unexpected{parsed_asset.error()};
 
@@ -1105,15 +1103,15 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     const auto scene_index = asset.defaultScene.value_or(0);
     if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", path.string())};
 
-    SceneData scene_data;
-    auto image_based_light = ReadImageBasedLightData(path, uint32_t(scene_index), asset.images.size());
+    Scene scene;
+    auto image_based_light = ReadImageBasedLight(path, uint32_t(scene_index), asset.images.size());
     if (!image_based_light) return std::unexpected{std::move(image_based_light.error())};
-    scene_data.ImageBasedLight = std::move(*image_based_light);
+    scene.ImageBasedLight = std::move(*image_based_light);
 
-    scene_data.Samplers.reserve(asset.samplers.size());
+    scene.Samplers.reserve(asset.samplers.size());
     for (const auto &sampler : asset.samplers) {
-        scene_data.Samplers.emplace_back(
-            SceneSamplerData{
+        scene.Samplers.emplace_back(
+            Sampler{
                 .MagFilter = sampler.magFilter,
                 .MinFilter = sampler.minFilter,
                 .WrapS = sampler.wrapS,
@@ -1123,17 +1121,17 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         );
     }
 
-    scene_data.Images.reserve(asset.images.size());
+    scene.Images.reserve(asset.images.size());
     for (uint32_t image_index = 0; image_index < asset.images.size(); ++image_index) {
-        auto image_data = ReadImageData(asset, image_index, path.parent_path());
+        auto image_data = ReadImage(asset, image_index, path.parent_path());
         if (!image_data) return std::unexpected{std::move(image_data.error())};
-        scene_data.Images.emplace_back(std::move(*image_data));
+        scene.Images.emplace_back(std::move(*image_data));
     }
 
-    scene_data.Textures.reserve(asset.textures.size());
+    scene.Textures.reserve(asset.textures.size());
     for (const auto &texture : asset.textures) {
-        scene_data.Textures.emplace_back(
-            SceneTextureData{
+        scene.Textures.emplace_back(
+            Texture{
                 .SamplerIndex = ToIndex(texture.samplerIndex, asset.samplers.size()),
                 .ImageIndex = ToIndex(texture.imageIndex, asset.images.size()),
                 .BasisuImageIndex = ToIndex(texture.basisuImageIndex, asset.images.size()),
@@ -1144,20 +1142,18 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         );
     }
 
-    scene_data.Materials.reserve(asset.materials.size() + 1u);
+    scene.Materials.reserve(asset.materials.size() + 1u);
     for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
-        scene_data.Materials.emplace_back(MakeMaterialData(asset, asset.materials[material_index], material_index));
+        scene.Materials.emplace_back(MakePBRMaterial(asset, asset.materials[material_index], material_index));
     }
-    scene_data.Materials.emplace_back(
-        SceneMaterialData{
-            .PbrData = {
-                .BaseColorFactor = vec4{1.f},
-                .MetallicFactor = 1.f,
-                .RoughnessFactor = 1.f,
-                .EmissiveFactor = vec3{0.f},
-                .NormalScale = 1.f,
-                .OcclusionStrength = 1.f,
-            },
+    scene.Materials.emplace_back(
+        PBRMaterial{
+            .BaseColorFactor = vec4{1.f},
+            .MetallicFactor = 1.f,
+            .RoughnessFactor = 1.f,
+            .EmissiveFactor = vec3{0.f},
+            .NormalScale = 1.f,
+            .OcclusionStrength = 1.f,
             .AlphaMode = fastgltf::AlphaMode::Opaque,
             .DoubleSided = false,
             .Unlit = false,
@@ -1181,10 +1177,10 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     }
 
     // Parse cameras
-    scene_data.Cameras.reserve(asset.cameras.size());
+    scene.Cameras.reserve(asset.cameras.size());
     for (const auto &cam : asset.cameras) {
         auto projection = std::visit(
-            [](const auto &source) -> CameraData {
+            [](const auto &source) -> ::Camera {
                 using Projection = std::decay_t<decltype(source)>;
                 if constexpr (std::is_same_v<Projection, fastgltf::Camera::Perspective>) {
                     return Perspective{.FieldOfViewRad = source.yfov, .FarClip = source.zfar, .NearClip = source.znear, .AspectRatio = source.aspectRatio};
@@ -1194,11 +1190,11 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             },
             cam.camera
         );
-        scene_data.Cameras.emplace_back(CameraData{std::move(projection)}, std::string{cam.name});
+        scene.Cameras.emplace_back(std::move(projection), std::string{cam.name});
     }
 
     // Parse KHR_lights_punctual lights
-    scene_data.Lights.reserve(asset.lights.size());
+    scene.Lights.reserve(asset.lights.size());
     for (const auto &light : asset.lights) {
         PunctualLight punctual_light{
             .Range = 0.f,
@@ -1226,7 +1222,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 break;
             }
         }
-        scene_data.Lights.emplace_back(punctual_light, std::string{light.name});
+        scene.Lights.emplace_back(punctual_light, std::string{light.name});
     }
 
     std::vector<bool> is_joint(asset.nodes.size(), false);
@@ -1239,13 +1235,13 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     }
 
     std::unordered_map<uint32_t, std::optional<uint32_t>> mesh_index_map;
-    scene_data.Nodes.resize(asset.nodes.size());
+    scene.Nodes.resize(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         const auto &source_node = asset.nodes[node_index];
         const auto source_mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
         auto mesh_index = std::optional<uint32_t>{};
         if (traversal.InScene[node_index] && source_mesh_index) {
-            auto ensured_mesh = EnsureMeshData(asset, *source_mesh_index, scene_data, mesh_index_map);
+            auto ensured_mesh = EnsureMeshData(asset, *source_mesh_index, scene, mesh_index_map);
             if (!ensured_mesh) return std::unexpected{std::move(ensured_mesh.error())};
             mesh_index = *ensured_mesh;
         }
@@ -1254,7 +1250,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         for (const auto child_idx : source_node.children) {
             if (const auto child = ToIndex(child_idx, asset.nodes.size())) children_node_indices.emplace_back(*child);
         }
-        scene_data.Nodes[node_index] = SceneNodeData{
+        scene.Nodes[node_index] = Node{
             .NodeIndex = node_index,
             .ParentNodeIndex = parents[node_index],
             .ChildrenNodeIndices = std::move(children_node_indices),
@@ -1271,8 +1267,8 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
     }
 
     std::vector<bool> is_object_emitted(asset.nodes.size(), false);
-    for (uint32_t node_index = 0; node_index < scene_data.Nodes.size(); ++node_index) {
-        if (const auto &node = scene_data.Nodes[node_index]; node.InScene) {
+    for (uint32_t node_index = 0; node_index < scene.Nodes.size(); ++node_index) {
+        if (const auto &node = scene.Nodes[node_index]; node.InScene) {
             // Joint nodes are bone-only unless they also carry renderable mesh data.
             is_object_emitted[node_index] = node.MeshIndex.has_value() || !node.IsJoint;
         }
@@ -1289,8 +1285,8 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         if (traversal.InScene[ni]) node_instance_transforms[ni] = ReadInstanceTransforms(asset, asset.nodes[ni]);
     }
 
-    for (uint32_t node_index = 0; node_index < scene_data.Nodes.size(); ++node_index) {
-        if (const auto &node = scene_data.Nodes[node_index]; is_object_emitted[node_index]) {
+    for (uint32_t node_index = 0; node_index < scene.Nodes.size(); ++node_index) {
+        if (const auto &node = scene.Nodes[node_index]; is_object_emitted[node_index]) {
             const auto source_mesh_index = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size());
             if (const auto &instance_transforms = node_instance_transforms[node_index];
                 !instance_transforms.empty() && node.MeshIndex) {
@@ -1299,9 +1295,9 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 const auto &source_weights = asset.nodes[node_index].weights;
                 auto node_weights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())};
                 for (uint32_t i = 0; i < instance_transforms.size(); ++i) {
-                    scene_data.Objects.emplace_back(
-                        SceneObjectData{
-                            .ObjectType = SceneObjectData::Type::Mesh,
+                    scene.Objects.emplace_back(
+                        Object{
+                            .ObjectType = Object::Type::Mesh,
                             .NodeIndex = node.NodeIndex,
                             .ParentNodeIndex = std::nullopt,
                             .WorldTransform = MatrixToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])),
@@ -1316,12 +1312,12 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
                 }
             } else {
                 const auto &source_weights = asset.nodes[node_index].weights;
-                const auto object_type = node.MeshIndex ? SceneObjectData::Type::Mesh :
-                    node.CameraIndex                    ? SceneObjectData::Type::Camera :
-                    node.LightIndex                     ? SceneObjectData::Type::Light :
-                                                          SceneObjectData::Type::Empty;
-                scene_data.Objects.emplace_back(
-                    SceneObjectData{
+                const auto object_type = node.MeshIndex ? Object::Type::Mesh :
+                    node.CameraIndex                    ? Object::Type::Camera :
+                    node.LightIndex                     ? Object::Type::Light :
+                                                          Object::Type::Empty;
+                scene.Objects.emplace_back(
+                    Object{
                         .ObjectType = object_type,
                         .NodeIndex = node.NodeIndex,
                         .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
@@ -1338,7 +1334,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         }
     }
 
-    scene_data.Skins.reserve(asset.skins.size());
+    scene.Skins.reserve(asset.skins.size());
     for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
         if (!used_skin[skin_index]) continue;
         const auto &skin = asset.skins[skin_index];
@@ -1370,7 +1366,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         const auto skeleton_node_index = ToIndex(skin.skeleton, asset.nodes.size());
         // Deterministic armature scene anchor: explicit skin.skeleton if present,
         // otherwise the computed joint ancestry root. Do not synthesize extra roots.
-        SceneSkinData scene_skin{
+        Skin scene_skin{
             .SkinIndex = skin_index,
             .Name = skin.name.empty() ? std::format("Skin{}", skin_index) : std::string(skin.name),
             .SkeletonNodeIndex = skeleton_node_index,
@@ -1385,7 +1381,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
             if (!rest_local) return std::unexpected{rest_local.error()};
 
             scene_skin.Joints.emplace_back(
-                SkinJointData{
+                SkinJoint{
                     .JointNodeIndex = joint_node_index,
                     .ParentJointNodeIndex = parent_joint_node_index,
                     .RestLocal = *rest_local,
@@ -1397,13 +1393,13 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         if (scene_skin.AnchorNodeIndex && traversal.InScene[*scene_skin.AnchorNodeIndex]) {
             scene_skin.ParentObjectNodeIndex = nearest_object_ancestor[*scene_skin.AnchorNodeIndex];
         }
-        scene_data.Skins.emplace_back(std::move(scene_skin));
+        scene.Skins.emplace_back(std::move(scene_skin));
     }
 
     // Parse animations
     for (uint32_t anim_index = 0; anim_index < asset.animations.size(); ++anim_index) {
         const auto &anim = asset.animations[anim_index];
-        AnimationClipData clip{.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name), .DurationSeconds = 0, .Channels = {}};
+        AnimationClip clip{.Name = anim.name.empty() ? std::format("Animation{}", anim_index) : std::string(anim.name), .DurationSeconds = 0, .Channels = {}};
         float max_time = 0;
         struct ChannelTargetSpec {
             AnimationPath Path;
@@ -1463,7 +1459,7 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
 
             if (!times.empty()) max_time = std::max(max_time, times.back());
 
-            clip.Channels.emplace_back(AnimationChannelData{
+            clip.Channels.emplace_back(AnimationChannel{
                 .TargetNodeIndex = uint32_t(*channel.nodeIndex),
                 .Target = target_spec->Path,
                 .Interp = interp,
@@ -1473,12 +1469,12 @@ std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path 
         }
 
         clip.DurationSeconds = max_time;
-        if (!clip.Channels.empty()) scene_data.Animations.emplace_back(std::move(clip));
+        if (!clip.Channels.empty()) scene.Animations.emplace_back(std::move(clip));
     }
 
-    if (scene_data.Objects.empty() && scene_data.Skins.empty()) {
+    if (scene.Objects.empty() && scene.Skins.empty()) {
         return std::unexpected{std::format("glTF '{}' has no importable scene objects or skins.", path.string())};
     }
-    return scene_data;
+    return scene;
 }
 } // namespace gltf

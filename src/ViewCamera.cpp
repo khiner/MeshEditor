@@ -80,8 +80,8 @@ void ViewCamera::SetTargetYawPitch(vec2 yaw_pitch) {
     GoalYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
 }
 
-void ViewCamera::SetData(const CameraData &camera_data) {
-    Data = camera_data;
+void ViewCamera::SetData(const Camera &data) {
+    Data = data;
     StopMoving();
 }
 

@@ -16,7 +16,7 @@ struct DescriptorSlots {
 
     vk::WriteDescriptorSet MakeBufferWrite(TypedSlot, const vk::DescriptorBufferInfo &) const;
     vk::WriteDescriptorSet MakeImageWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;
-    vk::WriteDescriptorSet MakeUniformWrite(TypedSlot slot, const vk::DescriptorBufferInfo &) const;
+    vk::WriteDescriptorSet MakeUniformWrite(TypedSlot, const vk::DescriptorBufferInfo &) const;
     vk::WriteDescriptorSet MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;
     vk::WriteDescriptorSet MakeCubeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &) const;
 

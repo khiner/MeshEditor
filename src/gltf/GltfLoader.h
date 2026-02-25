@@ -13,7 +13,7 @@
 #pragma once
 
 #include "Armature.h"
-#include "CameraData.h"
+#include "Camera.h"
 #include "Transform.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/ArmatureDeformData.h"
@@ -35,66 +35,66 @@
 #include <vector>
 
 namespace gltf {
-struct TextureTransformData {
+struct TextureTransform {
     float Rotation;
     vec2 UvOffset, UvScale;
     std::optional<uint32_t> TexCoordIndex;
 };
 
-struct TextureInfoData {
+struct TextureInfo {
     uint32_t TextureIndex;
     uint32_t TexCoordIndex;
-    std::optional<TextureTransformData> Transform;
+    std::optional<TextureTransform> Transform;
 };
 
 struct Sheen {
     vec3 ColorFactor{0.f, 0.f, 0.f};
     float RoughnessFactor{0.f};
-    std::optional<TextureInfoData> ColorTexture{}, RoughnessTexture{};
+    std::optional<TextureInfo> ColorTexture{}, RoughnessTexture{};
 };
 struct Specular {
     float Factor{1.f};
     vec3 ColorFactor{1.f, 1.f, 1.f};
-    std::optional<TextureInfoData> Texture{}, ColorTexture{};
+    std::optional<TextureInfo> Texture{}, ColorTexture{};
 };
 struct Transmission {
     float Factor{0.f};
-    std::optional<TextureInfoData> Texture{};
+    std::optional<TextureInfo> Texture{};
 };
 struct Volume {
     float ThicknessFactor{0.f};
     vec3 AttenuationColor{1.f, 1.f, 1.f};
     float AttenuationDistance{0.f};
-    std::optional<TextureInfoData> ThicknessTexture{};
+    std::optional<TextureInfo> ThicknessTexture{};
 };
 struct Clearcoat {
     float Factor{0.f};
     float RoughnessFactor{0.f};
     float NormalScale{1.f};
-    std::optional<TextureInfoData> Texture{}, RoughnessTexture{}, NormalTexture{};
+    std::optional<TextureInfo> Texture{}, RoughnessTexture{}, NormalTexture{};
 };
 struct Anisotropy {
     float Strength{0.f};
     float Rotation{0.f};
-    std::optional<TextureInfoData> Texture{};
+    std::optional<TextureInfo> Texture{};
 };
 struct Iridescence {
     float Factor{0.f};
     float Ior{1.3f};
     float ThicknessMinimum{100.f};
     float ThicknessMaximum{400.f};
-    std::optional<TextureInfoData> Texture{}, ThicknessTexture{};
+    std::optional<TextureInfo> Texture{}, ThicknessTexture{};
 };
 
-struct PBRData {
+struct PBRMaterial {
     vec4 BaseColorFactor;
     float MetallicFactor, RoughnessFactor;
     vec3 EmissiveFactor;
     float NormalScale;
     float OcclusionStrength;
     float Ior{1.5f};
-    std::optional<TextureInfoData> BaseColorTexture{}, MetallicRoughnessTexture{};
-    std::optional<TextureInfoData> NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
+    std::optional<TextureInfo> BaseColorTexture{}, MetallicRoughnessTexture{};
+    std::optional<TextureInfo> NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
     Sheen Sheen;
     Specular Specular;
     Transmission Transmission;
@@ -102,59 +102,55 @@ struct PBRData {
     Clearcoat Clearcoat;
     Anisotropy Anisotropy;
     Iridescence Iridescence;
-};
-
-struct SceneMaterialData {
-    PBRData PbrData;
     fastgltf::AlphaMode AlphaMode;
     bool DoubleSided, Unlit;
     float AlphaCutoff;
     std::string Name;
 };
 
-struct SceneTextureData {
+struct Texture {
     std::optional<uint32_t> SamplerIndex, ImageIndex, BasisuImageIndex, DdsImageIndex, WebpImageIndex;
     std::string Name;
 };
 
-struct SceneImageData {
+struct Image {
     std::vector<std::byte> Bytes;
     fastgltf::MimeType MimeType;
     std::string Name;
 };
 
-struct SceneSamplerData {
+struct Sampler {
     std::optional<fastgltf::Filter> MagFilter, MinFilter;
     fastgltf::Wrap WrapS, WrapT;
     std::string Name;
 };
 
-struct SceneMeshData {
+struct MeshData {
     // Merged triangle/line/point primitives (Triangles/TriangleStrip/TriangleFan, Lines/LineStrip/LineLoop, Points)
-    std::optional<MeshData> Triangles, Lines, Points;
+    std::optional<::MeshData> Triangles, Lines, Points;
     std::optional<ArmatureDeformData> DeformData;
     std::optional<MorphTargetData> MorphData;
     std::string Name;
 };
 
-struct SceneCameraData {
-    CameraData Camera;
+struct Camera {
+    ::Camera Camera;
     std::string Name;
 };
 
-struct SceneLightData {
+struct Light {
     PunctualLight Light;
     std::string Name;
 };
 
-struct SceneImageBasedLightData {
+struct ImageBasedLight {
     std::vector<std::array<uint32_t, 6>> SpecularImageIndicesByMip; // Mip-major; face order: +X, -X, +Y, -Y, +Z, -Z.
     std::optional<std::array<vec3, 9>> IrradianceCoefficients; // L00, L1-1, L10, L11, L2-2, L2-1, L20, L21, L22.
     float Intensity{1.f};
     std::string Name;
 };
 
-struct SceneNodeData {
+struct Node {
     uint32_t NodeIndex;
     std::optional<uint32_t> ParentNodeIndex;
     std::vector<uint32_t> ChildrenNodeIndices;
@@ -166,7 +162,7 @@ struct SceneNodeData {
     std::string Name;
 };
 
-struct SceneObjectData {
+struct Object {
     enum class Type : uint8_t {
         Empty,
         Mesh,
@@ -183,22 +179,22 @@ struct SceneObjectData {
     std::string Name;
 };
 
-struct SkinJointData {
+struct SkinJoint {
     uint32_t JointNodeIndex;
     std::optional<uint32_t> ParentJointNodeIndex;
     Transform RestLocal;
     std::string Name;
 };
 
-struct SceneSkinData {
+struct Skin {
     uint32_t SkinIndex;
     std::string Name;
     std::optional<uint32_t> SkeletonNodeIndex, AnchorNodeIndex, ParentObjectNodeIndex{};
-    std::vector<SkinJointData> Joints; // Parent-before-child order
+    std::vector<SkinJoint> Joints; // Parent-before-child order
     std::vector<mat4> InverseBindMatrices; // Order matches `Joints`
 };
 
-struct AnimationChannelData {
+struct AnimationChannel {
     uint32_t TargetNodeIndex;
     AnimationPath Target;
     AnimationInterpolation Interp;
@@ -206,26 +202,26 @@ struct AnimationChannelData {
     std::vector<float> Values; // Packed: vec3 for T/S, vec4(xyzw) for R
 };
 
-struct AnimationClipData {
+struct AnimationClip {
     std::string Name;
     float DurationSeconds;
-    std::vector<AnimationChannelData> Channels;
+    std::vector<AnimationChannel> Channels;
 };
 
-struct SceneData {
-    std::vector<SceneMeshData> Meshes;
-    std::vector<SceneMaterialData> Materials;
-    std::vector<SceneTextureData> Textures;
-    std::vector<SceneImageData> Images;
-    std::vector<SceneSamplerData> Samplers;
-    std::vector<SceneNodeData> Nodes;
-    std::vector<SceneObjectData> Objects;
-    std::vector<SceneSkinData> Skins;
-    std::vector<AnimationClipData> Animations;
-    std::vector<SceneCameraData> Cameras;
-    std::vector<SceneLightData> Lights;
-    std::optional<SceneImageBasedLightData> ImageBasedLight;
+struct Scene {
+    std::vector<MeshData> Meshes;
+    std::vector<PBRMaterial> Materials;
+    std::vector<Texture> Textures;
+    std::vector<Image> Images;
+    std::vector<Sampler> Samplers;
+    std::vector<Node> Nodes;
+    std::vector<Object> Objects;
+    std::vector<Skin> Skins;
+    std::vector<AnimationClip> Animations;
+    std::vector<Camera> Cameras;
+    std::vector<Light> Lights;
+    std::optional<ImageBasedLight> ImageBasedLight;
 };
 
-std::expected<SceneData, std::string> LoadSceneData(const std::filesystem::path &path);
+std::expected<Scene, std::string> LoadScene(const std::filesystem::path &);
 } // namespace gltf

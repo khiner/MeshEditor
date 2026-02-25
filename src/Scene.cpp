@@ -5,7 +5,7 @@
 #include "Armature.h"
 #include "BBox.h"
 #include "Bindless.h"
-#include "CameraData.h"
+#include "Camera.h"
 #include "Entity.h"
 #include "Excitable.h"
 #include "File.h"
@@ -236,7 +236,7 @@ enum class TextureColorSpace : uint8_t {
 
 vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm; }
 
-SamplerConfig ToSamplerConfig(const gltf::SceneSamplerData *sampler) {
+SamplerConfig ToSamplerConfig(const gltf::Sampler *sampler) {
     SamplerConfig config{};
     if (sampler) {
         if (sampler->MagFilter && *sampler->MagFilter == fastgltf::Filter::Nearest) config.MagFilter = vk::Filter::eNearest;
@@ -720,8 +720,8 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
     vk::CommandPool command_pool,
     vk::Fence one_shot_fence,
     DescriptorSlots &slots,
-    const gltf::SceneData &scene_data,
-    const gltf::SceneImageBasedLightData &ibl
+    const gltf::Scene &scene,
+    const gltf::ImageBasedLight &ibl
 ) {
     std::vector<CubemapMipFacesF32> specular_mips;
     specular_mips.reserve(ibl.SpecularImageIndicesByMip.size());
@@ -730,9 +730,9 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
         CubemapMipFacesF32 faces{};
         for (uint32_t face = 0; face < 6u; ++face) {
             const auto image_index = ibl.SpecularImageIndicesByMip[mip][face];
-            if (image_index >= scene_data.Images.size()) return std::unexpected{std::format("EXT_lights_image_based '{}' references image index {} (out of range).", ibl.Name, image_index)};
+            if (image_index >= scene.Images.size()) return std::unexpected{std::format("EXT_lights_image_based '{}' references image index {} (out of range).", ibl.Name, image_index)};
 
-            const auto &src_image = scene_data.Images[image_index];
+            const auto &src_image = scene.Images[image_index];
             auto decoded = DecodeImageRgba32f(
                 src_image.Bytes,
                 src_image.Name.empty() ? std::format("Image{}", image_index) : src_image.Name
@@ -1218,20 +1218,20 @@ void AppendExtrasDraw(entt::registry &R, DrawListBuilder &dl, DrawBatchInfo &bat
 namespace {
 // Build a wireframe frustum mesh in camera-local space (camera looks down -Z).
 // Returns positions + edges for a line-only mesh (no faces).
-MeshData BuildCameraFrustumMesh(const CameraData &cd) {
+MeshData BuildCameraFrustumMesh(const Camera &camera) {
     float display_near{0.01f}, display_far{5.f};
     float near_half_w{0.f}, near_half_h{0.f}, far_half_w{0.f}, far_half_h{0.f};
-    if (const auto *perspective = std::get_if<Perspective>(&cd)) {
+    if (const auto *perspective = std::get_if<Perspective>(&camera)) {
         // Clamp far plane for display so wireframe doesn't extend to infinity.
         display_near = perspective->NearClip;
         display_far = std::min(perspective->FarClip.value_or(5.f), 5.f);
 
-        const float aspect = AspectRatio(cd);
+        const float aspect = AspectRatio(camera);
         near_half_h = display_near * std::tan(perspective->FieldOfViewRad * 0.5f);
         near_half_w = near_half_h * aspect;
         far_half_h = display_far * std::tan(perspective->FieldOfViewRad * 0.5f);
         far_half_w = far_half_h * aspect;
-    } else if (const auto *orthographic = std::get_if<Orthographic>(&cd)) {
+    } else if (const auto *orthographic = std::get_if<Orthographic>(&camera)) {
         display_near = orthographic->NearClip;
         display_far = std::min(orthographic->FarClip, 5.f);
         near_half_w = far_half_w = orthographic->Mag.x;
@@ -1331,18 +1331,18 @@ struct ViewportContext {
     float Distance, AspectRatio;
 };
 
-bool RenderCameraLensEditor(CameraData &camera_data, std::optional<ViewportContext> viewport = {}) {
+bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewport = {}) {
     bool lens_changed = false;
 
-    int proj_i = std::holds_alternative<Orthographic>(camera_data) ? 1 : 0;
+    int proj_i = std::holds_alternative<Orthographic>(camera) ? 1 : 0;
     const char *proj_names[]{"Perspective", "Orthographic"};
     if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) {
-        if (proj_i == 0 && !std::holds_alternative<Perspective>(camera_data)) {
-            camera_data = PerspectiveFromOrthographic(std::get<Orthographic>(camera_data), viewport ? std::optional<float>{viewport->Distance} : std::nullopt);
+        if (proj_i == 0 && !std::holds_alternative<Perspective>(camera)) {
+            camera = PerspectiveFromOrthographic(std::get<Orthographic>(camera), viewport ? std::optional<float>{viewport->Distance} : std::nullopt);
             lens_changed = true;
-        } else if (proj_i == 1 && !std::holds_alternative<Orthographic>(camera_data)) {
-            camera_data = OrthographicFromPerspective(
-                std::get<Perspective>(camera_data),
+        } else if (proj_i == 1 && !std::holds_alternative<Orthographic>(camera)) {
+            camera = OrthographicFromPerspective(
+                std::get<Perspective>(camera),
                 viewport ? std::optional<float>{viewport->Distance} : std::nullopt,
                 viewport ? std::optional<float>{viewport->AspectRatio} : std::nullopt
             );
@@ -1350,7 +1350,7 @@ bool RenderCameraLensEditor(CameraData &camera_data, std::optional<ViewportConte
         }
     }
 
-    if (auto *perspective = std::get_if<Perspective>(&camera_data)) {
+    if (auto *perspective = std::get_if<Perspective>(&camera)) {
         float fov_deg = glm::degrees(perspective->FieldOfViewRad);
         if (SliderFloat("Field of view (deg)", &fov_deg, 1.f, 179.f)) {
             perspective->FieldOfViewRad = glm::radians(fov_deg);
@@ -1374,7 +1374,7 @@ bool RenderCameraLensEditor(CameraData &camera_data, std::optional<ViewportConte
                 lens_changed = true;
             }
         }
-    } else if (auto *orthographic = std::get_if<Orthographic>(&camera_data)) {
+    } else if (auto *orthographic = std::get_if<Orthographic>(&camera)) {
         lens_changed |= SliderFloat("X Mag", &orthographic->Mag.x, 0.01f, 100.f);
         lens_changed |= SliderFloat("Y Mag", &orthographic->Mag.y, 0.01f, 100.f);
         lens_changed |= SliderFloat("Near clip", &orthographic->NearClip, 0.001f, orthographic->FarClip - MinNearFarDelta);
@@ -1463,7 +1463,7 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         const auto &mesh = r.get<const Mesh>(mi.MeshEntity);
         const auto bone_deform = meshes.GetBoneDeformRange(mesh.GetStoreId());
         if (bone_deform.Count == 0) continue;
-        if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureDataEntity)) {
+        if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity)) {
             result[mi.MeshEntity] = {
                 .BoneDeformOffset = bone_deform.Offset,
                 .ArmatureDeformOffset = pose_state->GpuDeformRange.Offset,
@@ -1623,8 +1623,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<SceneEditMode>()
         .on_update<SceneEditMode>();
     R.storage<entt::reactive>(changes::CameraLens)
-        .on_construct<CameraData>()
-        .on_update<CameraData>();
+        .on_construct<Camera>()
+        .on_update<Camera>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -1912,7 +1912,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         for (auto instance_entity : active_tracker) {
             update_instance_state(instance_entity);
             // If looking through a camera and a different camera becomes active, snap to it.
-            if (SavedViewCamera && R.all_of<Active>(instance_entity) && R.all_of<CameraData>(instance_entity)) {
+            if (SavedViewCamera && R.all_of<Active>(instance_entity) && R.all_of<Camera>(instance_entity)) {
                 SnapToCamera(instance_entity);
             }
         }
@@ -1955,10 +1955,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (const auto *ev = R.try_get<ExcitedVertex>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
     }
     for (auto camera_entity : R.storage<entt::reactive>(changes::CameraLens)) {
-        if (const auto *cd = R.try_get<CameraData>(camera_entity)) {
+        if (const auto *cd = R.try_get<Camera>(camera_entity)) {
             SetMeshPositions(R.get<MeshInstance>(camera_entity).MeshEntity, BuildCameraFrustumMesh(*cd).Positions);
             // If looking through this camera, trigger a ViewCamera update so the SceneView
-            // handler re-derives the widened FOV from the updated CameraData.
+            // handler re-derives the widened FOV from the updated camera.
             if (SavedViewCamera && R.all_of<Active>(camera_entity)) {
                 R.patch<ViewCamera>(SceneEntity, [](auto &) {});
             }
@@ -2091,7 +2091,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         // with the current viewport aspect ratio (handles viewport resize).
         if (SavedViewCamera) {
             const auto active_entity = FindActiveEntity(R);
-            if (const auto *cd = active_entity != entt::null ? R.try_get<CameraData>(active_entity) : nullptr) {
+            if (const auto *cd = active_entity != entt::null ? R.try_get<Camera>(active_entity) : nullptr) {
                 const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
                 const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
                 R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(*cd, viewport_aspect);
@@ -2263,7 +2263,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             LastEvaluatedFrame = tl.CurrentFrame;
             const float eval_seconds = float(tl.CurrentFrame) / tl.Fps;
             for (auto [entity, anim_data, pose_state, armature_data] :
-                 R.view<const ArmatureAnimationData, ArmaturePoseState, ArmatureData>().each()) {
+                 R.view<const ArmatureAnimation, ArmaturePoseState, Armature>().each()) {
                 if (anim_data.Clips.empty() || anim_data.ActiveClipIndex >= anim_data.Clips.size()) continue;
                 const auto &clip = anim_data.Clips[anim_data.ActiveClipIndex];
                 const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
@@ -2277,7 +2277,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
             // Evaluate morph weight animations
             for (auto [entity, morph_anim, morph_state, mi] :
-                 R.view<const MorphWeightAnimationData, MorphWeightState, const MeshInstance>().each()) {
+                 R.view<const MorphWeightAnimation, MorphWeightState, const MeshInstance>().each()) {
                 if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
                 const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
                 const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
@@ -2419,7 +2419,7 @@ entt::entity Scene::AddEmpty(ObjectCreateInfo info) {
 
 entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     const auto data_entity = R.create();
-    R.emplace<ArmatureData>(data_entity);
+    R.emplace<Armature>(data_entity);
 
     const auto entity = R.create();
     R.emplace<ObjectKind>(entity, ObjectType::Armature);
@@ -2488,9 +2488,9 @@ entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType t
 }
 
 entt::entity Scene::AddCamera(ObjectCreateInfo info) {
-    CameraData cd{Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}};
-    const auto entity = CreateExtrasObject({.Data = BuildCameraFrustumMesh(cd)}, ObjectType::Camera, info, "Camera");
-    R.emplace<CameraData>(entity, cd);
+    Camera camera{Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}};
+    const auto entity = CreateExtrasObject({.Data = BuildCameraFrustumMesh(camera)}, ObjectType::Camera, info, "Camera");
+    R.emplace<Camera>(entity, camera);
     return entity;
 }
 
@@ -2636,8 +2636,8 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
 }
 
 std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltfScene(const std::filesystem::path &path) {
-    auto loaded_scene = gltf::LoadSceneData(path);
-    if (!loaded_scene) return std::unexpected{std::move(loaded_scene.error())};
+    auto scene = gltf::LoadScene(path);
+    if (!scene) return std::unexpected{std::move(scene.error())};
 
     auto &texture_store = *Textures;
     const auto texture_start = texture_store.Textures.size();
@@ -2663,7 +2663,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         return std::unexpected{std::move(error)};
     };
 
-    const auto resolve_image_index = [&](const gltf::SceneTextureData &texture) -> std::optional<uint32_t> {
+    const auto resolve_image_index = [&](const gltf::Texture &texture) -> std::optional<uint32_t> {
         if (texture.ImageIndex) return texture.ImageIndex;
         if (texture.WebpImageIndex) return texture.WebpImageIndex;
         if (texture.BasisuImageIndex) return texture.BasisuImageIndex;
@@ -2675,18 +2675,18 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         return (uint64_t(texture_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
     };
     const auto resolve_texture_slot = [&](uint32_t texture_index, TextureColorSpace color_space) -> std::expected<uint32_t, std::string> {
-        if (texture_index >= loaded_scene->Textures.size()) return InvalidSlot;
+        if (texture_index >= scene->Textures.size()) return InvalidSlot;
         const auto cache_key = texture_cache_key(texture_index, color_space);
         if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
 
-        const auto &src_texture = loaded_scene->Textures[texture_index];
+        const auto &src_texture = scene->Textures[texture_index];
         const auto image_index = resolve_image_index(src_texture);
-        if (!image_index || *image_index >= loaded_scene->Images.size()) return InvalidSlot;
+        if (!image_index || *image_index >= scene->Images.size()) return InvalidSlot;
 
-        const auto &src_image = loaded_scene->Images[*image_index];
+        const auto &src_image = scene->Images[*image_index];
 
-        const gltf::SceneSamplerData *src_sampler = nullptr;
-        if (src_texture.SamplerIndex && *src_texture.SamplerIndex < loaded_scene->Samplers.size()) src_sampler = &loaded_scene->Samplers[*src_texture.SamplerIndex];
+        const gltf::Sampler *src_sampler = nullptr;
+        if (src_texture.SamplerIndex && *src_texture.SamplerIndex < scene->Samplers.size()) src_sampler = &scene->Samplers[*src_texture.SamplerIndex];
         const auto sampler_config = ToSamplerConfig(src_sampler);
         const auto wrap_s = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : vk::SamplerAddressMode::eRepeat;
         const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : vk::SamplerAddressMode::eRepeat;
@@ -2717,13 +2717,13 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         return sampler_slot;
     };
 
-    std::vector<uint32_t> material_indices_by_gltf_material(loaded_scene->Materials.size(), 0u);
+    std::vector<uint32_t> material_indices_by_gltf_material(scene->Materials.size(), 0u);
     const auto material_count = GetMaterialCount(*Buffers);
     const auto default_material_index = material_count > 0 ? material_count - 1u : 0u;
     std::vector<std::string> material_names;
-    material_names.reserve(loaded_scene->Materials.size());
-    for (uint32_t material_index = 0; material_index < loaded_scene->Materials.size(); ++material_index) {
-        const auto &src_material = loaded_scene->Materials[material_index];
+    material_names.reserve(scene->Materials.size());
+    for (uint32_t material_index = 0; material_index < scene->Materials.size(); ++material_index) {
+        const auto &src_material = scene->Materials[material_index];
         const auto material_name = src_material.Name.empty() ? std::format("Material{}", material_index) : src_material.Name;
         const auto clamp_uv_set = [&](uint32_t uv_set, std::string_view texture_label) {
             if (uv_set <= 3u) return uv_set;
@@ -2736,7 +2736,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             return 3u;
         };
         const auto assign_texture = [&](
-                                        const std::optional<gltf::TextureInfoData> &texture_info,
+                                        const std::optional<gltf::TextureInfo> &texture_info,
                                         TextureColorSpace color_space,
                                         std::string_view texture_label,
                                         TextureInfo &tex
@@ -2759,98 +2759,98 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             return {};
         };
         PBRMaterial gpu_material{
-            .BaseColorFactor = src_material.PbrData.BaseColorFactor,
-            .EmissiveFactor = src_material.PbrData.EmissiveFactor,
-            .MetallicFactor = src_material.PbrData.MetallicFactor,
-            .RoughnessFactor = src_material.PbrData.RoughnessFactor,
-            .NormalScale = src_material.PbrData.NormalScale,
-            .OcclusionStrength = src_material.PbrData.OcclusionStrength,
+            .BaseColorFactor = src_material.BaseColorFactor,
+            .EmissiveFactor = src_material.EmissiveFactor,
+            .MetallicFactor = src_material.MetallicFactor,
+            .RoughnessFactor = src_material.RoughnessFactor,
+            .NormalScale = src_material.NormalScale,
+            .OcclusionStrength = src_material.OcclusionStrength,
             .AlphaMode = uint32_t(src_material.AlphaMode),
             .AlphaCutoff = src_material.AlphaCutoff,
             .DoubleSided = src_material.DoubleSided ? 1u : 0u,
             .Unlit = src_material.Unlit ? 1u : 0u,
-            .Ior = src_material.PbrData.Ior,
+            .Ior = src_material.Ior,
             .Sheen = {
-                .ColorFactor = src_material.PbrData.Sheen.ColorFactor,
-                .RoughnessFactor = src_material.PbrData.Sheen.RoughnessFactor,
+                .ColorFactor = src_material.Sheen.ColorFactor,
+                .RoughnessFactor = src_material.Sheen.RoughnessFactor,
             },
             .Specular = {
-                .Factor = src_material.PbrData.Specular.Factor,
-                .ColorFactor = src_material.PbrData.Specular.ColorFactor,
+                .Factor = src_material.Specular.Factor,
+                .ColorFactor = src_material.Specular.ColorFactor,
             },
             .Transmission = {
-                .Factor = src_material.PbrData.Transmission.Factor,
+                .Factor = src_material.Transmission.Factor,
             },
             .Volume = {
-                .ThicknessFactor = src_material.PbrData.Volume.ThicknessFactor,
-                .AttenuationColor = src_material.PbrData.Volume.AttenuationColor,
-                .AttenuationDistance = src_material.PbrData.Volume.AttenuationDistance,
+                .ThicknessFactor = src_material.Volume.ThicknessFactor,
+                .AttenuationColor = src_material.Volume.AttenuationColor,
+                .AttenuationDistance = src_material.Volume.AttenuationDistance,
             },
             .Clearcoat = {
-                .Factor = src_material.PbrData.Clearcoat.Factor,
-                .RoughnessFactor = src_material.PbrData.Clearcoat.RoughnessFactor,
-                .NormalScale = src_material.PbrData.Clearcoat.NormalScale,
+                .Factor = src_material.Clearcoat.Factor,
+                .RoughnessFactor = src_material.Clearcoat.RoughnessFactor,
+                .NormalScale = src_material.Clearcoat.NormalScale,
             },
             .Anisotropy = {
-                .Strength = src_material.PbrData.Anisotropy.Strength,
-                .Rotation = src_material.PbrData.Anisotropy.Rotation,
+                .Strength = src_material.Anisotropy.Strength,
+                .Rotation = src_material.Anisotropy.Rotation,
             },
             .Iridescence = {
-                .Factor = src_material.PbrData.Iridescence.Factor,
-                .Ior = src_material.PbrData.Iridescence.Ior,
-                .ThicknessMinimum = src_material.PbrData.Iridescence.ThicknessMinimum,
-                .ThicknessMaximum = src_material.PbrData.Iridescence.ThicknessMaximum,
+                .Factor = src_material.Iridescence.Factor,
+                .Ior = src_material.Iridescence.Ior,
+                .ThicknessMinimum = src_material.Iridescence.ThicknessMinimum,
+                .ThicknessMaximum = src_material.Iridescence.ThicknessMaximum,
             },
         };
-        if (auto result = assign_texture(src_material.PbrData.BaseColorTexture, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture); !result) {
+        if (auto result = assign_texture(src_material.BaseColorTexture, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture); !result) {
+        if (auto result = assign_texture(src_material.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.NormalTexture, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture); !result) {
+        if (auto result = assign_texture(src_material.NormalTexture, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.OcclusionTexture, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture); !result) {
+        if (auto result = assign_texture(src_material.OcclusionTexture, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.EmissiveTexture, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture); !result) {
+        if (auto result = assign_texture(src_material.EmissiveTexture, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Specular.Texture, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture); !result) {
+        if (auto result = assign_texture(src_material.Specular.Texture, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Specular.ColorTexture, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture); !result) {
+        if (auto result = assign_texture(src_material.Specular.ColorTexture, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture); !result) {
+        if (auto result = assign_texture(src_material.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture); !result) {
+        if (auto result = assign_texture(src_material.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Transmission.Texture, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture); !result) {
+        if (auto result = assign_texture(src_material.Transmission.Texture, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture); !result) {
+        if (auto result = assign_texture(src_material.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture); !result) {
+        if (auto result = assign_texture(src_material.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture); !result) {
+        if (auto result = assign_texture(src_material.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Clearcoat.NormalTexture, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture); !result) {
+        if (auto result = assign_texture(src_material.Clearcoat.NormalTexture, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Anisotropy.Texture, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture); !result) {
+        if (auto result = assign_texture(src_material.Anisotropy.Texture, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Iridescence.Texture, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture); !result) {
+        if (auto result = assign_texture(src_material.Iridescence.Texture, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(src_material.PbrData.Iridescence.ThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture); !result) {
+        if (auto result = assign_texture(src_material.Iridescence.ThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
         material_indices_by_gltf_material[material_index] = AppendMaterial(*Buffers, gpu_material);
@@ -2871,18 +2871,18 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     std::vector<entt::entity> mesh_entities;
-    mesh_entities.reserve(loaded_scene->Meshes.size());
+    mesh_entities.reserve(scene->Meshes.size());
     // Track morph data per mesh for later component setup
     std::vector<std::optional<MorphTargetData>> mesh_morph_data;
-    mesh_morph_data.reserve(loaded_scene->Meshes.size());
+    mesh_morph_data.reserve(scene->Meshes.size());
     entt::entity first_mesh_entity = entt::null;
     // Per-mesh: optional line entity + optional point entity
     struct ExtraPrimitiveEntities {
         entt::entity Lines{entt::null}, Points{entt::null};
     };
-    std::vector<ExtraPrimitiveEntities> extra_entities_per_mesh(loaded_scene->Meshes.size());
-    for (uint32_t mi = 0; mi < loaded_scene->Meshes.size(); ++mi) {
-        auto &scene_mesh = loaded_scene->Meshes[mi];
+    std::vector<ExtraPrimitiveEntities> extra_entities_per_mesh(scene->Meshes.size());
+    for (uint32_t mi = 0; mi < scene->Meshes.size(); ++mi) {
+        auto &scene_mesh = scene->Meshes[mi];
         entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
             if (scene_mesh.Triangles->PrimitiveMaterialIndices) {
@@ -2929,19 +2929,19 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
     const std::string name_prefix = path.stem().string();
     std::unordered_map<uint32_t, entt::entity> object_entities_by_node;
-    object_entities_by_node.reserve(loaded_scene->Objects.size());
+    object_entities_by_node.reserve(scene->Objects.size());
     std::unordered_map<uint32_t, std::vector<entt::entity>> skinned_mesh_instances_by_skin;
-    skinned_mesh_instances_by_skin.reserve(loaded_scene->Skins.size());
+    skinned_mesh_instances_by_skin.reserve(scene->Skins.size());
 
     entt::entity first_object_entity = entt::null,
                  first_mesh_object_entity = entt::null,
                  first_root_empty_entity = entt::null,
                  first_armature_entity = entt::null;
-    for (uint32_t i = 0; i < loaded_scene->Objects.size(); ++i) {
-        const auto &object = loaded_scene->Objects[i];
+    for (uint32_t i = 0; i < scene->Objects.size(); ++i) {
+        const auto &object = scene->Objects[i];
         const auto object_name = object.Name.empty() ? std::format("{}_{}", name_prefix, i) : object.Name;
         entt::entity object_entity = entt::null;
-        if (object.ObjectType == gltf::SceneObjectData::Type::Mesh &&
+        if (object.ObjectType == gltf::Object::Type::Mesh &&
             object.MeshIndex &&
             *object.MeshIndex < mesh_entities.size() &&
             mesh_entities[*object.MeshIndex] != entt::null) {
@@ -2954,20 +2954,20 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                     .Visible = true,
                 }
             );
-        } else if (object.ObjectType == gltf::SceneObjectData::Type::Camera &&
+        } else if (object.ObjectType == gltf::Object::Type::Camera &&
                    object.CameraIndex &&
-                   *object.CameraIndex < loaded_scene->Cameras.size()) {
+                   *object.CameraIndex < scene->Cameras.size()) {
             object_entity = AddCamera({
                 .Name = object_name,
                 .Transform = object.WorldTransform,
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             });
-            const auto &scd = loaded_scene->Cameras[*object.CameraIndex];
-            R.replace<CameraData>(object_entity, scd.Camera);
-        } else if (object.ObjectType == gltf::SceneObjectData::Type::Light &&
+            const auto &scd = scene->Cameras[*object.CameraIndex];
+            R.replace<Camera>(object_entity, scd.Camera);
+        } else if (object.ObjectType == gltf::Object::Type::Light &&
                    object.LightIndex &&
-                   *object.LightIndex < loaded_scene->Lights.size()) {
-            const auto &sld = loaded_scene->Lights[*object.LightIndex];
+                   *object.LightIndex < scene->Lights.size()) {
+            const auto &sld = scene->Lights[*object.LightIndex];
             object_entity = AddLight({.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, sld.Light);
             R.emplace_or_replace<SubmitDirty>(object_entity);
             R.emplace_or_replace<LightWireframeDirty>(object_entity);
@@ -2981,7 +2981,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             );
         }
         // Create instances for non-triangle primitives (lines/points) associated with this mesh
-        if (object.ObjectType == gltf::SceneObjectData::Type::Mesh &&
+        if (object.ObjectType == gltf::Object::Type::Mesh &&
             object.MeshIndex &&
             *object.MeshIndex < extra_entities_per_mesh.size()) {
             const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
@@ -3005,15 +3005,15 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
         }
         if (first_object_entity == entt::null) first_object_entity = object_entity;
-        if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::SceneObjectData::Type::Mesh) {
+        if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Mesh) {
             first_mesh_object_entity = object_entity;
         }
-        if (first_root_empty_entity == entt::null && object.ObjectType == gltf::SceneObjectData::Type::Empty && !object.ParentNodeIndex) {
+        if (first_root_empty_entity == entt::null && object.ObjectType == gltf::Object::Type::Empty && !object.ParentNodeIndex) {
             first_root_empty_entity = object_entity;
         }
     }
 
-    for (const auto &object : loaded_scene->Objects) {
+    for (const auto &object : scene->Objects) {
         if (!object.ParentNodeIndex) continue;
 
         const auto child_it = object_entities_by_node.find(object.NodeIndex);
@@ -3023,13 +3023,13 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         SetParent(R, child_it->second, parent_it->second);
     }
 
-    std::unordered_map<uint32_t, const gltf::SceneNodeData *> scene_nodes_by_index;
-    scene_nodes_by_index.reserve(loaded_scene->Nodes.size());
-    for (const auto &node : loaded_scene->Nodes) scene_nodes_by_index.emplace(node.NodeIndex, &node);
+    std::unordered_map<uint32_t, const gltf::Node *> scene_nodes_by_index;
+    scene_nodes_by_index.reserve(scene->Nodes.size());
+    for (const auto &node : scene->Nodes) scene_nodes_by_index.emplace(node.NodeIndex, &node);
 
-    for (const auto &skin : loaded_scene->Skins) {
+    for (const auto &skin : scene->Skins) {
         const auto armature_data_entity = R.create();
-        auto &armature_data = R.emplace<ArmatureData>(armature_data_entity);
+        auto &armature_data = R.emplace<Armature>(armature_data_entity);
 
         ArmatureImportedSkin imported_skin{
             .SkinIndex = skin.SkinIndex,
@@ -3117,10 +3117,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     // Resolve animation data: map glTF animation channels to bone indices
-    for (auto &anim_clip : loaded_scene->Animations) {
-        for (const auto &skin : loaded_scene->Skins) {
+    for (auto &anim_clip : scene->Animations) {
+        for (const auto &skin : scene->Skins) {
             entt::entity target_data_entity = entt::null;
-            for (const auto [entity, ad] : R.view<ArmatureData>().each()) {
+            for (const auto [entity, ad] : R.view<Armature>().each()) {
                 if (ad.ImportedSkin && ad.ImportedSkin->SkinIndex == skin.SkinIndex) {
                     target_data_entity = entity;
                     break;
@@ -3128,7 +3128,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             if (target_data_entity == entt::null) continue;
 
-            const auto &ad = R.get<const ArmatureData>(target_data_entity);
+            const auto &ad = R.get<const Armature>(target_data_entity);
             AnimationClip resolved_clip{.Name = std::move(anim_clip.Name), .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}};
 
             for (auto &ch : anim_clip.Channels) {
@@ -3146,10 +3146,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
 
             if (!resolved_clip.Channels.empty()) {
-                if (auto *existing = R.try_get<ArmatureAnimationData>(target_data_entity)) {
+                if (auto *existing = R.try_get<ArmatureAnimation>(target_data_entity)) {
                     existing->Clips.emplace_back(std::move(resolved_clip));
                 } else {
-                    R.emplace<ArmatureAnimationData>(target_data_entity, ArmatureAnimationData{.Clips = {std::move(resolved_clip)}});
+                    R.emplace<ArmatureAnimation>(target_data_entity, ArmatureAnimation{.Clips = {std::move(resolved_clip)}});
                 }
             }
         }
@@ -3158,8 +3158,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     // Set up morph weight state for mesh instances with morph targets
     // Build a map: node_index -> mesh instance entity, for resolving weight animation channels
     std::unordered_map<uint32_t, entt::entity> morph_instance_by_node;
-    for (const auto &object : loaded_scene->Objects) {
-        if (object.ObjectType != gltf::SceneObjectData::Type::Mesh || !object.MeshIndex) continue;
+    for (const auto &object : scene->Objects) {
+        if (object.ObjectType != gltf::Object::Type::Mesh || !object.MeshIndex) continue;
         if (*object.MeshIndex >= mesh_morph_data.size() || !mesh_morph_data[*object.MeshIndex]) continue;
         const auto obj_it = object_entities_by_node.find(object.NodeIndex);
         if (obj_it == object_entities_by_node.end()) continue;
@@ -3185,9 +3185,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     // Resolve morph weight animation channels
-    for (auto &anim_clip : loaded_scene->Animations) {
+    for (auto &anim_clip : scene->Animations) {
         // Group weight channels by target node
-        std::unordered_map<uint32_t, std::vector<gltf::AnimationChannelData *>> weight_channels_by_node;
+        std::unordered_map<uint32_t, std::vector<gltf::AnimationChannel *>> weight_channels_by_node;
         for (auto &ch : anim_clip.Channels) {
             if (ch.Target == AnimationPath::Weights) weight_channels_by_node[ch.TargetNodeIndex].emplace_back(&ch);
         }
@@ -3205,10 +3205,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 });
             }
             if (!resolved_clip.Channels.empty()) {
-                if (auto *existing = R.try_get<MorphWeightAnimationData>(instance_entity)) {
+                if (auto *existing = R.try_get<MorphWeightAnimation>(instance_entity)) {
                     existing->Clips.emplace_back(std::move(resolved_clip));
                 } else {
-                    R.emplace<MorphWeightAnimationData>(instance_entity, MorphWeightAnimationData{.Clips = {std::move(resolved_clip)}});
+                    R.emplace<MorphWeightAnimation>(instance_entity, MorphWeightAnimation{.Clips = {std::move(resolved_clip)}});
                 }
             }
         }
@@ -3216,17 +3216,17 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
     { // Get timeline range from imported animation durations
         float max_dur = 0;
-        for (const auto [_, anim] : R.view<const ArmatureAnimationData>().each()) {
+        for (const auto [_, anim] : R.view<const ArmatureAnimation>().each()) {
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
-        for (const auto [_, anim] : R.view<const MorphWeightAnimationData>().each()) {
+        for (const auto [_, anim] : R.view<const MorphWeightAnimation>().each()) {
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
         if (max_dur > 0) R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = int(std::ceil(max_dur * tl.Fps)); });
     }
 
-    if (loaded_scene->ImageBasedLight) {
-        auto scene_world = CreateIblFromExtIbl(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, *loaded_scene, *loaded_scene->ImageBasedLight);
+    if (scene->ImageBasedLight) {
+        auto scene_world = CreateIblFromExtIbl(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, *scene, *scene->ImageBasedLight);
         if (!scene_world) {
             std::cerr << std::format("Warning: Failed to import EXT_lights_image_based scene world from '{}': {}\n", path.string(), scene_world.error());
         } else {
@@ -3274,8 +3274,8 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         if (object_type == ObjectType::Armature) {
             const auto copy_entity = AddArmature(create_info);
             if (const auto *src_armature = R.try_get<ArmatureObject>(e)) {
-                auto &dst_data = R.get<ArmatureData>(R.get<ArmatureObject>(copy_entity).DataEntity);
-                dst_data = R.get<const ArmatureData>(src_armature->DataEntity);
+                auto &dst_data = R.get<Armature>(R.get<ArmatureObject>(copy_entity).Entity);
+                dst_data = R.get<const Armature>(src_armature->Entity);
             }
             return copy_entity;
         }
@@ -3284,9 +3284,9 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
 
     // Object extras (Camera, Empty, Light) have MeshInstance but create their own wireframe mesh.
     if (R.all_of<ObjectExtrasTag>(R.get<MeshInstance>(e).MeshEntity)) {
-        if (const auto *src_cd = R.try_get<CameraData>(e)) {
+        if (const auto *src_cd = R.try_get<Camera>(e)) {
             const auto copy_entity = AddCamera(create_info);
-            R.replace<CameraData>(copy_entity, *src_cd);
+            R.replace<Camera>(copy_entity, *src_cd);
             return copy_entity;
         }
         if (R.all_of<LightIndex>(e)) {
@@ -3322,7 +3322,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
             const auto e_new = R.create();
             R.emplace<Name>(e_new, !info || info->Name.empty() ? CreateName(R, std::format("{}_copy", GetName(R, e))) : CreateName(R, info->Name));
             R.emplace<ObjectKind>(e_new, ObjectType::Armature);
-            R.emplace<ArmatureObject>(e_new, armature->DataEntity);
+            R.emplace<ArmatureObject>(e_new, armature->Entity);
             SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
 
             if (select_behavior == MeshInstanceCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
@@ -3452,14 +3452,14 @@ void Scene::Destroy(entt::entity e) {
         SetVisible(e, false);
     }
     std::vector<entt::entity> armature_data_entities;
-    if (const auto *armature = R.try_get<ArmatureObject>(e); armature && R.valid(armature->DataEntity)) {
-        armature_data_entities.emplace_back(armature->DataEntity);
+    if (const auto *armature = R.try_get<ArmatureObject>(e); armature && R.valid(armature->Entity)) {
+        armature_data_entities.emplace_back(armature->Entity);
     }
-    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e); armature_modifier && R.valid(armature_modifier->ArmatureDataEntity)) {
-        armature_data_entities.emplace_back(armature_modifier->ArmatureDataEntity);
+    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e); armature_modifier && R.valid(armature_modifier->ArmatureEntity)) {
+        armature_data_entities.emplace_back(armature_modifier->ArmatureEntity);
     }
-    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e); bone_attachment && R.valid(bone_attachment->ArmatureDataEntity)) {
-        armature_data_entities.emplace_back(bone_attachment->ArmatureDataEntity);
+    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e); bone_attachment && R.valid(bone_attachment->ArmatureEntity)) {
+        armature_data_entities.emplace_back(bone_attachment->ArmatureEntity);
     }
     std::vector<entt::entity> unique_armature_data_entities;
     unique_armature_data_entities.reserve(armature_data_entities.size());
@@ -3507,15 +3507,15 @@ void Scene::Destroy(entt::entity e) {
 
         const auto used_by_armature_object = any_of(
             R.view<ArmatureObject>().each(),
-            [armature_data_entity](const auto &entry) { return std::get<1>(entry).DataEntity == armature_data_entity; }
+            [armature_data_entity](const auto &entry) { return std::get<1>(entry).Entity == armature_data_entity; }
         );
         const auto used_by_armature_modifier = any_of(
             R.view<ArmatureModifier>().each(),
-            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureDataEntity == armature_data_entity; }
+            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureEntity == armature_data_entity; }
         );
         const auto used_by_bone_attachment = any_of(
             R.view<BoneAttachment>().each(),
-            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureDataEntity == armature_data_entity; }
+            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureEntity == armature_data_entity; }
         );
 
         if (!(used_by_armature_object || used_by_armature_modifier || used_by_bone_attachment)) {
@@ -4911,7 +4911,7 @@ void Scene::SnapToCamera(entt::entity camera_entity) {
     const auto &wt = R.get<WorldTransform>(camera_entity);
     const vec3 pos = wt.Position;
     const vec3 fwd = -glm::normalize(glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0.f, 0.f, 1.f}));
-    R.replace<ViewCamera>(SceneEntity, ViewCamera{pos, pos + fwd, R.get<CameraData>(camera_entity)});
+    R.replace<ViewCamera>(SceneEntity, ViewCamera{pos, pos + fwd, R.get<Camera>(camera_entity)});
 }
 void Scene::AnimateToCamera(entt::entity camera_entity) {
     const auto &wt = R.get<WorldTransform>(camera_entity);
@@ -5180,7 +5180,7 @@ void Scene::RenderOverlay() {
     // The frame marks exactly what the active camera captures.
     if (SavedViewCamera && !camera.IsAnimating()) {
         const auto active_entity = FindActiveEntity(R);
-        if (const auto *cd = active_entity != entt::null ? R.try_get<CameraData>(active_entity) : nullptr) {
+        if (const auto *cd = active_entity != entt::null ? R.try_get<Camera>(active_entity) : nullptr) {
             const float cam_aspect = AspectRatio(*cd);
             const float frame_ratio = LookThroughFrameRatio(cam_aspect, viewport.size.x / viewport.size.y);
             const vec2 frame_size{viewport.size.y * frame_ratio * cam_aspect, viewport.size.y * frame_ratio};
@@ -5241,7 +5241,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         Text("Mesh entity: %s", GetName(R, mesh_instance->MeshEntity).c_str());
     }
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(active_entity)) {
-        Text("Armature data: %s", GetName(R, armature_modifier->ArmatureDataEntity).c_str());
+        Text("Armature data: %s", GetName(R, armature_modifier->ArmatureEntity).c_str());
         if (armature_modifier->ArmatureObjectEntity != entt::null) {
             Text("Armature object: %s", GetName(R, armature_modifier->ArmatureObjectEntity).c_str());
         }
@@ -5263,7 +5263,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
         );
     } else if (const auto *armature = R.try_get<ArmatureObject>(active_entity)) {
-        const auto &armature_data = R.get<const ArmatureData>(armature->DataEntity);
+        const auto &armature_data = R.get<const Armature>(armature->Entity);
         Text("Bones: %zu", armature_data.Bones.size());
     }
     Unindent();
@@ -5553,9 +5553,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
     }
-    if (auto *cd = R.try_get<CameraData>(active_entity)) {
+    if (auto *cd = R.try_get<Camera>(active_entity)) {
         if (CollapsingHeader("Camera")) {
-            if (RenderCameraLensEditor(*cd)) R.patch<CameraData>(active_entity, [](auto &) {});
+            if (RenderCameraLensEditor(*cd)) R.patch<Camera>(active_entity, [](auto &) {});
             Separator();
             if (SavedViewCamera) {
                 if (Button("Exit camera view")) ExitLookThroughCamera();
