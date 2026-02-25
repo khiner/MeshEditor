@@ -59,12 +59,16 @@ std::string_view StripComment(std::string_view s) {
     return pos == std::string_view::npos ? s : s.substr(0, pos);
 }
 
-bool ParseKeyValue(std::string_view line, std::string &key, std::string &value) {
-    const auto pos = line.find(':');
-    if (pos == std::string_view::npos) return false;
+struct ParsedKeyValue {
+    std::string_view Key, Value;
+};
 
-    key = Trim(line.substr(0, pos));
-    value = Trim(line.substr(pos + 1));
+std::optional<ParsedKeyValue> ParseKeyValue(std::string_view line) {
+    const auto pos = line.find(':');
+    if (pos == std::string_view::npos) return std::nullopt;
+
+    auto key = Trim(line.substr(0, pos));
+    auto value = Trim(line.substr(pos + 1));
     if (value.size() >= 2) {
         const char quote = value.front();
         if ((quote == '"' || quote == '\'') && value.back() == quote) {
@@ -74,7 +78,8 @@ bool ParseKeyValue(std::string_view line, std::string &key, std::string &value) 
     if (!value.empty() && value.front() == '[' && value.back() == ']') {
         value = value.substr(1, value.size() - 2);
     }
-    return !key.empty();
+    if (key.empty()) return std::nullopt;
+    return ParsedKeyValue{key, value};
 }
 
 enum class Section {
@@ -92,8 +97,10 @@ struct TypeSpec {
 TypeSpec ParseType(std::string_view type) {
     const auto open = type.find('[');
     if (open == std::string_view::npos) return {.Base = Trim(type), .ArraySize = std::nullopt};
+
     const auto close = type.find(']', open + 1);
     if (close == std::string_view::npos || close != type.size() - 1) return {.Base = Trim(type), .ArraySize = std::nullopt};
+
     const auto size_view = Trim(type.substr(open + 1, close - open - 1));
     size_t size = 0;
     const auto *begin = size_view.data();
@@ -108,71 +115,59 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
     std::ifstream in{path};
     if (!in) return false;
 
-    Section section = Section::None;
-    Binding current_binding{};
-    EnumDef current_enum{};
-    EnumValue current_enum_value{};
-    StructDef current_struct{};
-    Field current_field{};
-    bool has_binding = false;
-    bool has_enum = false;
-    bool has_enum_value = false;
-    bool has_struct = false;
-    bool has_field = false;
-    bool in_values = false;
-    bool in_fields = false;
-    size_t values_parent_indent = 0;
-    size_t fields_parent_indent = 0;
+    std::optional<Binding> current_binding;
+    std::optional<EnumDef> current_enum;
+    std::optional<EnumValue> current_enum_value;
+    std::optional<StructDef> current_struct;
+    std::optional<Field> current_field;
+    bool in_values{}, in_fields{};
 
     auto commit_binding = [&]() {
-        if (!has_binding) return;
-        if (current_binding.Name.empty() || current_binding.Kind.empty()) Fail("Invalid binding entry in schema.");
-        bindings.emplace_back(current_binding);
-        current_binding = {};
-        has_binding = false;
+        if (!current_binding) return;
+        if (current_binding->Name.empty() || current_binding->Kind.empty()) Fail("Invalid binding entry in schema.");
+        bindings.emplace_back(*current_binding);
+        current_binding.reset();
     };
-
     auto commit_enum_value = [&]() {
-        if (!has_enum_value) return;
-        if (current_enum_value.Name.empty()) Fail("Invalid enum value entry in schema.");
-        if (current_enum_value.Value.empty()) current_enum_value.Value = std::to_string(current_enum.Values.size());
-        current_enum.Values.emplace_back(current_enum_value);
-        current_enum_value = {};
-        has_enum_value = false;
-    };
+        if (!current_enum_value) return;
+        if (!current_enum) Fail("Invalid enum value entry in schema.");
+        if (current_enum_value->Name.empty()) Fail("Invalid enum value entry in schema.");
 
+        if (current_enum_value->Value.empty()) current_enum_value->Value = std::to_string(current_enum->Values.size());
+        current_enum->Values.emplace_back(*current_enum_value);
+        current_enum_value.reset();
+    };
     auto commit_enum = [&]() {
-        if (!has_enum) return;
+        if (!current_enum) return;
         commit_enum_value();
-        if (current_enum.Name.empty() || current_enum.Type.empty() || current_enum.Values.empty()) Fail("Invalid enum entry in schema.");
-        enums.emplace_back(current_enum);
-        current_enum = {};
-        has_enum = false;
-    };
+        if (current_enum->Name.empty() || current_enum->Type.empty() || current_enum->Values.empty()) Fail("Invalid enum entry in schema.");
 
+        enums.emplace_back(*current_enum);
+        current_enum.reset();
+    };
     auto commit_field = [&]() {
-        if (!has_field) return;
-        if (current_field.Name.empty() || current_field.Type.empty()) Fail("Invalid field entry in schema.");
+        if (!current_field) return;
+        if (!current_struct) Fail("Invalid field entry in schema.");
+        if (current_field->Name.empty() || current_field->Type.empty()) Fail("Invalid field entry in schema.");
 
-        current_struct.Fields.emplace_back(current_field);
-        current_field = {};
-        has_field = false;
+        current_struct->Fields.emplace_back(*current_field);
+        current_field.reset();
     };
-
     auto commit_struct = [&]() {
-        if (!has_struct) return;
+        if (!current_struct) return;
         commit_field();
-        if (current_struct.Name.empty() || current_struct.Fields.empty()) Fail("Invalid struct entry in schema.");
-        structs.emplace_back(current_struct);
-        current_struct = {};
-        has_struct = false;
+        if (current_struct->Name.empty() || current_struct->Fields.empty()) Fail("Invalid struct entry in schema.");
+
+        structs.emplace_back(*current_struct);
+        current_struct.reset();
     };
 
+    Section section = Section::None;
+    size_t values_parent_indent{0}, fields_parent_indent{0};
     for (std::string line; std::getline(in, line);) {
         const auto stripped = StripComment(line);
         const auto indent = stripped.find_first_not_of(' ');
         const auto indent_count = indent == std::string_view::npos ? stripped.size() : indent;
-
         auto trimmed = Trim(stripped);
         if (trimmed.empty()) continue;
 
@@ -226,14 +221,16 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
             trimmed = Trim(trimmed.substr(2));
         }
 
-        std::string key, value;
-        if (!ParseKeyValue(trimmed, key, value)) Fail("Unrecognized schema line: " + std::string{trimmed});
+        const auto parsed = ParseKeyValue(trimmed);
+        if (!parsed) Fail("Unrecognized schema line: " + std::string{trimmed});
+        const auto key = parsed->Key;
+        const auto value = parsed->Value;
 
         if (section == Section::Bindings) {
-            has_binding = true;
-            if (key == "name") current_binding.Name = value;
-            else if (key == "kind") current_binding.Kind = value;
-            else Fail("Unknown bindings key: " + key);
+            if (!current_binding) current_binding.emplace();
+            if (key == "name") current_binding->Name = value;
+            else if (key == "kind") current_binding->Kind = value;
+            else Fail("Unknown bindings key: " + std::string{key});
         } else if (section == Section::Enums) {
             if (key == "values" && value.empty()) {
                 in_values = true;
@@ -241,15 +238,15 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
                 continue;
             }
             if (in_values) {
-                has_enum_value = true;
-                if (key == "name") current_enum_value.Name = value;
-                else if (key == "value") current_enum_value.Value = value;
-                else Fail("Unknown enum value key: " + key);
+                if (!current_enum_value) current_enum_value.emplace();
+                if (key == "name") current_enum_value->Name = value;
+                else if (key == "value") current_enum_value->Value = value;
+                else Fail("Unknown enum value key: " + std::string{key});
             } else {
-                has_enum = true;
-                if (key == "name") current_enum.Name = value;
-                else if (key == "type") current_enum.Type = value;
-                else Fail("Unknown enum key: " + key);
+                if (!current_enum) current_enum.emplace();
+                if (key == "name") current_enum->Name = value;
+                else if (key == "type") current_enum->Type = value;
+                else Fail("Unknown enum key: " + std::string{key});
             }
         } else if (section == Section::Structs) {
             if (key == "fields" && value.empty()) {
@@ -258,17 +255,17 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
                 continue;
             }
             if (in_fields) {
-                has_field = true;
-                if (key == "name") current_field.Name = value;
-                else if (key == "type") current_field.Type = value;
-                else if (key == "default") current_field.DefaultValue = value;
-                else Fail("Unknown field key: " + key);
+                if (!current_field) current_field.emplace();
+                if (key == "name") current_field->Name = value;
+                else if (key == "type") current_field->Type = value;
+                else if (key == "default") current_field->DefaultValue = value;
+                else Fail("Unknown field key: " + std::string{key});
             } else {
-                has_struct = true;
-                if (key == "name") current_struct.Name = value;
-                else if (key == "binding") current_struct.Binding = value;
-                else if (key == "push_constant") current_struct.IsPushConstant = (value == "true");
-                else Fail("Unknown struct key: " + key);
+                if (!current_struct) current_struct.emplace();
+                if (key == "name") current_struct->Name = value;
+                else if (key == "binding") current_struct->Binding = value;
+                else if (key == "push_constant") current_struct->IsPushConstant = (value == "true");
+                else Fail("Unknown struct key: " + std::string{key});
             }
         } else Fail("Item defined outside of a section.");
     }
@@ -284,14 +281,8 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
 bool IsStructType(std::string_view type, const std::vector<StructDef> &structs) {
     return any_of(structs, [&](const auto &def) { return def.Name == type; });
 }
-
-const EnumDef *FindEnumDef(std::string_view type, const std::vector<EnumDef> &enums) {
-    const auto it = find_if(enums, [&](const auto &def) { return def.Name == type; });
-    return it == enums.end() ? nullptr : &*it;
-}
-
 bool IsEnumType(std::string_view type, const std::vector<EnumDef> &enums) {
-    return FindEnumDef(type, enums) != nullptr;
+    return any_of(enums, [&](const auto &def) { return def.Name == type; });
 }
 
 enum class TargetLang {
@@ -302,13 +293,7 @@ enum class TargetLang {
 std::optional<std::string_view> BuiltinTypeFor(std::string_view type, TargetLang target) {
     if (type == "u8") return "uint8_t";
     if (type == "u32") return target == TargetLang::Cpp ? "uint32_t" : "uint";
-    if (type == "float") return "float";
-    if (type == "uvec2") return target == TargetLang::Cpp ? "glm::uvec2" : "uvec2";
-    if (type == "uvec4") return target == TargetLang::Cpp ? "glm::uvec4" : "uvec4";
-    if (type == "vec2") return "vec2";
-    if (type == "vec3") return "vec3";
-    if (type == "vec4") return "vec4";
-    if (type == "mat4") return "mat4";
+    if (type == "float" || type == "vec2" || type == "uvec2" || type == "uvec4" || type == "vec3" || type == "vec4" || type == "mat4") return type;
     return {};
 }
 
@@ -320,7 +305,9 @@ std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vec
 }
 std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
     if (const auto builtin = BuiltinTypeFor(type, TargetLang::Glsl)) return builtin;
-    if (const auto *enum_def = FindEnumDef(type, enums)) return BuiltinTypeFor(enum_def->Type, TargetLang::Glsl);
+    if (const auto it = find_if(enums, [&](const auto &def) { return def.Name == type; }); it != enums.end()) {
+        return BuiltinTypeFor(it->Type, TargetLang::Glsl);
+    }
     if (IsStructType(type, structs)) return type;
     return {};
 }
@@ -337,7 +324,7 @@ bool BindingExists(const std::vector<Binding> &bindings, std::string_view name) 
     return any_of(bindings, [&](const auto &b) { return b.Name == name; });
 }
 
-std::string ToMacroName(const std::string &name, std::string_view suffix) {
+std::string ToMacroName(std::string_view name, std::string_view suffix) {
     std::string out;
     out.reserve(name.size() + suffix.size() + 1);
     for (const char ch : name) {
@@ -531,8 +518,8 @@ int main(int argc, char **argv) {
             if (spec.Base == "vec3") needs_vec3 = true;
             if (spec.Base == "vec4") needs_vec4 = true;
             if (spec.Base == "mat4") needs_mat4 = true;
-            if (field.DefaultValue.find("InvalidSlot") != std::string::npos ||
-                field.DefaultValue.find("InvalidOffset") != std::string::npos) needs_slots = true;
+            if (field.DefaultValue.find("InvalidSlot") != std::string_view::npos ||
+                field.DefaultValue.find("InvalidOffset") != std::string_view::npos) needs_slots = true;
             if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
                 if (find(cpp_includes, spec.Base) == cpp_includes.end()) {
                     cpp_includes.emplace_back(spec.Base);
