@@ -5466,67 +5466,30 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     changed |= DragFloat(rotation_label, &rotation, 0.01f);
                     return changed;
                 };
+                const auto edit_texture_info = [&](const char *label, TextureInfo &tex) {
+                    bool changed = false;
+                    changed |= edit_texture_slot(std::format("{} texture", label).c_str(), tex.Slot);
+                    changed |= SliderUInt(std::format("{} UV set", label).c_str(), &tex.TexCoord, 0u, 3u);
+                    changed |= edit_uv_transform(
+                        std::format("{} UV offset", label).c_str(),
+                        std::format("{} UV scale", label).c_str(),
+                        std::format("{} UV rotation", label).c_str(),
+                        tex.UvOffset, tex.UvScale, tex.UvRotation
+                    );
+                    return changed;
+                };
                 bool material_changed = false;
                 material_changed |= ColorEdit4("Base color", &material.BaseColorFactor.x);
                 material_changed |= SliderFloat("Metallic", &material.MetallicFactor, 0.f, 1.f);
                 material_changed |= SliderFloat("Roughness", &material.RoughnessFactor, 0.f, 1.f);
-                material_changed |= edit_texture_slot("Base color texture", material.BaseColorTexture.Slot);
-                material_changed |= SliderUInt("Base color UV set", &material.BaseColorTexture.TexCoord, 0u, 3u);
-                material_changed |= edit_uv_transform(
-                    "Base color UV offset",
-                    "Base color UV scale",
-                    "Base color UV rotation",
-                    material.BaseColorTexture.UvOffset,
-                    material.BaseColorTexture.UvScale,
-                    material.BaseColorTexture.UvRotation
-                );
-
-                material_changed |= edit_texture_slot("Metallic-roughness texture", material.MetallicRoughnessTexture.Slot);
-                material_changed |= SliderUInt("Metallic-roughness UV set", &material.MetallicRoughnessTexture.TexCoord, 0u, 3u);
-                material_changed |= edit_uv_transform(
-                    "Metallic-roughness UV offset",
-                    "Metallic-roughness UV scale",
-                    "Metallic-roughness UV rotation",
-                    material.MetallicRoughnessTexture.UvOffset,
-                    material.MetallicRoughnessTexture.UvScale,
-                    material.MetallicRoughnessTexture.UvRotation
-                );
-
-                material_changed |= edit_texture_slot("Normal texture", material.NormalTexture.Slot);
-                material_changed |= SliderUInt("Normal UV set", &material.NormalTexture.TexCoord, 0u, 3u);
-                material_changed |= edit_uv_transform(
-                    "Normal UV offset",
-                    "Normal UV scale",
-                    "Normal UV rotation",
-                    material.NormalTexture.UvOffset,
-                    material.NormalTexture.UvScale,
-                    material.NormalTexture.UvRotation
-                );
+                material_changed |= edit_texture_info("Base color", material.BaseColorTexture);
+                material_changed |= edit_texture_info("Metallic-roughness", material.MetallicRoughnessTexture);
+                material_changed |= edit_texture_info("Normal", material.NormalTexture);
                 material_changed |= SliderFloat("Normal scale", &material.NormalScale, -2.f, 2.f);
-
-                material_changed |= edit_texture_slot("Occlusion texture", material.OcclusionTexture.Slot);
-                material_changed |= SliderUInt("Occlusion UV set", &material.OcclusionTexture.TexCoord, 0u, 3u);
-                material_changed |= edit_uv_transform(
-                    "Occlusion UV offset",
-                    "Occlusion UV scale",
-                    "Occlusion UV rotation",
-                    material.OcclusionTexture.UvOffset,
-                    material.OcclusionTexture.UvScale,
-                    material.OcclusionTexture.UvRotation
-                );
+                material_changed |= edit_texture_info("Occlusion", material.OcclusionTexture);
                 material_changed |= SliderFloat("Occlusion strength", &material.OcclusionStrength, 0.f, 1.f);
-
                 material_changed |= ColorEdit3("Emissive", &material.EmissiveFactor.x);
-                material_changed |= edit_texture_slot("Emissive texture", material.EmissiveTexture.Slot);
-                material_changed |= SliderUInt("Emissive UV set", &material.EmissiveTexture.TexCoord, 0u, 3u);
-                material_changed |= edit_uv_transform(
-                    "Emissive UV offset",
-                    "Emissive UV scale",
-                    "Emissive UV rotation",
-                    material.EmissiveTexture.UvOffset,
-                    material.EmissiveTexture.UvScale,
-                    material.EmissiveTexture.UvRotation
-                );
+                material_changed |= edit_texture_info("Emissive", material.EmissiveTexture);
 
                 static constexpr std::array alpha_mode_labels{"Opaque", "Mask", "Blend"};
                 int alpha_mode = std::clamp<int>(int(material.AlphaMode), 0, int(alpha_mode_labels.size() - 1));
@@ -5549,21 +5512,11 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 // Transmission
                 material_changed |= SliderFloat("Transmission", &material.Transmission.Factor, 0.f, 1.f);
                 if (material.Transmission.Factor > 0.f) {
-                    material_changed |= edit_texture_slot("Transmission texture", material.Transmission.Texture.Slot);
-                    material_changed |= SliderUInt("Transmission UV set", &material.Transmission.Texture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Transmission UV offset", "Transmission UV scale", "Transmission UV rotation",
-                        material.Transmission.Texture.UvOffset, material.Transmission.Texture.UvScale, material.Transmission.Texture.UvRotation
-                    );
+                    material_changed |= edit_texture_info("Transmission", material.Transmission.Texture);
 
                     // Volume (only meaningful with transmission)
                     material_changed |= SliderFloat("Thickness", &material.Volume.ThicknessFactor, 0.f, 10.f);
-                    material_changed |= edit_texture_slot("Thickness texture", material.Volume.ThicknessTexture.Slot);
-                    material_changed |= SliderUInt("Thickness UV set", &material.Volume.ThicknessTexture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Thickness UV offset", "Thickness UV scale", "Thickness UV rotation",
-                        material.Volume.ThicknessTexture.UvOffset, material.Volume.ThicknessTexture.UvScale, material.Volume.ThicknessTexture.UvRotation
-                    );
+                    material_changed |= edit_texture_info("Thickness", material.Volume.ThicknessTexture);
                     material_changed |= ColorEdit3("Attenuation color", &material.Volume.AttenuationColor.x);
                     // 0 = infinite/disabled; display "Infinite" when zero.
                     material_changed |= DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
@@ -5572,25 +5525,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 // Clearcoat
                 material_changed |= SliderFloat("Clearcoat", &material.Clearcoat.Factor, 0.f, 1.f);
                 if (material.Clearcoat.Factor > 0.f) {
-                    material_changed |= edit_texture_slot("Clearcoat texture", material.Clearcoat.Texture.Slot);
-                    material_changed |= SliderUInt("Clearcoat UV set", &material.Clearcoat.Texture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Clearcoat UV offset", "Clearcoat UV scale", "Clearcoat UV rotation",
-                        material.Clearcoat.Texture.UvOffset, material.Clearcoat.Texture.UvScale, material.Clearcoat.Texture.UvRotation
-                    );
+                    material_changed |= edit_texture_info("Clearcoat", material.Clearcoat.Texture);
                     material_changed |= SliderFloat("Clearcoat roughness", &material.Clearcoat.RoughnessFactor, 0.f, 1.f);
-                    material_changed |= edit_texture_slot("Clearcoat roughness texture", material.Clearcoat.RoughnessTexture.Slot);
-                    material_changed |= SliderUInt("Clearcoat roughness UV set", &material.Clearcoat.RoughnessTexture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Clearcoat roughness UV offset", "Clearcoat roughness UV scale", "Clearcoat roughness UV rotation",
-                        material.Clearcoat.RoughnessTexture.UvOffset, material.Clearcoat.RoughnessTexture.UvScale, material.Clearcoat.RoughnessTexture.UvRotation
-                    );
-                    material_changed |= edit_texture_slot("Clearcoat normal texture", material.Clearcoat.NormalTexture.Slot);
-                    material_changed |= SliderUInt("Clearcoat normal UV set", &material.Clearcoat.NormalTexture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Clearcoat normal UV offset", "Clearcoat normal UV scale", "Clearcoat normal UV rotation",
-                        material.Clearcoat.NormalTexture.UvOffset, material.Clearcoat.NormalTexture.UvScale, material.Clearcoat.NormalTexture.UvRotation
-                    );
+                    material_changed |= edit_texture_info("Clearcoat roughness", material.Clearcoat.RoughnessTexture);
+                    material_changed |= edit_texture_info("Clearcoat normal", material.Clearcoat.NormalTexture);
                     material_changed |= SliderFloat("Clearcoat normal scale", &material.Clearcoat.NormalScale, -2.f, 2.f);
                 }
 
@@ -5598,32 +5536,17 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 material_changed |= SliderFloat("Anisotropy", &material.Anisotropy.Strength, 0.f, 1.f);
                 if (material.Anisotropy.Strength > 0.f) {
                     material_changed |= SliderFloat("Anisotropy rotation", &material.Anisotropy.Rotation, 0.f, 6.2832f, "%.3f rad");
-                    material_changed |= edit_texture_slot("Anisotropy texture", material.Anisotropy.Texture.Slot);
-                    material_changed |= SliderUInt("Anisotropy UV set", &material.Anisotropy.Texture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Anisotropy UV offset", "Anisotropy UV scale", "Anisotropy UV rotation",
-                        material.Anisotropy.Texture.UvOffset, material.Anisotropy.Texture.UvScale, material.Anisotropy.Texture.UvRotation
-                    );
+                    material_changed |= edit_texture_info("Anisotropy", material.Anisotropy.Texture);
                 }
 
                 // Iridescence
                 material_changed |= SliderFloat("Iridescence", &material.Iridescence.Factor, 0.f, 1.f);
                 if (material.Iridescence.Factor > 0.f) {
-                    material_changed |= edit_texture_slot("Iridescence texture", material.Iridescence.Texture.Slot);
-                    material_changed |= SliderUInt("Iridescence UV set", &material.Iridescence.Texture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Iridescence UV offset", "Iridescence UV scale", "Iridescence UV rotation",
-                        material.Iridescence.Texture.UvOffset, material.Iridescence.Texture.UvScale, material.Iridescence.Texture.UvRotation
-                    );
+                    material_changed |= edit_texture_info("Iridescence", material.Iridescence.Texture);
                     material_changed |= SliderFloat("Iridescence IOR", &material.Iridescence.Ior, 1.0f, 5.0f);
                     material_changed |= SliderFloat("Thickness min", &material.Iridescence.ThicknessMinimum, 0.f, 1000.f, "%.0f nm");
                     material_changed |= SliderFloat("Thickness max", &material.Iridescence.ThicknessMaximum, 1.f, 1000.f, "%.0f nm");
-                    material_changed |= edit_texture_slot("Iridescence thickness texture", material.Iridescence.ThicknessTexture.Slot);
-                    material_changed |= SliderUInt("Iridescence thickness UV set", &material.Iridescence.ThicknessTexture.TexCoord, 0u, 3u);
-                    material_changed |= edit_uv_transform(
-                        "Iridescence thickness UV offset", "Iridescence thickness UV scale", "Iridescence thickness UV rotation",
-                        material.Iridescence.ThicknessTexture.UvOffset, material.Iridescence.ThicknessTexture.UvScale, material.Iridescence.ThicknessTexture.UvRotation
-                    );
+                    material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
                 if (material_changed) R.emplace_or_replace<MaterialEdit>(SceneEntity, MaterialEdit{.Index = assigned_material, .Value = material});
