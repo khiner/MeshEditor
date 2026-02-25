@@ -8,6 +8,7 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
+#include <fastgltf/types.hpp>
 #include <simdjson.h>
 
 #include <glm/gtx/matrix_decompose.hpp>
@@ -43,6 +44,55 @@ std::optional<uint32_t> ToIndex(std::size_t index, std::size_t upper_bound) {
 std::optional<uint32_t> ToIndex(const fastgltf::Optional<std::size_t> &index, std::size_t upper_bound) {
     if (!index) return {};
     return ToIndex(*index, upper_bound);
+}
+
+Filter ToFilter(fastgltf::Filter filter) {
+    switch (filter) {
+        case fastgltf::Filter::Nearest: return Filter::Nearest;
+        case fastgltf::Filter::Linear: return Filter::Linear;
+        case fastgltf::Filter::NearestMipMapNearest: return Filter::NearestMipMapNearest;
+        case fastgltf::Filter::LinearMipMapNearest: return Filter::LinearMipMapNearest;
+        case fastgltf::Filter::NearestMipMapLinear: return Filter::NearestMipMapLinear;
+        case fastgltf::Filter::LinearMipMapLinear: return Filter::LinearMipMapLinear;
+    }
+    return Filter::LinearMipMapLinear;
+}
+
+std::optional<Filter> ToFilter(const fastgltf::Optional<fastgltf::Filter> &filter) {
+    if (!filter) return {};
+    return ToFilter(*filter);
+}
+
+Wrap ToWrap(fastgltf::Wrap wrap) {
+    switch (wrap) {
+        case fastgltf::Wrap::ClampToEdge: return Wrap::ClampToEdge;
+        case fastgltf::Wrap::MirroredRepeat: return Wrap::MirroredRepeat;
+        case fastgltf::Wrap::Repeat: return Wrap::Repeat;
+    }
+    return Wrap::Repeat;
+}
+
+MimeType ToMimeType(fastgltf::MimeType mime_type) {
+    switch (mime_type) {
+        case fastgltf::MimeType::None: return MimeType::None;
+        case fastgltf::MimeType::JPEG: return MimeType::JPEG;
+        case fastgltf::MimeType::PNG: return MimeType::PNG;
+        case fastgltf::MimeType::KTX2: return MimeType::KTX2;
+        case fastgltf::MimeType::DDS: return MimeType::DDS;
+        case fastgltf::MimeType::GltfBuffer: return MimeType::GltfBuffer;
+        case fastgltf::MimeType::OctetStream: return MimeType::OctetStream;
+        case fastgltf::MimeType::WEBP: return MimeType::WEBP;
+    }
+    return MimeType::None;
+}
+
+AlphaMode ToAlphaMode(fastgltf::AlphaMode alpha_mode) {
+    switch (alpha_mode) {
+        case fastgltf::AlphaMode::Opaque: return AlphaMode::Opaque;
+        case fastgltf::AlphaMode::Mask: return AlphaMode::Mask;
+        case fastgltf::AlphaMode::Blend: return AlphaMode::Blend;
+    }
+    return AlphaMode::Opaque;
 }
 
 vec2 ToVec2(const fastgltf::math::nvec2 &v) { return {v.x(), v.y()}; }
@@ -94,7 +144,7 @@ PBRMaterial MakePBRMaterial(const fastgltf::Asset &asset, const fastgltf::Materi
         .NormalTexture = ToTextureInfo(material.normalTexture, asset),
         .OcclusionTexture = ToTextureInfo(material.occlusionTexture, asset),
         .EmissiveTexture = ToTextureInfo(material.emissiveTexture, asset),
-        .AlphaMode = material.alphaMode,
+        .AlphaMode = ToAlphaMode(material.alphaMode),
         .DoubleSided = material.doubleSided,
         .Unlit = material.unlit,
         .AlphaCutoff = material.alphaCutoff,
@@ -181,14 +231,14 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
 
     Image image_data{
         .Bytes = {},
-        .MimeType = fastgltf::MimeType::None,
+        .MimeType = MimeType::None,
         .Name = image.name.empty() ? std::format("Image{}", image_index) : std::string(image.name),
     };
 
     const auto from_span = [&image_data](const auto &data, fastgltf::MimeType mime_type) {
         image_data.Bytes.resize(data.size());
         std::memcpy(image_data.Bytes.data(), data.data(), data.size());
-        image_data.MimeType = mime_type;
+        image_data.MimeType = ToMimeType(mime_type);
     };
 
     auto read_result = std::visit(
@@ -223,7 +273,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
                 auto bytes = ReadFileBytes(image_path);
                 if (!bytes) return std::unexpected{std::move(bytes.error())};
                 image_data.Bytes = std::move(*bytes);
-                image_data.MimeType = uri.mimeType;
+                image_data.MimeType = ToMimeType(uri.mimeType);
                 return {};
             },
             [&](const fastgltf::sources::CustomBuffer &) -> std::expected<void, std::string> {
@@ -1112,10 +1162,10 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
     for (const auto &sampler : asset.samplers) {
         scene.Samplers.emplace_back(
             Sampler{
-                .MagFilter = sampler.magFilter,
-                .MinFilter = sampler.minFilter,
-                .WrapS = sampler.wrapS,
-                .WrapT = sampler.wrapT,
+                .MagFilter = ToFilter(sampler.magFilter),
+                .MinFilter = ToFilter(sampler.minFilter),
+                .WrapS = ToWrap(sampler.wrapS),
+                .WrapT = ToWrap(sampler.wrapT),
                 .Name = std::string(sampler.name),
             }
         );
@@ -1154,7 +1204,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             .EmissiveFactor = vec3{0.f},
             .NormalScale = 1.f,
             .OcclusionStrength = 1.f,
-            .AlphaMode = fastgltf::AlphaMode::Opaque,
+            .AlphaMode = AlphaMode::Opaque,
             .DoubleSided = false,
             .Unlit = false,
             .AlphaCutoff = 0.5f,

@@ -24,10 +24,9 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include <fastgltf/types.hpp>
-
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <optional>
@@ -35,15 +34,42 @@
 #include <vector>
 
 namespace gltf {
+enum class Filter : uint16_t {
+    Nearest,
+    Linear,
+    NearestMipMapNearest,
+    LinearMipMapNearest,
+    NearestMipMapLinear,
+    LinearMipMapLinear,
+};
+enum class Wrap : uint16_t {
+    ClampToEdge,
+    MirroredRepeat,
+    Repeat,
+};
+enum class MimeType : uint8_t {
+    None,
+    JPEG,
+    PNG,
+    KTX2,
+    DDS,
+    GltfBuffer,
+    OctetStream,
+    WEBP,
+};
+enum class AlphaMode : uint8_t {
+    Opaque,
+    Mask,
+    Blend,
+};
+
 struct TextureTransform {
     float Rotation;
     vec2 UvOffset, UvScale;
     std::optional<uint32_t> TexCoordIndex;
 };
-
 struct TextureInfo {
-    uint32_t TextureIndex;
-    uint32_t TexCoordIndex;
+    uint32_t TextureIndex, TexCoordIndex;
     std::optional<TextureTransform> Transform;
 };
 
@@ -68,21 +94,16 @@ struct Volume {
     std::optional<TextureInfo> ThicknessTexture{};
 };
 struct Clearcoat {
-    float Factor{0.f};
-    float RoughnessFactor{0.f};
-    float NormalScale{1.f};
+    float Factor{0.f}, RoughnessFactor{0.f}, NormalScale{1.f};
     std::optional<TextureInfo> Texture{}, RoughnessTexture{}, NormalTexture{};
 };
 struct Anisotropy {
-    float Strength{0.f};
-    float Rotation{0.f};
+    float Strength{0.f}, Rotation{0.f};
     std::optional<TextureInfo> Texture{};
 };
 struct Iridescence {
-    float Factor{0.f};
-    float Ior{1.3f};
-    float ThicknessMinimum{100.f};
-    float ThicknessMaximum{400.f};
+    float Factor{0.f}, Ior{1.3f};
+    float ThicknessMinimum{100.f}, ThicknessMaximum{400.f};
     std::optional<TextureInfo> Texture{}, ThicknessTexture{};
 };
 
@@ -102,7 +123,7 @@ struct PBRMaterial {
     Clearcoat Clearcoat;
     Anisotropy Anisotropy;
     Iridescence Iridescence;
-    fastgltf::AlphaMode AlphaMode;
+    AlphaMode AlphaMode;
     bool DoubleSided, Unlit;
     float AlphaCutoff;
     std::string Name;
@@ -115,13 +136,13 @@ struct Texture {
 
 struct Image {
     std::vector<std::byte> Bytes;
-    fastgltf::MimeType MimeType;
+    MimeType MimeType;
     std::string Name;
 };
 
 struct Sampler {
-    std::optional<fastgltf::Filter> MagFilter, MinFilter;
-    fastgltf::Wrap WrapS, WrapT;
+    std::optional<Filter> MagFilter, MinFilter;
+    Wrap WrapS, WrapT;
     std::string Name;
 };
 
@@ -154,8 +175,7 @@ struct Node {
     uint32_t NodeIndex;
     std::optional<uint32_t> ParentNodeIndex;
     std::vector<uint32_t> ChildrenNodeIndices;
-    Transform LocalTransform;
-    Transform WorldTransform;
+    Transform LocalTransform, WorldTransform;
     bool InScene;
     bool IsJoint;
     std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;

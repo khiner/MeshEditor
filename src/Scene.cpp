@@ -213,11 +213,11 @@ PunctualLight MakeDefaultLight(uint32_t type = LightTypePoint) {
     };
 }
 
-vk::SamplerAddressMode ToSamplerAddressMode(fastgltf::Wrap wrap) {
+vk::SamplerAddressMode ToSamplerAddressMode(gltf::Wrap wrap) {
     switch (wrap) {
-        case fastgltf::Wrap::ClampToEdge: return vk::SamplerAddressMode::eClampToEdge;
-        case fastgltf::Wrap::MirroredRepeat: return vk::SamplerAddressMode::eMirroredRepeat;
-        case fastgltf::Wrap::Repeat: return vk::SamplerAddressMode::eRepeat;
+        case gltf::Wrap::ClampToEdge: return vk::SamplerAddressMode::eClampToEdge;
+        case gltf::Wrap::MirroredRepeat: return vk::SamplerAddressMode::eMirroredRepeat;
+        case gltf::Wrap::Repeat: return vk::SamplerAddressMode::eRepeat;
     }
     return vk::SamplerAddressMode::eRepeat;
 }
@@ -239,34 +239,34 @@ vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space =
 SamplerConfig ToSamplerConfig(const gltf::Sampler *sampler) {
     SamplerConfig config{};
     if (sampler) {
-        if (sampler->MagFilter && *sampler->MagFilter == fastgltf::Filter::Nearest) config.MagFilter = vk::Filter::eNearest;
-        switch (sampler->MinFilter.value_or(fastgltf::Filter::LinearMipMapLinear)) {
-            case fastgltf::Filter::Nearest:
+        if (sampler->MagFilter && *sampler->MagFilter == gltf::Filter::Nearest) config.MagFilter = vk::Filter::eNearest;
+        switch (sampler->MinFilter.value_or(gltf::Filter::LinearMipMapLinear)) {
+            case gltf::Filter::Nearest:
                 config.MinFilter = vk::Filter::eNearest;
                 config.MipmapMode = vk::SamplerMipmapMode::eNearest;
                 config.UsesMipmaps = false;
                 break;
-            case fastgltf::Filter::Linear:
+            case gltf::Filter::Linear:
                 config.MinFilter = vk::Filter::eLinear;
                 config.MipmapMode = vk::SamplerMipmapMode::eNearest;
                 config.UsesMipmaps = false;
                 break;
-            case fastgltf::Filter::NearestMipMapNearest:
+            case gltf::Filter::NearestMipMapNearest:
                 config.MinFilter = vk::Filter::eNearest;
                 config.MipmapMode = vk::SamplerMipmapMode::eNearest;
                 config.UsesMipmaps = true;
                 break;
-            case fastgltf::Filter::LinearMipMapNearest:
+            case gltf::Filter::LinearMipMapNearest:
                 config.MinFilter = vk::Filter::eLinear;
                 config.MipmapMode = vk::SamplerMipmapMode::eNearest;
                 config.UsesMipmaps = true;
                 break;
-            case fastgltf::Filter::NearestMipMapLinear:
+            case gltf::Filter::NearestMipMapLinear:
                 config.MinFilter = vk::Filter::eNearest;
                 config.MipmapMode = vk::SamplerMipmapMode::eLinear;
                 config.UsesMipmaps = true;
                 break;
-            case fastgltf::Filter::LinearMipMapLinear:
+            case gltf::Filter::LinearMipMapLinear:
                 config.MinFilter = vk::Filter::eLinear;
                 config.MipmapMode = vk::SamplerMipmapMode::eLinear;
                 config.UsesMipmaps = true;
@@ -1698,7 +1698,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
             .BaseColorFactor = vec4{1.f},
             .MetallicFactor = 0.f,
             .RoughnessFactor = 1.f,
-            .AlphaMode = uint32_t(fastgltf::AlphaMode::Opaque),
+            .AlphaMode = uint32_t(gltf::AlphaMode::Opaque),
             .AlphaCutoff = 0.5f,
             .DoubleSided = 0u,
             .BaseColorTexture = {.Slot = texture_store.WhiteTextureSlot},
@@ -2600,8 +2600,8 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
                     .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
                     .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
                     .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                        uint32_t(fastgltf::AlphaMode::Blend) :
-                        uint32_t(fastgltf::AlphaMode::Opaque),
+                        uint32_t(gltf::AlphaMode::Blend) :
+                        uint32_t(gltf::AlphaMode::Opaque),
                     .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot},
                     .NormalTexture = {.Slot = normal_texture},
                 }
@@ -3715,7 +3715,7 @@ void Scene::RecordRenderCommandBuffer() {
                     const auto material_count = GetMaterialCount(*Buffers);
                     const auto material_is_blend = [&](uint32_t material_index) {
                         return material_index < material_count &&
-                            GetMaterial(*Buffers, material_index).AlphaMode == uint32_t(fastgltf::AlphaMode::Blend);
+                            GetMaterial(*Buffers, material_index).AlphaMode == uint32_t(gltf::AlphaMode::Blend);
                     };
                     const uint32_t triangle_count = mesh_buffers.FaceIndices.Count / 3u;
                     if (!primitive_materials.empty() &&
@@ -5497,7 +5497,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     material.AlphaMode = uint32_t(alpha_mode);
                     material_changed = true;
                 }
-                if (material.AlphaMode == uint32_t(fastgltf::AlphaMode::Mask)) {
+                if (material.AlphaMode == uint32_t(gltf::AlphaMode::Mask)) {
                     material_changed |= SliderFloat("Alpha cutoff", &material.AlphaCutoff, 0.f, 1.f);
                 }
                 bool double_sided = material.DoubleSided != 0u;
