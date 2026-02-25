@@ -317,6 +317,111 @@ structs:
         type: float
       - name: Type
         type: u32
+  - name: TextureInfo
+    fields:
+      - name: Slot
+        type: u32
+        default: InvalidSlot
+      - name: TexCoord
+        type: u32
+      - name: UvOffset
+        type: vec2
+        default: 0
+      - name: UvScale
+        type: vec2
+        default: 1
+      - name: UvRotation
+        type: float
+        default: 0
+  - name: Sheen
+    fields:
+      - name: ColorFactor
+        type: vec3
+        default: 0
+      - name: RoughnessFactor
+        type: float
+        default: 0
+      - name: ColorTexture
+        type: TextureInfo
+      - name: RoughnessTexture
+        type: TextureInfo
+  - name: Specular
+    fields:
+      - name: Factor
+        type: float
+        default: 1
+      - name: ColorFactor
+        type: vec3
+        default: 1
+      - name: Texture
+        type: TextureInfo
+      - name: ColorTexture
+        type: TextureInfo
+  - name: Transmission
+    fields:
+      - name: Factor
+        type: float
+        default: 0
+      - name: Texture
+        type: TextureInfo
+  - name: Volume
+    fields:
+      - name: ThicknessFactor
+        type: float
+        default: 0
+      - name: AttenuationColor
+        type: vec3
+        default: 1
+      - name: AttenuationDistance
+        type: float
+        default: 0
+      - name: ThicknessTexture
+        type: TextureInfo
+  - name: Clearcoat
+    fields:
+      - name: Factor
+        type: float
+        default: 0
+      - name: RoughnessFactor
+        type: float
+        default: 0
+      - name: NormalScale
+        type: float
+        default: 1
+      - name: Texture
+        type: TextureInfo
+      - name: RoughnessTexture
+        type: TextureInfo
+      - name: NormalTexture
+        type: TextureInfo
+  - name: Anisotropy
+    fields:
+      - name: Strength
+        type: float
+        default: 0
+      - name: Rotation
+        type: float
+        default: 0
+      - name: Texture
+        type: TextureInfo
+  - name: Iridescence
+    fields:
+      - name: Factor
+        type: float
+        default: 0
+      - name: Ior
+        type: float
+        default: 1.3
+      - name: ThicknessMinimum
+        type: float
+        default: 100
+      - name: ThicknessMaximum
+        type: float
+        default: 400
+      - name: Texture
+        type: TextureInfo
+      - name: ThicknessTexture
+        type: TextureInfo
   - name: PBRMaterial
     fields:
       - name: BaseColorFactor
@@ -337,144 +442,6 @@ structs:
       - name: OcclusionStrength
         type: float
         default: 1
-      - name: BaseColorTexture
-        type: u32
-        default: InvalidSlot
-      - name: BaseColorTexCoord
-        type: u32
-      - name: BaseColorUvOffset
-        type: vec2
-        default: 0
-      - name: BaseColorUvScale
-        type: vec2
-        default: 1
-      - name: BaseColorUvRotation
-        type: float
-        default: 0
-      - name: MetallicRoughnessTexture
-        type: u32
-        default: InvalidSlot
-      - name: MetallicRoughnessTexCoord
-        type: u32
-      - name: MetallicRoughnessUvOffset
-        type: vec2
-        default: 0
-      - name: MetallicRoughnessUvScale
-        type: vec2
-        default: 1
-      - name: MetallicRoughnessUvRotation
-        type: float
-        default: 0
-      - name: NormalTexture
-        type: u32
-        default: InvalidSlot
-      - name: NormalTexCoord
-        type: u32
-      - name: NormalUvOffset
-        type: vec2
-        default: 0
-      - name: NormalUvScale
-        type: vec2
-        default: 1
-      - name: NormalUvRotation
-        type: float
-        default: 0
-      - name: OcclusionTexture
-        type: u32
-        default: InvalidSlot
-      - name: OcclusionTexCoord
-        type: u32
-      - name: OcclusionUvOffset
-        type: vec2
-        default: 0
-      - name: OcclusionUvScale
-        type: vec2
-        default: 1
-      - name: OcclusionUvRotation
-        type: float
-        default: 0
-      - name: EmissiveTexture
-        type: u32
-        default: InvalidSlot
-      - name: EmissiveTexCoord
-        type: u32
-      - name: EmissiveUvOffset
-        type: vec2
-        default: 0
-      - name: EmissiveUvScale
-        type: vec2
-        default: 1
-      - name: EmissiveUvRotation
-        type: float
-        default: 0
-      - name: SheenColorFactor
-        type: vec3
-        default: 0
-      - name: SheenRoughnessFactor
-        type: float
-        default: 0
-      - name: SheenColorTexture
-        type: u32
-        default: InvalidSlot
-      - name: SheenColorTexCoord
-        type: u32
-      - name: SheenColorUvOffset
-        type: vec2
-        default: 0
-      - name: SheenColorUvScale
-        type: vec2
-        default: 1
-      - name: SheenColorUvRotation
-        type: float
-        default: 0
-      - name: SheenRoughnessTexture
-        type: u32
-        default: InvalidSlot
-      - name: SheenRoughnessTexCoord
-        type: u32
-      - name: SheenRoughnessUvOffset
-        type: vec2
-        default: 0
-      - name: SheenRoughnessUvScale
-        type: vec2
-        default: 1
-      - name: SheenRoughnessUvRotation
-        type: float
-        default: 0
-      - name: SpecularFactor
-        type: float
-        default: 1
-      - name: SpecularTexture
-        type: u32
-        default: InvalidSlot
-      - name: SpecularTexCoord
-        type: u32
-      - name: SpecularUvOffset
-        type: vec2
-        default: 0
-      - name: SpecularUvScale
-        type: vec2
-        default: 1
-      - name: SpecularUvRotation
-        type: float
-        default: 0
-      - name: SpecularColorFactor
-        type: vec3
-        default: 1
-      - name: SpecularColorTexture
-        type: u32
-        default: InvalidSlot
-      - name: SpecularColorTexCoord
-        type: u32
-      - name: SpecularColorUvOffset
-        type: vec2
-        default: 0
-      - name: SpecularColorUvScale
-        type: vec2
-        default: 1
-      - name: SpecularColorUvRotation
-        type: float
-        default: 0
       - name: AlphaMode
         type: u32
       - name: AlphaCutoff
@@ -484,166 +451,33 @@ structs:
         type: u32
       - name: Unlit
         type: u32
-      # KHR_materials_ior
       - name: Ior
         type: float
         default: 1.5
-      # KHR_materials_transmission
-      - name: TransmissionFactor
-        type: float
-        default: 0
-      - name: TransmissionTexture
-        type: u32
-        default: InvalidSlot
-      - name: TransmissionTexCoord
-        type: u32
-      - name: TransmissionUvOffset
-        type: vec2
-        default: 0
-      - name: TransmissionUvScale
-        type: vec2
-        default: 1
-      - name: TransmissionUvRotation
-        type: float
-        default: 0
-      # KHR_materials_volume
-      - name: ThicknessFactor
-        type: float
-        default: 0
-      - name: ThicknessTexture
-        type: u32
-        default: InvalidSlot
-      - name: ThicknessTexCoord
-        type: u32
-      - name: ThicknessUvOffset
-        type: vec2
-        default: 0
-      - name: ThicknessUvScale
-        type: vec2
-        default: 1
-      - name: ThicknessUvRotation
-        type: float
-        default: 0
-      - name: AttenuationColor
-        type: vec3
-        default: 1
-      - name: AttenuationDistance
-        type: float
-        default: 0
-      # KHR_materials_clearcoat
-      - name: ClearcoatFactor
-        type: float
-        default: 0
-      - name: ClearcoatTexture
-        type: u32
-        default: InvalidSlot
-      - name: ClearcoatTexCoord
-        type: u32
-      - name: ClearcoatUvOffset
-        type: vec2
-        default: 0
-      - name: ClearcoatUvScale
-        type: vec2
-        default: 1
-      - name: ClearcoatUvRotation
-        type: float
-        default: 0
-      - name: ClearcoatRoughnessFactor
-        type: float
-        default: 0
-      - name: ClearcoatRoughnessTexture
-        type: u32
-        default: InvalidSlot
-      - name: ClearcoatRoughnessTexCoord
-        type: u32
-      - name: ClearcoatRoughnessUvOffset
-        type: vec2
-        default: 0
-      - name: ClearcoatRoughnessUvScale
-        type: vec2
-        default: 1
-      - name: ClearcoatRoughnessUvRotation
-        type: float
-        default: 0
-      - name: ClearcoatNormalTexture
-        type: u32
-        default: InvalidSlot
-      - name: ClearcoatNormalTexCoord
-        type: u32
-      - name: ClearcoatNormalUvOffset
-        type: vec2
-        default: 0
-      - name: ClearcoatNormalUvScale
-        type: vec2
-        default: 1
-      - name: ClearcoatNormalUvRotation
-        type: float
-        default: 0
-      - name: ClearcoatNormalScale
-        type: float
-        default: 1
-      # KHR_materials_anisotropy
-      - name: AnisotropyStrength
-        type: float
-        default: 0
-      - name: AnisotropyRotation
-        type: float
-        default: 0
-      - name: AnisotropyTexture
-        type: u32
-        default: InvalidSlot
-      - name: AnisotropyTexCoord
-        type: u32
-      - name: AnisotropyUvOffset
-        type: vec2
-        default: 0
-      - name: AnisotropyUvScale
-        type: vec2
-        default: 1
-      - name: AnisotropyUvRotation
-        type: float
-        default: 0
-      # KHR_materials_iridescence
-      - name: IridescenceFactor
-        type: float
-        default: 0
-      - name: IridescenceIor
-        type: float
-        default: 1.3
-      - name: IridescenceThicknessMinimum
-        type: float
-        default: 100
-      - name: IridescenceThicknessMaximum
-        type: float
-        default: 400
-      - name: IridescenceTexture
-        type: u32
-        default: InvalidSlot
-      - name: IridescenceTexCoord
-        type: u32
-      - name: IridescenceUvOffset
-        type: vec2
-        default: 0
-      - name: IridescenceUvScale
-        type: vec2
-        default: 1
-      - name: IridescenceUvRotation
-        type: float
-        default: 0
-      - name: IridescenceThicknessTexture
-        type: u32
-        default: InvalidSlot
-      - name: IridescenceThicknessTexCoord
-        type: u32
-      - name: IridescenceThicknessUvOffset
-        type: vec2
-        default: 0
-      - name: IridescenceThicknessUvScale
-        type: vec2
-        default: 1
-      - name: IridescenceThicknessUvRotation
-        type: float
-        default: 0
+      - name: BaseColorTexture
+        type: TextureInfo
+      - name: MetallicRoughnessTexture
+        type: TextureInfo
+      - name: NormalTexture
+        type: TextureInfo
+      - name: OcclusionTexture
+        type: TextureInfo
+      - name: EmissiveTexture
+        type: TextureInfo
+      - name: Sheen
+        type: Sheen
+      - name: Specular
+        type: Specular
+      - name: Transmission
+        type: Transmission
+      - name: Volume
+        type: Volume
+      - name: Clearcoat
+        type: Clearcoat
+      - name: Anisotropy
+        type: Anisotropy
+      - name: Iridescence
+        type: Iridescence
   - name: SelectionNode
     fields:
       - name: Depth

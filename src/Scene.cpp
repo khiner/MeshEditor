@@ -1698,11 +1698,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
             .BaseColorFactor = vec4{1.f},
             .MetallicFactor = 0.f,
             .RoughnessFactor = 1.f,
-            .BaseColorTexture = texture_store.WhiteTextureSlot,
-            .BaseColorTexCoord = 0u,
             .AlphaMode = uint32_t(fastgltf::AlphaMode::Opaque),
             .AlphaCutoff = 0.5f,
             .DoubleSided = 0u,
+            .BaseColorTexture = {.Slot = texture_store.WhiteTextureSlot},
         }
     );
     R.patch<MaterialStore>(SceneEntity, [](auto &material_store) { material_store.Names.emplace_back("Default"); });
@@ -2600,11 +2599,11 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
                     .BaseColorFactor = source.BaseColorFactor,
                     .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
                     .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-                    .BaseColorTexture = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot,
-                    .NormalTexture = normal_texture,
                     .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
                         uint32_t(fastgltf::AlphaMode::Blend) :
                         uint32_t(fastgltf::AlphaMode::Opaque),
+                    .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot},
+                    .NormalTexture = {.Slot = normal_texture},
                 }
             );
             names.emplace_back(material_name);
@@ -2740,31 +2739,23 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                                         const std::optional<gltf::TextureInfoData> &texture_info,
                                         TextureColorSpace color_space,
                                         std::string_view texture_label,
-                                        uint32_t &texture_slot,
-                                        uint32_t &tex_coord,
-                                        vec2 &uv_offset,
-                                        vec2 &uv_scale,
-                                        float &uv_rotation
+                                        TextureInfo &tex
                                     ) -> std::expected<void, std::string> {
-            texture_slot = InvalidSlot;
-            tex_coord = 0u;
-            uv_offset = vec2{0.f};
-            uv_scale = vec2{1.f};
-            uv_rotation = 0.f;
+            tex = {};
             if (!texture_info) return {};
 
             const uint32_t uv_set = texture_info->Transform && texture_info->Transform->TexCoordIndex ?
                 *texture_info->Transform->TexCoordIndex :
                 texture_info->TexCoordIndex;
-            tex_coord = clamp_uv_set(uv_set, texture_label);
+            tex.TexCoord = clamp_uv_set(uv_set, texture_label);
             if (texture_info->Transform) {
-                uv_offset = texture_info->Transform->UvOffset;
-                uv_scale = texture_info->Transform->UvScale;
-                uv_rotation = texture_info->Transform->Rotation;
+                tex.UvOffset = texture_info->Transform->UvOffset;
+                tex.UvScale = texture_info->Transform->UvScale;
+                tex.UvRotation = texture_info->Transform->Rotation;
             }
             auto texture_slot_result = resolve_texture_slot(texture_info->TextureIndex, color_space);
             if (!texture_slot_result) return std::unexpected{std::move(texture_slot_result.error())};
-            texture_slot = *texture_slot_result;
+            tex.Slot = *texture_slot_result;
             return {};
         };
         PBRMaterial gpu_material{
@@ -2774,273 +2765,92 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             .RoughnessFactor = src_material.PbrData.RoughnessFactor,
             .NormalScale = src_material.PbrData.NormalScale,
             .OcclusionStrength = src_material.PbrData.OcclusionStrength,
-            .BaseColorTexture = InvalidSlot,
-            .BaseColorTexCoord = 0u,
-            .BaseColorUvOffset = vec2{0.f},
-            .BaseColorUvScale = vec2{1.f},
-            .BaseColorUvRotation = 0.f,
-            .MetallicRoughnessTexture = InvalidSlot,
-            .MetallicRoughnessTexCoord = 0u,
-            .MetallicRoughnessUvOffset = vec2{0.f},
-            .MetallicRoughnessUvScale = vec2{1.f},
-            .MetallicRoughnessUvRotation = 0.f,
-            .NormalTexture = InvalidSlot,
-            .NormalTexCoord = 0u,
-            .NormalUvOffset = vec2{0.f},
-            .NormalUvScale = vec2{1.f},
-            .NormalUvRotation = 0.f,
-            .OcclusionTexture = InvalidSlot,
-            .OcclusionTexCoord = 0u,
-            .OcclusionUvOffset = vec2{0.f},
-            .OcclusionUvScale = vec2{1.f},
-            .OcclusionUvRotation = 0.f,
-            .EmissiveTexture = InvalidSlot,
-            .EmissiveTexCoord = 0u,
-            .EmissiveUvOffset = vec2{0.f},
-            .EmissiveUvScale = vec2{1.f},
-            .EmissiveUvRotation = 0.f,
-            .SheenColorFactor = src_material.PbrData.SheenColorFactor,
-            .SheenRoughnessFactor = src_material.PbrData.SheenRoughnessFactor,
-            .SpecularFactor = src_material.PbrData.SpecularFactor,
-            .SpecularColorFactor = src_material.PbrData.SpecularColorFactor,
             .AlphaMode = uint32_t(src_material.AlphaMode),
             .AlphaCutoff = src_material.AlphaCutoff,
             .DoubleSided = src_material.DoubleSided ? 1u : 0u,
             .Unlit = src_material.Unlit ? 1u : 0u,
             .Ior = src_material.PbrData.Ior,
-            .TransmissionFactor = src_material.PbrData.TransmissionFactor,
-            .ThicknessFactor = src_material.PbrData.ThicknessFactor,
-            .AttenuationColor = src_material.PbrData.AttenuationColor,
-            .AttenuationDistance = src_material.PbrData.AttenuationDistance,
-            .ClearcoatFactor = src_material.PbrData.ClearcoatFactor,
-            .ClearcoatRoughnessFactor = src_material.PbrData.ClearcoatRoughnessFactor,
-            .ClearcoatNormalScale = src_material.PbrData.ClearcoatNormalScale,
-            .AnisotropyStrength = src_material.PbrData.AnisotropyStrength,
-            .AnisotropyRotation = src_material.PbrData.AnisotropyRotation,
-            .IridescenceFactor = src_material.PbrData.IridescenceFactor,
-            .IridescenceIor = src_material.PbrData.IridescenceIor,
-            .IridescenceThicknessMinimum = src_material.PbrData.IridescenceThicknessMinimum,
-            .IridescenceThicknessMaximum = src_material.PbrData.IridescenceThicknessMaximum,
+            .Sheen = {
+                .ColorFactor = src_material.PbrData.SheenColorFactor,
+                .RoughnessFactor = src_material.PbrData.SheenRoughnessFactor,
+            },
+            .Specular = {
+                .Factor = src_material.PbrData.SpecularFactor,
+                .ColorFactor = src_material.PbrData.SpecularColorFactor,
+            },
+            .Transmission = {
+                .Factor = src_material.PbrData.TransmissionFactor,
+            },
+            .Volume = {
+                .ThicknessFactor = src_material.PbrData.ThicknessFactor,
+                .AttenuationColor = src_material.PbrData.AttenuationColor,
+                .AttenuationDistance = src_material.PbrData.AttenuationDistance,
+            },
+            .Clearcoat = {
+                .Factor = src_material.PbrData.ClearcoatFactor,
+                .RoughnessFactor = src_material.PbrData.ClearcoatRoughnessFactor,
+                .NormalScale = src_material.PbrData.ClearcoatNormalScale,
+            },
+            .Anisotropy = {
+                .Strength = src_material.PbrData.AnisotropyStrength,
+                .Rotation = src_material.PbrData.AnisotropyRotation,
+            },
+            .Iridescence = {
+                .Factor = src_material.PbrData.IridescenceFactor,
+                .Ior = src_material.PbrData.IridescenceIor,
+                .ThicknessMinimum = src_material.PbrData.IridescenceThicknessMinimum,
+                .ThicknessMaximum = src_material.PbrData.IridescenceThicknessMaximum,
+            },
         };
-        if (auto result = assign_texture(
-                src_material.PbrData.BaseColorTexture,
-                TextureColorSpace::Srgb,
-                "baseColor",
-                gpu_material.BaseColorTexture,
-                gpu_material.BaseColorTexCoord,
-                gpu_material.BaseColorUvOffset,
-                gpu_material.BaseColorUvScale,
-                gpu_material.BaseColorUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.BaseColorTexture, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.MetallicRoughnessTexture,
-                TextureColorSpace::Linear,
-                "metallicRoughness",
-                gpu_material.MetallicRoughnessTexture,
-                gpu_material.MetallicRoughnessTexCoord,
-                gpu_material.MetallicRoughnessUvOffset,
-                gpu_material.MetallicRoughnessUvScale,
-                gpu_material.MetallicRoughnessUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.NormalTexture,
-                TextureColorSpace::Linear,
-                "normal",
-                gpu_material.NormalTexture,
-                gpu_material.NormalTexCoord,
-                gpu_material.NormalUvOffset,
-                gpu_material.NormalUvScale,
-                gpu_material.NormalUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.NormalTexture, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.OcclusionTexture,
-                TextureColorSpace::Linear,
-                "occlusion",
-                gpu_material.OcclusionTexture,
-                gpu_material.OcclusionTexCoord,
-                gpu_material.OcclusionUvOffset,
-                gpu_material.OcclusionUvScale,
-                gpu_material.OcclusionUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.OcclusionTexture, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.EmissiveTexture,
-                TextureColorSpace::Srgb,
-                "emissive",
-                gpu_material.EmissiveTexture,
-                gpu_material.EmissiveTexCoord,
-                gpu_material.EmissiveUvOffset,
-                gpu_material.EmissiveUvScale,
-                gpu_material.EmissiveUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.EmissiveTexture, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.SpecularTexture,
-                TextureColorSpace::Linear,
-                "specular",
-                gpu_material.SpecularTexture,
-                gpu_material.SpecularTexCoord,
-                gpu_material.SpecularUvOffset,
-                gpu_material.SpecularUvScale,
-                gpu_material.SpecularUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.SpecularTexture, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.SpecularColorTexture,
-                TextureColorSpace::Srgb,
-                "specularColor",
-                gpu_material.SpecularColorTexture,
-                gpu_material.SpecularColorTexCoord,
-                gpu_material.SpecularColorUvOffset,
-                gpu_material.SpecularColorUvScale,
-                gpu_material.SpecularColorUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.SpecularColorTexture, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.SheenColorTexture,
-                TextureColorSpace::Srgb,
-                "sheenColor",
-                gpu_material.SheenColorTexture,
-                gpu_material.SheenColorTexCoord,
-                gpu_material.SheenColorUvOffset,
-                gpu_material.SheenColorUvScale,
-                gpu_material.SheenColorUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.SheenColorTexture, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.SheenRoughnessTexture,
-                TextureColorSpace::Linear,
-                "sheenRoughness",
-                gpu_material.SheenRoughnessTexture,
-                gpu_material.SheenRoughnessTexCoord,
-                gpu_material.SheenRoughnessUvOffset,
-                gpu_material.SheenRoughnessUvScale,
-                gpu_material.SheenRoughnessUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.SheenRoughnessTexture, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.TransmissionTexture,
-                TextureColorSpace::Linear,
-                "transmission",
-                gpu_material.TransmissionTexture,
-                gpu_material.TransmissionTexCoord,
-                gpu_material.TransmissionUvOffset,
-                gpu_material.TransmissionUvScale,
-                gpu_material.TransmissionUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.TransmissionTexture, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.ThicknessTexture,
-                TextureColorSpace::Linear,
-                "thickness",
-                gpu_material.ThicknessTexture,
-                gpu_material.ThicknessTexCoord,
-                gpu_material.ThicknessUvOffset,
-                gpu_material.ThicknessUvScale,
-                gpu_material.ThicknessUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.ThicknessTexture, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.ClearcoatTexture,
-                TextureColorSpace::Linear,
-                "clearcoat",
-                gpu_material.ClearcoatTexture,
-                gpu_material.ClearcoatTexCoord,
-                gpu_material.ClearcoatUvOffset,
-                gpu_material.ClearcoatUvScale,
-                gpu_material.ClearcoatUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.ClearcoatTexture, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.ClearcoatRoughnessTexture,
-                TextureColorSpace::Linear,
-                "clearcoatRoughness",
-                gpu_material.ClearcoatRoughnessTexture,
-                gpu_material.ClearcoatRoughnessTexCoord,
-                gpu_material.ClearcoatRoughnessUvOffset,
-                gpu_material.ClearcoatRoughnessUvScale,
-                gpu_material.ClearcoatRoughnessUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.ClearcoatRoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.ClearcoatNormalTexture,
-                TextureColorSpace::Linear,
-                "clearcoatNormal",
-                gpu_material.ClearcoatNormalTexture,
-                gpu_material.ClearcoatNormalTexCoord,
-                gpu_material.ClearcoatNormalUvOffset,
-                gpu_material.ClearcoatNormalUvScale,
-                gpu_material.ClearcoatNormalUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.ClearcoatNormalTexture, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.AnisotropyTexture,
-                TextureColorSpace::Linear,
-                "anisotropy",
-                gpu_material.AnisotropyTexture,
-                gpu_material.AnisotropyTexCoord,
-                gpu_material.AnisotropyUvOffset,
-                gpu_material.AnisotropyUvScale,
-                gpu_material.AnisotropyUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.AnisotropyTexture, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.IridescenceTexture,
-                TextureColorSpace::Linear,
-                "iridescence",
-                gpu_material.IridescenceTexture,
-                gpu_material.IridescenceTexCoord,
-                gpu_material.IridescenceUvOffset,
-                gpu_material.IridescenceUvScale,
-                gpu_material.IridescenceUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.IridescenceTexture, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture); !result) {
             return import_fail(std::move(result.error()));
         }
-        if (auto result = assign_texture(
-                src_material.PbrData.IridescenceThicknessTexture,
-                TextureColorSpace::Linear,
-                "iridescenceThickness",
-                gpu_material.IridescenceThicknessTexture,
-                gpu_material.IridescenceThicknessTexCoord,
-                gpu_material.IridescenceThicknessUvOffset,
-                gpu_material.IridescenceThicknessUvScale,
-                gpu_material.IridescenceThicknessUvRotation
-            );
-            !result) {
+        if (auto result = assign_texture(src_material.PbrData.IridescenceThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture); !result) {
             return import_fail(std::move(result.error()));
         }
         material_indices_by_gltf_material[material_index] = AppendMaterial(*Buffers, gpu_material);
@@ -5660,62 +5470,62 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 material_changed |= ColorEdit4("Base color", &material.BaseColorFactor.x);
                 material_changed |= SliderFloat("Metallic", &material.MetallicFactor, 0.f, 1.f);
                 material_changed |= SliderFloat("Roughness", &material.RoughnessFactor, 0.f, 1.f);
-                material_changed |= edit_texture_slot("Base color texture", material.BaseColorTexture);
-                material_changed |= SliderUInt("Base color UV set", &material.BaseColorTexCoord, 0u, 3u);
+                material_changed |= edit_texture_slot("Base color texture", material.BaseColorTexture.Slot);
+                material_changed |= SliderUInt("Base color UV set", &material.BaseColorTexture.TexCoord, 0u, 3u);
                 material_changed |= edit_uv_transform(
                     "Base color UV offset",
                     "Base color UV scale",
                     "Base color UV rotation",
-                    material.BaseColorUvOffset,
-                    material.BaseColorUvScale,
-                    material.BaseColorUvRotation
+                    material.BaseColorTexture.UvOffset,
+                    material.BaseColorTexture.UvScale,
+                    material.BaseColorTexture.UvRotation
                 );
 
-                material_changed |= edit_texture_slot("Metallic-roughness texture", material.MetallicRoughnessTexture);
-                material_changed |= SliderUInt("Metallic-roughness UV set", &material.MetallicRoughnessTexCoord, 0u, 3u);
+                material_changed |= edit_texture_slot("Metallic-roughness texture", material.MetallicRoughnessTexture.Slot);
+                material_changed |= SliderUInt("Metallic-roughness UV set", &material.MetallicRoughnessTexture.TexCoord, 0u, 3u);
                 material_changed |= edit_uv_transform(
                     "Metallic-roughness UV offset",
                     "Metallic-roughness UV scale",
                     "Metallic-roughness UV rotation",
-                    material.MetallicRoughnessUvOffset,
-                    material.MetallicRoughnessUvScale,
-                    material.MetallicRoughnessUvRotation
+                    material.MetallicRoughnessTexture.UvOffset,
+                    material.MetallicRoughnessTexture.UvScale,
+                    material.MetallicRoughnessTexture.UvRotation
                 );
 
-                material_changed |= edit_texture_slot("Normal texture", material.NormalTexture);
-                material_changed |= SliderUInt("Normal UV set", &material.NormalTexCoord, 0u, 3u);
+                material_changed |= edit_texture_slot("Normal texture", material.NormalTexture.Slot);
+                material_changed |= SliderUInt("Normal UV set", &material.NormalTexture.TexCoord, 0u, 3u);
                 material_changed |= edit_uv_transform(
                     "Normal UV offset",
                     "Normal UV scale",
                     "Normal UV rotation",
-                    material.NormalUvOffset,
-                    material.NormalUvScale,
-                    material.NormalUvRotation
+                    material.NormalTexture.UvOffset,
+                    material.NormalTexture.UvScale,
+                    material.NormalTexture.UvRotation
                 );
                 material_changed |= SliderFloat("Normal scale", &material.NormalScale, -2.f, 2.f);
 
-                material_changed |= edit_texture_slot("Occlusion texture", material.OcclusionTexture);
-                material_changed |= SliderUInt("Occlusion UV set", &material.OcclusionTexCoord, 0u, 3u);
+                material_changed |= edit_texture_slot("Occlusion texture", material.OcclusionTexture.Slot);
+                material_changed |= SliderUInt("Occlusion UV set", &material.OcclusionTexture.TexCoord, 0u, 3u);
                 material_changed |= edit_uv_transform(
                     "Occlusion UV offset",
                     "Occlusion UV scale",
                     "Occlusion UV rotation",
-                    material.OcclusionUvOffset,
-                    material.OcclusionUvScale,
-                    material.OcclusionUvRotation
+                    material.OcclusionTexture.UvOffset,
+                    material.OcclusionTexture.UvScale,
+                    material.OcclusionTexture.UvRotation
                 );
                 material_changed |= SliderFloat("Occlusion strength", &material.OcclusionStrength, 0.f, 1.f);
 
                 material_changed |= ColorEdit3("Emissive", &material.EmissiveFactor.x);
-                material_changed |= edit_texture_slot("Emissive texture", material.EmissiveTexture);
-                material_changed |= SliderUInt("Emissive UV set", &material.EmissiveTexCoord, 0u, 3u);
+                material_changed |= edit_texture_slot("Emissive texture", material.EmissiveTexture.Slot);
+                material_changed |= SliderUInt("Emissive UV set", &material.EmissiveTexture.TexCoord, 0u, 3u);
                 material_changed |= edit_uv_transform(
                     "Emissive UV offset",
                     "Emissive UV scale",
                     "Emissive UV rotation",
-                    material.EmissiveUvOffset,
-                    material.EmissiveUvScale,
-                    material.EmissiveUvRotation
+                    material.EmissiveTexture.UvOffset,
+                    material.EmissiveTexture.UvScale,
+                    material.EmissiveTexture.UvRotation
                 );
 
                 static constexpr std::array alpha_mode_labels{"Opaque", "Mask", "Blend"};
@@ -5737,82 +5547,82 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 material_changed |= SliderFloat("IOR", &material.Ior, 1.0f, 3.0f, "%.3f");
 
                 // Transmission
-                material_changed |= SliderFloat("Transmission", &material.TransmissionFactor, 0.f, 1.f);
-                if (material.TransmissionFactor > 0.f) {
-                    material_changed |= edit_texture_slot("Transmission texture", material.TransmissionTexture);
-                    material_changed |= SliderUInt("Transmission UV set", &material.TransmissionTexCoord, 0u, 3u);
+                material_changed |= SliderFloat("Transmission", &material.Transmission.Factor, 0.f, 1.f);
+                if (material.Transmission.Factor > 0.f) {
+                    material_changed |= edit_texture_slot("Transmission texture", material.Transmission.Texture.Slot);
+                    material_changed |= SliderUInt("Transmission UV set", &material.Transmission.Texture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Transmission UV offset", "Transmission UV scale", "Transmission UV rotation",
-                        material.TransmissionUvOffset, material.TransmissionUvScale, material.TransmissionUvRotation
+                        material.Transmission.Texture.UvOffset, material.Transmission.Texture.UvScale, material.Transmission.Texture.UvRotation
                     );
 
                     // Volume (only meaningful with transmission)
-                    material_changed |= SliderFloat("Thickness", &material.ThicknessFactor, 0.f, 10.f);
-                    material_changed |= edit_texture_slot("Thickness texture", material.ThicknessTexture);
-                    material_changed |= SliderUInt("Thickness UV set", &material.ThicknessTexCoord, 0u, 3u);
+                    material_changed |= SliderFloat("Thickness", &material.Volume.ThicknessFactor, 0.f, 10.f);
+                    material_changed |= edit_texture_slot("Thickness texture", material.Volume.ThicknessTexture.Slot);
+                    material_changed |= SliderUInt("Thickness UV set", &material.Volume.ThicknessTexture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Thickness UV offset", "Thickness UV scale", "Thickness UV rotation",
-                        material.ThicknessUvOffset, material.ThicknessUvScale, material.ThicknessUvRotation
+                        material.Volume.ThicknessTexture.UvOffset, material.Volume.ThicknessTexture.UvScale, material.Volume.ThicknessTexture.UvRotation
                     );
-                    material_changed |= ColorEdit3("Attenuation color", &material.AttenuationColor.x);
+                    material_changed |= ColorEdit3("Attenuation color", &material.Volume.AttenuationColor.x);
                     // 0 = infinite/disabled; display "Infinite" when zero.
-                    material_changed |= DragFloat("Attenuation distance", &material.AttenuationDistance, 0.01f, 0.f, 0.f, material.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
+                    material_changed |= DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
                 }
 
                 // Clearcoat
-                material_changed |= SliderFloat("Clearcoat", &material.ClearcoatFactor, 0.f, 1.f);
-                if (material.ClearcoatFactor > 0.f) {
-                    material_changed |= edit_texture_slot("Clearcoat texture", material.ClearcoatTexture);
-                    material_changed |= SliderUInt("Clearcoat UV set", &material.ClearcoatTexCoord, 0u, 3u);
+                material_changed |= SliderFloat("Clearcoat", &material.Clearcoat.Factor, 0.f, 1.f);
+                if (material.Clearcoat.Factor > 0.f) {
+                    material_changed |= edit_texture_slot("Clearcoat texture", material.Clearcoat.Texture.Slot);
+                    material_changed |= SliderUInt("Clearcoat UV set", &material.Clearcoat.Texture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Clearcoat UV offset", "Clearcoat UV scale", "Clearcoat UV rotation",
-                        material.ClearcoatUvOffset, material.ClearcoatUvScale, material.ClearcoatUvRotation
+                        material.Clearcoat.Texture.UvOffset, material.Clearcoat.Texture.UvScale, material.Clearcoat.Texture.UvRotation
                     );
-                    material_changed |= SliderFloat("Clearcoat roughness", &material.ClearcoatRoughnessFactor, 0.f, 1.f);
-                    material_changed |= edit_texture_slot("Clearcoat roughness texture", material.ClearcoatRoughnessTexture);
-                    material_changed |= SliderUInt("Clearcoat roughness UV set", &material.ClearcoatRoughnessTexCoord, 0u, 3u);
+                    material_changed |= SliderFloat("Clearcoat roughness", &material.Clearcoat.RoughnessFactor, 0.f, 1.f);
+                    material_changed |= edit_texture_slot("Clearcoat roughness texture", material.Clearcoat.RoughnessTexture.Slot);
+                    material_changed |= SliderUInt("Clearcoat roughness UV set", &material.Clearcoat.RoughnessTexture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Clearcoat roughness UV offset", "Clearcoat roughness UV scale", "Clearcoat roughness UV rotation",
-                        material.ClearcoatRoughnessUvOffset, material.ClearcoatRoughnessUvScale, material.ClearcoatRoughnessUvRotation
+                        material.Clearcoat.RoughnessTexture.UvOffset, material.Clearcoat.RoughnessTexture.UvScale, material.Clearcoat.RoughnessTexture.UvRotation
                     );
-                    material_changed |= edit_texture_slot("Clearcoat normal texture", material.ClearcoatNormalTexture);
-                    material_changed |= SliderUInt("Clearcoat normal UV set", &material.ClearcoatNormalTexCoord, 0u, 3u);
+                    material_changed |= edit_texture_slot("Clearcoat normal texture", material.Clearcoat.NormalTexture.Slot);
+                    material_changed |= SliderUInt("Clearcoat normal UV set", &material.Clearcoat.NormalTexture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Clearcoat normal UV offset", "Clearcoat normal UV scale", "Clearcoat normal UV rotation",
-                        material.ClearcoatNormalUvOffset, material.ClearcoatNormalUvScale, material.ClearcoatNormalUvRotation
+                        material.Clearcoat.NormalTexture.UvOffset, material.Clearcoat.NormalTexture.UvScale, material.Clearcoat.NormalTexture.UvRotation
                     );
-                    material_changed |= SliderFloat("Clearcoat normal scale", &material.ClearcoatNormalScale, -2.f, 2.f);
+                    material_changed |= SliderFloat("Clearcoat normal scale", &material.Clearcoat.NormalScale, -2.f, 2.f);
                 }
 
                 // Anisotropy
-                material_changed |= SliderFloat("Anisotropy", &material.AnisotropyStrength, 0.f, 1.f);
-                if (material.AnisotropyStrength > 0.f) {
-                    material_changed |= SliderFloat("Anisotropy rotation", &material.AnisotropyRotation, 0.f, 6.2832f, "%.3f rad");
-                    material_changed |= edit_texture_slot("Anisotropy texture", material.AnisotropyTexture);
-                    material_changed |= SliderUInt("Anisotropy UV set", &material.AnisotropyTexCoord, 0u, 3u);
+                material_changed |= SliderFloat("Anisotropy", &material.Anisotropy.Strength, 0.f, 1.f);
+                if (material.Anisotropy.Strength > 0.f) {
+                    material_changed |= SliderFloat("Anisotropy rotation", &material.Anisotropy.Rotation, 0.f, 6.2832f, "%.3f rad");
+                    material_changed |= edit_texture_slot("Anisotropy texture", material.Anisotropy.Texture.Slot);
+                    material_changed |= SliderUInt("Anisotropy UV set", &material.Anisotropy.Texture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Anisotropy UV offset", "Anisotropy UV scale", "Anisotropy UV rotation",
-                        material.AnisotropyUvOffset, material.AnisotropyUvScale, material.AnisotropyUvRotation
+                        material.Anisotropy.Texture.UvOffset, material.Anisotropy.Texture.UvScale, material.Anisotropy.Texture.UvRotation
                     );
                 }
 
                 // Iridescence
-                material_changed |= SliderFloat("Iridescence", &material.IridescenceFactor, 0.f, 1.f);
-                if (material.IridescenceFactor > 0.f) {
-                    material_changed |= edit_texture_slot("Iridescence texture", material.IridescenceTexture);
-                    material_changed |= SliderUInt("Iridescence UV set", &material.IridescenceTexCoord, 0u, 3u);
+                material_changed |= SliderFloat("Iridescence", &material.Iridescence.Factor, 0.f, 1.f);
+                if (material.Iridescence.Factor > 0.f) {
+                    material_changed |= edit_texture_slot("Iridescence texture", material.Iridescence.Texture.Slot);
+                    material_changed |= SliderUInt("Iridescence UV set", &material.Iridescence.Texture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Iridescence UV offset", "Iridescence UV scale", "Iridescence UV rotation",
-                        material.IridescenceUvOffset, material.IridescenceUvScale, material.IridescenceUvRotation
+                        material.Iridescence.Texture.UvOffset, material.Iridescence.Texture.UvScale, material.Iridescence.Texture.UvRotation
                     );
-                    material_changed |= SliderFloat("Iridescence IOR", &material.IridescenceIor, 1.0f, 5.0f);
-                    material_changed |= SliderFloat("Thickness min", &material.IridescenceThicknessMinimum, 0.f, 1000.f, "%.0f nm");
-                    material_changed |= SliderFloat("Thickness max", &material.IridescenceThicknessMaximum, 1.f, 1000.f, "%.0f nm");
-                    material_changed |= edit_texture_slot("Iridescence thickness texture", material.IridescenceThicknessTexture);
-                    material_changed |= SliderUInt("Iridescence thickness UV set", &material.IridescenceThicknessTexCoord, 0u, 3u);
+                    material_changed |= SliderFloat("Iridescence IOR", &material.Iridescence.Ior, 1.0f, 5.0f);
+                    material_changed |= SliderFloat("Thickness min", &material.Iridescence.ThicknessMinimum, 0.f, 1000.f, "%.0f nm");
+                    material_changed |= SliderFloat("Thickness max", &material.Iridescence.ThicknessMaximum, 1.f, 1000.f, "%.0f nm");
+                    material_changed |= edit_texture_slot("Iridescence thickness texture", material.Iridescence.ThicknessTexture.Slot);
+                    material_changed |= SliderUInt("Iridescence thickness UV set", &material.Iridescence.ThicknessTexture.TexCoord, 0u, 3u);
                     material_changed |= edit_uv_transform(
                         "Iridescence thickness UV offset", "Iridescence thickness UV scale", "Iridescence thickness UV rotation",
-                        material.IridescenceThicknessUvOffset, material.IridescenceThicknessUvScale, material.IridescenceThicknessUvRotation
+                        material.Iridescence.ThicknessTexture.UvOffset, material.Iridescence.ThicknessTexture.UvScale, material.Iridescence.ThicknessTexture.UvRotation
                     );
                 }
 

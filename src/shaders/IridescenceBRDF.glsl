@@ -2,8 +2,8 @@
 // Implements thin-film interference (Belcour 2017).
 // https://belcour.github.io/blog/research/2017/05/01/brdf-thin-film.html
 
-#ifndef IRIDESCENCE_GLSL
-#define IRIDESCENCE_GLSL
+#ifndef IRIDESCENCE_BRDF_GLSL
+#define IRIDESCENCE_BRDF_GLSL
 
 float sq(float x) { return x * x; }
 vec3  sq(vec3  x) { return x * x; }
