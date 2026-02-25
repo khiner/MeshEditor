@@ -2802,55 +2802,36 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 .ThicknessMaximum = src_material.Iridescence.ThicknessMaximum,
             },
         };
-        if (auto result = assign_texture(src_material.BaseColorTexture, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.NormalTexture, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.OcclusionTexture, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.EmissiveTexture, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Specular.Texture, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Specular.ColorTexture, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Transmission.Texture, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Clearcoat.NormalTexture, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Anisotropy.Texture, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Iridescence.Texture, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture); !result) {
-            return import_fail(std::move(result.error()));
-        }
-        if (auto result = assign_texture(src_material.Iridescence.ThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture); !result) {
+        if (auto result = [&]() -> std::expected<void, std::string> {
+                std::expected<void, std::string> assign_result{};
+                const auto check = [&](const std::optional<gltf::TextureInfo> &texture_info, TextureColorSpace color_space, std::string_view texture_label, TextureInfo &tex) {
+                    assign_result = assign_texture(texture_info, color_space, texture_label, tex);
+                    return assign_result.has_value();
+                };
+                if (
+                    !check(src_material.BaseColorTexture, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture) ||
+                    !check(src_material.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture) ||
+                    !check(src_material.NormalTexture, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture) ||
+                    !check(src_material.OcclusionTexture, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture) ||
+                    !check(src_material.EmissiveTexture, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture) ||
+                    !check(src_material.Specular.Texture, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture) ||
+                    !check(src_material.Specular.ColorTexture, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture) ||
+                    !check(src_material.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture) ||
+                    !check(src_material.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture) ||
+                    !check(src_material.Transmission.Texture, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture) ||
+                    !check(src_material.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture) ||
+                    !check(src_material.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture) ||
+                    !check(src_material.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture) ||
+                    !check(src_material.Clearcoat.NormalTexture, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture) ||
+                    !check(src_material.Anisotropy.Texture, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture) ||
+                    !check(src_material.Iridescence.Texture, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture) ||
+                    !check(src_material.Iridescence.ThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture)
+                ) {
+                    return std::unexpected{std::move(assign_result.error())};
+                }
+                return {};
+            }();
+            !result) {
             return import_fail(std::move(result.error()));
         }
         material_indices_by_gltf_material[material_index] = AppendMaterial(*Buffers, gpu_material);
