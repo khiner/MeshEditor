@@ -9,6 +9,7 @@
 #include "Entity.h"
 #include "Excitable.h"
 #include "File.h"
+#include "ImageDecode.h"
 #include "LightTypes.h"
 #include "OrientationGizmo.h"
 #include "Shader.h"
@@ -41,11 +42,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-
-// Decode imported glTF image bytes (PNG/JPEG/etc.) to RGBA8 for GPU texture upload.
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#include "../lib/lunasvg/plutovg/source/plutovg-stb-image.h"
 
 using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::iota, std::views::take, std::views::transform;
@@ -274,54 +270,6 @@ SamplerConfig ToSamplerConfig(const gltf::Sampler *sampler) {
         }
     }
     return config;
-}
-
-struct DecodedImage {
-    std::vector<std::byte> Pixels;
-    uint32_t Width{0}, Height{0};
-};
-
-struct DecodedImageF32 {
-    std::vector<float> Pixels;
-    uint32_t Width{0}, Height{0};
-};
-
-std::expected<DecodedImage, std::string> DecodeImageRgba8(std::span<const std::byte> encoded, std::string_view image_name) {
-    if (encoded.empty()) return std::unexpected{std::format("Image '{}' has no encoded bytes.", image_name)};
-    int width = 0, height = 0, channels = 0;
-    stbi_uc *pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc *>(encoded.data()), int(encoded.size()), &width, &height, &channels, 4);
-    if (!pixels) {
-        const char *reason = stbi_failure_reason();
-        return std::unexpected{std::format("Failed to decode image '{}': {}", image_name, reason ? reason : "unknown stb_image error")};
-    }
-    if (width <= 0 || height <= 0) {
-        stbi_image_free(pixels);
-        return std::unexpected{std::format("Image '{}' decoded to invalid dimensions {}x{}.", image_name, width, height)};
-    }
-
-    DecodedImage decoded{.Pixels = std::vector<std::byte>(size_t(width) * height * 4u), .Width = uint32_t(width), .Height = uint32_t(height)};
-    std::memcpy(decoded.Pixels.data(), pixels, decoded.Pixels.size());
-    stbi_image_free(pixels);
-    return decoded;
-}
-
-std::expected<DecodedImageF32, std::string> DecodeImageRgba32f(std::span<const std::byte> encoded, std::string_view image_name) {
-    if (encoded.empty()) return std::unexpected{std::format("Image '{}' has no encoded bytes.", image_name)};
-    int width = 0, height = 0, channels = 0;
-    float *pixels = stbi_loadf_from_memory(reinterpret_cast<const stbi_uc *>(encoded.data()), int(encoded.size()), &width, &height, &channels, 4);
-    if (!pixels) {
-        const char *reason = stbi_failure_reason();
-        return std::unexpected{std::format("Failed to decode image '{}' as float RGBA: {}", image_name, reason ? reason : "unknown stb_image error")};
-    }
-    if (width <= 0 || height <= 0) {
-        stbi_image_free(pixels);
-        return std::unexpected{std::format("Image '{}' decoded to invalid dimensions {}x{}.", image_name, width, height)};
-    }
-
-    DecodedImageF32 decoded{.Pixels = std::vector<float>(size_t(width) * height * 4u), .Width = uint32_t(width), .Height = uint32_t(height)};
-    std::memcpy(decoded.Pixels.data(), pixels, decoded.Pixels.size() * sizeof(float));
-    stbi_image_free(pixels);
-    return decoded;
 }
 
 uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
@@ -835,17 +783,18 @@ static EnvironmentPrefiltered CreateIblFromHdri(
     const std::string &name
 ) {
     // 1. Load HDR equirectangular image into a CPU staging buffer.
-    int eq_w_i = 0, eq_h_i = 0, channels = 0;
     const auto path_str = path.string();
-    float *raw_pixels = stbi_loadf(path_str.c_str(), &eq_w_i, &eq_h_i, &channels, 4);
-    if (!raw_pixels) {
-        throw std::runtime_error(std::format("Failed to load HDR '{}': {}", path_str, stbi_failure_reason() ? stbi_failure_reason() : "unknown error"));
-    }
-    const uint32_t eq_w = uint32_t(eq_w_i), eq_h = uint32_t(eq_h_i);
+    auto decoded = DecodeImageFileRgba32f(path, path_str);
+    if (!decoded) throw std::runtime_error(std::format("Failed to load HDR '{}': {}", path_str, decoded.error()));
+    const uint32_t eq_w = decoded->Width, eq_h = decoded->Height;
 
-    const size_t eq_bytes = size_t(eq_w) * eq_h * 4 * sizeof(float);
-    mvk::Buffer eq_staging{ctx, std::span<const std::byte>{reinterpret_cast<const std::byte *>(raw_pixels), eq_bytes}, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
-    stbi_image_free(raw_pixels);
+    const size_t eq_bytes = decoded->Pixels.size() * sizeof(float);
+    mvk::Buffer eq_staging{
+        ctx,
+        std::span<const std::byte>{reinterpret_cast<const std::byte *>(decoded->Pixels.data()), eq_bytes},
+        mvk::MemoryUsage::CpuOnly,
+        vk::BufferUsageFlagBits::eTransferSrc
+    };
 
     // 2. Upload equirect pixels to a temporary GPU image.
     constexpr auto rgba32f = vk::Format::eR32G32B32A32Sfloat;
