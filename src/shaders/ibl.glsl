@@ -15,7 +15,7 @@ mat3 getEnvRotation() {
 
 vec3 getDiffuseLight(vec3 n) {
     vec4 texture_sample = texture(
-        CubeSamplers[nonuniformEXT(SceneViewUBO.DiffuseEnvSamplerSlot)],
+        CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.DiffuseEnvSamplerSlot)],
         getEnvRotation() * n
     );
     texture_sample.rgb *= SceneViewUBO.EnvIntensity;
@@ -24,7 +24,7 @@ vec3 getDiffuseLight(vec3 n) {
 
 vec4 getSpecularSample(vec3 reflection, float lod) {
     vec4 texture_sample = textureLod(
-        CubeSamplers[nonuniformEXT(SceneViewUBO.SpecularEnvSamplerSlot)],
+        CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SpecularEnvSamplerSlot)],
         getEnvRotation() * reflection,
         lod
     );
@@ -35,7 +35,7 @@ vec4 getSpecularSample(vec3 reflection, float lod) {
 vec3 getIBLGGXFresnel(vec3 n, vec3 v, float roughness, vec3 F0, float specularWeight) {
     const float NdotV = clamp(dot(n, v), 0.0, 1.0);
     const vec2 brdf_sample_point = clamp(vec2(NdotV, roughness), vec2(0.0), vec2(1.0));
-    const vec2 f_ab = texture(Samplers[nonuniformEXT(SceneViewUBO.BrdfLutSamplerSlot)], brdf_sample_point).rg;
+    const vec2 f_ab = texture(Samplers[nonuniformEXT(SceneViewUBO.Ibl.BrdfLutSamplerSlot)], brdf_sample_point).rg;
 
     const vec3 Fr = max(vec3(1.0 - roughness), F0) - F0;
     const vec3 k_S = F0 + Fr * pow(1.0 - NdotV, 5.0);
@@ -49,21 +49,21 @@ vec3 getIBLGGXFresnel(vec3 n, vec3 v, float roughness, vec3 F0, float specularWe
 }
 
 vec3 getIBLRadianceGGX(vec3 n, vec3 v, float roughness) {
-    const uint mip_count = max(SceneViewUBO.SpecularEnvMipCount, 1u);
+    const uint mip_count = max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u);
     const float lod = roughness * float(mip_count - 1u);
     const vec3 reflection = normalize(reflect(-v, n));
     return getSpecularSample(reflection, lod).rgb;
 }
 
 vec4 getSheenSample(vec3 reflection, float lod) {
-    vec4 s = textureLod(CubeSamplers[nonuniformEXT(SceneViewUBO.SheenEnvSamplerSlot)],
+    vec4 s = textureLod(CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SheenEnvSamplerSlot)],
                         getEnvRotation() * reflection, lod);
     s.rgb *= SceneViewUBO.EnvIntensity;
     return s;
 }
 
 float albedoSheenScalingLUT(float NdotV, float sheenRoughness) {
-    return texture(Samplers[nonuniformEXT(SceneViewUBO.SheenELutSamplerSlot)],
+    return texture(Samplers[nonuniformEXT(SceneViewUBO.Ibl.SheenELutSamplerSlot)],
                    clamp(vec2(NdotV, sheenRoughness), vec2(0.0), vec2(1.0))).r;
 }
 
@@ -77,7 +77,7 @@ vec3 getIBLRadianceAnisotropy(vec3 n, vec3 v, float roughness, float anisotropy,
     const float bendFactorPow4     = bendFactor * bendFactor * bendFactor * bendFactor;
     const vec3  bentNormal         = normalize(mix(anisotropicNormal, n, bendFactorPow4));
 
-    const uint mip_count = max(SceneViewUBO.SpecularEnvMipCount, 1u);
+    const uint mip_count = max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u);
     const float lod = roughness * float(mip_count - 1u);
     const vec3 reflection = normalize(reflect(-v, bentNormal));
     return getSpecularSample(reflection, lod).rgb;
@@ -92,16 +92,16 @@ float applyIorToRoughness(float roughness, float ior) {
 // Sample environment at refracted ray direction instead of reflected.
 // Approximation: uses the prefiltered specular environment (no separate scene render pass needed).
 vec3 getIBLVolumeRefraction(vec3 n, vec3 v, float perceptualRoughness, float ior) {
-    float lod = applyIorToRoughness(perceptualRoughness, ior) * float(max(SceneViewUBO.SpecularEnvMipCount, 1u) - 1u);
+    float lod = applyIorToRoughness(perceptualRoughness, ior) * float(max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u) - 1u);
     vec3 refracted = normalize(refract(-v, n, 1.0 / ior));
     return getSpecularSample(refracted, lod).rgb;
 }
 
 vec3 getIBLRadianceCharlie(vec3 n, vec3 v, float sheenRoughness, vec3 sheenColor) {
     const float NdotV = clamp(dot(n, v), 0.0, 1.0);
-    const float lod = sheenRoughness * float(max(SceneViewUBO.SheenEnvMipCount, 1u) - 1u);
+    const float lod = sheenRoughness * float(max(SceneViewUBO.Ibl.SheenEnvMipCount, 1u) - 1u);
     const vec3 reflection = normalize(reflect(-v, n));
-    const float brdf = texture(Samplers[nonuniformEXT(SceneViewUBO.CharlieLutSamplerSlot)],
+    const float brdf = texture(Samplers[nonuniformEXT(SceneViewUBO.Ibl.CharlieLutSamplerSlot)],
                                clamp(vec2(NdotV, sheenRoughness), vec2(0.0), vec2(1.0))).b;
     return getSheenSample(reflection, lod).rgb * sheenColor * brdf;
 }

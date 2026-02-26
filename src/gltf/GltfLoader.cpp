@@ -100,35 +100,23 @@ vec4 ToVec4(const fastgltf::math::nvec4 &v) { return {v.x(), v.y(), v.z(), v.w()
 quat ToQuat(const fastgltf::math::fquat &q) { return {q.w(), q.x(), q.y(), q.z()}; }
 Transform ToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = glm::normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
-template<typename T>
-TextureInfo ToTextureInfoImpl(const T &texture_info, const fastgltf::Asset &asset) {
-    TextureInfo out{};
-    const auto texture_index = ToIndex(texture_info.textureIndex, asset.textures.size());
-    if (!texture_index) return out;
-
-    out.TextureIndex = *texture_index;
-    out.TexCoord = uint32_t(texture_info.texCoordIndex);
-    if (texture_info.transform) {
-        out.UvRotation = texture_info.transform->rotation;
-        out.UvOffset = ToVec2(texture_info.transform->uvOffset);
-        out.UvScale = ToVec2(texture_info.transform->uvScale);
-        if (const auto tex_coord_override = ToIndex(texture_info.transform->texCoordIndex, std::numeric_limits<uint32_t>::max())) {
-            out.TexCoord = *tex_coord_override;
+// Converts any fastgltf optional texture info type (TextureInfo, NormalTextureInfo, OcclusionTextureInfo)
+// to a GPU TextureInfo with Slot = glTF texture index (resolved to a bindless slot later, in Scene.cpp).
+template<typename OptT>
+::TextureInfo ToTextureIndex(const OptT &opt, const fastgltf::Asset &asset) {
+    if (!opt) return {};
+    const auto texture_index = ToIndex(opt->textureIndex, asset.textures.size());
+    if (!texture_index) return {};
+    ::TextureInfo out{.Slot = *texture_index, .TexCoord = uint32_t(opt->texCoordIndex)};
+    if (opt->transform) {
+        out.UvRotation = opt->transform->rotation;
+        out.UvOffset = ToVec2(opt->transform->uvOffset);
+        out.UvScale = ToVec2(opt->transform->uvScale);
+        if (const auto tc_override = ToIndex(opt->transform->texCoordIndex, std::numeric_limits<uint32_t>::max())) {
+            out.TexCoord = *tc_override;
         }
     }
     return out;
-}
-TextureInfo ToTextureInfo(const fastgltf::Optional<fastgltf::TextureInfo> &texture_info, const fastgltf::Asset &asset) {
-    if (!texture_info) return {};
-    return ToTextureInfoImpl(*texture_info, asset);
-}
-TextureInfo ToTextureInfo(const fastgltf::Optional<fastgltf::NormalTextureInfo> &texture_info, const fastgltf::Asset &asset) {
-    if (!texture_info) return {};
-    return ToTextureInfoImpl(*texture_info, asset);
-}
-TextureInfo ToTextureInfo(const fastgltf::Optional<fastgltf::OcclusionTextureInfo> &texture_info, const fastgltf::Asset &asset) {
-    if (!texture_info) return {};
-    return ToTextureInfoImpl(*texture_info, asset);
 }
 
 std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::filesystem::path &path) {
@@ -1131,21 +1119,31 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                         .DoubleSided = material.doubleSided ? 1u : 0u,
                         .Unlit = material.unlit ? 1u : 0u,
                         .Ior = material.ior,
+                        .BaseColorTexture = ToTextureIndex(material.pbrData.baseColorTexture, asset),
+                        .MetallicRoughnessTexture = ToTextureIndex(material.pbrData.metallicRoughnessTexture, asset),
+                        .NormalTexture = ToTextureIndex(material.normalTexture, asset),
+                        .OcclusionTexture = ToTextureIndex(material.occlusionTexture, asset),
+                        .EmissiveTexture = ToTextureIndex(material.emissiveTexture, asset),
                         .Sheen = material.sheen ?
                             Sheen{
                                 .ColorFactor = ToVec3(material.sheen->sheenColorFactor),
                                 .RoughnessFactor = material.sheen->sheenRoughnessFactor,
+                                .ColorTexture = ToTextureIndex(material.sheen->sheenColorTexture, asset),
+                                .RoughnessTexture = ToTextureIndex(material.sheen->sheenRoughnessTexture, asset),
                             } :
                             Sheen{},
                         .Specular = material.specular ?
                             Specular{
                                 .Factor = material.specular->specularFactor,
                                 .ColorFactor = ToVec3(material.specular->specularColorFactor),
+                                .Texture = ToTextureIndex(material.specular->specularTexture, asset),
+                                .ColorTexture = ToTextureIndex(material.specular->specularColorTexture, asset),
                             } :
                             Specular{},
                         .Transmission = material.transmission ?
                             Transmission{
                                 .Factor = material.transmission->transmissionFactor,
+                                .Texture = ToTextureIndex(material.transmission->transmissionTexture, asset),
                             } :
                             Transmission{},
                         .Volume = [&]() -> Volume {
@@ -1155,6 +1153,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                                 .ThicknessFactor = material.volume->thicknessFactor,
                                 .AttenuationColor = ToVec3(material.volume->attenuationColor),
                                 .AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad,
+                                .ThicknessTexture = ToTextureIndex(material.volume->thicknessTexture, asset),
                             };
                         }(),
                         .Clearcoat = material.clearcoat ?
@@ -1162,12 +1161,16 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                                 .Factor = material.clearcoat->clearcoatFactor,
                                 .RoughnessFactor = material.clearcoat->clearcoatRoughnessFactor,
                                 .NormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f,
+                                .Texture = ToTextureIndex(material.clearcoat->clearcoatTexture, asset),
+                                .RoughnessTexture = ToTextureIndex(material.clearcoat->clearcoatRoughnessTexture, asset),
+                                .NormalTexture = ToTextureIndex(material.clearcoat->clearcoatNormalTexture, asset),
                             } :
                             Clearcoat{},
                         .Anisotropy = material.anisotropy ?
                             Anisotropy{
                                 .Strength = material.anisotropy->anisotropyStrength,
                                 .Rotation = material.anisotropy->anisotropyRotation,
+                                .Texture = ToTextureIndex(material.anisotropy->anisotropyTexture, asset),
                             } :
                             Anisotropy{},
                         .Iridescence = material.iridescence ?
@@ -1176,64 +1179,16 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                                 .Ior = material.iridescence->iridescenceIor,
                                 .ThicknessMinimum = material.iridescence->iridescenceThicknessMinimum,
                                 .ThicknessMaximum = material.iridescence->iridescenceThicknessMaximum,
+                                .Texture = ToTextureIndex(material.iridescence->iridescenceTexture, asset),
+                                .ThicknessTexture = ToTextureIndex(material.iridescence->iridescenceThicknessTexture, asset),
                             } :
                             Iridescence{},
-                    },
-                .Textures =
-                    ImportedMaterialTextures{
-                        .BaseColor = ToTextureInfo(material.pbrData.baseColorTexture, asset),
-                        .MetallicRoughness = ToTextureInfo(material.pbrData.metallicRoughnessTexture, asset),
-                        .Normal = ToTextureInfo(material.normalTexture, asset),
-                        .Occlusion = ToTextureInfo(material.occlusionTexture, asset),
-                        .Emissive = ToTextureInfo(material.emissiveTexture, asset),
-                        .SheenColor = material.sheen ? ToTextureInfo(material.sheen->sheenColorTexture, asset) : TextureInfo{},
-                        .SheenRoughness = material.sheen ? ToTextureInfo(material.sheen->sheenRoughnessTexture, asset) : TextureInfo{},
-                        .Specular = material.specular ? ToTextureInfo(material.specular->specularTexture, asset) : TextureInfo{},
-                        .SpecularColor = material.specular ? ToTextureInfo(material.specular->specularColorTexture, asset) : TextureInfo{},
-                        .Transmission = material.transmission ? ToTextureInfo(material.transmission->transmissionTexture, asset) : TextureInfo{},
-                        .VolumeThickness = material.volume ? ToTextureInfo(material.volume->thicknessTexture, asset) : TextureInfo{},
-                        .Clearcoat = material.clearcoat ? ToTextureInfo(material.clearcoat->clearcoatTexture, asset) : TextureInfo{},
-                        .ClearcoatRoughness = material.clearcoat ? ToTextureInfo(material.clearcoat->clearcoatRoughnessTexture, asset) : TextureInfo{},
-                        .ClearcoatNormal = material.clearcoat ? ToTextureInfo(material.clearcoat->clearcoatNormalTexture, asset) : TextureInfo{},
-                        .Anisotropy = material.anisotropy ? ToTextureInfo(material.anisotropy->anisotropyTexture, asset) : TextureInfo{},
-                        .Iridescence = material.iridescence ? ToTextureInfo(material.iridescence->iridescenceTexture, asset) : TextureInfo{},
-                        .IridescenceThickness = material.iridescence ? ToTextureInfo(material.iridescence->iridescenceThicknessTexture, asset) : TextureInfo{},
                     },
                 .Name = material.name.empty() ? std::format("Material{}", material_index) : std::string(material.name),
             }
         );
     }
-    scene.Materials.emplace_back(
-        NamedMaterial{
-            .Value =
-                PBRMaterial{
-                    .BaseColorFactor = vec4{1.f},
-                    .EmissiveFactor = vec3{0.f},
-                    .MetallicFactor = 1.f,
-                    .RoughnessFactor = 1.f,
-                    .NormalScale = 1.f,
-                    .OcclusionStrength = 1.f,
-                    .AlphaMode = MaterialAlphaMode::Opaque,
-                    .AlphaCutoff = 0.5f,
-                    .DoubleSided = 0u,
-                    .Unlit = 0u,
-                    .Ior = 1.5f,
-                    .BaseColorTexture = {},
-                    .MetallicRoughnessTexture = {},
-                    .NormalTexture = {},
-                    .OcclusionTexture = {},
-                    .EmissiveTexture = {},
-                    .Sheen = {},
-                    .Specular = {},
-                    .Transmission = {},
-                    .Volume = {},
-                    .Clearcoat = {},
-                    .Anisotropy = {},
-                    .Iridescence = {},
-                },
-            .Name = "DefaultMaterial",
-        }
-    );
+    scene.Materials.emplace_back(NamedMaterial{.Name = "DefaultMaterial"});
 
     const auto parents = BuildNodeParentTable(asset);
     std::vector<Transform> local_transforms(asset.nodes.size());

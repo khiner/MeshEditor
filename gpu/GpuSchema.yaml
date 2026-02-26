@@ -151,6 +151,32 @@ structs:
       - name: FacePrimitiveOffset
         type: u32
         default: InvalidOffset
+  - name: IblSamplers
+    fields:
+      - name: DiffuseEnvSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: SpecularEnvSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: BrdfLutSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: SpecularEnvMipCount
+        type: u32
+        default: 1
+      - name: SheenEnvSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: SheenEnvMipCount
+        type: u32
+        default: 1
+      - name: SheenELutSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: CharlieLutSamplerSlot
+        type: u32
+        default: InvalidSlot
   - name: SceneViewUBO
     binding: SceneViewUBO
     fields:
@@ -179,30 +205,8 @@ structs:
       - name: WorldOpacity
         type: float
         default: 0
-      - name: DiffuseEnvSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: SpecularEnvSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: BrdfLutSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: SpecularEnvMipCount
-        type: u32
-        default: 1
-      - name: SheenEnvSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: SheenEnvMipCount
-        type: u32
-        default: 1
-      - name: SheenELutSamplerSlot
-        type: u32
-        default: InvalidSlot
-      - name: CharlieLutSamplerSlot
-        type: u32
-        default: InvalidSlot
+      - name: Ibl
+        type: IblSamplers
       - name: InteractionMode
         type: InteractionMode
       - name: EditElement

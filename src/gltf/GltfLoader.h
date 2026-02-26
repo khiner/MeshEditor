@@ -15,16 +15,13 @@
 #include "Armature.h"
 #include "Camera.h"
 #include "Transform.h"
-#include "gpu/MaterialAlphaMode.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/ArmatureDeformData.h"
 #include "mesh/MeshData.h"
 #include "mesh/MorphTargetData.h"
 #include "numeric/mat4.h"
-#include "numeric/vec2.h"
 #include "numeric/vec3.h"
-#include "numeric/vec4.h"
 
 #include <array>
 #include <cstddef>
@@ -69,27 +66,8 @@ using Anisotropy = ::Anisotropy;
 using Iridescence = ::Iridescence;
 using PBRMaterial = ::PBRMaterial;
 
-struct TextureInfo {
-    std::optional<uint32_t> TextureIndex{}; // Indexes into `Scene::Textures`
-    uint32_t TexCoord{};
-    vec2 UvOffset{0.f}, UvScale{1.f};
-    float UvRotation{0.f};
-};
-
-struct ImportedMaterialTextures {
-    TextureInfo BaseColor{}, MetallicRoughness{};
-    TextureInfo Normal{}, Occlusion{}, Emissive{};
-    TextureInfo SheenColor{}, SheenRoughness{};
-    TextureInfo Specular{}, SpecularColor{};
-    TextureInfo Transmission{}, VolumeThickness{};
-    TextureInfo Clearcoat{}, ClearcoatRoughness{}, ClearcoatNormal{};
-    TextureInfo Anisotropy{};
-    TextureInfo Iridescence{}, IridescenceThickness{};
-};
-
 struct NamedMaterial {
     PBRMaterial Value{};
-    ImportedMaterialTextures Textures{};
     std::string Name;
 };
 

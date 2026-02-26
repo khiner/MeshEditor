@@ -18,14 +18,14 @@ mat3 EnvRotation() {
 }
 
 void main() {
-    if (SceneViewUBO.WorldOpacity <= 0.0 || SceneViewUBO.SpecularEnvSamplerSlot == 0xFFFFFFFFu) discard;
+    if (SceneViewUBO.WorldOpacity <= 0.0 || SceneViewUBO.Ibl.SpecularEnvSamplerSlot == 0xFFFFFFFFu) discard;
 
     const mat4 inv_vp = inverse(SceneViewUBO.ViewProj);
     const vec4 far_world = inv_vp * vec4(InNDC, 1.0, 1.0);
     const vec3 world_dir = normalize(far_world.xyz / far_world.w - SceneViewUBO.CameraPosition);
     const vec3 env_dir = EnvRotation() * world_dir;
     const vec3 linear = textureLod(
-        CubeSamplers[nonuniformEXT(SceneViewUBO.SpecularEnvSamplerSlot)], env_dir, 0.0
+        CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SpecularEnvSamplerSlot)], env_dir, 0.0
     ).rgb * SceneViewUBO.EnvIntensity;
     OutColor = vec4(linearTosRGB(toneMapPBRNeutral(linear)), SceneViewUBO.WorldOpacity);
 }

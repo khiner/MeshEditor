@@ -15,6 +15,7 @@
 #include "SvgResource.h"
 #include "Timer.h"
 #include "gltf/GltfLoader.h"
+#include "gpu/IblSamplers.h"
 #include "gpu/MaterialAlphaMode.h"
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/PBRMaterial.h"
@@ -83,14 +84,7 @@ struct HdriEntry {
 };
 
 struct EnvironmentSelection {
-    uint32_t DiffuseEnvSamplerSlot{InvalidSlot};
-    uint32_t SpecularEnvSamplerSlot{InvalidSlot};
-    uint32_t BrdfLutSamplerSlot{InvalidSlot};
-    uint32_t SpecularEnvMipCount{1};
-    uint32_t SheenEnvSamplerSlot{InvalidSlot};
-    uint32_t SheenEnvMipCount{1};
-    uint32_t SheenELutSamplerSlot{InvalidSlot};
-    uint32_t CharlieLutSamplerSlot{InvalidSlot};
+    IblSamplers Ibl{};
     std::string Name;
 };
 
@@ -736,25 +730,23 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
     };
 }
 
-TextureEntry CreateDefaultBrdfLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots) {
-    static constexpr std::string_view lut_path{"res/images/lut_ggx.png"};
-    const auto encoded = File::Read(std::filesystem::path{lut_path});
-    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, "DefaultGGXBRDFLUT", TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
-    if (!texture) throw std::runtime_error(std::format("Failed to initialize default BRDF LUT texture '{}': {}", lut_path, texture.error()));
-    return std::move(*texture);
+IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const EnvironmentStore &environments) {
+    return {
+        .DiffuseEnvSamplerSlot = pre.DiffuseEnv.SamplerSlot,
+        .SpecularEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
+        .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
+        .SpecularEnvMipCount = pre.SpecularEnv.MipLevels,
+        .SheenEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
+        .SheenEnvMipCount = pre.SpecularEnv.MipLevels,
+        .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
+        .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
+    };
 }
-TextureEntry CreateDefaultSheenELutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots) {
-    static constexpr std::string_view lut_path{"res/images/lut_sheen_E.png"};
+
+TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots, std::string_view lut_path, std::string_view name) {
     const auto encoded = File::Read(std::filesystem::path{lut_path});
-    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, "DefaultSheenELUT", TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
-    if (!texture) throw std::runtime_error(std::format("Failed to initialize default sheen E LUT texture '{}': {}", lut_path, texture.error()));
-    return std::move(*texture);
-}
-TextureEntry CreateDefaultCharlieLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots) {
-    static constexpr std::string_view lut_path{"res/images/lut_charlie.png"};
-    const auto encoded = File::Read(std::filesystem::path{lut_path});
-    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, "DefaultCharlieLUT", TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
-    if (!texture) throw std::runtime_error(std::format("Failed to initialize default Charlie LUT texture '{}': {}", lut_path, texture.error()));
+    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, std::string{name}, TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
+    if (!texture) throw std::runtime_error(std::format("Failed to initialize default LUT texture '{}': {}", lut_path, texture.error()));
     return std::move(*texture);
 }
 } // namespace
@@ -1623,9 +1615,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     texture_store.Textures.emplace_back(std::move(white_texture));
 
     auto &environments = *Environments;
-    environments.BrdfLut = CreateDefaultBrdfLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
-    environments.SheenELut = CreateDefaultSheenELutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
-    environments.CharlieLut = CreateDefaultCharlieLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots);
+    environments.BrdfLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, "res/images/lut_ggx.png", "DefaultGGXBRDFLUT");
+    environments.SheenELut = CreateDefaultLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, "res/images/lut_sheen_E.png", "DefaultSheenELUT");
+    environments.CharlieLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, "res/images/lut_charlie.png", "DefaultCharlieLUT");
 
     // Discover HDR environment files, sorted by name for stable ordering.
     static constexpr std::string_view HdriDir{"res/images/studiolights/world"};
@@ -1687,17 +1679,7 @@ void Scene::SetStudioEnvironment(uint32_t index) {
     }
     const auto &pre = *hdri.Prefiltered;
     environments.ActiveHdriIndex = index;
-    environments.StudioWorld = {
-        .DiffuseEnvSamplerSlot = pre.DiffuseEnv.SamplerSlot,
-        .SpecularEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
-        .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
-        .SpecularEnvMipCount = pre.SpecularEnv.MipLevels,
-        .SheenEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
-        .SheenEnvMipCount = pre.SpecularEnv.MipLevels,
-        .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
-        .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
-        .Name = hdri.Name,
-    };
+    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
 }
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
@@ -2079,14 +2061,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .EnvIntensity = env_intensity,
             .EnvRotationRadians = env_rotation_radians,
             .WorldOpacity = world_opacity,
-            .DiffuseEnvSamplerSlot = active_environment.DiffuseEnvSamplerSlot,
-            .SpecularEnvSamplerSlot = active_environment.SpecularEnvSamplerSlot,
-            .BrdfLutSamplerSlot = active_environment.BrdfLutSamplerSlot,
-            .SpecularEnvMipCount = active_environment.SpecularEnvMipCount,
-            .SheenEnvSamplerSlot = active_environment.SheenEnvSamplerSlot,
-            .SheenEnvMipCount = active_environment.SheenEnvMipCount,
-            .SheenELutSamplerSlot = active_environment.SheenELutSamplerSlot,
-            .CharlieLutSamplerSlot = active_environment.CharlieLutSamplerSlot,
+            .Ibl = active_environment.Ibl,
             .InteractionMode = interaction_mode,
             .EditElement = R.get<const SceneEditMode>(SceneEntity).Value,
             .IsTransforming = pending ? 1u : 0u,
@@ -2693,53 +2668,44 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             );
             return 3u;
         };
-        const auto assign_texture = [&](
-                                        const gltf::TextureInfo &texture_info,
-                                        TextureColorSpace color_space,
-                                        std::string_view texture_label,
-                                        TextureInfo &tex
-                                    ) -> std::expected<void, std::string> {
-            tex = {};
-            if (!texture_info.TextureIndex) return {};
-
-            tex.TexCoord = texture_info.TexCoord;
-            tex.UvOffset = texture_info.UvOffset;
-            tex.UvScale = texture_info.UvScale;
-            tex.UvRotation = texture_info.UvRotation;
+        // Resolves a texture slot in-place: tex.Slot starts as a glTF texture index (stored by GltfLoader),
+        // and is replaced with the bindless sampler slot. UV fields are already correct from the loader.
+        const auto resolve_texture = [&](TextureInfo &tex, TextureColorSpace color_space, std::string_view texture_label) -> std::expected<void, std::string> {
+            if (tex.Slot == InvalidSlot) return {};
+            const uint32_t gltf_index = tex.Slot;
             tex.TexCoord = clamp_uv_set(tex.TexCoord, texture_label);
-            auto texture_slot_result = resolve_texture_slot(*texture_info.TextureIndex, color_space);
+            auto texture_slot_result = resolve_texture_slot(gltf_index, color_space);
             if (!texture_slot_result) return std::unexpected{std::move(texture_slot_result.error())};
             tex.Slot = *texture_slot_result;
             return {};
         };
         PBRMaterial gpu_material = src_material;
-        const auto &src_textures = src_named_material.Textures;
         if (auto result = [&]() -> std::expected<void, std::string> {
-                std::expected<void, std::string> assign_result{};
-                const auto check = [&](const gltf::TextureInfo &texture_info, TextureColorSpace color_space, std::string_view texture_label, TextureInfo &tex) {
-                    assign_result = assign_texture(texture_info, color_space, texture_label, tex);
-                    return assign_result.has_value();
+                std::expected<void, std::string> resolve_result{};
+                const auto check = [&](TextureInfo &tex, TextureColorSpace color_space, std::string_view texture_label) {
+                    resolve_result = resolve_texture(tex, color_space, texture_label);
+                    return resolve_result.has_value();
                 };
                 if (
-                    !check(src_textures.BaseColor, TextureColorSpace::Srgb, "baseColor", gpu_material.BaseColorTexture) ||
-                    !check(src_textures.MetallicRoughness, TextureColorSpace::Linear, "metallicRoughness", gpu_material.MetallicRoughnessTexture) ||
-                    !check(src_textures.Normal, TextureColorSpace::Linear, "normal", gpu_material.NormalTexture) ||
-                    !check(src_textures.Occlusion, TextureColorSpace::Linear, "occlusion", gpu_material.OcclusionTexture) ||
-                    !check(src_textures.Emissive, TextureColorSpace::Srgb, "emissive", gpu_material.EmissiveTexture) ||
-                    !check(src_textures.Specular, TextureColorSpace::Linear, "specular", gpu_material.Specular.Texture) ||
-                    !check(src_textures.SpecularColor, TextureColorSpace::Srgb, "specularColor", gpu_material.Specular.ColorTexture) ||
-                    !check(src_textures.SheenColor, TextureColorSpace::Srgb, "sheenColor", gpu_material.Sheen.ColorTexture) ||
-                    !check(src_textures.SheenRoughness, TextureColorSpace::Linear, "sheenRoughness", gpu_material.Sheen.RoughnessTexture) ||
-                    !check(src_textures.Transmission, TextureColorSpace::Linear, "transmission", gpu_material.Transmission.Texture) ||
-                    !check(src_textures.VolumeThickness, TextureColorSpace::Linear, "thickness", gpu_material.Volume.ThicknessTexture) ||
-                    !check(src_textures.Clearcoat, TextureColorSpace::Linear, "clearcoat", gpu_material.Clearcoat.Texture) ||
-                    !check(src_textures.ClearcoatRoughness, TextureColorSpace::Linear, "clearcoatRoughness", gpu_material.Clearcoat.RoughnessTexture) ||
-                    !check(src_textures.ClearcoatNormal, TextureColorSpace::Linear, "clearcoatNormal", gpu_material.Clearcoat.NormalTexture) ||
-                    !check(src_textures.Anisotropy, TextureColorSpace::Linear, "anisotropy", gpu_material.Anisotropy.Texture) ||
-                    !check(src_textures.Iridescence, TextureColorSpace::Linear, "iridescence", gpu_material.Iridescence.Texture) ||
-                    !check(src_textures.IridescenceThickness, TextureColorSpace::Linear, "iridescenceThickness", gpu_material.Iridescence.ThicknessTexture)
+                    !check(gpu_material.BaseColorTexture, TextureColorSpace::Srgb, "baseColor") ||
+                    !check(gpu_material.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness") ||
+                    !check(gpu_material.NormalTexture, TextureColorSpace::Linear, "normal") ||
+                    !check(gpu_material.OcclusionTexture, TextureColorSpace::Linear, "occlusion") ||
+                    !check(gpu_material.EmissiveTexture, TextureColorSpace::Srgb, "emissive") ||
+                    !check(gpu_material.Specular.Texture, TextureColorSpace::Linear, "specular") ||
+                    !check(gpu_material.Specular.ColorTexture, TextureColorSpace::Srgb, "specularColor") ||
+                    !check(gpu_material.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor") ||
+                    !check(gpu_material.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness") ||
+                    !check(gpu_material.Transmission.Texture, TextureColorSpace::Linear, "transmission") ||
+                    !check(gpu_material.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness") ||
+                    !check(gpu_material.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat") ||
+                    !check(gpu_material.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness") ||
+                    !check(gpu_material.Clearcoat.NormalTexture, TextureColorSpace::Linear, "clearcoatNormal") ||
+                    !check(gpu_material.Anisotropy.Texture, TextureColorSpace::Linear, "anisotropy") ||
+                    !check(gpu_material.Iridescence.Texture, TextureColorSpace::Linear, "iridescence") ||
+                    !check(gpu_material.Iridescence.ThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness")
                 ) {
-                    return std::unexpected{std::move(assign_result.error())};
+                    return std::unexpected{std::move(resolve_result.error())};
                 }
                 return {};
             }();
@@ -3120,17 +3086,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             environments.ImportedSceneWorld = std::move(*scene_world);
             const auto &pre = *environments.ImportedSceneWorld;
-            environments.SceneWorld = {
-                .DiffuseEnvSamplerSlot = pre.DiffuseEnv.SamplerSlot,
-                .SpecularEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
-                .BrdfLutSamplerSlot = environments.BrdfLut.SamplerSlot,
-                .SpecularEnvMipCount = pre.SpecularEnv.MipLevels,
-                .SheenEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
-                .SheenEnvMipCount = pre.SpecularEnv.MipLevels,
-                .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
-                .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
-                .Name = pre.Name,
-            };
+            environments.SceneWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = pre.Name};
         }
     }
 
