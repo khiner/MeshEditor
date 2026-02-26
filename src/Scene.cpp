@@ -2611,10 +2611,14 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
         );
     };
-    const auto import_fail = [&](std::string error) -> std::expected<std::pair<entt::entity, entt::entity>, std::string> {
-        rollback_import_side_effects();
-        return std::unexpected{std::move(error)};
+    struct ImportRollbackGuard {
+        decltype(rollback_import_side_effects) &Rollback;
+        bool Enabled{true};
+        ~ImportRollbackGuard() {
+            if (Enabled) Rollback();
+        }
     };
+    ImportRollbackGuard import_rollback_guard{rollback_import_side_effects};
 
     const auto resolve_image_index = [&](const gltf::Texture &texture) -> std::optional<uint32_t> {
         if (texture.ImageIndex) return texture.ImageIndex;
@@ -2740,7 +2744,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 return {};
             }();
             !result) {
-            return import_fail(std::move(result.error()));
+            return std::unexpected{std::move(result.error())};
         }
         material_indices_by_gltf_material[material_index] = AppendMaterial(*Buffers, gpu_material);
         material_names.emplace_back(material_name);
@@ -2941,17 +2945,17 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
         }
-        armature.FinalizeStructure();
+        armature.FinalizeImportedStructure();
 
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
         armature.ImportedSkin = std::move(imported_skin);
         if (!skin.AnchorNodeIndex) {
-            return import_fail(std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex));
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex)};
         }
 
         const auto anchor_it = scene_nodes_by_index.find(*skin.AnchorNodeIndex);
         if (anchor_it == scene_nodes_by_index.end() || !anchor_it->second->InScene) {
-            return import_fail(std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", path.string(), skin.SkinIndex, *skin.AnchorNodeIndex));
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", path.string(), skin.SkinIndex, *skin.AnchorNodeIndex)};
         }
 
         const auto armature_entity = R.create();
@@ -2977,7 +2981,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
             }
         } else {
-            return import_fail(std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex));
+            return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
         }
 
         // Allocate pose state and GPU deform buffer for this armature
@@ -3136,6 +3140,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         first_root_empty_entity != entt::null  ? first_root_empty_entity :
                                                  first_object_entity;
     if (selected_entity != entt::null) Select(selected_entity);
+    import_rollback_guard.Enabled = false;
 
     return std::pair{first_mesh_entity, selected_entity};
 }

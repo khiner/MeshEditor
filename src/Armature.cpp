@@ -8,6 +8,43 @@
 namespace {
 mat4 ToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
 
+void RebuildDerivedCaches(Armature &armature) {
+    auto &bones = armature.Bones;
+    armature.BoneIdToIndex.clear();
+    armature.BoneIdToIndex.reserve(bones.size());
+    armature.JointNodeIndexToBoneId.clear();
+    armature.JointNodeIndexToBoneId.reserve(bones.size());
+
+    for (auto &bone : bones) bone.ParentIndex = bone.FirstChild = bone.NextSibling = InvalidBoneIndex;
+
+    for (uint32_t i = 0; i < bones.size(); ++i) {
+        armature.BoneIdToIndex.emplace(bones[i].Id, i);
+    }
+
+    for (const auto &bone : bones) {
+        if (const auto joint_node_index = bone.JointNodeIndex) {
+            armature.JointNodeIndexToBoneId.emplace(*joint_node_index, bone.Id);
+        }
+    }
+
+    for (uint32_t i = 0; i < bones.size(); ++i) {
+        const auto parent_id = bones[i].ParentBoneId;
+        if (parent_id == InvalidBoneId) continue;
+
+        const auto parent = armature.BoneIdToIndex.find(parent_id)->second;
+        bones[i].ParentIndex = parent;
+        bones[i].NextSibling = bones[parent].FirstChild;
+        bones[parent].FirstChild = i;
+    }
+
+    for (uint32_t i = 0; i < bones.size(); ++i) {
+        const auto local = ToMatrix(bones[i].RestLocal);
+        const auto parent = bones[i].ParentIndex;
+        bones[i].RestWorld = parent == InvalidBoneIndex ? local : bones[parent].RestWorld * local;
+        bones[i].InvRestWorld = glm::inverse(bones[i].RestWorld);
+    }
+}
+
 // Binary search for the keyframe interval containing `t`. Returns the index of the left keyframe.
 uint32_t FindKeyframe(const std::vector<float> &times, float t) {
     if (times.size() <= 1) return 0;
@@ -61,13 +98,6 @@ std::optional<BoneId> Armature::FindBoneIdByJointNodeIndex(uint32_t joint_node_i
         if (bone.JointNodeIndex && *bone.JointNodeIndex == joint_node_index) return bone.Id;
     }
     return {};
-}
-
-void Armature::SetJointNodeMapping(BoneId bone_id, uint32_t joint_node_index) {
-    const auto index = FindBoneIndex(bone_id);
-    if (!index) return;
-    Bones[*index].JointNodeIndex = joint_node_index;
-    Dirty = true;
 }
 
 BoneId Armature::AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index) {
@@ -134,40 +164,24 @@ void Armature::FinalizeStructure() {
     for (const auto old_index : ordered_old_indices) reordered.emplace_back(std::move(Bones[old_index]));
     Bones = std::move(reordered);
 
-    BoneIdToIndex.clear();
-    BoneIdToIndex.reserve(Bones.size());
-    JointNodeIndexToBoneId.clear();
-    JointNodeIndexToBoneId.reserve(Bones.size());
+    RebuildDerivedCaches(*this);
 
-    for (auto &bone : Bones) bone.ParentIndex = bone.FirstChild = bone.NextSibling = InvalidBoneIndex;
+    Dirty = false;
+}
 
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        BoneIdToIndex.emplace(Bones[i].Id, i);
+void Armature::FinalizeImportedStructure() {
+    if (!Dirty) return;
+
+    ++Version;
+
+    if (Bones.empty()) {
+        BoneIdToIndex.clear();
+        JointNodeIndexToBoneId.clear();
+        Dirty = false;
+        return;
     }
 
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        if (const auto joint_node_index = Bones[i].JointNodeIndex) {
-            JointNodeIndexToBoneId.emplace(*joint_node_index, Bones[i].Id);
-        }
-    }
-
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        const auto parent_id = Bones[i].ParentBoneId;
-        if (parent_id == InvalidBoneId) continue;
-
-        const auto parent_it = BoneIdToIndex.find(parent_id);
-        const auto parent = parent_it->second;
-        Bones[i].ParentIndex = parent;
-        Bones[i].NextSibling = Bones[parent].FirstChild;
-        Bones[parent].FirstChild = i;
-    }
-
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        const auto local = ToMatrix(Bones[i].RestLocal);
-        const auto parent = Bones[i].ParentIndex;
-        Bones[i].RestWorld = parent == InvalidBoneIndex ? local : Bones[parent].RestWorld * local;
-        Bones[i].InvRestWorld = glm::inverse(Bones[i].RestWorld);
-    }
+    RebuildDerivedCaches(*this);
 
     Dirty = false;
 }

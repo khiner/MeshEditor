@@ -1435,7 +1435,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
 
         auto ordered_joint_nodes = BuildParentBeforeChildJointOrder(source_joint_nodes, joint_parent_map, skin_index);
         if (!ordered_joint_nodes) return std::unexpected{ordered_joint_nodes.error()};
-        // AddBone/FinalizeStructure consume joints in this parent-before-child order.
+        // AddBone/FinalizeImportedStructure consume joints in this parent-before-child order.
 
         const auto skeleton_node_index = ToIndex(skin.skeleton, asset.nodes.size());
         // Deterministic armature scene anchor: explicit skin.skeleton if present,

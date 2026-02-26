@@ -50,9 +50,9 @@ struct Armature {
     std::optional<uint32_t> FindBoneIndex(BoneId) const;
     std::optional<uint32_t> FindJointNodeIndex(BoneId) const;
     std::optional<BoneId> FindBoneIdByJointNodeIndex(uint32_t) const;
-    void SetJointNodeMapping(BoneId, uint32_t joint_node_index);
     BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index);
     void FinalizeStructure(); // Validate/canonicalize + rebuild derived runtime caches.
+    void FinalizeImportedStructure();
 };
 
 // Scene-facing armature object (name/transform/selection).
