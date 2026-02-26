@@ -2782,38 +2782,28 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 }
             }
             auto morph_data_copy = scene_mesh.MorphData; // Keep a copy for component setup
-            try {
-                auto mesh = Meshes->CreateMesh(std::move(*scene_mesh.Triangles), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
-                const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
-                mesh_entity = me;
-                R.emplace<Path>(mesh_entity, path);
-                mesh_morphs.emplace_back(std::move(morph_data_copy));
-            } catch (const std::exception &e) {
-                return import_fail(std::format("glTF import failed for '{}': {}", path.string(), e.what()));
-            }
+            auto mesh = Meshes->CreateMesh(std::move(*scene_mesh.Triangles), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
+            const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
+            mesh_entity = me;
+            R.emplace<Path>(mesh_entity, path);
+            mesh_morphs.emplace_back(std::move(morph_data_copy));
         } else {
             mesh_morphs.emplace_back(std::nullopt);
         }
         if (first_mesh_entity == entt::null && mesh_entity != entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
 
-        auto create_extra = [&](std::optional<MeshData> &data) -> std::expected<entt::entity, std::string> {
-            if (!data) return entt::entity{entt::null};
-            try {
-                auto m = Meshes->CreateMesh(std::move(*data));
-                const auto [e, _] = AddMesh(std::move(m), std::nullopt);
-                R.emplace<Path>(e, path);
-                if (first_mesh_entity == entt::null) first_mesh_entity = e;
-                return e;
-            } catch (const std::exception &e) {
-                return std::unexpected{std::format("glTF import failed for '{}': {}", path.string(), e.what())};
-            }
+        auto create_extra = [&](std::optional<MeshData> &data) -> entt::entity {
+            if (!data) return entt::null;
+            auto m = Meshes->CreateMesh(std::move(*data));
+            const auto [e, _] = AddMesh(std::move(m), std::nullopt);
+            R.emplace<Path>(e, path);
+            if (first_mesh_entity == entt::null) first_mesh_entity = e;
+            return e;
         };
         auto lines_entity = create_extra(scene_mesh.Lines);
-        if (!lines_entity) return import_fail(std::move(lines_entity.error()));
         auto points_entity = create_extra(scene_mesh.Points);
-        if (!points_entity) return import_fail(std::move(points_entity.error()));
-        extra_entities_per_mesh[mi] = {*lines_entity, *points_entity};
+        extra_entities_per_mesh[mi] = {lines_entity, points_entity};
     }
 
     const std::string name_prefix = path.stem().string();

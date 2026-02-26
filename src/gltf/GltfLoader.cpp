@@ -779,6 +779,7 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
         }
         const uint32_t prev_vertex_count = mesh.Positions.size();
         const uint32_t prev_face_count = mesh.Faces.size();
+        // AppendPrimitive enforces per-vertex/per-face channel alignment for CreateMesh.
         if (auto append_result = AppendPrimitive(asset, primitive, mesh, mesh_deform, mesh_morph); !append_result) {
             return std::unexpected{std::move(append_result.error())};
         }
@@ -1434,6 +1435,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
 
         auto ordered_joint_nodes = BuildParentBeforeChildJointOrder(source_joint_nodes, joint_parent_map, skin_index);
         if (!ordered_joint_nodes) return std::unexpected{ordered_joint_nodes.error()};
+        // AddBone/FinalizeStructure consume joints in this parent-before-child order.
 
         const auto skeleton_node_index = ToIndex(skin.skeleton, asset.nodes.size());
         // Deterministic armature scene anchor: explicit skin.skeleton if present,

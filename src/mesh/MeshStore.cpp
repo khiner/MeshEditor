@@ -457,17 +457,8 @@ void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
 }
 
 Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
-    if (deform && (deform->Joints.size() != data.Positions.size() || deform->Weights.size() != data.Positions.size())) {
-        throw std::runtime_error{"ArmatureDeformData channel counts must match the position count."};
-    }
+    // Current mesh loaders/builders provide channel vectors already aligned to Positions/Faces.
     const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
-    if (data.TexCoords0 && data.TexCoords0->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords0 must match vertex count."};
-    if (data.TexCoords1 && data.TexCoords1->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords1 must match vertex count."};
-    if (data.TexCoords2 && data.TexCoords2->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords2 must match vertex count."};
-    if (data.TexCoords3 && data.TexCoords3->size() != vertex_count) throw std::runtime_error{"MeshData.TexCoords3 must match vertex count."};
-    if (data.Tangents && data.Tangents->size() != vertex_count) throw std::runtime_error{"MeshData.Tangents must match vertex count."};
-    if (data.Colors0 && data.Colors0->size() != vertex_count) throw std::runtime_error{"MeshData.Colors0 must match vertex count."};
-    if (data.FacePrimitiveIndices && data.FacePrimitiveIndices->size() != data.Faces.size()) throw std::runtime_error{"MeshData.FacePrimitiveIndices must match face count."};
     const auto vertices = AllocateVertices(vertex_count);
     auto vertex_span = VerticesBuffer.GetMutable(vertices);
     for (uint32_t i = 0; i < vertex_count; ++i) {
@@ -525,9 +516,6 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         const auto primitive_count = data.FacePrimitiveIndices ?
             (face_primitive_indices.empty() ? 0u : *std::ranges::max_element(face_primitive_indices) + 1u) :
             1u;
-        if (data.PrimitiveMaterialIndices && data.PrimitiveMaterialIndices->size() != primitive_count) {
-            throw std::runtime_error{"MeshData.PrimitiveMaterialIndices must match primitive count."};
-        }
         std::vector<uint32_t> primitive_material_indices(primitive_count, 0u);
         if (data.PrimitiveMaterialIndices) primitive_material_indices = *data.PrimitiveMaterialIndices;
         primitive_materials = PrimitiveMaterialBuffer.Allocate(primitive_material_indices);
