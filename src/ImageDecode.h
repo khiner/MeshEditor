@@ -21,4 +21,4 @@ struct DecodedImageF32 {
 
 std::expected<DecodedImage, std::string> DecodeImageRgba8(std::span<const std::byte> encoded, std::string_view image_name);
 std::expected<DecodedImageF32, std::string> DecodeImageRgba32f(std::span<const std::byte> encoded, std::string_view image_name);
-std::expected<DecodedImageF32, std::string> DecodeImageFileRgba32f(const std::filesystem::path &path, std::string_view image_name);
+std::expected<DecodedImageF32, std::string> DecodeImageFileRgba32f(const std::filesystem::path &, std::string_view image_name);

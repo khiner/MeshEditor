@@ -275,6 +275,12 @@ uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
     return max_dim > 0 ? std::bit_width(max_dim) : 1u;
 }
 
+uint32_t RegisterCubeSamplerSlot(DescriptorSlots &slots, vk::Device device, vk::Sampler sampler, vk::ImageView image_view) {
+    const auto slot = slots.Allocate(SlotType::CubeSampler);
+    device.updateDescriptorSets({slots.MakeCubeSamplerWrite(slot, {sampler, image_view, vk::ImageLayout::eShaderReadOnlyOptimal})}, {});
+    return slot;
+}
+
 using CubemapMipFacesF32 = std::array<DecodedImageF32, 6>;
 
 std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
@@ -402,9 +408,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
         }
     );
 
-    const auto sampler_slot = slots.Allocate(SlotType::CubeSampler);
-    const vk::DescriptorImageInfo sampler_info{*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-    vk.Device.updateDescriptorSets({slots.MakeCubeSamplerWrite(sampler_slot, sampler_info)}, {});
+    const auto sampler_slot = RegisterCubeSamplerSlot(slots, vk.Device, *sampler, *image.View);
     return CubemapEntry{.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Size = base_size, .MipLevels = uint32_t(mip_faces.size()), .Name = std::move(name)};
 }
 
@@ -1082,10 +1086,7 @@ static EnvironmentPrefiltered CreateIblFromHdri(
 
     // 9. Register diffuse and specular cubemaps in the global bindless CubeSamplers array.
     auto diff_sampler = vk.Device.createSamplerUnique(linear_clamp_ci);
-    const uint32_t diff_slot = slots.Allocate(SlotType::CubeSampler);
-    vk.Device.updateDescriptorSets(
-        {slots.MakeCubeSamplerWrite(diff_slot, {*diff_sampler, *diff_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {}
-    );
+    const uint32_t diff_slot = RegisterCubeSamplerSlot(slots, vk.Device, *diff_sampler, *diff_cube.View);
 
     auto spec_sampler = vk.Device.createSamplerUnique(vk::SamplerCreateInfo{
         {},
@@ -1105,10 +1106,7 @@ static EnvironmentPrefiltered CreateIblFromHdri(
         vk::BorderColor::eIntOpaqueBlack,
         VK_FALSE,
     });
-    const uint32_t spec_slot = slots.Allocate(SlotType::CubeSampler);
-    vk.Device.updateDescriptorSets(
-        {slots.MakeCubeSamplerWrite(spec_slot, {*spec_sampler, *spec_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {}
-    );
+    const uint32_t spec_slot = RegisterCubeSamplerSlot(slots, vk.Device, *spec_sampler, *spec_cube.View);
 
     return {
         .DiffuseEnv = {.Image = std::move(diff_cube), .Sampler = std::move(diff_sampler), .SamplerSlot = diff_slot, .Size = diff_size, .MipLevels = 1, .Name = name + "_diffuse"},
@@ -2300,6 +2298,23 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
     return {mesh_entity, info ? AddMeshInstance(mesh_entity, *info) : entt::null};
 }
 
+void Scene::ApplySelectBehavior(entt::entity entity, MeshInstanceCreateInfo::SelectBehavior behavior) {
+    switch (behavior) {
+        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
+            Select(entity);
+            break;
+        case MeshInstanceCreateInfo::SelectBehavior::Additive:
+            R.emplace<Selected>(entity);
+            // Fallthrough
+        case MeshInstanceCreateInfo::SelectBehavior::None:
+            if (R.storage<Active>().empty()) {
+                R.emplace<Active>(entity);
+                R.emplace_or_replace<Selected>(entity);
+            }
+            break;
+    }
+}
+
 entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo info) {
     const auto instance_entity = R.create();
     R.emplace<MeshInstance>(instance_entity, mesh_entity);
@@ -2314,23 +2329,7 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
     });
     SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
-
-    switch (info.Select) {
-        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
-            Select(instance_entity);
-            break;
-        case MeshInstanceCreateInfo::SelectBehavior::Additive:
-            R.emplace<Selected>(instance_entity);
-            // Fallthrough
-        case MeshInstanceCreateInfo::SelectBehavior::None:
-            // If no mesh is active yet, activate the new one.
-            if (R.storage<Active>().empty()) {
-                R.emplace<Active>(instance_entity);
-                R.emplace_or_replace<Selected>(instance_entity);
-            }
-            break;
-    }
-
+    ApplySelectBehavior(instance_entity, info.Select);
     return instance_entity;
 }
 
@@ -2355,20 +2354,7 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     SetTransform(R, entity, info.Transform);
     R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Armature" : info.Name));
 
-    switch (info.Select) {
-        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
-            Select(entity);
-            break;
-        case MeshInstanceCreateInfo::SelectBehavior::Additive:
-            R.emplace<Selected>(entity);
-            // Fallthrough
-        case MeshInstanceCreateInfo::SelectBehavior::None:
-            if (R.storage<Active>().empty()) {
-                R.emplace<Active>(entity);
-                R.emplace_or_replace<Selected>(entity);
-            }
-            break;
-    }
+    ApplySelectBehavior(entity, info.Select);
     return entity;
 }
 
@@ -2397,21 +2383,7 @@ entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType t
         mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
     });
     SetVisible(entity, true);
-
-    switch (info.Select) {
-        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
-            Select(entity);
-            break;
-        case MeshInstanceCreateInfo::SelectBehavior::Additive:
-            R.emplace<Selected>(entity);
-            // Fallthrough
-        case MeshInstanceCreateInfo::SelectBehavior::None:
-            if (R.storage<Active>().empty()) {
-                R.emplace<Active>(entity);
-                R.emplace_or_replace<Selected>(entity);
-            }
-            break;
-    }
+    ApplySelectBehavior(entity, info.Select);
     return entity;
 }
 
@@ -3165,12 +3137,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
             R.emplace<ArmatureObject>(e_new, armature->Entity);
             SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
 
-            if (select_behavior == MeshInstanceCreateInfo::SelectBehavior::Additive) R.emplace<Selected>(e_new);
-            else if (select_behavior == MeshInstanceCreateInfo::SelectBehavior::Exclusive) Select(e_new);
-            else if (R.storage<Active>().empty()) {
-                R.emplace<Active>(e_new);
-                R.emplace_or_replace<Selected>(e_new);
-            }
+            ApplySelectBehavior(e_new, select_behavior);
             return e_new;
         }
 
@@ -3835,6 +3802,10 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
         std::unordered_map<entt::entity, entt::entity>{};
     const bool is_edit_mode = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit;
     const auto selection_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes);
+    const auto get_deform_slots = [&](entt::entity mesh_entity) -> DeformSlots {
+        if (auto it = selection_deform_slots.find(mesh_entity); it != selection_deform_slots.end()) return it->second;
+        return {};
+    };
 
     // Object selection never uses depth testing - we want all visible pixels regardless of occlusion.
     // Build separate batches per topology since each requires a different pipeline primitive topology.
@@ -3847,13 +3818,8 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
                     if (R.all_of<ObjectExtrasTag>(mesh_entity)) continue;
                     const auto *indices = filter(mesh, mesh_buffers);
                     if (!indices || indices->Count == 0) continue;
-                    const auto deform_it = selection_deform_slots.find(mesh_entity);
-                    const auto has_deform = deform_it != selection_deform_slots.end();
-                    const auto bone_deform = has_deform ? deform_it->second.BoneDeformOffset : InvalidOffset;
-                    const auto armature_deform = has_deform ? deform_it->second.ArmatureDeformOffset : InvalidOffset;
-                    const auto morph_deform = has_deform ? deform_it->second.MorphDeformOffset : InvalidOffset;
-                    const auto morph_target_count = has_deform ? deform_it->second.MorphTargetCount : 0u;
-                    auto draw = MakeDrawData(mesh_buffers.Vertices, *indices, models, bone_deform, armature_deform, morph_deform, morph_target_count);
+                    const auto deform = get_deform_slots(mesh_entity);
+                    auto draw = MakeDrawData(mesh_buffers.Vertices, *indices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
                     draw.ObjectIdSlot = models.ObjectIds.Slot;
                     const auto db = draw_list.Draws.size();
                     if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
@@ -3861,7 +3827,7 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
                     } else {
                         AppendDraw(draw_list, batch, *indices, models, draw);
                     }
-                    if (has_deform) PatchMorphWeights(draw_list, db, deform_it->second);
+                    PatchMorphWeights(draw_list, db, deform);
                 }
                 return batch;
             };

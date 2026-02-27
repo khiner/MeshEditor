@@ -291,6 +291,7 @@ private:
     std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, he::Element, uvec2 mouse_px);
     std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 
+    void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);
     entt::entity CreateExtrasMeshEntity(ExtrasWireframe &&);
     entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
 

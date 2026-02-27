@@ -148,7 +148,7 @@ struct MorphWeightState {
 void EvaluateAnimation(const AnimationClip &, float time, std::span<Transform> local_transforms);
 
 // Interpolate morph weight animation channels at `time`, writing into `weights`.
-void EvaluateMorphWeights(const MorphWeightClip &clip, float time, std::span<float> weights);
+void EvaluateMorphWeights(const MorphWeightClip &, float time, std::span<float> weights);
 
 // Compute final deform matrices from posed local transforms + inverse bind matrices.
 // Writes directly into `out` (mapped GPU memory).
