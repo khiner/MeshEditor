@@ -137,8 +137,6 @@ std::string to_string(InteractionMode mode) {
     }
 }
 
-const SceneDefaults Defaults{};
-
 using namespace he;
 
 float AngleFromCos(float cos_theta) { return std::acos(std::clamp(cos_theta, -1.f, 1.f)); }
@@ -1437,7 +1435,7 @@ void Scene::RenderControls() {
                 auto &theme = R.get<ViewportTheme>(SceneEntity);
                 bool changed{false};
                 if (Button("Reset##ViewportTheme")) {
-                    theme = Defaults.ViewportTheme;
+                    theme = SceneDefaults::ViewportTheme;
                     changed = true;
                 }
                 changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
@@ -1475,7 +1473,7 @@ void Scene::RenderControls() {
             const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
             const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
             if (Button("Reset##Camera")) {
-                camera = Defaults.ViewCamera;
+                camera = SceneDefaults::ViewCamera;
                 changed = true;
             }
             changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);
@@ -1489,7 +1487,7 @@ void Scene::RenderControls() {
             auto &lights = GetWorkspaceLights(*Buffers);
             bool changed = false;
             if (Button("Reset##Lighting")) {
-                lights = Defaults.WorkspaceLights;
+                lights = SceneDefaults::WorkspaceLights;
                 changed = true;
             }
             changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);

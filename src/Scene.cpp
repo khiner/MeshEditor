@@ -36,8 +36,6 @@ using std::ranges::any_of, std::ranges::all_of, std::ranges::find, std::ranges::
 using std::views::filter, std::views::iota, std::views::transform;
 
 namespace {
-const SceneDefaults Defaults{};
-
 constexpr SelectionElementFlags operator|(SelectionElementFlags a, SelectionElementFlags b) {
     return static_cast<SelectionElementFlags>(uint32_t(a) | uint32_t(b));
 }
@@ -592,14 +590,14 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<SceneSettings>(SceneEntity);
     R.emplace<SceneInteraction>(SceneEntity);
     R.emplace<SceneEditMode>(SceneEntity);
-    R.emplace<ViewportTheme>(SceneEntity, Defaults.ViewportTheme);
-    R.emplace<ViewCamera>(SceneEntity, Defaults.ViewCamera);
+    R.emplace<ViewportTheme>(SceneEntity, SceneDefaults::ViewportTheme);
+    R.emplace<ViewCamera>(SceneEntity, SceneDefaults::ViewCamera);
     R.emplace<MaterialPreviewLighting>(SceneEntity, false, false, 1.f, 0.f);
     R.emplace<RenderedLighting>(SceneEntity, true, true, 1.f, 0.f);
     R.emplace<ViewportExtent>(SceneEntity);
     R.emplace<AnimationTimeline>(SceneEntity);
     R.emplace<MaterialStore>(SceneEntity);
-    Buffers->WorkspaceLightsUBO.Update(as_bytes(Defaults.WorkspaceLights));
+    Buffers->WorkspaceLightsUBO.Update(as_bytes(SceneDefaults::WorkspaceLights));
 
     BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
     ResetObjectPickKeys(*Buffers);
@@ -676,7 +674,7 @@ Scene::~Scene() {
     R.clear<Mesh>();
 }
 
-World Scene::GetWorld() const { return Defaults.World; }
+World Scene::GetWorld() const { return SceneDefaults::World; }
 
 void Scene::SetStudioEnvironment(uint32_t index) {
     auto &environments = *Environments;
