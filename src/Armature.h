@@ -3,7 +3,7 @@
 #include "Transform.h"
 #include "entt_fwd.h"
 #include "numeric/mat4.h"
-#include "vulkan/BufferArena.h"
+#include "vulkan/Range.h"
 
 #include <limits>
 #include <optional>

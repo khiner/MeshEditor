@@ -1,12 +1,12 @@
 #pragma once
 
-#include "../vulkan/BufferArena.h"
 #include "ArmatureDeformData.h"
 #include "Mesh.h"
 #include "MorphTargetData.h"
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/MorphTargetVertex.h"
 #include "numeric/vec4.h"
+#include "vulkan/BufferArena.h"
 
 #include <expected>
 #include <filesystem>

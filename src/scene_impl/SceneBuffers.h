@@ -3,11 +3,53 @@
 #include "gpu/ElementPickCandidate.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
+#include "gpu/SceneViewUBO.h"
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
+#include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
-#include "gpu/WorldTransform.h"
-#include "numeric/mat4.h"
+#include "vulkan/BufferArena.h"
+
+#include <numeric>
+#include <unordered_map>
+
+using uint = uint32_t;
+
+enum class IndexKind {
+    Face,
+    Edge,
+    Vertex
+};
+
+constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
+
+struct RenderBuffers {
+    RenderBuffers(Range vertices, SlottedRange indices, IndexKind index_type)
+        : Vertices(vertices), Indices(indices), IndexType(index_type) {}
+    RenderBuffers(RenderBuffers &&) = default;
+    RenderBuffers &operator=(RenderBuffers &&) = default;
+    RenderBuffers(const RenderBuffers &) = delete;
+    RenderBuffers &operator=(const RenderBuffers &) = delete;
+
+    Range Vertices;
+    SlottedRange Indices;
+    IndexKind IndexType;
+};
+
+struct BoundingBoxesBuffers {
+    RenderBuffers Buffers;
+};
+
+struct MeshBuffers {
+    MeshBuffers(SlottedRange vertices, SlottedRange face_indices, SlottedRange edge_indices, SlottedRange vertex_indices)
+        : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
+    MeshBuffers(const MeshBuffers &) = delete;
+    MeshBuffers &operator=(const MeshBuffers &) = delete;
+
+    SlottedRange Vertices;
+    SlottedRange FaceIndices, EdgeIndices, VertexIndices;
+    std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
+};
 
 constexpr uint32_t
     ObjectSelectRadiusPx = 15,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Shader.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 

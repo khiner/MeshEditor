@@ -1,22 +1,7 @@
 #include "MeshStore.h"
-
 #include "MeshData.h"
-#include "MorphTargetData.h"
 
-#include <glm/glm.hpp>
-
-#include <algorithm>
-#include <cassert>
-#include <cctype>
-#include <cmath>
-#include <format>
-#include <fstream>
 #include <limits>
-#include <span>
-#include <stdexcept>
-#include <string>
-#include <type_traits>
-#include <unordered_map>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"

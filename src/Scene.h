@@ -10,17 +10,9 @@
 #include "mesh/Handle.h"
 #include "numeric/vec2.h"
 
-#include "entt_fwd.h"
-#include <vulkan/vulkan.hpp>
-
-#include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <functional>
-#include <memory>
 #include <set>
-#include <span>
-#include <vector>
 
 using uint = uint32_t;
 

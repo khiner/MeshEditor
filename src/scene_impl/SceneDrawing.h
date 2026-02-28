@@ -3,8 +3,7 @@
 #include "gpu/DrawData.h"
 
 struct DrawBatchInfo {
-    uint32_t DrawDataSlotOffset{0};
-    uint32_t DrawCount{0};
+    uint32_t DrawDataSlotOffset{0}, DrawCount{0};
     vk::DeviceSize IndirectOffset{0};
 };
 
@@ -13,9 +12,7 @@ struct DrawListBuilder {
     std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
     uint32_t MaxIndexCount{0};
 
-    DrawBatchInfo BeginBatch() {
-        return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)};
-    }
+    DrawBatchInfo BeginBatch() { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)}; }
 
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
@@ -39,6 +36,7 @@ struct SelectionDrawInfo {
 };
 
 #include "gpu/DrawPassPushConstants.h"
+#include "gpu/WorldTransform.h"
 
 namespace {
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.
@@ -64,10 +62,8 @@ DrawData MakeDrawData(
     const SlottedRange &indices,
     uint32_t model_slot,
     uint32_t instance_state_slot = InvalidSlot,
-    uint32_t bone_deform = InvalidOffset,
-    uint32_t armature_deform = InvalidOffset,
-    uint32_t morph_deform = InvalidOffset,
-    uint32_t morph_target_count = 0
+    uint32_t bone_deform = InvalidOffset, uint32_t armature_deform = InvalidOffset,
+    uint32_t morph_deform = InvalidOffset, uint32_t morph_target_count = 0
 ) {
     return {
         .VertexSlot = vertex_slot,

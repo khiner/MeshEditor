@@ -1,11 +1,6 @@
 #pragma once
 
-#include "gpu/SceneViewUBO.h"
-#include "gpu/ViewportTheme.h"
-
 namespace {
-// Component on the scene singleton entity. Sent directly as UBO to shader.
-
 // Component on the scene singleton entity. Changes require command buffer re-recording.
 struct SceneSettings {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};

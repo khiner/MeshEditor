@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "Range.h"
 #include "gpu/SlotOffset.h"
 
 #include <algorithm>
@@ -8,10 +9,6 @@
 #include <ranges>
 #include <span>
 #include <vector>
-
-struct Range {
-    uint32_t Offset{0}, Count{0};
-};
 
 struct SlottedRange : SlotOffset {
     uint32_t Count{0};

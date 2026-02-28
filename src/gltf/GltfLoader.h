@@ -24,14 +24,8 @@
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"
 
-#include <array>
-#include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <optional>
-#include <string>
-#include <vector>
 
 namespace gltf {
 enum class Filter : uint16_t {
@@ -47,15 +41,6 @@ enum class Wrap : uint16_t {
     MirroredRepeat,
     Repeat,
 };
-
-using Sheen = ::Sheen;
-using Specular = ::Specular;
-using Transmission = ::Transmission;
-using Volume = ::Volume;
-using Clearcoat = ::Clearcoat;
-using Anisotropy = ::Anisotropy;
-using Iridescence = ::Iridescence;
-using PBRMaterial = ::PBRMaterial;
 
 struct NamedMaterial {
     PBRMaterial Value{};

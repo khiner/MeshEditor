@@ -31,10 +31,6 @@ struct ObjectKind {
     ObjectType Value{ObjectType::Empty};
 };
 
-struct LightIndex {
-    uint32_t Value{0}; // Index into SceneBuffers::LightBuffer (PunctualLight[])
-};
-
 constexpr std::string_view ObjectTypeName(ObjectType type) {
     switch (type) {
         case ObjectType::Empty: return "Empty";
