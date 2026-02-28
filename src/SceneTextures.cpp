@@ -7,7 +7,6 @@
 
 #include <glm/geometric.hpp>
 
-#include <array>
 #include <bit>
 #include <format>
 #include <stdexcept>
@@ -94,6 +93,12 @@ CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &
         }
     }
     return mip;
+}
+
+uint32_t RegisterCubeSamplerSlot(DescriptorSlots &slots, vk::Device device, vk::Sampler sampler, vk::ImageView image_view) {
+    const auto slot = slots.Allocate(SlotType::CubeSampler);
+    device.updateDescriptorSets({slots.MakeCubeSamplerWrite(slot, {sampler, image_view, vk::ImageLayout::eShaderReadOnlyOptimal})}, {});
+    return slot;
 }
 
 std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
@@ -187,12 +192,6 @@ uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
     return max_dim > 0 ? std::bit_width(max_dim) : 1u;
 }
 
-uint32_t RegisterCubeSamplerSlot(DescriptorSlots &slots, vk::Device device, vk::Sampler sampler, vk::ImageView image_view) {
-    const auto slot = slots.Allocate(SlotType::CubeSampler);
-    device.updateDescriptorSets({slots.MakeCubeSamplerWrite(slot, {sampler, image_view, vk::ImageLayout::eShaderReadOnlyOptimal})}, {});
-    return slot;
-}
-
 std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry> textures) {
     std::vector<uint32_t> sampler_slots;
     sampler_slots.reserve(textures.size());
@@ -227,55 +226,6 @@ void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentSto
     }
 }
 
-vk::SamplerAddressMode ToSamplerAddressMode(gltf::Wrap wrap) {
-    switch (wrap) {
-        case gltf::Wrap::ClampToEdge: return vk::SamplerAddressMode::eClampToEdge;
-        case gltf::Wrap::MirroredRepeat: return vk::SamplerAddressMode::eMirroredRepeat;
-        case gltf::Wrap::Repeat: return vk::SamplerAddressMode::eRepeat;
-    }
-    return vk::SamplerAddressMode::eRepeat;
-}
-
-SamplerConfig ToSamplerConfig(const gltf::Sampler *sampler) {
-    SamplerConfig config{};
-    if (sampler) {
-        if (sampler->MagFilter && *sampler->MagFilter == gltf::Filter::Nearest) config.MagFilter = vk::Filter::eNearest;
-        switch (sampler->MinFilter.value_or(gltf::Filter::LinearMipMapLinear)) {
-            case gltf::Filter::Nearest:
-                config.MinFilter = vk::Filter::eNearest;
-                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
-                config.UsesMipmaps = false;
-                break;
-            case gltf::Filter::Linear:
-                config.MinFilter = vk::Filter::eLinear;
-                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
-                config.UsesMipmaps = false;
-                break;
-            case gltf::Filter::NearestMipMapNearest:
-                config.MinFilter = vk::Filter::eNearest;
-                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
-                config.UsesMipmaps = true;
-                break;
-            case gltf::Filter::LinearMipMapNearest:
-                config.MinFilter = vk::Filter::eLinear;
-                config.MipmapMode = vk::SamplerMipmapMode::eNearest;
-                config.UsesMipmaps = true;
-                break;
-            case gltf::Filter::NearestMipMapLinear:
-                config.MinFilter = vk::Filter::eNearest;
-                config.MipmapMode = vk::SamplerMipmapMode::eLinear;
-                config.UsesMipmaps = true;
-                break;
-            case gltf::Filter::LinearMipMapLinear:
-                config.MinFilter = vk::Filter::eLinear;
-                config.MipmapMode = vk::SamplerMipmapMode::eLinear;
-                config.UsesMipmaps = true;
-                break;
-        }
-    }
-    return config;
-}
-
 TextureEntry CreateTextureEntry(
     const SceneVulkanResources &vk,
     mvk::BufferContext &ctx,
@@ -283,12 +233,10 @@ TextureEntry CreateTextureEntry(
     vk::Fence one_shot_fence,
     DescriptorSlots &slots,
     std::span<const std::byte> pixels_rgba8,
-    uint32_t width,
-    uint32_t height,
+    uint32_t width, uint32_t height,
     std::string name,
     TextureColorSpace color_space,
-    vk::SamplerAddressMode wrap_s,
-    vk::SamplerAddressMode wrap_t,
+    vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
     const SamplerConfig &sampler_cfg
 ) {
     const vk::Format texture_format = ToTextureFormat(color_space);
@@ -405,7 +353,7 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
 
 std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
     const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots,
-    const gltf::Scene &scene, const gltf::ImageBasedLight &ibl
+    const std::vector<gltf::Image> &images, const gltf::ImageBasedLight &ibl
 ) {
     std::vector<CubemapMipFacesF32> specular_mips;
     specular_mips.reserve(ibl.SpecularImageIndicesByMip.size());
@@ -414,9 +362,9 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
         CubemapMipFacesF32 faces{};
         for (uint32_t face = 0; face < 6u; ++face) {
             const auto image_index = ibl.SpecularImageIndicesByMip[mip][face];
-            if (image_index >= scene.Images.size()) return std::unexpected{std::format("EXT_lights_image_based '{}' references image index {} (out of range).", ibl.Name, image_index)};
+            if (image_index >= images.size()) return std::unexpected{std::format("EXT_lights_image_based '{}' references image index {} (out of range).", ibl.Name, image_index)};
 
-            const auto &src_image = scene.Images[image_index];
+            const auto &src_image = images[image_index];
             auto decoded = DecodeImageRgba32f(
                 src_image.Bytes,
                 src_image.Name.empty() ? std::format("Image{}", image_index) : src_image.Name

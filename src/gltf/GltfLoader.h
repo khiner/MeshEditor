@@ -14,6 +14,7 @@
 
 #include "Armature.h"
 #include "Camera.h"
+#include "Image.h"
 #include "Transform.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
@@ -46,16 +47,6 @@ enum class Wrap : uint16_t {
     MirroredRepeat,
     Repeat,
 };
-enum class MimeType : uint8_t {
-    None,
-    JPEG,
-    PNG,
-    KTX2,
-    DDS,
-    GltfBuffer,
-    OctetStream,
-    WEBP,
-};
 
 using Sheen = ::Sheen;
 using Specular = ::Specular;
@@ -74,12 +65,6 @@ struct NamedMaterial {
 struct Texture {
     std::optional<uint32_t> SamplerIndex; // Index into `Scene::Samplers`
     std::optional<uint32_t> ImageIndex, WebpImageIndex, BasisuImageIndex, DdsImageIndex; // Indexes into `Scene::Images` in resolution order.
-    std::string Name;
-};
-
-struct Image {
-    std::vector<std::byte> Bytes;
-    MimeType MimeType;
     std::string Name;
 };
 
@@ -104,13 +89,6 @@ struct Camera {
 
 struct Light {
     PunctualLight Light;
-    std::string Name;
-};
-
-struct ImageBasedLight {
-    std::vector<std::array<uint32_t, 6>> SpecularImageIndicesByMip; // Mip-major; face order: +X, -X, +Y, -Y, +Z, -Z.
-    std::optional<std::array<vec3, 9>> IrradianceCoefficients; // L00, L1-1, L10, L11, L2-2, L2-1, L20, L21, L22.
-    float Intensity{1.f};
     std::string Name;
 };
 

@@ -1608,8 +1608,38 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
         const auto &src_image = scene->Images[*image_index];
 
-        const gltf::Sampler *src_sampler = nullptr;
-        if (src_texture.SamplerIndex && *src_texture.SamplerIndex < scene->Samplers.size()) src_sampler = &scene->Samplers[*src_texture.SamplerIndex];
+        const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < scene->Samplers.size() ?
+            &scene->Samplers[*src_texture.SamplerIndex] :
+            nullptr;
+        static constexpr auto ToSamplerAddressMode = [](gltf::Wrap wrap) {
+            switch (wrap) {
+                case gltf::Wrap::ClampToEdge: return vk::SamplerAddressMode::eClampToEdge;
+                case gltf::Wrap::MirroredRepeat: return vk::SamplerAddressMode::eMirroredRepeat;
+                case gltf::Wrap::Repeat: return vk::SamplerAddressMode::eRepeat;
+            }
+            return vk::SamplerAddressMode::eRepeat;
+        };
+        static constexpr auto ToSamplerConfig = [](const gltf::Sampler *sampler) -> SamplerConfig {
+            if (!sampler) return {.MinFilter = vk::Filter::eLinear, .MagFilter = vk::Filter::eLinear, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+
+            const auto mag_filter = sampler->MagFilter && *sampler->MagFilter == gltf::Filter::Nearest ? vk::Filter::eNearest : vk::Filter::eLinear;
+            switch (sampler->MinFilter.value_or(gltf::Filter::LinearMipMapLinear)) {
+                case gltf::Filter::Nearest:
+                    return {.MinFilter = vk::Filter::eNearest, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = false};
+                case gltf::Filter::Linear:
+                    return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = false};
+                case gltf::Filter::NearestMipMapNearest:
+                    return {.MinFilter = vk::Filter::eNearest, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = true};
+                case gltf::Filter::LinearMipMapNearest:
+                    return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = true};
+                case gltf::Filter::NearestMipMapLinear:
+                    return {.MinFilter = vk::Filter::eNearest, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+                case gltf::Filter::LinearMipMapLinear:
+                    return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+            }
+            return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+        };
+
         const auto sampler_config = ToSamplerConfig(src_sampler);
         const auto wrap_s = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : vk::SamplerAddressMode::eRepeat;
         const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : vk::SamplerAddressMode::eRepeat;
@@ -2066,7 +2096,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     if (scene->ImageBasedLight) {
-        auto scene_world = CreateIblFromExtIbl(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, *scene, *scene->ImageBasedLight);
+        auto scene_world = CreateIblFromExtIbl(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, scene->Images, *scene->ImageBasedLight);
         if (!scene_world) {
             std::cerr << std::format("Warning: Failed to import EXT_lights_image_based scene world from '{}': {}\n", path.string(), scene_world.error());
         } else {

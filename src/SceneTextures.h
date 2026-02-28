@@ -1,17 +1,13 @@
 #pragma once
 
 #include "SceneVulkanResources.h"
-#include "gltf/GltfLoader.h"
+#include "gltf/Image.h"
 #include "gpu/IblSamplers.h"
 #include "vulkan/Image.h"
 
-#include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <optional>
 #include <span>
-#include <string>
-#include <vector>
 
 struct DescriptorSlots;
 struct IblPrefilterPipelines;
@@ -37,8 +33,7 @@ struct CubemapEntry {
     mvk::ImageResource Image{};
     vk::UniqueSampler Sampler{};
     uint32_t SamplerSlot{InvalidSlot};
-    uint32_t Size{0};
-    uint32_t MipLevels{1};
+    uint32_t Size{0}, MipLevels{1};
     std::string Name;
 };
 
@@ -62,17 +57,13 @@ struct EnvironmentSelection {
 struct EnvironmentStore {
     std::vector<HdriEntry> Hdris;
     uint32_t ActiveHdriIndex{0};
-    TextureEntry BrdfLut;
-    TextureEntry SheenELut;
-    TextureEntry CharlieLut;
+    TextureEntry BrdfLut, SheenELut, CharlieLut;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
-    EnvironmentSelection SceneWorld;
-    EnvironmentSelection StudioWorld;
+    EnvironmentSelection SceneWorld, StudioWorld;
 };
 
 struct SamplerConfig {
-    vk::Filter MinFilter{vk::Filter::eLinear};
-    vk::Filter MagFilter{vk::Filter::eLinear};
+    vk::Filter MinFilter{vk::Filter::eLinear}, MagFilter{vk::Filter::eLinear};
     vk::SamplerMipmapMode MipmapMode{vk::SamplerMipmapMode::eLinear};
     bool UsesMipmaps{true};
 };
@@ -82,14 +73,10 @@ enum class TextureColorSpace : uint8_t {
     Linear,
 };
 
-uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height);
-uint32_t RegisterCubeSamplerSlot(DescriptorSlots &, vk::Device, vk::Sampler, vk::ImageView);
 std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry>);
 void ReleaseSamplerSlots(DescriptorSlots &, std::span<const uint32_t>);
 void ReleaseCubeSamplerSlot(DescriptorSlots &, uint32_t);
 void ReleaseEnvironmentSamplerSlots(DescriptorSlots &, const EnvironmentStore &);
-vk::SamplerAddressMode ToSamplerAddressMode(gltf::Wrap);
-SamplerConfig ToSamplerConfig(const gltf::Sampler *);
 TextureEntry CreateTextureEntry(
     const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, DescriptorSlots &,
     std::span<const std::byte> pixels, uint32_t w, uint32_t h, std::string name,
@@ -102,7 +89,7 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
 );
 std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
     const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, DescriptorSlots &,
-    const gltf::Scene &, const gltf::ImageBasedLight &
+    const std::vector<gltf::Image> &, const gltf::ImageBasedLight &
 );
 EnvironmentPrefiltered CreateIblFromHdri(
     const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, DescriptorSlots &,
