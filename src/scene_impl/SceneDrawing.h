@@ -1,6 +1,8 @@
 #pragma once
 
 #include "gpu/DrawData.h"
+#include "gpu/DrawPassPushConstants.h"
+#include "gpu/WorldTransform.h"
 
 struct DrawBatchInfo {
     uint32_t DrawDataSlotOffset{0}, DrawCount{0};
@@ -31,12 +33,9 @@ struct DrawListBuilder {
 };
 
 struct SelectionDrawInfo {
-    ShaderPipelineType Pipeline{ShaderPipelineType::Fill};
-    DrawBatchInfo Batch{};
+    ShaderPipelineType Pipeline;
+    DrawBatchInfo Batch;
 };
-
-#include "gpu/DrawPassPushConstants.h"
-#include "gpu/WorldTransform.h"
 
 namespace {
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.

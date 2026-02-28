@@ -11,9 +11,7 @@ struct IblPrefilterPipelines {
     // Used only during IBL prefiltering; not related to the global bindless system.
     vk::UniqueDescriptorSetLayout DescriptorSetLayout;
     vk::UniquePipelineLayout PipelineLayout;
-    vk::UniquePipeline EquirectToCubemap;
-    vk::UniquePipeline DiffuseIrradiance;
-    vk::UniquePipeline SpecularPrefilter;
+    vk::UniquePipeline EquirectToCubemap, DiffuseIrradiance, SpecularPrefilter;
 
     IblPrefilterPipelines(vk::Device device) {
         const std::array bindings{

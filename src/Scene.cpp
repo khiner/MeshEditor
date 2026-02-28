@@ -11,6 +11,7 @@
 #include "File.h"
 #include "MeshComponents.h"
 #include "MeshInstance.h"
+#include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "Shader.h"
 #include "SvgResource.h"
@@ -19,6 +20,7 @@
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SelectionElementFlags.h"
+#include "gpu/SelectionElementPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshData.h"
@@ -57,7 +59,6 @@ void WaitFor(vk::Fence fence, vk::Device device) {
 
 #include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneDrawing.h"
-#include "scene_impl/ScenePipelines.h"
 #include "scene_impl/SceneTransformUtils.h"
 
 namespace {
@@ -2741,13 +2742,6 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     }
     return entities;
 }
-
-void ScenePipelines::SetExtent(vk::Extent2D extent) {
-    Main.SetExtent(extent, Device, PhysicalDevice, Samples);
-    Silhouette.SetExtent(extent, Device, PhysicalDevice);
-    SilhouetteEdge.SetExtent(extent, Device, PhysicalDevice);
-    SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);
-};
 
 void Scene::Render(vk::Fence viewportConsumerFence) {
     auto &dl = *ImGui::GetWindowDrawList();

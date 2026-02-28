@@ -2,14 +2,13 @@
 #include "Bindless.h"
 #include "File.h"
 #include "ImageDecode.h"
-#include "scene_impl/IblPrefilterPipelines.h"
+#include "IblPrefilterPipelines.h"
 #include "vulkan/Buffer.h"
 
 #include <glm/geometric.hpp>
 
 #include <bit>
 #include <format>
-#include <stdexcept>
 
 namespace {
 void SubmitWait(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fence fence, vk::Device device) {
