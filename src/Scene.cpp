@@ -1424,11 +1424,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
             } catch (const std::exception &e) {
                 std::cerr << std::format(
                     "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(),
-                    material_name,
-                    texture_label,
-                    path.string(),
-                    e.what()
+                    texture_path.string(), material_name, texture_label, path.string(), e.what()
                 );
                 return InvalidSlot;
             }
@@ -1454,11 +1450,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
             if (!texture) {
                 std::cerr << std::format(
                     "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(),
-                    material_name,
-                    texture_label,
-                    path.string(),
-                    texture.error()
+                    texture_path.string(), material_name, texture_label, path.string(), texture.error()
                 );
                 return InvalidSlot;
             }
@@ -1495,11 +1487,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
         R.patch<MaterialStore>(
             SceneEntity,
             [&](auto &material_store) {
-                material_store.Names.insert(
-                    material_store.Names.end(),
-                    std::make_move_iterator(names.begin()),
-                    std::make_move_iterator(names.end())
-                );
+                material_store.Names.insert(material_store.Names.end(), std::make_move_iterator(names.begin()), std::make_move_iterator(names.end()));
             }
         );
 
@@ -1529,9 +1517,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     const auto material_name_start = R.get<const MaterialStore>(SceneEntity).Names.size();
     const auto rollback_import_side_effects = [&] {
         if (texture_store.Textures.size() > texture_start) {
-            const auto staged_textures = std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start);
-            const auto sampler_slots = CollectSamplerSlots(staged_textures);
-            ReleaseSamplerSlots(*Slots, sampler_slots);
+            ReleaseSamplerSlots(*Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start)));
             texture_store.Textures.resize(texture_start);
         }
         if (GetMaterialCount(*Buffers) > material_start) SetMaterialCount(*Buffers, material_start);
@@ -1572,7 +1558,6 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         if (!image_index || *image_index >= scene->Images.size()) return InvalidSlot;
 
         const auto &src_image = scene->Images[*image_index];
-
         const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < scene->Samplers.size() ?
             &scene->Samplers[*src_texture.SamplerIndex] :
             nullptr;
@@ -1615,17 +1600,12 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         );
 
         auto texture = CreateTextureEntryFromEncoded(
-            Vk,
-            Buffers->Ctx,
-            *CommandPool,
-            *OneShotFence,
-            *Slots,
+            Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots,
             src_image.Bytes,
             src_image.Name.empty() ? std::format("Image{}", *image_index) : src_image.Name,
             texture_name,
             color_space,
-            wrap_s,
-            wrap_t,
+            wrap_s, wrap_t,
             sampler_config
         );
         if (!texture) return std::unexpected{std::move(texture.error())};
@@ -1648,9 +1628,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             if (uv_set <= 3u) return uv_set;
             std::cerr << std::format(
                 "Warning: glTF material '{}' texture '{}' uses TEXCOORD_{}. MeshEditor currently supports TEXCOORD_0..3. Clamping to TEXCOORD_3.\n",
-                material_name,
-                texture_label,
-                uv_set
+                material_name, texture_label, uv_set
             );
             return 3u;
         };
@@ -1706,11 +1684,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         R.patch<MaterialStore>(
             SceneEntity,
             [&](auto &store) {
-                store.Names.insert(
-                    store.Names.end(),
-                    std::make_move_iterator(material_names.begin()),
-                    std::make_move_iterator(material_names.end())
-                );
+                store.Names.insert(store.Names.end(), std::make_move_iterator(material_names.begin()), std::make_move_iterator(material_names.end()));
             }
         );
     }
@@ -1762,7 +1736,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         extra_entities_per_mesh[mi] = {lines_entity, points_entity};
     }
 
-    const std::string name_prefix = path.stem().string();
+    const auto name_prefix = path.stem().string();
     std::unordered_map<uint32_t, entt::entity> object_entities_by_node;
     object_entities_by_node.reserve(scene->Objects.size());
     std::unordered_map<uint32_t, std::vector<entt::entity>> skinned_mesh_instances_by_skin;
@@ -1782,70 +1756,33 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             mesh_entities[*object.MeshIndex] != entt::null) {
             object_entity = AddMeshInstance(
                 mesh_entities[*object.MeshIndex],
-                {
-                    .Name = object_name,
-                    .Transform = object.WorldTransform,
-                    .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-                    .Visible = true,
-                }
+                {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
             );
-        } else if (object.ObjectType == gltf::Object::Type::Camera &&
-                   object.CameraIndex &&
-                   *object.CameraIndex < scene->Cameras.size()) {
-            object_entity = AddCamera({
-                .Name = object_name,
-                .Transform = object.WorldTransform,
-                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-            });
+        } else if (object.ObjectType == gltf::Object::Type::Camera && object.CameraIndex && *object.CameraIndex < scene->Cameras.size()) {
+            object_entity = AddCamera({.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
             const auto &scd = scene->Cameras[*object.CameraIndex];
             R.replace<Camera>(object_entity, scd.Camera);
-        } else if (object.ObjectType == gltf::Object::Type::Light &&
-                   object.LightIndex &&
-                   *object.LightIndex < scene->Lights.size()) {
+        } else if (object.ObjectType == gltf::Object::Type::Light && object.LightIndex && *object.LightIndex < scene->Lights.size()) {
             const auto &sld = scene->Lights[*object.LightIndex];
             object_entity = AddLight({.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, sld.Light);
-            R.emplace_or_replace<SubmitDirty>(object_entity);
-            R.emplace_or_replace<LightWireframeDirty>(object_entity);
         } else {
-            object_entity = AddEmpty(
-                {
-                    .Name = object_name,
-                    .Transform = object.WorldTransform,
-                    .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-                }
-            );
+            object_entity = AddEmpty({.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
         }
         // Create instances for non-triangle primitives (lines/points) associated with this mesh
-        if (object.ObjectType == gltf::Object::Type::Mesh &&
-            object.MeshIndex &&
-            *object.MeshIndex < extra_entities_per_mesh.size()) {
+        if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < extra_entities_per_mesh.size()) {
             const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
             for (const auto extra_entity : {extras.Lines, extras.Points}) {
                 if (extra_entity == entt::null) continue;
-                AddMeshInstance(
-                    extra_entity,
-                    {
-                        .Name = object_name,
-                        .Transform = object.WorldTransform,
-                        .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-                        .Visible = true,
-                    }
-                );
+                AddMeshInstance(extra_entity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
             }
         }
 
         object_entities_by_node[object.NodeIndex] = object_entity;
-        if (object.SkinIndex && R.all_of<MeshInstance>(object_entity)) {
-            // glTF node.skin is deform linkage, not a transform-parent relationship.
-            skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
-        }
+        // glTF node.skin is deform linkage, not a transform-parent relationship.
+        if (object.SkinIndex && R.all_of<MeshInstance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
         if (first_object_entity == entt::null) first_object_entity = object_entity;
-        if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Mesh) {
-            first_mesh_object_entity = object_entity;
-        }
-        if (first_root_empty_entity == entt::null && object.ObjectType == gltf::Object::Type::Empty && !object.ParentNodeIndex) {
-            first_root_empty_entity = object_entity;
-        }
+        if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Mesh) first_mesh_object_entity = object_entity;
+        if (first_root_empty_entity == entt::null && object.ObjectType == gltf::Object::Type::Empty && !object.ParentNodeIndex) first_root_empty_entity = object_entity;
     }
 
     for (const auto &object : scene->Objects) {
@@ -1965,7 +1902,6 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
             const auto &ad = R.get<const Armature>(target_data_entity);
             AnimationClip resolved_clip{.Name = std::move(anim_clip.Name), .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}};
-
             for (auto &ch : anim_clip.Channels) {
                 if (const auto bone_id = ad.FindBoneIdByJointNodeIndex(ch.TargetNodeIndex)) {
                     if (const auto bone_index = ad.FindBoneIndex(*bone_id)) {
@@ -1979,7 +1915,6 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                     }
                 }
             }
-
             if (!resolved_clip.Channels.empty()) {
                 if (auto *existing = R.try_get<ArmatureAnimation>(target_data_entity)) {
                     existing->Clips.emplace_back(std::move(resolved_clip));
@@ -2117,8 +2052,6 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         }
         if (R.all_of<LightIndex>(e)) {
             const auto copy_entity = AddLight(create_info, GetLight(*Buffers, R.get<const LightIndex>(e).Value));
-            R.emplace_or_replace<SubmitDirty>(copy_entity);
-            R.emplace_or_replace<LightWireframeDirty>(copy_entity);
             return copy_entity;
         }
         return AddEmpty(create_info);
@@ -2155,13 +2088,11 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
             return e_new;
         }
 
-        return AddEmpty(
-            {
-                .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
-                .Transform = info ? info->Transform : GetTransform(R, e),
-                .Select = select_behavior,
-            }
-        );
+        return AddEmpty({
+            .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
+            .Transform = info ? info->Transform : GetTransform(R, e),
+            .Select = select_behavior,
+        });
     }
 
     const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
