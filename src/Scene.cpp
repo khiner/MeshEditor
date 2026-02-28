@@ -723,44 +723,9 @@ void Scene::ToggleSelected(entt::entity e) {
     else R.emplace_or_replace<Selected>(e);
 }
 
-mvk::ImageResource Scene::RenderBitmapToImage(std::span<const std::byte> data, uint32_t width, uint32_t height) const {
-    auto image = mvk::CreateImage(
-        Vk.Device, Vk.PhysicalDevice,
-        {{},
-         vk::ImageType::e2D,
-         Format::Color,
-         {width, height, 1},
-         1,
-         1,
-         vk::SampleCountFlagBits::e1,
-         vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-         vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
-    );
-
-    auto cb = std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front());
-    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    {
-        // Write the bitmap into a temporary staging buffer.
-        mvk::Buffer staging_buffer{Buffers->Ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
-        mvk::RecordBufferToSampledImageUpload(*cb, *staging_buffer, *image.Image, width, height, ColorSubresourceRange);
-        cb->end();
-
-        vk::SubmitInfo submit;
-        submit.setCommandBuffers(*cb);
-        Vk.Queue.submit(submit, *OneShotFence);
-        WaitFor(*OneShotFence, Vk.Device);
-    } // staging buffer is destroyed here
-
-    Buffers->Ctx.ReclaimRetiredBuffers();
-
-    return image;
-}
-
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(data, width, height);
+        return RenderBitmapToImage(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, data, width, height, Format::Color, ColorSubresourceRange);
     };
     svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, std::move(path));
 }

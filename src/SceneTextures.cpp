@@ -150,8 +150,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
 
     constexpr auto format = vk::Format::eR32G32B32A32Sfloat;
     auto image = mvk::CreateImage(
-        vk.Device,
-        vk.PhysicalDevice,
+        vk.Device, vk.PhysicalDevice,
         {
             vk::ImageCreateFlagBits::eCubeCompatible,
             vk::ImageType::e2D,
@@ -226,6 +225,30 @@ void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentSto
     }
 }
 
+mvk::ImageResource RenderBitmapToImage(
+    const SceneVulkanResources &vk,
+    mvk::BufferContext &ctx,
+    vk::CommandPool command_pool,
+    vk::Fence one_shot_fence,
+    std::span<const std::byte> data,
+    uint32_t width, uint32_t height,
+    vk::Format format,
+    vk::ImageSubresourceRange subresource_range
+) {
+    auto image = mvk::CreateImage(
+        vk.Device, vk.PhysicalDevice,
+        {{}, vk::ImageType::e2D, format, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, format, {}, subresource_range}
+    );
+    {
+        mvk::Buffer staging{ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
+        RecordSubmit(vk.Device, command_pool, vk.Queue, one_shot_fence, [&](vk::CommandBuffer cb) {
+            mvk::RecordBufferToSampledImageUpload(cb, *staging, *image.Image, width, height, subresource_range);
+        });
+    } // staging buffer is destroyed here
+    return image;
+}
+
 TextureEntry CreateTextureEntry(
     const SceneVulkanResources &vk,
     mvk::BufferContext &ctx,
@@ -246,8 +269,7 @@ TextureEntry CreateTextureEntry(
     if (mip_levels == 0) mip_levels = 1u;
 
     auto image = mvk::CreateImage(
-        vk.Device,
-        vk.PhysicalDevice,
+        vk.Device, vk.PhysicalDevice,
         {
             {},
             vk::ImageType::e2D,

@@ -77,6 +77,10 @@ std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry>);
 void ReleaseSamplerSlots(DescriptorSlots &, std::span<const uint32_t>);
 void ReleaseCubeSamplerSlot(DescriptorSlots &, uint32_t);
 void ReleaseEnvironmentSamplerSlots(DescriptorSlots &, const EnvironmentStore &);
+mvk::ImageResource RenderBitmapToImage(
+    const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence,
+    std::span<const std::byte> data, uint32_t width, uint32_t height, vk::Format, vk::ImageSubresourceRange
+);
 TextureEntry CreateTextureEntry(
     const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, DescriptorSlots &,
     std::span<const std::byte> pixels, uint32_t w, uint32_t h, std::string name,

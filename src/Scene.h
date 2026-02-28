@@ -9,7 +9,6 @@
 #include "gpu/PunctualLight.h"
 #include "mesh/Handle.h"
 #include "numeric/vec2.h"
-#include "vulkan/Image.h"
 
 #include "entt_fwd.h"
 #include <vulkan/vulkan.hpp>
@@ -171,7 +170,6 @@ struct Scene {
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     void ApplyTimelineAction(const AnimationTimelineAction &);
 
-    mvk::ImageResource RenderBitmapToImage(std::span<const std::byte> data, uint width, uint height) const;
     void CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path);
 
     std::string DebugBufferHeapUsage() const;
