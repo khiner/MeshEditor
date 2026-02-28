@@ -38,6 +38,10 @@ void TransitionImage(
     cb.pipelineBarrier(src_stage, dst_stage, {}, {}, {}, vk::ImageMemoryBarrier{src_access, dst_access, old_layout, new_layout, {}, {}, image, range});
 }
 
+vk::SamplerCreateInfo LinearSamplerCreateInfo(vk::SamplerAddressMode address_mode, float max_lod) {
+    return {{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear, address_mode, address_mode, address_mode, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, max_lod, vk::BorderColor::eIntOpaqueBlack, VK_FALSE};
+}
+
 vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm; }
 
 vec3 CubemapFaceDirection(uint32_t face, float u, float v) {
@@ -53,23 +57,18 @@ vec3 CubemapFaceDirection(uint32_t face, float u, float v) {
 
 // EXT_lights_image_based Appendix B (Romain Guy) irradiance reconstruction constants.
 vec3 EvaluateIrradianceSH(const std::array<vec3, 9> &l, vec3 n) {
-    static constexpr float c0 = 0.886227f;
-    static constexpr float c1 = 1.023327f;
-    static constexpr float c2 = 0.858086f;
-    static constexpr float c3 = 0.247708f;
-    static constexpr float c4 = 0.429043f;
-    const float x = n.x, y = n.y, z = n.z;
+    static constexpr float c0{0.886227f}, c1{1.023327f}, c2{0.858086f}, c3{0.247708f}, c4{0.429043f};
     const vec3 irradiance =
         c0 * l[0] -
-        c1 * y * l[1] +
-        c1 * z * l[2] -
-        c1 * x * l[3] +
-        c2 * x * y * l[4] -
-        c2 * y * z * l[5] +
-        c3 * (3.f * z * z - 1.f) * l[6] -
-        c2 * x * z * l[7] +
-        c4 * (x * x - y * y) * l[8];
-    return glm::max(irradiance, vec3{0.f});
+        c1 * n.y * l[1] +
+        c1 * n.z * l[2] -
+        c1 * n.x * l[3] +
+        c2 * n.x * n.y * l[4] -
+        c2 * n.y * n.z * l[5] +
+        c3 * (3.f * n.z * n.z - 1.f) * l[6] -
+        c2 * n.x * n.z * l[7] +
+        c4 * (n.x * n.x - n.y * n.y) * l[8];
+    return glm::max(irradiance, vec3{0});
 }
 
 using CubemapMipFacesF32 = std::array<DecodedImageF32, 6>;
@@ -80,11 +79,11 @@ CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &
         auto &image = mip[face];
         image.Width = size;
         image.Height = size;
-        image.Pixels.resize(size_t(size) * size * 4u, 1.f);
+        image.Pixels.resize(size * size * 4, 1.f);
         for (uint32_t y = 0; y < size; ++y) {
             for (uint32_t x = 0; x < size; ++x) {
-                const auto u = 2.f * (float(x) + 0.5f) / float(size) - 1.f;
-                const auto v = 2.f * (float(y) + 0.5f) / float(size) - 1.f;
+                const auto u = 2.f * (x + 0.5f) / float(size) - 1.f;
+                const auto v = 2.f * (y + 0.5f) / float(size) - 1.f;
                 const auto rgb = intensity * EvaluateIrradianceSH(coefficients, CubemapFaceDirection(face, u, v));
                 const auto offset = (size_t(y) * size + x) * 4u;
                 image.Pixels[offset + 0] = rgb.r;
@@ -177,27 +176,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
         );
     });
 
-    auto sampler = vk.Device.createSamplerUnique(
-        vk::SamplerCreateInfo{
-            {},
-            vk::Filter::eLinear,
-            vk::Filter::eLinear,
-            vk::SamplerMipmapMode::eLinear,
-            vk::SamplerAddressMode::eClampToEdge,
-            vk::SamplerAddressMode::eClampToEdge,
-            vk::SamplerAddressMode::eClampToEdge,
-            0.f,
-            VK_FALSE,
-            1.f,
-            VK_FALSE,
-            vk::CompareOp::eNever,
-            0.f,
-            float(mip_faces.size()),
-            vk::BorderColor::eIntOpaqueBlack,
-            VK_FALSE,
-        }
-    );
-
+    auto sampler = vk.Device.createSamplerUnique(LinearSamplerCreateInfo(vk::SamplerAddressMode::eClampToEdge, mip_faces.size()));
     const auto sampler_slot = RegisterCubeSamplerSlot(slots, vk.Device, *sampler, *image.View);
     return CubemapEntry{.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Size = base_size, .MipLevels = uint32_t(mip_faces.size()), .Name = std::move(name)};
 }
@@ -603,42 +582,8 @@ EnvironmentPrefiltered CreateIblFromHdri(
     // desc_sets[2+mip]   = SpecularPrefilter (raw cube in, specular mip N out)
 
     // 7. Update all descriptor sets before recording.
-    const vk::SamplerCreateInfo linear_clamp_ci{
-        {},
-        vk::Filter::eLinear,
-        vk::Filter::eLinear,
-        vk::SamplerMipmapMode::eLinear,
-        vk::SamplerAddressMode::eClampToEdge,
-        vk::SamplerAddressMode::eClampToEdge,
-        vk::SamplerAddressMode::eClampToEdge,
-        0.f,
-        VK_FALSE,
-        1.f,
-        VK_FALSE,
-        vk::CompareOp::eNever,
-        0.f,
-        1000.f,
-        vk::BorderColor::eIntOpaqueBlack,
-        VK_FALSE,
-    };
-    const vk::SamplerCreateInfo linear_repeat_ci{
-        {},
-        vk::Filter::eLinear,
-        vk::Filter::eLinear,
-        vk::SamplerMipmapMode::eLinear,
-        vk::SamplerAddressMode::eRepeat,
-        vk::SamplerAddressMode::eRepeat,
-        vk::SamplerAddressMode::eRepeat,
-        0.f,
-        VK_FALSE,
-        1.f,
-        VK_FALSE,
-        vk::CompareOp::eNever,
-        0.f,
-        1000.f,
-        vk::BorderColor::eIntOpaqueBlack,
-        VK_FALSE,
-    };
+    const auto linear_clamp_ci = LinearSamplerCreateInfo(vk::SamplerAddressMode::eClampToEdge, 1000.f);
+    const auto linear_repeat_ci = LinearSamplerCreateInfo(vk::SamplerAddressMode::eRepeat, 1000.f);
 
     auto equirect_sampler = vk.Device.createSamplerUnique(linear_repeat_ci);
     auto raw_cube_sampler = vk.Device.createSamplerUnique(linear_clamp_ci);
@@ -774,28 +719,9 @@ EnvironmentPrefiltered CreateIblFromHdri(
 
     // 9. Register diffuse and specular cubemaps in the global bindless CubeSamplers array.
     auto diff_sampler = vk.Device.createSamplerUnique(linear_clamp_ci);
-    const uint32_t diff_slot = RegisterCubeSamplerSlot(slots, vk.Device, *diff_sampler, *diff_cube.View);
-
-    auto spec_sampler = vk.Device.createSamplerUnique(vk::SamplerCreateInfo{
-        {},
-        vk::Filter::eLinear,
-        vk::Filter::eLinear,
-        vk::SamplerMipmapMode::eLinear,
-        vk::SamplerAddressMode::eClampToEdge,
-        vk::SamplerAddressMode::eClampToEdge,
-        vk::SamplerAddressMode::eClampToEdge,
-        0.f,
-        VK_FALSE,
-        1.f,
-        VK_FALSE,
-        vk::CompareOp::eNever,
-        0.f,
-        float(spec_mips),
-        vk::BorderColor::eIntOpaqueBlack,
-        VK_FALSE,
-    });
-    const uint32_t spec_slot = RegisterCubeSamplerSlot(slots, vk.Device, *spec_sampler, *spec_cube.View);
-
+    auto spec_sampler = vk.Device.createSamplerUnique(LinearSamplerCreateInfo(vk::SamplerAddressMode::eClampToEdge, spec_mips));
+    const auto diff_slot = RegisterCubeSamplerSlot(slots, vk.Device, *diff_sampler, *diff_cube.View);
+    const auto spec_slot = RegisterCubeSamplerSlot(slots, vk.Device, *spec_sampler, *spec_cube.View);
     return {
         .DiffuseEnv = {.Image = std::move(diff_cube), .Sampler = std::move(diff_sampler), .SamplerSlot = diff_slot, .Size = diff_size, .MipLevels = 1, .Name = name + "_diffuse"},
         .SpecularEnv = {.Image = std::move(spec_cube), .Sampler = std::move(spec_sampler), .SamplerSlot = spec_slot, .Size = spec_size, .MipLevels = spec_mips, .Name = name + "_specular"},
