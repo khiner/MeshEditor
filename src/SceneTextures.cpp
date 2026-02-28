@@ -38,16 +38,6 @@ void TransitionImage(
     cb.pipelineBarrier(src_stage, dst_stage, {}, {}, {}, vk::ImageMemoryBarrier{src_access, dst_access, old_layout, new_layout, {}, {}, image, range});
 }
 
-void WriteImagePairDescriptorSet(vk::Device device, vk::DescriptorSet descriptor_set, const vk::DescriptorImageInfo &sampled_image, const vk::DescriptorImageInfo &storage_image) {
-    device.updateDescriptorSets(
-        {
-            vk::WriteDescriptorSet{descriptor_set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &sampled_image},
-            vk::WriteDescriptorSet{descriptor_set, 1, 0, 1, vk::DescriptorType::eStorageImage, &storage_image},
-        },
-        {}
-    );
-}
-
 vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm; }
 
 vec3 CubemapFaceDirection(uint32_t face, float u, float v) {
@@ -593,9 +583,9 @@ EnvironmentPrefiltered CreateIblFromHdri(
     std::vector<vk::UniqueImageView> spec_storage_views;
     spec_storage_views.reserve(spec_mips);
     for (uint32_t mip = 0; mip < spec_mips; ++mip) {
-        spec_storage_views.push_back(vk.Device.createImageViewUnique(
-            {{}, *spec_cube.Image, vk::ImageViewType::e2DArray, rgba32f, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}}
-        ));
+        spec_storage_views.emplace_back(
+            vk.Device.createImageViewUnique({{}, *spec_cube.Image, vk::ImageViewType::e2DArray, rgba32f, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}})
+        );
     }
 
     // 6. Allocate local descriptor sets (one per dispatch variant).
@@ -649,20 +639,28 @@ EnvironmentPrefiltered CreateIblFromHdri(
         vk::BorderColor::eIntOpaqueBlack,
         VK_FALSE,
     };
+
     auto equirect_sampler = vk.Device.createSamplerUnique(linear_repeat_ci);
     auto raw_cube_sampler = vk.Device.createSamplerUnique(linear_clamp_ci);
-
-    const vk::DescriptorImageInfo eq_info{*equirect_sampler, *equirect.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-    const vk::DescriptorImageInfo raw_mip0_info{{}, *raw_cube_storage_view, vk::ImageLayout::eGeneral};
-    WriteImagePairDescriptorSet(vk.Device, desc_sets[0], eq_info, raw_mip0_info);
-
-    const vk::DescriptorImageInfo raw_cube_info{*raw_cube_sampler, *raw_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-    const vk::DescriptorImageInfo diff_info{{}, *diff_storage_view, vk::ImageLayout::eGeneral};
-    WriteImagePairDescriptorSet(vk.Device, desc_sets[1], raw_cube_info, diff_info);
-
-    for (uint32_t mip = 0; mip < spec_mips; ++mip) {
-        const vk::DescriptorImageInfo spec_mip_info{{}, *spec_storage_views[mip], vk::ImageLayout::eGeneral};
-        WriteImagePairDescriptorSet(vk.Device, desc_sets[2 + mip], raw_cube_info, spec_mip_info);
+    {
+        std::vector<vk::DescriptorImageInfo> infos;
+        infos.reserve(num_sets * 2u);
+        std::vector<vk::WriteDescriptorSet> writes;
+        writes.reserve(num_sets * 2u);
+        auto append_image_pair = [&](vk::DescriptorSet descriptor_set, vk::DescriptorImageInfo sampled_image, const vk::DescriptorImageInfo &storage_image) {
+            infos.emplace_back(sampled_image);
+            infos.emplace_back(storage_image);
+            const size_t i = infos.size();
+            writes.emplace_back(descriptor_set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &infos[i - 2]);
+            writes.emplace_back(descriptor_set, 1, 0, 1, vk::DescriptorType::eStorageImage, &infos[i - 1]);
+        };
+        const vk::DescriptorImageInfo raw_cube_info{*raw_cube_sampler, *raw_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        append_image_pair(desc_sets[0], {*equirect_sampler, *equirect.View, vk::ImageLayout::eShaderReadOnlyOptimal}, {{}, *raw_cube_storage_view, vk::ImageLayout::eGeneral});
+        append_image_pair(desc_sets[1], raw_cube_info, {{}, *diff_storage_view, vk::ImageLayout::eGeneral});
+        for (uint32_t mip = 0; mip < spec_mips; ++mip) {
+            append_image_pair(desc_sets[2 + mip], raw_cube_info, vk::DescriptorImageInfo{{}, *spec_storage_views[mip], vk::ImageLayout::eGeneral});
+        }
+        vk.Device.updateDescriptorSets(writes, {});
     }
 
     // 8. Record and submit the full prefiltering command buffer.
@@ -757,15 +755,10 @@ EnvironmentPrefiltered CreateIblFromHdri(
         for (uint32_t mip = 0; mip < spec_mips; ++mip) {
             const uint32_t mip_face_size = std::max(1u, spec_size >> mip);
             struct SpecPC {
-                uint32_t FaceSize;
-                uint32_t SourceSize;
+                uint32_t FaceSize, SourceSize;
                 float Roughness;
             };
-            const SpecPC pc{
-                .FaceSize = mip_face_size,
-                .SourceSize = raw_size,
-                .Roughness = float(mip) / float(spec_mips - 1),
-            };
+            const SpecPC pc{.FaceSize = mip_face_size, .SourceSize = raw_size, .Roughness = float(mip) / float(spec_mips - 1)};
             cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[2 + mip], {});
             cb.pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(SpecPC), &pc);
             cb.dispatch((mip_face_size + 7) / 8, (mip_face_size + 7) / 8, 6);
