@@ -13,7 +13,7 @@
 #include <stdexcept>
 
 namespace {
-void Submit(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fence fence, vk::Device device) {
+void SubmitWait(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fence fence, vk::Device device) {
     vk::SubmitInfo submit{};
     submit.setCommandBuffers(command_buffer);
     queue.submit(submit, fence);
@@ -21,6 +21,31 @@ void Submit(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fence fence, 
         throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
     }
     device.resetFences(fence);
+}
+
+void RecordSubmit(vk::Device device, vk::CommandPool command_pool, vk::Queue queue, vk::Fence fence, auto &&record) {
+    auto cb = std::move(device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    record(*cb);
+    cb->end();
+    SubmitWait(queue, *cb, fence, device);
+}
+
+void TransitionImage(
+    vk::CommandBuffer cb, vk::PipelineStageFlags src_stage, vk::PipelineStageFlags dst_stage,
+    vk::AccessFlags src_access, vk::AccessFlags dst_access, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::Image image, vk::ImageSubresourceRange range
+) {
+    cb.pipelineBarrier(src_stage, dst_stage, {}, {}, {}, vk::ImageMemoryBarrier{src_access, dst_access, old_layout, new_layout, {}, {}, image, range});
+}
+
+void WriteImagePairDescriptorSet(vk::Device device, vk::DescriptorSet descriptor_set, const vk::DescriptorImageInfo &sampled_image, const vk::DescriptorImageInfo &storage_image) {
+    device.updateDescriptorSets(
+        {
+            vk::WriteDescriptorSet{descriptor_set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &sampled_image},
+            vk::WriteDescriptorSet{descriptor_set, 1, 0, 1, vk::DescriptorType::eStorageImage, &storage_image},
+        },
+        {}
+    );
 }
 
 vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm; }
@@ -68,10 +93,10 @@ CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &
         image.Pixels.resize(size_t(size) * size * 4u, 1.f);
         for (uint32_t y = 0; y < size; ++y) {
             for (uint32_t x = 0; x < size; ++x) {
-                const float u = 2.f * (float(x) + 0.5f) / float(size) - 1.f;
-                const float v = 2.f * (float(y) + 0.5f) / float(size) - 1.f;
-                const vec3 rgb = intensity * EvaluateIrradianceSH(coefficients, CubemapFaceDirection(face, u, v));
-                const size_t offset = (size_t(y) * size + x) * 4u;
+                const auto u = 2.f * (float(x) + 0.5f) / float(size) - 1.f;
+                const auto v = 2.f * (float(y) + 0.5f) / float(size) - 1.f;
+                const auto rgb = intensity * EvaluateIrradianceSH(coefficients, CubemapFaceDirection(face, u, v));
+                const auto offset = (size_t(y) * size + x) * 4u;
                 image.Pixels[offset + 0] = rgb.r;
                 image.Pixels[offset + 1] = rgb.g;
                 image.Pixels[offset + 2] = rgb.b;
@@ -113,9 +138,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
     std::vector<vk::BufferImageCopy> copies;
     size_t total_floats = 0;
     for (const auto &mip : mip_faces) {
-        for (const auto &face : mip) {
-            total_floats += face.Pixels.size();
-        }
+        for (const auto &face : mip) total_floats += face.Pixels.size();
     }
     pixels.reserve(total_floats);
     copies.reserve(mip_faces.size() * 6u);
@@ -125,16 +148,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
         const uint32_t size = std::max(1u, base_size >> mip);
         for (uint32_t face = 0; face < 6u; ++face) {
             const auto &src = mip_faces[mip][face].Pixels;
-            copies.emplace_back(
-                vk::BufferImageCopy{
-                    offset_bytes,
-                    0,
-                    0,
-                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, face, 1},
-                    {0, 0, 0},
-                    {size, size, 1},
-                }
-            );
+            copies.emplace_back(vk::BufferImageCopy{offset_bytes, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, face, 1}, {0, 0, 0}, {size, size, 1}});
             pixels.insert(pixels.end(), src.begin(), src.end());
             offset_bytes += src.size() * sizeof(float);
         }
@@ -160,28 +174,18 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
     );
 
     mvk::Buffer staging{ctx, as_bytes(std::span<const float>{pixels}), mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
-    auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
-    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, uint32_t(mip_faces.size()), 0, 6};
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe,
-        vk::PipelineStageFlagBits::eTransfer,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, {}, {}, *image.Image, full_range}
-    );
-
-    cb->copyBufferToImage(*staging, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
-
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer,
-        vk::PipelineStageFlagBits::eFragmentShader,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *image.Image, full_range}
-    );
-
-    cb->end();
-    Submit(vk.Queue, *cb, one_shot_fence, vk.Device);
+    RecordSubmit(vk.Device, command_pool, vk.Queue, one_shot_fence, [&](vk::CommandBuffer cb) {
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range
+        );
+        cb.copyBufferToImage(*staging, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, full_range
+        );
+    });
 
     auto sampler = vk.Device.createSamplerUnique(
         vk::SamplerCreateInfo{
@@ -230,9 +234,7 @@ std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry> textures
 }
 
 void ReleaseSamplerSlots(DescriptorSlots &slots, std::span<const uint32_t> sampler_slots) {
-    for (const auto sampler_slot : sampler_slots) {
-        slots.Release({SlotType::Sampler, sampler_slot});
-    }
+    for (const auto sampler_slot : sampler_slots) slots.Release({SlotType::Sampler, sampler_slot});
 }
 
 void ReleaseCubeSamplerSlot(DescriptorSlots &slots, uint32_t sampler_slot) {
@@ -345,112 +347,52 @@ TextureEntry CreateTextureEntry(
     );
 
     mvk::Buffer staging{ctx, pixels_rgba8, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
-    auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
-    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe,
-        vk::PipelineStageFlagBits::eTransfer,
-        {},
-        {},
-        {},
-        vk::ImageMemoryBarrier{
-            {},
-            vk::AccessFlagBits::eTransferWrite,
-            vk::ImageLayout::eUndefined,
-            vk::ImageLayout::eTransferDstOptimal,
-            {},
-            {},
+    RecordSubmit(vk.Device, command_pool, vk.Queue, one_shot_fence, [&](vk::CommandBuffer cb) {
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range
+        );
+        cb.copyBufferToImage(
+            *staging,
             *image.Image,
-            full_range,
-        }
-    );
+            vk::ImageLayout::eTransferDstOptimal,
+            vk::BufferImageCopy{0, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}
+        );
 
-    cb->copyBufferToImage(
-        *staging,
-        *image.Image,
-        vk::ImageLayout::eTransferDstOptimal,
-        vk::BufferImageCopy{
-            0,
-            0,
-            0,
-            vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-            {0, 0, 0},
-            {width, height, 1},
-        }
-    );
-
-    int32_t mip_width = int32_t(width), mip_height = int32_t(height);
-    for (uint32_t mip = 1; mip < mip_levels; ++mip) {
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer,
-            vk::PipelineStageFlagBits::eTransfer,
-            {}, {}, {},
-            vk::ImageMemoryBarrier{
-                vk::AccessFlagBits::eTransferWrite,
-                vk::AccessFlagBits::eTransferRead,
+        int32_t mip_width = int32_t(width), mip_height = int32_t(height);
+        for (uint32_t mip = 1; mip < mip_levels; ++mip) {
+            TransitionImage(
+                cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
+                vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1}
+            );
+            cb.blitImage(
+                *image.Image,
+                vk::ImageLayout::eTransferSrcOptimal,
+                *image.Image,
                 vk::ImageLayout::eTransferDstOptimal,
-                vk::ImageLayout::eTransferSrcOptimal,
-                {},
-                {},
-                *image.Image,
-                vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1},
-            }
-        );
+                vk::ImageBlit{
+                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 1},
+                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_width, mip_height, 1}},
+                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1},
+                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{std::max(1, mip_width / 2), std::max(1, mip_height / 2), 1}},
+                },
+                vk::Filter::eLinear
+            );
+            TransitionImage(
+                cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
+                vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1}
+            );
 
-        cb->blitImage(
-            *image.Image,
-            vk::ImageLayout::eTransferSrcOptimal,
-            *image.Image,
-            vk::ImageLayout::eTransferDstOptimal,
-            vk::ImageBlit{
-                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 1},
-                {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_width, mip_height, 1}},
-                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1},
-                {vk::Offset3D{0, 0, 0}, vk::Offset3D{std::max(1, mip_width / 2), std::max(1, mip_height / 2), 1}},
-            },
-            vk::Filter::eLinear
-        );
-
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer,
-            vk::PipelineStageFlagBits::eFragmentShader,
-            {}, {}, {},
-            vk::ImageMemoryBarrier{
-                vk::AccessFlagBits::eTransferRead,
-                vk::AccessFlagBits::eShaderRead,
-                vk::ImageLayout::eTransferSrcOptimal,
-                vk::ImageLayout::eShaderReadOnlyOptimal,
-                {},
-                {},
-                *image.Image,
-                vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1},
-            }
-        );
-
-        mip_width = std::max(1, mip_width / 2);
-        mip_height = std::max(1, mip_height / 2);
-    }
-
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer,
-        vk::PipelineStageFlagBits::eFragmentShader,
-        {}, {}, {},
-        vk::ImageMemoryBarrier{
-            vk::AccessFlagBits::eTransferWrite,
-            vk::AccessFlagBits::eShaderRead,
-            vk::ImageLayout::eTransferDstOptimal,
-            vk::ImageLayout::eShaderReadOnlyOptimal,
-            {},
-            {},
-            *image.Image,
-            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip_levels - 1, 1, 0, 1},
+            mip_width = std::max(1, mip_width / 2);
+            mip_height = std::max(1, mip_height / 2);
         }
-    );
 
-    cb->end();
-    Submit(vk.Queue, *cb, one_shot_fence, vk.Device);
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip_levels - 1, 1, 0, 1}
+        );
+    });
 
     auto sampler = vk.Device.createSamplerUnique(
         vk::SamplerCreateInfo{
@@ -481,17 +423,10 @@ TextureEntry CreateTextureEntry(
 }
 
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
-    const SceneVulkanResources &vk,
-    mvk::BufferContext &ctx,
-    vk::CommandPool command_pool,
-    vk::Fence one_shot_fence,
-    DescriptorSlots &slots,
-    std::span<const std::byte> encoded_bytes,
-    std::string_view encoded_name,
-    std::string texture_name,
+    const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots,
+    std::span<const std::byte> encoded_bytes, std::string_view encoded_name, std::string texture_name,
     TextureColorSpace color_space,
-    vk::SamplerAddressMode wrap_s,
-    vk::SamplerAddressMode wrap_t,
+    vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
     const SamplerConfig &sampler_cfg
 ) {
     auto decoded = DecodeImageRgba8(encoded_bytes, encoded_name);
@@ -500,13 +435,8 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
 }
 
 std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
-    const SceneVulkanResources &vk,
-    mvk::BufferContext &ctx,
-    vk::CommandPool command_pool,
-    vk::Fence one_shot_fence,
-    DescriptorSlots &slots,
-    const gltf::Scene &scene,
-    const gltf::ImageBasedLight &ibl
+    const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots,
+    const gltf::Scene &scene, const gltf::ImageBasedLight &ibl
 ) {
     std::vector<CubemapMipFacesF32> specular_mips;
     specular_mips.reserve(ibl.SpecularImageIndicesByMip.size());
@@ -562,11 +492,7 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
         return std::unexpected{std::move(diffuse_env.error())};
     }
 
-    return EnvironmentPrefiltered{
-        .DiffuseEnv = std::move(*diffuse_env),
-        .SpecularEnv = std::move(*specular_env),
-        .Name = ibl.Name,
-    };
+    return EnvironmentPrefiltered{.DiffuseEnv = std::move(*diffuse_env), .SpecularEnv = std::move(*specular_env), .Name = ibl.Name};
 }
 
 // GPU-prefilters a Radiance HDR equirectangular image into a diffuse irradiance cubemap and a
@@ -574,14 +500,10 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
 // CubemapEntries. All temporary GPU resources (equirect image, raw cubemap, descriptor sets)
 // are destroyed before returning.
 EnvironmentPrefiltered CreateIblFromHdri(
-    const SceneVulkanResources &vk,
-    mvk::BufferContext &ctx,
-    vk::CommandPool command_pool,
-    vk::Fence fence,
+    const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence fence,
     DescriptorSlots &slots,
     const IblPrefilterPipelines &prefilter,
-    const std::filesystem::path &path,
-    const std::string &name
+    const std::filesystem::path &path, const std::string &name
 ) {
     // 1. Load HDR equirectangular image into a CPU staging buffer.
     const auto path_str = path.string();
@@ -606,25 +528,24 @@ EnvironmentPrefiltered CreateIblFromHdri(
         {{}, vk::ImageType::e2D, rgba32f, vk::Extent3D{eq_w, eq_h, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, rgba32f, {}, one_2d}
     );
-    {
-        auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
-        cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-            vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, {}, {}, *equirect.Image, one_2d}
+    RecordSubmit(vk.Device, command_pool, vk.Queue, fence, [&](vk::CommandBuffer cb) {
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *equirect.Image, one_2d
         );
-        cb->copyBufferToImage(*eq_staging, *equirect.Image, vk::ImageLayout::eTransferDstOptimal, vk::BufferImageCopy{0, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}});
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-            vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *equirect.Image, one_2d}
+        cb.copyBufferToImage(
+            *eq_staging, *equirect.Image,
+            vk::ImageLayout::eTransferDstOptimal,
+            vk::BufferImageCopy{0, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}}
         );
-        cb->end();
-        Submit(vk.Queue, *cb, fence, vk.Device);
-    }
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *equirect.Image, one_2d
+        );
+    });
 
     // 3. Create raw cubemap (512×512, full mip chain, storage+sampled+transfer).
-    const uint32_t raw_size = 512;
-    const uint32_t raw_mips = ComputeMipLevelCount(raw_size, raw_size);
+    const uint32_t raw_size = 512, raw_mips = ComputeMipLevelCount(raw_size, raw_size);
     constexpr auto cube_flags = vk::ImageCreateFlagBits::eCubeCompatible;
     const vk::ImageSubresourceRange raw_full{vk::ImageAspectFlagBits::eColor, 0, raw_mips, 0, 6};
 
@@ -632,8 +553,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         vk.Device, vk.PhysicalDevice,
         {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{raw_size, raw_size, 1}, raw_mips, 6,
          vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
-             vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
          vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, raw_full}
     );
@@ -649,8 +569,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         vk.Device, vk.PhysicalDevice,
         {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{diff_size, diff_size, 1}, 1, 6,
          vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
-             vk::ImageUsageFlagBits::eTransferDst,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst,
          vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, diff_range}
     );
@@ -666,8 +585,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         vk.Device, vk.PhysicalDevice,
         {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{spec_size, spec_size, 1}, spec_mips, 6,
          vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
-             vk::ImageUsageFlagBits::eTransferDst,
+         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst,
          vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, spec_full}
     );
@@ -736,145 +654,129 @@ EnvironmentPrefiltered CreateIblFromHdri(
 
     const vk::DescriptorImageInfo eq_info{*equirect_sampler, *equirect.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     const vk::DescriptorImageInfo raw_mip0_info{{}, *raw_cube_storage_view, vk::ImageLayout::eGeneral};
-    vk.Device.updateDescriptorSets({
-                                       vk::WriteDescriptorSet{desc_sets[0], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &eq_info},
-                                       vk::WriteDescriptorSet{desc_sets[0], 1, 0, 1, vk::DescriptorType::eStorageImage, &raw_mip0_info},
-                                   },
-                                   {});
+    WriteImagePairDescriptorSet(vk.Device, desc_sets[0], eq_info, raw_mip0_info);
 
     const vk::DescriptorImageInfo raw_cube_info{*raw_cube_sampler, *raw_cube.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     const vk::DescriptorImageInfo diff_info{{}, *diff_storage_view, vk::ImageLayout::eGeneral};
-    vk.Device.updateDescriptorSets({
-                                       vk::WriteDescriptorSet{desc_sets[1], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &raw_cube_info},
-                                       vk::WriteDescriptorSet{desc_sets[1], 1, 0, 1, vk::DescriptorType::eStorageImage, &diff_info},
-                                   },
-                                   {});
+    WriteImagePairDescriptorSet(vk.Device, desc_sets[1], raw_cube_info, diff_info);
 
     for (uint32_t mip = 0; mip < spec_mips; ++mip) {
         const vk::DescriptorImageInfo spec_mip_info{{}, *spec_storage_views[mip], vk::ImageLayout::eGeneral};
-        vk.Device.updateDescriptorSets({
-                                           vk::WriteDescriptorSet{desc_sets[2 + mip], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &raw_cube_info},
-                                           vk::WriteDescriptorSet{desc_sets[2 + mip], 1, 0, 1, vk::DescriptorType::eStorageImage, &spec_mip_info},
-                                       },
-                                       {});
+        WriteImagePairDescriptorSet(vk.Device, desc_sets[2 + mip], raw_cube_info, spec_mip_info);
     }
 
     // 8. Record and submit the full prefiltering command buffer.
-    auto cb = std::move(vk.Device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
-    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    // --- Initial layout transitions ---
-    // raw cube mip 0: Undefined → General (storage write by EquirectToCubemap)
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}}
-    );
-    // raw cube mips 1..N: Undefined → TransferDstOptimal (blit targets for mipmap generation)
-    if (raw_mips > 1) {
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-            vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 1, raw_mips - 1, 0, 6}}
+    RecordSubmit(vk.Device, command_pool, vk.Queue, fence, [&](vk::CommandBuffer cb) {
+        // --- Initial layout transitions ---
+        // raw cube mip 0: Undefined → General (storage write by EquirectToCubemap)
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, vk::AccessFlagBits::eShaderWrite,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}
         );
-    }
-    // diffuse: Undefined → General
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *diff_cube.Image, diff_range}
-    );
-    // specular all mips: Undefined → General
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *spec_cube.Image, spec_full}
-    );
-
-    // --- EquirectToCubemap pass ---
-    cb->bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.EquirectToCubemap);
-    cb->bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[0], {});
-    cb->pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &raw_size);
-    cb->dispatch((raw_size + 7) / 8, (raw_size + 7) / 8, 6);
-
-    // raw cube mip 0: General → TransferSrcOptimal (source for mipmap blit chain)
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-        vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead, vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}}
-    );
-
-    // --- Generate mip chain for raw cubemap ---
-    int32_t mip_size = int32_t(raw_size);
-    for (uint32_t mip = 1; mip < raw_mips; ++mip) {
-        const int32_t next_size = std::max(1, mip_size / 2);
-        // Blit all 6 faces: mip N-1 (TransferSrcOptimal) → mip N (TransferDstOptimal)
-        cb->blitImage(
-            *raw_cube.Image, vk::ImageLayout::eTransferSrcOptimal,
-            *raw_cube.Image, vk::ImageLayout::eTransferDstOptimal,
-            vk::ImageBlit{
-                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 6},
-                {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_size, mip_size, 1}},
-                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 6},
-                {vk::Offset3D{0, 0, 0}, vk::Offset3D{next_size, next_size, 1}},
-            },
-            vk::Filter::eLinear
-        );
-        // mip N-1: TransferSrcOptimal → ShaderReadOnlyOptimal (done as blit source)
-        cb->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-            vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 6}}
-        );
-        if (mip < raw_mips - 1) {
-            // mip N: TransferDstOptimal → TransferSrcOptimal (source for next blit)
-            cb->pipelineBarrier(
-                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-                vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}}
-            );
-        } else {
-            // Last mip: TransferDstOptimal → ShaderReadOnlyOptimal
-            cb->pipelineBarrier(
-                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-                vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}}
+        // raw cube mips 1..N: Undefined → TransferDstOptimal (blit targets for mipmap generation)
+        if (raw_mips > 1) {
+            TransitionImage(
+                cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
+                vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 1, raw_mips - 1, 0, 6}
             );
         }
-        mip_size = next_size;
-    }
+        // diffuse: Undefined → General
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, vk::AccessFlagBits::eShaderWrite,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *diff_cube.Image, diff_range
+        );
+        // specular all mips: Undefined → General
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, vk::AccessFlagBits::eShaderWrite,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *spec_cube.Image, spec_full
+        );
 
-    // --- DiffuseIrradiance pass ---
-    cb->bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.DiffuseIrradiance);
-    cb->bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[1], {});
-    cb->pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &diff_size);
-    cb->dispatch((diff_size + 7) / 8, (diff_size + 7) / 8, 6);
+        // --- EquirectToCubemap pass ---
+        cb.bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.EquirectToCubemap);
+        cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[0], {});
+        cb.pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &raw_size);
+        cb.dispatch((raw_size + 7) / 8, (raw_size + 7) / 8, 6);
 
-    // diffuse: General → ShaderReadOnlyOptimal
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
-        vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *diff_cube.Image, diff_range}
-    );
+        // raw cube mip 0: General → TransferSrcOptimal (source for mipmap blit chain)
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead,
+            vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}
+        );
 
-    // --- SpecularPrefilter passes (one per roughness mip) ---
-    cb->bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.SpecularPrefilter);
-    for (uint32_t mip = 0; mip < spec_mips; ++mip) {
-        const uint32_t mip_face_size = std::max(1u, spec_size >> mip);
-        struct SpecPC {
-            uint32_t FaceSize;
-            uint32_t SourceSize;
-            float Roughness;
-        };
-        const SpecPC pc{
-            .FaceSize = mip_face_size,
-            .SourceSize = raw_size,
-            .Roughness = float(mip) / float(spec_mips - 1),
-        };
-        cb->bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[2 + mip], {});
-        cb->pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(SpecPC), &pc);
-        cb->dispatch((mip_face_size + 7) / 8, (mip_face_size + 7) / 8, 6);
-    }
+        // --- Generate mip chain for raw cubemap ---
+        int32_t mip_size = int32_t(raw_size);
+        for (uint32_t mip = 1; mip < raw_mips; ++mip) {
+            const int32_t next_size = std::max(1, mip_size / 2);
+            // Blit all 6 faces: mip N-1 (TransferSrcOptimal) → mip N (TransferDstOptimal)
+            cb.blitImage(
+                *raw_cube.Image, vk::ImageLayout::eTransferSrcOptimal,
+                *raw_cube.Image, vk::ImageLayout::eTransferDstOptimal,
+                vk::ImageBlit{
+                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 6},
+                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_size, mip_size, 1}},
+                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 6},
+                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{next_size, next_size, 1}},
+                },
+                vk::Filter::eLinear
+            );
+            // mip N-1: TransferSrcOptimal → ShaderReadOnlyOptimal (done as blit source)
+            TransitionImage(
+                cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
+                vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 6}
+            );
+            if (mip < raw_mips - 1) {
+                // mip N: TransferDstOptimal → TransferSrcOptimal (source for next blit)
+                TransitionImage(
+                    cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
+                    vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}
+                );
+            } else {
+                // Last mip: TransferDstOptimal → ShaderReadOnlyOptimal
+                TransitionImage(
+                    cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
+                    vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}
+                );
+            }
+            mip_size = next_size;
+        }
 
-    // specular: General → ShaderReadOnlyOptimal
-    cb->pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
-        vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, *spec_cube.Image, spec_full}
-    );
+        // --- DiffuseIrradiance pass ---
+        cb.bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.DiffuseIrradiance);
+        cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[1], {});
+        cb.pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &diff_size);
+        cb.dispatch((diff_size + 7) / 8, (diff_size + 7) / 8, 6);
 
-    cb->end();
-    Submit(vk.Queue, *cb, fence, vk.Device);
+        // diffuse: General → ShaderReadOnlyOptimal
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, *diff_cube.Image, diff_range
+        );
+
+        // --- SpecularPrefilter passes (one per roughness mip) ---
+        cb.bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.SpecularPrefilter);
+        for (uint32_t mip = 0; mip < spec_mips; ++mip) {
+            const uint32_t mip_face_size = std::max(1u, spec_size >> mip);
+            struct SpecPC {
+                uint32_t FaceSize;
+                uint32_t SourceSize;
+                float Roughness;
+            };
+            const SpecPC pc{
+                .FaceSize = mip_face_size,
+                .SourceSize = raw_size,
+                .Roughness = float(mip) / float(spec_mips - 1),
+            };
+            cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter.PipelineLayout, 0, desc_sets[2 + mip], {});
+            cb.pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(SpecPC), &pc);
+            cb.dispatch((mip_face_size + 7) / 8, (mip_face_size + 7) / 8, 6);
+        }
+
+        // specular: General → ShaderReadOnlyOptimal
+        TransitionImage(
+            cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, *spec_cube.Image, spec_full
+        );
+    });
     // desc_pool destroyed here, freeing desc_sets. equirect, raw_cube, storage views, local samplers also destroyed.
 
     // 9. Register diffuse and specular cubemaps in the global bindless CubeSamplers array.
