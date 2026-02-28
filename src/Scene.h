@@ -225,7 +225,7 @@ private:
     float PlaybackFrame{1.0f}; // Smooth float frame position for playback
     int LastEvaluatedFrame{-1}; // Last frame where armature poses were evaluated
 
-    static inline const std::vector<he::Element> NormalElements{he::Element::Vertex, he::Element::Face};
+    static inline const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
 
     enum class RenderRequest : uint8_t {
         None,
@@ -261,7 +261,7 @@ private:
     RenderRequest ProcessComponentEvents();
 
     void SetInteractionMode(InteractionMode);
-    void SetEditMode(he::Element mode);
+    void SetEditMode(Element mode);
 
     std::vector<entt::entity> RunObjectPick(uvec2 pixel, uint32_t radius_px = 0);
     std::vector<entt::entity> RunBoxSelect(std::pair<uvec2, uvec2>);
@@ -269,10 +269,10 @@ private:
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
     void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
-    void RenderEditSelectionPass(std::span<const ElementRange>, he::Element, vk::Semaphore signal_semaphore = {});
-    void RenderElementSelectionPass(std::span<const ElementRange>, he::Element, bool write_bitset, uvec2 box_min = {}, uvec2 box_max = {}, vk::Semaphore signal_semaphore = {});
-    std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, he::Element, std::pair<uvec2, uvec2>);
-    std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, he::Element, uvec2 mouse_px);
+    void RenderEditSelectionPass(std::span<const ElementRange>, Element, vk::Semaphore signal_semaphore = {});
+    void RenderElementSelectionPass(std::span<const ElementRange>, Element, bool write_bitset, uvec2 box_min = {}, uvec2 box_max = {}, vk::Semaphore signal_semaphore = {});
+    std::vector<std::vector<uint32_t>> RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>);
+    std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, Element, uvec2 mouse_px);
     std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 
     void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);

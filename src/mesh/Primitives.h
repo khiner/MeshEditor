@@ -2,9 +2,7 @@
 
 #include "PrimitiveType.h"
 #include "mesh/MeshData.h"
-#include "numeric/vec2.h"
 
-#include <array>
 #include <ranges>
 #include <unordered_map>
 
@@ -20,7 +18,7 @@ inline MeshData Rect(vec2 half_extents = {0.5, 0.5}) {
 }
 
 inline MeshData Circle(float radius = 0.5, uint n = 32) {
-    std::vector<vec3> vertices =
+    std::vector vertices =
         iota_view{0u, n} |
         transform([radius, n](uint i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
         to<std::vector>();
@@ -204,11 +202,11 @@ inline MeshData Cylinder(float radius = 0.5, float height = 1, uint slices = 32)
 }
 
 inline MeshData Cone(float radius = 0.5, float height = 1, uint slices = 32) {
-    std::vector<vec3> vertices = // Base
+    std::vector vertices =
         iota_view{0u, slices} | transform([&](uint i) {
             return vec3{radius * __cospi(2.f * i / slices), -height / 2, radius * __sinpi(2.f * i / slices)};
         }) |
-        to<std::vector>();
+        to<std::vector>(); // Base
     vertices.emplace_back(0, height / 2, 0); // Top
 
     std::vector<std::vector<uint>> indices = // Side triangles

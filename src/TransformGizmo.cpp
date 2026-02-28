@@ -1,19 +1,11 @@
-#ifndef IMGUI_DEFINE_MATH_OPERATORS
-#define IMGUI_DEFINE_MATH_OPERATORS
-#endif
-
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
-#include "numeric/vec4.h"
 
 #include "imgui.h"
-#include "imgui_internal.h"
 
 #include "AxisColors.h" // Must be after imgui.h
 
-#include <algorithm>
 #include <format>
-#include <optional>
 #include <span>
 
 namespace {
@@ -182,6 +174,11 @@ constexpr std::optional<std::pair<InteractionOp, InteractionOp>> PlaneAxes(Inter
 constexpr std::pair<uint32_t, uint32_t> PerpendicularAxes(uint32_t axis_i) { return {(axis_i + 1) % 3, (axis_i + 2) % 3}; }
 
 constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) { return {vec3{p_normal}, glm::dot(p_normal, vec4{p, 1})}; }
+
+constexpr ImVec2 ImMin(ImVec2 lhs, ImVec2 rhs) { return {lhs.x < rhs.x ? lhs.x : rhs.x, lhs.y < rhs.y ? lhs.y : rhs.y}; }
+constexpr ImVec2 ImMax(ImVec2 lhs, ImVec2 rhs) { return {lhs.x > rhs.x ? lhs.x : rhs.x, lhs.y > rhs.y ? lhs.y : rhs.y}; }
+constexpr ImVec2 ImClamp(ImVec2 v, ImVec2 mn, ImVec2 mx) { return ImMin(ImMax(v, mn), mx); }
+constexpr float ImLengthSqr(ImVec2 v) { return (v.x * v.x) + (v.y * v.y); }
 
 // Homogeneous clip space to signed NDC in [-1,+1]
 constexpr vec3 CsToNdc(vec4 cs) { return {fabsf(cs.w) > FLT_EPSILON ? vec3{cs} / cs.w : vec3{cs}}; }

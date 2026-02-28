@@ -1,6 +1,5 @@
 #pragma once
 
-namespace {
 // Component on the scene singleton entity. Changes require command buffer re-recording.
 struct SceneSettings {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
@@ -8,7 +7,7 @@ struct SceneSettings {
     vk::ClearColorValue ClearColor{0.25f, 0.25f, 0.25f, 1.f};
     FaceColorMode FaceColorMode{FaceColorMode::Mesh};
     bool SmoothShading{false}, ShowGrid{true}, ShowBoundingBoxes{false};
-    uint8_t NormalOverlays{0}; // Bitmask of he::Element
+    uint8_t NormalOverlays{0}; // Bitmask of Element
 };
 
 // Shared PBR viewport lighting controls (Blender-style scene lights/world toggles + studio env controls).
@@ -29,10 +28,9 @@ struct SceneInteraction {
 };
 
 struct SceneEditMode {
-    he::Element Value{he::Element::Vertex};
+    Element Value{Element::Vertex};
 };
 
 struct ViewportExtent {
     vk::Extent2D Value{};
 };
-} // namespace

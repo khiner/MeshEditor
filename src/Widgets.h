@@ -14,6 +14,10 @@ inline bool BeginTable(const char *name, int columns) {
     return result;
 }
 
+inline bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
+    return ImGui::SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
+}
+
 inline void HelpMarker(const char *desc) {
     using namespace ImGui;
     SameLine();

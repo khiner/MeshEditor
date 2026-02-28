@@ -2,7 +2,6 @@
 
 #include <glm/gtx/euler_angles.hpp>
 
-namespace {
 // Mutually exclusive structs to track rotation representation.
 // Note: `Rotation` is still the source of truth transformation component. These are for slider values only.
 struct RotationQuat {
@@ -21,7 +20,7 @@ struct StartTransform {
     Transform T;
 };
 
-void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
+inline void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     r.emplace_or_replace<Rotation>(e, v);
     if (!r.all_of<RotationUiVariant>(e)) {
         r.emplace<RotationUiVariant>(e, RotationQuat{v});
@@ -47,7 +46,7 @@ void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     });
 }
 
-void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
+inline void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
     r.emplace_or_replace<Position>(e, t.P);
     // Avoid replacing rotation UI slider values if the value hasn't changed.
     if (!r.all_of<Rotation>(e) || r.get<Rotation>(e).Value != t.R) SetRotation(r, e, t.R);
@@ -56,4 +55,3 @@ void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
 
     UpdateWorldTransform(r, e);
 }
-} // namespace

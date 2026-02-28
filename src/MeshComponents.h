@@ -2,7 +2,6 @@
 
 #include "vulkan/Buffer.h"
 
-namespace {
 struct RenderInstance {
     uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
     uint32_t ObjectId{0};
@@ -22,4 +21,3 @@ struct ObjectExtrasTag {};
 struct VertexClass {
     uint32_t Offset{InvalidOffset};
 };
-} // namespace

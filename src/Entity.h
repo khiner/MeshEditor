@@ -3,6 +3,7 @@
 #include "entt_fwd.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 

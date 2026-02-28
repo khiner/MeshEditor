@@ -12,10 +12,9 @@ using uint = uint32_t;
 
 constexpr uint null{std::numeric_limits<uint>::max()};
 
-using Element = ::Element;
-constexpr uint8_t ElementMask(he::Element element) { return uint8_t(element); }
-constexpr bool ElementMaskContains(uint8_t mask, he::Element element) { return (mask & ElementMask(element)) != 0; }
-constexpr void SetElementMask(uint8_t &mask, he::Element element, bool enabled) {
+constexpr uint8_t ElementMask(Element element) { return uint8_t(element); }
+constexpr bool ElementMaskContains(uint8_t mask, Element element) { return (mask & ElementMask(element)) != 0; }
+constexpr void SetElementMask(uint8_t &mask, Element element, bool enabled) {
     if (enabled) mask |= ElementMask(element);
     else mask &= ~ElementMask(element);
 }
@@ -66,21 +65,21 @@ struct AnyHandle {
     AnyHandle(Element element = Element::None, uint index = null) : Element(element), Index(index) {}
     template<typename Tag> AnyHandle(Handle<Tag> h) : Element(h.GetElement()), Index(*h) {}
 
-    he::Element Element;
+    Element Element;
     uint Index;
 
     uint operator*() const { return Index; }
     bool operator==(const AnyHandle &other) const { return Element == other.Element && Index == other.Index; }
     operator bool() const { return Index != null; }
 
-    bool operator==(VH vh) const { return Element == he::Element::Vertex && Index == *vh; }
-    bool operator==(EH eh) const { return Element == he::Element::Edge && Index == *eh; }
-    bool operator==(FH fh) const { return Element == he::Element::Face && Index == *fh; }
+    bool operator==(VH vh) const { return Element == Element::Vertex && Index == *vh; }
+    bool operator==(EH eh) const { return Element == Element::Edge && Index == *eh; }
+    bool operator==(FH fh) const { return Element == Element::Face && Index == *fh; }
 
     // Implicit conversion to typed handles
-    operator VH() const { return {Element == he::Element::Vertex ? Index : null}; }
-    operator EH() const { return {Element == he::Element::Edge ? Index : null}; }
-    operator FH() const { return {Element == he::Element::Face ? Index : null}; }
+    operator VH() const { return {Element == Element::Vertex ? Index : null}; }
+    operator EH() const { return {Element == Element::Edge ? Index : null}; }
+    operator FH() const { return {Element == Element::Face ? Index : null}; }
 };
 
 struct AnyHandleHash {

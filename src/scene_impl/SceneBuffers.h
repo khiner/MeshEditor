@@ -48,7 +48,7 @@ struct MeshBuffers {
 
     SlottedRange Vertices;
     SlottedRange FaceIndices, EdgeIndices, VertexIndices;
-    std::unordered_map<he::Element, RenderBuffers> NormalIndicators;
+    std::unordered_map<Element, RenderBuffers> NormalIndicators;
 };
 
 constexpr uint32_t
@@ -140,6 +140,9 @@ struct SceneBuffers {
         IdentityIndexBuffer.Update(as_bytes(indices));
         IdentityIndexCount = count;
     }
+
+    PunctualLight GetLight(uint32_t index) const { return reinterpret_cast<const PunctualLight *>(LightBuffer.GetMappedData().data())[index]; }
+    void SetLight(uint32_t index, const PunctualLight &light) { LightBuffer.Update(as_bytes(light), vk::DeviceSize(index) * sizeof(PunctualLight)); }
 
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
