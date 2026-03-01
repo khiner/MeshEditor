@@ -847,23 +847,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         const auto active_entity = FindActiveEntity(R);
         const auto *active_mi = R.try_get<MeshInstance>(active_entity);
-        std::vector<ElementRange> active_ranges;
         for (auto mesh_entity : tracker) {
             if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity);
                 active_element && edit_mode != Element::None && active_mi && active_mi->MeshEntity == mesh_entity) {
                 orbit_to_active(active_entity, edit_mode, active_element->Handle);
             }
-            if (edit_mode != Element::None) {
-                if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
-                    active_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
-                }
-            }
             dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
         }
-        if (!active_ranges.empty()) {
-            DispatchUpdateSelectionStates(active_ranges, edit_mode);
-            ElementStatesDirty = true;
-        }
+    }
+    if (SelectionBitsDirty) {
+        SelectionBitsDirty = false;
+        if (is_edit_mode) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), R.get<const SceneEditMode>(SceneEntity).Value);
     }
     for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
         if (const auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
@@ -934,11 +928,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (new_count > 0) geometry_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
             }
         }
-        if (!geometry_ranges.empty()) {
-            DispatchUpdateSelectionStates(geometry_ranges, edit_mode);
-            UpdateEditVertexPreviewStates(geometry_ranges, edit_mode);
-            ElementStatesDirty = true;
-        }
+        if (!geometry_ranges.empty()) ApplySelectionStateUpdate(geometry_ranges, edit_mode);
         request(RenderRequest::Submit);
     }
     if (auto &tracker = R.storage<entt::reactive>(changes::MeshMaterial); !tracker.empty()) {
@@ -976,19 +966,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto new_interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
         if (new_interaction_mode == InteractionMode::Edit) {
             const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-            if (edit_mode != Element::None) {
-                std::vector<ElementRange> ranges;
-                for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
-                    if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
-                        ranges.emplace_back(mesh_entity, br->Offset, br->Count);
-                    }
-                }
-                if (!ranges.empty()) {
-                    DispatchUpdateSelectionStates(ranges, edit_mode);
-                    UpdateEditVertexPreviewStates(ranges, edit_mode);
-                    ElementStatesDirty = true;
-                }
-            }
+            if (edit_mode != Element::None) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), edit_mode);
         }
         for (const auto [_, mi, __] : R.view<const MeshInstance, const Excitable>().each()) {
             dirty_element_state_meshes.insert(mi.MeshEntity);
@@ -2610,12 +2588,24 @@ void Scene::UpdateEditVertexPreviewStates(std::span<const ElementRange> ranges, 
             }
             Meshes->UpdateEdgeStatesFromFaces(mesh, selected_handles, active_face);
         }
-        const auto selected_vertices = scene_selection::ConvertSelectionElement(selected_handles, mesh, element, Element::Vertex);
-        std::vector<uint32_t> vertex_indices;
-        vertex_indices.reserve(selected_vertices.size());
-        for (const auto vi : selected_vertices) vertex_indices.emplace_back(vi);
-        Meshes->UpdateVertexStates(mesh, vertex_indices);
+        Meshes->UpdateVertexStates(mesh, selected_handles, element);
     }
+}
+
+void Scene::ApplySelectionStateUpdate(std::span<const ElementRange> ranges, Element element) {
+    DispatchUpdateSelectionStates(ranges, element);
+    UpdateEditVertexPreviewStates(ranges, element);
+    ElementStatesDirty = true;
+}
+
+std::vector<Scene::ElementRange> Scene::GetBitsetRangesForSelected() const {
+    std::vector<ElementRange> ranges;
+    for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
+        if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
+            ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+        }
+    }
+    return ranges;
 }
 
 void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
@@ -2644,9 +2634,7 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
     RenderElementSelectionPass(ranges, element, true, box_min, box_max);
     // After RenderElementSelectionPass (which waits on fence), SelectionBitsetBuffer is populated.
     // Dispatch UpdateSelectionState compute shader to update element state buffers on GPU.
-    DispatchUpdateSelectionStates(ranges, element);
-    UpdateEditVertexPreviewStates(ranges, element);
-    ElementStatesDirty = true;
+    ApplySelectionStateUpdate(ranges, element);
 }
 
 std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges(std::span<const ElementRange> ranges, Element element, uvec2 mouse_px) {

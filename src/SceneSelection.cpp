@@ -39,38 +39,36 @@ std::vector<uint32_t> ScanBitsetRange(const uint32_t *bits, uint32_t offset, uin
     return result;
 }
 
-std::unordered_set<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles, const Mesh &mesh, Element from_element, Element to_element) {
+std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles, const Mesh &mesh, Element from_element, Element to_element) {
     if (from_element == Element::None || handles.empty()) return {};
     if (from_element == to_element) return {handles.begin(), handles.end()};
-    std::unordered_set<uint32_t> new_handles;
+
+    std::vector<uint32_t> result;
     if (from_element == Element::Face) {
         if (to_element == Element::Edge) {
             for (auto f : handles) {
-                for (const auto heh : mesh.fh_range(he::FH{f})) new_handles.emplace(*mesh.GetEdge(heh));
+                for (const auto heh : mesh.fh_range(he::FH{f})) result.emplace_back(*mesh.GetEdge(heh));
             }
         } else if (to_element == Element::Vertex) {
             for (auto f : handles) {
-                for (const auto vh : mesh.fv_range(he::FH{f})) new_handles.emplace(*vh);
+                for (const auto vh : mesh.fv_range(he::FH{f})) result.emplace_back(*vh);
             }
         }
     } else if (from_element == Element::Edge) {
         if (to_element == Element::Vertex) {
             for (auto eh_raw : handles) {
                 const auto heh = mesh.GetHalfedge(he::EH{eh_raw}, 0);
-                new_handles.emplace(*mesh.GetFromVertex(heh));
-                new_handles.emplace(*mesh.GetToVertex(heh));
+                result.emplace_back(*mesh.GetFromVertex(heh));
+                result.emplace_back(*mesh.GetToVertex(heh));
             }
         } else if (to_element == Element::Face) {
             const std::unordered_set<uint32_t> handle_set{handles.begin(), handles.end()};
             for (const auto fh : mesh.faces()) {
                 bool all_selected = true;
                 for (const auto heh : mesh.fh_range(fh)) {
-                    if (!handle_set.contains(*mesh.GetEdge(heh))) {
-                        all_selected = false;
-                        break;
-                    }
+                    if (!handle_set.contains(*mesh.GetEdge(heh))) { all_selected = false; break; }
                 }
-                if (all_selected) new_handles.emplace(*fh);
+                if (all_selected) result.emplace_back(*fh);
             }
         }
     } else if (from_element == Element::Vertex) {
@@ -79,44 +77,20 @@ std::unordered_set<uint32_t> ConvertSelectionElement(std::span<const uint32_t> h
             for (const auto eh : mesh.edges()) {
                 const auto heh = mesh.GetHalfedge(eh, 0);
                 if (handle_set.contains(*mesh.GetFromVertex(heh)) && handle_set.contains(*mesh.GetToVertex(heh))) {
-                    new_handles.emplace(*eh);
+                    result.emplace_back(*eh);
                 }
             }
         } else if (to_element == Element::Face) {
             for (const auto fh : mesh.faces()) {
                 bool all_selected = true;
                 for (const auto vh : mesh.fv_range(fh)) {
-                    if (!handle_set.contains(*vh)) {
-                        all_selected = false;
-                        break;
-                    }
+                    if (!handle_set.contains(*vh)) { all_selected = false; break; }
                 }
-                if (all_selected) new_handles.emplace(*fh);
+                if (all_selected) result.emplace_back(*fh);
             }
         }
     }
-    return new_handles;
-}
-
-void ConvertSelectionBitset(uint32_t *bits, MeshSelectionBitsetRange from_range, MeshSelectionBitsetRange to_range, const Mesh &mesh, Element from_element, Element to_element) {
-    const auto from_handles = ScanBitsetRange(bits, from_range.Offset, from_range.Count);
-    // Clear the from_range bits
-    const uint32_t first_word = from_range.Offset / 32, last_word = (from_range.Offset + from_range.Count + 31) / 32;
-    memset(bits + first_word, 0, (last_word - first_word) * sizeof(uint32_t));
-    // Convert to new element type
-    const auto new_handles = ConvertSelectionElement(from_handles, mesh, from_element, to_element);
-    // Write into to_range
-    for (const uint32_t h : new_handles) {
-        if (h >= to_range.Count) continue;
-        const uint32_t global_bit = to_range.Offset + h;
-        bits[global_bit >> 5] |= (1u << (global_bit & 31u));
-    }
-}
-
-std::unordered_set<uint32_t> GetSelectedVertices(const uint32_t *bits, MeshSelectionBitsetRange range, const Mesh &mesh, Element element) {
-    const auto handles = ScanBitsetRange(bits, range.Offset, range.Count);
-    if (element == Element::Vertex) return {handles.begin(), handles.end()};
-    return ConvertSelectionElement(handles, mesh, element, Element::Vertex);
+    return result;
 }
 
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_frozen) {

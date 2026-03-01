@@ -206,6 +206,7 @@ private:
     bool RenderPending{false}; // GPU render submitted but not yet waited on.
     bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
     bool ElementStatesDirty{false}; // Element state buffers updated by GPU compute; triggers a submit.
+    bool SelectionBitsDirty{false}; // Bitset written by Interact; ProcessComponentEvents dispatches the compute update.
     bool ShaderRecompileRequested{false};
 
     struct ElementRange {
@@ -243,6 +244,8 @@ private:
     void RenderElementSelectionPass(std::span<const ElementRange>, Element, bool write_bitset, uvec2 box_min = {}, uvec2 box_max = {}, vk::Semaphore signal_semaphore = {});
     void DispatchUpdateSelectionStates(std::span<const ElementRange>, Element); // Submits UpdateSelectionState.comp for each range and waits.
     void UpdateEditVertexPreviewStates(std::span<const ElementRange>, Element); // Keeps vertex selection state in sync for edit transform preview.
+    void ApplySelectionStateUpdate(std::span<const ElementRange>, Element); // Dispatch + preview + dirty in one call.
+    std::vector<ElementRange> GetBitsetRangesForSelected() const; // Build ElementRange list from selected mesh bitset ranges.
     void RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>, bool is_additive);
     std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, Element, uvec2 mouse_px);
     std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);

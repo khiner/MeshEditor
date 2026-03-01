@@ -711,12 +711,25 @@ void MeshStore::UpdateElementStates(
     }
 }
 
-void MeshStore::UpdateVertexStates(const Mesh &mesh, std::span<const uint32_t> selected_vertices) {
+void MeshStore::UpdateVertexStates(const Mesh &mesh, std::span<const uint32_t> handles, Element element) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto vertex_states = GetVertexStates(entry.Vertices);
     std::ranges::fill(vertex_states, uint8_t{0});
-    for (const auto vi : selected_vertices) {
+    const auto set_vertex = [&](uint32_t vi) {
         if (vi < vertex_states.size()) vertex_states[vi] |= ElementStateSelected;
+    };
+    if (element == Element::Vertex) {
+        for (const auto vi : handles) set_vertex(vi);
+    } else if (element == Element::Edge) {
+        for (const auto ei : handles) {
+            const auto heh = mesh.GetHalfedge(EH{ei}, 0);
+            set_vertex(*mesh.GetFromVertex(heh));
+            set_vertex(*mesh.GetToVertex(heh));
+        }
+    } else if (element == Element::Face) {
+        for (const auto fi : handles) {
+            for (const auto vh : mesh.fv_range(FH{fi})) set_vertex(*vh);
+        }
     }
 }
 
