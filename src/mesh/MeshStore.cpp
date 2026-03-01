@@ -711,28 +711,6 @@ void MeshStore::UpdateElementStates(
     }
 }
 
-void MeshStore::UpdateVertexStates(const Mesh &mesh, std::span<const uint32_t> handles, Element element) {
-    const auto &entry = Entries.at(mesh.GetStoreId());
-    auto vertex_states = GetVertexStates(entry.Vertices);
-    std::ranges::fill(vertex_states, uint8_t{0});
-    const auto set_vertex = [&](uint32_t vi) {
-        if (vi < vertex_states.size()) vertex_states[vi] |= ElementStateSelected;
-    };
-    if (element == Element::Vertex) {
-        for (const auto vi : handles) set_vertex(vi);
-    } else if (element == Element::Edge) {
-        for (const auto ei : handles) {
-            const auto heh = mesh.GetHalfedge(EH{ei}, 0);
-            set_vertex(*mesh.GetFromVertex(heh));
-            set_vertex(*mesh.GetToVertex(heh));
-        }
-    } else if (element == Element::Face) {
-        for (const auto fi : handles) {
-            for (const auto vh : mesh.fv_range(FH{fi})) set_vertex(*vh);
-        }
-    }
-}
-
 void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
@@ -752,6 +730,32 @@ void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::span<const uint
             const auto ei = *mesh.GetEdge(heh);
             edge_states[2 * ei] |= ElementStateActive;
             edge_states[2 * ei + 1] |= ElementStateActive;
+        }
+    }
+}
+
+void MeshStore::UpdateVertexStatesFromElements(const Mesh &mesh, std::span<const uint32_t> handles, Element element, std::optional<uint32_t> active_handle) {
+    const auto &entry = Entries.at(mesh.GetStoreId());
+    auto vertex_states = GetVertexStates(entry.Vertices);
+    std::ranges::fill(vertex_states, uint8_t{0});
+
+    if (element == Element::Face) {
+        for (const auto fi : handles) {
+            for (const auto vh : mesh.fv_range(FH{fi})) vertex_states[*vh] |= ElementStateSelected;
+        }
+        if (active_handle && *active_handle < mesh.FaceCount()) {
+            for (const auto vh : mesh.fv_range(FH{*active_handle})) vertex_states[*vh] |= ElementStateActive;
+        }
+    } else if (element == Element::Edge) {
+        for (const auto ei : handles) {
+            const auto hh = mesh.GetHalfedge(EH{ei}, 0);
+            vertex_states[*mesh.GetFromVertex(hh)] |= ElementStateSelected;
+            vertex_states[*mesh.GetToVertex(hh)] |= ElementStateSelected;
+        }
+        if (active_handle && *active_handle < mesh.EdgeCount()) {
+            const auto hh = mesh.GetHalfedge(EH{*active_handle}, 0);
+            vertex_states[*mesh.GetFromVertex(hh)] |= ElementStateActive;
+            vertex_states[*mesh.GetToVertex(hh)] |= ElementStateActive;
         }
     }
 }

@@ -982,8 +982,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (scene_selection::HasFrozenInstance(R, mesh_entity)) continue;
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
                 const auto vertex_states = Meshes->GetVertexStates(mesh.GetStoreId());
-                const bool any_selected_vertex = std::ranges::any_of(vertex_states, [](const auto state) { return (state & ElementStateSelected) != 0u; });
-                if (!any_selected_vertex) continue;
+                const bool any_selected = std::ranges::any_of(vertex_states, [](const auto s) { return (s & ElementStateSelected) != 0u; });
+                if (!any_selected) continue;
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &wt = R.get<const WorldTransform>(instance_entity);
                 const auto wt_rot = Vec4ToQuat(wt.Rotation);
@@ -2575,26 +2575,21 @@ void Scene::DispatchUpdateSelectionStates(std::span<const ElementRange> ranges, 
     WaitFor(*OneShotFence, Vk.Device);
 }
 
-void Scene::UpdateEditVertexPreviewStates(std::span<const ElementRange> ranges, Element element) {
-    if (ranges.empty() || element == Element::None || element == Element::Vertex) return;
-    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
-    for (const auto &range : ranges) {
-        const auto &mesh = R.get<const Mesh>(range.MeshEntity);
-        const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
-        if (element == Element::Face) {
-            std::optional<uint32_t> active_face;
-            if (const auto *active = R.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
-                active_face = active->Handle;
-            }
-            Meshes->UpdateEdgeStatesFromFaces(mesh, selected_handles, active_face);
-        }
-        Meshes->UpdateVertexStates(mesh, selected_handles, element);
-    }
-}
-
 void Scene::ApplySelectionStateUpdate(std::span<const ElementRange> ranges, Element element) {
     DispatchUpdateSelectionStates(ranges, element);
-    UpdateEditVertexPreviewStates(ranges, element);
+    if (element == Element::Face || element == Element::Edge) {
+        const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+        for (const auto &range : ranges) {
+            const auto &mesh = R.get<const Mesh>(range.MeshEntity);
+            const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
+            std::optional<uint32_t> active_handle;
+            if (const auto *active = R.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
+                active_handle = active->Handle;
+            }
+            if (element == Element::Face) Meshes->UpdateEdgeStatesFromFaces(mesh, selected_handles, active_handle);
+            Meshes->UpdateVertexStatesFromElements(mesh, selected_handles, element, active_handle);
+        }
+    }
     ElementStatesDirty = true;
 }
 

@@ -66,7 +66,10 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
             for (const auto fh : mesh.faces()) {
                 bool all_selected = true;
                 for (const auto heh : mesh.fh_range(fh)) {
-                    if (!handle_set.contains(*mesh.GetEdge(heh))) { all_selected = false; break; }
+                    if (!handle_set.contains(*mesh.GetEdge(heh))) {
+                        all_selected = false;
+                        break;
+                    }
                 }
                 if (all_selected) result.emplace_back(*fh);
             }
@@ -84,7 +87,10 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
             for (const auto fh : mesh.faces()) {
                 bool all_selected = true;
                 for (const auto vh : mesh.fv_range(fh)) {
-                    if (!handle_set.contains(*vh)) { all_selected = false; break; }
+                    if (!handle_set.contains(*vh)) {
+                        all_selected = false;
+                        break;
+                    }
                 }
                 if (all_selected) result.emplace_back(*fh);
             }

@@ -243,8 +243,7 @@ private:
     void RenderEditSelectionPass(std::span<const ElementRange>, Element, vk::Semaphore signal_semaphore = {});
     void RenderElementSelectionPass(std::span<const ElementRange>, Element, bool write_bitset, uvec2 box_min = {}, uvec2 box_max = {}, vk::Semaphore signal_semaphore = {});
     void DispatchUpdateSelectionStates(std::span<const ElementRange>, Element); // Submits UpdateSelectionState.comp for each range and waits.
-    void UpdateEditVertexPreviewStates(std::span<const ElementRange>, Element); // Keeps vertex selection state in sync for edit transform preview.
-    void ApplySelectionStateUpdate(std::span<const ElementRange>, Element); // Dispatch + preview + dirty in one call.
+    void ApplySelectionStateUpdate(std::span<const ElementRange>, Element); // Dispatch + GPU/CPU state update + dirty in one call.
     std::vector<ElementRange> GetBitsetRangesForSelected() const; // Build ElementRange list from selected mesh bitset ranges.
     void RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>, bool is_additive);
     std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, Element, uvec2 mouse_px);

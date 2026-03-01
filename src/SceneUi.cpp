@@ -701,8 +701,6 @@ void Scene::RenderOverlay() {
             for (const auto &[mesh_entity, instance_entity] : edit_transform_instances) {
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
                 const auto vertex_states = Meshes->GetVertexStates(mesh.GetStoreId());
-                const bool any_selected_vertex = std::ranges::any_of(vertex_states, [](const auto state) { return (state & ElementStateSelected) != 0u; });
-                if (!any_selected_vertex) continue;
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &wt = R.get<const WorldTransform>(instance_entity);
                 for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
