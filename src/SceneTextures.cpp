@@ -713,7 +713,12 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const Environment
 
 TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots, std::string_view lut_path, std::string_view name) {
     const auto encoded = File::Read(std::filesystem::path{lut_path});
-    auto texture = CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, std::as_bytes(std::span{encoded}), lut_path, std::string{name}, TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge, SamplerConfig{.UsesMipmaps = false});
+    auto texture = CreateTextureEntryFromEncoded(
+        vk, ctx, command_pool, one_shot_fence, slots,
+        std::as_bytes(std::span{encoded}), lut_path, std::string{name},
+        TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
+        {.MinFilter = vk::Filter::eLinear, .MagFilter = vk::Filter::eLinear, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = false}
+    );
     if (!texture) throw std::runtime_error(std::format("Failed to initialize default LUT texture '{}': {}", lut_path, texture.error()));
     return std::move(*texture);
 }

@@ -4,6 +4,7 @@
 #include "gltf/Image.h"
 #include "gpu/IblSamplers.h"
 #include "vulkan/Image.h"
+#include "vulkan/Slots.h"
 
 #include <expected>
 #include <filesystem>
@@ -17,23 +18,23 @@ struct BufferContext;
 } // namespace mvk
 
 struct TextureEntry {
-    mvk::ImageResource Image{};
-    vk::UniqueSampler Sampler{};
-    uint32_t SamplerSlot{InvalidSlot};
-    uint32_t Width{0}, Height{0}, MipLevels{1};
+    mvk::ImageResource Image;
+    vk::UniqueSampler Sampler;
+    uint32_t SamplerSlot;
+    uint32_t Width, Height, MipLevels;
     std::string Name;
 };
 
 struct TextureStore {
     std::vector<TextureEntry> Textures;
-    uint32_t WhiteTextureSlot{InvalidSlot};
+    uint32_t WhiteTextureSlot;
 };
 
 struct CubemapEntry {
-    mvk::ImageResource Image{};
-    vk::UniqueSampler Sampler{};
-    uint32_t SamplerSlot{InvalidSlot};
-    uint32_t Size{0}, MipLevels{1};
+    mvk::ImageResource Image;
+    vk::UniqueSampler Sampler;
+    uint32_t SamplerSlot;
+    uint32_t Size, MipLevels;
     std::string Name;
 };
 
@@ -50,22 +51,22 @@ struct HdriEntry {
 };
 
 struct EnvironmentSelection {
-    IblSamplers Ibl{};
+    IblSamplers Ibl;
     std::string Name;
 };
 
 struct EnvironmentStore {
     std::vector<HdriEntry> Hdris;
-    uint32_t ActiveHdriIndex{0};
+    uint32_t ActiveHdriIndex;
     TextureEntry BrdfLut, SheenELut, CharlieLut;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
     EnvironmentSelection SceneWorld, StudioWorld;
 };
 
 struct SamplerConfig {
-    vk::Filter MinFilter{vk::Filter::eLinear}, MagFilter{vk::Filter::eLinear};
-    vk::SamplerMipmapMode MipmapMode{vk::SamplerMipmapMode::eLinear};
-    bool UsesMipmaps{true};
+    vk::Filter MinFilter, MagFilter;
+    vk::SamplerMipmapMode MipmapMode;
+    bool UsesMipmaps;
 };
 
 enum class TextureColorSpace : uint8_t {
@@ -83,7 +84,7 @@ mvk::ImageResource RenderBitmapToImage(
 );
 TextureEntry CreateTextureEntry(
     const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, DescriptorSlots &,
-    std::span<const std::byte> pixels, uint32_t w, uint32_t h, std::string name,
+    std::span<const std::byte> pixels, uint32_t width, uint32_t height, std::string name,
     TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
 );
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
