@@ -32,6 +32,7 @@
 #include <entt/entity/registry.hpp>
 
 #include "Variant.h"
+#include <bit>
 #include <iostream>
 
 using std::ranges::any_of, std::ranges::all_of, std::ranges::find, std::ranges::fold_left, std::ranges::to;
@@ -2508,9 +2509,12 @@ void Scene::RenderElementSelectionPass(
 
     if (write_bitset) {
         // Ensure fragment shader writes to the bitset are visible to the host after the fence.
+        // Scope the barrier to the written range.
+        const auto element_count = fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
+        const vk::DeviceSize bitset_bytes = ((element_count + 31) / 32) * sizeof(uint32_t);
         cb.pipelineBarrier(
             vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
-            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Buffers->BoxSelectBitsetBuffer, 0, VK_WHOLE_SIZE},
+            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Buffers->BoxSelectBitsetBuffer, 0, bitset_bytes},
             {}
         );
     }
@@ -2550,16 +2554,23 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
     RenderElementSelectionPass(ranges, element, true, box_min, box_max);
 
+    // Scan only the bitset words covering each range. Zero words are skipped entirely;
+    // the bounds check handles partial first/last words shared between adjacent ranges.
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
     for (size_t i = 0; i < ranges.size(); ++i) {
         const auto &range = ranges[i];
-        results[i] = iota(range.Offset, range.Offset + range.Count) //
-            | filter([&](uint32_t idx) {
-                         const uint32_t mask = 1u << (idx % 32);
-                         return (bits[idx / 32] & mask) != 0;
-                     }) //
-            | transform([offset = range.Offset](uint32_t idx) { return idx - offset; }) //
-            | to<std::vector>();
+        auto &result = results[i];
+        const uint32_t first_word = range.Offset / 32, last_word = (range.Offset + range.Count + 31) / 32;
+        for (uint32_t w = first_word; w < last_word; ++w) {
+            uint32_t word = bits[w];
+            while (word) {
+                const uint32_t global_idx = w * 32 + std::countr_zero(word);
+                if (global_idx >= range.Offset && global_idx < range.Offset + range.Count) {
+                    result.emplace_back(global_idx - range.Offset);
+                }
+                word &= word - 1;
+            }
+        }
     }
     return results;
 }
