@@ -15,7 +15,8 @@ struct SceneBuffers;
 
 // Material buffer accessors (SceneBuffers must be complete at call sites).
 uint32_t GetMaterialCount(const SceneBuffers &);
-PBRMaterial GetMaterial(const SceneBuffers &, uint32_t index);
+const PBRMaterial &GetMaterial(const SceneBuffers &, uint32_t index);
+PBRMaterial &GetMaterial(SceneBuffers &, uint32_t index);
 void SetMaterial(SceneBuffers &, uint32_t index, const PBRMaterial &);
 uint32_t AppendMaterial(SceneBuffers &, const PBRMaterial &);
 void SetMaterialCount(SceneBuffers &, uint32_t count);

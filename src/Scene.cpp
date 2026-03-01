@@ -434,7 +434,8 @@ std::optional<uint32_t> FindNearestPickedElement(
 } // namespace
 
 uint32_t GetMaterialCount(const SceneBuffers &buffers) { return buffers.MaterialBuffer.UsedSize / sizeof(PBRMaterial); }
-PBRMaterial GetMaterial(const SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<const PBRMaterial *>(buffers.MaterialBuffer.GetMappedData().data())[index]; }
+const PBRMaterial &GetMaterial(const SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<const PBRMaterial *>(buffers.MaterialBuffer.GetData().data())[index]; }
+PBRMaterial &GetMaterial(SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<PBRMaterial *>(buffers.MaterialBuffer.GetMappedData().data())[index]; }
 void SetMaterial(SceneBuffers &buffers, uint32_t index, const PBRMaterial &material) { buffers.MaterialBuffer.Update(as_bytes(material), vk::DeviceSize(index) * sizeof(PBRMaterial)); }
 uint32_t AppendMaterial(SceneBuffers &buffers, const PBRMaterial &material) {
     const auto index = GetMaterialCount(buffers);
@@ -563,8 +564,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<ViewportTheme>()
         .on_update<ViewportTheme>();
     R.storage<entt::reactive>(changes::Materials)
-        .on_construct<MaterialEdit>()
-        .on_update<MaterialEdit>();
+        .on_construct<MaterialDirty>()
+        .on_update<MaterialDirty>();
     R.storage<entt::reactive>(changes::SceneView)
         .on_construct<ViewCamera>()
         .on_update<ViewCamera>()
@@ -950,9 +951,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::Submit);
     }
     if (!R.storage<entt::reactive>(changes::Materials).empty()) {
-        if (const auto *edit = R.try_get<const MaterialEdit>(SceneEntity);
-            edit && edit->Index < GetMaterialCount(*Buffers)) {
-            SetMaterial(*Buffers, edit->Index, edit->Value);
+        if (const auto *dirty = R.try_get<const MaterialDirty>(SceneEntity);
+            dirty && dirty->Index < GetMaterialCount(*Buffers)) {
+            SetMaterial(*Buffers, dirty->Index, GetMaterial(*Buffers, dirty->Index));
         }
         request(RenderRequest::Submit);
     }
@@ -1192,7 +1193,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     DestroyTracker->Storage.clear();
     R.clear<MeshGeometryDirty>();
     R.clear<MeshMaterialAssignment>();
-    R.clear<MaterialEdit>();
+    R.clear<MaterialDirty>();
     R.clear<SubmitDirty>();
     R.clear<LightWireframeDirty>();
 

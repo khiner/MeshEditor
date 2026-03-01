@@ -1043,26 +1043,24 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 EndChild();
                 if (slot_selection_changed) R.patch<MeshMaterialSlotSelection>(active_mesh_entity, [](auto &) {});
 
-                uint32_t assigned_material = std::min(primitive_materials[slot_selection.PrimitiveIndex], material_count - 1);
-                if (const auto *pending = R.try_get<const MeshMaterialAssignment>(active_mesh_entity);
-                    pending && pending->PrimitiveIndex == slot_selection.PrimitiveIndex) {
-                    assigned_material = std::min(pending->MaterialIndex, material_count - 1);
-                }
-                int assigned_material_i = int(assigned_material);
-                const auto assigned_material_name = material_name(assigned_material);
+                const auto *pending_assignment = R.try_get<const MeshMaterialAssignment>(active_mesh_entity);
+                uint32_t material_index = pending_assignment && pending_assignment->PrimitiveIndex == slot_selection.PrimitiveIndex ?
+                    pending_assignment->MaterialIndex :
+                    primitive_materials[slot_selection.PrimitiveIndex];
+                material_index = std::min(material_index, material_count - 1);
+                const auto assigned_material_name = material_name(material_index);
                 if (BeginCombo("Assigned material", assigned_material_name.c_str())) {
-                    for (int i = 0; i < int(material_count); ++i) {
-                        const auto option_name = material_name(uint32_t(i));
-                        if (Selectable(option_name.c_str(), assigned_material_i == i)) {
-                            assigned_material_i = i;
-                            assigned_material = uint32_t(i);
-                            R.emplace_or_replace<MeshMaterialAssignment>(active_mesh_entity, slot_selection.PrimitiveIndex, uint32_t(i));
+                    for (uint32_t i = 0; i < material_count; ++i) {
+                        const auto option_name = material_name(i);
+                        if (Selectable(option_name.c_str(), material_index == i)) {
+                            material_index = i;
+                            R.emplace_or_replace<MeshMaterialAssignment>(active_mesh_entity, slot_selection.PrimitiveIndex, i);
                         }
                     }
                     EndCombo();
                 }
 
-                auto material = GetMaterial(*Buffers, assigned_material);
+                auto &material = GetMaterial(*Buffers, material_index);
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
@@ -1180,7 +1178,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
-                if (material_changed) R.emplace_or_replace<MaterialEdit>(SceneEntity, MaterialEdit{.Index = assigned_material, .Value = material});
+                if (material_changed) R.emplace_or_replace<MaterialDirty>(SceneEntity, material_index);
             }
         }
     }

@@ -30,6 +30,9 @@ struct MeshMaterialSlotSelection {
 // Generic tag for events that only require command buffer submission (not re-record).
 struct SubmitDirty {};
 struct LightWireframeDirty {};
+struct MaterialDirty {
+    uint32_t Index{0};
+};
 
 struct LightIndex {
     uint32_t Value{0}; // Index into SceneBuffers::LightBuffer (PunctualLight[])
@@ -43,9 +46,4 @@ struct PendingTransform {
     vec3 P{}; // Translation delta
     quat R{1, 0, 0, 0}; // Rotation delta
     vec3 S{1, 1, 1}; // Scale delta
-};
-
-struct MaterialEdit {
-    uint32_t Index{0};
-    PBRMaterial Value{};
 };
