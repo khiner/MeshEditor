@@ -21,6 +21,7 @@
 #include "mesh/Primitives.h"
 #include "numeric/rect.h"
 
+#include <algorithm>
 #include <entt/entity/registry.hpp>
 #include <imgui_internal.h>
 
@@ -1421,7 +1422,7 @@ void Scene::RenderControls() {
             const auto render_pbr_controls = [&](PBRViewportLighting &lighting, bool &lighting_changed, const char *id) {
                 PushID(id);
                 if (Button("Reset")) {
-                    lighting = {false, false, 1.f, 0.f};
+                    lighting = {false, false, 1.f, 0.f, 0.5f, 0.f};
                     lighting_changed = true;
                 }
                 lighting_changed |= Checkbox("Scene lights", &lighting.UseSceneLights);
@@ -1443,6 +1444,7 @@ void Scene::RenderControls() {
                     }
                     lighting_changed |= SliderFloat("Intensity", &lighting.EnvIntensity, 0.f, 2.f, "%.2f");
                     lighting_changed |= SliderFloat("Rotation", &lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
+                    lighting_changed |= SliderFloat("Blur", &lighting.BackgroundBlur, 0.f, 1.f, "%.2f");
                     lighting_changed |= SliderFloat("World opacity", &lighting.WorldOpacity, 0.f, 1.f, "%.2f");
                 }
                 PopID();
@@ -1523,10 +1525,12 @@ void Scene::RenderControls() {
             if (settings_changed) R.patch<SceneSettings>(SceneEntity, [](auto &) {});
             if (mat_preview_changed) {
                 mat_preview_lighting.EnvIntensity = std::max(0.f, mat_preview_lighting.EnvIntensity);
+                mat_preview_lighting.BackgroundBlur = std::clamp(mat_preview_lighting.BackgroundBlur, 0.f, 1.f);
                 R.patch<MaterialPreviewLighting>(SceneEntity, [](auto &) {});
             }
             if (rendered_changed) {
                 rendered_lighting.EnvIntensity = std::max(0.f, rendered_lighting.EnvIntensity);
+                rendered_lighting.BackgroundBlur = std::clamp(rendered_lighting.BackgroundBlur, 0.f, 1.f);
                 R.patch<RenderedLighting>(SceneEntity, [](auto &) {});
             }
             EndTabItem();

@@ -24,8 +24,10 @@ void main() {
     const vec4 far_world = inv_vp * vec4(InNDC, 1.0, 1.0);
     const vec3 world_dir = normalize(far_world.xyz / far_world.w - SceneViewUBO.CameraPosition);
     const vec3 env_dir = EnvRotation() * world_dir;
+    const uint mip_count = max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u);
+    const float lod = clamp(SceneViewUBO.BackgroundBlur, 0.0, 1.0) * float(mip_count - 1u);
     const vec3 linear = textureLod(
-        CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SpecularEnvSamplerSlot)], env_dir, 0.0
+        CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SpecularEnvSamplerSlot)], env_dir, lod
     ).rgb * SceneViewUBO.EnvIntensity;
     OutColor = vec4(linearTosRGB(toneMapPBRNeutral(linear)), SceneViewUBO.WorldOpacity);
 }

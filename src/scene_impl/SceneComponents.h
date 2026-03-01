@@ -16,6 +16,7 @@ struct PBRViewportLighting {
     bool UseSceneWorld;
     float EnvIntensity;
     float EnvRotationDegrees;
+    float BackgroundBlur{0.5f};
     float WorldOpacity{0.f};
 };
 

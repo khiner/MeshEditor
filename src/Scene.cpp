@@ -1034,6 +1034,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto &active_environment = use_scene_world ? Environments->SceneWorld : Environments->StudioWorld;
         const float env_intensity = use_scene_world ? 1.f : active_lighting.EnvIntensity;
         const float env_rotation_radians = use_scene_world ? 0.f : active_lighting.EnvRotationDegrees * (Pi / 180.f);
+        const float background_blur = use_scene_world ? 0.f : active_lighting.BackgroundBlur;
         const float world_opacity = is_pbr_mode ? (use_scene_world ? 1.f : active_lighting.WorldOpacity) : 0.f;
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
@@ -1051,6 +1052,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
             .EnvIntensity = env_intensity,
             .EnvRotationRadians = env_rotation_radians,
+            .BackgroundBlur = background_blur,
             .WorldOpacity = world_opacity,
             .Ibl = active_environment.Ibl,
             .InteractionMode = interaction_mode,
