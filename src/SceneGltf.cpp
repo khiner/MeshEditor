@@ -1,4 +1,6 @@
+#include "Armature.h"
 #include "MeshInstance.h"
+#include "NodeTransformAnimation.h"
 #include "Scene.h"
 #include "SceneMaterials.h"
 #include "SceneTextures.h"
@@ -9,6 +11,7 @@
 
 #include <entt/entity/registry.hpp>
 #include <iostream>
+#include <unordered_set>
 
 std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltfScene(const std::filesystem::path &path) {
     auto scene = gltf::LoadScene(path);
@@ -240,6 +243,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     object_entities_by_node.reserve(scene->Objects.size());
     std::unordered_map<uint32_t, std::vector<entt::entity>> skinned_mesh_instances_by_skin;
     skinned_mesh_instances_by_skin.reserve(scene->Skins.size());
+    std::unordered_map<uint32_t, entt::entity> armature_data_entities_by_skin;
+    armature_data_entities_by_skin.reserve(scene->Skins.size());
 
     entt::entity first_object_entity = entt::null,
                  first_mesh_object_entity = entt::null,
@@ -272,7 +277,12 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
             for (const auto extra_entity : {extras.Lines, extras.Points}) {
                 if (extra_entity == entt::null) continue;
-                AddMeshInstance(extra_entity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
+                const auto extra_instance = AddMeshInstance(
+                    extra_entity,
+                    {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
+                );
+                // Keep line/point primitive instances in lockstep with the primary glTF object transform.
+                SetParent(R, extra_instance, object_entity);
             }
         }
 
@@ -301,6 +311,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     for (const auto &skin : scene->Skins) {
         const auto armature_data_entity = R.create();
         auto &armature = R.emplace<Armature>(armature_data_entity);
+        armature_data_entities_by_skin[skin.SkinIndex] = armature_data_entity;
 
         ArmatureImportedSkin imported_skin{
             .SkinIndex = skin.SkinIndex,
@@ -391,40 +402,18 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         }
     }
 
-    // Resolve animation data: map glTF animation channels to bone indices
-    for (auto &anim_clip : scene->Animations) {
-        for (const auto &skin : scene->Skins) {
-            entt::entity target_data_entity = entt::null;
-            for (const auto [entity, ad] : R.view<Armature>().each()) {
-                if (ad.ImportedSkin && ad.ImportedSkin->SkinIndex == skin.SkinIndex) {
-                    target_data_entity = entity;
-                    break;
-                }
-            }
-            if (target_data_entity == entt::null) continue;
-
-            const auto &ad = R.get<const Armature>(target_data_entity);
-            AnimationClip resolved_clip{.Name = std::move(anim_clip.Name), .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}};
-            for (auto &ch : anim_clip.Channels) {
-                if (const auto bone_id = ad.FindBoneIdByJointNodeIndex(ch.TargetNodeIndex)) {
-                    if (const auto bone_index = ad.FindBoneIndex(*bone_id)) {
-                        resolved_clip.Channels.emplace_back(AnimationChannel{
-                            .BoneIndex = *bone_index,
-                            .Target = ch.Target,
-                            .Interp = ch.Interp,
-                            .TimesSeconds = std::move(ch.TimesSeconds),
-                            .Values = std::move(ch.Values),
-                        });
-                    }
-                }
-            }
-            if (!resolved_clip.Channels.empty()) {
-                if (auto *existing = R.try_get<ArmatureAnimation>(target_data_entity)) {
-                    existing->Clips.emplace_back(std::move(resolved_clip));
-                } else {
-                    R.emplace<ArmatureAnimation>(target_data_entity, ArmatureAnimation{.Clips = {std::move(resolved_clip)}});
-                }
-            }
+    std::unordered_set<uint32_t> joint_node_indices;
+    for (const auto &skin : scene->Skins) {
+        for (const auto &joint : skin.Joints) joint_node_indices.emplace(joint.JointNodeIndex);
+    }
+    std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, uint32_t>>> armature_targets_by_joint_node;
+    for (const auto &entry : armature_data_entities_by_skin) {
+        const auto armature_data_entity = entry.second;
+        const auto &armature = R.get<const Armature>(armature_data_entity);
+        for (const auto &[joint_node_index, bone_id] : armature.JointNodeIndexToBoneId) {
+            const auto bone_index = armature.FindBoneIndex(bone_id);
+            if (!bone_index) continue;
+            armature_targets_by_joint_node[joint_node_index].emplace_back(armature_data_entity, *bone_index);
         }
     }
 
@@ -457,34 +446,99 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         morph_instance_by_node[object.NodeIndex] = instance_entity;
     }
 
-    // Resolve morph weight animation channels
-    for (auto &anim_clip : scene->Animations) {
-        // Group weight channels by target node
-        std::unordered_map<uint32_t, std::vector<gltf::AnimationChannel *>> weight_channels_by_node;
-        for (auto &ch : anim_clip.Channels) {
-            if (ch.Target == AnimationPath::Weights) weight_channels_by_node[ch.TargetNodeIndex].emplace_back(&ch);
-        }
-        for (auto &[node_index, channels] : weight_channels_by_node) {
-            const auto inst_it = morph_instance_by_node.find(node_index);
-            if (inst_it == morph_instance_by_node.end()) continue;
-            const auto instance_entity = inst_it->second;
+    // Resolve object/node transform animations (empties, meshes, cameras, lights).
+    // Channels targeting skin joints are handled by ArmatureAnimation and skipped here.
+    std::unordered_map<entt::entity, std::pair<Transform, Transform>> node_anim_bindings;
+    node_anim_bindings.reserve(object_entities_by_node.size());
+    for (const auto &[node_index, object_entity] : object_entities_by_node) {
+        if (!R.valid(object_entity)) continue;
+        const auto node_it = scene_nodes_by_index.find(node_index);
+        if (node_it == scene_nodes_by_index.end()) continue;
 
-            MorphWeightClip resolved_clip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}};
-            for (auto *ch : channels) {
-                resolved_clip.Channels.emplace_back(MorphWeightChannel{
-                    .Interp = ch->Interp,
-                    .TimesSeconds = std::move(ch->TimesSeconds),
-                    .Values = std::move(ch->Values),
-                });
-            }
-            if (!resolved_clip.Channels.empty()) {
-                if (auto *existing = R.try_get<MorphWeightAnimation>(instance_entity)) {
-                    existing->Clips.emplace_back(std::move(resolved_clip));
-                } else {
-                    R.emplace<MorphWeightAnimation>(instance_entity, MorphWeightAnimation{.Clips = {std::move(resolved_clip)}});
-                }
+        Transform parent_bind_world{};
+        if (const auto parent_node_index = node_it->second->ParentNodeIndex) {
+            if (const auto parent_it = scene_nodes_by_index.find(*parent_node_index); parent_it != scene_nodes_by_index.end()) {
+                parent_bind_world = parent_it->second->WorldTransform;
             }
         }
+        node_anim_bindings.emplace(object_entity, std::pair{node_it->second->LocalTransform, parent_bind_world});
+    }
+
+    const auto append_armature_clip = [&](entt::entity target_data_entity, AnimationClip &&resolved_clip) {
+        if (resolved_clip.Channels.empty()) return;
+        if (auto *existing = R.try_get<ArmatureAnimation>(target_data_entity)) {
+            existing->Clips.emplace_back(std::move(resolved_clip));
+        } else {
+            R.emplace<ArmatureAnimation>(target_data_entity, ArmatureAnimation{.Clips = {std::move(resolved_clip)}});
+        }
+    };
+    const auto append_morph_clip = [&](entt::entity instance_entity, MorphWeightClip &&resolved_clip) {
+        if (resolved_clip.Channels.empty()) return;
+        if (auto *existing = R.try_get<MorphWeightAnimation>(instance_entity)) {
+            existing->Clips.emplace_back(std::move(resolved_clip));
+        } else {
+            R.emplace<MorphWeightAnimation>(instance_entity, MorphWeightAnimation{.Clips = {std::move(resolved_clip)}});
+        }
+    };
+    const auto append_node_clip = [&](entt::entity object_entity, AnimationClip &&resolved_clip) {
+        if (resolved_clip.Channels.empty()) return;
+        if (auto *existing = R.try_get<NodeTransformAnimation>(object_entity)) {
+            existing->Clips.emplace_back(std::move(resolved_clip));
+            return;
+        }
+        const auto binding_it = node_anim_bindings.find(object_entity);
+        if (binding_it == node_anim_bindings.end()) return;
+        R.emplace<NodeTransformAnimation>(
+            object_entity,
+            NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0, .RestLocal = binding_it->second.first, .ParentBindWorld = binding_it->second.second}
+        );
+    };
+
+    // Resolve armature, morph-weight, and node TRS channels in one pass per source clip.
+    for (const auto &anim_clip : scene->Animations) {
+        std::unordered_map<entt::entity, AnimationClip> armature_clips_by_entity;
+        std::unordered_map<entt::entity, MorphWeightClip> morph_clips_by_entity;
+        std::unordered_map<entt::entity, AnimationClip> node_clips_by_entity;
+        for (const auto &ch : anim_clip.Channels) {
+            if (ch.Target == AnimationPath::Weights) {
+                const auto inst_it = morph_instance_by_node.find(ch.TargetNodeIndex);
+                if (inst_it == morph_instance_by_node.end()) continue;
+                auto &resolved_clip = morph_clips_by_entity
+                                          .try_emplace(inst_it->second, MorphWeightClip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}})
+                                          .first->second;
+                resolved_clip.Channels.emplace_back(MorphWeightChannel{
+                    .Interp = ch.Interp,
+                    .TimesSeconds = ch.TimesSeconds,
+                    .Values = ch.Values,
+                });
+                continue;
+            }
+
+            if (const auto armature_it = armature_targets_by_joint_node.find(ch.TargetNodeIndex);
+                armature_it != armature_targets_by_joint_node.end()) {
+                for (const auto &[target_data_entity, bone_index] : armature_it->second) {
+                    auto &resolved_clip = armature_clips_by_entity
+                                              .try_emplace(target_data_entity, AnimationClip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}})
+                                              .first->second;
+                    resolved_clip.Channels.emplace_back(AnimationChannel{.BoneIndex = bone_index, .Target = ch.Target, .Interp = ch.Interp, .TimesSeconds = ch.TimesSeconds, .Values = ch.Values});
+                }
+                continue;
+            }
+
+            if (joint_node_indices.contains(ch.TargetNodeIndex)) continue;
+
+            const auto object_it = object_entities_by_node.find(ch.TargetNodeIndex);
+            if (object_it == object_entities_by_node.end() || !R.valid(object_it->second)) continue;
+
+            auto &resolved_clip = node_clips_by_entity
+                                      .try_emplace(object_it->second, AnimationClip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}})
+                                      .first->second;
+            resolved_clip.Channels.emplace_back(AnimationChannel{.BoneIndex = 0, .Target = ch.Target, .Interp = ch.Interp, .TimesSeconds = ch.TimesSeconds, .Values = ch.Values});
+        }
+
+        for (auto &[target_data_entity, resolved_clip] : armature_clips_by_entity) append_armature_clip(target_data_entity, std::move(resolved_clip));
+        for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) append_morph_clip(instance_entity, std::move(resolved_clip));
+        for (auto &[object_entity, resolved_clip] : node_clips_by_entity) append_node_clip(object_entity, std::move(resolved_clip));
     }
 
     { // Get timeline range from imported animation durations
@@ -493,6 +547,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
         for (const auto [_, anim] : R.view<const MorphWeightAnimation>().each()) {
+            for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
+        }
+        for (const auto [_, anim] : R.view<const NodeTransformAnimation>().each()) {
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
         if (max_dur > 0) R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = int(std::ceil(max_dur * tl.Fps)); });

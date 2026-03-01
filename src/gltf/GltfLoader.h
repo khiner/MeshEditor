@@ -12,7 +12,7 @@
 
 #pragma once
 
-#include "Armature.h"
+#include "AnimationData.h"
 #include "Camera.h"
 #include "Image.h"
 #include "Transform.h"

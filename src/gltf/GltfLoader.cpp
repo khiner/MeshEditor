@@ -1488,13 +1488,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
 
             if (!times.empty()) max_time = std::max(max_time, times.back());
 
-            clip.Channels.emplace_back(AnimationChannel{
-                .TargetNodeIndex = uint32_t(*channel.nodeIndex),
-                .Target = target_spec->Path,
-                .Interp = interp,
-                .TimesSeconds = std::move(times),
-                .Values = std::move(values),
-            });
+            clip.Channels.emplace_back(AnimationChannel{.TargetNodeIndex = uint32_t(*channel.nodeIndex), .Target = target_spec->Path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
         }
 
         clip.DurationSeconds = max_time;

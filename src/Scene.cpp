@@ -11,6 +11,7 @@
 #include "File.h"
 #include "MeshComponents.h"
 #include "MeshInstance.h"
+#include "NodeTransformAnimation.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "Shader.h"
@@ -281,6 +282,10 @@ vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_
     const auto local_pos = ComputeElementLocalPosition(mesh, element, handle);
     const auto &wt = r.get<WorldTransform>(instance_entity);
     return {wt.Position + glm::rotate(Vec4ToQuat(wt.Rotation), wt.Scale * local_pos)};
+}
+
+Transform ComposeWorldTransform(const Transform &parent, const Transform &local) {
+    return {.P = parent.P + glm::rotate(parent.R, parent.S * local.P), .R = glm::normalize(parent.R * local.R), .S = parent.S * local.S};
 }
 
 struct EditTransformContext {
@@ -1157,6 +1162,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (tl.CurrentFrame != LastEvaluatedFrame) {
             LastEvaluatedFrame = tl.CurrentFrame;
             const float eval_seconds = float(tl.CurrentFrame) / tl.Fps;
+            bool request_rerecord = false;
             for (auto [entity, anim, pose_state, armature] :
                  R.view<const ArmatureAnimation, ArmaturePoseState, Armature>().each()) {
                 if (anim.Clips.empty() || anim.ActiveClipIndex >= anim.Clips.size()) continue;
@@ -1167,9 +1173,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
                 auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
                 ComputeDeformMatrices(armature, pose_state.BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
-                request(RenderRequest::ReRecord);
+                request_rerecord = true;
             }
-
             // Evaluate morph weight animations
             for (auto [entity, morph_anim, morph_state, mi] :
                  R.view<const MorphWeightAnimation, MorphWeightState, const MeshInstance>().each()) {
@@ -1184,8 +1189,19 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 // Write to GPU
                 auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
                 std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
-                request(RenderRequest::ReRecord);
+                request_rerecord = true;
             }
+            // Evaluate glTF node transform animations (empties/meshes/cameras/lights).
+            for (auto [entity, node_anim] : R.view<const NodeTransformAnimation>().each()) {
+                if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
+                const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
+                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+                std::array<Transform, 1> local_pose{node_anim.RestLocal};
+                EvaluateAnimation(clip, clip_time, local_pose);
+                SetTransform(R, entity, ComposeWorldTransform(node_anim.ParentBindWorld, local_pose.front()));
+                request_rerecord = true;
+            }
+            if (request_rerecord) request(RenderRequest::ReRecord);
         }
     }
 
