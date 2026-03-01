@@ -60,7 +60,8 @@ constexpr uint32_t
 struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
     static constexpr uint32_t MaxSelectableElements{10'000'000};
-    static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableElements + 31) / 32};
+    static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
+    static constexpr uint32_t SelectionBitsetWords{(MaxSelectableElements + 31) / 32};
     static constexpr uint32_t ElementPickGroupSize{256};
     static constexpr uint32_t ElementPickGroupCount{(ElementPickPixelCount + ElementPickGroupSize - 1) / ElementPickGroupSize};
     static constexpr uint32_t SelectionNodesPerPixel{10};
@@ -86,9 +87,11 @@ struct SceneBuffers {
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ObjectPickKeyBuffer{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ElementPickCandidateBuffer{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          BoxSelectBitsetBuffer{Ctx, BoxSelectBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
+          ObjectPickSeenBitsetBuffer{Ctx, ObjectPickBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          SelectionBitsetBuffer{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
 
-    vk::DescriptorBufferInfo GetSelectionBitsetDescriptor() const { return {*BoxSelectBitsetBuffer, 0, BoxSelectBitsetWords * sizeof(uint32_t)}; }
+    vk::DescriptorBufferInfo GetSelectionBitsetDescriptor() const { return {*SelectionBitsetBuffer, 0, SelectionBitsetWords * sizeof(uint32_t)}; }
+    vk::DescriptorBufferInfo GetObjectPickSeenBitsetDescriptor() const { return {*ObjectPickSeenBitsetBuffer, 0, ObjectPickBitsetWords * sizeof(uint32_t)}; }
 
     SlottedRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
         auto &index_buffer = GetIndexBuffer(index_kind);
@@ -160,5 +163,5 @@ struct SceneBuffers {
     BufferArena<float> MorphWeightBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer};
     BufferArena<uint8_t> VertexClassBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexClassBuffer};
     // CPU readback buffers (host-visible)
-    mvk::Buffer SelectionCounterBuffer, ObjectPickKeyBuffer, ElementPickCandidateBuffer, BoxSelectBitsetBuffer;
+    mvk::Buffer SelectionCounterBuffer, ObjectPickKeyBuffer, ElementPickCandidateBuffer, ObjectPickSeenBitsetBuffer, SelectionBitsetBuffer;
 };

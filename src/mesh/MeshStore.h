@@ -65,6 +65,7 @@ struct MeshStore {
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
     SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceData, FaceStateBuffer.Slot}; }
     SlottedRange GetEdgeStateRange(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
+    std::span<const uint8_t> GetVertexStates(uint32_t id) const;
 
     SlottedRange GetFaceFirstTriRange(uint32_t id) const { return {Entries.at(id).FaceData, FaceFirstTriangleBuffer.Buffer.Slot}; }
 
@@ -86,6 +87,8 @@ struct MeshStore {
         const std::unordered_set<he::FH> &selected_faces,
         std::optional<uint32_t> active_handle
     );
+    void UpdateVertexStates(const Mesh &, std::span<const uint32_t> selected_vertices);
+    void UpdateEdgeStatesFromFaces(const Mesh &, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face);
     void UpdateNormals(const Mesh &, bool skip_nonzero = false);
 
     void Release(uint32_t id);
@@ -123,4 +126,5 @@ private:
     Range AllocateFaces(uint32_t count);
     std::span<uint8_t> GetFaceStates(Range);
     std::span<uint8_t> GetVertexStates(Range);
+    std::span<const uint8_t> GetVertexStates(Range) const;
 };

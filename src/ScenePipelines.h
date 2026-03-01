@@ -110,7 +110,7 @@ struct ScenePipelines {
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
-    ComputePipeline ObjectPick, ElementPick, BoxSelect;
+    ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
     IblPrefilterPipelines IblPrefilter;
 
     void SetExtent(vk::Extent2D);

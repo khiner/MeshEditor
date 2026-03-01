@@ -644,6 +644,24 @@ structs:
     fields:
       - name: SilhouetteSamplerIndex
         type: u32
+  - name: UpdateSelectionStatePushConstants
+    push_constant: true
+    fields:
+      - name: BitsetSlot
+        type: u32
+      - name: BitsetOffset
+        type: u32
+      - name: StateSlot
+        type: u32
+      - name: StateOffset
+        type: u32
+      - name: ElementCount
+        type: u32
+      - name: ActiveHandle
+        type: u32
+        default: InvalidOffset
+      - name: EdgeMode
+        type: u32
   - name: SilhouetteEdgeColorPushConstants
     push_constant: true
     fields:

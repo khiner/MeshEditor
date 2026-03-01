@@ -23,6 +23,7 @@
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
+#include "gpu/UpdateSelectionStatePushConstants.h"
 #include "mesh/MeshData.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
@@ -297,7 +298,6 @@ constexpr auto
     Selected = "selected_changes"_hs,
     ActiveInstance = "active_instance_changes"_hs,
     Rerecord = "rerecord_changes"_hs,
-    MeshSelection = "mesh_selection_changes"_hs,
     MeshActiveElement = "mesh_active_element_changes"_hs,
     MeshGeometry = "mesh_geometry_changes"_hs,
     MeshMaterial = "mesh_material_changes"_hs,
@@ -459,6 +459,7 @@ struct Scene::SelectionSlotHandles {
           SelectionCounter(slots.Allocate(SlotType::Buffer)),
           ObjectPickKey(slots.Allocate(SlotType::Buffer)),
           ElementPickCandidates(slots.Allocate(SlotType::Buffer)),
+          ObjectPickSeenBits(slots.Allocate(SlotType::Buffer)),
           SelectionBitset(slots.Allocate(SlotType::Buffer)),
           ObjectIdSampler(slots.Allocate(SlotType::Sampler)),
           DepthSampler(slots.Allocate(SlotType::Sampler)),
@@ -469,6 +470,7 @@ struct Scene::SelectionSlotHandles {
         Slots.Release({SlotType::Buffer, SelectionCounter});
         Slots.Release({SlotType::Buffer, ObjectPickKey});
         Slots.Release({SlotType::Buffer, ElementPickCandidates});
+        Slots.Release({SlotType::Buffer, ObjectPickSeenBits});
         Slots.Release({SlotType::Buffer, SelectionBitset});
         Slots.Release({SlotType::Sampler, ObjectIdSampler});
         Slots.Release({SlotType::Sampler, DepthSampler});
@@ -476,7 +478,7 @@ struct Scene::SelectionSlotHandles {
     }
 
     DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler;
+    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, ObjectPickSeenBits, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler;
 };
 
 // Unmanaged reactive storage to track entity destruction.
@@ -533,9 +535,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_construct<SceneEditMode>()
         .on_update<SceneEditMode>();
 
-    R.storage<entt::reactive>(changes::MeshSelection)
-        .on_construct<MeshSelection>()
-        .on_update<MeshSelection>();
     R.storage<entt::reactive>(changes::MeshActiveElement)
         .on_construct<MeshActiveElement>()
         .on_update<MeshActiveElement>();
@@ -844,19 +843,26 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         });
     };
 
-    for (auto mesh_entity : R.storage<entt::reactive>(changes::MeshSelection)) {
-        if (R.all_of<MeshSelection>(mesh_entity)) dirty_element_state_meshes.insert(mesh_entity);
-    }
     if (const auto &tracker = R.storage<entt::reactive>(changes::MeshActiveElement); !tracker.empty()) {
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         const auto active_entity = FindActiveEntity(R);
         const auto *active_mi = R.try_get<MeshInstance>(active_entity);
+        std::vector<ElementRange> active_ranges;
         for (auto mesh_entity : tracker) {
-            dirty_element_state_meshes.insert(mesh_entity);
             if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity);
                 active_element && edit_mode != Element::None && active_mi && active_mi->MeshEntity == mesh_entity) {
                 orbit_to_active(active_entity, edit_mode, active_element->Handle);
             }
+            if (edit_mode != Element::None) {
+                if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
+                    active_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+                }
+            }
+            dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
+        }
+        if (!active_ranges.empty()) {
+            DispatchUpdateSelectionStates(active_ranges, edit_mode);
+            ElementStatesDirty = true;
         }
     }
     for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
@@ -913,8 +919,25 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
     }
     if (auto &tracker = R.storage<entt::reactive>(changes::MeshGeometry); !tracker.empty()) {
+        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+        std::vector<ElementRange> geometry_ranges;
         for (auto mesh_entity : tracker) {
             if (HasSelectedInstance(R, mesh_entity)) dirty_overlay_meshes.insert(mesh_entity);
+            if (auto *br = R.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {
+                // Topology changed: zero stale selection bits and update count.
+                const auto &mesh = R.get<const Mesh>(mesh_entity);
+                const uint32_t new_count = scene_selection::GetElementCount(mesh, edit_mode);
+                const uint32_t max_words = (std::max(br->Count, new_count) + 31) / 32;
+                auto *mapped = Buffers->SelectionBitsetBuffer.GetMappedData().data();
+                memset(mapped + (br->Offset / 32) * sizeof(uint32_t), 0, max_words * sizeof(uint32_t));
+                br->Count = new_count;
+                if (new_count > 0) geometry_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+            }
+        }
+        if (!geometry_ranges.empty()) {
+            DispatchUpdateSelectionStates(geometry_ranges, edit_mode);
+            UpdateEditVertexPreviewStates(geometry_ranges, edit_mode);
+            ElementStatesDirty = true;
         }
         request(RenderRequest::Submit);
     }
@@ -949,8 +972,23 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     if (!R.storage<entt::reactive>(changes::InteractionMode).empty()) {
         request(RenderRequest::ReRecord);
-        for (const auto [mesh_entity, selection] : R.view<MeshSelection>().each()) {
-            if (!selection.Handles.empty()) dirty_element_state_meshes.insert(mesh_entity);
+        // Dispatch UpdateSelectionState for all meshes entering Edit mode (MeshSelectionBitsetRange assigned in SetInteractionMode).
+        const auto new_interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+        if (new_interaction_mode == InteractionMode::Edit) {
+            const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+            if (edit_mode != Element::None) {
+                std::vector<ElementRange> ranges;
+                for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
+                    if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
+                        ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+                    }
+                }
+                if (!ranges.empty()) {
+                    DispatchUpdateSelectionStates(ranges, edit_mode);
+                    UpdateEditVertexPreviewStates(ranges, edit_mode);
+                    ElementStatesDirty = true;
+                }
+            }
         }
         for (const auto [_, mi, __] : R.view<const MeshInstance, const Excitable>().each()) {
             dirty_element_state_meshes.insert(mi.MeshEntity);
@@ -960,20 +998,21 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (!R.storage<entt::reactive>(changes::TransformEnd).empty()) {
         if (is_edit_mode) {
             const auto &pending = R.get<const PendingTransform>(SceneEntity);
-            const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
             // Apply edit transform once per selected mesh via a representative selected instance.
             // This keeps linked instances from receiving duplicate per-instance edits.
             for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
                 if (scene_selection::HasFrozenInstance(R, mesh_entity)) continue;
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
+                const auto vertex_states = Meshes->GetVertexStates(mesh.GetStoreId());
+                const bool any_selected_vertex = std::ranges::any_of(vertex_states, [](const auto state) { return (state & ElementStateSelected) != 0u; });
+                if (!any_selected_vertex) continue;
                 const auto vertices = mesh.GetVerticesSpan();
-                const auto &selection = R.get<const MeshSelection>(mesh_entity);
-                if (selection.Handles.empty()) continue;
                 const auto &wt = R.get<const WorldTransform>(instance_entity);
                 const auto wt_rot = Vec4ToQuat(wt.Rotation);
                 const auto inv_rot = glm::conjugate(wt_rot);
                 const auto inv_scale = 1.f / wt.Scale;
-                for (const auto vi : scene_selection::ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex)) {
+                for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
+                    if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
                     const auto local_pos = vertices[vi].Position;
                     const auto world_pos = wt.Position + glm::rotate(wt_rot, wt.Scale * local_pos);
                     auto offset = world_pos - pending.Pivot;
@@ -1102,53 +1141,28 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             R.remove<BoundingBoxesBuffers>(mesh_entity);
         }
     }
-    // Update mesh element state buffers
-    const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+    // Update mesh element state buffers (Excite mode only; Edit mode handled by GPU compute)
     for (const auto mesh_entity : dirty_element_state_meshes) {
+        if (interaction_mode != InteractionMode::Excite) continue;
         const auto &mesh = R.get<Mesh>(mesh_entity);
         std::unordered_set<VH> selected_vertices;
         std::unordered_set<EH> selected_edges, active_edges;
         std::unordered_set<FH> selected_faces;
-
-        auto element{Element::None};
-        std::unordered_set<uint32_t> handles;
         std::optional<uint32_t> active_handle;
-        if (interaction_mode == InteractionMode::Excite) {
-            element = Element::Vertex;
-            for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
-                if (mi.MeshEntity != mesh_entity) continue;
-                handles = excitable.ExcitableVertices | to<std::unordered_set>();
-                selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
-                if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) active_handle = excited_vertex->Vertex;
-                break;
-            }
-        } else if (const auto *selection = R.try_get<const MeshSelection>(mesh_entity); selection && interaction_mode == InteractionMode::Edit && HasSelectedInstance(R, mesh_entity)) {
-            element = edit_mode;
-            handles = selection->Handles;
-            if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity)) active_handle = active_element->Handle;
-            {
-                const auto vertex_handles = scene_selection::ConvertSelectionElement(*selection, mesh, edit_mode, Element::Vertex);
-                selected_vertices.insert(vertex_handles.begin(), vertex_handles.end());
-            }
-            if (element == Element::Edge) {
-                selected_edges.insert(selection->Handles.begin(), selection->Handles.end());
-            } else if (element == Element::Face) {
-                for (auto h : selection->Handles) {
-                    selected_faces.emplace(h);
-                    for (const auto heh : mesh.fh_range(FH{h})) {
-                        selected_edges.emplace(mesh.GetEdge(heh));
-                        if (active_handle == h) {
-                            for (const auto heh : mesh.fh_range(FH{*active_handle})) active_edges.emplace(mesh.GetEdge(heh));
-                        }
-                    }
-                }
-            }
+        for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
+            if (mi.MeshEntity != mesh_entity) continue;
+            selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
+            if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) active_handle = excited_vertex->Vertex;
+            break;
         }
-
-        Meshes->UpdateElementStates(mesh, element, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
+        Meshes->UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
+    if (ElementStatesDirty) {
+        ElementStatesDirty = false;
+        request(RenderRequest::Submit);
+    }
     { // Animation timeline tick
         auto &tl = R.get<AnimationTimeline>(SceneEntity);
         if (tl.Playing) {
@@ -1257,10 +1271,6 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<
         mvk::Buffer{Buffers->Ctx, sizeof(WorldTransform), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
         mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
         mvk::Buffer{Buffers->Ctx, sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer}
-    );
-    R.emplace<MeshSelection>(
-        mesh_entity,
-        iota(0u, scene_selection::GetElementCount(mesh, R.get<const SceneEditMode>(SceneEntity).Value)) | to<std::unordered_set>()
     );
     R.emplace<MeshBuffers>(
         mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()),
@@ -2514,7 +2524,7 @@ void Scene::RenderElementSelectionPass(
         const vk::DeviceSize bitset_bytes = ((element_count + 31) / 32) * sizeof(uint32_t);
         cb.pipelineBarrier(
             vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
-            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Buffers->BoxSelectBitsetBuffer, 0, bitset_bytes},
+            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Buffers->SelectionBitsetBuffer, 0, bitset_bytes},
             {}
         );
     }
@@ -2530,49 +2540,113 @@ void Scene::RenderElementSelectionPass(
     SelectionStale = true;
 }
 
-std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px) {
-    if (ranges.empty()) return {};
+void Scene::DispatchUpdateSelectionStates(std::span<const ElementRange> ranges, Element element) {
+    if (ranges.empty() || element == Element::None) return;
 
-    std::vector<std::vector<uint32_t>> results(ranges.size());
+    auto cb = *ClickCommandBuffer;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Ensure bitset writes from previous render/compute are visible to this compute shader.
+    const vk::MemoryBarrier input_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eComputeShader, {}, input_barrier, {}, {});
+
+    const auto &compute = Pipelines->UpdateSelectionState;
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+
+    for (const auto &range : ranges) {
+        const auto &mesh = R.get<const Mesh>(range.MeshEntity);
+        const auto &mesh_buffers = R.get<const MeshBuffers>(range.MeshEntity);
+        const auto *active_element = R.try_get<const MeshActiveElement>(range.MeshEntity);
+
+        uint32_t state_slot, state_offset;
+        if (element == Element::Vertex) {
+            state_slot = Meshes->GetVertexStateSlot();
+            state_offset = mesh_buffers.Vertices.Offset;
+        } else if (element == Element::Edge) {
+            const auto edge_range = Meshes->GetEdgeStateRange(mesh.GetStoreId());
+            state_slot = edge_range.Slot;
+            state_offset = edge_range.Offset;
+        } else {
+            const auto face_range = Meshes->GetFaceStateRange(mesh.GetStoreId());
+            state_slot = face_range.Slot;
+            state_offset = face_range.Offset;
+        }
+
+        const UpdateSelectionStatePushConstants pc{
+            .BitsetSlot = SelectionHandles->SelectionBitset,
+            .BitsetOffset = range.Offset,
+            .StateSlot = state_slot,
+            .StateOffset = state_offset,
+            .ElementCount = range.Count,
+            .ActiveHandle = active_element ? active_element->Handle : InvalidOffset,
+            .EdgeMode = element == Element::Edge ? 1u : 0u,
+        };
+        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+        cb.dispatch((range.Count + 255) / 256, 1, 1);
+    }
+
+    const vk::MemoryBarrier output_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, output_barrier, {}, {});
+    cb.end();
+
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    Vk.Queue.submit(submit, *OneShotFence);
+    WaitFor(*OneShotFence, Vk.Device);
+}
+
+void Scene::UpdateEditVertexPreviewStates(std::span<const ElementRange> ranges, Element element) {
+    if (ranges.empty() || element == Element::None || element == Element::Vertex) return;
+    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+    for (const auto &range : ranges) {
+        const auto &mesh = R.get<const Mesh>(range.MeshEntity);
+        const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
+        if (element == Element::Face) {
+            std::optional<uint32_t> active_face;
+            if (const auto *active = R.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
+                active_face = active->Handle;
+            }
+            Meshes->UpdateEdgeStatesFromFaces(mesh, selected_handles, active_face);
+        }
+        const auto selected_vertices = scene_selection::ConvertSelectionElement(selected_handles, mesh, element, Element::Vertex);
+        std::vector<uint32_t> vertex_indices;
+        vertex_indices.reserve(selected_vertices.size());
+        for (const auto vi : selected_vertices) vertex_indices.emplace_back(vi);
+        Meshes->UpdateVertexStates(mesh, vertex_indices);
+    }
+}
+
+void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
+    if (ranges.empty()) return;
+
     const auto [box_min, box_max] = box_px;
-    if (box_min.x > box_max.x || box_min.y > box_max.y) return results;
+    if (box_min.x > box_max.x || box_min.y > box_max.y) return;
 
     const Timer timer{"RunBoxSelectElements"};
     const auto element_count = fold_left(
         ranges, uint32_t{0},
         [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); }
     );
-    if (element_count == 0) return results;
+    if (element_count == 0) return;
 
     const uint32_t bitset_words = (element_count + 31) / 32;
-    if (bitset_words > SceneBuffers::BoxSelectBitsetWords) return results;
+    if (bitset_words > SceneBuffers::SelectionBitsetWords) return;
+
+    // For non-additive: clear the entire bitset range so only newly box-selected bits remain.
+    if (!is_additive) {
+        auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
+        memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
+    }
 
     // Box-select writes element IDs directly from the selection fragment shader.
-    // This avoids linked-list overflow in heavy X-Ray overlap while keeping the same
-    // depth semantics as the element render pipeline in non-X-Ray mode.
-    auto mapped = Buffers->BoxSelectBitsetBuffer.GetMappedData();
-    memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
     RenderElementSelectionPass(ranges, element, true, box_min, box_max);
-
-    // Scan only the bitset words covering each range. Zero words are skipped entirely;
-    // the bounds check handles partial first/last words shared between adjacent ranges.
-    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
-    for (size_t i = 0; i < ranges.size(); ++i) {
-        const auto &range = ranges[i];
-        auto &result = results[i];
-        const uint32_t first_word = range.Offset / 32, last_word = (range.Offset + range.Count + 31) / 32;
-        for (uint32_t w = first_word; w < last_word; ++w) {
-            uint32_t word = bits[w];
-            while (word) {
-                const uint32_t global_idx = w * 32 + std::countr_zero(word);
-                if (global_idx >= range.Offset && global_idx < range.Offset + range.Count) {
-                    result.emplace_back(global_idx - range.Offset);
-                }
-                word &= word - 1;
-            }
-        }
-    }
-    return results;
+    // After RenderElementSelectionPass (which waits on fence), SelectionBitsetBuffer is populated.
+    // Dispatch UpdateSelectionState compute shader to update element state buffers on GPU.
+    DispatchUpdateSelectionStates(ranges, element);
+    UpdateEditVertexPreviewStates(ranges, element);
+    ElementStatesDirty = true;
 }
 
 std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges(std::span<const ElementRange> ranges, Element element, uvec2 mouse_px) {
@@ -2662,7 +2736,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
             .HeadImageIndex = SelectionHandles->HeadImage,
             .SelectionNodesIndex = Buffers->SelectionNodeBuffer.Slot,
             .BestKeyIndex = SelectionHandles->ObjectPickKey,
-            .SeenBitsIndex = SelectionHandles->SelectionBitset,
+            .SeenBitsIndex = SelectionHandles->ObjectPickSeenBits,
         },
         [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }, // Single workgroup; threads cooperatively scan the radius.
         selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{}
@@ -2679,7 +2753,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
         auto operator<=>(const SortedHit &) const = default;
     };
 
-    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
+    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->ObjectPickSeenBitsetBuffer.GetData().data());
     const auto *keys = reinterpret_cast<const uint32_t *>(Buffers->ObjectPickKeyBuffer.GetData().data());
     std::vector<SortedHit> hits;
     for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
@@ -2702,7 +2776,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 
 void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const uint32_t bitset_words = (max_id + 31) / 32;
-    auto mapped = Buffers->BoxSelectBitsetBuffer.GetMappedData();
+    auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
     memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
 
     const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
@@ -2737,7 +2811,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
 
-    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
+    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetData().data());
     std::vector<entt::entity> entities;
     for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
         const uint32_t bit_index = object_id - 1;
@@ -2816,12 +2890,14 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
             const auto selection_bitset = Buffers->GetSelectionBitsetDescriptor();
+            const auto object_pick_seen_bitset = Buffers->GetObjectPickSeenBitsetDescriptor();
             Vk.Device.updateDescriptorSets(
                 {
                     Slots->MakeImageWrite(SelectionHandles->HeadImage, head_image_info),
                     Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->SelectionCounter}, selection_counter),
                     Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ObjectPickKey}, object_pick_key),
                     Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ElementPickCandidates}, element_pick_candidates),
+                    Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->ObjectPickSeenBits}, object_pick_seen_bitset),
                     Slots->MakeBufferWrite({SlotType::Buffer, SelectionHandles->SelectionBitset}, selection_bitset),
                     Slots->MakeSamplerWrite(SelectionHandles->ObjectIdSampler, object_id_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->DepthSampler, depth_sampler),

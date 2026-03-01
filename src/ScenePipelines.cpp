@@ -4,6 +4,7 @@
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
+#include "gpu/UpdateSelectionStatePushConstants.h"
 
 #include <ranges>
 
@@ -533,6 +534,12 @@ ScenePipelines::ScenePipelines(
         selection_layout,
         selection_set
     },
+    UpdateSelectionState{
+        d, Shaders{{{ShaderType::eCompute, "UpdateSelectionState.comp"}}},
+        vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(UpdateSelectionStatePushConstants)},
+        selection_layout,
+        selection_set
+    },
     IblPrefilter{d} {}
 
 void ScenePipelines::SetExtent(vk::Extent2D extent) {
@@ -550,4 +557,5 @@ void ScenePipelines::CompileShaders() {
     ObjectPick.Compile();
     ElementPick.Compile();
     BoxSelect.Compile();
+    UpdateSelectionState.Compile();
 }

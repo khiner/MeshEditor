@@ -1,0 +1,47 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+// Reads the selection bitset and writes element state bytes for one mesh.
+// Dispatched after fragment selection pass (or direct bit write for click-select).
+// One thread per element (vertex, edge, or face).
+// Edge mode: state buffer has 2 bytes per edge (one per halfedge direction).
+layout(local_size_x = 256) in;
+
+#include "UpdateSelectionStatePushConstants.glsl"
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer SelectionBitsetBuffer {
+    uint Bits[];
+} SelectionBitsets[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer ElementStateBuffer {
+    uint8_t States[];
+} ElementStateBuffers[];
+
+const uint INVALID_HANDLE = 0xffffffffu;
+const uint8_t STATE_SELECTED = uint8_t(1u);
+const uint8_t STATE_ACTIVE = uint8_t(2u);
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.ElementCount) return;
+
+    const uint global_bit = pc.BitsetOffset + i;
+    const uint word = SelectionBitsets[nonuniformEXT(pc.BitsetSlot)].Bits[global_bit >> 5];
+    const bool is_selected = ((word >> (global_bit & 31u)) & 1u) != 0u;
+    const bool is_active = pc.ActiveHandle != INVALID_HANDLE && i == pc.ActiveHandle;
+
+    uint8_t state = uint8_t(0);
+    if (is_selected) state |= STATE_SELECTED;
+    if (is_active) state |= STATE_ACTIVE;
+
+    if (pc.EdgeMode != 0u) {
+        // Edge state buffer: 2 bytes per edge (halfedge 0 and halfedge 1).
+        ElementStateBuffers[nonuniformEXT(pc.StateSlot)].States[pc.StateOffset + 2u * i] = state;
+        ElementStateBuffers[nonuniformEXT(pc.StateSlot)].States[pc.StateOffset + 2u * i + 1u] = state;
+    } else {
+        ElementStateBuffers[nonuniformEXT(pc.StateSlot)].States[pc.StateOffset + i] = state;
+    }
+}
