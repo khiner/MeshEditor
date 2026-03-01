@@ -1232,16 +1232,8 @@ void Scene::RenderControls() {
                     const auto active_entity = FindActiveEntity(R);
                     if (active_entity != entt::null) {
                         if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
-                            const auto mesh_entity = mesh_instance->MeshEntity;
-                            const auto &selection = R.get<MeshSelection>(mesh_entity);
+                            const auto &selection = R.get<MeshSelection>(mesh_instance->MeshEntity);
                             Text("Editing %s: %zu selected", label(edit_mode).data(), selection.Handles.size());
-                            if (edit_mode == Element::Vertex && !selection.Handles.empty()) {
-                                const auto &mesh = R.get<Mesh>(mesh_entity);
-                                for (const auto vh : selection.Handles) {
-                                    const auto pos = mesh.GetPosition(VH{vh});
-                                    Text("Vertex %u: (%.4f, %.4f, %.4f)", vh, pos.x, pos.y, pos.z);
-                                }
-                            }
                         } else {
                             TextUnformatted("Edit mode requires an active mesh object.");
                         }

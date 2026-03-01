@@ -972,8 +972,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto wt_rot = Vec4ToQuat(wt.Rotation);
                 const auto inv_rot = glm::conjugate(wt_rot);
                 const auto inv_scale = 1.f / wt.Scale;
-                const auto vertex_handles = scene_selection::ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex);
-                for (const auto vi : vertex_handles) {
+                for (const auto vi : scene_selection::ConvertSelectionElement(selection, mesh, edit_mode, Element::Vertex)) {
                     const auto local_pos = vertices[vi].Position;
                     const auto world_pos = wt.Position + glm::rotate(wt_rot, wt.Scale * local_pos);
                     auto offset = world_pos - pending.Pivot;
@@ -1122,8 +1121,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) active_handle = excited_vertex->Vertex;
                 break;
             }
-        } else if (const auto *selection = R.try_get<const MeshSelection>(mesh_entity);
-                   selection && interaction_mode == InteractionMode::Edit && HasSelectedInstance(R, mesh_entity)) {
+        } else if (const auto *selection = R.try_get<const MeshSelection>(mesh_entity); selection && interaction_mode == InteractionMode::Edit && HasSelectedInstance(R, mesh_entity)) {
             element = edit_mode;
             handles = selection->Handles;
             if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity)) active_handle = active_element->Handle;
