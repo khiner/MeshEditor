@@ -160,7 +160,6 @@ private:
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
     vec2 AccumulatedWrapMouseDelta{0, 0};
-    std::vector<uint32_t> BoxSelectZeroBits;
     uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset.
     uint32_t NextObjectId{1}; // Monotonically increasing, assigned to RenderInstance on show
 

@@ -600,7 +600,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<MaterialStore>(SceneEntity);
     Buffers->WorkspaceLightsUBO.Update(as_bytes(SceneDefaults::WorkspaceLights));
 
-    BoxSelectZeroBits.assign(SceneBuffers::BoxSelectBitsetWords, 0);
     ResetObjectPickKeys(*Buffers);
 
     auto &texture_store = *Textures;
@@ -2544,13 +2543,13 @@ std::vector<std::vector<uint32_t>> Scene::RunBoxSelectElements(std::span<const E
     if (element_count == 0) return results;
 
     const uint32_t bitset_words = (element_count + 31) / 32;
-    if (bitset_words > BoxSelectZeroBits.size()) return results;
+    if (bitset_words > SceneBuffers::BoxSelectBitsetWords) return results;
 
     // Box-select writes element IDs directly from the selection fragment shader.
     // This avoids linked-list overflow in heavy X-Ray overlap while keeping the same
     // depth semantics as the element render pipeline in non-X-Ray mode.
-    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
-    Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
+    auto mapped = Buffers->BoxSelectBitsetBuffer.GetMappedData();
+    memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
     RenderElementSelectionPass(ranges, element, true, box_min, box_max);
 
     const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->BoxSelectBitsetBuffer.GetData().data());
@@ -2694,8 +2693,8 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 
 void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const uint32_t bitset_words = (max_id + 31) / 32;
-    const std::span<const uint32_t> zero_bits{BoxSelectZeroBits.data(), bitset_words};
-    Buffers->BoxSelectBitsetBuffer.Write(std::as_bytes(zero_bits));
+    auto mapped = Buffers->BoxSelectBitsetBuffer.GetMappedData();
+    memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
 
     const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
     RunSelectionCompute(

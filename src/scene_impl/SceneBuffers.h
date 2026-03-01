@@ -59,7 +59,8 @@ constexpr uint32_t
 
 struct SceneBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
-    static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableObjects + 31) / 32};
+    static constexpr uint32_t MaxSelectableElements{10'000'000};
+    static constexpr uint32_t BoxSelectBitsetWords{(MaxSelectableElements + 31) / 32};
     static constexpr uint32_t ElementPickGroupSize{256};
     static constexpr uint32_t ElementPickGroupCount{(ElementPickPixelCount + ElementPickGroupSize - 1) / ElementPickGroupSize};
     static constexpr uint32_t SelectionNodesPerPixel{10};
