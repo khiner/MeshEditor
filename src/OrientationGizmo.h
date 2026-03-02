@@ -17,8 +17,7 @@ inline constexpr vec3 Signed(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : 
 namespace internal {
 struct Style {
     // Radii are relative to rect size
-    float CircleRad{.095};
-    float HoverCircleRad{.5};
+    float CircleRad{.095}, HoverCircleRad{.5};
 };
 struct Color {
     ImU32 Hover{IM_COL32(120, 120, 120, 130)};
@@ -89,7 +88,7 @@ void Draw(vec2 pos, float size, ViewCamera &camera, bool interactive = true) {
                       colors::WithAlpha(colors::Axes[i], t);
         const float r = size * Style.CircleRad;
         const auto line_end = std::bit_cast<ImVec2>(center + AxisScreen(i));
-        if (positive) dl.AddLine(std::bit_cast<ImVec2>(center), line_end, fill_color, 1.5f);
+        if (positive) dl.AddLine(std::bit_cast<ImVec2>(center), line_end, fill_color, 2.f);
         dl.AddCircleFilled(line_end, positive ? r : r - .5f, fill_color);
         if (!positive) { // Outline
             const auto color = aligned ? colors::Lighten(colors::Axes[i - 3], .8f) : colors::Blend(colors::Axes[i], colors::Axes[i - 3], t);
@@ -98,9 +97,12 @@ void Draw(vec2 pos, float size, ViewCamera &camera, bool interactive = true) {
         if (const bool hovered = hovered_i && *hovered_i == i;
             positive || hovered || aligned) {
             static constexpr std::string_view AxisLabels[]{"X", "Y", "Z", "-X", "-Y", "-Z"};
-            const auto *label = AxisLabels[i].data();
-            const auto text_pos = line_end - ImGui::CalcTextSize(label) * .5f + ImVec2{.5f, 0.f};
-            dl.AddText(text_pos, hovered ? IM_COL32_WHITE : IM_COL32_BLACK, label);
+            auto *const label = AxisLabels[i].data();
+            auto *const font = ImGui::GetFont();
+            const float font_size = r * 1.5f;
+            const auto text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label);
+            const auto text_pos = line_end - text_size * .5f + ImVec2{.5f, 0.f};
+            dl.AddText(font, font_size, text_pos, hovered ? IM_COL32_WHITE : IM_COL32_BLACK, label);
         }
     }
 

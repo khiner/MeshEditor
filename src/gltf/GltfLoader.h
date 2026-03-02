@@ -5,12 +5,9 @@
 // - Known gap: morph target tangent deltas (targets[*].TANGENT) are not imported/applied yet.
 //   Static tangents (vertex TANGENT) are imported and used for shading, but
 //   morphing is deferred for now due to added GPU morph bandwidth/ALU cost.
-//
-// TODO (glTF 2.0 coverage):
-// - Full `KHR_animation_pointer` support
-// - Support compressed geometry extensions (`EXT_meshopt_compression`, `KHR_draco_mesh_compression`):
-//   minimal decode path: meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
-//   draco decoder-only build (disable encoder/tools/tests, keep mesh decode path).
+// - Also skipping `KHR_animation_pointer` for now - too much complexity for an extension that isn't widely used yet
+// - Probably should suppor `EXT_meshopt_compression`, with a minimal decode path:
+//   - meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
 
 #pragma once
 
