@@ -318,7 +318,8 @@ constexpr auto
     SceneView = "scene_view_changes"_hs,
     CameraLens = "camera_lens_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
-    TransformEnd = "transform_end_changes"_hs;
+    TransformEnd = "transform_end_changes"_hs,
+    WorldTransform = "world_transform_changes"_hs;
 } // namespace changes
 
 struct DeformSlots {
@@ -586,6 +587,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::CameraLens)
         .on_construct<Camera>()
         .on_update<Camera>();
+    R.storage<entt::reactive>(changes::WorldTransform)
+        .on_construct<WorldTransform>()
+        .on_update<WorldTransform>();
     R.storage<entt::reactive>(changes::TransformPending)
         .on_construct<PendingTransform>()
         .on_update<PendingTransform>();
@@ -827,7 +831,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         for (auto instance_entity : active_tracker) {
             update_instance_state(instance_entity);
             // If looking through a camera and a different camera becomes active, snap to it.
-            if (SavedViewCamera && R.all_of<Active>(instance_entity) && R.all_of<Camera>(instance_entity)) {
+            if (SavedViewCamera && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
                 SnapToCamera(instance_entity);
             }
         }
@@ -1013,6 +1017,70 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         R.remove<PendingTransform>(SceneEntity);
     }
+    { // Animation timeline tick
+        auto &tl = R.get<AnimationTimeline>(SceneEntity);
+        if (tl.Playing) {
+            PlaybackFrame += ImGui::GetIO().DeltaTime * tl.Fps;
+            if (PlaybackFrame > float(tl.EndFrame)) PlaybackFrame = float(tl.StartFrame);
+            const int new_frame = int(std::floor(PlaybackFrame));
+            if (new_frame != tl.CurrentFrame) R.patch<AnimationTimeline>(SceneEntity, [&](auto &t) { t.CurrentFrame = new_frame; });
+        } else {
+            PlaybackFrame = float(tl.CurrentFrame);
+        }
+        if (tl.CurrentFrame != LastEvaluatedFrame) {
+            LastEvaluatedFrame = tl.CurrentFrame;
+            const float eval_seconds = float(tl.CurrentFrame) / tl.Fps;
+            bool request_rerecord = false;
+            for (auto [entity, anim, pose_state, armature] :
+                 R.view<const ArmatureAnimation, ArmaturePoseState, Armature>().each()) {
+                if (anim.Clips.empty() || anim.ActiveClipIndex >= anim.Clips.size()) continue;
+                const auto &clip = anim.Clips[anim.ActiveClipIndex];
+                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+                for (uint32_t i = 0; i < armature.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature.Bones[i].RestLocal;
+                EvaluateAnimation(clip, clip_time, pose_state.BonePoseLocal);
+
+                auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
+                ComputeDeformMatrices(armature, pose_state.BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
+                request_rerecord = true;
+            }
+            // Evaluate morph weight animations
+            for (auto [entity, morph_anim, morph_state, mi] :
+                 R.view<const MorphWeightAnimation, MorphWeightState, const MeshInstance>().each()) {
+                if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
+                const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
+                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+                // Reset to default weights from mesh-level data
+                const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                const auto default_weights = Meshes->GetDefaultMorphWeights(mesh.GetStoreId());
+                std::copy(default_weights.begin(), default_weights.end(), morph_state.Weights.begin());
+                EvaluateMorphWeights(clip, clip_time, morph_state.Weights);
+                // Write to GPU
+                auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
+                std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
+                request_rerecord = true;
+            }
+            // Evaluate glTF node transform animations (empties/meshes/cameras/lights).
+            for (auto [entity, node_anim] : R.view<const NodeTransformAnimation>().each()) {
+                if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
+                const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
+                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+                std::array<Transform, 1> local_pose{node_anim.RestLocal};
+                EvaluateAnimation(clip, clip_time, local_pose);
+                SetTransform(R, entity, ComposeWorldTransform(node_anim.ParentBindWorld, local_pose.front()));
+                request_rerecord = true;
+            }
+            if (request_rerecord) request(RenderRequest::ReRecord);
+        }
+    }
+    if (SavedViewCamera) {
+        // If looking through a camera and it moved (animation or manual edit), snap the ViewCamera.
+        // This must run before the SceneView handler so SnapToCamera's ViewCamera replacement is picked up.
+        if (const auto active_entity = FindActiveEntity(R);
+            active_entity != entt::null && R.all_of<Camera>(active_entity) &&
+            R.storage<entt::reactive>(changes::WorldTransform).contains(active_entity)) {
+            SnapToCamera(active_entity);
+        }
+    }
     if (!R.storage<entt::reactive>(changes::SceneView).empty() ||
         !R.storage<entt::reactive>(changes::TransformPending).empty() ||
         !R.storage<entt::reactive>(changes::SceneSettings).empty() ||
@@ -1150,62 +1218,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         ElementStatesDirty = false;
         request(RenderRequest::Submit);
     }
-    { // Animation timeline tick
-        auto &tl = R.get<AnimationTimeline>(SceneEntity);
-        if (tl.Playing) {
-            PlaybackFrame += ImGui::GetIO().DeltaTime * tl.Fps;
-            if (PlaybackFrame > float(tl.EndFrame)) PlaybackFrame = float(tl.StartFrame);
-            const int new_frame = int(std::floor(PlaybackFrame));
-            if (new_frame != tl.CurrentFrame) R.patch<AnimationTimeline>(SceneEntity, [&](auto &t) { t.CurrentFrame = new_frame; });
-        } else {
-            PlaybackFrame = float(tl.CurrentFrame);
-        }
-        if (tl.CurrentFrame != LastEvaluatedFrame) {
-            LastEvaluatedFrame = tl.CurrentFrame;
-            const float eval_seconds = float(tl.CurrentFrame) / tl.Fps;
-            bool request_rerecord = false;
-            for (auto [entity, anim, pose_state, armature] :
-                 R.view<const ArmatureAnimation, ArmaturePoseState, Armature>().each()) {
-                if (anim.Clips.empty() || anim.ActiveClipIndex >= anim.Clips.size()) continue;
-                const auto &clip = anim.Clips[anim.ActiveClipIndex];
-                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
-                for (uint32_t i = 0; i < armature.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature.Bones[i].RestLocal;
-                EvaluateAnimation(clip, clip_time, pose_state.BonePoseLocal);
-
-                auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
-                ComputeDeformMatrices(armature, pose_state.BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
-                request_rerecord = true;
-            }
-            // Evaluate morph weight animations
-            for (auto [entity, morph_anim, morph_state, mi] :
-                 R.view<const MorphWeightAnimation, MorphWeightState, const MeshInstance>().each()) {
-                if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
-                const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
-                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
-                // Reset to default weights from mesh-level data
-                const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
-                const auto default_weights = Meshes->GetDefaultMorphWeights(mesh.GetStoreId());
-                std::copy(default_weights.begin(), default_weights.end(), morph_state.Weights.begin());
-                EvaluateMorphWeights(clip, clip_time, morph_state.Weights);
-                // Write to GPU
-                auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
-                std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
-                request_rerecord = true;
-            }
-            // Evaluate glTF node transform animations (empties/meshes/cameras/lights).
-            for (auto [entity, node_anim] : R.view<const NodeTransformAnimation>().each()) {
-                if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
-                const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
-                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
-                std::array<Transform, 1> local_pose{node_anim.RestLocal};
-                EvaluateAnimation(clip, clip_time, local_pose);
-                SetTransform(R, entity, ComposeWorldTransform(node_anim.ParentBindWorld, local_pose.front()));
-                request_rerecord = true;
-            }
-            if (request_rerecord) request(RenderRequest::ReRecord);
-        }
-    }
-
     for (auto &&[id, storage] : R.storage()) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
