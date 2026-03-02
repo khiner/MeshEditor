@@ -25,6 +25,7 @@
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "gpu/UpdateSelectionStatePushConstants.h"
+#include "mesh/MeshAttributes.h"
 #include "mesh/MeshData.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
@@ -899,7 +900,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             R.remove<VertexClass>(mesh_entity);
         }
 
-        R.replace<Mesh>(mesh_entity, Meshes->CreateMesh(std::move(wireframe.Data)));
+        R.replace<Mesh>(mesh_entity, Meshes->CreateMesh(std::move(wireframe.Data), {}, {}));
         const auto &mesh = R.get<const Mesh>(mesh_entity);
 
         if (auto *mb = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mb);
@@ -1391,7 +1392,7 @@ entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight>
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, std::optional<MeshInstanceCreateInfo> info) {
-    return AddMesh(Meshes->CreateMesh(std::move(data)), std::move(info));
+    return AddMesh(Meshes->CreateMesh(std::move(data), {}, {}), std::move(info));
 }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path &path, std::optional<MeshInstanceCreateInfo> info) {
@@ -1401,12 +1402,12 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
     if (!result->Materials.empty()) {
         auto &texture_store = *Textures;
         std::unordered_map<std::string, uint32_t> texture_slot_cache;
-        const auto resolve_texture_slot = [&](
-                                              const std::optional<std::filesystem::path> &source_texture_path,
-                                              TextureColorSpace color_space,
-                                              std::string_view material_name,
-                                              std::string_view texture_label
-                                          ) -> uint32_t {
+        const auto resolve_texture_slot =
+            [&](
+                const std::optional<std::filesystem::path> &source_texture_path,
+                TextureColorSpace color_space,
+                std::string_view material_name, std::string_view texture_label
+            ) -> uint32_t {
             if (!source_texture_path) return InvalidSlot;
             auto texture_path = *source_texture_path;
             if (texture_path.is_relative()) texture_path = path.parent_path() / texture_path;

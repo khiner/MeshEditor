@@ -123,7 +123,7 @@ void main() {
             tangent = normalize(trs_transform_normal(world, tangent));
             WorldTangent = vec4(tangent, vert.Tangent.w);
         } else {
-            WorldTangent = vec4(0.0, 0.0, 0.0, 1.0);
+            WorldTangent = vec4(0, 0, 0, 1);
         }
     }
     WorldScale = (world.Scale.x + world.Scale.y + world.Scale.z) / 3.0;

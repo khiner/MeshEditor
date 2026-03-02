@@ -19,6 +19,7 @@
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/ArmatureDeformData.h"
+#include "mesh/MeshAttributes.h"
 #include "mesh/MeshData.h"
 #include "mesh/MorphTargetData.h"
 #include "numeric/mat4.h"
@@ -62,6 +63,8 @@ struct Sampler {
 struct MeshData {
     // Merged triangle/line/point primitives (Triangles/TriangleStrip/TriangleFan, Lines/LineStrip/LineLoop, Points)
     std::optional<::MeshData> Triangles, Lines, Points;
+    ::MeshVertexAttributes TriangleAttrs;
+    ::MeshPrimitives TrianglePrimitives;
     std::optional<ArmatureDeformData> DeformData;
     std::optional<MorphTargetData> MorphData;
     std::string Name;

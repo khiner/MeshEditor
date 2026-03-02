@@ -11,19 +11,19 @@ using std::views::transform, std::ranges::find_if, std::ranges::to;
 
 #ifdef RELEASE_BUILD
 // All files in `src/shaders` are copied to `build/shaders` at build time.
-static const fs::path ShadersDir = "shaders";
+static const std::filesystem::path ShadersDir = "shaders";
 static const std::array ShaderIncludeDirs{ShadersDir};
 #else
-static const fs::path ShadersDir = "../src/shaders"; // Relative to `build/`.
-static const fs::path BuildShadersDir = "shaders";
+static const std::filesystem::path ShadersDir = "../src/shaders"; // Relative to `build/`.
+static const std::filesystem::path BuildShadersDir = "shaders";
 static const std::array ShaderIncludeDirs{ShadersDir, BuildShadersDir};
 #endif
 
-static fs::path ResolveIncludePath(const fs::path &requested) {
+static std::filesystem::path ResolveIncludePath(const std::filesystem::path &requested) {
     for (const auto &dir : ShaderIncludeDirs) {
         const auto candidate = dir / requested;
         std::error_code ec;
-        if (fs::exists(candidate, ec)) return candidate;
+        if (std::filesystem::exists(candidate, ec)) return candidate;
     }
     throw std::runtime_error(std::format("Failed to resolve shader path '{}'", requested.string()));
 }

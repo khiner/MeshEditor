@@ -423,6 +423,7 @@ std::expected<void, std::string> AppendPrimitive(
     const fastgltf::Asset &asset,
     const fastgltf::Primitive &primitive,
     ::MeshData &mesh,
+    ::MeshVertexAttributes &attrs,
     std::optional<ArmatureDeformData> &deform,
     std::optional<MorphTargetData> &morph
 ) {
@@ -449,61 +450,61 @@ std::expected<void, std::string> AppendPrimitive(
     const auto normal_it = primitive.findAttribute("NORMAL");
     const bool has_normals = normal_it != primitive.attributes.end();
     if (has_normals) {
-        if (!mesh.Normals) {
-            mesh.Normals.emplace();
+        if (!attrs.Normals) {
+            attrs.Normals.emplace();
             // Backfill zeros for vertices from earlier primitives that lacked normals
-            mesh.Normals->resize(base_vertex, vec3{0.f});
+            attrs.Normals->resize(base_vertex, vec3{0.f});
         }
         const auto &normal_accessor = asset.accessors[normal_it->accessorIndex];
-        mesh.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
-        fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*mesh.Normals)[base_vertex]);
-    } else if (mesh.Normals) {
+        attrs.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
+        fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*attrs.Normals)[base_vertex]);
+    } else if (attrs.Normals) {
         // Previous primitives had normals but this one doesn't — pad with zeros
-        mesh.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
+        attrs.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
     }
 
     const auto tangent_it = primitive.findAttribute("TANGENT");
     const bool has_tangents = tangent_it != primitive.attributes.end();
     if (has_tangents) {
-        if (!mesh.Tangents) {
-            mesh.Tangents.emplace();
-            mesh.Tangents->resize(base_vertex, vec4{0.f, 0.f, 0.f, 1.f});
+        if (!attrs.Tangents) {
+            attrs.Tangents.emplace();
+            attrs.Tangents->resize(base_vertex, vec4{0.f, 0.f, 0.f, 1.f});
         }
         const auto &tangent_accessor = asset.accessors[tangent_it->accessorIndex];
         if (tangent_accessor.count != position_accessor.count) {
             return std::unexpected{std::format("glTF primitive TANGENT count ({}) must match POSITION count ({}).", tangent_accessor.count, position_accessor.count)};
         }
-        mesh.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
-        fastgltf::copyFromAccessor<vec4>(asset, tangent_accessor, &(*mesh.Tangents)[base_vertex]);
-    } else if (mesh.Tangents) {
-        mesh.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
+        attrs.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
+        fastgltf::copyFromAccessor<vec4>(asset, tangent_accessor, &(*attrs.Tangents)[base_vertex]);
+    } else if (attrs.Tangents) {
+        attrs.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
     }
 
     const auto color_it = primitive.findAttribute("COLOR_0");
     const bool has_colors0 = color_it != primitive.attributes.end();
     if (has_colors0) {
-        if (!mesh.Colors0) {
-            mesh.Colors0.emplace();
-            mesh.Colors0->resize(base_vertex, vec4{1.f});
+        if (!attrs.Colors0) {
+            attrs.Colors0.emplace();
+            attrs.Colors0->resize(base_vertex, vec4{1.f});
         }
         const auto &color_accessor = asset.accessors[color_it->accessorIndex];
         if (color_accessor.count != position_accessor.count) {
             return std::unexpected{std::format("glTF primitive COLOR_0 count ({}) must match POSITION count ({}).", color_accessor.count, position_accessor.count)};
         }
-        mesh.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
+        attrs.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
         if (color_accessor.type == fastgltf::AccessorType::Vec3) {
             std::vector<vec3> colors(position_accessor.count);
             fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
             for (uint32_t i = 0; i < position_accessor.count; ++i) {
-                (*mesh.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
+                (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
             }
         } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
-            fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*mesh.Colors0)[base_vertex]);
+            fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*attrs.Colors0)[base_vertex]);
         } else {
             return std::unexpected{std::format("glTF primitive COLOR_0 accessor type must be VEC3 or VEC4, got type {}.", int(color_accessor.type))};
         }
-    } else if (mesh.Colors0) {
-        mesh.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
+    } else if (attrs.Colors0) {
+        attrs.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
     }
 
     const auto append_uv_set = [&](uint32_t set_index, std::optional<std::vector<vec2>> &uv_set) -> std::expected<void, std::string> {
@@ -526,10 +527,10 @@ std::expected<void, std::string> AppendPrimitive(
         }
         return {};
     };
-    if (auto uv_result = append_uv_set(0, mesh.TexCoords0); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(1, mesh.TexCoords1); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(2, mesh.TexCoords2); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(3, mesh.TexCoords3); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(0, attrs.TexCoords0); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(1, attrs.TexCoords1); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(2, attrs.TexCoords2); !uv_result) return uv_result;
+    if (auto uv_result = append_uv_set(3, attrs.TexCoords3); !uv_result) return uv_result;
 
     if (has_joints && !deform) deform.emplace();
     const bool mesh_has_skin = deform && (!deform->Joints.empty() || !deform->Weights.empty());
@@ -742,16 +743,14 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
 
     const auto &source_mesh = asset.meshes[source_mesh_index];
     ::MeshData mesh;
+    ::MeshVertexAttributes mesh_attrs;
     std::optional<ArmatureDeformData> mesh_deform;
     std::optional<MorphTargetData> mesh_morph;
     ::MeshData lines, points; // Merged across all line/point primitives
     // Track per-primitive vertex counts for morph target re-packing
     std::vector<uint32_t> prim_vertex_counts;
     std::vector<uint32_t> face_primitive_indices;
-    std::vector<uint32_t> primitive_material_indices(
-        source_mesh.primitives.size(),
-        scene.Materials.empty() ? 0u : uint32_t(scene.Materials.size() - 1u)
-    );
+    std::vector<uint32_t> primitive_material_indices(source_mesh.primitives.size(), scene.Materials.empty() ? 0u : uint32_t(scene.Materials.size() - 1u));
     for (uint32_t primitive_index = 0; primitive_index < source_mesh.primitives.size(); ++primitive_index) {
         const auto &primitive = source_mesh.primitives[primitive_index];
         if (const auto material_index = ToIndex(primitive.materialIndex, scene.Materials.size())) {
@@ -768,7 +767,7 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
         const uint32_t prev_vertex_count = mesh.Positions.size();
         const uint32_t prev_face_count = mesh.Faces.size();
         // AppendPrimitive enforces per-vertex/per-face channel alignment for CreateMesh.
-        if (auto append_result = AppendPrimitive(asset, primitive, mesh, mesh_deform, mesh_morph); !append_result) {
+        if (auto append_result = AppendPrimitive(asset, primitive, mesh, mesh_attrs, mesh_deform, mesh_morph); !append_result) {
             return std::unexpected{std::move(append_result.error())};
         }
         prim_vertex_counts.emplace_back(mesh.Positions.size() - prev_vertex_count);
@@ -828,22 +827,17 @@ std::expected<std::optional<uint32_t>, std::string> EnsureMeshData(const fastglt
         mesh_morph->DefaultWeights.assign(mesh_morph->TargetCount, 0.f);
     }
 
-    if (has_triangles) {
-        mesh.FacePrimitiveIndices = std::move(face_primitive_indices);
-        mesh.PrimitiveMaterialIndices = std::move(primitive_material_indices);
-    }
-
     const auto mesh_index = scene.Meshes.size();
-    scene.Meshes.emplace_back(
-        MeshData{
-            .Triangles = has_triangles ? std::optional{std::move(mesh)} : std::nullopt,
-            .Lines = has_lines ? std::optional{std::move(lines)} : std::nullopt,
-            .Points = has_points ? std::optional{std::move(points)} : std::nullopt,
-            .DeformData = std::move(mesh_deform),
-            .MorphData = std::move(mesh_morph),
-            .Name = source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name),
-        }
-    );
+    scene.Meshes.emplace_back(MeshData{
+        .Triangles = has_triangles ? std::optional{std::move(mesh)} : std::nullopt,
+        .Lines = has_lines ? std::optional{std::move(lines)} : std::nullopt,
+        .Points = has_points ? std::optional{std::move(points)} : std::nullopt,
+        .TriangleAttrs = std::move(mesh_attrs),
+        .TrianglePrimitives = has_triangles ? ::MeshPrimitives{std::move(face_primitive_indices), std::move(primitive_material_indices)} : ::MeshPrimitives{},
+        .DeformData = std::move(mesh_deform),
+        .MorphData = std::move(mesh_morph),
+        .Name = source_mesh.name.empty() ? std::format("Mesh{}", source_mesh_index) : std::string(source_mesh.name),
+    });
     mesh_index_map.emplace(source_mesh_index, mesh_index);
     return std::optional<uint32_t>{mesh_index};
 }
@@ -1069,15 +1063,13 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
 
     scene.Samplers.reserve(asset.samplers.size());
     for (const auto &sampler : asset.samplers) {
-        scene.Samplers.emplace_back(
-            Sampler{
-                .MagFilter = ToFilter(sampler.magFilter),
-                .MinFilter = ToFilter(sampler.minFilter),
-                .WrapS = ToWrap(sampler.wrapS),
-                .WrapT = ToWrap(sampler.wrapT),
-                .Name = std::string(sampler.name),
-            }
-        );
+        scene.Samplers.emplace_back(Sampler{
+            .MagFilter = ToFilter(sampler.magFilter),
+            .MinFilter = ToFilter(sampler.minFilter),
+            .WrapS = ToWrap(sampler.wrapS),
+            .WrapT = ToWrap(sampler.wrapT),
+            .Name = std::string(sampler.name),
+        });
     }
 
     scene.Images.reserve(asset.images.size());
@@ -1089,16 +1081,14 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
 
     scene.Textures.reserve(asset.textures.size());
     for (const auto &texture : asset.textures) {
-        scene.Textures.emplace_back(
-            Texture{
-                .SamplerIndex = ToIndex(texture.samplerIndex, asset.samplers.size()),
-                .ImageIndex = ToIndex(texture.imageIndex, asset.images.size()),
-                .WebpImageIndex = ToIndex(texture.webpImageIndex, asset.images.size()),
-                .BasisuImageIndex = ToIndex(texture.basisuImageIndex, asset.images.size()),
-                .DdsImageIndex = ToIndex(texture.ddsImageIndex, asset.images.size()),
-                .Name = std::string(texture.name),
-            }
-        );
+        scene.Textures.emplace_back(Texture{
+            .SamplerIndex = ToIndex(texture.samplerIndex, asset.samplers.size()),
+            .ImageIndex = ToIndex(texture.imageIndex, asset.images.size()),
+            .WebpImageIndex = ToIndex(texture.webpImageIndex, asset.images.size()),
+            .BasisuImageIndex = ToIndex(texture.basisuImageIndex, asset.images.size()),
+            .DdsImageIndex = ToIndex(texture.ddsImageIndex, asset.images.size()),
+            .Name = std::string(texture.name),
+        });
     }
 
     scene.Materials.reserve(asset.materials.size() + 1u);
@@ -1323,20 +1313,18 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                 const auto &source_weights = asset.nodes[node_index].weights;
                 auto node_weights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())};
                 for (uint32_t i = 0; i < instance_transforms.size(); ++i) {
-                    scene.Objects.emplace_back(
-                        Object{
-                            .ObjectType = Object::Type::Mesh,
-                            .NodeIndex = node.NodeIndex,
-                            .ParentNodeIndex = std::nullopt,
-                            .WorldTransform = MatrixToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])),
-                            .MeshIndex = node.MeshIndex,
-                            .SkinIndex = node.SkinIndex,
-                            .CameraIndex = {},
-                            .LightIndex = {},
-                            .NodeWeights = node_weights,
-                            .Name = base_name + "." + std::to_string(i),
-                        }
-                    );
+                    scene.Objects.emplace_back(Object{
+                        .ObjectType = Object::Type::Mesh,
+                        .NodeIndex = node.NodeIndex,
+                        .ParentNodeIndex = std::nullopt,
+                        .WorldTransform = MatrixToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])),
+                        .MeshIndex = node.MeshIndex,
+                        .SkinIndex = node.SkinIndex,
+                        .CameraIndex = {},
+                        .LightIndex = {},
+                        .NodeWeights = node_weights,
+                        .Name = base_name + "." + std::to_string(i),
+                    });
                 }
             } else {
                 const auto &source_weights = asset.nodes[node_index].weights;
@@ -1344,20 +1332,18 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                     node.CameraIndex                    ? Object::Type::Camera :
                     node.LightIndex                     ? Object::Type::Light :
                                                           Object::Type::Empty;
-                scene.Objects.emplace_back(
-                    Object{
-                        .ObjectType = object_type,
-                        .NodeIndex = node.NodeIndex,
-                        .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
-                        .WorldTransform = node.WorldTransform,
-                        .MeshIndex = node.MeshIndex,
-                        .SkinIndex = node.SkinIndex,
-                        .CameraIndex = node.CameraIndex,
-                        .LightIndex = node.LightIndex,
-                        .NodeWeights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())},
-                        .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
-                    }
-                );
+                scene.Objects.emplace_back(Object{
+                    .ObjectType = object_type,
+                    .NodeIndex = node.NodeIndex,
+                    .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
+                    .WorldTransform = node.WorldTransform,
+                    .MeshIndex = node.MeshIndex,
+                    .SkinIndex = node.SkinIndex,
+                    .CameraIndex = node.CameraIndex,
+                    .LightIndex = node.LightIndex,
+                    .NodeWeights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())},
+                    .Name = MakeNodeName(asset, node.NodeIndex, source_mesh_index),
+                });
             }
         }
     }
@@ -1409,14 +1395,12 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             auto rest_local = ComputeJointRestLocal(skin_index, joint_node_index, parent_joint_node_index, scene_skin.AnchorNodeIndex, parents, local_transforms);
             if (!rest_local) return std::unexpected{rest_local.error()};
 
-            scene_skin.Joints.emplace_back(
-                SkinJoint{
-                    .JointNodeIndex = joint_node_index,
-                    .ParentJointNodeIndex = parent_joint_node_index,
-                    .RestLocal = *rest_local,
-                    .Name = MakeNodeName(asset, joint_node_index),
-                }
-            );
+            scene_skin.Joints.emplace_back(SkinJoint{
+                .JointNodeIndex = joint_node_index,
+                .ParentJointNodeIndex = parent_joint_node_index,
+                .RestLocal = *rest_local,
+                .Name = MakeNodeName(asset, joint_node_index),
+            });
         }
         scene_skin.InverseBindMatrices = LoadInverseBindMatrices(asset, skin, uint32_t(scene_skin.Joints.size()));
         if (scene_skin.AnchorNodeIndex && traversal.InScene[*scene_skin.AnchorNodeIndex]) {

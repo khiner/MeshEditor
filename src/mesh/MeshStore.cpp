@@ -1,4 +1,5 @@
 #include "MeshStore.h"
+#include "MeshAttributes.h"
 #include "MeshData.h"
 
 #include <limits>
@@ -13,6 +14,8 @@ constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
 struct MeshDataWithMaterials {
     MeshData Mesh;
+    MeshVertexAttributes Attrs;
+    MeshPrimitives Primitives;
     std::vector<ObjPlyMaterial> Materials;
 };
 
@@ -71,10 +74,11 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
 
     MeshDataWithMaterials result{};
     auto &data = result.Mesh;
+    auto &attrs = result.Attrs;
     const bool has_normals = !attrib.normals.empty();
     const bool has_texcoords = !attrib.texcoords.empty();
-    if (has_normals) data.Normals = std::vector<vec3>{};
-    if (has_texcoords) data.TexCoords0 = std::vector<vec2>{};
+    if (has_normals) attrs.Normals = std::vector<vec3>{};
+    if (has_texcoords) attrs.TexCoords0 = std::vector<vec2>{};
 
     struct ObjVertexKey {
         int PositionIndex;
@@ -107,26 +111,26 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
             attrib.vertices[size_t(index.vertex_index) * 3u + 2u]
         );
 
-        if (data.Normals) {
+        if (attrs.Normals) {
             if (index.normal_index >= 0 && size_t(index.normal_index) * 3u + 2u < attrib.normals.size()) {
-                data.Normals->emplace_back(
+                attrs.Normals->emplace_back(
                     attrib.normals[size_t(index.normal_index) * 3u],
                     attrib.normals[size_t(index.normal_index) * 3u + 1u],
                     attrib.normals[size_t(index.normal_index) * 3u + 2u]
                 );
             } else {
-                data.Normals->emplace_back(vec3{0.f});
+                attrs.Normals->emplace_back(vec3{0.f});
             }
         }
 
-        if (data.TexCoords0) {
+        if (attrs.TexCoords0) {
             if (index.texcoord_index >= 0 && size_t(index.texcoord_index) * 2u + 1u < attrib.texcoords.size()) {
-                data.TexCoords0->emplace_back(
+                attrs.TexCoords0->emplace_back(
                     attrib.texcoords[size_t(index.texcoord_index) * 2u],
                     attrib.texcoords[size_t(index.texcoord_index) * 2u + 1u]
                 );
             } else {
-                data.TexCoords0->emplace_back(vec2{0.f});
+                attrs.TexCoords0->emplace_back(vec2{0.f});
             }
         }
 
@@ -174,8 +178,8 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     }
 
     if (!face_primitive_indices.empty()) {
-        data.FacePrimitiveIndices = std::move(face_primitive_indices);
-        data.PrimitiveMaterialIndices = std::move(primitive_material_indices);
+        result.Primitives.FacePrimitiveIndices = std::move(face_primitive_indices);
+        result.Primitives.MaterialIndices = std::move(primitive_material_indices);
     }
     return result;
 }
@@ -286,27 +290,27 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
         // Bake vertex colors down to one albedo value for now (no per-vertex color channel in the render path yet).
         const auto avg = ComputeAverageVertexColor(*colors);
         result.Materials.emplace_back(ObjPlyMaterial{.BaseColorFactor = {avg.x, avg.y, avg.z, 1.f}, .MetallicFactor = 0.f, .RoughnessFactor = 1.f, .Name = "VertexColor"});
-        data.FacePrimitiveIndices = std::vector<uint32_t>(data.Faces.size(), 0u);
-        data.PrimitiveMaterialIndices = std::vector<uint32_t>{0u};
+        result.Primitives.FacePrimitiveIndices = std::vector<uint32_t>(data.Faces.size(), 0u);
+        result.Primitives.MaterialIndices = std::vector<uint32_t>{0u};
     }
 
     return result;
 }
 
-MeshData DeduplicateVertices(MeshData &&mesh) {
+std::pair<MeshData, MeshVertexAttributes> DeduplicateVertices(MeshData &&mesh, MeshVertexAttributes &&attrs) {
     // todo we shouldn't deduplicate vertices when textures are present.
     // position-only merging split causes UV seams / hard normals get collapsed,
     // which breaks texture mapping and shading.
     // However, this breaks RealImpact/excitation behavior.
     // const bool has_vertex_channels =
-    //     mesh.Normals.has_value() ||
-    //     mesh.Tangents.has_value() ||
-    //     mesh.Colors0.has_value() ||
-    //     mesh.TexCoords0.has_value() ||
-    //     mesh.TexCoords1.has_value() ||
-    //     mesh.TexCoords2.has_value() ||
-    //     mesh.TexCoords3.has_value();
-    // if (has_vertex_channels) return std::move(mesh);
+    //     attrs.Normals.has_value() ||
+    //     attrs.Tangents.has_value() ||
+    //     attrs.Colors0.has_value() ||
+    //     attrs.TexCoords0.has_value() ||
+    //     attrs.TexCoords1.has_value() ||
+    //     attrs.TexCoords2.has_value() ||
+    //     attrs.TexCoords3.has_value();
+    // if (has_vertex_channels) return {std::move(mesh), std::move(attrs)};
 
     struct VertexHash {
         constexpr size_t operator()(const vec3 &p) const noexcept {
@@ -315,34 +319,35 @@ MeshData DeduplicateVertices(MeshData &&mesh) {
     };
 
     MeshData deduped;
+    MeshVertexAttributes deduped_attrs;
     deduped.Positions.reserve(mesh.Positions.size());
-    if (mesh.Normals && mesh.Normals->size() == mesh.Positions.size()) {
-        deduped.Normals = std::vector<vec3>{};
-        deduped.Normals->reserve(mesh.Normals->size());
+    if (attrs.Normals && attrs.Normals->size() == mesh.Positions.size()) {
+        deduped_attrs.Normals = std::vector<vec3>{};
+        deduped_attrs.Normals->reserve(attrs.Normals->size());
     }
-    if (mesh.Tangents && mesh.Tangents->size() == mesh.Positions.size()) {
-        deduped.Tangents = std::vector<vec4>{};
-        deduped.Tangents->reserve(mesh.Tangents->size());
+    if (attrs.Tangents && attrs.Tangents->size() == mesh.Positions.size()) {
+        deduped_attrs.Tangents = std::vector<vec4>{};
+        deduped_attrs.Tangents->reserve(attrs.Tangents->size());
     }
-    if (mesh.Colors0 && mesh.Colors0->size() == mesh.Positions.size()) {
-        deduped.Colors0 = std::vector<vec4>{};
-        deduped.Colors0->reserve(mesh.Colors0->size());
+    if (attrs.Colors0 && attrs.Colors0->size() == mesh.Positions.size()) {
+        deduped_attrs.Colors0 = std::vector<vec4>{};
+        deduped_attrs.Colors0->reserve(attrs.Colors0->size());
     }
-    if (mesh.TexCoords0 && mesh.TexCoords0->size() == mesh.Positions.size()) {
-        deduped.TexCoords0 = std::vector<vec2>{};
-        deduped.TexCoords0->reserve(mesh.TexCoords0->size());
+    if (attrs.TexCoords0 && attrs.TexCoords0->size() == mesh.Positions.size()) {
+        deduped_attrs.TexCoords0 = std::vector<vec2>{};
+        deduped_attrs.TexCoords0->reserve(attrs.TexCoords0->size());
     }
-    if (mesh.TexCoords1 && mesh.TexCoords1->size() == mesh.Positions.size()) {
-        deduped.TexCoords1 = std::vector<vec2>{};
-        deduped.TexCoords1->reserve(mesh.TexCoords1->size());
+    if (attrs.TexCoords1 && attrs.TexCoords1->size() == mesh.Positions.size()) {
+        deduped_attrs.TexCoords1 = std::vector<vec2>{};
+        deduped_attrs.TexCoords1->reserve(attrs.TexCoords1->size());
     }
-    if (mesh.TexCoords2 && mesh.TexCoords2->size() == mesh.Positions.size()) {
-        deduped.TexCoords2 = std::vector<vec2>{};
-        deduped.TexCoords2->reserve(mesh.TexCoords2->size());
+    if (attrs.TexCoords2 && attrs.TexCoords2->size() == mesh.Positions.size()) {
+        deduped_attrs.TexCoords2 = std::vector<vec2>{};
+        deduped_attrs.TexCoords2->reserve(attrs.TexCoords2->size());
     }
-    if (mesh.TexCoords3 && mesh.TexCoords3->size() == mesh.Positions.size()) {
-        deduped.TexCoords3 = std::vector<vec2>{};
-        deduped.TexCoords3->reserve(mesh.TexCoords3->size());
+    if (attrs.TexCoords3 && attrs.TexCoords3->size() == mesh.Positions.size()) {
+        deduped_attrs.TexCoords3 = std::vector<vec2>{};
+        deduped_attrs.TexCoords3->reserve(attrs.TexCoords3->size());
     }
     std::unordered_map<vec3, uint, VertexHash> index_by_vertex;
     std::vector<uint32_t> remap(mesh.Positions.size(), 0u);
@@ -352,13 +357,13 @@ MeshData DeduplicateVertices(MeshData &&mesh) {
         remap[i] = it->second;
         if (inserted) {
             deduped.Positions.emplace_back(p);
-            if (deduped.Normals) deduped.Normals->emplace_back((*mesh.Normals)[i]);
-            if (deduped.Tangents) deduped.Tangents->emplace_back((*mesh.Tangents)[i]);
-            if (deduped.Colors0) deduped.Colors0->emplace_back((*mesh.Colors0)[i]);
-            if (deduped.TexCoords0) deduped.TexCoords0->emplace_back((*mesh.TexCoords0)[i]);
-            if (deduped.TexCoords1) deduped.TexCoords1->emplace_back((*mesh.TexCoords1)[i]);
-            if (deduped.TexCoords2) deduped.TexCoords2->emplace_back((*mesh.TexCoords2)[i]);
-            if (deduped.TexCoords3) deduped.TexCoords3->emplace_back((*mesh.TexCoords3)[i]);
+            if (deduped_attrs.Normals) deduped_attrs.Normals->emplace_back((*attrs.Normals)[i]);
+            if (deduped_attrs.Tangents) deduped_attrs.Tangents->emplace_back((*attrs.Tangents)[i]);
+            if (deduped_attrs.Colors0) deduped_attrs.Colors0->emplace_back((*attrs.Colors0)[i]);
+            if (deduped_attrs.TexCoords0) deduped_attrs.TexCoords0->emplace_back((*attrs.TexCoords0)[i]);
+            if (deduped_attrs.TexCoords1) deduped_attrs.TexCoords1->emplace_back((*attrs.TexCoords1)[i]);
+            if (deduped_attrs.TexCoords2) deduped_attrs.TexCoords2->emplace_back((*attrs.TexCoords2)[i]);
+            if (deduped_attrs.TexCoords3) deduped_attrs.TexCoords3->emplace_back((*attrs.TexCoords3)[i]);
         }
     }
 
@@ -371,10 +376,8 @@ MeshData DeduplicateVertices(MeshData &&mesh) {
     }
     deduped.Edges.reserve(mesh.Edges.size());
     for (const auto &edge : mesh.Edges) deduped.Edges.emplace_back(std::array<uint32_t, 2>{remap[edge[0]], remap[edge[1]]});
-    deduped.FacePrimitiveIndices = std::move(mesh.FacePrimitiveIndices);
-    deduped.PrimitiveMaterialIndices = std::move(mesh.PrimitiveMaterialIndices);
 
-    return deduped;
+    return {std::move(deduped), std::move(deduped_attrs)};
 }
 
 std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_t>> &faces) {
@@ -441,7 +444,7 @@ void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
     }
 }
 
-Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
+Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
     // Current mesh loaders/builders provide channel vectors already aligned to Positions/Faces.
     const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
     const auto vertices = AllocateVertices(vertex_count);
@@ -449,12 +452,12 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
     for (uint32_t i = 0; i < vertex_count; ++i) {
         vertex_span[i] = {
             .Position = data.Positions[i],
-            .Tangent = data.Tangents ? (*data.Tangents)[i] : vec4{0.f, 0.f, 0.f, 1.f},
-            .Color = data.Colors0 ? (*data.Colors0)[i] : vec4{1.f},
-            .TexCoord0 = data.TexCoords0 ? (*data.TexCoords0)[i] : vec2{0},
-            .TexCoord1 = data.TexCoords1 ? (*data.TexCoords1)[i] : vec2{0},
-            .TexCoord2 = data.TexCoords2 ? (*data.TexCoords2)[i] : vec2{0},
-            .TexCoord3 = data.TexCoords3 ? (*data.TexCoords3)[i] : vec2{0},
+            .Tangent = attrs.Tangents ? (*attrs.Tangents)[i] : vec4{0.f, 0.f, 0.f, 1.f},
+            .Color = attrs.Colors0 ? (*attrs.Colors0)[i] : vec4{1.f},
+            .TexCoord0 = attrs.TexCoords0 ? (*attrs.TexCoords0)[i] : vec2{0},
+            .TexCoord1 = attrs.TexCoords1 ? (*attrs.TexCoords1)[i] : vec2{0},
+            .TexCoord2 = attrs.TexCoords2 ? (*attrs.TexCoords2)[i] : vec2{0},
+            .TexCoord3 = attrs.TexCoords3 ? (*attrs.TexCoords3)[i] : vec2{0},
         };
     }
     Range bone_deform{};
@@ -462,10 +465,7 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         bone_deform = BoneDeformBuffer.Allocate(vertex_count);
         auto bd_span = BoneDeformBuffer.GetMutable(bone_deform);
         for (uint32_t i = 0; i < vertex_count; ++i) {
-            bd_span[i] = BoneDeformVertex{
-                .Joints = deform->Joints[i],
-                .Weights = deform->Weights[i],
-            };
+            bd_span[i] = {.Joints = deform->Joints[i], .Weights = deform->Weights[i]};
         }
     }
     Range morph_targets{};
@@ -495,14 +495,14 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
         triangle_face_ids = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
 
         std::vector<uint32_t> face_primitive_indices(data.Faces.size(), 0u);
-        if (data.FacePrimitiveIndices) face_primitive_indices = *data.FacePrimitiveIndices;
+        if (!primitives.FacePrimitiveIndices.empty()) face_primitive_indices = std::move(primitives.FacePrimitiveIndices);
         face_primitives = FacePrimitiveBuffer.Allocate(face_primitive_indices);
 
-        const auto primitive_count = data.FacePrimitiveIndices ?
+        const auto primitive_count = !primitives.MaterialIndices.empty() ?
             (face_primitive_indices.empty() ? 0u : *std::ranges::max_element(face_primitive_indices) + 1u) :
             1u;
         std::vector<uint32_t> primitive_material_indices(primitive_count, 0u);
-        if (data.PrimitiveMaterialIndices) primitive_material_indices = *data.PrimitiveMaterialIndices;
+        if (!primitives.MaterialIndices.empty()) primitive_material_indices = std::move(primitives.MaterialIndices);
         primitive_materials = PrimitiveMaterialBuffer.Allocate(primitive_material_indices);
     }
 
@@ -529,9 +529,9 @@ Mesh MeshStore::CreateMesh(MeshData &&data, std::optional<ArmatureDeformData> de
     auto &entry = Entries[id];
 
     if (!data.Faces.empty()) {
-        if (data.Normals) {
+        if (attrs.Normals) {
             auto verts = GetVertices(id);
-            for (uint32_t i = 0; i < vertex_count; ++i) verts[i].Normal = (*data.Normals)[i];
+            for (uint32_t i = 0; i < vertex_count; ++i) verts[i].Normal = (*attrs.Normals)[i];
             UpdateNormals(mesh, /*skip_nonzero=*/true);
         } else {
             UpdateNormals(mesh);
@@ -587,8 +587,9 @@ std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::fil
     } catch (const std::exception &e) {
         return std::unexpected{e.what()};
     }
+    auto [mesh, attrs] = DeduplicateVertices(std::move(source.Mesh), std::move(source.Attrs));
     return MeshWithMaterials{
-        .Mesh = CreateMesh(DeduplicateVertices(std::move(source.Mesh))),
+        .Mesh = CreateMesh(std::move(mesh), std::move(attrs), std::move(source.Primitives)),
         .Materials = std::move(source.Materials),
     };
 }

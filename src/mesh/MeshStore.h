@@ -5,7 +5,6 @@
 #include "MorphTargetData.h"
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/MorphTargetVertex.h"
-#include "numeric/vec4.h"
 #include "vulkan/BufferArena.h"
 
 #include <expected>
@@ -14,7 +13,6 @@
 #include <span>
 #include <string>
 #include <unordered_set>
-#include <vector>
 
 struct ObjPlyMaterial {
     vec4 BaseColorFactor;
@@ -32,12 +30,14 @@ struct MeshWithMaterials {
 };
 
 struct MeshData;
+struct MeshVertexAttributes;
+struct MeshPrimitives;
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
 
-    Mesh CreateMesh(MeshData &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
+    Mesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     Mesh CloneMesh(const Mesh &);
     std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &);
 

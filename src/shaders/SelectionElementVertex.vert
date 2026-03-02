@@ -14,7 +14,7 @@ void main() {
         const uint state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + idx]);
         if ((state & STATE_SELECTED) == 0u) {
             // Clip non-selected vertices by placing them outside the frustum.
-            gl_Position = vec4(0.0, 0.0, 0.0, 0.0);
+            gl_Position = vec4(0, 0, 0, 0);
             gl_PointSize = 0.0;
             ElementId = 0u;
             return;

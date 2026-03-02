@@ -206,15 +206,16 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         auto &scene_mesh = scene->Meshes[mi];
         entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
-            if (scene_mesh.Triangles->PrimitiveMaterialIndices) {
-                for (auto &local_material_index : *scene_mesh.Triangles->PrimitiveMaterialIndices) {
-                    local_material_index = local_material_index < material_indices_by_gltf_material.size() ?
-                        material_indices_by_gltf_material[local_material_index] :
-                        fallback_material_index;
-                }
+            for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) {
+                local_material_index = local_material_index < material_indices_by_gltf_material.size() ?
+                    material_indices_by_gltf_material[local_material_index] :
+                    fallback_material_index;
             }
             auto morph_data_copy = scene_mesh.MorphData; // Keep a copy for component setup
-            auto mesh = Meshes->CreateMesh(std::move(*scene_mesh.Triangles), std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData));
+            auto mesh = Meshes->CreateMesh(
+                std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
+                std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData)
+            );
             const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
             mesh_entity = me;
             R.emplace<Path>(mesh_entity, path);
@@ -227,7 +228,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
         auto create_extra = [&](std::optional<MeshData> &data) -> entt::entity {
             if (!data) return entt::null;
-            auto m = Meshes->CreateMesh(std::move(*data));
+            auto m = Meshes->CreateMesh(std::move(*data), {}, {});
             const auto [e, _] = AddMesh(std::move(m), std::nullopt);
             R.emplace<Path>(e, path);
             if (first_mesh_entity == entt::null) first_mesh_entity = e;
