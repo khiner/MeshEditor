@@ -232,6 +232,15 @@ void main() {
     if (material.Transmission.Texture.Slot != INVALID_SLOT) {
         transmissionFactor *= texture(Samplers[nonuniformEXT(material.Transmission.Texture.Slot)], GetUv(material.Transmission.Texture)).r;
     }
+    // KHR_materials_diffuse_transmission
+    float diffuseTransmissionFactor = material.DiffuseTransmission.Factor;
+    if (material.DiffuseTransmission.Texture.Slot != INVALID_SLOT) {
+        diffuseTransmissionFactor *= texture(Samplers[nonuniformEXT(material.DiffuseTransmission.Texture.Slot)], GetUv(material.DiffuseTransmission.Texture)).a;
+    }
+    vec3 diffuseTransmissionColor = material.DiffuseTransmission.ColorFactor;
+    if (material.DiffuseTransmission.ColorTexture.Slot != INVALID_SLOT) {
+        diffuseTransmissionColor *= texture(Samplers[nonuniformEXT(material.DiffuseTransmission.ColorTexture.Slot)], GetUv(material.DiffuseTransmission.ColorTexture)).rgb;
+    }
     // KHR_materials_volume: ThicknessFactor is model-space; multiply by world scale for Beer's law.
     float worldThickness = material.Volume.ThicknessFactor * WorldScale;
     if (material.Volume.ThicknessTexture.Slot != INVALID_SLOT) {
@@ -308,10 +317,22 @@ void main() {
             const float NdotH = clampedDot(n, H);
             const float VdotH = clampedDot(v, H);
 
-            const vec3 dielectric_fresnel = F_Schlick(f0_dielectric * specularWeight, f90_dielectric, abs(VdotH));
+            vec3 dielectric_fresnel = F_Schlick(f0_dielectric * specularWeight, f90_dielectric, abs(VdotH));
             const vec3 metal_fresnel = F_Schlick(base_color.rgb, vec3(1.0), abs(VdotH));
 
             vec3 l_diffuse = light_intensity * NdotL * BRDF_lambertian(base_color.rgb);
+            if (diffuseTransmissionFactor > 0.0) {
+                l_diffuse *= (1.0 - diffuseTransmissionFactor);
+                if (dot(n, L) < 0.0) {
+                    const float diffuseNdotL = clampedDot(-n, L);
+                    vec3 l_diffuse_btdf = light_intensity * diffuseNdotL * BRDF_lambertian(diffuseTransmissionColor);
+                    const vec3 l_mirror = normalize(L + 2.0 * n * dot(-L, n));
+                    const float diffuseVdotH = clampedDot(v, normalize(l_mirror + v));
+                    dielectric_fresnel = F_Schlick(f0_dielectric * specularWeight, f90_dielectric, abs(diffuseVdotH));
+                    l_diffuse_btdf = applyVolumeAttenuation(l_diffuse_btdf, worldThickness, material.Volume.AttenuationColor, material.Volume.AttenuationDistance);
+                    l_diffuse += l_diffuse_btdf * diffuseTransmissionFactor;
+                }
+            }
             if (transmissionFactor > 0.0) {
                 vec3 l_transmit = light_intensity * getPunctualRadianceTransmission(n, v, L, alphaRoughness, base_color.rgb, material.Ior);
                 l_transmit = applyVolumeAttenuation(l_transmit, worldThickness, material.Volume.AttenuationColor, material.Volume.AttenuationDistance);
@@ -350,6 +371,11 @@ void main() {
     }
 
     vec3 f_diffuse = getDiffuseLight(n) * base_color.rgb;
+    if (diffuseTransmissionFactor > 0.0) {
+        vec3 f_diffuse_transmission = getDiffuseLight(-n) * diffuseTransmissionColor;
+        f_diffuse_transmission = applyVolumeAttenuation(f_diffuse_transmission, worldThickness, material.Volume.AttenuationColor, material.Volume.AttenuationDistance);
+        f_diffuse = mix(f_diffuse, f_diffuse_transmission, diffuseTransmissionFactor);
+    }
     if (transmissionFactor > 0.0) {
         vec3 f_transmission = getIBLVolumeRefraction(n, v, perceptualRoughness, material.Ior) * base_color.rgb;
         f_transmission = applyVolumeAttenuation(f_transmission, worldThickness, material.Volume.AttenuationColor, material.Volume.AttenuationDistance);

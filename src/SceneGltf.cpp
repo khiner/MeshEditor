@@ -163,6 +163,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                     !check(gpu_material.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor") ||
                     !check(gpu_material.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness") ||
                     !check(gpu_material.Transmission.Texture, TextureColorSpace::Linear, "transmission") ||
+                    !check(gpu_material.DiffuseTransmission.Texture, TextureColorSpace::Linear, "diffuseTransmission") ||
+                    !check(gpu_material.DiffuseTransmission.ColorTexture, TextureColorSpace::Srgb, "diffuseTransmissionColor") ||
                     !check(gpu_material.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness") ||
                     !check(gpu_material.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat") ||
                     !check(gpu_material.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness") ||

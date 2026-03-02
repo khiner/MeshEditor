@@ -385,6 +385,18 @@ structs:
         default: 0
       - name: Texture
         type: TextureInfo
+  - name: DiffuseTransmission
+    fields:
+      - name: Factor
+        type: float
+        default: 0
+      - name: ColorFactor
+        type: vec3
+        default: 1
+      - name: Texture
+        type: TextureInfo
+      - name: ColorTexture
+        type: TextureInfo
   - name: Volume
     fields:
       - name: ThicknessFactor
@@ -492,6 +504,8 @@ structs:
         type: Specular
       - name: Transmission
         type: Transmission
+      - name: DiffuseTransmission
+        type: DiffuseTransmission
       - name: Volume
         type: Volume
       - name: Clearcoat

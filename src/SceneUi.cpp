@@ -1151,6 +1151,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     // 0 = infinite/disabled; display "Infinite" when zero.
                     material_changed |= DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
                 }
+                material_changed |= SliderFloat("Diffuse transmission", &material.DiffuseTransmission.Factor, 0.f, 1.f);
+                if (material.DiffuseTransmission.Factor > 0.f) {
+                    material_changed |= edit_texture_info("Diffuse transmission", material.DiffuseTransmission.Texture);
+                    material_changed |= ColorEdit3("Diffuse transmission color", &material.DiffuseTransmission.ColorFactor.x);
+                    material_changed |= edit_texture_info("Diffuse transmission color", material.DiffuseTransmission.ColorTexture);
+                }
 
                 // Clearcoat
                 material_changed |= SliderFloat("Clearcoat", &material.Clearcoat.Factor, 0.f, 1.f);
