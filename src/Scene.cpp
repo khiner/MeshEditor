@@ -57,6 +57,16 @@ void WaitFor(vk::Fence fence, vk::Device device) {
     }
     device.resetFences(fence);
 }
+
+vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent) {
+    const auto scale = ImGui::GetIO().DisplayFramebufferScale;
+    const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
+        if (logical == 0u) return 0u;
+        const float scale_value = s > 0.0f ? s : 1.0f;
+        return std::max(1u, uint32_t(float(logical) * scale_value + 0.5f));
+    };
+    return {scaled_dim(logical_extent.width, scale.x), scaled_dim(logical_extent.height, scale.y)};
+}
 } // namespace
 
 #include "scene_impl/SceneComponents.h"
@@ -1092,8 +1102,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (SavedViewCamera) {
             const auto active_entity = FindActiveEntity(R);
             if (const auto *cd = active_entity != entt::null ? R.try_get<Camera>(active_entity) : nullptr) {
-                const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-                const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
+                const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
+                const auto render_extent = ComputeRenderExtentPx(logical_extent);
+                const float viewport_aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
                 R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(*cd, viewport_aspect);
             }
         }
@@ -1111,13 +1122,14 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const float background_blur = use_scene_world ? 0.f : active_lighting.BackgroundBlur;
         const float world_opacity = is_pbr_mode ? (use_scene_world ? 1.f : active_lighting.WorldOpacity) : 0.f;
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
-        const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-        const float viewport_height = extent.height > 0 ? float(extent.height) : 1.f;
+        const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
+        const auto render_extent = ComputeRenderExtentPx(logical_extent);
+        const float viewport_height = render_extent.height > 0 ? float(render_extent.height) : 1.f;
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
         const float screen_pixel_scale = ScreenPixelScale(camera.Data, viewport_height);
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
-            .ViewProj = camera.Projection(extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height)) * camera.View(),
+            .ViewProj = camera.Projection(render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height)) * camera.View(),
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip(),
             .CameraFar = camera.FarClip(),
@@ -2099,11 +2111,11 @@ void Scene::RecordRenderCommandBuffer() {
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
-    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value);
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
     const uint32_t transform_vertex_state_slot = is_edit_mode ? Meshes->GetVertexStateSlot() : InvalidSlot;
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
@@ -2331,9 +2343,9 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value);
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
@@ -2469,9 +2481,9 @@ void Scene::RenderElementSelectionPass(
         );
     }
 
-    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, extent});
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value);
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
     if (render_depth) {
         const auto &silhouette = Pipelines->Silhouette;
@@ -2858,12 +2870,22 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
 }
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
-    auto &extent = R.get<ViewportExtent>(SceneEntity).Value;
+    auto &logical_extent = R.get<ViewportExtent>(SceneEntity).Value;
     const auto content_region = ImGui::GetContentRegionAvail();
-    const bool extent_changed = extent.width != content_region.x || extent.height != content_region.y;
+    const vk::Extent2D new_logical_extent{
+        uint32_t(std::max(content_region.x, 0.0f)),
+        uint32_t(std::max(content_region.y, 0.0f))
+    };
+    const bool extent_changed = logical_extent.width != new_logical_extent.width || logical_extent.height != new_logical_extent.height;
     if (extent_changed) {
-        extent.width = uint(content_region.x);
-        extent.height = uint(content_region.y);
+        logical_extent = new_logical_extent;
+        R.patch<ViewportExtent>(SceneEntity, [](auto &) {});
+    }
+    const auto render_extent = ComputeRenderExtentPx(logical_extent);
+    const auto current_render_extent = Pipelines->Main.Resources ? ToExtent2D(Pipelines->Main.Resources->ResolveImage.Extent) : vk::Extent2D{};
+    const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
+    if (render_extent_changed && !extent_changed) {
+        // Trigger SceneView update (projection, screen pixel scale) when DPI scale changes at fixed logical viewport size.
         R.patch<ViewportExtent>(SceneEntity, [](auto &) {});
     }
 
@@ -2874,15 +2896,15 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
         Buffers->Ctx.ClearDeferredDescriptorUpdates();
     }
-    if (!extent_changed && render_request == RenderRequest::None) return false;
+    if (!extent_changed && !render_extent_changed && render_request == RenderRequest::None) return false;
 
     const Timer timer{"SubmitViewport"};
-    if (extent_changed) {
+    if (extent_changed || render_extent_changed) {
         if (viewportConsumerFence) { // Wait for viewport consumer to finish sampling old resources
             std::ignore = Vk.Device.waitForFences(viewportConsumerFence, VK_TRUE, UINT64_MAX);
         }
-        Pipelines->SetExtent(extent);
-        Buffers->ResizeSelectionNodeBuffer(extent);
+        Pipelines->SetExtent(render_extent);
+        Buffers->ResizeSelectionNodeBuffer(render_extent);
         {
             const Timer timer{"SubmitViewport->UpdateSelectionDescriptorSets"};
             const auto head_image_info = vk::DescriptorImageInfo{
@@ -2925,7 +2947,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     RecordTransferCommandBuffer();
 #endif
 
-    if (render_request == RenderRequest::ReRecord || extent_changed) RecordRenderCommandBuffer();
+    if (render_request == RenderRequest::ReRecord || extent_changed || render_extent_changed) RecordRenderCommandBuffer();
 
     // Always ensure DrawDataSlot points to render draw data before submitting (may have been overwritten by a selection pass).
     Buffers->SceneViewUBO.Update(as_bytes(Buffers->RenderDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
@@ -2939,7 +2961,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
 #endif
     Vk.Queue.submit(submit, *RenderFence);
     RenderPending = true;
-    return extent_changed;
+    return extent_changed || render_extent_changed;
 }
 
 void Scene::WaitForRender() {

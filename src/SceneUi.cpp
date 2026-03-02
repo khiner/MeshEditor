@@ -37,17 +37,33 @@ using namespace ImGui;
 namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 
-std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D extent) {
+vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent) {
+    const auto scale = GetIO().DisplayFramebufferScale;
+    const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
+        if (logical == 0u) return 0u;
+        const float scale_value = s > 0.0f ? s : 1.0f;
+        return std::max(1u, uint32_t(float(logical) * scale_value + 0.5f));
+    };
+    return {scaled_dim(logical_extent.width, scale.x), scaled_dim(logical_extent.height, scale.y)};
+}
+
+std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D logical_extent, vk::Extent2D render_extent) {
     static constexpr float DragThresholdSq{2 * 2};
     if (glm::distance2(start, end) <= DragThresholdSq) return {};
 
-    const vec2 extent_size{float(extent.width), float(extent.height)};
+    const vec2 logical_size{float(logical_extent.width), float(logical_extent.height)};
+    const vec2 render_scale{
+        logical_extent.width > 0u ? float(render_extent.width) / float(logical_extent.width) : 1.0f,
+        logical_extent.height > 0u ? float(render_extent.height) / float(logical_extent.height) : 1.0f
+    };
     const auto box_min = glm::min(start, end) - window_pos;
     const auto box_max = glm::max(start, end) - window_pos;
-    const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, extent_size);
-    const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, extent_size);
-    const uvec2 box_min_px{uint32_t(glm::floor(local_min.x)), uint32_t(glm::floor(extent_size.y - local_max.y))};
-    const uvec2 box_max_px{uint32_t(glm::ceil(local_max.x)), uint32_t(glm::ceil(extent_size.y - local_min.y))};
+    const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, logical_size);
+    const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, logical_size);
+    const auto render_min = local_min * render_scale;
+    const auto render_max = local_max * render_scale;
+    const uvec2 box_min_px{glm::floor(render_min.x), glm::floor(float(render_extent.height) - render_max.y)};
+    const uvec2 box_max_px{glm::ceil(render_max.x), glm::ceil(float(render_extent.height) - render_min.y)};
     return std::pair{box_min_px, box_max_px};
 }
 
@@ -337,8 +353,9 @@ void Scene::AnimateToCamera(entt::entity camera_entity) {
 }
 
 void Scene::Interact() {
-    const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
-    if (extent.width == 0 || extent.height == 0) return;
+    const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
+    const auto render_extent = ComputeRenderExtentPx(logical_extent);
+    if (logical_extent.width == 0 || logical_extent.height == 0 || render_extent.width == 0 || render_extent.height == 0) return;
 
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto active_entity = FindActiveEntity(R);
@@ -457,7 +474,7 @@ void Scene::Interact() {
             BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectEnd = ToGlm(GetMousePos());
-            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), extent); box_px) {
+            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
                 const bool is_additive = IsKeyDown(ImGuiMod_Shift);
                 if (interaction_mode == InteractionMode::Edit) {
                     Timer timer{"BoxSelectElements (all)"};
@@ -475,9 +492,16 @@ void Scene::Interact() {
         if (BoxSelectStart) return;
     }
 
+    const vec2 render_scale{
+        logical_extent.width > 0u ? float(render_extent.width) / float(logical_extent.width) : 1.0f,
+        logical_extent.height > 0u ? float(render_extent.height) / float(logical_extent.height) : 1.0f
+    };
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
+    const auto mouse_pos_render = ToGlm(mouse_pos_rel) * render_scale;
+    const float max_x = float(std::max(render_extent.width, 1u) - 1u);
+    const float max_y = float(std::max(render_extent.height, 1u) - 1u);
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
-    const uvec2 mouse_px{uint32_t(mouse_pos_rel.x), uint32_t(extent.height - mouse_pos_rel.y)};
+    const uvec2 mouse_px{glm::clamp(mouse_pos_render.x, 0.0f, max_x), glm::clamp(float(render_extent.height) - mouse_pos_render.y, 0.0f, max_y)};
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -535,7 +559,8 @@ void Scene::Interact() {
         }
         if (!ranges.empty() && (!toggle || hit)) SelectionBitsDirty = true;
     } else if (interaction_mode == InteractionMode::Object) {
-        const auto hit_entities = RunObjectPick(mouse_px, ObjectSelectRadiusPx);
+        const uint32_t scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
+        const auto hit_entities = RunObjectPick(mouse_px, scaled_pick_radius);
 
         entt::entity hit = entt::null;
         if (!hit_entities.empty()) {
@@ -1015,7 +1040,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
             std::span<const uint32_t> primitive_materials = Meshes->GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
             const auto material_count = GetMaterialCount(*Buffers);
-            const auto material_name = [&](uint32_t index) -> std::string {
+            const auto material_name = [&](uint32_t index) {
                 if (index < material_store.Names.size() && !material_store.Names[index].empty()) return std::string{material_store.Names[index]};
                 return std::format("Material{}", index);
             };
@@ -1026,8 +1051,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             } else {
                 auto &slot_selection = R.get_or_emplace<MeshMaterialSlotSelection>(active_mesh_entity);
                 bool slot_selection_changed = false;
-                const auto max_primitive = uint32_t(primitive_materials.size() - 1);
-                if (slot_selection.PrimitiveIndex > max_primitive) {
+                if (const auto max_primitive = uint32_t(primitive_materials.size() - 1);
+                    slot_selection.PrimitiveIndex > max_primitive) {
                     slot_selection.PrimitiveIndex = max_primitive;
                     slot_selection_changed = true;
                 }

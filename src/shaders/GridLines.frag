@@ -10,7 +10,7 @@ layout(location = 1) in vec3 FarPos;
 layout(location = 0) out vec4 Color;
 
 vec4 Grid(vec3 pos_3d, float scale) {
-    const float AxisWidth = 0.5;
+    const float AxisWidth = 1;
     const float LineColor = 0.4;
     const float ScaleFactor = 0.2;
     const vec3 XAxisColor = vec3(1.0, 0.2, 0.332);
