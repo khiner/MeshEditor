@@ -2,10 +2,12 @@
 // to the top 4 influences per vertex (sorted by weight, renormalized).
 // The spec permits supporting only a single set of 4 (see glTF 2.0 §3.7.3.1).
 // Lossy for round-trip export but visually near-lossless.
+// - Known gap: morph target tangent deltas (targets[*].TANGENT) are not imported/applied yet.
+//   Static tangents (vertex TANGENT) are imported and used for shading, but
+//   morphing is deferred for now due to added GPU morph bandwidth/ALU cost.
 //
 // TODO (glTF 2.0 coverage):
-// - After adding materials/textures: tangents import + morph target tangent deltas.
-// - Add `KHR_animation_pointer` support (requires materials/lights; currently only core TRS/weights animation paths are handled).
+// - Full `KHR_animation_pointer` support
 // - Support compressed geometry extensions (`EXT_meshopt_compression`, `KHR_draco_mesh_compression`):
 //   minimal decode path: meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
 //   draco decoder-only build (disable encoder/tools/tests, keep mesh decode path).

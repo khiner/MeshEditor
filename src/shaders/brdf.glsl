@@ -1,4 +1,4 @@
-// Adapted from KhronosGroup/glTF-Sample-Renderer (brdf.glsl), pulled 2026-02-16.
+// Adapted from KhronosGroup/glTF-Sample-Renderer (brdf.glsl)
 
 #ifndef BRDF_GLSL
 #define BRDF_GLSL

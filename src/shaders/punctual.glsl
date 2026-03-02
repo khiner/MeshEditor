@@ -1,4 +1,4 @@
-// Adapted from KhronosGroup/glTF-Sample-Renderer (punctual.glsl), pulled 2026-02-16.
+// Adapted from KhronosGroup/glTF-Sample-Renderer (punctual.glsl)
 
 #ifndef PUNCTUAL_GLSL
 #define PUNCTUAL_GLSL

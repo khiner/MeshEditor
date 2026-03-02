@@ -1,6 +1,6 @@
 #version 450
 
-// Adapted from Khronos glTF-Sample-Renderer shader logic, pulled 2026-02-16.
+// Adapted from Khronos glTF-Sample-Renderer shader logic
 //  - material graph subset: core glTF metallic-roughness (baseColor, MR, normal, occlusion, emissive)
 //  - KHR_materials_unlit: baseColor-only path, no lighting or IBL
 //  - loop over bindless LightBuffer (LightCount/LightSlot)
@@ -227,7 +227,7 @@ void main() {
     f0_dielectric = min(f0_dielectric, vec3(1.0));
     const vec3 f90_dielectric = vec3(specularWeight);
 
-    // KHR_materials_transmission
+    // KHR_materials_transmission / KHR_materials_dispersion
     float transmissionFactor = material.Transmission.Factor;
     if (material.Transmission.Texture.Slot != INVALID_SLOT) {
         transmissionFactor *= texture(Samplers[nonuniformEXT(material.Transmission.Texture.Slot)], GetUv(material.Transmission.Texture)).r;
@@ -377,7 +377,7 @@ void main() {
         f_diffuse = mix(f_diffuse, f_diffuse_transmission, diffuseTransmissionFactor);
     }
     if (transmissionFactor > 0.0) {
-        vec3 f_transmission = getIBLVolumeRefraction(n, v, perceptualRoughness, material.Ior) * base_color.rgb;
+        vec3 f_transmission = getIBLVolumeRefraction(n, v, perceptualRoughness, material.Ior, material.Dispersion) * base_color.rgb;
         f_transmission = applyVolumeAttenuation(f_transmission, worldThickness, material.Volume.AttenuationColor, material.Volume.AttenuationDistance);
         f_diffuse = mix(f_diffuse, f_transmission, transmissionFactor);
     }

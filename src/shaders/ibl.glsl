@@ -1,4 +1,4 @@
-// Adapted from KhronosGroup/glTF-Sample-Renderer (ibl.glsl), pulled 2026-02-21.
+// Adapted from KhronosGroup/glTF-Sample-Renderer (ibl.glsl)
 
 #ifndef IBL_GLSL
 #define IBL_GLSL
@@ -91,7 +91,20 @@ float applyIorToRoughness(float roughness, float ior) {
 
 // Sample environment at refracted ray direction instead of reflected.
 // Approximation: uses the prefiltered specular environment (no separate scene render pass needed).
-vec3 getIBLVolumeRefraction(vec3 n, vec3 v, float perceptualRoughness, float ior) {
+// KHR_materials_dispersion: for dispersion>0, split IOR across RGB channels and sample each channel separately.
+vec3 getIBLVolumeRefraction(vec3 n, vec3 v, float perceptualRoughness, float ior, float dispersion) {
+    if (dispersion > 0.0) {
+        float halfSpread = (ior - 1.0) * 0.025 * dispersion;
+        vec3 iors = vec3(ior - halfSpread, ior, ior + halfSpread);
+        vec3 transmittedLight = vec3(0.0);
+        for (int i = 0; i < 3; ++i) {
+            float lod = applyIorToRoughness(perceptualRoughness, iors[i]) * float(max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u) - 1u);
+            vec3 refracted = normalize(refract(-v, n, 1.0 / iors[i]));
+            transmittedLight[i] = getSpecularSample(refracted, lod)[i];
+        }
+        return transmittedLight;
+    }
+
     float lod = applyIorToRoughness(perceptualRoughness, ior) * float(max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u) - 1u);
     vec3 refracted = normalize(refract(-v, n, 1.0 / ior));
     return getSpecularSample(refracted, lod).rgb;

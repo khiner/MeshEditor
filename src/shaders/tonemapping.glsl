@@ -1,4 +1,4 @@
-// Adapted from KhronosGroup/glTF-Sample-Renderer (tonemapping.glsl), pulled 2026-02-16.
+// Adapted from KhronosGroup/glTF-Sample-Renderer (tonemapping.glsl)
 
 #ifndef TONEMAPPING_GLSL
 #define TONEMAPPING_GLSL

@@ -1143,6 +1143,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 material_changed |= SliderFloat("Transmission", &material.Transmission.Factor, 0.f, 1.f);
                 if (material.Transmission.Factor > 0.f) {
                     material_changed |= edit_texture_info("Transmission", material.Transmission.Texture);
+                    material_changed |= SliderFloat("Dispersion", &material.Dispersion, 0.f, 1.f);
 
                     // Volume (only meaningful with transmission)
                     material_changed |= SliderFloat("Thickness", &material.Volume.ThicknessFactor, 0.f, 10.f);

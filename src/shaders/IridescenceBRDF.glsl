@@ -1,4 +1,4 @@
-// Adapted from KhronosGroup/glTF-Sample-Renderer (iridescence.glsl), pulled 2026-02-24.
+// Adapted from KhronosGroup/glTF-Sample-Renderer (iridescence.glsl)
 // Implements thin-film interference (Belcour 2017).
 // https://belcour.github.io/blog/research/2017/05/01/brdf-thin-film.html
 

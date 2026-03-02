@@ -488,6 +488,9 @@ structs:
       - name: Ior
         type: float
         default: 1.5
+      - name: Dispersion
+        type: float
+        default: 0
       - name: BaseColorTexture
         type: TextureInfo
       - name: MetallicRoughnessTexture
