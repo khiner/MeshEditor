@@ -63,10 +63,8 @@ void main() {
     const vec3 N = FaceDirection(face, uv);
     const vec3 V = N; // Assume view = normal for prefiltering.
 
-    const uint SAMPLE_COUNT = 256u;
-    // Solid angle per texel of the source cubemap (not the output target mip).
+    const uint SAMPLE_COUNT = 1024u;
     const float src_size = float(max(SourceSize, 1u));
-    const float sa_texel = 4.0 * PI / (6.0 * src_size * src_size);
     const float max_src_lod = log2(src_size);
 
     vec3 prefiltered = vec3(0.0);
@@ -81,8 +79,13 @@ void main() {
             const float HdotV = max(dot(H, V), 0.0);
             const float D = DistributionGGX(NdotH, Roughness);
             const float pdf = max(D * NdotH / max(4.0 * HdotV, 1e-4), 1e-4);
-            const float sa_sample = 1.0 / (float(SAMPLE_COUNT) * pdf + 0.0001);
-            const float mip_level = Roughness == 0.0 ? 0.0 : clamp(0.5 * log2(sa_sample / sa_texel), 0.0, max_src_lod);
+            // GGX importance-sampled LOD from sample PDF:
+            // lod = 0.5 * log2(6 * width^2 / (sampleCount * pdf))
+            const float mip_level = Roughness == 0.0 ? 0.0 : clamp(
+                0.5 * log2(6.0 * src_size * src_size / (float(SAMPLE_COUNT) * max(pdf, 1e-4))),
+                0.0,
+                max_src_lod
+            );
             prefiltered += textureLod(EnvMap, L, mip_level).rgb * NdotL;
             total_weight += NdotL;
         }
