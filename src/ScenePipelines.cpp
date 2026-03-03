@@ -24,9 +24,9 @@ vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice pd) {
     if (counts & vk::SampleCountFlagBits::e8) return vk::SampleCountFlagBits::e8;
     if (counts & vk::SampleCountFlagBits::e4) return vk::SampleCountFlagBits::e4;
     if (counts & vk::SampleCountFlagBits::e2) return vk::SampleCountFlagBits::e2;
-
     return vk::SampleCountFlagBits::e1;
 }
+
 } // namespace
 
 void PipelineRenderer::CompileShaders() {
@@ -47,8 +47,9 @@ static PipelineRenderer CreateMainRenderer(
     const std::vector<vk::AttachmentDescription> attachments{
         // Depth attachment.
         {{}, Format::Depth, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        // Multisampled offscreen image.
-        {{}, Format::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Multisampled offscreen image. eDontCare: tile-based GPUs resolve on-chip; no need to flush MSAA surface to DRAM.
+        // finalLayout=eColorAttachmentOptimal: this image is transient (never sampled), so eShaderReadOnlyOptimal would be wrong.
+        {{}, Format::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal},
         // Single-sampled resolve target. UNDEFINED + DONT_CARE = discard previous contents, let render pass handle transition.
         {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
@@ -201,7 +202,7 @@ MainPipeline::ResourcesT::ResourcesT(
          1,
          msaa_samples,
          vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
+         vk::ImageUsageFlagBits::eColorAttachment,
          vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
     )},
