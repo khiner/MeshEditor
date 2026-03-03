@@ -136,14 +136,12 @@ ShaderPipeline::ShaderPipeline(
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
     vk::PipelineColorBlendAttachmentState color_blend_attachment,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
-    vk::SampleCountFlagBits msaa_samples,
     std::optional<vk::PushConstantRange> push_constant_range,
     float depth_bias,
     vk::DescriptorSetLayout set_layout,
     vk::DescriptorSet set
 ) : Device(device), Shaders(std::move(shaders)),
     VertexInputState(std::move(vertex_input_state)),
-    MultisampleState({{}, msaa_samples}),
     ColorBlendAttachment(std::move(color_blend_attachment)),
     DepthStencilState(std::move(depth_stencil_state)),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eClockwise, depth_bias != 0.f, depth_bias, {}, {}, 1.f}),
@@ -160,6 +158,7 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     static constexpr vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     static constexpr std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
+    static constexpr vk::PipelineMultisampleStateCreateInfo multisample_state{{}, vk::SampleCountFlagBits::e1};
 
     const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &ColorBlendAttachment};
     auto pipeline_result = Device.createGraphicsPipelineUnique(
@@ -172,7 +171,7 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
             nullptr,
             &viewport_state,
             &RasterizationState,
-            &MultisampleState,
+            &multisample_state,
             DepthStencilState.has_value() ? &*DepthStencilState : nullptr,
             &color_blending,
             &dynamic_state,
@@ -219,7 +218,7 @@ ShaderPipeline PipelineContext::CreateGraphics(
     return {
         Device, std::move(shaders), vertex_input,
         polygon_mode, topology, color_blend, depth_stencil,
-        MsaaSamples, push_constants, depth_bias, SharedLayout, SharedSet
+        push_constants, depth_bias, SharedLayout, SharedSet
     };
 }
 

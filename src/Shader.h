@@ -87,7 +87,6 @@ struct ShaderPipeline {
         vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
         vk::PipelineColorBlendAttachmentState color_blend_attachment = {},
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state = {},
-        vk::SampleCountFlagBits msaa_samples = vk::SampleCountFlagBits::e1,
         std::optional<vk::PushConstantRange> push_constant_range = std::nullopt,
         float depth_bias = 0.f,
         vk::DescriptorSetLayout set_layout = {},
@@ -101,7 +100,6 @@ struct ShaderPipeline {
     Shaders Shaders;
 
     vk::PipelineVertexInputStateCreateInfo VertexInputState;
-    vk::PipelineMultisampleStateCreateInfo MultisampleState;
     vk::PipelineColorBlendAttachmentState ColorBlendAttachment;
     std::optional<vk::PipelineDepthStencilStateCreateInfo> DepthStencilState;
     vk::PipelineRasterizationStateCreateInfo RasterizationState;
@@ -146,7 +144,6 @@ struct PipelineContext {
     vk::Device Device;
     vk::DescriptorSetLayout SharedLayout;
     vk::DescriptorSet SharedSet;
-    vk::SampleCountFlagBits MsaaSamples;
 
     ShaderPipeline CreateGraphics(
         Shaders &&shaders,

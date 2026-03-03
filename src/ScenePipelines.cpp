@@ -15,18 +15,6 @@ enum class OverlayKind : uint32_t {
     VertexNormal = 2,
 };
 
-vk::SampleCountFlagBits GetMaxUsableSampleCount(vk::PhysicalDevice pd) {
-    const auto props = pd.getProperties();
-    const auto counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
-    if (counts & vk::SampleCountFlagBits::e64) return vk::SampleCountFlagBits::e64;
-    if (counts & vk::SampleCountFlagBits::e32) return vk::SampleCountFlagBits::e32;
-    if (counts & vk::SampleCountFlagBits::e16) return vk::SampleCountFlagBits::e16;
-    if (counts & vk::SampleCountFlagBits::e8) return vk::SampleCountFlagBits::e8;
-    if (counts & vk::SampleCountFlagBits::e4) return vk::SampleCountFlagBits::e4;
-    if (counts & vk::SampleCountFlagBits::e2) return vk::SampleCountFlagBits::e2;
-    return vk::SampleCountFlagBits::e1;
-}
-
 } // namespace
 
 void PipelineRenderer::CompileShaders() {
@@ -41,24 +29,18 @@ const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) cons
 }
 
 static PipelineRenderer CreateMainRenderer(
-    vk::Device d, vk::SampleCountFlagBits msaa_samples,
+    vk::Device d,
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) {
     const std::vector<vk::AttachmentDescription> attachments{
-        // Depth attachment.
-        {{}, Format::Depth, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        // Multisampled offscreen image. eDontCare: tile-based GPUs resolve on-chip; no need to flush MSAA surface to DRAM.
-        // finalLayout=eColorAttachmentOptimal: this image is transient (never sampled), so eShaderReadOnlyOptimal would be wrong.
-        {{}, Format::Color, msaa_samples, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal},
-        // Single-sampled resolve target. UNDEFINED + DONT_CARE = discard previous contents, let render pass handle transition.
-        {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::AttachmentReference resolve_attachment_ref{2, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, &resolve_attachment_ref, &depth_attachment_ref};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
-    const PipelineContext ctx{d, shared_layout, shared_set, msaa_samples};
+    const PipelineContext ctx{d, shared_layout, shared_set};
     const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
 
     // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
@@ -185,49 +167,20 @@ static PipelineRenderer CreateMainRenderer(
 }
 
 MainPipeline::MainPipeline(
-    vk::Device d, vk::SampleCountFlagBits msaa_samples,
+    vk::Device d,
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
-) : Renderer{CreateMainRenderer(d, msaa_samples, shared_layout, shared_set)} {}
+) : Renderer{CreateMainRenderer(d, shared_layout, shared_set)} {}
 
 MainPipeline::ResourcesT::ResourcesT(
-    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::SampleCountFlagBits msaa_samples, vk::RenderPass render_pass
-) : DepthImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Depth, vk::Extent3D{extent, 1}, 1, 1, msaa_samples, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange})},
-    OffscreenImage{mvk::CreateImage(
-        d, pd,
-        {{},
-         vk::ImageType::e2D,
-         Format::Color,
-         vk::Extent3D{extent, 1},
-         1,
-         1,
-         msaa_samples,
-         vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eColorAttachment,
-         vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
-    )},
-    ResolveImage{mvk::CreateImage(
-        d, pd,
-        {
-            {},
-            vk::ImageType::e2D,
-            Format::Color,
-            vk::Extent3D{extent, 1},
-            1,
-            1,
-            vk::SampleCountFlagBits::e1,
-            vk::ImageTiling::eOptimal,
-            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment,
-            vk::SharingMode::eExclusive,
-        },
-        {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange}
-    )} {
-    const std::array image_views{*DepthImage.View, *OffscreenImage.View, *ResolveImage.View};
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass
+) : DepthImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Depth, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange})},
+    ColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange})} {
+    const std::array image_views{*DepthImage.View, *ColorImage.View};
     Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
 }
 
-void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::SampleCountFlagBits msaa_samples) {
-    Resources = std::make_unique<ResourcesT>(extent, d, pd, msaa_samples, *Renderer.RenderPass);
+void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
+    Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
 }
 
 static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
@@ -241,7 +194,7 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
-    const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
+    const PipelineContext ctx{d, shared_layout, shared_set};
     const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
@@ -316,7 +269,7 @@ static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::Descripto
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
-    const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
+    const PipelineContext ctx{d, shared_layout, shared_set};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
         SPT::SilhouetteEdgeDepthObject,
@@ -380,7 +333,7 @@ static PipelineRenderer CreateSelectionFragmentRenderer(vk::Device d, vk::Descri
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
 
-    const PipelineContext ctx{d, shared_layout, shared_set, vk::SampleCountFlagBits::e1};
+    const PipelineContext ctx{d, shared_layout, shared_set};
     const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
     const vk::PushConstantRange element_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(SelectionElementPushConstants)};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
@@ -512,8 +465,7 @@ ScenePipelines::ScenePipelines(
     vk::DescriptorSetLayout selection_layout, vk::DescriptorSet selection_set
 ) : Device(d),
     PhysicalDevice(pd),
-    Samples{GetMaxUsableSampleCount(pd)},
-    Main{d, Samples, selection_layout, selection_set},
+    Main{d, selection_layout, selection_set},
     Silhouette{d, selection_layout, selection_set},
     SilhouetteEdge{d, selection_layout, selection_set},
     SelectionFragment{d, selection_layout, selection_set},
@@ -544,7 +496,7 @@ ScenePipelines::ScenePipelines(
     IblPrefilter{d} {}
 
 void ScenePipelines::SetExtent(vk::Extent2D extent) {
-    Main.SetExtent(extent, Device, PhysicalDevice, Samples);
+    Main.SetExtent(extent, Device, PhysicalDevice);
     Silhouette.SetExtent(extent, Device, PhysicalDevice);
     SilhouetteEdge.SetExtent(extent, Device, PhysicalDevice);
     SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);

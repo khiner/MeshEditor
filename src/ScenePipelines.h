@@ -29,20 +29,16 @@ inline constexpr auto Uint = vk::Format::eR32Uint;
 } // namespace Format
 
 struct MainPipeline {
-    MainPipeline(
-        vk::Device, vk::SampleCountFlagBits,
-        vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}
-    );
+    MainPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::SampleCountFlagBits msaa_samples, vk::RenderPass);
+        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass);
 
-        // Perform depth testing, render into a multisampled offscreen image, and resolve into a single-sampled image.
-        mvk::ImageResource DepthImage, OffscreenImage, ResolveImage;
+        mvk::ImageResource DepthImage, ColorImage;
         vk::UniqueFramebuffer Framebuffer;
     };
 
-    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::SampleCountFlagBits msaa_samples);
+    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
 
     PipelineRenderer Renderer;
     std::unique_ptr<ResourcesT> Resources;
@@ -104,8 +100,6 @@ struct ScenePipelines {
 
     vk::Device Device;
     vk::PhysicalDevice PhysicalDevice;
-    vk::SampleCountFlagBits Samples;
-
     MainPipeline Main;
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;

@@ -2150,7 +2150,7 @@ void Scene::RecordRenderCommandBuffer() {
     // Main rendering pass
     {
         const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {settings.ClearColor}};
-        const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->OffscreenImage.Extent)};
+        const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
         cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
 
@@ -2858,7 +2858,7 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {
         // Recreate the ImGui texture wrapper for the new resolve image.
-        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->ResolveImage.View, vec2{0, 1}, vec2{1, 0});
+        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->ColorImage.View, vec2{0, 1}, vec2{1, 0});
     }
     if (ViewportTexture) {
         const auto p = ImGui::GetCursorScreenPos();
@@ -2882,7 +2882,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
         R.patch<ViewportExtent>(SceneEntity, [](auto &) {});
     }
     const auto render_extent = ComputeRenderExtentPx(logical_extent);
-    const auto current_render_extent = Pipelines->Main.Resources ? ToExtent2D(Pipelines->Main.Resources->ResolveImage.Extent) : vk::Extent2D{};
+    const auto current_render_extent = Pipelines->Main.Resources ? ToExtent2D(Pipelines->Main.Resources->ColorImage.Extent) : vk::Extent2D{};
     const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
     if (render_extent_changed && !extent_changed) {
         // Trigger SceneView update (projection, screen pixel scale) when DPI scale changes at fixed logical viewport size.
