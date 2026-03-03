@@ -219,7 +219,8 @@ void main() {
     if (material.Specular.Texture.Slot != INVALID_SLOT) {
         specularWeight *= texture(Samplers[nonuniformEXT(material.Specular.Texture.Slot)], GetUv(material.Specular.Texture)).a;
     }
-    float f0_ior = pow((material.Ior - 1.0) / (material.Ior + 1.0), 2.0);
+    float f0_ior_t = (material.Ior - 1.0) / (material.Ior + 1.0);
+    float f0_ior = f0_ior_t * f0_ior_t;
     vec3 f0_dielectric = vec3(f0_ior) * material.Specular.ColorFactor;
     if (material.Specular.ColorTexture.Slot != INVALID_SLOT) {
         f0_dielectric *= texture(Samplers[nonuniformEXT(material.Specular.ColorTexture.Slot)], GetUv(material.Specular.ColorTexture)).rgb;
@@ -305,6 +306,9 @@ void main() {
     if (iridescenceThickness == 0.0) iridescenceFactor = 0.0;
     const bool has_iridescence = iridescenceFactor > 0.0;
 
+    // Hoisted: NdotV is constant across lights.
+    const float sheen_lut_ndotv = has_sheen ? albedoSheenScalingLUT(NdotV, sheenRoughness) : 0.0;
+
     vec3 direct_color = vec3(0.0);
     if (SceneViewUBO.UseSceneLightsRender != 0u) {
         for (uint i = 0u; i < SceneViewUBO.LightCount; ++i) {
@@ -352,7 +356,7 @@ void main() {
             if (has_sheen) {
                 const float max_sheen = max(sheenColor.r, max(sheenColor.g, sheenColor.b));
                 const float l_albedo_sheen_scaling = min(
-                    1.0 - max_sheen * albedoSheenScalingLUT(NdotV, sheenRoughness),
+                    1.0 - max_sheen * sheen_lut_ndotv,
                     1.0 - max_sheen * albedoSheenScalingLUT(NdotL, sheenRoughness));
                 l_color = light_intensity * NdotL * BRDF_specularSheen(sheenColor, sheenRoughness, NdotL, NdotV, NdotH)
                     + l_color * l_albedo_sheen_scaling;
@@ -386,10 +390,12 @@ void main() {
         : getIBLRadianceGGX(n, v, perceptualRoughness);
     const vec3 f_specular_metal = f_specular_dielectric;
 
-    const vec3 f_metal_fresnel_ibl = getIBLGGXFresnel(n, v, perceptualRoughness, base_color.rgb, 1.0);
+    const vec2 ibl_brdf_f_ab = texture(Samplers[nonuniformEXT(SceneViewUBO.Ibl.BrdfLutSamplerSlot)],
+                                       clamp(vec2(NdotV, perceptualRoughness), vec2(0.0), vec2(1.0))).rg;
+    const vec3 f_metal_fresnel_ibl = getIBLGGXFresnel(ibl_brdf_f_ab, NdotV, perceptualRoughness, base_color.rgb, 1.0);
     vec3 f_metal_brdf_ibl = f_metal_fresnel_ibl * f_specular_metal;
 
-    const vec3 f_dielectric_fresnel_ibl = getIBLGGXFresnel(n, v, perceptualRoughness, f0_dielectric, specularWeight);
+    const vec3 f_dielectric_fresnel_ibl = getIBLGGXFresnel(ibl_brdf_f_ab, NdotV, perceptualRoughness, f0_dielectric, specularWeight);
     vec3 f_dielectric_brdf_ibl = mix(f_diffuse, f_specular_dielectric, f_dielectric_fresnel_ibl);
 
     if (has_iridescence) {
@@ -400,7 +406,7 @@ void main() {
     if (has_sheen) {
         const vec3 f_sheen = getIBLRadianceCharlie(n, v, sheenRoughness, sheenColor);
         const float max_sheen = max(sheenColor.r, max(sheenColor.g, sheenColor.b));
-        const float albedo_sheen_scaling = 1.0 - max_sheen * albedoSheenScalingLUT(NdotV, sheenRoughness);
+        const float albedo_sheen_scaling = 1.0 - max_sheen * sheen_lut_ndotv;
         indirect_color = f_sheen + indirect_color * albedo_sheen_scaling;
     }
     if (material.OcclusionTexture.Slot != INVALID_SLOT) {

@@ -32,11 +32,7 @@ vec4 getSpecularSample(vec3 reflection, float lod) {
     return texture_sample;
 }
 
-vec3 getIBLGGXFresnel(vec3 n, vec3 v, float roughness, vec3 F0, float specularWeight) {
-    const float NdotV = clamp(dot(n, v), 0.0, 1.0);
-    const vec2 brdf_sample_point = clamp(vec2(NdotV, roughness), vec2(0.0), vec2(1.0));
-    const vec2 f_ab = texture(Samplers[nonuniformEXT(SceneViewUBO.Ibl.BrdfLutSamplerSlot)], brdf_sample_point).rg;
-
+vec3 getIBLGGXFresnel(vec2 f_ab, float NdotV, float roughness, vec3 F0, float specularWeight) {
     const vec3 Fr = max(vec3(1.0 - roughness), F0) - F0;
     const vec3 k_S = F0 + Fr * pow(1.0 - NdotV, 5.0);
     const vec3 FssEss = specularWeight * (k_S * f_ab.x + f_ab.y);
@@ -46,6 +42,13 @@ vec3 getIBLGGXFresnel(vec3 n, vec3 v, float roughness, vec3 F0, float specularWe
     const vec3 FmsEms = Ems * FssEss * F_avg / (1.0 - F_avg * Ems);
 
     return FssEss + FmsEms;
+}
+
+vec3 getIBLGGXFresnel(vec3 n, vec3 v, float roughness, vec3 F0, float specularWeight) {
+    const float NdotV = clamp(dot(n, v), 0.0, 1.0);
+    const vec2 f_ab = texture(Samplers[nonuniformEXT(SceneViewUBO.Ibl.BrdfLutSamplerSlot)],
+                              clamp(vec2(NdotV, roughness), vec2(0.0), vec2(1.0))).rg;
+    return getIBLGGXFresnel(f_ab, NdotV, roughness, F0, specularWeight);
 }
 
 vec3 getIBLRadianceGGX(vec3 n, vec3 v, float roughness) {
