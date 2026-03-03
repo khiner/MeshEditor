@@ -212,6 +212,8 @@ structs:
         type: vec3
       - name: ScreenPixelScale
         type: float
+      - name: ViewportSize
+        type: vec2
       - name: FaceFirstTriSlot
         type: u32
       - name: BoneDeformSlot
@@ -282,6 +284,8 @@ structs:
     fields:
       - name: Colors
         type: ViewportThemeColors
+      - name: EdgeWidth
+        type: float
       - name: SilhouetteEdgeWidth
         type: u32
   - name: Vertex

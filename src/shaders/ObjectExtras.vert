@@ -7,6 +7,8 @@ layout(location = 0) out vec3 WorldNormal;
 layout(location = 1) out vec3 WorldPosition;
 layout(location = 2) out vec4 Color;
 layout(location = 3) flat out uint FaceOverlayFlags;
+layout(location = 12) flat out vec2 EdgeStart;
+layout(location = 13) out vec2 EdgePos;
 
 void main() {
     const DrawData draw = GetDrawData();
@@ -41,4 +43,7 @@ void main() {
     Color = final_color;
 
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
+    const vec2 screen_pos = (gl_Position.xy / gl_Position.w * 0.5 + 0.5) * SceneViewUBO.ViewportSize;
+    EdgeStart = screen_pos;
+    EdgePos = screen_pos;
 }

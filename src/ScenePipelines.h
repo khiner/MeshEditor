@@ -25,6 +25,7 @@ inline constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
 inline constexpr auto Depth = vk::Format::eD32Sfloat;
 inline constexpr auto Float = vk::Format::eR32Sfloat;
 inline constexpr auto Float2 = vk::Format::eR32G32Sfloat;
+inline constexpr auto LineData = vk::Format::eR8G8B8A8Unorm;
 inline constexpr auto Uint = vk::Format::eR32Uint;
 } // namespace Format
 
@@ -32,15 +33,18 @@ struct MainPipeline {
     MainPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass);
+        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::RenderPass line_aa_render_pass);
 
-        mvk::ImageResource DepthImage, ColorImage;
-        vk::UniqueFramebuffer Framebuffer;
+        mvk::ImageResource DepthImage, ColorImage, LineDataImage, FinalColorImage;
+        vk::UniqueSampler NearestSampler;
+        vk::UniqueFramebuffer Framebuffer, LineAAFramebuffer;
     };
 
     void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
 
     PipelineRenderer Renderer;
+    vk::UniqueRenderPass LineAARenderPass;
+    ShaderPipeline LineAAComposite;
     std::unique_ptr<ResourcesT> Resources;
 };
 

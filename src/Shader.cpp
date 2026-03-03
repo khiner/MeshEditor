@@ -134,7 +134,7 @@ ShaderPipeline::ShaderPipeline(
     vk::Device device, ::Shaders &&shaders,
     vk::PipelineVertexInputStateCreateInfo vertex_input_state,
     vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
-    vk::PipelineColorBlendAttachmentState color_blend_attachment,
+    std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
     std::optional<vk::PushConstantRange> push_constant_range,
     float depth_bias,
@@ -142,7 +142,7 @@ ShaderPipeline::ShaderPipeline(
     vk::DescriptorSet set
 ) : Device(device), Shaders(std::move(shaders)),
     VertexInputState(std::move(vertex_input_state)),
-    ColorBlendAttachment(std::move(color_blend_attachment)),
+    ColorBlendAttachments(std::move(color_blend_attachments)),
     DepthStencilState(std::move(depth_stencil_state)),
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eClockwise, depth_bias != 0.f, depth_bias, {}, {}, 1.f}),
     InputAssemblyState({{}, topology}),
@@ -160,7 +160,7 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
     static constexpr vk::PipelineMultisampleStateCreateInfo multisample_state{{}, vk::SampleCountFlagBits::e1};
 
-    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, 1, &ColorBlendAttachment};
+    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, static_cast<uint32_t>(ColorBlendAttachments.size()), ColorBlendAttachments.data()};
     auto pipeline_result = Device.createGraphicsPipelineUnique(
         {},
         {
@@ -210,14 +210,14 @@ ShaderPipeline PipelineContext::CreateGraphics(
     vk::PipelineVertexInputStateCreateInfo vertex_input,
     vk::PolygonMode polygon_mode,
     vk::PrimitiveTopology topology,
-    vk::PipelineColorBlendAttachmentState color_blend,
+    std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil,
     std::optional<vk::PushConstantRange> push_constants,
     float depth_bias
 ) const {
     return {
         Device, std::move(shaders), vertex_input,
-        polygon_mode, topology, color_blend, depth_stencil,
+        polygon_mode, topology, std::move(color_blend_attachments), depth_stencil,
         push_constants, depth_bias, SharedLayout, SharedSet
     };
 }

@@ -196,6 +196,7 @@ struct VulkanContext {
         device_features.fillModeNonSolid = VK_TRUE;
         device_features.multiDrawIndirect = VK_TRUE;
         device_features.fragmentStoresAndAtomics = VK_TRUE; // For writing to storage buffers from fragment shaders
+        device_features.independentBlend = VK_TRUE; // For different blend states per color attachment (line AA)
 
         // Create logical device (with one queue).
         RequireDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
@@ -594,7 +595,7 @@ void run() {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
                 scene->Interact();
-                // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the resolve image.
+                // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
                 scene->Render(GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
             }
             End();
@@ -612,7 +613,7 @@ void run() {
         ImGui::Render();
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
-            scene->WaitForRender(); // ImGui samples resolve image
+            scene->WaitForRender(); // ImGui samples final image
             RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
             PresentFrame(vc->Queue, wd);
         }

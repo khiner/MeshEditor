@@ -119,8 +119,8 @@ struct Scene {
     // Handle mouse/keyboard interactions.
     void Interact();
 
-    // Submit GPU render (nonblocking), draw the resolve image into the current ImGui window, and draw overlays.
-    // Call WaitForRender() before the ImGui frame samples the resolve image.
+    // Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.
+    // Call WaitForRender() before the ImGui frame samples the final image.
     // If provided, waits on `viewportConsumerFence` before destroying old resources on extent change.
     void Render(vk::Fence viewportConsumerFence = {});
     // Wait for pending viewport render to complete. No-op if no render pending.

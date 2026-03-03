@@ -1551,6 +1551,7 @@ void Scene::RenderControls() {
                 changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
                 changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
                 changed |= ColorEdit3("Transform", &theme.Colors.Transform.x);
+                changed |= SliderFloat("Edge width", &theme.EdgeWidth, 0.5f, 2.0f);
                 changed |= MeshEditor::SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
                 if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
             }

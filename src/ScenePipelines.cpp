@@ -28,17 +28,29 @@ const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) cons
     return pipeline;
 }
 
+// No-write for LineData attachment (used by non-line pipelines as their 2nd color blend state).
+static constexpr vk::PipelineColorBlendAttachmentState NoWriteBlend{};
+// Write-only for LineData attachment (used by line pipelines as their 2nd color blend state).
+static const vk::PipelineColorBlendAttachmentState LineDataBlend = CreateColorBlendAttachment(false);
+
 static PipelineRenderer CreateMainRenderer(
     vk::Device d,
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) {
     const std::vector<vk::AttachmentDescription> attachments{
+        // Depth: cleared each frame, eDontCare store (no sampling after main pass).
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        // Color: cleared to background, stored for sampling in line AA composite pass.
         {{}, Format::Color, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // LineData: cleared to zero (alpha=0 means "no line here"), stored for sampling in line AA composite pass.
+        {{}, Format::LineData, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
+    const std::array color_attachment_refs{
+        vk::AttachmentReference{1, vk::ImageLayout::eColorAttachmentOptimal}, // Color (location 0)
+        vk::AttachmentReference{2, vk::ImageLayout::eColorAttachmentOptimal}, // LineData (location 1)
+    };
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, uint32_t(color_attachment_refs.size()), color_attachment_refs.data(), nullptr, &depth_attachment_ref};
 
     const PipelineContext ctx{d, shared_layout, shared_set};
     const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
@@ -51,7 +63,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "WorkspaceLighting.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
         )
     );
     pipelines.emplace(
@@ -60,7 +72,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "pbr.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
         )
     );
     pipelines.emplace(
@@ -69,16 +81,16 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "pbr.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(true, false), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, false), draw_pc
         )
     );
     pipelines.emplace(
         SPT::Line,
         ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
+            {{{ShaderType::eVertex, "VertexTransform.vert", {{1, 1u}}}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(), draw_pc
         )
     );
     pipelines.emplace(
@@ -87,16 +99,16 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "ObjectExtras.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(), draw_pc
         )
     );
     const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
         return ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "VertexTransform.vert", {{0, uint32_t(overlay_kind)}}},
+            {{{ShaderType::eVertex, "VertexTransform.vert", {{0, uint32_t(overlay_kind)}, {1, 1u}}},
               {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(), draw_pc
         );
     };
     pipelines.emplace(SPT::LineOverlayFaceNormals, make_overlay_pipeline(OverlayKind::FaceNormal));
@@ -108,7 +120,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexPoint.vert"}, {ShaderType::eFragment, "VertexPoint.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc, -1.0f
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc, -1.0f
         )
     );
     pipelines.emplace(
@@ -117,7 +129,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            CreateColorBlendAttachment(true), CreateDepthStencil(true, false)
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, false)
         )
     );
     pipelines.emplace(
@@ -126,7 +138,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "Background.vert"}, {ShaderType::eFragment, "Background.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            CreateColorBlendAttachment(true), CreateDepthStencil(false, false)
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(false, false)
         )
     );
 
@@ -139,7 +151,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SampleDepth.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            CreateColorBlendAttachment(true), CreateDepthStencil(true, true, vk::CompareOp::eAlways),
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eAlways),
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)}
         )
     );
@@ -150,7 +162,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeColor.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            CreateColorBlendAttachment(true), CreateDepthStencil(false, false),
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(false, false),
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 3} // Manipulating flag + sampler index + active object id
         )
     );
@@ -160,27 +172,75 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            CreateColorBlendAttachment(true), CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
         )
     );
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
+static vk::UniqueRenderPass CreateLineAARenderPass(vk::Device d) {
+    const vk::AttachmentDescription attachment{
+        {},
+        Format::Color,
+        vk::SampleCountFlagBits::e1,
+        vk::AttachmentLoadOp::eDontCare,
+        vk::AttachmentStoreOp::eStore,
+        {},
+        {},
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eShaderReadOnlyOptimal,
+    };
+    const vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_ref};
+    return d.createRenderPassUnique({{}, attachment, subpass});
+}
+
 MainPipeline::MainPipeline(
     vk::Device d,
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
-) : Renderer{CreateMainRenderer(d, shared_layout, shared_set)} {}
+) : Renderer{CreateMainRenderer(d, shared_layout, shared_set)},
+    LineAARenderPass{CreateLineAARenderPass(d)},
+    LineAAComposite{
+        d,
+        Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "LineAA.frag"}}},
+        {},
+        vk::PolygonMode::eFill,
+        vk::PrimitiveTopology::eTriangleStrip,
+        {CreateColorBlendAttachment(false)},
+        {},
+        vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2},
+        0.f,
+        shared_layout,
+        shared_set
+    } {}
 
 MainPipeline::ResourcesT::ResourcesT(
-    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::RenderPass line_aa_render_pass
 ) : DepthImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Depth, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange})},
-    ColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange})} {
-    const std::array image_views{*DepthImage.View, *ColorImage.View};
-    Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+    ColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange})},
+    LineDataImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::LineData, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::LineData, {}, ColorSubresourceRange})},
+    FinalColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange})},
+    NearestSampler{d.createSamplerUnique({
+        {},
+        vk::Filter::eNearest,
+        vk::Filter::eNearest,
+        vk::SamplerMipmapMode::eNearest,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+    })} {
+    {
+        const std::array image_views{*DepthImage.View, *ColorImage.View, *LineDataImage.View};
+        Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+    }
+    {
+        const std::array image_views{*FinalColorImage.View};
+        LineAAFramebuffer = d.createFramebufferUnique({{}, line_aa_render_pass, image_views, extent.width, extent.height, 1});
+    }
 }
 
 void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
-    Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
+    Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass, *LineAARenderPass);
 }
 
 static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
@@ -203,7 +263,7 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
             {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "DepthObject.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            CreateColorBlendAttachment(false), CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(false)}, CreateDepthStencil(), draw_pc
         )
     );
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
@@ -277,7 +337,7 @@ static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::Descripto
             {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SilhouetteEdgeDepthObject.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            CreateColorBlendAttachment(false), CreateDepthStencil(),
+            {CreateColorBlendAttachment(false)}, CreateDepthStencil(),
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2}
         )
     );
@@ -504,6 +564,7 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 
 void ScenePipelines::CompileShaders() {
     Main.Renderer.CompileShaders();
+    Main.LineAAComposite.Compile(*Main.LineAARenderPass);
     Silhouette.Renderer.CompileShaders();
     SilhouetteEdge.Renderer.CompileShaders();
     SelectionFragment.Renderer.CompileShaders();
