@@ -34,6 +34,7 @@ ViewportTheme SceneDefaults::ViewportTheme{
         .VertexNormal{0.137f, 0.380f, 0.867f},
         .Transform{1, 1, 1},
     },
+    .EdgeWidth = 1.0f,
     .SilhouetteEdgeWidth = 2,
 };
 

@@ -17,8 +17,14 @@ layout(location = 8) flat out uint MaterialIndex;
 layout(location = 9) out vec4 VertexColor;
 layout(location = 10) out vec4 WorldTangent;
 layout(location = 11) flat out float WorldScale;
+// Screen-space edge endpoints for line anti-aliasing (only used when rendering as LINE_LIST).
+// edge_start is flat (constant across the primitive, takes value from the provoking vertex = first vertex).
+// edge_pos is smooth (interpolated), giving the current position along the line.
+layout(location = 12) flat out vec2 EdgeStart;
+layout(location = 13) out vec2 EdgePos;
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
+layout(constant_id = 1) const uint IsLineDraw = 0u;
 
 vec3 ComputeWorldPos(DrawData draw, WorldTransform world, uint vertex_index) {
     vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[vertex_index + draw.VertexOffset].Position;
@@ -128,4 +134,13 @@ void main() {
     }
     WorldScale = (world.Scale.x + world.Scale.y + world.Scale.z) / 3.0;
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
+    if (IsLineDraw != 0u) {
+        // Convert clip-space to pixel coordinates matching gl_FragCoord.xy ([0, ViewportSize])
+        const vec2 screen_pos = (gl_Position.xy / gl_Position.w * 0.5 + 0.5) * SceneViewUBO.ViewportSize;
+        EdgeStart = screen_pos; // flat: takes first-vertex value for the whole line primitive
+        EdgePos = screen_pos;   // smooth: interpolated along the line
+    } else {
+        EdgeStart = vec2(0);
+        EdgePos = vec2(0);
+    }
 }

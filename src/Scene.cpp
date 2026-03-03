@@ -481,7 +481,9 @@ struct Scene::SelectionSlotHandles {
           SelectionBitset(slots.Allocate(SlotType::Buffer)),
           ObjectIdSampler(slots.Allocate(SlotType::Sampler)),
           DepthSampler(slots.Allocate(SlotType::Sampler)),
-          SilhouetteSampler(slots.Allocate(SlotType::Sampler)) {}
+          SilhouetteSampler(slots.Allocate(SlotType::Sampler)),
+          ColorSampler(slots.Allocate(SlotType::Sampler)),
+          LineDataSampler(slots.Allocate(SlotType::Sampler)) {}
 
     ~SelectionSlotHandles() {
         Slots.Release({SlotType::Image, HeadImage});
@@ -493,10 +495,12 @@ struct Scene::SelectionSlotHandles {
         Slots.Release({SlotType::Sampler, ObjectIdSampler});
         Slots.Release({SlotType::Sampler, DepthSampler});
         Slots.Release({SlotType::Sampler, SilhouetteSampler});
+        Slots.Release({SlotType::Sampler, ColorSampler});
+        Slots.Release({SlotType::Sampler, LineDataSampler});
     }
 
     DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, ObjectPickSeenBits, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler;
+    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, ObjectPickSeenBits, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler, ColorSampler, LineDataSampler;
 };
 
 // Unmanaged reactive storage to track entity destruction.
@@ -1149,6 +1153,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .PendingRotation = pending ? QuatToVec4(pending->R) : vec4{0, 0, 0, 1},
             .PendingScale = pending ? pending->S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
+            .ViewportSize = {float(render_extent.width), float(render_extent.height)},
             .FaceFirstTriSlot = Meshes->FaceFirstTriangleBuffer.Buffer.Slot,
             .BoneDeformSlot = Meshes->BoneDeformBuffer.Buffer.Slot,
             .ArmatureDeformSlot = Buffers->ArmatureDeformBuffer.Buffer.Slot,
@@ -2149,7 +2154,12 @@ void Scene::RecordRenderCommandBuffer() {
     const auto &main = Pipelines->Main;
     // Main rendering pass
     {
-        const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {settings.ClearColor}};
+        // Three clear values: depth, color, linedata (linedata cleared to 0 so alpha=0 means "no line")
+        const std::vector<vk::ClearValue> clear_values{
+            {vk::ClearDepthStencilValue{1, 0}},
+            {settings.ClearColor},
+            {vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 0}}},
+        };
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
         cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
     }
@@ -2213,6 +2223,20 @@ void Scene::RecordRenderCommandBuffer() {
     if (settings.ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
 
     cb.endRenderPass();
+
+    // Line AA composite pass: blends anti-aliased lines from LineDataImage onto ColorImage → FinalColorImage
+    {
+        const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
+        const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
+        cb.beginRenderPass({*main.LineAARenderPass, *main.Resources->LineAAFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
+        const struct {
+            uint32_t ColorSamplerSlot, LineDataSamplerSlot;
+        } line_aa_pc{SelectionHandles->ColorSampler, SelectionHandles->LineDataSampler};
+        cb.pushConstants(*main.LineAAComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(line_aa_pc), &line_aa_pc);
+        main.LineAAComposite.RenderQuad(cb);
+        cb.endRenderPass();
+    }
+
     cb.end();
 }
 
@@ -2857,8 +2881,8 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
 
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {
-        // Recreate the ImGui texture wrapper for the new resolve image.
-        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->ColorImage.View, vec2{0, 1}, vec2{1, 0});
+        // Recreate the ImGui texture wrapper for the line-AA composited image.
+        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->FinalColorImage.View, vec2{0, 1}, vec2{1, 0});
     }
     if (ViewportTexture) {
         const auto p = ImGui::GetCursorScreenPos();
@@ -2917,9 +2941,12 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             const vk::DescriptorBufferInfo element_pick_candidates{*Buffers->ElementPickCandidateBuffer, 0, SceneBuffers::ElementPickGroupCount * sizeof(ElementPickCandidate)};
             const auto &sil = Pipelines->Silhouette;
             const auto &sil_edge = Pipelines->SilhouetteEdge;
+            const auto &main = Pipelines->Main;
             const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
+            const vk::DescriptorImageInfo color_sampler{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+            const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const auto selection_bitset = Buffers->GetSelectionBitsetDescriptor();
             const auto object_pick_seen_bitset = Buffers->GetObjectPickSeenBitsetDescriptor();
             Vk.Device.updateDescriptorSets(
@@ -2933,6 +2960,8 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
                     Slots->MakeSamplerWrite(SelectionHandles->ObjectIdSampler, object_id_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->DepthSampler, depth_sampler),
                     Slots->MakeSamplerWrite(SelectionHandles->SilhouetteSampler, silhouette_sampler),
+                    Slots->MakeSamplerWrite(SelectionHandles->ColorSampler, color_sampler),
+                    Slots->MakeSamplerWrite(SelectionHandles->LineDataSampler, line_data_sampler),
                 },
                 {}
             );

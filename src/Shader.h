@@ -85,7 +85,7 @@ struct ShaderPipeline {
         vk::PipelineVertexInputStateCreateInfo,
         vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
         vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
-        vk::PipelineColorBlendAttachmentState color_blend_attachment = {},
+        std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments = {},
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state = {},
         std::optional<vk::PushConstantRange> push_constant_range = std::nullopt,
         float depth_bias = 0.f,
@@ -100,7 +100,7 @@ struct ShaderPipeline {
     Shaders Shaders;
 
     vk::PipelineVertexInputStateCreateInfo VertexInputState;
-    vk::PipelineColorBlendAttachmentState ColorBlendAttachment;
+    std::vector<vk::PipelineColorBlendAttachmentState> ColorBlendAttachments;
     std::optional<vk::PipelineDepthStencilStateCreateInfo> DepthStencilState;
     vk::PipelineRasterizationStateCreateInfo RasterizationState;
     vk::PipelineInputAssemblyStateCreateInfo InputAssemblyState;
@@ -150,7 +150,7 @@ struct PipelineContext {
         vk::PipelineVertexInputStateCreateInfo vertex_input,
         vk::PolygonMode polygon_mode,
         vk::PrimitiveTopology topology,
-        vk::PipelineColorBlendAttachmentState color_blend,
+        std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments,
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil,
         std::optional<vk::PushConstantRange> push_constants = std::nullopt,
         float depth_bias = 0.f
