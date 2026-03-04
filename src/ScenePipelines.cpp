@@ -17,6 +17,18 @@ enum class OverlayKind : uint32_t {
 };
 constexpr std::array PbrSpecFeatures{PbrFeature::Punctual, PbrFeature::Transmission, PbrFeature::DiffuseTrans, PbrFeature::Clearcoat, PbrFeature::Sheen, PbrFeature::Anisotropy, PbrFeature::Iridescence};
 
+constexpr vk::SubpassDependency ExternalFragReadDependency() {
+    return {
+        0,
+        vk::SubpassExternal,
+        vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests,
+        vk::PipelineStageFlagBits::eFragmentShader,
+        vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        vk::AccessFlagBits::eShaderRead,
+        {},
+    };
+}
+
 } // namespace
 
 void PipelineRenderer::CompileShaders() {
@@ -230,7 +242,8 @@ static PipelineRenderer CreateMainRenderer(
             {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
         )
     );
-    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    const std::array dependencies{ExternalFragReadDependency()};
+    return {d.createRenderPassUnique({{}, attachments, subpass, dependencies}), std::move(pipelines)};
 }
 
 static vk::UniqueRenderPass CreateLineAARenderPass(vk::Device d) {
@@ -322,7 +335,8 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
             {CreateColorBlendAttachment(false)}, CreateDepthStencil(), draw_pc
         )
     );
-    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    const std::array dependencies{ExternalFragReadDependency()};
+    return {d.createRenderPassUnique({{}, attachments, subpass, dependencies}), std::move(pipelines)};
 }
 
 SilhouettePipeline::SilhouettePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set)
@@ -397,7 +411,8 @@ static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::Descripto
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2}
         )
     );
-    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    const std::array dependencies{ExternalFragReadDependency()};
+    return {d.createRenderPassUnique({{}, attachments, subpass, dependencies}), std::move(pipelines)};
 }
 
 SilhouetteEdgePipeline::SilhouetteEdgePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set)
