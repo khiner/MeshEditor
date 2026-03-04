@@ -1,6 +1,7 @@
 #include "Armature.h"
 #include "MeshInstance.h"
 #include "NodeTransformAnimation.h"
+#include "PbrFeature.h"
 #include "Scene.h"
 #include "SceneMaterials.h"
 #include "SceneTextures.h"
@@ -8,6 +9,7 @@
 #include "gltf/GltfLoader.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MorphTargetData.h"
+#include "scene_impl/SceneComponents.h"
 
 #include <entt/entity/registry.hpp>
 #include <iostream>
@@ -208,6 +210,19 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         auto &scene_mesh = scene->Meshes[mi];
         entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
+            // Detect PBR extension features before material index remapping.
+            PbrFeatureMask mesh_pbr_mask{0};
+            for (const auto gltf_mat_idx : scene_mesh.TrianglePrimitives.MaterialIndices) {
+                if (gltf_mat_idx < scene->Materials.size()) {
+                    const auto &mat = scene->Materials[gltf_mat_idx].Value;
+                    if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Transmission;
+                    if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::DiffuseTrans;
+                    if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Clearcoat;
+                    if (mat.Sheen.RoughnessFactor > 0.f || mat.Sheen.ColorTexture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Sheen;
+                    if (mat.Anisotropy.Strength != 0.f || mat.Anisotropy.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Anisotropy;
+                    if (mat.Iridescence.Factor > 0.f || mat.Iridescence.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Iridescence;
+                }
+            }
             for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) {
                 local_material_index = local_material_index < material_indices_by_gltf_material.size() ?
                     material_indices_by_gltf_material[local_material_index] :
@@ -221,6 +236,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             const auto [me, _] = AddMesh(std::move(mesh), std::nullopt);
             mesh_entity = me;
             R.emplace<Path>(mesh_entity, path);
+            if (mesh_pbr_mask != 0) R.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
             mesh_morphs.emplace_back(std::move(morph_data_copy));
         } else {
             mesh_morphs.emplace_back(std::nullopt);

@@ -1,3 +1,4 @@
+#include "PbrFeature.h"
 #include "Scene.h"
 #include "SceneDefaults.h"
 #include "SceneMaterials.h"
@@ -1164,29 +1165,44 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 // IOR — always visible; affects Fresnel reflectance even for non-transmissive dielectrics.
                 material_changed |= SliderFloat("IOR", &material.Ior, 1.0f, 3.0f, "%.3f");
 
+                auto pbr_features_mask = R.all_of<PbrMeshFeatures>(active_mesh_entity) ? R.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
+                bool pbr_features_changed = false;
+                const auto feature_toggle = [&](const char *label, PbrFeature feature) {
+                    bool enabled = HasFeature(pbr_features_mask, feature);
+                    if (Checkbox(label, &enabled)) {
+                        if (enabled) pbr_features_mask |= feature;
+                        else pbr_features_mask &= ~uint32_t(feature);
+                        pbr_features_changed = true;
+                    }
+                    return enabled;
+                };
+
                 // Transmission
-                material_changed |= SliderFloat("Transmission", &material.Transmission.Factor, 0.f, 1.f);
-                if (material.Transmission.Factor > 0.f) {
+                if (feature_toggle("Transmission", PbrFeature::Transmission)) {
+                    SeparatorText("Transmission");
+                    material_changed |= SliderFloat("Transmission factor", &material.Transmission.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Transmission", material.Transmission.Texture);
                     material_changed |= SliderFloat("Dispersion", &material.Dispersion, 0.f, 1.f);
-
                     // Volume (only meaningful with transmission)
                     material_changed |= SliderFloat("Thickness", &material.Volume.ThicknessFactor, 0.f, 10.f);
                     material_changed |= edit_texture_info("Thickness", material.Volume.ThicknessTexture);
                     material_changed |= ColorEdit3("Attenuation color", &material.Volume.AttenuationColor.x);
-                    // 0 = infinite/disabled; display "Infinite" when zero.
                     material_changed |= DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
                 }
-                material_changed |= SliderFloat("Diffuse transmission", &material.DiffuseTransmission.Factor, 0.f, 1.f);
-                if (material.DiffuseTransmission.Factor > 0.f) {
+
+                // Diffuse transmission
+                if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) {
+                    SeparatorText("Diffuse transmission");
+                    material_changed |= SliderFloat("Diffuse transmission factor", &material.DiffuseTransmission.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Diffuse transmission", material.DiffuseTransmission.Texture);
                     material_changed |= ColorEdit3("Diffuse transmission color", &material.DiffuseTransmission.ColorFactor.x);
                     material_changed |= edit_texture_info("Diffuse transmission color", material.DiffuseTransmission.ColorTexture);
                 }
 
                 // Clearcoat
-                material_changed |= SliderFloat("Clearcoat", &material.Clearcoat.Factor, 0.f, 1.f);
-                if (material.Clearcoat.Factor > 0.f) {
+                if (feature_toggle("Clearcoat", PbrFeature::Clearcoat)) {
+                    SeparatorText("Clearcoat");
+                    material_changed |= SliderFloat("Clearcoat factor", &material.Clearcoat.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Clearcoat", material.Clearcoat.Texture);
                     material_changed |= SliderFloat("Clearcoat roughness", &material.Clearcoat.RoughnessFactor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Clearcoat roughness", material.Clearcoat.RoughnessTexture);
@@ -1195,15 +1211,26 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 }
 
                 // Anisotropy
-                material_changed |= SliderFloat("Anisotropy", &material.Anisotropy.Strength, 0.f, 1.f);
-                if (material.Anisotropy.Strength > 0.f) {
+                if (feature_toggle("Anisotropy", PbrFeature::Anisotropy)) {
+                    SeparatorText("Anisotropy");
+                    material_changed |= SliderFloat("Anisotropy strength", &material.Anisotropy.Strength, 0.f, 1.f);
                     material_changed |= SliderFloat("Anisotropy rotation", &material.Anisotropy.Rotation, 0.f, 6.2832f, "%.3f rad");
                     material_changed |= edit_texture_info("Anisotropy", material.Anisotropy.Texture);
                 }
 
+                // Sheen
+                if (feature_toggle("Sheen", PbrFeature::Sheen)) {
+                    SeparatorText("Sheen");
+                    material_changed |= ColorEdit3("Sheen color", &material.Sheen.ColorFactor.x);
+                    material_changed |= edit_texture_info("Sheen color", material.Sheen.ColorTexture);
+                    material_changed |= SliderFloat("Sheen roughness", &material.Sheen.RoughnessFactor, 0.f, 1.f);
+                    material_changed |= edit_texture_info("Sheen roughness", material.Sheen.RoughnessTexture);
+                }
+
                 // Iridescence
-                material_changed |= SliderFloat("Iridescence", &material.Iridescence.Factor, 0.f, 1.f);
-                if (material.Iridescence.Factor > 0.f) {
+                if (feature_toggle("Iridescence", PbrFeature::Iridescence)) {
+                    SeparatorText("Iridescence");
+                    material_changed |= SliderFloat("Iridescence factor", &material.Iridescence.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Iridescence", material.Iridescence.Texture);
                     material_changed |= SliderFloat("Iridescence IOR", &material.Iridescence.Ior, 1.0f, 5.0f);
                     material_changed |= SliderFloat("Thickness min", &material.Iridescence.ThicknessMinimum, 0.f, 1000.f, "%.0f nm");
@@ -1211,6 +1238,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
+                if (pbr_features_changed) {
+                    if (pbr_features_mask != 0u) R.emplace_or_replace<PbrMeshFeatures>(active_mesh_entity, pbr_features_mask);
+                    else R.remove<PbrMeshFeatures>(active_mesh_entity);
+                }
                 if (material_changed) R.emplace_or_replace<MaterialDirty>(SceneEntity, material_index);
             }
         }

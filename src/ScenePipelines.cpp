@@ -1,4 +1,5 @@
 #include "ScenePipelines.h"
+#include "Shader.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/DrawPassPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
@@ -14,6 +15,7 @@ enum class OverlayKind : uint32_t {
     FaceNormal = 1,
     VertexNormal = 2,
 };
+constexpr std::array PbrSpecFeatures{PbrFeature::Punctual, PbrFeature::Transmission, PbrFeature::DiffuseTrans, PbrFeature::Clearcoat, PbrFeature::Sheen, PbrFeature::Anisotropy, PbrFeature::Iridescence};
 
 } // namespace
 
@@ -28,8 +30,79 @@ const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) cons
     return pipeline;
 }
 
-// No-write for LineData attachment (used by non-line pipelines as their 2nd color blend state).
+// No-write for LineData attachment (non-line pipelines) - also used by PbrCompiler.
 static constexpr vk::PipelineColorBlendAttachmentState NoWriteBlend{};
+
+PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass rp)
+    : Device(ctx.Device), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(rp) {
+    CompileModules();
+    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
+    Layout = Device.createPipelineLayoutUnique({{}, 1, &SetLayout, 1, &draw_pc});
+}
+
+void PbrCompiler::CompileModules() {
+    VertModule = CompileShaderModule(Device, ShaderType::eVertex, "VertexTransform.vert");
+    FragModule = CompileShaderModule(Device, ShaderType::eFragment, "pbr.frag");
+}
+
+vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write) const {
+    static constexpr vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
+    static constexpr std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
+    static constexpr vk::PipelineMultisampleStateCreateInfo multisample_state{{}, vk::SampleCountFlagBits::e1};
+    static constexpr vk::PipelineVertexInputStateCreateInfo vertex_input{};
+    static constexpr vk::PipelineInputAssemblyStateCreateInfo input_assembly{{}, vk::PrimitiveTopology::eTriangleList};
+    static const vk::PipelineRasterizationStateCreateInfo raster{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eClockwise, false, 0.f, {}, {}, 1.f};
+
+    const std::array stages{
+        vk::PipelineShaderStageCreateInfo{{}, ShaderType::eVertex, *VertModule, "main"},
+        vk::PipelineShaderStageCreateInfo{{}, ShaderType::eFragment, *FragModule, "main", &frag_spec},
+    };
+    const auto depth_stencil = CreateDepthStencil(true, depth_write);
+    const std::array color_blend_attachments{CreateColorBlendAttachment(true), NoWriteBlend};
+    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, color_blend_attachments.size(), color_blend_attachments.data()};
+    auto result = Device.createGraphicsPipelineUnique(
+        {},
+        {{}, stages, &vertex_input, &input_assembly, nullptr, &viewport_state, &raster, &multisample_state, &depth_stencil, &color_blending, &dynamic_state, *Layout, RenderPass}
+    );
+    if (result.result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::format("PbrCompiler: failed to create targeted pipeline: {}", vk::to_string(result.result)));
+    }
+    return std::move(result.value);
+}
+
+bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
+    if (mask == Mask && OpaqueTargeted && BlendTargeted) return false;
+
+    constexpr auto N = uint32_t(PbrSpecFeatures.size());
+    std::array<uint32_t, PbrSpecFeatures.size()> data{};
+    std::array<vk::SpecializationMapEntry, PbrSpecFeatures.size()> entries{};
+    for (uint32_t i = 0; i < N; ++i) {
+        data[i] = HasFeature(mask, PbrSpecFeatures[i]) ? 1u : 0u;
+        entries[i] = vk::SpecializationMapEntry{i, i * uint32_t(sizeof(uint32_t)), uint32_t(sizeof(uint32_t))};
+    }
+    const vk::SpecializationInfo spec{N, entries.data(), N * sizeof(uint32_t), data.data()};
+    OpaqueTargeted = CreateTargetedPipeline(spec, true);
+    BlendTargeted = CreateTargetedPipeline(spec, false);
+    Mask = mask;
+
+    return true;
+}
+
+vk::PipelineLayout PbrCompiler::BindTargeted(vk::CommandBuffer cb, bool opaque) const {
+    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, opaque ? *OpaqueTargeted : *BlendTargeted);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *Layout, 0, Set, {});
+    return *Layout;
+}
+
+void PbrCompiler::RecompileModules() {
+    if (!Device) return;
+    CompileModules();
+    OpaqueTargeted.reset();
+    BlendTargeted.reset();
+    CompilePipelines(Mask);
+}
+
 // Write-only for LineData attachment (used by line pipelines as their 2nd color blend state).
 static const vk::PipelineColorBlendAttachmentState LineDataBlend = CreateColorBlendAttachment(false);
 
@@ -64,24 +137,6 @@ static PipelineRenderer CreateMainRenderer(
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
             {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
-        )
-    );
-    pipelines.emplace(
-        SPT::PBRFill,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "pbr.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
-        )
-    );
-    pipelines.emplace(
-        SPT::PBRFillBlend,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "pbr.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, false), draw_pc
         )
     );
     pipelines.emplace(
@@ -212,7 +267,8 @@ MainPipeline::MainPipeline(
         0.f,
         shared_layout,
         shared_set
-    } {}
+    },
+    Compiler{{d, shared_layout, shared_set}, *Renderer.RenderPass} {}
 
 MainPipeline::ResourcesT::ResourcesT(
     vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::RenderPass line_aa_render_pass
@@ -565,6 +621,7 @@ void ScenePipelines::SetExtent(vk::Extent2D extent) {
 void ScenePipelines::CompileShaders() {
     Main.Renderer.CompileShaders();
     Main.LineAAComposite.Compile(*Main.LineAARenderPass);
+    Main.Compiler.RecompileModules();
     Silhouette.Renderer.CompileShaders();
     SilhouetteEdge.Renderer.CompileShaders();
     SelectionFragment.Renderer.CompileShaders();

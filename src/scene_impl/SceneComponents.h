@@ -35,3 +35,9 @@ struct SceneEditMode {
 struct ViewportExtent {
     vk::Extent2D Value{};
 };
+
+// Per-mesh-entity: bitmask of PbrFeature bits that are explicitly enabled for that mesh.
+// Scene-wide mask = OR of all PbrMeshFeatures + Punctual bit from "Use Scene Lights".
+struct PbrMeshFeatures {
+    uint32_t Mask{0};
+};

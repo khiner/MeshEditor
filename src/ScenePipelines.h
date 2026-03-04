@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IblPrefilterPipelines.h"
+#include "PbrFeature.h"
 #include "ShaderPipelineType.h"
 #include "vulkan/Image.h"
 
@@ -29,6 +30,30 @@ inline constexpr auto LineData = vk::Format::eR8G8B8A8Unorm;
 inline constexpr auto Uint = vk::Format::eR32Uint;
 } // namespace Format
 
+// Compiles a PBR pipeline shaped to the scene's active feature set via Vulkan specialization constants.
+// Vert + frag VkShaderModules are compiled once; only vkCreateGraphicsPipeline runs on mask changes.
+struct PbrCompiler {
+    PbrCompiler(PipelineContext, vk::RenderPass);
+
+    bool CompilePipelines(PbrFeatureMask);
+    vk::PipelineLayout BindTargeted(vk::CommandBuffer, bool opaque) const;
+    void RecompileModules(); // hot reload: recompile SPIRV and pipelines from disk
+
+private:
+    void CompileModules();
+    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write) const;
+
+    vk::Device Device;
+    vk::UniqueShaderModule VertModule, FragModule;
+    vk::UniquePipelineLayout Layout;
+    vk::DescriptorSetLayout SetLayout;
+    vk::DescriptorSet Set;
+    vk::RenderPass RenderPass;
+
+    PbrFeatureMask Mask{0};
+    vk::UniquePipeline OpaqueTargeted, BlendTargeted;
+};
+
 struct MainPipeline {
     MainPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
 
@@ -46,6 +71,8 @@ struct MainPipeline {
     vk::UniqueRenderPass LineAARenderPass;
     ShaderPipeline LineAAComposite;
     std::unique_ptr<ResourcesT> Resources;
+
+    PbrCompiler Compiler;
 };
 
 struct SilhouettePipeline {

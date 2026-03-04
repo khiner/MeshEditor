@@ -1168,8 +1168,20 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::Submit);
     }
 
-    // Update selection overlays
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
+    { // Keep targeted PBR specialization mask in sync every frame while rendered shading is active.
+        if (settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered) {
+            PbrFeatureMask pbr_mask{0};
+            if ((settings.ViewportShading == ViewportShadingMode::Rendered && R.get<const RenderedLighting>(SceneEntity).UseSceneLights) ||
+                (settings.ViewportShading == ViewportShadingMode::MaterialPreview && R.get<const MaterialPreviewLighting>(SceneEntity).UseSceneLights)) {
+                pbr_mask |= PbrFeature::Punctual;
+            }
+            for (const auto [_, feat] : R.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
+            if (Pipelines->Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
+        }
+    }
+
+    // Update selection overlays
     for (const auto mesh_entity : dirty_overlay_meshes) {
         const auto &mesh = R.get<const Mesh>(mesh_entity);
         R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
@@ -2129,6 +2141,13 @@ void Scene::RecordRenderCommandBuffer() {
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
+    auto record_pbr_batch = [&](const DrawBatchInfo &batch, bool opaque) {
+        if (batch.DrawCount == 0) return;
+        const auto layout = Pipelines->Main.Compiler.BindTargeted(cb, opaque);
+        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot};
+        cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+        cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+    };
 
     const bool has_silhouette = render_silhouette && silhouette_batch.DrawCount > 0;
     if (has_silhouette) { // Silhouette depth/object pass
@@ -2180,8 +2199,8 @@ void Scene::RecordRenderCommandBuffer() {
         // Solid faces
         if (show_fill) {
             if (show_rendered) {
-                record_draw_batch(main.Renderer, SPT::PBRFill, fill_batch_opaque);
-                record_draw_batch(main.Renderer, SPT::PBRFillBlend, fill_batch_blend);
+                record_pbr_batch(fill_batch_opaque, true);
+                record_pbr_batch(fill_batch_blend, false);
             } else {
                 record_draw_batch(main.Renderer, fill_pipeline, fill_batch_opaque);
             }

@@ -95,35 +95,40 @@ Shaders::~Shaders() = default;
 
 Shaders &Shaders::operator=(Shaders &&) = default;
 
+static vk::UniqueShaderModule CompileToModule(vk::Device device, ShaderType type, const std::filesystem::path &path) {
+    static const shaderc::Compiler compiler;
+    shaderc::CompileOptions compile_opts;
+    compile_opts.SetGenerateDebugInfo();
+    compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
+    compile_opts.SetIncluder(std::make_unique<ShaderIncluder>());
+    const auto kind = [type] {
+        switch (type) {
+            case ShaderType::eVertex: return shaderc_glsl_vertex_shader;
+            case ShaderType::eFragment: return shaderc_glsl_fragment_shader;
+            case ShaderType::eCompute: return shaderc_glsl_compute_shader;
+            default: throw std::runtime_error(std::format("Unsupported shader stage {}", vk::to_string(type)));
+        }
+    }();
+    const auto result = compiler.CompileGlslToSpv(File::Read(path), kind, "", compile_opts);
+    if (result.GetCompilationStatus() != shaderc_compilation_status_success) {
+        throw std::runtime_error(std::format("Error compiling shader {}:\n{}", path.string(), result.GetErrorMessage()));
+    }
+    const std::vector<uint32_t> spirv{result.cbegin(), result.cend()};
+    return device.createShaderModuleUnique({{}, spirv});
+}
+
+vk::UniqueShaderModule CompileShaderModule(vk::Device device, ShaderType type, const std::filesystem::path &relative_path) {
+    return CompileToModule(device, type, ShadersDir / relative_path);
+}
+
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
     auto stages =
         Resources | transform([device](auto &resource) {
-            static const shaderc::Compiler compiler;
-            shaderc::CompileOptions compile_opts;
-            compile_opts.SetGenerateDebugInfo(); // To get resource variable names for linking with their binding.
-            compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
-            compile_opts.SetIncluder(std::make_unique<ShaderIncluder>());
             const auto type = resource.TypePath.Type;
             const auto path = ShadersDir / resource.TypePath.Path;
-            const auto kind = [type] {
-                switch (type) {
-                    case ShaderType::eVertex: return shaderc_glsl_vertex_shader;
-                    case ShaderType::eFragment: return shaderc_glsl_fragment_shader;
-                    case ShaderType::eCompute: return shaderc_glsl_compute_shader;
-                    default: throw std::runtime_error(std::format("Unsupported shader stage {}", vk::to_string(type)));
-                }
-            }();
-            const auto comp_result = compiler.CompileGlslToSpv(File::Read(path), kind, "", compile_opts);
-            if (comp_result.GetCompilationStatus() != shaderc_compilation_status_success) {
-                const auto error_message = comp_result.GetErrorMessage();
-                throw std::runtime_error(std::format("Error compiling shader {}:\n{}", path.string(), error_message));
-            }
-            std::vector<uint> spirv_words{comp_result.cbegin(), comp_result.cend()};
-            resource.Module = device.createShaderModuleUnique({{}, spirv_words});
+            resource.Module = CompileToModule(device, type, path);
             vk::PipelineShaderStageCreateInfo stage_info{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
-            if (resource.Specialization) {
-                stage_info.setPSpecializationInfo(&resource.Specialization->Info);
-            }
+            if (resource.Specialization) stage_info.setPSpecializationInfo(&resource.Specialization->Info);
             return stage_info;
         }) |
         to<std::vector>();

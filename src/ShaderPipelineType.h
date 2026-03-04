@@ -2,8 +2,6 @@
 
 enum class ShaderPipelineType {
     Fill,
-    PBRFill,
-    PBRFillBlend,
     Line,
     LineOverlayFaceNormals,
     LineOverlayVertexNormals,
