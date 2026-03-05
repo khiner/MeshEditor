@@ -81,7 +81,7 @@ All Khnonos ratified extensions that visually impact the scene are supported (im
 PBR BRDF/lighting equations are taken directly from the reference [glTF-Sample-Renderer shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/).
 
 PBR render features that are not needed by the scene (because the feature isn't enabled on any current object's materials, scene lights are not present or enabled, or IBL environment not present (in Solid render mode)) are not compiled. This is updated dynamically as the scene changes or edits are made.
-(This is implemented with specialization constants, so only the VkPipeline variants (opaque/blend) need to be recreated, and no GLSL->SPIR-V recompilation is needed for the PBR shader. This is fast enough to run synchronously whenever the enabled feature mask changes, with no perceivable hitch on my machine.)
+(This is implemented with specialization constants, so only the VkPipeline variants (opaque/blend) need to be recreated, and no GLSL->SPIR-V recompilation is needed for the PBR shader. This is fast enough to run synchronously whenever the enabled feature mask changes - usually around 60ms on my machine.)
 
 #### glTF supported extensions
 

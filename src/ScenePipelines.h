@@ -44,6 +44,7 @@ private:
     vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write) const;
 
     vk::Device Device;
+    vk::UniquePipelineCache Cache;
     vk::UniqueShaderModule VertModule, FragModule;
     vk::UniquePipelineLayout Layout;
     vk::DescriptorSetLayout SetLayout;

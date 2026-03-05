@@ -1,5 +1,6 @@
 #include "ScenePipelines.h"
 #include "Shader.h"
+#include "Timer.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/DrawPassPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
@@ -46,7 +47,7 @@ const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) cons
 static constexpr vk::PipelineColorBlendAttachmentState NoWriteBlend{};
 
 PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass rp)
-    : Device(ctx.Device), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(rp) {
+    : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(rp) {
     CompileModules();
     const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
     Layout = Device.createPipelineLayoutUnique({{}, 1, &SetLayout, 1, &draw_pc});
@@ -74,7 +75,7 @@ vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationI
     const std::array color_blend_attachments{CreateColorBlendAttachment(true), NoWriteBlend};
     const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, color_blend_attachments.size(), color_blend_attachments.data()};
     auto result = Device.createGraphicsPipelineUnique(
-        {},
+        *Cache,
         {{}, stages, &vertex_input, &input_assembly, nullptr, &viewport_state, &raster, &multisample_state, &depth_stencil, &color_blending, &dynamic_state, *Layout, RenderPass}
     );
     if (result.result != vk::Result::eSuccess) {
@@ -94,6 +95,7 @@ bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
         entries[i] = vk::SpecializationMapEntry{i, i * uint32_t(sizeof(uint32_t)), uint32_t(sizeof(uint32_t))};
     }
     const vk::SpecializationInfo spec{N, entries.data(), N * sizeof(uint32_t), data.data()};
+    const Timer timer{"PBR pipeline compile"};
     OpaqueTargeted = CreateTargetedPipeline(spec, true);
     BlendTargeted = CreateTargetedPipeline(spec, false);
     Mask = mask;
