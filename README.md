@@ -73,6 +73,41 @@ _The cylinders shown in the images represent recorded microphone positions, but 
 | Plastic Scoop | ![Mesh](paper/images/impacts/PlasticScoopMesh.png) | [Impact](audio_samples/PlasticScoopImpact.wav) | [Modal](audio_samples/PlasticScoopModal.wav) |
 | Small Swan Ceramic | ![Mesh](paper/images/impacts/SwanSmallCeramicMesh.png) | [Impact](audio_samples/SmallSwanCeramicImpact.wav) | [Modal](audio_samples/SmallSwanCeramicModal.wav) |
 
+### glTF viewer
+
+MeshEditor is also a fully featured glTF 2.0 viewer/importer.
+glTF scene nodes are mapped to corresponding MeshEditor objects (meshes, armatures, cameras, lights, empty objects), with the scene parenting hierarchy mirroring the glTF node hierarchy.
+All Khnonos ratified extensions that visually impact the scene are supported (imported, rendered, fully editable), except for `KHR_texture_basisu` and the common realtime approximation to sample the refracted IBL behind transmissive objects instead of scene contents behind them (same as Blender).
+PBR BRDF/lighting equations are taken directly from the reference [glTF-Sample-Renderer shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/).
+
+PBR render features that are not needed by the scene (because the feature isn't enabled on any current object's materials, scene lights are not present or enabled, or IBL environment not present (in Solid render mode)) are not compiled. This is updated dynamically as the scene changes or edits are made. (This is implemented with specialization constants, so only the VkPipeline variants (opaque/blend) need to be recreated, and no GLSL->SPIR-V recompilation is needed for the PBR shader. This is fast enough to run synchronously whenever the enabled feature mask changes, with no perceivable hitch on my machine.)
+
+#### glTF supported extensions
+
+✅ supported | 🟨 partial | ⬜ not supported
+| Extension | Status | Notes |
+| - | - | - |
+| `KHR_mesh_quantization` | ✅ | Handled in fastgltf parser/import path |
+| `EXT_mesh_gpu_instancing` | ✅ | Imported into MeshEditor instances |
+| `KHR_lights_punctual` | ✅ | Imported into MeshEditor light entities |
+| `KHR_texture_transform` | ✅ | |
+| `KHR_materials_emissive_strength` | ✅ | |
+| `KHR_materials_unlit` | ✅ | |
+| `KHR_materials_specular` | ✅ | |
+| `KHR_materials_sheen` | ✅ | |
+| `KHR_materials_ior` | ✅ | |
+| `KHR_materials_dispersion` | ✅ | |
+| `KHR_materials_transmission` | ✅ | |
+| `KHR_materials_diffuse_transmission` | ✅ | |
+| `KHR_materials_volume` | ✅ | |
+| `KHR_materials_clearcoat` | ✅ | |
+| `KHR_materials_anisotropy` | ✅ | |
+| `KHR_materials_iridescence` | ✅ | |
+| `EXT_lights_image_based` | 🟨 | Imported as Scene IBL when present (used for Rendered view mode) |
+| `KHR_texture_basisu` | 🟨 | KTX2/BasisU decode path not wired yet |
+| `KHR_animation_pointer` | ⬜ | Too much complexity for now, for an extension that isn't widely used yet |
+| `EXT_meshopt_compression` | ⬜ | Not taking on the meshopt dependency for now |
+
 ## Build & run
 
 ### Install dependencies
