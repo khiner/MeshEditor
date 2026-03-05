@@ -92,6 +92,12 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
     std::span<const std::byte>, std::string_view encoded_name, std::string texture_name,
     TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
 );
+std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
+    const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, DescriptorSlots &,
+    const gltf::Image &image, std::string texture_name,
+    TextureColorSpace, vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
+    const SamplerConfig &
+);
 std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
     const SceneVulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, DescriptorSlots &,
     const std::vector<gltf::Image> &, const gltf::ImageBasedLight &

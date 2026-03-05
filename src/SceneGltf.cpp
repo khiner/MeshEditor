@@ -103,14 +103,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : vk::SamplerAddressMode::eRepeat;
         const auto texture_name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
 
-        auto texture = CreateTextureEntryFromEncoded(
+        auto texture = CreateTextureEntryFromImage(
             Vk, GetBufferCtx(Buffers.get()), *CommandPool, *OneShotFence, *Slots,
-            src_image.Bytes,
-            src_image.Name.empty() ? std::format("Image{}", *image_index) : src_image.Name,
-            texture_name,
-            color_space,
-            wrap_s, wrap_t,
-            sampler_config
+            src_image, texture_name, color_space, wrap_s, wrap_t, sampler_config
         );
         if (!texture) return std::unexpected{std::move(texture.error())};
         const auto sampler_slot = texture->SamplerSlot;

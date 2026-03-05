@@ -5,6 +5,7 @@
 #include "ImageDecode.h"
 #include "vulkan/Buffer.h"
 
+#include <basisu_transcoder.h>
 #include <glm/geometric.hpp>
 
 #include <bit>
@@ -183,6 +184,56 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
     const auto sampler_slot = RegisterCubeSamplerSlot(slots, vk.Device, *sampler, *image.View);
     return CubemapEntry{.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Size = base_size, .MipLevels = uint32_t(mip_faces.size()), .Name = std::move(name)};
 }
+struct KtxFormatPair {
+    vk::Format VkFmt;
+    basist::transcoder_texture_format BasisFmt;
+};
+
+KtxFormatPair SelectKtx2Format(vk::PhysicalDevice pd, TextureColorSpace cs) {
+    const bool srgb = cs == TextureColorSpace::Srgb;
+    static constexpr struct {
+        vk::Format Unorm, Srgb;
+        basist::transcoder_texture_format BasisFmt;
+    } Candidates[]{
+        {vk::Format::eBc7UnormBlock, vk::Format::eBc7SrgbBlock, basist::transcoder_texture_format::cTFBC7_RGBA},
+        {vk::Format::eEtc2R8G8B8A8UnormBlock, vk::Format::eEtc2R8G8B8A8SrgbBlock, basist::transcoder_texture_format::cTFETC2_RGBA},
+    };
+    for (const auto &c : Candidates) {
+        const auto fmt = srgb ? c.Srgb : c.Unorm;
+        if (pd.getFormatProperties(fmt).optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage) return {fmt, c.BasisFmt};
+    }
+    return {srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm, basist::transcoder_texture_format::cTFRGBA32};
+}
+
+TextureEntry CreateCompressedTextureEntry(
+    const SceneVulkanResources &vk, mvk::BufferContext &ctx,
+    vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots,
+    std::span<const std::byte> all_mip_data,
+    std::vector<vk::BufferImageCopy> copies,
+    vk::Format format, uint32_t width, uint32_t height, uint32_t mip_levels,
+    std::string name,
+    vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t, const SamplerConfig &sampler_cfg
+) {
+    auto image = mvk::CreateImage(
+        vk.Device, vk.PhysicalDevice,
+        {{}, vk::ImageType::e2D, format, {width, height, 1}, mip_levels, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
+        {{}, {}, vk::ImageViewType::e2D, format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1}}
+    );
+
+    const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
+    mvk::Buffer staging{ctx, all_mip_data, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    RecordSubmit(vk.Device, command_pool, vk.Queue, one_shot_fence, [&](vk::CommandBuffer cb) {
+        TransitionImage(cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range);
+        cb.copyBufferToImage(*staging, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
+        TransitionImage(cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, full_range);
+    });
+
+    auto sampler = vk.Device.createSamplerUnique(vk::SamplerCreateInfo{{}, sampler_cfg.MagFilter, sampler_cfg.MinFilter, sampler_cfg.MipmapMode, wrap_s, wrap_t, vk::SamplerAddressMode::eRepeat, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, float(mip_levels), vk::BorderColor::eIntOpaqueBlack, VK_FALSE});
+
+    const auto sampler_slot = slots.Allocate(SlotType::Sampler);
+    vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(sampler_slot, {*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {});
+    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = sampler_slot, .Width = width, .Height = height, .MipLevels = mip_levels, .Name = std::move(name)};
+}
 } // namespace
 
 uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
@@ -298,7 +349,7 @@ TextureEntry CreateTextureEntry(
             vk::BufferImageCopy{0, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}
         );
 
-        int32_t mip_width = int32_t(width), mip_height = int32_t(height);
+        int32_t mip_width = width, mip_height = height;
         for (uint32_t mip = 1; mip < mip_levels; ++mip) {
             TransitionImage(
                 cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
@@ -709,6 +760,55 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const Environment
         .SheenELutSamplerSlot = environments.SheenELut.SamplerSlot,
         .CharlieLutSamplerSlot = environments.CharlieLut.SamplerSlot,
     };
+}
+
+std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
+    const SceneVulkanResources &vk, mvk::BufferContext &ctx,
+    vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots,
+    const gltf::Image &image, std::string texture_name,
+    TextureColorSpace color_space,
+    vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
+    const SamplerConfig &sampler_cfg
+) {
+    if (image.MimeType != gltf::MimeType::KTX2) {
+        return CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, image.Bytes, image.Name, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
+    }
+
+    static const bool _ = (basist::basisu_transcoder_init(), true);
+
+    basist::ktx2_transcoder transcoder;
+    if (!transcoder.init(image.Bytes.data(), uint32_t(image.Bytes.size())))
+        return std::unexpected{std::format("Failed to parse KTX2 image '{}'.", image.Name)};
+    if (!transcoder.start_transcoding())
+        return std::unexpected{std::format("Failed to start transcoding KTX2 image '{}'.", image.Name)};
+
+    const auto [vk_fmt, basis_fmt] = SelectKtx2Format(vk.PhysicalDevice, color_space);
+    const uint32_t width = transcoder.get_width();
+    const uint32_t height = transcoder.get_height();
+    const uint32_t mip_levels = transcoder.get_levels();
+
+    std::vector<std::byte> all_mip_data;
+    std::vector<vk::BufferImageCopy> copies;
+    copies.reserve(mip_levels);
+    size_t offset = 0;
+
+    for (uint32_t mip = 0; mip < mip_levels; ++mip) {
+        const uint32_t mip_w = std::max(1u, width >> mip);
+        const uint32_t mip_h = std::max(1u, height >> mip);
+        const uint32_t mip_bytes = basist::basis_compute_transcoded_image_size_in_bytes(basis_fmt, mip_w, mip_h);
+        const uint32_t block_count = mip_bytes / basist::basis_get_bytes_per_block_or_pixel(basis_fmt);
+
+        const size_t prev_size = all_mip_data.size();
+        all_mip_data.resize(prev_size + mip_bytes);
+
+        if (!transcoder.transcode_image_level(mip, 0, 0, all_mip_data.data() + prev_size, block_count, basis_fmt))
+            return std::unexpected{std::format("Failed to transcode KTX2 image '{}' mip {}.", image.Name, mip)};
+
+        copies.emplace_back(vk::BufferImageCopy{offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1}, vk::Offset3D{0, 0, 0}, vk::Extent3D{mip_w, mip_h, 1}});
+        offset += mip_bytes;
+    }
+
+    return CreateCompressedTextureEntry(vk, ctx, command_pool, one_shot_fence, slots, all_mip_data, std::move(copies), vk_fmt, width, height, mip_levels, std::move(texture_name), wrap_s, wrap_t, sampler_cfg);
 }
 
 TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, vk::CommandPool command_pool, vk::Fence one_shot_fence, DescriptorSlots &slots, std::string_view lut_path, std::string_view name) {

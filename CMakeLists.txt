@@ -19,6 +19,13 @@ set(STATIC_FAUST on CACHE BOOL "Build Static Faust library" FORCE)
 
 add_subdirectory(lib)
 
+add_library(basisu_transcoder STATIC
+    lib/basis_universal/transcoder/basisu_transcoder.cpp
+    lib/basis_universal/zstd/zstddeclib.c
+)
+target_include_directories(basisu_transcoder SYSTEM PUBLIC lib/basis_universal/transcoder)
+target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COMPILE_LANGUAGE:CXX>:-include exception>)
+
 # Ignore lib warnings
 target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
@@ -170,7 +177,7 @@ if(APPLE)
   target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
 endif()
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf basisu_transcoder)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

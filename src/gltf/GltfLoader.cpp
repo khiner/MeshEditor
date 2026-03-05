@@ -197,6 +197,11 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
         image.data
     );
     if (!read_result) return std::unexpected{std::move(read_result.error())};
+    if (image_result.MimeType == MimeType::None && image_result.Bytes.size() >= 12) {
+        // basist::g_ktx2_file_identifier
+        static constexpr uint8_t Ktx2Magic[12]{0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+        if (std::memcmp(image_result.Bytes.data(), Ktx2Magic, 12) == 0) image_result.MimeType = MimeType::KTX2;
+    }
     return image_result;
 }
 
