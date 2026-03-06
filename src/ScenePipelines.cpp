@@ -159,7 +159,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert", {{1, 1u}}}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
     pipelines.emplace(
@@ -189,7 +189,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexPoint.vert"}, {ShaderType::eFragment, "VertexPoint.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc, -1.0f
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
         )
     );
     pipelines.emplace(

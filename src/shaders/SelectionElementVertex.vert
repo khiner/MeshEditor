@@ -27,5 +27,5 @@ void main() {
     ElementId = draw.ElementIdOffset + idx + 1;
 
     gl_Position = SceneViewUBO.ViewProj * vec4(trs_transform_point(world, vert.Position), 1.0);
-    gl_PointSize = 6.0;
+    gl_PointSize = 8.0;
 }
