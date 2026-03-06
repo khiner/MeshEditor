@@ -27,6 +27,8 @@ float ViewCamera::FarClip() const {
     return std::get<Orthographic>(Data).FarClip;
 }
 
+float ViewCamera::TargetDistance() const { return GoalDistance.value_or(Distance); }
+
 ray ViewCamera::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
     const auto rel = (mouse_px - viewport.pos) / viewport.size;
     const auto ndc = vec2{rel.x, 1.f - rel.y} * 2.f - 1.f;

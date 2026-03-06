@@ -26,6 +26,7 @@ struct ViewCamera {
 
     float NearClip() const;
     float FarClip() const; // Always finite (fallback when perspective far is infinite).
+    float TargetDistance() const;
 
     vec3 Forward() const;
     mat3 Basis() const; // Right, Up, -Forward

@@ -160,6 +160,8 @@ private:
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
     vec2 AccumulatedWrapMouseDelta{0, 0};
+    double LastWheelZoomTime{-1.0};
+    float WheelZoomBurst{0.f}; // Signed by zoom direction; stores the next burst level to apply.
     uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset.
     uint32_t NextObjectId{1}; // Monotonically increasing, assigned to RenderInstance on show
 
