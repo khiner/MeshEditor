@@ -87,6 +87,9 @@ struct MeshStore {
         std::optional<uint32_t> active_handle
     );
     void UpdateEdgeStatesFromFaces(const Mesh &, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face);
+    void UpdateEdgeStatesFromVertices(const Mesh &);
+    void UpdateFaceStatesFromVertices(const Mesh &);
+    void UpdateFaceStatesFromEdges(const Mesh &);
     // Writes vertex state buffer from non-vertex element handles (Face/Edge), for the GPU transform preview shader.
     void UpdateVertexStatesFromElements(const Mesh &, std::span<const uint32_t> handles, Element, std::optional<uint32_t> active_handle = {});
     void UpdateNormals(const Mesh &, bool skip_nonzero = false);

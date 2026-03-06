@@ -735,6 +735,51 @@ void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::span<const uint
     }
 }
 
+void MeshStore::UpdateEdgeStatesFromVertices(const Mesh &mesh) {
+    const auto &entry = Entries.at(mesh.GetStoreId());
+    auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    const auto vertex_states = GetVertexStates(entry.Vertices);
+    for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
+        const auto heh = mesh.GetHalfedge(EH{ei}, 0);
+        edge_states[2 * ei] = vertex_states[*mesh.GetFromVertex(heh)] & ElementStateSelected;
+        edge_states[2 * ei + 1] = vertex_states[*mesh.GetToVertex(heh)] & ElementStateSelected;
+    }
+}
+
+void MeshStore::UpdateFaceStatesFromVertices(const Mesh &mesh) {
+    const auto &entry = Entries.at(mesh.GetStoreId());
+    auto face_states = GetFaceStates(entry.FaceData);
+    if (face_states.empty()) return;
+    const auto vertex_states = GetVertexStates(entry.Vertices);
+    for (uint32_t fi = 0; fi < mesh.FaceCount(); ++fi) {
+        uint8_t state = ElementStateSelected;
+        for (const auto vh : mesh.fv_range(FH{fi})) {
+            if (!(vertex_states[*vh] & ElementStateSelected)) {
+                state = 0;
+                break;
+            }
+        }
+        face_states[fi] = state;
+    }
+}
+
+void MeshStore::UpdateFaceStatesFromEdges(const Mesh &mesh) {
+    const auto &entry = Entries.at(mesh.GetStoreId());
+    auto face_states = GetFaceStates(entry.FaceData);
+    if (face_states.empty()) return;
+    const auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    for (uint32_t fi = 0; fi < mesh.FaceCount(); ++fi) {
+        uint8_t state = ElementStateSelected;
+        for (const auto heh : mesh.fh_range(FH{fi})) {
+            if (!(edge_states[2 * *mesh.GetEdge(heh)] & ElementStateSelected)) {
+                state = 0;
+                break;
+            }
+        }
+        face_states[fi] = state;
+    }
+}
+
 void MeshStore::UpdateVertexStatesFromElements(const Mesh &mesh, std::span<const uint32_t> handles, Element element, std::optional<uint32_t> active_handle) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto vertex_states = GetVertexStates(entry.Vertices);

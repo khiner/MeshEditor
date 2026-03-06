@@ -2695,7 +2695,14 @@ void Scene::DispatchUpdateSelectionStates(std::span<const ElementRange> ranges, 
 
 void Scene::ApplySelectionStateUpdate(std::span<const ElementRange> ranges, Element element) {
     DispatchUpdateSelectionStates(ranges, element);
-    if (element == Element::Face || element == Element::Edge) {
+    if (element == Element::Vertex) {
+        // Vertex states are already updated by the GPU compute above; derive edge/face states from them directly.
+        for (const auto &range : ranges) {
+            const auto &mesh = R.get<const Mesh>(range.MeshEntity);
+            Meshes->UpdateEdgeStatesFromVertices(mesh);
+            Meshes->UpdateFaceStatesFromVertices(mesh);
+        }
+    } else if (element == Element::Face || element == Element::Edge) {
         const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
         for (const auto &range : ranges) {
             const auto &mesh = R.get<const Mesh>(range.MeshEntity);
@@ -2705,6 +2712,7 @@ void Scene::ApplySelectionStateUpdate(std::span<const ElementRange> ranges, Elem
                 active_handle = active->Handle;
             }
             if (element == Element::Face) Meshes->UpdateEdgeStatesFromFaces(mesh, selected_handles, active_handle);
+            if (element == Element::Edge) Meshes->UpdateFaceStatesFromEdges(mesh);
             Meshes->UpdateVertexStatesFromElements(mesh, selected_handles, element, active_handle);
         }
     }
