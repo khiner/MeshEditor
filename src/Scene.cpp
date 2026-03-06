@@ -20,7 +20,6 @@
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
-#include "gpu/SelectionElementFlags.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
@@ -42,10 +41,6 @@ using std::ranges::any_of, std::ranges::all_of, std::ranges::find, std::ranges::
 using std::views::filter, std::views::iota, std::views::transform;
 
 namespace {
-constexpr SelectionElementFlags operator|(SelectionElementFlags a, SelectionElementFlags b) {
-    return static_cast<SelectionElementFlags>(uint32_t(a) | uint32_t(b));
-}
-
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -2475,10 +2470,17 @@ void Scene::RenderElementSelectionPass(
 
     const auto primary_edit_instances = scene_selection::ComputePrimaryEditInstances(R);
     const bool xray_selection = SelectionXRay;
-    const auto element_pipeline = [xray_selection](Element el) -> SPT {
-        if (el == Element::Vertex) return xray_selection ? SPT::SelectionElementVertexXRay : SPT::SelectionElementVertex;
-        if (el == Element::Edge) return xray_selection ? SPT::SelectionElementEdgeXRay : SPT::SelectionElementEdge;
-        return xray_selection ? SPT::SelectionElementFaceXRay : SPT::SelectionElementFace;
+    const auto element_pipeline = [xray_selection, write_bitset](Element el) -> SPT {
+        if (el == Element::Vertex) {
+            if (xray_selection) return write_bitset ? SPT::SelectionElementVertexXRayBitsetBox : SPT::SelectionElementVertexXRay;
+            return write_bitset ? SPT::SelectionElementVertexBitsetBox : SPT::SelectionElementVertex;
+        }
+        if (el == Element::Edge) {
+            if (xray_selection) return write_bitset ? SPT::SelectionElementEdgeXRayBitsetBox : SPT::SelectionElementEdgeXRay;
+            return write_bitset ? SPT::SelectionElementEdgeBitsetBox : SPT::SelectionElementEdge;
+        }
+        if (xray_selection) return write_bitset ? SPT::SelectionElementFaceXRayBitsetBox : SPT::SelectionElementFaceXRay;
+        return write_bitset ? SPT::SelectionElementFaceBitsetBox : SPT::SelectionElementFace;
     };
 
     DrawListBuilder draw_list;
@@ -2595,7 +2597,6 @@ void Scene::RenderElementSelectionPass(
             box_max.x,
             box_max.y,
             SelectionHandles->SelectionBitset,
-            write_bitset ? (SelectionElementFlags::OutputBitset | SelectionElementFlags::ClipToBox) : SelectionElementFlags::None,
         };
         auto draw_with = [&](SPT spt) {
             const auto &pipeline = selection.Renderer.Bind(cb, spt);
@@ -2605,9 +2606,9 @@ void Scene::RenderElementSelectionPass(
         draw_with(element_pipeline(element));
         if (write_bitset && xray_selection) {
             // X-Ray face: point pass catches edge-on faces (zero projected triangle area).
-            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVerts);
+            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVertsBitsetBox);
             // X-Ray edge: point pass catches near/zero-length projected edges.
-            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVerts);
+            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVertsBitsetBox);
         }
     }
     cb.endRenderPass();

@@ -469,77 +469,77 @@ static PipelineRenderer CreateSelectionFragmentRenderer(vk::Device d, vk::Descri
     const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
     const vk::PushConstantRange element_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(SelectionElementPushConstants)};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
+    const auto make_selection_element = [&](const char *vert, const char *frag, vk::PrimitiveTopology topology, auto depth_stencil) {
+        return ctx.CreateGraphics(
+            {{{ShaderType::eVertex, vert}, {ShaderType::eFragment, frag}}},
+            {},
+            vk::PolygonMode::eFill, topology,
+            {}, depth_stencil, element_pc
+        );
+    };
     pipelines.emplace(
         SPT::SelectionElementFace,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {}, CreateDepthStencil(true, true, vk::CompareOp::eLess), element_pc
-        )
+        make_selection_element("SelectionElementFace.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::eTriangleList, CreateDepthStencil(true, true, vk::CompareOp::eLess))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementFaceBitsetBox,
+        make_selection_element("SelectionElementFace.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::eTriangleList, CreateDepthStencil(true, true, vk::CompareOp::eLess))
     );
     pipelines.emplace(
         SPT::SelectionElementFaceXRay,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {}, CreateDepthStencil(false, false), element_pc
-        )
+        make_selection_element("SelectionElementFace.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::eTriangleList, CreateDepthStencil(false, false))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementFaceXRayBitsetBox,
+        make_selection_element("SelectionElementFace.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::eTriangleList, CreateDepthStencil(false, false))
     );
     pipelines.emplace(
         SPT::SelectionElementEdge,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-            {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), element_pc
-        )
+        make_selection_element("SelectionElementEdge.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::eLineList, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementEdgeBitsetBox,
+        make_selection_element("SelectionElementEdge.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::eLineList, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual))
     );
     pipelines.emplace(
         SPT::SelectionElementEdgeXRay,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-            {}, CreateDepthStencil(false, false), element_pc
-        )
+        make_selection_element("SelectionElementEdge.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::eLineList, CreateDepthStencil(false, false))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementEdgeXRayBitsetBox,
+        make_selection_element("SelectionElementEdge.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::eLineList, CreateDepthStencil(false, false))
     );
     pipelines.emplace(
         SPT::SelectionElementEdgeXRayVerts,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementEdge.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            {}, CreateDepthStencil(false, false), element_pc
-        )
+        make_selection_element("SelectionElementEdge.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(false, false))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementEdgeXRayVertsBitsetBox,
+        make_selection_element("SelectionElementEdge.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(false, false))
     );
     pipelines.emplace(
         SPT::SelectionElementVertex,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            {}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), element_pc
-        )
+        make_selection_element("SelectionElementVertex.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementVertexBitsetBox,
+        make_selection_element("SelectionElementVertex.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual))
     );
     pipelines.emplace(
         SPT::SelectionElementVertexXRay,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementVertex.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            {}, CreateDepthStencil(false, false), element_pc
-        )
+        make_selection_element("SelectionElementVertex.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(false, false))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementVertexXRayBitsetBox,
+        make_selection_element("SelectionElementVertex.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(false, false))
     );
     pipelines.emplace(
         SPT::SelectionElementFaceXRayVerts,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "SelectionElementFace.vert"}, {ShaderType::eFragment, "SelectionElement.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            {}, CreateDepthStencil(false, false), element_pc
-        )
+        make_selection_element("SelectionElementFace.vert", "SelectionElementLinkedList.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(false, false))
+    );
+    pipelines.emplace(
+        SPT::SelectionElementFaceXRayVertsBitsetBox,
+        make_selection_element("SelectionElementFace.vert", "SelectionElementBitsetBox.frag", vk::PrimitiveTopology::ePointList, CreateDepthStencil(false, false))
     );
     pipelines.emplace(
         SPT::SelectionFragmentTriangles,

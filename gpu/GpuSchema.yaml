@@ -74,16 +74,6 @@ enums:
         value: 2
       - name: Face
         value: 4
-  - name: SelectionElementFlags
-    type: u32
-    values:
-      - name: None
-        value: 0
-      - name: OutputBitset
-        value: 1
-      - name: ClipToBox
-        value: 2
-
 structs:
   - name: SlotOffset
     fields:
@@ -579,8 +569,6 @@ structs:
         type: u32
       - name: BoxResultSlot
         type: u32
-      - name: Flags
-        type: SelectionElementFlags
   - name: ObjectPickPushConstants
     push_constant: true
     fields:

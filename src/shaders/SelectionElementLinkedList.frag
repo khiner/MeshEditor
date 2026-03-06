@@ -2,9 +2,13 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 
+#define SELECTION_CUSTOM_DRAW_PASS_PC 1
+#include "SelectionElementPushConstants.glsl"
 #include "SelectionShared.glsl"
 
-layout(location = 1) flat in uint ObjectId;
+layout(location = 0) flat in uint ElementId;
+
+layout(early_fragment_tests) in;
 
 void main() {
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
@@ -20,7 +24,7 @@ void main() {
     }
 
     SelectionBuffers[nodes_index].Nodes[idx].Depth = gl_FragCoord.z;
-    SelectionBuffers[nodes_index].Nodes[idx].Id = ObjectId;
+    SelectionBuffers[nodes_index].Nodes[idx].Id = ElementId;
 
     const uint prev = imageAtomicExchange(HeadImages[head_index], ivec2(gl_FragCoord.xy), idx);
     SelectionBuffers[nodes_index].Nodes[idx].Next = prev;

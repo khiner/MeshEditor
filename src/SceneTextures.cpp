@@ -498,8 +498,8 @@ EnvironmentPrefiltered CreateIblFromHdri(
     const auto path_str = path.string();
     auto decoded = DecodeImageFileRgba32f(path, path_str);
     if (!decoded) throw std::runtime_error(std::format("Failed to load HDR '{}': {}", path_str, decoded.error()));
-    const uint32_t eq_w = decoded->Width, eq_h = decoded->Height;
 
+    const uint32_t eq_w = decoded->Width, eq_h = decoded->Height;
     const size_t eq_bytes = decoded->Pixels.size() * sizeof(float);
     mvk::Buffer eq_staging{
         ctx,
@@ -567,8 +567,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
     );
 
     // 5. Create specular prefiltered cubemap (256×256, full mip chain).
-    const uint32_t spec_size = 256;
-    const uint32_t spec_mips = ComputeMipLevelCount(spec_size, spec_size);
+    const uint32_t spec_size = 256, spec_mips = ComputeMipLevelCount(spec_size, spec_size);
     const vk::ImageSubresourceRange spec_full{vk::ImageAspectFlagBits::eColor, 0, spec_mips, 0, 6};
     auto spec_cube = mvk::CreateImage(
         vk.Device, vk.PhysicalDevice,
@@ -604,7 +603,6 @@ EnvironmentPrefiltered CreateIblFromHdri(
     // 7. Update all descriptor sets before recording.
     const auto linear_clamp_ci = LinearSamplerCreateInfo(vk::SamplerAddressMode::eClampToEdge, 1000.f);
     const auto linear_repeat_ci = LinearSamplerCreateInfo(vk::SamplerAddressMode::eRepeat, 1000.f);
-
     auto equirect_sampler = vk.Device.createSamplerUnique(linear_repeat_ci);
     auto raw_cube_sampler = vk.Device.createSamplerUnique(linear_clamp_ci);
     {
@@ -615,7 +613,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         auto append_image_pair = [&](vk::DescriptorSet descriptor_set, vk::DescriptorImageInfo sampled_image, const vk::DescriptorImageInfo &storage_image) {
             infos.emplace_back(sampled_image);
             infos.emplace_back(storage_image);
-            const size_t i = infos.size();
+            const auto i = infos.size();
             writes.emplace_back(descriptor_set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &infos[i - 2]);
             writes.emplace_back(descriptor_set, 1, 0, 1, vk::DescriptorType::eStorageImage, &infos[i - 1]);
         };
@@ -667,7 +665,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         );
 
         // --- Generate mip chain for raw cubemap ---
-        int32_t mip_size = int32_t(raw_size);
+        int32_t mip_size = raw_size;
         for (uint32_t mip = 1; mip < raw_mips; ++mip) {
             const int32_t next_size = std::max(1, mip_size / 2);
             // Blit all 6 faces: mip N-1 (TransferSrcOptimal) → mip N (TransferDstOptimal)
@@ -774,35 +772,30 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
         return CreateTextureEntryFromEncoded(vk, ctx, command_pool, one_shot_fence, slots, image.Bytes, image.Name, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
     }
 
-    static const bool _ = (basist::basisu_transcoder_init(), true);
+    basist::basisu_transcoder_init();
 
     basist::ktx2_transcoder transcoder;
-    if (!transcoder.init(image.Bytes.data(), uint32_t(image.Bytes.size())))
-        return std::unexpected{std::format("Failed to parse KTX2 image '{}'.", image.Name)};
-    if (!transcoder.start_transcoding())
-        return std::unexpected{std::format("Failed to start transcoding KTX2 image '{}'.", image.Name)};
+    if (!transcoder.init(image.Bytes.data(), uint32_t(image.Bytes.size()))) return std::unexpected{std::format("Failed to parse KTX2 image '{}'.", image.Name)};
+    if (!transcoder.start_transcoding()) return std::unexpected{std::format("Failed to start transcoding KTX2 image '{}'.", image.Name)};
 
     const auto [vk_fmt, basis_fmt] = SelectKtx2Format(vk.PhysicalDevice, color_space);
-    const uint32_t width = transcoder.get_width();
-    const uint32_t height = transcoder.get_height();
+    const uint32_t width = transcoder.get_width(), height = transcoder.get_height();
     const uint32_t mip_levels = transcoder.get_levels();
 
     std::vector<std::byte> all_mip_data;
     std::vector<vk::BufferImageCopy> copies;
     copies.reserve(mip_levels);
     size_t offset = 0;
-
     for (uint32_t mip = 0; mip < mip_levels; ++mip) {
-        const uint32_t mip_w = std::max(1u, width >> mip);
-        const uint32_t mip_h = std::max(1u, height >> mip);
+        const uint32_t mip_w = std::max(1u, width >> mip), mip_h = std::max(1u, height >> mip);
         const uint32_t mip_bytes = basist::basis_compute_transcoded_image_size_in_bytes(basis_fmt, mip_w, mip_h);
         const uint32_t block_count = mip_bytes / basist::basis_get_bytes_per_block_or_pixel(basis_fmt);
 
         const size_t prev_size = all_mip_data.size();
         all_mip_data.resize(prev_size + mip_bytes);
-
-        if (!transcoder.transcode_image_level(mip, 0, 0, all_mip_data.data() + prev_size, block_count, basis_fmt))
+        if (!transcoder.transcode_image_level(mip, 0, 0, all_mip_data.data() + prev_size, block_count, basis_fmt)) {
             return std::unexpected{std::format("Failed to transcode KTX2 image '{}' mip {}.", image.Name, mip)};
+        }
 
         copies.emplace_back(vk::BufferImageCopy{offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1}, vk::Offset3D{0, 0, 0}, vk::Extent3D{mip_w, mip_h, 1}});
         offset += mip_bytes;
