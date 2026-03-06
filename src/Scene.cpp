@@ -603,6 +603,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on_update<MaterialPreviewLighting>()
         .on_construct<RenderedLighting>()
         .on_update<RenderedLighting>()
+        .on_construct<LightIndex>()
+        .on_destroy<LightIndex>()
         .on_construct<ViewportExtent>()
         .on_update<ViewportExtent>()
         .on_construct<SceneEditMode>()
@@ -913,13 +915,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     bool light_count_changed = false;
-    {
-        const auto required_size = vk::DeviceSize(R.storage<LightIndex>().size()) * sizeof(PunctualLight);
-        if (Buffers->LightBuffer.UsedSize != required_size) {
-            Buffers->LightBuffer.Reserve(required_size);
-            Buffers->LightBuffer.UsedSize = required_size;
-            light_count_changed = true;
-        }
+    if (const auto required_size = vk::DeviceSize(R.storage<LightIndex>().size()) * sizeof(PunctualLight);
+        Buffers->LightBuffer.UsedSize != required_size) {
+        Buffers->LightBuffer.Reserve(required_size);
+        Buffers->LightBuffer.UsedSize = required_size;
+        light_count_changed = true;
     }
     if (!R.storage<entt::reactive>(changes::Submit).empty() || light_count_changed) request(RenderRequest::Submit);
     for (auto light_entity : R.view<LightWireframeDirty, LightIndex, MeshInstance>()) {
@@ -943,12 +943,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
             Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
         );
-
         if (!wireframe.VertexClasses.empty()) {
             const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
             R.emplace<VertexClass>(mesh_entity, range.Offset);
         }
-
         request(RenderRequest::ReRecord);
     }
     if (auto &tracker = R.storage<entt::reactive>(changes::MeshGeometry); !tracker.empty()) {
