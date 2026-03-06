@@ -325,6 +325,7 @@ constexpr auto
     Submit = "submit_changes"_hs,
     ViewportTheme = "viewport_theme_changes"_hs,
     Materials = "materials_changes"_hs,
+    PbrSpecialization = "pbr_specialization_changes"_hs,
     SceneView = "scene_view_changes"_hs,
     CameraLens = "camera_lens_changes"_hs,
     TransformPending = "transform_pending_changes"_hs,
@@ -587,6 +588,14 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.storage<entt::reactive>(changes::Materials)
         .on_construct<MaterialDirty>()
         .on_update<MaterialDirty>();
+    R.storage<entt::reactive>(changes::PbrSpecialization)
+        .on_construct<PbrMeshFeatures>()
+        .on_update<PbrMeshFeatures>()
+        .on_destroy<PbrMeshFeatures>()
+        .on_construct<MaterialPreviewLighting>()
+        .on_update<MaterialPreviewLighting>()
+        .on_construct<RenderedLighting>()
+        .on_update<RenderedLighting>();
     R.storage<entt::reactive>(changes::SceneView)
         .on_construct<ViewCamera>()
         .on_update<ViewCamera>()
@@ -1174,19 +1183,23 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::Submit);
     }
 
-    const auto &settings = R.get<const SceneSettings>(SceneEntity);
-    { // Keep targeted PBR specialization mask in sync every frame while rendered shading is active.
-        if (settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered) {
-            PbrFeatureMask pbr_mask{0};
-            if ((settings.ViewportShading == ViewportShadingMode::Rendered && R.get<const RenderedLighting>(SceneEntity).UseSceneLights) ||
-                (settings.ViewportShading == ViewportShadingMode::MaterialPreview && R.get<const MaterialPreviewLighting>(SceneEntity).UseSceneLights)) {
-                pbr_mask |= PbrFeature::Punctual;
+    { // Keep targeted PBR specialization mask in sync when one of its inputs changes.
+        const auto shading = R.get<const SceneSettings>(SceneEntity).ViewportShading;
+        if (!R.storage<entt::reactive>(changes::SceneSettings).empty() ||
+            !R.storage<entt::reactive>(changes::PbrSpecialization).empty()) {
+            if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
+                PbrFeatureMask pbr_mask{0};
+                const bool use_scene_lights = shading == ViewportShadingMode::Rendered ?
+                    R.get<const RenderedLighting>(SceneEntity).UseSceneLights :
+                    R.get<const MaterialPreviewLighting>(SceneEntity).UseSceneLights;
+                if (use_scene_lights) pbr_mask |= PbrFeature::Punctual;
+                for (const auto [_, feat] : R.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
+                if (Pipelines->Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
             }
-            for (const auto [_, feat] : R.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
-            if (Pipelines->Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
         }
     }
 
+    const auto &settings = R.get<const SceneSettings>(SceneEntity);
     // Update selection overlays
     for (const auto mesh_entity : dirty_overlay_meshes) {
         const auto &mesh = R.get<const Mesh>(mesh_entity);
