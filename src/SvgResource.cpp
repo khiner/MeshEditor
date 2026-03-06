@@ -77,7 +77,7 @@ struct SvgResource::Impl {
     std::unique_ptr<mvk::ImGuiTexture> Texture;
 
 private:
-    static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap.
+    static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap
 };
 
 SvgResource::SvgResource(vk::Device device, BitmapToImage render, std::filesystem::path path)

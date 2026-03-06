@@ -185,12 +185,16 @@ private:
     };
     TransformGizmoState MGizmo;
     std::optional<TransformGizmo::TransformType> StartScreenTransform;
-    bool TransformModePillsHovered{false};
+    bool OverlayControlsHovered{false};
 
     struct TransformIcons {
         std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
     };
+    struct ViewportShadingIcons {
+        std::unique_ptr<SvgResource> Wireframe, Solid, MaterialPreview, Rendered;
+    };
     TransformIcons Icons;
+    ViewportShadingIcons ShadingIcons;
     AnimationIcons AnimIcons;
     AnimationTimelineView TimelineView;
     float PlaybackFrame{1.0f}; // Smooth float frame position for playback

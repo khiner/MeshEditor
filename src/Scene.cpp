@@ -755,6 +755,11 @@ void Scene::LoadIcons() {
     CreateSvgResource(Icons.Scale, svg_path / "scale.svg");
     CreateSvgResource(Icons.Universal, svg_path / "transform.svg");
 
+    CreateSvgResource(ShadingIcons.Wireframe, svg_path / "shading_wire.svg");
+    CreateSvgResource(ShadingIcons.Solid, svg_path / "shading_solid.svg");
+    CreateSvgResource(ShadingIcons.MaterialPreview, svg_path / "shading_texture.svg");
+    CreateSvgResource(ShadingIcons.Rendered, svg_path / "shading_rendered.svg");
+
     CreateSvgResource(AnimIcons.Play, svg_path / "play.svg");
     CreateSvgResource(AnimIcons.Pause, svg_path / "pause.svg");
     CreateSvgResource(AnimIcons.JumpStart, svg_path / "jump_start.svg");
