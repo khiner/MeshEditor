@@ -1043,7 +1043,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         if (tl.CurrentFrame != LastEvaluatedFrame) {
             LastEvaluatedFrame = tl.CurrentFrame;
-            const float eval_seconds = float(tl.CurrentFrame) / tl.Fps;
+            // Timeline frames are displayed 1-based (like Blender), but animation time starts at t=0 on frame 1.
+            const float eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
             bool request_rerecord = false;
             for (auto [entity, anim, pose_state, armature] :
                  R.view<const ArmatureAnimation, ArmaturePoseState, Armature>().each()) {

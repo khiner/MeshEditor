@@ -478,8 +478,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         node_anim_bindings.emplace(object_entity, std::pair{node_it->second->LocalTransform, parent_bind_world});
     }
 
+    bool imported_animation = false;
     const auto append_armature_clip = [&](entt::entity target_data_entity, AnimationClip &&resolved_clip) {
         if (resolved_clip.Channels.empty()) return;
+        imported_animation = true;
         if (auto *existing = R.try_get<ArmatureAnimation>(target_data_entity)) {
             existing->Clips.emplace_back(std::move(resolved_clip));
         } else {
@@ -488,6 +490,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     };
     const auto append_morph_clip = [&](entt::entity instance_entity, MorphWeightClip &&resolved_clip) {
         if (resolved_clip.Channels.empty()) return;
+        imported_animation = true;
         if (auto *existing = R.try_get<MorphWeightAnimation>(instance_entity)) {
             existing->Clips.emplace_back(std::move(resolved_clip));
         } else {
@@ -496,6 +499,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     };
     const auto append_node_clip = [&](entt::entity object_entity, AnimationClip &&resolved_clip) {
         if (resolved_clip.Channels.empty()) return;
+        imported_animation = true;
         if (auto *existing = R.try_get<NodeTransformAnimation>(object_entity)) {
             existing->Clips.emplace_back(std::move(resolved_clip));
             return;
@@ -567,6 +571,10 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
         if (max_dur > 0) R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = int(std::ceil(max_dur * tl.Fps)); });
+    }
+    if (imported_animation) {
+        ApplyTimelineAction(timeline_action::JumpToStart{});
+        LastEvaluatedFrame = -1;
     }
 
     if (scene->ImageBasedLight) {
