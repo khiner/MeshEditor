@@ -11,7 +11,9 @@
 #include <variant>
 
 inline constexpr float DefaultAspectRatio{16.f / 9.f};
-inline constexpr float MinNearFarDelta{0.001f}, MaxFarClip{100.f};
+inline constexpr float DefaultPerspectiveNearClip{0.1f}, DefaultPerspectiveFarClip{1000.f};
+inline constexpr float MinNearClip{0.001f}, MaxFarClip{DefaultPerspectiveFarClip}, MinNearFarDelta{MinNearClip};
+inline constexpr float DefaultPerspectiveFieldOfViewRad{glm::radians(60.f)};
 
 struct Orthographic {
     vec2 Mag; // x/y half-extents of the view volume in world units
@@ -26,6 +28,10 @@ struct Perspective {
 };
 
 using Camera = std::variant<Perspective, Orthographic>;
+
+inline Perspective DefaultPerspectiveCamera() {
+    return {.FieldOfViewRad = DefaultPerspectiveFieldOfViewRad, .FarClip = DefaultPerspectiveFarClip, .NearClip = DefaultPerspectiveNearClip};
+}
 
 inline float AspectRatio(const Camera &camera) {
     if (const auto *persp = std::get_if<Perspective>(&camera)) return persp->AspectRatio.value_or(DefaultAspectRatio);
@@ -46,7 +52,7 @@ inline Orthographic OrthographicFromPerspective(const Perspective &perspective, 
     }
     return {
         .Mag = mag,
-        .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip)),
+        .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, DefaultPerspectiveFarClip)),
         .NearClip = perspective.NearClip,
     };
 }

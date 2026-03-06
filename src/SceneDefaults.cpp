@@ -1,13 +1,11 @@
 #include "SceneDefaults.h"
 
-#include <glm/trigonometric.hpp>
-
 World SceneDefaults::World{.Origin{0, 0, 0}, .Up{0, 1, 0}};
 
 ViewCamera SceneDefaults::ViewCamera{
     {0, 0, 2},
     {0, 0, 0},
-    {Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}},
+    {DefaultPerspectiveCamera()},
 };
 WorkspaceLights SceneDefaults::WorkspaceLights{
     .ViewColor = {1, 1, 1},

@@ -1411,7 +1411,7 @@ entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType t
 }
 
 entt::entity Scene::AddCamera(ObjectCreateInfo info) {
-    Camera camera{Perspective{.FieldOfViewRad = glm::radians(60.f), .FarClip = 100.f, .NearClip = 0.01f}};
+    Camera camera{DefaultPerspectiveCamera()};
     const auto entity = CreateExtrasObject({.Data = BuildCameraFrustumMesh(camera)}, ObjectType::Camera, info, "Camera");
     R.emplace<Camera>(entity, camera);
     return entity;

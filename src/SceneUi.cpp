@@ -191,20 +191,21 @@ bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewp
 
     if (auto *perspective = std::get_if<Perspective>(&camera)) {
         float fov_deg = glm::degrees(perspective->FieldOfViewRad);
+        const float far_max = std::max(perspective->NearClip + MinNearFarDelta, MaxFarClip);
         if (SliderFloat("Field of view (deg)", &fov_deg, 1.f, 179.f)) {
             perspective->FieldOfViewRad = glm::radians(fov_deg);
             lens_changed = true;
         }
-        const float near_max = perspective->FarClip ? std::max(*perspective->FarClip - MinNearFarDelta, MinNearFarDelta) : MaxFarClip;
-        lens_changed |= SliderFloat("Near clip", &perspective->NearClip, 0.001f, near_max);
+        const float near_max = perspective->FarClip ? std::max(*perspective->FarClip - MinNearFarDelta, MinNearClip) : far_max;
+        lens_changed |= SliderFloat("Near clip", &perspective->NearClip, MinNearClip, near_max);
         bool infinite_far = !perspective->FarClip.has_value();
         if (Checkbox("Infinite far clip", &infinite_far)) {
             if (infinite_far) perspective->FarClip.reset();
-            else perspective->FarClip = std::max(perspective->NearClip + MinNearFarDelta, MaxFarClip);
+            else perspective->FarClip = far_max;
             lens_changed = true;
         }
         if (perspective->FarClip) {
-            lens_changed |= SliderFloat("Far clip", &*perspective->FarClip, perspective->NearClip + MinNearFarDelta, MaxFarClip);
+            lens_changed |= SliderFloat("Far clip", &*perspective->FarClip, perspective->NearClip + MinNearFarDelta, far_max);
         }
         if (!viewport) {
             float aspect = perspective->AspectRatio.value_or(DefaultAspectRatio);
@@ -214,10 +215,11 @@ bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewp
             }
         }
     } else if (auto *orthographic = std::get_if<Orthographic>(&camera)) {
+        const float far_max = std::max(orthographic->NearClip + MinNearFarDelta, MaxFarClip);
         lens_changed |= SliderFloat("X Mag", &orthographic->Mag.x, 0.01f, 100.f);
         lens_changed |= SliderFloat("Y Mag", &orthographic->Mag.y, 0.01f, 100.f);
-        lens_changed |= SliderFloat("Near clip", &orthographic->NearClip, 0.001f, orthographic->FarClip - MinNearFarDelta);
-        lens_changed |= SliderFloat("Far clip", &orthographic->FarClip, orthographic->NearClip + MinNearFarDelta, MaxFarClip);
+        lens_changed |= SliderFloat("Near clip", &orthographic->NearClip, MinNearClip, orthographic->FarClip - MinNearFarDelta);
+        lens_changed |= SliderFloat("Far clip", &orthographic->FarClip, orthographic->NearClip + MinNearFarDelta, far_max);
     }
     return lens_changed;
 }
