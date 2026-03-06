@@ -262,7 +262,8 @@ static vk::UniqueRenderPass CreateLineAARenderPass(vk::Device d) {
     };
     const vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_ref};
-    return d.createRenderPassUnique({{}, attachment, subpass});
+    const std::array dependencies{ExternalFragReadDependency()};
+    return d.createRenderPassUnique({{}, attachment, subpass, dependencies});
 }
 
 MainPipeline::MainPipeline(
@@ -337,8 +338,7 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
             {CreateColorBlendAttachment(false)}, CreateDepthStencil(), draw_pc
         )
     );
-    const std::array dependencies{ExternalFragReadDependency()};
-    return {d.createRenderPassUnique({{}, attachments, subpass, dependencies}), std::move(pipelines)};
+    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
 SilhouettePipeline::SilhouettePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set)
@@ -413,8 +413,7 @@ static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::Descripto
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2}
         )
     );
-    const std::array dependencies{ExternalFragReadDependency()};
-    return {d.createRenderPassUnique({{}, attachments, subpass, dependencies}), std::move(pipelines)};
+    return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
 SilhouetteEdgePipeline::SilhouetteEdgePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set)

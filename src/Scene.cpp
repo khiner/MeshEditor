@@ -2148,6 +2148,12 @@ void Scene::RecordRenderCommandBuffer() {
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
+    const auto make_shader_read_barrier = [](vk::AccessFlags src_access, vk::ImageLayout layout, vk::Image image, const vk::ImageSubresourceRange &range) {
+        return vk::ImageMemoryBarrier{src_access, vk::AccessFlagBits::eShaderRead, layout, layout, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range};
+    };
+    const auto sync_fragment_shader_reads = [&](vk::PipelineStageFlags src_stages, auto &&barriers) {
+        cb.pipelineBarrier(src_stages, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barriers);
+    };
 
     const bool has_silhouette = render_silhouette && silhouette_batch.DrawCount > 0;
     if (has_silhouette) { // Silhouette depth/object pass
@@ -2159,6 +2165,12 @@ void Scene::RecordRenderCommandBuffer() {
         record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, silhouette_batch);
         cb.endRenderPass();
 
+        // Silhouette pass offscreen color writes -> edge pass fragment sampling.
+        const std::array silhouette_to_edge_barriers{
+            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *silhouette.Resources->OffscreenImage.Image, ColorSubresourceRange),
+        };
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
+
         const auto &silhouette_edge = Pipelines->SilhouetteEdge;
         static const std::vector<vk::ClearValue> edge_clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
@@ -2168,6 +2180,13 @@ void Scene::RecordRenderCommandBuffer() {
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
         silhouette_edo.RenderQuad(cb);
         cb.endRenderPass();
+
+        // Edge pass depth/color writes -> main pass silhouette sampling.
+        const std::array edge_to_main_barriers{
+            make_shader_read_barrier(vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::ImageLayout::eDepthStencilReadOnlyOptimal, *silhouette_edge.Resources->DepthImage.Image, DepthSubresourceRange),
+            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *silhouette_edge.Resources->OffscreenImage.Image, ColorSubresourceRange),
+        };
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eLateFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput, edge_to_main_barriers);
     }
 
     const auto &main = Pipelines->Main;
