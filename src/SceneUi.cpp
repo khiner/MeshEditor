@@ -20,6 +20,7 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+#include "numeric/mat3.h"
 #include "numeric/rect.h"
 
 #include <algorithm>
@@ -226,6 +227,7 @@ std::string to_string(InteractionMode mode) {
         case InteractionMode::Object: return "Object";
         case InteractionMode::Edit: return "Edit";
         case InteractionMode::Excite: return "Excite";
+        case InteractionMode::Pose: return "Pose";
     }
 }
 
@@ -306,7 +308,15 @@ WorkspaceLights &GetWorkspaceLights(SceneBuffers &buffers) {
 
 void Scene::SetInteractionMode(InteractionMode mode) {
     if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return;
-    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R)) return;
+
+    const auto active_entity = FindActiveEntity(R);
+    // Active entity may be the armature object or a bone — resolve to arm_obj_entity.
+    const auto active_arm = active_entity != entt::null ? (R.all_of<ArmatureObject>(active_entity) ? active_entity : R.all_of<BoneIndex>(active_entity) ? R.get<const MeshInstance>(active_entity).MeshEntity :
+                                                                                                                                                          entt::null) :
+                                                          entt::null;
+    const bool active_is_armature = active_arm != entt::null;
+    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return;
+    if (mode == InteractionMode::Pose && !active_is_armature) return;
 
     const auto current_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     if (current_mode == InteractionMode::Edit) {
@@ -318,7 +328,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
         }
         ElementStatesDirty = true;
     }
-    if (mode == InteractionMode::Edit) {
+    if (mode == InteractionMode::Edit && !active_is_armature) {
         // Entering Edit mode: assign ranges only for selected meshes missing one.
         // Existing ranges preserve remembered selection.
         // ProcessComponentEvents handles the GPU state update via the InteractionMode reactive event.
@@ -469,9 +479,19 @@ void Scene::Interact() {
                 SelectionXRay = !SelectionXRay;
             }
             if (IsKeyPressed(ImGuiKey_Tab)) {
-                // Cycle to the next interaction mode, wrapping around to the first.
-                auto it = find(InteractionModes, interaction_mode);
-                SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
+                const bool is_armature = active_entity != entt::null &&
+                    (R.all_of<ArmatureObject>(active_entity) || R.all_of<BoneIndex>(active_entity));
+                if (is_armature && GetIO().KeyCtrl) {
+                    // Ctrl+Tab: toggle Object ↔ Pose
+                    SetInteractionMode(interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose);
+                } else if (is_armature) {
+                    // Tab: toggle Object ↔ Edit
+                    SetInteractionMode(interaction_mode == InteractionMode::Edit ? InteractionMode::Object : InteractionMode::Edit);
+                } else {
+                    // Cycle to the next interaction mode, wrapping around to the first.
+                    auto it = find(InteractionModes, interaction_mode);
+                    SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
+                }
             }
             if (interaction_mode == InteractionMode::Edit) {
                 if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
@@ -559,16 +579,27 @@ void Scene::Interact() {
     if (OrientationGizmo::IsActive() || OverlayControlsHovered) return;
 
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-    if (SelectionMode == SelectionMode::Box && (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Object)) {
+    const bool active_is_armature = active_entity != entt::null &&
+        (R.all_of<ArmatureObject>(active_entity) || R.all_of<BoneIndex>(active_entity));
+    const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
+    if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectEnd = ToGlm(GetMousePos());
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
                 const bool is_additive = IsKeyDown(ImGuiMod_Shift);
-                if (interaction_mode == InteractionMode::Edit) {
+                if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     Timer timer{"BoxSelectElements (all)"};
                     RunBoxSelectElements(GetBitsetRangesForSelected(), edit_mode, *box_px, is_additive);
+                } else if (bone_mode) {
+                    const auto selected_entities = RunBoxSelect(*box_px);
+                    if (!is_additive) {
+                        for (const auto e : R.view<Selected, BoneIndex>()) R.remove<Selected>(e);
+                    }
+                    for (const auto e : selected_entities) {
+                        if (R.all_of<BoneIndex>(e)) R.emplace_or_replace<Selected>(e);
+                    }
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto selected_entities = RunBoxSelect(*box_px);
                     if (!is_additive) R.clear<Selected>();
@@ -608,9 +639,10 @@ void Scene::Interact() {
         return;
     }
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
-    if (interaction_mode == InteractionMode::Edit && edit_mode == Element::None) return;
 
-    if (interaction_mode == InteractionMode::Edit) {
+    if (interaction_mode == InteractionMode::Edit && edit_mode == Element::None && !active_is_armature) return;
+
+    if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
         const auto ranges = GetBitsetRangesForSelected();
         auto *mapped = Buffers->SelectionBitsetBuffer.GetMappedData().data();
@@ -659,6 +691,10 @@ void Scene::Interact() {
             if (it == hit_entities.end()) it = hit_entities.begin();
             hit = *it;
         }
+        // In Object mode, clicking a bone sphere selects its armature object
+        if (hit != entt::null && R.all_of<BoneIndex>(hit)) {
+            hit = R.get<MeshInstance>(hit).MeshEntity;
+        }
         if (hit != entt::null && IsKeyDown(ImGuiMod_Shift)) {
             if (active_entity == hit) {
                 ToggleSelected(hit);
@@ -667,6 +703,22 @@ void Scene::Interact() {
                 R.emplace<Active>(hit);
                 R.emplace_or_replace<Selected>(hit);
             }
+        } else if (hit != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
+            Select(hit);
+        }
+    } else if (interaction_mode == InteractionMode::Pose || active_is_armature) {
+        // Bone pick: used in Pose mode and armature Edit mode
+        const uint32_t scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
+        const auto hit_entities = RunObjectPick(mouse_px, scaled_pick_radius);
+        entt::entity hit = entt::null;
+        for (const auto e : hit_entities) {
+            if (R.all_of<BoneIndex>(e)) {
+                hit = e;
+                break;
+            }
+        }
+        if (hit != entt::null && IsKeyDown(ImGuiMod_Shift)) {
+            ToggleSelected(hit);
         } else if (hit != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
             Select(hit);
         }
@@ -798,7 +850,11 @@ void Scene::RenderOverlay() {
         const auto root_count = distance(root_selected);
 
         const auto active_entity = FindActiveEntity(R);
-        const auto active_transform = active_entity != entt::null ? GetTransform(R, active_entity) : Transform{};
+        const auto active_transform = [&]() -> Transform {
+            if (active_entity == entt::null) return {};
+            const auto &wt = R.get<WorldTransform>(active_entity);
+            return {wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale};
+        }();
         const auto edit_transform_instances = interaction_mode == InteractionMode::Edit ?
             scene_selection::ComputePrimaryEditInstances(R, false) :
             std::unordered_map<entt::entity, entt::entity>{};
@@ -825,7 +881,7 @@ void Scene::RenderOverlay() {
                 pivot += pending->P;
             }
         } else {
-            pivot = fold_left(root_selected | transform([&](auto e) { return R.get<Position>(e).Value; }), vec3{}, std::plus{}) / float(root_count);
+            pivot = fold_left(root_selected | transform([&](auto e) { return R.get<WorldTransform>(e).Position; }), vec3{}, std::plus{}) / float(root_count);
         }
 
         const auto start_transform_view = R.view<const StartTransform>();
@@ -843,7 +899,10 @@ void Scene::RenderOverlay() {
                         R.emplace<StartTransform>(instance_entity, GetTransform(R, instance_entity));
                     }
                 } else {
-                    for (const auto e : root_selected) R.emplace<StartTransform>(e, GetTransform(R, e));
+                    for (const auto e : root_selected) {
+                        const auto &wt = R.get<WorldTransform>(e);
+                        R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale});
+                    }
                 }
             }
             if (interaction_mode == InteractionMode::Edit) {
@@ -852,19 +911,31 @@ void Scene::RenderOverlay() {
                 R.emplace_or_replace<PendingTransform>(SceneEntity, ts.P, ts.R, td.P, td.R, td.S);
             } else {
                 // Object mode: apply transform to entity components immediately during drag.
+                // StartTransform stores world P/R/S; compute new world result, then convert to local for parented entities.
                 const auto r = ts.R, rT = glm::conjugate(r);
                 for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
-                    const auto &ts_e = ts_e_comp.T;
+                    const auto &ts_e = ts_e_comp.T; // world P/R/S at start
                     const bool frozen = R.all_of<Frozen>(e);
                     const auto offset = ts_e.P - ts.P;
-                    SetTransform(
-                        R, e,
-                        {
-                            .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
-                            .R = glm::normalize(td.R * ts_e.R),
-                            .S = frozen ? ts_e.S : td.S * ts_e.S,
+                    const vec3 new_world_p = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S));
+                    const quat new_world_r = glm::normalize(td.R * ts_e.R);
+                    const vec3 new_world_s = frozen ? ts_e.S : td.S * ts_e.S;
+
+                    if (const auto *node = R.try_get<SceneNode>(e); node && node->Parent != entt::null) {
+                        if (const auto *pi = R.try_get<ParentInverse>(e)) {
+                            const auto &parent_wt = R.get<WorldTransform>(node->Parent);
+                            const mat4 parent_delta = ToMatrix(parent_wt) * pi->M;
+                            const vec3 new_local_p = vec3(glm::inverse(parent_delta) * vec4(new_world_p, 1.f));
+                            const mat3 rs{parent_delta};
+                            const vec3 parent_delta_s{glm::length(rs[0]), glm::length(rs[1]), glm::length(rs[2])};
+                            const quat parent_delta_r = glm::normalize(glm::quat_cast(mat3{rs[0] / parent_delta_s.x, rs[1] / parent_delta_s.y, rs[2] / parent_delta_s.z}));
+                            const quat new_local_r = glm::conjugate(parent_delta_r) * new_world_r;
+                            const vec3 new_local_s = new_world_s / parent_delta_s;
+                            SetTransform(R, e, {.P = new_local_p, .R = new_local_r, .S = new_local_s});
+                            continue;
                         }
-                    );
+                    }
+                    SetTransform(R, e, {.P = new_world_p, .R = new_world_r, .S = new_world_s});
                 }
             }
         } else if (!start_transform_view.empty()) {
@@ -1006,6 +1077,27 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     } else if (const auto *armature_object = R.try_get<ArmatureObject>(active_entity)) {
         const auto &armature = R.get<const Armature>(armature_object->Entity);
         Text("Bones: %zu", armature.Bones.size());
+        const auto cur_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+        const bool show_bones = cur_mode == InteractionMode::Pose || cur_mode == InteractionMode::Edit;
+        if (show_bones && CollapsingHeader("Bones", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const auto active_bone = FindActiveEntity(R);
+            for (const auto [b, mi, bi] : R.view<MeshInstance, const BoneIndex>().each()) {
+                if (mi.MeshEntity != active_entity) continue;
+                const bool is_active_bone = (b == active_bone);
+                if (is_active_bone) PushStyleColor(ImGuiCol_Text, ImVec4{1, 0.8f, 0.2f, 1});
+                if (Selectable(armature.Bones[bi.Index].Name.c_str(), R.all_of<Selected>(b))) Select(b);
+                if (is_active_bone) PopStyleColor();
+            }
+            if (Button("Reset Pose")) {
+                for (const auto [b, mi, bi] : R.view<MeshInstance, const BoneIndex>().each()) {
+                    if (mi.MeshEntity != active_entity) continue;
+                    const auto &rest = armature.Bones[bi.Index].RestLocal;
+                    R.replace<Position>(b, rest.P);
+                    R.replace<Rotation>(b, rest.R);
+                }
+                UpdateWorldTransform(R, active_entity);
+            }
+        }
     }
     Unindent();
     if (CollapsingHeader("Transform")) {
@@ -1420,9 +1512,14 @@ void Scene::RenderControls() {
                 TextUnformatted("Interaction mode:");
                 auto interaction_mode_value = int(interaction_mode);
                 bool interaction_mode_changed = false;
-                const bool edit_allowed = AllSelectedAreMeshes(R);
+                const auto active_entity_rc = FindActiveEntity(R);
+                const bool active_is_armature_rc = active_entity_rc != entt::null &&
+                    (R.all_of<ArmatureObject>(active_entity_rc) || R.all_of<BoneIndex>(active_entity_rc));
+                const bool edit_allowed = AllSelectedAreMeshes(R) || active_is_armature_rc;
+                const bool pose_allowed = active_is_armature_rc;
                 for (const auto mode : InteractionModes) {
                     if (mode == InteractionMode::Edit && !edit_allowed) continue;
+                    if (mode == InteractionMode::Pose && !pose_allowed) continue;
                     SameLine();
                     interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
                 }
@@ -1778,20 +1875,42 @@ void Scene::RenderObjectTree() {
     for (const auto &request : ms_begin->Requests) begin_requests.emplace_back(request);
     const auto begin_nav_item = ms_begin->NavIdItem;
 
+    // Build the set of ancestors of any selected entity (for secondary highlight).
+    std::unordered_set<entt::entity> ancestor_of_selected;
+    for (const auto selected_entity : R.view<Selected>()) {
+        const auto *n = R.try_get<SceneNode>(selected_entity);
+        auto parent = n ? n->Parent : entt::null;
+        while (parent != entt::null) {
+            if (!ancestor_of_selected.insert(parent).second) break; // already inserted — parents already covered
+            const auto *pn = R.try_get<SceneNode>(parent);
+            parent = pn ? pn->Parent : entt::null;
+        }
+    }
+
     const auto render_entity = [&](const auto &self, entt::entity e) -> void {
         const auto *node = R.try_get<SceneNode>(e);
         const bool has_children = node && node->FirstChild != entt::null;
+
+        const bool is_selected = R.all_of<Selected>(e);
+        const bool is_ancestor_selected = !is_selected && ancestor_of_selected.contains(e);
 
         auto flags =
             ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanFullWidth |
             ImGuiTreeNodeFlags_FramePadding |
             ImGuiTreeNodeFlags_NavLeftJumpsToParent;
         if (!has_children) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-        if (R.all_of<Selected>(e)) flags |= ImGuiTreeNodeFlags_Selected;
+        if (is_selected || is_ancestor_selected) flags |= ImGuiTreeNodeFlags_Selected;
+
+        if (is_ancestor_selected) {
+            const auto col = GetStyleColorVec4(ImGuiCol_Header);
+            PushStyleColor(ImGuiCol_Header, ImVec4{col.x, col.y, col.z, col.w * 0.4f});
+            PushStyleColor(ImGuiCol_HeaderHovered, ImVec4{col.x, col.y, col.z, col.w * 0.6f});
+        }
 
         SetNextItemSelectionUserData(ToSelectionUserData(e));
         const auto label = std::format("{} [{}]", GetName(R, e), ObjectTypeName(GetObjectType(e)));
         const bool open = TreeNodeEx(reinterpret_cast<void *>(uintptr_t(uint32_t(e))), flags, "%s", label.c_str());
+        if (is_ancestor_selected) PopStyleColor(2);
         visible_entities.emplace_back(e);
         if (open && has_children) {
             for (const auto child : Children{&R, e}) self(self, child);

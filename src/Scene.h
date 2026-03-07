@@ -158,7 +158,7 @@ private:
 
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
-    std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit};
+    std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     double LastWheelZoomTime{-1.0};
     float WheelZoomBurst{0.f}; // Signed by zoom direction; stores the next burst level to apply.
@@ -258,6 +258,10 @@ private:
     void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);
     entt::entity CreateExtrasMeshEntity(ExtrasWireframe &&);
     entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
+
+    void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
+    void DestroyBoneInstances(entt::entity arm_obj_entity);
+    void SwapBoneMesh(entt::entity arm_obj_entity, bool edit_mode);
 
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
     void SetStudioEnvironment(uint32_t index);

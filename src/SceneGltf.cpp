@@ -414,6 +414,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
             R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
         }
+        CreateBoneInstances(armature_entity, armature_data_entity);
     }
 
     std::unordered_set<uint32_t> joint_node_indices;

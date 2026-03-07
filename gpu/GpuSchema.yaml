@@ -63,6 +63,8 @@ enums:
       - name: Object
       - name: Edit
       - name: Excite
+      - name: Pose
+        value: 3
   - name: Element
     type: u32
     values:

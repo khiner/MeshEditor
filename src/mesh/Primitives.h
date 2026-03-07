@@ -217,6 +217,30 @@ inline MeshData Cone(float radius = 0.5, float height = 1, uint slices = 32) {
     return {std::move(vertices), std::move(indices)};
 }
 
+// Octahedral bone primitive for Edit mode. Head at origin, tail at (0, length, 0).
+inline MeshData BoneOctahedron(float length = 1.0f) {
+    const float r = length * 0.1f;
+    const float mid = length * 0.1f;
+    std::vector<vec3> verts{
+        {0, 0, 0}, // 0: head
+        {r, mid, 0}, // 1: right
+        {0, mid, r}, // 2: front
+        {-r, mid, 0}, // 3: left
+        {0, mid, -r}, // 4: back
+        {0, length, 0}, // 5: tail
+    };
+    return {std::move(verts), {
+                                  {0, 1, 2},
+                                  {0, 2, 3},
+                                  {0, 3, 4},
+                                  {0, 4, 1},
+                                  {5, 2, 1},
+                                  {5, 3, 2},
+                                  {5, 4, 3},
+                                  {5, 1, 4},
+                              }};
+}
+
 inline MeshData CreateDefault(PrimitiveType type) {
     switch (type) {
         case PrimitiveType::Rect: return Rect();

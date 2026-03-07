@@ -14,7 +14,9 @@ void main() {
     const uint object_id = uint(texelFetch(Samplers[pc.ObjectSamplerIndex], texel, 0).r);
     if (object_id == 0) discard;
 
-    const bool is_active = pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId;
+    // ActiveObjectId == UINT32_MAX is a sentinel meaning "all objects are active" (used for armatures,
+    // which have no single ObjectId of their own — all bone instance pixels should show as active).
+    const bool is_active = pc.ActiveObjectId == 0xFFFFFFFFu || (pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId);
     EdgeColor = bool(pc.Manipulating) ? vec4(ViewportTheme.Colors.Transform, 1.0) :
         is_active ? vec4(ViewportTheme.Colors.ObjectActive, 1.0) :
                     vec4(ViewportTheme.Colors.ObjectSelected, 1.0);

@@ -48,6 +48,8 @@ struct Children {
     ChildrenIterator end() const { return {R, null_entity}; }
 };
 
+mat4 ToMatrix(const WorldTransform &);
+
 Transform GetTransform(const entt::registry &, entt::entity);
 void UpdateWorldTransform(entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);

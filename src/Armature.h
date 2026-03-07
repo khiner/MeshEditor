@@ -70,6 +70,18 @@ struct ArmatureModifier {
     entt::entity ArmatureObjectEntity;
 };
 
+// Component on bone instance entities. Index into Armature::Bones.
+struct BoneIndex {
+    uint32_t Index;
+};
+
+// Display-only scale for bone sphere rendering. Kept separate from the ECS Scale component
+// (which must stay vec3{1} so parent scale doesn't displace FK child positions).
+// Applied only at GPU write time in UpdateModelBuffer.
+struct BoneDisplayScale {
+    float Value; // bone head-to-tail length; baked into mesh scale at GPU write time
+};
+
 // Component on scene objects attached to a specific armature bone.
 // Source skin/node references remain recoverable via Armature::ImportedSkin and BoneId mappings.
 // This is primarily for uncommon glTF joint+mesh nodes (direct per-bone attachment),
