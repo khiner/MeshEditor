@@ -404,13 +404,12 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         // Allocate pose state and GPU deform buffer for this armature
         {
             ArmaturePoseState pose_state;
-            pose_state.BonePoseLocal.resize(armature.Bones.size());
-            for (uint32_t i = 0; i < armature.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature.Bones[i].RestLocal;
+            pose_state.BonePoseDelta.resize(armature.Bones.size(), {vec3{0}, quat{1, 0, 0, 0}, vec3{1}});
             pose_state.GpuDeformRange = AllocateArmatureDeform(Buffers.get(), armature.ImportedSkin->OrderedJointNodeIndices.size());
 
-            // Compute initial rest-pose deform matrices
+            // Compute initial rest-pose deform matrices (identity deltas → rest pose)
             auto gpu_span = GetArmatureDeformMutable(Buffers.get(), pose_state.GpuDeformRange);
-            ComputeDeformMatrices(armature, pose_state.BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
+            ComputeDeformMatrices(armature, pose_state.BonePoseDelta, armature.ImportedSkin->InverseBindMatrices, gpu_span);
 
             R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
         }

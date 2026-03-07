@@ -467,9 +467,7 @@ int main(int argc, char **argv) {
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
             if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
-                if (find(glsl_includes, spec.Base) == glsl_includes.end()) {
-                    glsl_includes.emplace_back(spec.Base);
-                }
+                if (find(glsl_includes, spec.Base) == glsl_includes.end()) glsl_includes.emplace_back(spec.Base);
             }
         }
         // Determine if we need extensions and BindlessBindings.glsl for layout declarations
@@ -521,14 +519,10 @@ int main(int argc, char **argv) {
             if (field.DefaultValue.find("InvalidSlot") != std::string_view::npos ||
                 field.DefaultValue.find("InvalidOffset") != std::string_view::npos) needs_slots = true;
             if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
-                if (find(cpp_includes, spec.Base) == cpp_includes.end()) {
-                    cpp_includes.emplace_back(spec.Base);
-                }
+                if (find(cpp_includes, spec.Base) == cpp_includes.end()) cpp_includes.emplace_back(spec.Base);
             }
             if (IsEnumType(spec.Base, enums) && spec.Base != def.Name) {
-                if (find(cpp_includes, spec.Base) == cpp_includes.end()) {
-                    cpp_includes.emplace_back(spec.Base);
-                }
+                if (find(cpp_includes, spec.Base) == cpp_includes.end()) cpp_includes.emplace_back(spec.Base);
             }
         }
 

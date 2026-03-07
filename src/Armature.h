@@ -93,7 +93,7 @@ struct BoneAttachment {
 
 // Component on armature data entities with imported skin data.
 struct ArmaturePoseState {
-    std::vector<Transform> BonePoseLocal; // CPU working storage (per-bone animated local transform)
+    std::vector<Transform> BonePoseDelta; // Delta from rest (identity = at rest). Persistent across frames.
     Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena
     bool Dirty{true};
 };
@@ -117,6 +117,17 @@ struct MorphWeightState {
     Range GpuWeightRange; // Allocation in MorphWeightBuffer
 };
 
-// Compute final deform matrices from posed local transforms + inverse bind matrices.
+// Compose a rest-pose transform with a delta (Blender-style pose channel model).
+// delta identity {P=0, R=identity, S=1} produces rest unchanged.
+Transform ComposeWithDelta(const Transform &rest, const Transform &delta);
+
+// Convert an absolute local transform to a delta relative to rest.
+Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute);
+
+// Evaluate animation into delta space. For each keyed channel, interpolates the absolute glTF
+// keyframe value and converts to a rest-relative delta. Unkeyed components are left unchanged.
+void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const ArmatureBone>, std::span<Transform> deltas);
+
+// Compute final deform matrices from rest poses + pose deltas + inverse bind matrices.
 // Writes directly into `out` (mapped GPU memory).
-void ComputeDeformMatrices(const Armature &, std::span<const Transform> local_transforms, std::span<const mat4> inverse_bind, std::span<mat4> out);
+void ComputeDeformMatrices(const Armature &, std::span<const Transform> pose_deltas, std::span<const mat4> inverse_bind, std::span<mat4> out);

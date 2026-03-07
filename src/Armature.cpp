@@ -290,16 +290,31 @@ void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<
     }
 }
 
+Transform ComposeWithDelta(const Transform &rest, const Transform &delta) {
+    return {.P = rest.P + rest.R * delta.P, .R = glm::normalize(rest.R * delta.R), .S = rest.S * delta.S};
+}
+
+Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute) {
+    const auto inv_r = glm::inverse(rest.R);
+    return {.P = inv_r * (absolute.P - rest.P), .R = glm::normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
+}
+
+void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<const ArmatureBone> bones, std::span<Transform> deltas) {
+    for (uint32_t i = 0; i < bones.size(); ++i) deltas[i] = ComposeWithDelta(bones[i].RestLocal, deltas[i]);
+    EvaluateAnimation(clip, time, deltas);
+    for (uint32_t i = 0; i < bones.size(); ++i) deltas[i] = AbsoluteToDelta(bones[i].RestLocal, deltas[i]);
+}
+
 void ComputeDeformMatrices(
     const Armature &data,
-    std::span<const Transform> bone_pose_local, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
+    std::span<const Transform> pose_deltas, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
 ) {
     if (!data.ImportedSkin || data.Bones.empty()) return;
 
     // Compute posed world transforms in parent-before-child order (bones are already sorted this way)
     std::vector<mat4> pose_world(data.Bones.size());
     for (uint32_t i = 0; i < data.Bones.size(); ++i) {
-        const auto local = ToMatrix(bone_pose_local[i]);
+        const auto local = ToMatrix(ComposeWithDelta(data.Bones[i].RestLocal, pose_deltas[i]));
         const auto parent = data.Bones[i].ParentIndex;
         pose_world[i] = (parent == InvalidBoneIndex) ? local : pose_world[parent] * local;
     }

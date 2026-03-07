@@ -925,7 +925,7 @@ void Scene::RenderOverlay() {
                         if (const auto *pi = R.try_get<ParentInverse>(e)) {
                             const auto &parent_wt = R.get<WorldTransform>(node->Parent);
                             const mat4 parent_delta = ToMatrix(parent_wt) * pi->M;
-                            const vec3 new_local_p = vec3(glm::inverse(parent_delta) * vec4(new_world_p, 1.f));
+                            const vec3 new_local_p = glm::inverse(parent_delta) * vec4{new_world_p, 1.f};
                             const mat3 rs{parent_delta};
                             const vec3 parent_delta_s{glm::length(rs[0]), glm::length(rs[1]), glm::length(rs[2])};
                             const quat parent_delta_r = glm::normalize(glm::quat_cast(mat3{rs[0] / parent_delta_s.x, rs[1] / parent_delta_s.y, rs[2] / parent_delta_s.z}));

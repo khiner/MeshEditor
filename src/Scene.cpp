@@ -1055,7 +1055,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         R.remove<PendingTransform>(SceneEntity);
     }
-    { // Sync bone transforms → BonePoseLocal → GPU deform matrices whenever any bone WorldTransform changes
+    { // Sync bone transforms → BonePoseDelta → GPU deform matrices whenever any bone WorldTransform changes
         const auto &wt_changes = reactive<changes::WorldTransform>(R);
         for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
             const auto arm_data_entity = arm_obj_comp.Entity;
@@ -1066,15 +1066,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             bool any_bone_changed = false;
             for (const auto [b, mi, bi] : R.view<const MeshInstance, const BoneIndex>().each()) {
                 if (mi.MeshEntity != arm_obj_entity) continue;
-                if (bi.Index < pose_state->BonePoseLocal.size()) {
-                    pose_state->BonePoseLocal[bi.Index].P = R.get<Position>(b).Value;
-                    pose_state->BonePoseLocal[bi.Index].R = R.get<Rotation>(b).Value;
+                if (bi.Index < pose_state->BonePoseDelta.size() && wt_changes.contains(b)) {
+                    const auto &rest = armature.Bones[bi.Index].RestLocal;
+                    const auto pos = R.get<Position>(b).Value;
+                    const auto rot = R.get<Rotation>(b).Value;
+                    pose_state->BonePoseDelta[bi.Index] = AbsoluteToDelta(rest, {pos, rot, rest.S});
+                    any_bone_changed = true;
                 }
-                if (wt_changes.contains(b)) any_bone_changed = true;
             }
             if (any_bone_changed) {
                 auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange);
-                ComputeDeformMatrices(armature, pose_state->BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
+                ComputeDeformMatrices(armature, pose_state->BonePoseDelta, armature.ImportedSkin->InverseBindMatrices, gpu_span);
                 request(RenderRequest::Submit);
             }
         }
@@ -1099,20 +1101,20 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (anim.Clips.empty() || anim.ActiveClipIndex >= anim.Clips.size()) continue;
                 const auto &clip = anim.Clips[anim.ActiveClipIndex];
                 const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
-                for (uint32_t i = 0; i < armature.Bones.size(); ++i) pose_state.BonePoseLocal[i] = armature.Bones[i].RestLocal;
-                EvaluateAnimation(clip, clip_time, pose_state.BonePoseLocal);
+                // Evaluate animation as deltas from rest; unkeyed components keep manual pose edits.
+                EvaluateAnimationDeltas(clip, clip_time, armature.Bones, pose_state.BonePoseDelta);
 
                 auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
-                ComputeDeformMatrices(armature, pose_state.BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
+                ComputeDeformMatrices(armature, pose_state.BonePoseDelta, armature.ImportedSkin->InverseBindMatrices, gpu_span);
 
-                // Sync BonePoseLocal → bone entity transforms → FK cascade
+                // Sync deltas → bone entity transforms → FK cascade
                 for (const auto [arm_obj_entity, arm_obj] : R.view<ArmatureObject>().each()) {
                     if (arm_obj.Entity != entity) continue;
                     bool any_bone = false;
                     for (const auto [b, mi, bi] : R.view<MeshInstance, BoneIndex>().each()) {
                         if (mi.MeshEntity != arm_obj_entity) continue;
-                        if (bi.Index >= pose_state.BonePoseLocal.size()) continue;
-                        const auto &local = pose_state.BonePoseLocal[bi.Index];
+                        if (bi.Index >= pose_state.BonePoseDelta.size()) continue;
+                        const auto local = ComposeWithDelta(armature.Bones[bi.Index].RestLocal, pose_state.BonePoseDelta[bi.Index]);
                         R.replace<Position>(b, local.P);
                         R.replace<Rotation>(b, local.R);
                         any_bone = true;
@@ -1465,14 +1467,14 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     for (uint32_t i = 0; i < n; ++i) {
         for (uint32_t j = 0; j < n; ++j) {
             if (armature.Bones[j].ParentIndex == i) {
-                bone_scales[i] = glm::length(vec3(armature.Bones[j].RestWorld[3]) - vec3(armature.Bones[i].RestWorld[3]));
+                bone_scales[i] = glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[i].RestWorld[3]});
                 break;
             }
         }
     }
     for (uint32_t i = 0; i < n; ++i) {
         if (bone_scales[i] == 0.f) {
-            bone_scales[i] = armature.Bones[i].ParentIndex != InvalidBoneIndex ? bone_scales[armature.Bones[i].ParentIndex] : glm::length(vec3(armature.Bones[i].RestWorld[3]));
+            bone_scales[i] = armature.Bones[i].ParentIndex != InvalidBoneIndex ? bone_scales[armature.Bones[i].ParentIndex] : glm::length(vec3{armature.Bones[i].RestWorld[3]});
         }
     }
     // Apply a skeleton-relative minimum so near-zero-length bones (e.g. root joints placed at the
