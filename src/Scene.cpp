@@ -1094,6 +1094,30 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         R.remove<PendingTransform>(SceneEntity);
     }
+    { // Sync bone transforms → BonePoseLocal → GPU deform matrices whenever any bone WorldTransform changes
+        const auto &wt_changes = R.storage<entt::reactive>(changes::WorldTransform);
+        for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
+            const auto arm_data_entity = arm_obj_comp.Entity;
+            auto *pose_state = R.try_get<ArmaturePoseState>(arm_data_entity);
+            if (!pose_state) continue;
+            const auto &armature = R.get<const Armature>(arm_data_entity);
+            if (!armature.ImportedSkin) continue;
+            bool any_bone_changed = false;
+            for (const auto [b, mi, bi] : R.view<const MeshInstance, const BoneIndex>().each()) {
+                if (mi.MeshEntity != arm_obj_entity) continue;
+                if (bi.Index < pose_state->BonePoseLocal.size()) {
+                    pose_state->BonePoseLocal[bi.Index].P = R.get<Position>(b).Value;
+                    pose_state->BonePoseLocal[bi.Index].R = R.get<Rotation>(b).Value;
+                }
+                if (wt_changes.contains(b)) any_bone_changed = true;
+            }
+            if (any_bone_changed) {
+                auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange);
+                ComputeDeformMatrices(armature, pose_state->BonePoseLocal, armature.ImportedSkin->InverseBindMatrices, gpu_span);
+                request(RenderRequest::Submit);
+            }
+        }
+    }
     { // Animation timeline tick
         auto &tl = R.get<AnimationTimeline>(SceneEntity);
         if (tl.Playing) {
