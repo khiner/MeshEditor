@@ -306,30 +306,38 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
     std::fill_n(reinterpret_cast<uint32_t *>(bytes.data()), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
+// clang-format off
 namespace changes {
-using namespace entt::literals;
-constexpr auto
-    Selected = "selected_changes"_hs,
-    ActiveInstance = "active_instance_changes"_hs,
-    Rerecord = "rerecord_changes"_hs,
-    MeshActiveElement = "mesh_active_element_changes"_hs,
-    MeshGeometry = "mesh_geometry_changes"_hs,
-    MeshMaterial = "mesh_material_changes"_hs,
-    Excitable = "excitable_changes"_hs,
-    ExcitedVertex = "excited_vertex_changes"_hs,
-    ModelsBuffer = "models_buffer_changes"_hs,
-    SceneSettings = "scene_settings_changes"_hs,
-    InteractionMode = "interaction_mode_changes"_hs,
-    Submit = "submit_changes"_hs,
-    ViewportTheme = "viewport_theme_changes"_hs,
-    Materials = "materials_changes"_hs,
-    PbrSpecialization = "pbr_specialization_changes"_hs,
-    SceneView = "scene_view_changes"_hs,
-    CameraLens = "camera_lens_changes"_hs,
-    TransformPending = "transform_pending_changes"_hs,
-    TransformEnd = "transform_end_changes"_hs,
-    WorldTransform = "world_transform_changes"_hs;
+struct Selected {}; struct ActiveInstance {}; struct Rerecord {};
+struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
+struct Excitable {}; struct ExcitedVertex {}; struct ModelsBuffer {};
+struct SceneSettings {}; struct InteractionMode {}; struct Submit {};
+struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
+struct SceneView {}; struct CameraLens {}; struct TransformPending {};
+struct TransformEnd {}; struct WorldTransform {};
 } // namespace changes
+// clang-format on
+
+enum class On : uint8_t {
+    Create = 1,
+    Update = 2,
+    Destroy = 4
+};
+constexpr On operator|(On a, On b) { return On(uint8_t(a) | uint8_t(b)); }
+
+struct ReactiveTracker {
+    entt::storage_for_t<entt::reactive> &s;
+    template<typename T> ReactiveTracker &on(On events) {
+        if (uint8_t(events) & uint8_t(On::Create)) s.on_construct<T>();
+        if (uint8_t(events) & uint8_t(On::Update)) s.on_update<T>();
+        if (uint8_t(events) & uint8_t(On::Destroy)) s.on_destroy<T>();
+        return *this;
+    }
+};
+template<typename Change>
+ReactiveTracker track(entt::registry &r) { return {r.storage<entt::reactive>(entt::type_hash<Change>::value())}; }
+template<typename Change>
+auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_hash<Change>::value()); }
 
 struct DeformSlots {
     uint32_t BoneDeformOffset{InvalidOffset}, ArmatureDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset};
@@ -538,86 +546,39 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       Textures{std::make_unique<TextureStore>()},
       Environments{std::make_unique<EnvironmentStore>()} {
     // Reactive storage subscriptions for deferred once-per-frame processing
-    using namespace entt::literals;
-
-    R.storage<entt::reactive>(changes::Selected)
-        .on_construct<Selected>()
-        .on_destroy<Selected>();
-    R.storage<entt::reactive>(changes::ActiveInstance)
-        .on_construct<Active>()
-        .on_destroy<Active>();
-    R.storage<entt::reactive>(changes::Rerecord)
-        .on_construct<RenderInstance>()
-        .on_destroy<RenderInstance>()
-        .on_construct<Active>()
-        .on_destroy<Active>()
-        .on_construct<StartTransform>()
-        .on_destroy<StartTransform>()
-        .on_construct<SceneEditMode>()
-        .on_update<SceneEditMode>();
-
-    R.storage<entt::reactive>(changes::MeshActiveElement)
-        .on_construct<MeshActiveElement>()
-        .on_update<MeshActiveElement>();
-    R.storage<entt::reactive>(changes::MeshGeometry)
-        .on_construct<MeshGeometryDirty>();
-    R.storage<entt::reactive>(changes::MeshMaterial)
-        .on_construct<MeshMaterialAssignment>()
-        .on_update<MeshMaterialAssignment>();
-    R.storage<entt::reactive>(changes::Excitable)
-        .on_construct<Excitable>()
-        .on_destroy<Excitable>();
-    R.storage<entt::reactive>(changes::ExcitedVertex)
-        .on_construct<ExcitedVertex>()
-        .on_destroy<ExcitedVertex>();
-    R.storage<entt::reactive>(changes::ModelsBuffer)
-        .on_update<ModelsBuffer>();
-    R.storage<entt::reactive>(changes::SceneSettings)
-        .on_construct<SceneSettings>()
-        .on_update<SceneSettings>();
-    R.storage<entt::reactive>(changes::InteractionMode)
-        .on_construct<SceneInteraction>()
-        .on_update<SceneInteraction>();
-    R.storage<entt::reactive>(changes::Submit)
-        .on_construct<SubmitDirty>();
-    R.storage<entt::reactive>(changes::ViewportTheme)
-        .on_construct<ViewportTheme>()
-        .on_update<ViewportTheme>();
-    R.storage<entt::reactive>(changes::Materials)
-        .on_construct<MaterialDirty>()
-        .on_update<MaterialDirty>();
-    R.storage<entt::reactive>(changes::PbrSpecialization)
-        .on_construct<PbrMeshFeatures>()
-        .on_update<PbrMeshFeatures>()
-        .on_destroy<PbrMeshFeatures>()
-        .on_construct<MaterialPreviewLighting>()
-        .on_update<MaterialPreviewLighting>()
-        .on_construct<RenderedLighting>()
-        .on_update<RenderedLighting>();
-    R.storage<entt::reactive>(changes::SceneView)
-        .on_construct<ViewCamera>()
-        .on_update<ViewCamera>()
-        .on_construct<MaterialPreviewLighting>()
-        .on_update<MaterialPreviewLighting>()
-        .on_construct<RenderedLighting>()
-        .on_update<RenderedLighting>()
-        .on_construct<LightIndex>()
-        .on_destroy<LightIndex>()
-        .on_construct<ViewportExtent>()
-        .on_update<ViewportExtent>()
-        .on_construct<SceneEditMode>()
-        .on_update<SceneEditMode>();
-    R.storage<entt::reactive>(changes::CameraLens)
-        .on_construct<Camera>()
-        .on_update<Camera>();
-    R.storage<entt::reactive>(changes::WorldTransform)
-        .on_construct<WorldTransform>()
-        .on_update<WorldTransform>();
-    R.storage<entt::reactive>(changes::TransformPending)
-        .on_construct<PendingTransform>()
-        .on_update<PendingTransform>();
-    R.storage<entt::reactive>(changes::TransformEnd)
-        .on_destroy<StartTransform>();
+    track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
+    track<changes::ActiveInstance>(R).on<Active>(On::Create | On::Destroy);
+    track<changes::Rerecord>(R)
+        .on<RenderInstance>(On::Create | On::Destroy)
+        .on<Active>(On::Create | On::Destroy)
+        .on<StartTransform>(On::Create | On::Destroy)
+        .on<SceneEditMode>(On::Create | On::Update);
+    track<changes::MeshActiveElement>(R).on<MeshActiveElement>(On::Create | On::Update);
+    track<changes::MeshGeometry>(R).on<MeshGeometryDirty>(On::Create);
+    track<changes::MeshMaterial>(R).on<MeshMaterialAssignment>(On::Create | On::Update);
+    track<changes::Excitable>(R).on<Excitable>(On::Create | On::Destroy);
+    track<changes::ExcitedVertex>(R).on<ExcitedVertex>(On::Create | On::Destroy);
+    track<changes::ModelsBuffer>(R).on<ModelsBuffer>(On::Update);
+    track<changes::SceneSettings>(R).on<SceneSettings>(On::Create | On::Update);
+    track<changes::InteractionMode>(R).on<SceneInteraction>(On::Create | On::Update);
+    track<changes::Submit>(R).on<SubmitDirty>(On::Create);
+    track<changes::ViewportTheme>(R).on<ViewportTheme>(On::Create | On::Update);
+    track<changes::Materials>(R).on<MaterialDirty>(On::Create | On::Update);
+    track<changes::PbrSpecialization>(R)
+        .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
+        .on<MaterialPreviewLighting>(On::Create | On::Update)
+        .on<RenderedLighting>(On::Create | On::Update);
+    track<changes::SceneView>(R)
+        .on<ViewCamera>(On::Create | On::Update)
+        .on<MaterialPreviewLighting>(On::Create | On::Update)
+        .on<RenderedLighting>(On::Create | On::Update)
+        .on<LightIndex>(On::Create | On::Destroy)
+        .on<ViewportExtent>(On::Create | On::Update)
+        .on<SceneEditMode>(On::Create | On::Update);
+    track<changes::CameraLens>(R).on<Camera>(On::Create | On::Update);
+    track<changes::WorldTransform>(R).on<WorldTransform>(On::Create | On::Update);
+    track<changes::TransformPending>(R).on<PendingTransform>(On::Create | On::Update);
+    track<changes::TransformEnd>(R).on<StartTransform>(On::Destroy);
 
     DestroyTracker->Bind(R);
 
@@ -812,7 +773,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (R.storage<Excitable>().empty()) {
             if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
-        } else if (!R.storage<entt::reactive>(changes::Excitable).empty()) {
+        } else if (!reactive<changes::Excitable>(R).empty()) {
             InteractionModes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
             else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
@@ -855,8 +816,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     };
 
     { // Selected/Active instance changes - update instance state buffer
-        auto &selected_tracker = R.storage<entt::reactive>(changes::Selected);
-        auto &active_tracker = R.storage<entt::reactive>(changes::ActiveInstance);
+        auto &selected_tracker = reactive<changes::Selected>(R);
+        auto &active_tracker = reactive<changes::ActiveInstance>(R);
         if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
 
         for (auto instance_entity : selected_tracker) {
@@ -901,7 +862,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
     }
-    if (!R.storage<entt::reactive>(changes::Rerecord).empty() || !DestroyTracker->Storage.empty()) {
+    if (!reactive<changes::Rerecord>(R).empty() || !DestroyTracker->Storage.empty()) {
         request(RenderRequest::ReRecord);
     }
 
@@ -919,7 +880,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         });
     };
 
-    if (const auto &tracker = R.storage<entt::reactive>(changes::MeshActiveElement); !tracker.empty()) {
+    if (const auto &tracker = reactive<changes::MeshActiveElement>(R); !tracker.empty()) {
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         const auto active_entity = FindActiveEntity(R);
         const auto *active_mi = R.try_get<MeshInstance>(active_entity);
@@ -935,11 +896,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         SelectionBitsDirty = false;
         if (is_edit_mode) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), R.get<const SceneEditMode>(SceneEntity).Value);
     }
-    for (auto instance_entity : R.storage<entt::reactive>(changes::ExcitedVertex)) {
+    for (auto instance_entity : reactive<changes::ExcitedVertex>(R)) {
         if (const auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
         if (const auto *ev = R.try_get<ExcitedVertex>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
     }
-    for (auto camera_entity : R.storage<entt::reactive>(changes::CameraLens)) {
+    for (auto camera_entity : reactive<changes::CameraLens>(R)) {
         if (const auto *cd = R.try_get<Camera>(camera_entity)) {
             SetMeshPositions(R.get<MeshInstance>(camera_entity).MeshEntity, BuildCameraFrustumMesh(*cd).Positions);
             // If looking through this camera, trigger a ViewCamera update so the SceneView
@@ -956,7 +917,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         Buffers->LightBuffer.UsedSize = required_size;
         light_count_changed = true;
     }
-    if (!R.storage<entt::reactive>(changes::Submit).empty() || light_count_changed) request(RenderRequest::Submit);
+    if (!reactive<changes::Submit>(R).empty() || light_count_changed) request(RenderRequest::Submit);
     for (auto light_entity : R.view<LightWireframeDirty, LightIndex, MeshInstance>()) {
         const auto light = Buffers->GetLight(R.get<const LightIndex>(light_entity).Value);
         auto wireframe = BuildLightMesh(light);
@@ -984,7 +945,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         request(RenderRequest::ReRecord);
     }
-    if (auto &tracker = R.storage<entt::reactive>(changes::MeshGeometry); !tracker.empty()) {
+    if (auto &tracker = reactive<changes::MeshGeometry>(R); !tracker.empty()) {
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         std::vector<ElementRange> geometry_ranges;
         for (auto mesh_entity : tracker) {
@@ -1003,7 +964,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (!geometry_ranges.empty()) ApplySelectionStateUpdate(geometry_ranges, edit_mode);
         request(RenderRequest::Submit);
     }
-    if (auto &tracker = R.storage<entt::reactive>(changes::MeshMaterial); !tracker.empty()) {
+    if (auto &tracker = reactive<changes::MeshMaterial>(R); !tracker.empty()) {
         for (auto mesh_entity : tracker) {
             const auto *assignment = R.try_get<const MeshMaterialAssignment>(mesh_entity);
             const auto *mesh = R.try_get<const Mesh>(mesh_entity);
@@ -1016,23 +977,23 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         request(RenderRequest::Submit);
     }
-    if (!R.storage<entt::reactive>(changes::ModelsBuffer).empty()) request(RenderRequest::Submit);
-    if (!R.storage<entt::reactive>(changes::ViewportTheme).empty()) {
+    if (!reactive<changes::ModelsBuffer>(R).empty()) request(RenderRequest::Submit);
+    if (!reactive<changes::ViewportTheme>(R).empty()) {
         Buffers->ViewportThemeUBO.Update(as_bytes(R.get<const ViewportTheme>(SceneEntity)));
         request(RenderRequest::Submit);
     }
-    if (!R.storage<entt::reactive>(changes::Materials).empty()) {
+    if (!reactive<changes::Materials>(R).empty()) {
         if (const auto *dirty = R.try_get<const MaterialDirty>(SceneEntity);
             dirty && dirty->Index < GetMaterialCount(*Buffers)) {
             SetMaterial(*Buffers, dirty->Index, GetMaterial(*Buffers, dirty->Index));
         }
         request(RenderRequest::Submit);
     }
-    if (!R.storage<entt::reactive>(changes::SceneSettings).empty()) {
+    if (!reactive<changes::SceneSettings>(R).empty()) {
         request(RenderRequest::ReRecord);
         dirty_overlay_meshes.merge(scene_selection::GetSelectedMeshEntities(R));
     }
-    if (!R.storage<entt::reactive>(changes::InteractionMode).empty()) {
+    if (!reactive<changes::InteractionMode>(R).empty()) {
         request(RenderRequest::ReRecord);
         // Dispatch UpdateSelectionState for all meshes entering Edit mode (MeshSelectionBitsetRange assigned in SetInteractionMode).
         const auto new_interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -1061,7 +1022,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     // Handle Edit mode transform commit when StartTransform is cleared.
-    if (!R.storage<entt::reactive>(changes::TransformEnd).empty()) {
+    if (!reactive<changes::TransformEnd>(R).empty()) {
         if (is_edit_mode) {
             const auto &pending = R.get<const PendingTransform>(SceneEntity);
             // Apply edit transform once per selected mesh via a representative selected instance.
@@ -1095,7 +1056,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         R.remove<PendingTransform>(SceneEntity);
     }
     { // Sync bone transforms → BonePoseLocal → GPU deform matrices whenever any bone WorldTransform changes
-        const auto &wt_changes = R.storage<entt::reactive>(changes::WorldTransform);
+        const auto &wt_changes = reactive<changes::WorldTransform>(R);
         for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
             const auto arm_data_entity = arm_obj_comp.Entity;
             auto *pose_state = R.try_get<ArmaturePoseState>(arm_data_entity);
@@ -1194,15 +1155,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         // This must run before the SceneView handler so SnapToCamera's ViewCamera replacement is picked up.
         if (const auto active_entity = FindActiveEntity(R);
             active_entity != entt::null && R.all_of<Camera>(active_entity) &&
-            R.storage<entt::reactive>(changes::WorldTransform).contains(active_entity)) {
+            reactive<changes::WorldTransform>(R).contains(active_entity)) {
             SnapToCamera(active_entity);
         }
     }
-    if (!R.storage<entt::reactive>(changes::SceneView).empty() ||
-        !R.storage<entt::reactive>(changes::TransformPending).empty() ||
-        !R.storage<entt::reactive>(changes::SceneSettings).empty() ||
-        !R.storage<entt::reactive>(changes::InteractionMode).empty() ||
-        !R.storage<entt::reactive>(changes::TransformEnd).empty() ||
+    if (!reactive<changes::SceneView>(R).empty() ||
+        !reactive<changes::TransformPending>(R).empty() ||
+        !reactive<changes::SceneSettings>(R).empty() ||
+        !reactive<changes::InteractionMode>(R).empty() ||
+        !reactive<changes::TransformEnd>(R).empty() ||
         light_count_changed) {
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).
@@ -1273,8 +1234,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     { // Keep targeted PBR specialization mask in sync when one of its inputs changes.
         const auto shading = R.get<const SceneSettings>(SceneEntity).ViewportShading;
-        if (!R.storage<entt::reactive>(changes::SceneSettings).empty() ||
-            !R.storage<entt::reactive>(changes::PbrSpecialization).empty()) {
+        if (!reactive<changes::SceneSettings>(R).empty() ||
+            !reactive<changes::PbrSpecialization>(R).empty()) {
             if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
                 PbrFeatureMask pbr_mask{0};
                 const bool use_scene_lights = shading == ViewportShadingMode::Rendered ?
