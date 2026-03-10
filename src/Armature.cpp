@@ -307,14 +307,15 @@ void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<co
 
 void ComputeDeformMatrices(
     const Armature &data,
-    std::span<const Transform> pose_deltas, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
+    std::span<const Transform> pose_deltas, std::span<const Transform> user_offsets, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
 ) {
     if (!data.ImportedSkin || data.Bones.empty()) return;
 
     // Compute posed world transforms in parent-before-child order (bones are already sorted this way)
     std::vector<mat4> pose_world(data.Bones.size());
     for (uint32_t i = 0; i < data.Bones.size(); ++i) {
-        const auto local = ToMatrix(ComposeWithDelta(data.Bones[i].RestLocal, pose_deltas[i]));
+        const auto combined = ComposeWithDelta(pose_deltas[i], user_offsets[i]);
+        const auto local = ToMatrix(ComposeWithDelta(data.Bones[i].RestLocal, combined));
         const auto parent = data.Bones[i].ParentIndex;
         pose_world[i] = (parent == InvalidBoneIndex) ? local : pose_world[parent] * local;
     }

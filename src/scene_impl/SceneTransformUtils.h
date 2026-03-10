@@ -18,6 +18,7 @@ using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxis
 // Tracks transform at start of gizmo manipulation. If present, actively manipulating.
 struct StartTransform {
     Transform T;
+    Transform ParentDelta; // Frozen parent_world * parent_inverse at drag start (identity if unparented)
 };
 
 inline void SetRotation(entt::registry &r, entt::entity e, const quat &v) {

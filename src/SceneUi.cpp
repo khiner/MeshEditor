@@ -899,9 +899,20 @@ void Scene::RenderOverlay() {
                         R.emplace<StartTransform>(instance_entity, GetTransform(R, instance_entity));
                     }
                 } else {
+                    // Capture parent transform at drag start so world->local conversion uses a stable reference frame throughout the interaction.
                     for (const auto e : root_selected) {
                         const auto &wt = R.get<WorldTransform>(e);
-                        R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale});
+                        auto parent_delta = [&]() -> Transform {
+                            const auto *node = R.try_get<SceneNode>(e);
+                            if (!node || node->Parent == entt::null) return {};
+                            const auto *pi = R.try_get<ParentInverse>(e);
+                            if (!pi) return {};
+                            const mat4 m = ToMatrix(R.get<WorldTransform>(node->Parent)) * pi->M;
+                            const mat3 rs{m};
+                            const vec3 s{glm::length(rs[0]), glm::length(rs[1]), glm::length(rs[2])};
+                            return {.P = vec3{m[3]}, .R = glm::normalize(glm::quat_cast(mat3{rs[0] / s.x, rs[1] / s.y, rs[2] / s.z})), .S = s};
+                        }();
+                        R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale}, parent_delta);
                     }
                 }
             }
@@ -911,31 +922,29 @@ void Scene::RenderOverlay() {
                 R.emplace_or_replace<PendingTransform>(SceneEntity, ts.P, ts.R, td.P, td.R, td.S);
             } else {
                 // Object mode: apply transform to entity components immediately during drag.
-                // StartTransform stores world P/R/S; compute new world result, then convert to local for parented entities.
+                // Compute new world result, then convert to local for parented entities.
                 const auto r = ts.R, rT = glm::conjugate(r);
                 for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
-                    const auto &ts_e = ts_e_comp.T; // world P/R/S at start
+                    const auto &ts_e = ts_e_comp.T; // world transform at start
                     const bool frozen = R.all_of<Frozen>(e);
                     const auto offset = ts_e.P - ts.P;
-                    const vec3 new_world_p = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S));
-                    const quat new_world_r = glm::normalize(td.R * ts_e.R);
-                    const vec3 new_world_s = frozen ? ts_e.S : td.S * ts_e.S;
+                    const Transform new_world{
+                        .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
+                        .R = glm::normalize(td.R * ts_e.R),
+                        .S = frozen ? ts_e.S : td.S * ts_e.S,
+                    };
 
-                    if (const auto *node = R.try_get<SceneNode>(e); node && node->Parent != entt::null) {
-                        if (const auto *pi = R.try_get<ParentInverse>(e)) {
-                            const auto &parent_wt = R.get<WorldTransform>(node->Parent);
-                            const mat4 parent_delta = ToMatrix(parent_wt) * pi->M;
-                            const vec3 new_local_p = glm::inverse(parent_delta) * vec4{new_world_p, 1.f};
-                            const mat3 rs{parent_delta};
-                            const vec3 parent_delta_s{glm::length(rs[0]), glm::length(rs[1]), glm::length(rs[2])};
-                            const quat parent_delta_r = glm::normalize(glm::quat_cast(mat3{rs[0] / parent_delta_s.x, rs[1] / parent_delta_s.y, rs[2] / parent_delta_s.z}));
-                            const quat new_local_r = glm::conjugate(parent_delta_r) * new_world_r;
-                            const vec3 new_local_s = new_world_s / parent_delta_s;
-                            SetTransform(R, e, {.P = new_local_p, .R = new_local_r, .S = new_local_s});
-                            continue;
+                    // Convert world target to local using the drag-start parent transform
+                    // (identity for unparented entities, so this is a no-op in that case).
+                    const auto &parent_delta = ts_e_comp.ParentDelta;
+                    SetTransform(
+                        R, e,
+                        {
+                            .P = glm::conjugate(parent_delta.R) * ((new_world.P - parent_delta.P) / parent_delta.S),
+                            .R = glm::conjugate(parent_delta.R) * new_world.R,
+                            .S = new_world.S / parent_delta.S,
                         }
-                    }
-                    SetTransform(R, e, {.P = new_world_p, .R = new_world_r, .S = new_world_s});
+                    );
                 }
             }
         } else if (!start_transform_view.empty()) {

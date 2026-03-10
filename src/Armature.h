@@ -93,7 +93,8 @@ struct BoneAttachment {
 
 // Component on armature data entities with imported skin data.
 struct ArmaturePoseState {
-    std::vector<Transform> BonePoseDelta; // Delta from rest (identity = at rest). Persistent across frames.
+    std::vector<Transform> BonePoseDelta; // Animation delta from rest (identity = at rest). Persistent across frames.
+    std::vector<Transform> BoneUserOffset; // Additive user offset per bone (identity = no offset). Applied on top of animation.
     Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena
     bool Dirty{true};
 };
@@ -128,6 +129,6 @@ Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute);
 // keyframe value and converts to a rest-relative delta. Unkeyed components are left unchanged.
 void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const ArmatureBone>, std::span<Transform> deltas);
 
-// Compute final deform matrices from rest poses + pose deltas + inverse bind matrices.
-// Writes directly into `out` (mapped GPU memory).
-void ComputeDeformMatrices(const Armature &, std::span<const Transform> pose_deltas, std::span<const mat4> inverse_bind, std::span<mat4> out);
+// Compute final deform matrices from rest poses + pose deltas + user offsets + inverse bind matrices.
+// Effective delta per bone = ComposeWithDelta(pose_delta, user_offset). Writes directly into `out` (mapped GPU memory).
+void ComputeDeformMatrices(const Armature &, std::span<const Transform> pose_deltas, std::span<const Transform> user_offsets, std::span<const mat4> inverse_bind, std::span<mat4> out);

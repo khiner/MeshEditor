@@ -1055,32 +1055,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         R.remove<PendingTransform>(SceneEntity);
     }
-    { // Sync bone transforms → BonePoseDelta → GPU deform matrices whenever any bone WorldTransform changes
-        const auto &wt_changes = reactive<changes::WorldTransform>(R);
-        for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
-            const auto arm_data_entity = arm_obj_comp.Entity;
-            auto *pose_state = R.try_get<ArmaturePoseState>(arm_data_entity);
-            if (!pose_state) continue;
-            const auto &armature = R.get<const Armature>(arm_data_entity);
-            if (!armature.ImportedSkin) continue;
-            bool any_bone_changed = false;
-            for (const auto [b, mi, bi] : R.view<const MeshInstance, const BoneIndex>().each()) {
-                if (mi.MeshEntity != arm_obj_entity) continue;
-                if (bi.Index < pose_state->BonePoseDelta.size() && wt_changes.contains(b)) {
-                    const auto &rest = armature.Bones[bi.Index].RestLocal;
-                    const auto pos = R.get<Position>(b).Value;
-                    const auto rot = R.get<Rotation>(b).Value;
-                    pose_state->BonePoseDelta[bi.Index] = AbsoluteToDelta(rest, {pos, rot, rest.S});
-                    any_bone_changed = true;
-                }
-            }
-            if (any_bone_changed) {
-                auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange);
-                ComputeDeformMatrices(armature, pose_state->BonePoseDelta, armature.ImportedSkin->InverseBindMatrices, gpu_span);
-                request(RenderRequest::Submit);
-            }
-        }
-    }
     { // Animation timeline tick
         auto &tl = R.get<AnimationTimeline>(SceneEntity);
         if (tl.Playing) {
@@ -1091,38 +1065,90 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         } else {
             PlaybackFrame = float(tl.CurrentFrame);
         }
-        if (tl.CurrentFrame != LastEvaluatedFrame) {
-            LastEvaluatedFrame = tl.CurrentFrame;
-            // Timeline frames are displayed 1-based (like Blender), but animation time starts at t=0 on frame 1.
-            const float eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
-            bool request_rerecord = false;
-            for (auto [entity, anim, pose_state, armature] :
-                 R.view<const ArmatureAnimation, ArmaturePoseState, Armature>().each()) {
-                if (anim.Clips.empty() || anim.ActiveClipIndex >= anim.Clips.size()) continue;
-                const auto &clip = anim.Clips[anim.ActiveClipIndex];
-                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
-                // Evaluate animation as deltas from rest; unkeyed components keep manual pose edits.
-                EvaluateAnimationDeltas(clip, clip_time, armature.Bones, pose_state.BonePoseDelta);
+        const bool anim_advanced = tl.CurrentFrame != LastEvaluatedFrame;
+        if (anim_advanced) LastEvaluatedFrame = tl.CurrentFrame;
+        // Timeline frames are displayed 1-based (like Blender), but animation time starts at t=0 on frame 1.
+        const float eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
 
-                auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange);
-                ComputeDeformMatrices(armature, pose_state.BonePoseDelta, armature.ImportedSkin->InverseBindMatrices, gpu_span);
+        // Armature bone sync: animation evaluation, active drag offset, commit, manual edit.
+        // Runs every frame for dragged/committed/manually-moved bones; on frame change for animation.
+        const auto &wt_changes = reactive<changes::WorldTransform>(R);
+        const auto &transform_end = reactive<changes::TransformEnd>(R);
+        bool request_rerecord = false;
+        for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
+            const auto arm_data_entity = arm_obj_comp.Entity;
+            auto *pose_state = R.try_get<ArmaturePoseState>(arm_data_entity);
+            if (!pose_state) continue;
+            const auto &armature = R.get<const Armature>(arm_data_entity);
+            if (!armature.ImportedSkin) continue;
 
-                // Sync deltas → bone entity transforms → FK cascade
-                for (const auto [arm_obj_entity, arm_obj] : R.view<ArmatureObject>().each()) {
-                    if (arm_obj.Entity != entity) continue;
-                    bool any_bone = false;
-                    for (const auto [b, mi, bi] : R.view<MeshInstance, BoneIndex>().each()) {
-                        if (mi.MeshEntity != arm_obj_entity) continue;
-                        if (bi.Index >= pose_state.BonePoseDelta.size()) continue;
-                        const auto local = ComposeWithDelta(armature.Bones[bi.Index].RestLocal, pose_state.BonePoseDelta[bi.Index]);
-                        R.replace<Position>(b, local.P);
-                        R.replace<Rotation>(b, local.R);
-                        any_bone = true;
-                    }
-                    if (any_bone) UpdateWorldTransform(R, arm_obj_entity);
+            // Evaluate animation deltas on frame change.
+            if (anim_advanced) {
+                if (const auto *anim = R.try_get<const ArmatureAnimation>(arm_data_entity);
+                    anim && !anim->Clips.empty() && anim->ActiveClipIndex < anim->Clips.size()) {
+                    const auto &clip = anim->Clips[anim->ActiveClipIndex];
+                    const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+                    EvaluateAnimationDeltas(clip, clip_time, armature.Bones, pose_state->BonePoseDelta);
                 }
+            }
+
+            // Sync bone entity transforms from deltas + user offsets. Single pass, no mutation of BonePoseDelta.
+            bool need_sync = false;
+            for (const auto [b, mi, bi] : R.view<const MeshInstance, const BoneIndex>().each()) {
+                if (mi.MeshEntity != arm_obj_entity) continue;
+                if (bi.Index >= pose_state->BonePoseDelta.size()) continue;
+                if (const auto *st = R.try_get<const StartTransform>(b)) {
+                    // Active drag: compute user offset into BoneUserOffset (additive on top of animation).
+                    const auto &rest = armature.Bones[bi.Index].RestLocal;
+                    const auto &pd = st->ParentDelta;
+                    const Transform grab_local{
+                        .P = glm::conjugate(pd.R) * ((st->T.P - pd.P) / pd.S),
+                        .R = glm::conjugate(pd.R) * st->T.R,
+                        .S = st->T.S / pd.S,
+                    };
+                    const auto grab_delta = AbsoluteToDelta(rest, grab_local);
+                    const Transform gizmo_local{R.get<Position>(b).Value, R.get<Rotation>(b).Value, rest.S};
+                    pose_state->BoneUserOffset[bi.Index] = AbsoluteToDelta(grab_delta, AbsoluteToDelta(rest, gizmo_local));
+                    const auto combined = ComposeWithDelta(pose_state->BonePoseDelta[bi.Index], pose_state->BoneUserOffset[bi.Index]);
+                    const auto local = ComposeWithDelta(rest, combined);
+                    R.replace<Position>(b, local.P);
+                    R.replace<Rotation>(b, local.R);
+                    need_sync = true;
+                } else if (transform_end.contains(b)) {
+                    // Commit: bake user offset into animation delta, clear offset.
+                    const auto &rest = armature.Bones[bi.Index].RestLocal;
+                    pose_state->BonePoseDelta[bi.Index] = AbsoluteToDelta(rest, {R.get<Position>(b).Value, R.get<Rotation>(b).Value, rest.S});
+                    pose_state->BoneUserOffset[bi.Index] = {};
+                    need_sync = true;
+                } else if (anim_advanced) {
+                    // Animation advanced: set entity P/R from combined delta + offset.
+                    const auto combined = ComposeWithDelta(pose_state->BonePoseDelta[bi.Index], pose_state->BoneUserOffset[bi.Index]);
+                    const auto local = ComposeWithDelta(armature.Bones[bi.Index].RestLocal, combined);
+                    R.replace<Position>(b, local.P);
+                    R.replace<Rotation>(b, local.R);
+                    need_sync = true;
+                } else if (wt_changes.contains(b)) {
+                    // Manual transform (non-animated pose edit).
+                    const auto &rest = armature.Bones[bi.Index].RestLocal;
+                    const auto combined = ComposeWithDelta(pose_state->BonePoseDelta[bi.Index], pose_state->BoneUserOffset[bi.Index]);
+                    const auto expected = ComposeWithDelta(rest, combined);
+                    const auto pos = R.get<Position>(b).Value;
+                    const auto rot = R.get<Rotation>(b).Value;
+                    if (pos == expected.P && rot == expected.R) continue;
+                    pose_state->BonePoseDelta[bi.Index] = AbsoluteToDelta(rest, {pos, rot, rest.S});
+                    pose_state->BoneUserOffset[bi.Index] = {};
+                    need_sync = true;
+                }
+            }
+            if (need_sync) {
+                UpdateWorldTransform(R, arm_obj_entity);
+                auto gpu_span = Buffers->ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange);
+                ComputeDeformMatrices(armature, pose_state->BonePoseDelta, pose_state->BoneUserOffset, armature.ImportedSkin->InverseBindMatrices, gpu_span);
                 request_rerecord = true;
             }
+        }
+
+        if (anim_advanced) {
             // Evaluate morph weight animations
             for (auto [entity, morph_anim, morph_state, mi] :
                  R.view<const MorphWeightAnimation, MorphWeightState, const MeshInstance>().each()) {
@@ -1149,8 +1175,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 SetTransform(R, entity, ComposeWorldTransform(node_anim.ParentBindWorld, local_pose.front()));
                 request_rerecord = true;
             }
-            if (request_rerecord) request(RenderRequest::ReRecord);
         }
+        if (request_rerecord) request(RenderRequest::ReRecord);
     }
     if (SavedViewCamera) {
         // If looking through a camera and it moved (animation or manual edit), snap the ViewCamera.
