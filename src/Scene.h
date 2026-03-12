@@ -261,7 +261,6 @@ private:
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     void DestroyBoneInstances(entt::entity arm_obj_entity);
-    void SwapBoneMesh(entt::entity arm_obj_entity, bool edit_mode);
 
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
     void SetStudioEnvironment(uint32_t index);

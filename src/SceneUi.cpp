@@ -1090,19 +1090,18 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         const bool show_bones = cur_mode == InteractionMode::Pose || cur_mode == InteractionMode::Edit;
         if (show_bones && CollapsingHeader("Bones", ImGuiTreeNodeFlags_DefaultOpen)) {
             const auto active_bone = FindActiveEntity(R);
-            for (const auto [b, mi, bi] : R.view<MeshInstance, const BoneIndex>().each()) {
-                if (mi.MeshEntity != active_entity) continue;
+            for (uint32_t i = 0; i < armature_object->BoneEntities.size(); ++i) {
+                const auto b = armature_object->BoneEntities[i];
                 const bool is_active_bone = (b == active_bone);
                 if (is_active_bone) PushStyleColor(ImGuiCol_Text, ImVec4{1, 0.8f, 0.2f, 1});
-                if (Selectable(armature.Bones[bi.Index].Name.c_str(), R.all_of<Selected>(b))) Select(b);
+                if (Selectable(armature.Bones[i].Name.c_str(), R.all_of<Selected>(b))) Select(b);
                 if (is_active_bone) PopStyleColor();
             }
             if (Button("Reset Pose")) {
-                for (const auto [b, mi, bi] : R.view<MeshInstance, const BoneIndex>().each()) {
-                    if (mi.MeshEntity != active_entity) continue;
-                    const auto &rest = armature.Bones[bi.Index].RestLocal;
-                    R.replace<Position>(b, rest.P);
-                    R.replace<Rotation>(b, rest.R);
+                for (uint32_t i = 0; i < armature_object->BoneEntities.size(); ++i) {
+                    const auto &rest = armature.Bones[i].RestLocal;
+                    R.replace<Position>(armature_object->BoneEntities[i], rest.P);
+                    R.replace<Rotation>(armature_object->BoneEntities[i], rest.R);
                 }
                 UpdateWorldTransform(R, active_entity);
             }

@@ -60,6 +60,7 @@ struct Armature {
 // References shared Armature (bones, IDs, imported skin metadata).
 struct ArmatureObject {
     entt::entity Entity;
+    std::vector<entt::entity> BoneEntities; // Bone instance entities, indexed by bone index.
 };
 
 // Armature modifier linkage for mesh instances deformed by an armature.
