@@ -119,6 +119,9 @@ struct MorphWeightState {
     Range GpuWeightRange; // Allocation in MorphWeightBuffer
 };
 
+// Given an instance entity, return its armature object entity (if it is one, or if it's a sub-element of one).
+entt::entity FindArmatureObject(const entt::registry &, entt::entity);
+
 // Compose a rest-pose transform with a delta (Blender-style pose channel model).
 // delta identity {P=0, R=identity, S=1} produces rest unchanged.
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta);

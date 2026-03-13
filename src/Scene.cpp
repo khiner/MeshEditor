@@ -41,18 +41,18 @@
 using std::ranges::any_of, std::ranges::all_of, std::ranges::find, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::iota, std::views::transform;
 
+entt::entity FindArmatureObject(const entt::registry &r, entt::entity e) {
+    if (e == entt::null) return entt::null;
+    if (r.all_of<ArmatureObject>(e)) return e;
+    if (const auto *sub = r.try_get<SubElementOf>(e); sub && r.all_of<ArmatureObject>(sub->Parent)) return sub->Parent;
+    return entt::null;
+}
+
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
 using namespace he;
-
-// Given an instance entity, return its armature object entity (if it is one, or if it's a bone instance).
-entt::entity FindArmatureObject(const entt::registry &r, entt::entity e) {
-    if (r.all_of<ArmatureObject>(e)) return e;
-    if (r.all_of<BoneIndex>(e)) return r.get<const MeshInstance>(e).MeshEntity;
-    return entt::null;
-}
 
 void WaitFor(vk::Fence fence, vk::Device device) {
     if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
@@ -1515,6 +1515,7 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
         const auto &bone = armature.Bones[i];
         const auto bone_entity = R.create();
         R.emplace<BoneIndex>(bone_entity, i);
+        R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
         R.emplace<MeshInstance>(bone_entity, arm_obj_entity);
         R.emplace<Name>(bone_entity, bone.Name);
         R.emplace<BoneDisplayScale>(bone_entity, bone_scales[i]);
@@ -2068,31 +2069,29 @@ void Scene::RecordRenderCommandBuffer() {
         return {};
     };
 
-    // In Object mode, silhouette ALL bones of any armature where the armature or any bone is Selected/Active.
-    // Color = max state across the group: any Active member → all bones render as Active; else as Selected.
-    std::unordered_set<entt::entity> armature_bone_silhouettes;
-    std::unordered_set<entt::entity> active_arm_groups; // arm_obj_entities with any Active member
+    // In Object mode, silhouette ALL sub-elements of any parent where the parent or any sub-element is Selected/Active.
+    // Color = max state across the group: any Active member → all sub-elements render as Active; else as Selected.
+    std::unordered_set<entt::entity> sub_element_silhouettes;
+    std::unordered_set<entt::entity> active_sub_element_parents; // Parents with any Active member
     if (interaction_mode == InteractionMode::Object) {
-        std::unordered_set<entt::entity> triggered_arms;
-        for (const auto arm : R.view<const Selected, const ArmatureObject>()) triggered_arms.insert(arm);
-        for (const auto arm : R.view<const Active, const ArmatureObject>()) {
-            triggered_arms.insert(arm);
-            active_arm_groups.insert(arm);
+        std::unordered_set<entt::entity> triggered_parents;
+        for (const auto [e, sub] : R.view<const SubElementOf>().each()) {
+            if (R.any_of<Selected, Active>(e) || R.any_of<Selected, Active>(sub.Parent)) {
+                triggered_parents.insert(sub.Parent);
+            }
+            if (R.all_of<Active>(e) || R.all_of<Active>(sub.Parent)) {
+                active_sub_element_parents.insert(sub.Parent);
+            }
         }
-        for (const auto [b, mi, _] : R.view<const Selected, const MeshInstance, const BoneIndex>().each()) triggered_arms.insert(mi.MeshEntity);
-        for (const auto [b, mi, _] : R.view<const Active, const MeshInstance, const BoneIndex>().each()) {
-            triggered_arms.insert(mi.MeshEntity);
-            active_arm_groups.insert(mi.MeshEntity);
-        }
-        for (const auto arm : triggered_arms) {
-            for (const auto b : R.get<const ArmatureObject>(arm).BoneEntities) {
-                if (is_silhouette_eligible(b)) armature_bone_silhouettes.insert(b);
+        for (const auto [e, sub] : R.view<const SubElementOf>().each()) {
+            if (triggered_parents.contains(sub.Parent) && is_silhouette_eligible(e)) {
+                sub_element_silhouettes.insert(e);
             }
         }
     }
 
     const bool has_object_silhouette_selection =
-        !armature_bone_silhouettes.empty() ||
+        !sub_element_silhouettes.empty() ||
         any_of(R.view<const Selected, const MeshInstance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
     // Pose mode silhouettes work exactly like Object mode: selected/active instances get silhouettes.
     const bool render_silhouette = is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection;
@@ -2132,7 +2131,7 @@ void Scene::RecordRenderCommandBuffer() {
             for (const auto e : silhouette_instances) append_silhouette(e);
         } else {
             for (const auto e : R.view<Selected, RenderInstance>()) append_silhouette(e);
-            for (const auto e : armature_bone_silhouettes) append_silhouette(e);
+            for (const auto e : sub_element_silhouettes) append_silhouette(e);
         }
     }
 
@@ -2470,15 +2469,14 @@ void Scene::RecordRenderCommandBuffer() {
         // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
         // In armature Edit/Pose mode, bones behave like Object mode: active bone gets active-color silhouette.
         const auto active_entity = FindActiveEntity(R);
-        const bool armature_mode = active_entity != entt::null &&
-            (R.all_of<BoneIndex>(active_entity) || R.all_of<ArmatureObject>(active_entity));
+        const bool armature_mode = FindArmatureObject(R, active_entity) != entt::null;
         uint32_t active_object_id = 0;
         if (!is_edit_mode || armature_mode) {
             if (active_entity != entt::null) {
-                // Object mode armature group with any Active member → sentinel makes all bone pixels active-colored.
-                const auto active_arm = R.all_of<ArmatureObject>(active_entity) ? active_entity : R.all_of<BoneIndex>(active_entity) ? R.get<const MeshInstance>(active_entity).MeshEntity :
-                                                                                                                                       entt::null;
-                if (active_arm != entt::null && active_arm_groups.contains(active_arm)) {
+                // Sub-element parent with any Active member → sentinel makes all sub-element pixels active-colored.
+                const auto *sub = R.try_get<const SubElementOf>(active_entity);
+                const auto active_parent = sub ? sub->Parent : active_entity;
+                if (active_sub_element_parents.contains(active_parent)) {
                     active_object_id = 0xFFFFFFFFu;
                 } else if (R.all_of<RenderInstance>(active_entity)) {
                     // Covers regular meshes, Pose-mode and Edit-mode active bones (all have RenderInstance).

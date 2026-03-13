@@ -310,10 +310,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return;
 
     const auto active_entity = FindActiveEntity(R);
-    // Active entity may be the armature object or a bone — resolve to arm_obj_entity.
-    const auto active_arm = active_entity != entt::null ? (R.all_of<ArmatureObject>(active_entity) ? active_entity : R.all_of<BoneIndex>(active_entity) ? R.get<const MeshInstance>(active_entity).MeshEntity :
-                                                                                                                                                          entt::null) :
-                                                          entt::null;
+    const auto active_arm = active_entity != entt::null ? FindArmatureObject(R, active_entity) : entt::null;
     const bool active_is_armature = active_arm != entt::null;
     if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return;
     if (mode == InteractionMode::Pose && !active_is_armature) return;
@@ -479,8 +476,7 @@ void Scene::Interact() {
                 SelectionXRay = !SelectionXRay;
             }
             if (IsKeyPressed(ImGuiKey_Tab)) {
-                const bool is_armature = active_entity != entt::null &&
-                    (R.all_of<ArmatureObject>(active_entity) || R.all_of<BoneIndex>(active_entity));
+                const bool is_armature = FindArmatureObject(R, active_entity) != entt::null;
                 if (is_armature && GetIO().KeyCtrl) {
                     // Ctrl+Tab: toggle Object ↔ Pose
                     SetInteractionMode(interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose);
@@ -579,8 +575,7 @@ void Scene::Interact() {
     if (OrientationGizmo::IsActive() || OverlayControlsHovered) return;
 
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-    const bool active_is_armature = active_entity != entt::null &&
-        (R.all_of<ArmatureObject>(active_entity) || R.all_of<BoneIndex>(active_entity));
+    const bool active_is_armature = FindArmatureObject(R, active_entity) != entt::null;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -603,7 +598,10 @@ void Scene::Interact() {
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto selected_entities = RunBoxSelect(*box_px);
                     if (!is_additive) R.clear<Selected>();
-                    for (const auto e : selected_entities) R.emplace_or_replace<Selected>(e);
+                    for (const auto e : selected_entities) {
+                        const auto target = R.all_of<SubElementOf>(e) ? R.get<SubElementOf>(e).Parent : e;
+                        R.emplace_or_replace<Selected>(target);
+                    }
                 }
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
@@ -691,9 +689,9 @@ void Scene::Interact() {
             if (it == hit_entities.end()) it = hit_entities.begin();
             hit = *it;
         }
-        // In Object mode, clicking a bone sphere selects its armature object
-        if (hit != entt::null && R.all_of<BoneIndex>(hit)) {
-            hit = R.get<MeshInstance>(hit).MeshEntity;
+        // In Object mode, clicking a sub-element selects its parent object
+        if (hit != entt::null && R.all_of<SubElementOf>(hit)) {
+            hit = R.get<SubElementOf>(hit).Parent;
         }
         if (hit != entt::null && IsKeyDown(ImGuiMod_Shift)) {
             if (active_entity == hit) {
@@ -960,16 +958,34 @@ void Scene::RenderOverlay() {
     if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
         const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
-        for (const auto [e, wt] : R.view<const WorldTransform>().each()) {
-            if (!R.any_of<Active, Selected>(e)) continue;
-
-            const auto p_cs = vp * vec4{wt.Position, 1.f}; // World to clip space
-            const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs}; // Clip space to NDC
-            const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f; // NDC to UV [0,1] (top-left origin)
-            const auto p_px = std::bit_cast<ImVec2>(viewport.pos + p_uv * viewport.size); // UV to px
+        auto draw_dot = [&](vec3 pos, bool is_active) {
+            const auto p_cs = vp * vec4{pos, 1.f};
+            const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs};
+            const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f;
+            const auto p_px = std::bit_cast<ImVec2>(viewport.pos + p_uv * viewport.size);
             auto &dl = *GetWindowDrawList();
-            dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(R.all_of<Active>(e) ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
+            dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(is_active ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);
             dl.AddCircle(p_px, 3.5f, IM_COL32(0, 0, 0, 255), 10, 1.f);
+        };
+        // Top-level objects: draw dot at own position.
+        for (const auto [e, wt] : R.view<const WorldTransform>(entt::exclude<SubElementOf>).each()) {
+            if (!R.any_of<Active, Selected>(e)) continue;
+            draw_dot(wt.Position, R.all_of<Active>(e));
+        }
+        // Sub-element parents not already drawn above (Pose/Edit mode: sub-elements Selected but parent isn't).
+        std::unordered_set<entt::entity> drawn_parents;
+        for (const auto [e, sub] : R.view<const SubElementOf, const Selected>().each()) {
+            if (R.any_of<Active, Selected>(sub.Parent)) continue; // Already drawn in first loop.
+            if (!drawn_parents.insert(sub.Parent).second) continue;
+            // Check if any sub-element of this parent is Active.
+            bool is_active = false;
+            for (const auto [sibling, sib_sub] : R.view<const SubElementOf, const Active>().each()) {
+                if (sib_sub.Parent == sub.Parent) {
+                    is_active = true;
+                    break;
+                }
+            }
+            draw_dot(R.get<const WorldTransform>(sub.Parent).Position, is_active);
         }
     }
 
@@ -1521,8 +1537,7 @@ void Scene::RenderControls() {
                 auto interaction_mode_value = int(interaction_mode);
                 bool interaction_mode_changed = false;
                 const auto active_entity_rc = FindActiveEntity(R);
-                const bool active_is_armature_rc = active_entity_rc != entt::null &&
-                    (R.all_of<ArmatureObject>(active_entity_rc) || R.all_of<BoneIndex>(active_entity_rc));
+                const bool active_is_armature_rc = FindArmatureObject(R, active_entity_rc) != entt::null;
                 const bool edit_allowed = AllSelectedAreMeshes(R) || active_is_armature_rc;
                 const bool pose_allowed = active_is_armature_rc;
                 for (const auto mode : InteractionModes) {
