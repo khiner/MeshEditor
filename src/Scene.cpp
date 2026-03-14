@@ -990,9 +990,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         // Mark all armatures dirty for bone state + pose sync on mode change.
         for (const auto arm : R.view<ArmatureObject>()) dirty_bone_state_armatures.insert(arm);
     }
-    // Handle Edit mode transform commit when StartTransform is cleared.
+    // Handle mesh Edit mode transform commit when StartTransform is cleared.
+    // Bone Edit mode commits are handled in the bone pose transform section below.
     if (!reactive<changes::TransformEnd>(R).empty()) {
-        if (is_edit_mode) {
+        if (is_edit_mode && FindArmatureObject(R, FindActiveEntity(R)) == entt::null) {
             const auto &pending = R.get<const PendingTransform>(SceneEntity);
             // Apply edit transform once per selected mesh via a representative selected instance.
             // This keeps linked instances from receiving duplicate per-instance edits.
@@ -1021,8 +1022,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 Meshes->UpdateNormals(mesh);
                 dirty_overlay_meshes.insert(mesh_entity);
             }
+            R.remove<PendingTransform>(SceneEntity);
         }
-        R.remove<PendingTransform>(SceneEntity);
     }
     const bool mode_changed = !reactive<changes::InteractionMode>(R).empty();
     bool anim_advanced;
@@ -1121,20 +1122,28 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
                 auto *pose_state = R.try_get<ArmaturePoseState>(arm_obj_comp.Entity);
                 if (!pose_state) continue;
-                const auto &armature = R.get<const Armature>(arm_obj_comp.Entity);
+                auto &armature = R.get<Armature>(arm_obj_comp.Entity);
                 if (!armature.ImportedSkin) continue;
 
                 bool need_sync = false;
+                bool rest_pose_edited = false;
                 for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                     const auto b = arm_obj_comp.BoneEntities[i];
                     if (i >= pose_state->BonePoseDelta.size()) continue;
                     const auto &rest = armature.Bones[i].RestLocal;
                     if (is_edit_mode) {
-                        if (!mode_changed) continue;
-                        // Entering Edit mode: snap to rest pose.
-                        R.replace<Position>(b, rest.P);
-                        R.replace<Rotation>(b, rest.R);
-                        need_sync = true;
+                        if (mode_changed) {
+                            // Entering Edit mode: snap to rest pose.
+                            R.replace<Position>(b, rest.P);
+                            R.replace<Rotation>(b, rest.R);
+                            need_sync = true;
+                        } else if (transform_end.contains(b)) {
+                            // Commit Edit mode drag: write new rest pose.
+                            armature.Bones[i].RestLocal.P = R.get<Position>(b).Value;
+                            armature.Bones[i].RestLocal.R = R.get<Rotation>(b).Value;
+                            rest_pose_edited = true;
+                            need_sync = true;
+                        }
                     } else if (const auto *st = R.try_get<const StartTransform>(b)) {
                         // Active drag: compute user offset into BoneUserOffset (additive on top of animation).
                         const auto &pd = st->ParentDelta;
@@ -1173,6 +1182,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         pose_state->BoneUserOffset[i] = {};
                         need_sync = true;
                     }
+                }
+                if (rest_pose_edited) {
+                    // Recompute derived rest pose data after Edit mode bone transforms.
+                    armature.RecomputeRestWorld();
+                    armature.RecomputeInverseBindMatrices();
                 }
                 if (need_sync) {
                     UpdateWorldTransform(R, arm_obj_entity);

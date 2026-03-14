@@ -52,8 +52,9 @@ struct Armature {
     std::optional<uint32_t> FindJointNodeIndex(BoneId) const;
     std::optional<BoneId> FindBoneIdByJointNodeIndex(uint32_t) const;
     BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index);
-    void FinalizeStructure(); // Validate/canonicalize + rebuild derived runtime caches.
     void FinalizeImportedStructure();
+    void RecomputeRestWorld(); // Recompute RestWorld/InvRestWorld from RestLocal (no reordering).
+    void RecomputeInverseBindMatrices(); // Update IBMs from current RestWorld after rest pose edits.
 };
 
 // Scene-facing armature object (name/transform/selection).

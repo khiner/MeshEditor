@@ -22,7 +22,7 @@ mat4 ToMatrix(const WorldTransform &wt) {
     return glm::translate(I4, wt.Position) * glm::mat4_cast(glm::normalize(Vec4ToQuat(wt.Rotation))) * glm::scale(I4, wt.Scale);
 }
 
-void UpdateWorldTransform(entt::registry &r, entt::entity e) {
+void UpdateWorldTransform(entt::registry &r, entt::entity e, bool propagate_to_children) {
     static const auto GetParentDelta = [](const entt::registry &r, entt::entity child) -> mat4 {
         const auto *node = r.try_get<SceneNode>(child);
         if (!node || node->Parent == entt::null) return I4;
@@ -34,7 +34,9 @@ void UpdateWorldTransform(entt::registry &r, entt::entity e) {
     const bool has_parent = node && node->Parent != entt::null;
     const auto &wt = has_parent ? r.emplace_or_replace<WorldTransform>(e, MakeWorldTransform(GetParentDelta(r, e) * LocalToMatrix(GetTransform(r, e)))) : r.emplace_or_replace<WorldTransform>(e, MakeWorldTransform(GetTransform(r, e)));
     UpdateModelBuffer(r, e, wt);
-    for (const auto child : Children{&r, e}) UpdateWorldTransform(r, child);
+    if (propagate_to_children) {
+        for (const auto child : Children{&r, e}) UpdateWorldTransform(r, child);
+    }
 }
 
 ChildrenIterator &ChildrenIterator::operator++() {

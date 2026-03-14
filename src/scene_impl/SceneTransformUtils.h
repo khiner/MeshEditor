@@ -47,12 +47,12 @@ inline void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     });
 }
 
-inline void SetTransform(entt::registry &r, entt::entity e, const Transform &t) {
+inline void SetTransform(entt::registry &r, entt::entity e, const Transform &t, bool propagate_to_children = true) {
     r.emplace_or_replace<Position>(e, t.P);
     // Avoid replacing rotation UI slider values if the value hasn't changed.
     if (!r.all_of<Rotation>(e) || r.get<Rotation>(e).Value != t.R) SetRotation(r, e, t.R);
     // Frozen entities can't have their scale changed.
     if (!r.all_of<Frozen>(e)) r.emplace_or_replace<Scale>(e, t.S);
 
-    UpdateWorldTransform(r, e);
+    UpdateWorldTransform(r, e, propagate_to_children);
 }

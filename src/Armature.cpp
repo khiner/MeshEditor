@@ -37,12 +37,7 @@ void RebuildDerivedCaches(Armature &armature) {
         bones[parent].FirstChild = i;
     }
 
-    for (uint32_t i = 0; i < bones.size(); ++i) {
-        const auto local = ToMatrix(bones[i].RestLocal);
-        const auto parent = bones[i].ParentIndex;
-        bones[i].RestWorld = parent == InvalidBoneIndex ? local : bones[parent].RestWorld * local;
-        bones[i].InvRestWorld = glm::inverse(bones[i].RestWorld);
-    }
+    armature.RecomputeRestWorld();
 }
 
 // Binary search for the keyframe interval containing `t`. Returns the index of the left keyframe.
@@ -114,61 +109,6 @@ BoneId Armature::AddBone(std::string_view name, std::optional<BoneId> parent_bon
     return bone_id;
 }
 
-void Armature::FinalizeStructure() {
-    if (!Dirty) return;
-
-    ++Version;
-
-    if (Bones.empty()) {
-        BoneIdToIndex.clear();
-        JointNodeIndexToBoneId.clear();
-        Dirty = false;
-        return;
-    }
-
-    std::unordered_map<BoneId, uint32_t> old_index_by_id;
-    old_index_by_id.reserve(Bones.size());
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        old_index_by_id.emplace(Bones[i].Id, i);
-    }
-
-    std::vector<std::vector<uint32_t>> children_by_old_index(Bones.size());
-    std::vector<uint32_t> indegree(Bones.size(), 0);
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        const auto parent_id = Bones[i].ParentBoneId;
-        if (parent_id == InvalidBoneId) continue;
-        const auto parent_it = old_index_by_id.find(parent_id);
-        children_by_old_index[parent_it->second].push_back(i);
-        indegree[i] = 1;
-    }
-
-    std::vector<uint32_t> ordered_old_indices;
-    ordered_old_indices.reserve(Bones.size());
-    std::vector<uint32_t> queue;
-    queue.reserve(Bones.size());
-    for (uint32_t i = 0; i < Bones.size(); ++i) {
-        if (indegree[i] == 0) queue.push_back(i);
-    }
-
-    uint32_t queue_read = 0;
-    while (queue_read < queue.size()) {
-        const auto current = queue[queue_read++];
-        ordered_old_indices.push_back(current);
-        for (const auto child : children_by_old_index[current]) {
-            if (--indegree[child] == 0) queue.push_back(child);
-        }
-    }
-
-    std::vector<ArmatureBone> reordered;
-    reordered.reserve(Bones.size());
-    for (const auto old_index : ordered_old_indices) reordered.emplace_back(std::move(Bones[old_index]));
-    Bones = std::move(reordered);
-
-    RebuildDerivedCaches(*this);
-
-    Dirty = false;
-}
-
 void Armature::FinalizeImportedStructure() {
     if (!Dirty) return;
 
@@ -184,6 +124,28 @@ void Armature::FinalizeImportedStructure() {
     RebuildDerivedCaches(*this);
 
     Dirty = false;
+}
+
+void Armature::RecomputeRestWorld() {
+    for (uint32_t i = 0; i < Bones.size(); ++i) {
+        const auto local = ToMatrix(Bones[i].RestLocal);
+        const auto parent = Bones[i].ParentIndex;
+        Bones[i].RestWorld = parent == InvalidBoneIndex ? local : Bones[parent].RestWorld * local;
+        Bones[i].InvRestWorld = glm::inverse(Bones[i].RestWorld);
+    }
+}
+
+void Armature::RecomputeInverseBindMatrices() {
+    if (!ImportedSkin) return;
+    auto &ibms = ImportedSkin->InverseBindMatrices;
+    const auto &ordered_joints = ImportedSkin->OrderedJointNodeIndices;
+    for (uint32_t j = 0; j < ordered_joints.size() && j < ibms.size(); ++j) {
+        const auto bone_id = FindBoneIdByJointNodeIndex(ordered_joints[j]);
+        if (!bone_id) continue;
+        const auto bone_index = FindBoneIndex(*bone_id);
+        if (!bone_index || *bone_index >= Bones.size()) continue;
+        ibms[j] = Bones[*bone_index].InvRestWorld;
+    }
 }
 
 void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::span<float> weights) {

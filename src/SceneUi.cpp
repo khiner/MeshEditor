@@ -825,6 +825,7 @@ void Scene::RenderOverlay() {
     const auto has_transform_target = [&]() {
         if (selected_view.empty()) return false;
         if (interaction_mode != InteractionMode::Edit) return true;
+        if (FindArmatureObject(R, FindActiveEntity(R)) != entt::null) return true; // Bones in Edit mode are transformable.
         const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
         for (const auto [e, mi] : R.view<const MeshInstance, const Selected>(entt::exclude<Frozen>).each()) {
             if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mi.MeshEntity)) {
@@ -853,12 +854,14 @@ void Scene::RenderOverlay() {
             const auto &wt = R.get<WorldTransform>(active_entity);
             return {wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale};
         }();
-        const auto edit_transform_instances = interaction_mode == InteractionMode::Edit ?
+        const bool bone_edit_mode = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
+        const bool mesh_edit_mode = interaction_mode == InteractionMode::Edit && !bone_edit_mode;
+        const auto edit_transform_instances = mesh_edit_mode ?
             scene_selection::ComputePrimaryEditInstances(R, false) :
             std::unordered_map<entt::entity, entt::entity>{};
 
         vec3 pivot{};
-        if (interaction_mode == InteractionMode::Edit) {
+        if (mesh_edit_mode) {
             // Compute world-space centroid of selected vertices once per selected mesh
             // (using a representative selected instance for world transform).
             uint32_t vertex_count = 0;
@@ -892,7 +895,7 @@ void Scene::RenderOverlay() {
         if (interact_result) {
             const auto &[ts, td] = *interact_result;
             if (start_transform_view.empty()) {
-                if (interaction_mode == InteractionMode::Edit) {
+                if (mesh_edit_mode) {
                     for (const auto &[_, instance_entity] : edit_transform_instances) {
                         R.emplace<StartTransform>(instance_entity, GetTransform(R, instance_entity));
                     }
@@ -914,8 +917,8 @@ void Scene::RenderOverlay() {
                     }
                 }
             }
-            if (interaction_mode == InteractionMode::Edit) {
-                // Edit mode: store pending transform for shader-based preview.
+            if (mesh_edit_mode) {
+                // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
                 R.emplace_or_replace<PendingTransform>(SceneEntity, ts.P, ts.R, td.P, td.R, td.S);
             } else {
@@ -941,7 +944,8 @@ void Scene::RenderOverlay() {
                             .P = glm::conjugate(parent_delta.R) * ((new_world.P - parent_delta.P) / parent_delta.S),
                             .R = glm::conjugate(parent_delta.R) * new_world.R,
                             .S = new_world.S / parent_delta.S,
-                        }
+                        },
+                        !bone_edit_mode // In bone Edit mode, don't cascade transforms to children.
                     );
                 }
             }
