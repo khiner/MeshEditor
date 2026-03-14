@@ -1564,10 +1564,12 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
 
 void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
     auto &arm = R.get<ArmatureObject>(arm_obj_entity);
-    for (const auto b : arm.BoneEntities) {
-        ClearParent(R, b);
-        SetVisible(b, false);
-        R.destroy(b);
+    // Destroy children before parents (reverse of topological order) so ClearParent
+    // can access the parent's SceneNode to unlink the child.
+    for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
+        ClearParent(R, *it);
+        SetVisible(*it, false);
+        R.destroy(*it);
     }
     arm.BoneEntities.clear();
     if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) Buffers->Release(*mb);
@@ -1857,7 +1859,9 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
 
 void Scene::Delete() {
     std::vector<entt::entity> entities;
-    for (const auto e : R.view<Selected>()) entities.emplace_back(e);
+    for (const auto e : R.view<Selected>()) {
+        if (!R.all_of<SubElementOf>(e)) entities.emplace_back(e);
+    }
     for (const auto e : entities) Destroy(e);
 }
 
