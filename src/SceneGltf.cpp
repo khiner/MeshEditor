@@ -396,6 +396,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             for (const auto mesh_instance_entity : skinned_it->second) {
                 if (!R.valid(mesh_instance_entity) || !R.all_of<MeshInstance>(mesh_instance_entity)) continue;
                 R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
+                SetParent(R, mesh_instance_entity, armature_entity);
             }
         } else {
             return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
