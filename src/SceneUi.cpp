@@ -973,19 +973,10 @@ void Scene::RenderOverlay() {
             draw_dot(wt.Position, R.all_of<Active>(e));
         }
         // Sub-element parents not already drawn above (Pose/Edit mode: sub-elements Selected but parent isn't).
-        std::unordered_set<entt::entity> drawn_parents;
-        for (const auto [e, sub] : R.view<const SubElementOf, const Selected>().each()) {
-            if (R.any_of<Active, Selected>(sub.Parent)) continue; // Already drawn in first loop.
-            if (!drawn_parents.insert(sub.Parent).second) continue;
-            // Check if any sub-element of this parent is Active.
-            bool is_active = false;
-            for (const auto [sibling, sib_sub] : R.view<const SubElementOf, const Active>().each()) {
-                if (sib_sub.Parent == sub.Parent) {
-                    is_active = true;
-                    break;
-                }
-            }
-            draw_dot(R.get<const WorldTransform>(sub.Parent).Position, is_active);
+        for (const auto [parent, state] : R.view<const SubElementGroupState>().each()) {
+            if (R.any_of<Active, Selected>(parent)) continue; // Already drawn in first loop
+            if (!state.AnySelected) continue;
+            draw_dot(R.get<const WorldTransform>(parent).Position, state.AnyActive);
         }
     }
 
@@ -1913,7 +1904,6 @@ void Scene::RenderObjectTree() {
     const auto render_entity = [&](const auto &self, entt::entity e) -> void {
         const auto *node = R.try_get<SceneNode>(e);
         const bool has_children = node && node->FirstChild != entt::null;
-
         const bool is_selected = R.all_of<Selected>(e);
         const bool is_ancestor_selected = !is_selected && ancestor_of_selected.contains(e);
 

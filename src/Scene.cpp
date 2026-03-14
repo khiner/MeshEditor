@@ -764,8 +764,6 @@ void Scene::ApplyTimelineAction(const AnimationTimelineAction &action) {
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
-    using namespace entt::literals;
-
     auto render_request = RenderRequest::None;
     auto request = [&render_request](RenderRequest req) { render_request = std::max(render_request, req); };
 
@@ -832,6 +830,18 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             // If looking through a camera and a different camera becomes active, snap to it.
             if (SavedViewCamera && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
                 SnapToCamera(instance_entity);
+            }
+        }
+        if (!selected_tracker.empty() || !active_tracker.empty()) {
+            for (auto [parent, state] : R.view<SubElementGroupState>().each()) {
+                state.AnySelected = R.any_of<Selected, Active>(parent);
+                state.AnyActive = R.all_of<Active>(parent);
+            }
+            for (const auto [e, sub] : R.view<const SubElementOf>().each()) {
+                if (auto *state = R.try_get<SubElementGroupState>(sub.Parent)) {
+                    if (R.any_of<Selected, Active>(e)) state->AnySelected = true;
+                    if (R.all_of<Active>(e)) state->AnyActive = true;
+                }
             }
         }
     }
@@ -1535,6 +1545,7 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
 
     for (uint32_t i = 0; i < n; ++i) SetVisible(bone_entities[i], true);
     R.get<ArmatureObject>(arm_obj_entity).BoneEntities = std::move(bone_entities);
+    R.emplace_or_replace<SubElementGroupState>(arm_obj_entity);
 }
 
 void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
@@ -1546,7 +1557,7 @@ void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
     }
     arm.BoneEntities.clear();
     if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) Buffers->Release(*mb);
-    R.remove<MeshBuffers, Mesh, ModelsBuffer>(arm_obj_entity);
+    R.remove<MeshBuffers, Mesh, ModelsBuffer, SubElementGroupState>(arm_obj_entity);
 }
 
 entt::entity Scene::AddArmature(ObjectCreateInfo info) {
@@ -2069,29 +2080,11 @@ void Scene::RecordRenderCommandBuffer() {
         return {};
     };
 
-    // In Object mode, silhouette ALL sub-elements of any parent where the parent or any sub-element is Selected/Active.
-    // Color = max state across the group: any Active member → all sub-elements render as Active; else as Selected.
-    std::unordered_set<entt::entity> sub_element_silhouettes;
-    std::unordered_set<entt::entity> active_sub_element_parents; // Parents with any Active member
-    if (interaction_mode == InteractionMode::Object) {
-        std::unordered_set<entt::entity> triggered_parents;
-        for (const auto [e, sub] : R.view<const SubElementOf>().each()) {
-            if (R.any_of<Selected, Active>(e) || R.any_of<Selected, Active>(sub.Parent)) {
-                triggered_parents.insert(sub.Parent);
-            }
-            if (R.all_of<Active>(e) || R.all_of<Active>(sub.Parent)) {
-                active_sub_element_parents.insert(sub.Parent);
-            }
-        }
-        for (const auto [e, sub] : R.view<const SubElementOf>().each()) {
-            if (triggered_parents.contains(sub.Parent) && is_silhouette_eligible(e)) {
-                sub_element_silhouettes.insert(e);
-            }
-        }
-    }
-
+    const bool has_sub_silhouettes = interaction_mode == InteractionMode::Object &&
+        any_of(R.view<const SubElementGroupState>().each(),
+               [](const auto &entry) { return std::get<1>(entry).AnySelected; });
     const bool has_object_silhouette_selection =
-        !sub_element_silhouettes.empty() ||
+        has_sub_silhouettes ||
         any_of(R.view<const Selected, const MeshInstance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
     // Pose mode silhouettes work exactly like Object mode: selected/active instances get silhouettes.
     const bool render_silhouette = is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection;
@@ -2131,7 +2124,12 @@ void Scene::RecordRenderCommandBuffer() {
             for (const auto e : silhouette_instances) append_silhouette(e);
         } else {
             for (const auto e : R.view<Selected, RenderInstance>()) append_silhouette(e);
-            for (const auto e : sub_element_silhouettes) append_silhouette(e);
+            if (interaction_mode == InteractionMode::Object) {
+                for (const auto [e, sub] : R.view<const SubElementOf>().each()) {
+                    const auto *state = R.try_get<const SubElementGroupState>(sub.Parent);
+                    if (state && state->AnySelected) append_silhouette(e);
+                }
+            }
         }
     }
 
@@ -2476,7 +2474,8 @@ void Scene::RecordRenderCommandBuffer() {
                 // Sub-element parent with any Active member → sentinel makes all sub-element pixels active-colored.
                 const auto *sub = R.try_get<const SubElementOf>(active_entity);
                 const auto active_parent = sub ? sub->Parent : active_entity;
-                if (active_sub_element_parents.contains(active_parent)) {
+                if (const auto *group = R.try_get<const SubElementGroupState>(active_parent);
+                    group && group->AnyActive) {
                     active_object_id = 0xFFFFFFFFu;
                 } else if (R.all_of<RenderInstance>(active_entity)) {
                     // Covers regular meshes, Pose-mode and Edit-mode active bones (all have RenderInstance).

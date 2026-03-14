@@ -25,6 +25,13 @@ struct SubElementOf {
     entt::entity Parent;
 };
 
+// Aggregate selection state for a sub-element group (parent + all SubElementOf children).
+// Always present on sub-element parent entities. Updated reactively on selection changes.
+struct SubElementGroupState {
+    bool AnySelected = false; // Any member (child or self) is Selected or Active
+    bool AnyActive = false; // Any member (child or self) is Active
+};
+
 struct Frozen {}; // Disable scale changes (translate/rotate still allowed)
 
 enum class ObjectType : uint8_t {
