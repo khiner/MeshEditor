@@ -305,6 +305,12 @@ void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<co
     for (uint32_t i = 0; i < bones.size(); ++i) deltas[i] = AbsoluteToDelta(bones[i].RestLocal, deltas[i]);
 }
 
+// Unlike Blender, we don't apply mesh-to-armature transforms (target_to_armature / armature_to_target) around the deformation.
+// Blender computes these per-mesh-instance on CPU, but we batch deform matrices per-armature on the GPU:
+// multiple mesh instances share one deform buffer, so per-instance transforms would require duplicating deform buffers
+// or adding per-draw uniforms. The only visible effect is that moving a skinned mesh away from its armature
+// produces a rigid shift instead of Blender's stretching, which is rare in practice since glTF exporters bake
+// co-located transforms and the spec ignores skinned mesh node transforms.
 void ComputeDeformMatrices(
     const Armature &data,
     std::span<const Transform> pose_deltas, std::span<const Transform> user_offsets, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
