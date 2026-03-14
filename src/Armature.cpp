@@ -109,7 +109,33 @@ BoneId Armature::AddBone(std::string_view name, std::optional<BoneId> parent_bon
     return bone_id;
 }
 
-void Armature::FinalizeImportedStructure() {
+bool Armature::RemoveBone(BoneId bone_id) {
+    const auto it = BoneIdToIndex.find(bone_id);
+    if (it == BoneIdToIndex.end()) return false;
+
+    const auto index = it->second;
+
+    // Reparent children of the removed bone to its parent, adjusting RestLocal
+    // to preserve world position: new_local = deleted.RestLocal * child.RestLocal.
+    const auto parent_id = Bones[index].ParentBoneId;
+    const auto &deleted_rest = Bones[index].RestLocal;
+    for (auto &bone : Bones) {
+        if (bone.ParentBoneId == bone_id) {
+            bone.ParentBoneId = parent_id;
+            bone.RestLocal = ComposeLocalTransforms(deleted_rest, bone.RestLocal);
+        }
+    }
+
+    Bones.erase(Bones.begin() + index);
+
+    BoneIdToIndex.clear();
+    for (uint32_t i = 0; i < Bones.size(); ++i) BoneIdToIndex[Bones[i].Id] = i;
+
+    Dirty = true;
+    return true;
+}
+
+void Armature::FinalizeStructure() {
     if (!Dirty) return;
 
     ++Version;
@@ -124,6 +150,14 @@ void Armature::FinalizeImportedStructure() {
     RebuildDerivedCaches(*this);
 
     Dirty = false;
+}
+
+void Armature::ResolveAnimationIndices(AnimationClip &clip) const {
+    for (auto &channel : clip.Channels) {
+        if (channel.TargetBoneId == InvalidBoneId) continue;
+        const auto index = FindBoneIndex(channel.TargetBoneId);
+        channel.BoneIndex = index.value_or(InvalidBoneIndex);
+    }
 }
 
 void Armature::RecomputeRestWorld() {
@@ -192,7 +226,7 @@ void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::
 void EvaluateAnimation(const AnimationClip &clip, float time_seconds, std::span<Transform> bone_pose_local) {
     for (const auto &channel : clip.Channels) {
         if (channel.Target == AnimationPath::Weights) continue; // Handled by EvaluateMorphWeights
-        if (channel.BoneIndex >= bone_pose_local.size()) continue;
+        if (channel.BoneIndex >= bone_pose_local.size() || channel.BoneIndex == InvalidBoneIndex) continue;
         if (channel.TimesSeconds.empty()) continue;
 
         const auto k = FindKeyframe(channel.TimesSeconds, time_seconds);

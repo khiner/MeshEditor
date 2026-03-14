@@ -135,8 +135,8 @@ struct ExtrasWireframe {
 
     uint32_t AddVertex(vec3 pos, uint8_t vclass) {
         const uint32_t i = Data.Positions.size();
-        Data.Positions.push_back(pos);
-        VertexClasses.push_back(vclass);
+        Data.Positions.emplace_back(pos);
+        VertexClasses.emplace_back(vclass);
         return i;
     }
     void AddEdge(uint32_t a, uint32_t b) { Data.Edges.push_back({a, b}); }
@@ -635,7 +635,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     for (const auto &entry : std::filesystem::directory_iterator{HdriDir, ec}) {
         if (entry.path().extension() == ".hdr") {
             const auto stem = entry.path().stem().string();
-            environments.Hdris.push_back({.Name = stem, .Path = entry.path(), .Prefiltered = {}});
+            environments.Hdris.emplace_back(HdriEntry{.Name = stem, .Path = entry.path(), .Prefiltered = {}});
         }
     }
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
@@ -1554,10 +1554,9 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
         const auto parent = armature.Bones[i].ParentIndex == InvalidBoneIndex ? arm_obj_entity : bone_entities[armature.Bones[i].ParentIndex];
         SetParent(R, bone_entities[i], parent);
         R.emplace_or_replace<ParentInverse>(bone_entities[i], I4); // Parent without inverse
-        UpdateWorldTransform(R, bone_entities[i]); // Recompute with identity ParentInverse
+        SetVisible(bone_entities[i], true); // Must precede UpdateWorldTransform
+        UpdateWorldTransform(R, bone_entities[i]);
     }
-
-    for (uint32_t i = 0; i < n; ++i) SetVisible(bone_entities[i], true);
     R.get<ArmatureObject>(arm_obj_entity).BoneEntities = std::move(bone_entities);
     R.emplace_or_replace<SubElementGroupState>(arm_obj_entity);
 }
@@ -1574,6 +1573,147 @@ void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
     arm.BoneEntities.clear();
     if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) Buffers->Release(*mb);
     R.remove<MeshBuffers, Mesh, ModelsBuffer, SubElementGroupState>(arm_obj_entity);
+}
+
+void Scene::RebuildBoneStructure(entt::entity arm_data_entity) {
+    auto &armature = R.get<Armature>(arm_data_entity);
+    armature.FinalizeStructure();
+    armature.RecomputeRestWorld();
+
+    const uint32_t n = armature.Bones.size();
+    const Transform identity_delta{vec3{0}, quat{1, 0, 0, 0}, vec3{1}};
+
+    // Reset pose state to identity. Structural edits happen in Edit mode where pose deltas aren't active;
+    // animation will re-evaluate from keyframes when switching back to Pose mode.
+    if (auto *pose_state = R.try_get<ArmaturePoseState>(arm_data_entity)) {
+        pose_state->BonePoseDelta.assign(n, identity_delta);
+        pose_state->BoneUserOffset.assign(n, identity_delta);
+        pose_state->Dirty = true;
+    }
+
+    if (auto *anim = R.try_get<ArmatureAnimation>(arm_data_entity)) {
+        for (auto &clip : anim->Clips) armature.ResolveAnimationIndices(clip);
+    }
+
+    // Force animation re-evaluation on next frame so pose is restored when leaving Edit mode.
+    LastEvaluatedFrame = -1;
+}
+
+namespace {
+// Non-leaf: distance to nearest child. Leaf: inherit parent's scale, or use distance from origin if no parent.
+float ComputeSingleBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
+    for (uint32_t j = 0; j < armature.Bones.size(); ++j) {
+        if (armature.Bones[j].ParentIndex == bone_index) {
+            return glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
+        }
+    }
+    if (armature.Bones[bone_index].ParentIndex != InvalidBoneIndex) {
+        return ComputeSingleBoneDisplayScale(armature, armature.Bones[bone_index].ParentIndex);
+    }
+    const float d = glm::length(vec3{armature.Bones[bone_index].RestWorld[3]});
+    return d > 0.f ? d : 1.f;
+}
+} // namespace
+
+void Scene::AddBone() {
+    const auto active_entity = FindActiveEntity(R);
+    const auto arm_obj_entity = FindArmatureObject(R, active_entity);
+    if (arm_obj_entity == entt::null) return;
+
+    auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
+    auto &armature = R.get<Armature>(arm_obj.Entity);
+
+    // New bone: unparented, unit length, oriented along Y (up), at world origin.
+    // Transform world origin into armature-local space for the rest pose position.
+    const auto arm_world_inv = glm::inverse(ToMatrix(R.get<WorldTransform>(arm_obj_entity)));
+    Transform rest_local{.P = vec3{arm_world_inv * vec4{0, 0, 0, 1}}};
+
+    const auto new_id = armature.AddBone("Bone", std::nullopt, rest_local, std::nullopt);
+    RebuildBoneStructure(arm_obj.Entity);
+
+    const auto new_index = *armature.FindBoneIndex(new_id);
+    const auto &bone = armature.Bones[new_index];
+
+    const auto bone_entity = R.create();
+    R.emplace<BoneIndex>(bone_entity, new_index);
+    R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
+    R.emplace<MeshInstance>(bone_entity, arm_obj_entity);
+    R.emplace<Name>(bone_entity, bone.Name);
+    R.emplace<BoneDisplayScale>(bone_entity, ComputeSingleBoneDisplayScale(armature, new_index));
+    SetTransform(R, bone_entity, {bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
+
+    SetParent(R, bone_entity, arm_obj_entity);
+    R.emplace_or_replace<ParentInverse>(bone_entity, I4);
+
+    // Ensure model buffers have room for the new instance
+    R.patch<ModelsBuffer>(arm_obj_entity, [](auto &mb) {
+        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
+        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
+        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
+    });
+    SetVisible(bone_entity, true);
+    UpdateWorldTransform(R, bone_entity);
+
+    arm_obj.BoneEntities.emplace_back(bone_entity);
+    Select(bone_entity);
+}
+
+void Scene::DeleteSelectedBones() {
+    const auto active_entity = FindActiveEntity(R);
+    const auto arm_obj_entity = FindArmatureObject(R, active_entity);
+    if (arm_obj_entity == entt::null) return;
+
+    auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
+    auto &armature = R.get<Armature>(arm_obj.Entity);
+
+    // Destroy bone entities in reverse topological order (children before parents).
+    // Reparent scene graph children to their grandparent, adjusting local transforms
+    // to preserve world position (same composition as Armature::RemoveBone applies to RestLocal).
+    std::vector<uint32_t> to_delete;
+    for (const auto e : R.view<Selected, BoneIndex>()) {
+        if (R.get<SubElementOf>(e).Parent == arm_obj_entity) to_delete.emplace_back(R.get<BoneIndex>(e).Index);
+    }
+    if (to_delete.empty()) return;
+    std::sort(to_delete.rbegin(), to_delete.rend());
+
+    for (const auto idx : to_delete) {
+        const auto bone_entity = arm_obj.BoneEntities[idx];
+        const auto &bone = armature.Bones[idx];
+        const auto grandparent = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
+
+        std::vector<entt::entity> children;
+        for (const auto child : Children{&R, bone_entity}) children.emplace_back(child);
+        for (const auto child : children) {
+            SetTransform(R, child, ComposeLocalTransforms(bone.RestLocal, GetTransform(R, child)));
+            ClearParent(R, child);
+            SetParent(R, child, grandparent);
+            R.emplace_or_replace<ParentInverse>(child, I4);
+            UpdateWorldTransform(R, child);
+        }
+
+        ClearParent(R, bone_entity);
+        SetVisible(bone_entity, false);
+        R.destroy(bone_entity);
+    }
+
+    for (const auto idx : to_delete) {
+        armature.RemoveBone(armature.Bones[idx].Id);
+        arm_obj.BoneEntities.erase(arm_obj.BoneEntities.begin() + idx);
+    }
+
+    RebuildBoneStructure(arm_obj.Entity);
+
+    // Update surviving bones with new dense indices.
+    for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) {
+        R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
+    }
+
+    if (arm_obj.BoneEntities.empty()) {
+        if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) Buffers->Release(*mb);
+        R.remove<MeshBuffers, Mesh, ModelsBuffer, SubElementGroupState>(arm_obj_entity);
+    }
+
+    Select(arm_obj_entity);
 }
 
 entt::entity Scene::AddArmature(ObjectCreateInfo info) {

@@ -21,6 +21,9 @@ struct Transform {
     vec3 S{1}; // Scale
 };
 
-// GLM stores quat in memory as {w,x,y,z}, GPU vec4 as {x,y,z,w}.
+inline Transform ComposeLocalTransforms(const Transform &parent, const Transform &child) {
+    return {parent.R * (parent.S * child.P) + parent.P, parent.R * child.R, parent.S * child.S};
+}
+
 inline vec4 QuatToVec4(quat q) { return {q.x, q.y, q.z, q.w}; }
-inline quat Vec4ToQuat(vec4 v) { return quat{v.w, v.x, v.y, v.z}; }
+inline quat Vec4ToQuat(vec4 v) { return {v.w, v.x, v.y, v.z}; }

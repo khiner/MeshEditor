@@ -14,9 +14,6 @@
 #include <unordered_map>
 #include <vector>
 
-using BoneId = uint32_t; // Stable identifier - never reused
-
-inline constexpr BoneId InvalidBoneId{0};
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};
 
 struct ArmatureBone {
@@ -52,7 +49,9 @@ struct Armature {
     std::optional<uint32_t> FindJointNodeIndex(BoneId) const;
     std::optional<BoneId> FindBoneIdByJointNodeIndex(uint32_t) const;
     BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index);
-    void FinalizeImportedStructure();
+    bool RemoveBone(BoneId bone_id); // Returns true if bone was found and removed.
+    void FinalizeStructure(); // Rebuild derived caches and increment version. Call after AddBone/RemoveBone.
+    void ResolveAnimationIndices(AnimationClip &) const; // Resolve TargetBoneId -> BoneIndex for all bone channels.
     void RecomputeRestWorld(); // Recompute RestWorld/InvRestWorld from RestLocal (no reordering).
     void RecomputeInverseBindMatrices(); // Update IBMs from current RestWorld after rest pose edits.
 };

@@ -7,6 +7,9 @@
 #include <string>
 #include <vector>
 
+using BoneId = uint32_t; // Stable identifier - never reused
+inline constexpr BoneId InvalidBoneId{0};
+
 enum class AnimationPath : uint8_t {
     Translation,
     Rotation,
@@ -20,9 +23,12 @@ enum class AnimationInterpolation : uint8_t {
     CubicSpline
 };
 
-// Generic animation channel. `BoneIndex` is also used as a generic target index by some callers.
+// Generic animation channel.
+// For bone channels, TargetBoneId stores the stable identity; BoneIndex is a resolved cache.
+// For non-bone channels (e.g. node animation), TargetBoneId is InvalidBoneId and BoneIndex is used directly.
 struct AnimationChannel {
     uint32_t BoneIndex;
+    BoneId TargetBoneId{InvalidBoneId};
     AnimationPath Target;
     AnimationInterpolation Interp;
     std::vector<float> TimesSeconds;

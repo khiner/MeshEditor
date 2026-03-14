@@ -116,6 +116,9 @@ struct Scene {
     void DuplicateLinked();
     void Delete();
 
+    void AddBone(); // Add a new root bone at the world origin.
+    void DeleteSelectedBones(); // Delete all selected bones from the active armature.
+
     // Handle mouse/keyboard interactions.
     void Interact();
 
@@ -261,6 +264,7 @@ private:
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     void DestroyBoneInstances(entt::entity arm_obj_entity);
+    void RebuildBoneStructure(entt::entity arm_data_entity); // Call after Armature::AddBone/RemoveBone
 
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
     void SetStudioEnvironment(uint32_t index);

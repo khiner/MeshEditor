@@ -358,7 +358,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
         }
-        armature.FinalizeImportedStructure();
+        armature.FinalizeStructure();
 
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
         armature.ImportedSkin = std::move(imported_skin);
@@ -423,14 +423,13 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     for (const auto &skin : scene->Skins) {
         for (const auto &joint : skin.Joints) joint_node_indices.emplace(joint.JointNodeIndex);
     }
-    std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, uint32_t>>> armature_targets_by_joint_node;
+    std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, BoneId>>> armature_targets_by_joint_node;
     for (const auto &entry : armature_data_entities_by_skin) {
         const auto armature_data_entity = entry.second;
         const auto &armature = R.get<const Armature>(armature_data_entity);
         for (const auto &[joint_node_index, bone_id] : armature.JointNodeIndexToBoneId) {
-            const auto bone_index = armature.FindBoneIndex(bone_id);
-            if (!bone_index) continue;
-            armature_targets_by_joint_node[joint_node_index].emplace_back(armature_data_entity, *bone_index);
+            if (!armature.FindBoneIndex(bone_id)) continue;
+            armature_targets_by_joint_node[joint_node_index].emplace_back(armature_data_entity, bone_id);
         }
     }
 
@@ -537,11 +536,13 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
             if (const auto armature_it = armature_targets_by_joint_node.find(ch.TargetNodeIndex);
                 armature_it != armature_targets_by_joint_node.end()) {
-                for (const auto &[target_data_entity, bone_index] : armature_it->second) {
+                for (const auto &[target_data_entity, bone_id] : armature_it->second) {
+                    const auto &armature = R.get<const Armature>(target_data_entity);
+                    const auto bone_index = armature.FindBoneIndex(bone_id).value_or(InvalidBoneIndex);
                     auto &resolved_clip = armature_clips_by_entity
                                               .try_emplace(target_data_entity, AnimationClip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}})
                                               .first->second;
-                    resolved_clip.Channels.emplace_back(AnimationChannel{.BoneIndex = bone_index, .Target = ch.Target, .Interp = ch.Interp, .TimesSeconds = ch.TimesSeconds, .Values = ch.Values});
+                    resolved_clip.Channels.emplace_back(AnimationChannel{.BoneIndex = bone_index, .TargetBoneId = bone_id, .Target = ch.Target, .Interp = ch.Interp, .TimesSeconds = ch.TimesSeconds, .Values = ch.Values});
                 }
                 continue;
             }

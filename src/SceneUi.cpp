@@ -494,6 +494,14 @@ void Scene::Interact() {
                 else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
                 else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
             }
+            const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
+            if (bone_edit) {
+                if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyShift && !GetIO().KeyCtrl) {
+                    AddBone();
+                } else if (IsKeyPressed(ImGuiKey_X, false) || IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) {
+                    DeleteSelectedBones();
+                }
+            }
             if (IsKeyPressed(ImGuiKey_E, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
                 AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
                 StartScreenTransform = TransformGizmo::TransformType::Translate;
@@ -510,7 +518,7 @@ void Scene::Interact() {
             if (!R.storage<Selected>().empty()) {
                 if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
                 else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
-                else if (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) Delete();
+                else if (!bone_edit && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) Delete();
                 else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
                     // Start transform gizmo in both Object and Edit modes.
                     // In Edit mode, shader applies transform to selected vertices.
