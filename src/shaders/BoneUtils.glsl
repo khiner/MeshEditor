@@ -32,6 +32,15 @@ vec3 bone_wire_color(uint instance_state) {
     return ViewportTheme.Colors.Wire;
 }
 
+// Joint sphere wire color: Vertex/VertexSelected in Edit mode, bone wire color otherwise.
+vec3 bone_joint_wire_color(uint instance_state) {
+    if (SceneViewUBO.InteractionMode == InteractionMode_Edit) {
+        bool is_selected = (instance_state & STATE_SELECTED) != 0u;
+        return is_selected ? ViewportTheme.Colors.VertexSelected : ViewportTheme.Colors.Vertex;
+    }
+    return bone_wire_color(instance_state);
+}
+
 struct BoneBillboard {
     vec3 world_pos;
     vec3 center;

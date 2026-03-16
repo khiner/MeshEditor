@@ -16,7 +16,7 @@ void main() {
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
-    Color = vec4(bone_wire_color(load_bone_instance_state(draw)), 1.0);
+    Color = vec4(bone_joint_wire_color(load_bone_instance_state(draw)), 1.0);
 
     const BoneBillboard bb = bone_sphere_billboard(world, vert.Position);
     vec4 clip_pos = SceneViewUBO.ViewProj * vec4(bb.world_pos, 1.0);

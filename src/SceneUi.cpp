@@ -717,16 +717,41 @@ void Scene::Interact() {
         const uint32_t scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
         const auto hit_entities = RunObjectPick(mouse_px, scaled_pick_radius);
         entt::entity hit = entt::null;
+        BoneSel sel_part = BoneSel::Body;
         for (const auto e : hit_entities) {
             if (R.all_of<BoneIndex>(e)) {
                 hit = e;
+                sel_part = BoneSel::Body;
+                break;
+            }
+            if (const auto *sub = R.try_get<BoneSubPartOf>(e)) {
+                hit = sub->BoneEntity;
+                sel_part = sub->IsTip ? BoneSel::Tip : BoneSel::Root;
                 break;
             }
         }
-        if (hit != entt::null && IsKeyDown(ImGuiMod_Shift)) {
-            ToggleSelected(hit);
-        } else if (hit != entt::null || !IsKeyDown(ImGuiMod_Shift)) {
-            Select(hit);
+        if (hit != entt::null) {
+            const bool shift = IsKeyDown(ImGuiMod_Shift);
+            if (shift) {
+                // Additive: make hit active, ensure selected, OR clicked part in
+                R.clear<Active>();
+                R.emplace<Active>(hit);
+                R.emplace_or_replace<Selected>(hit);
+                auto &parts = R.get_or_emplace<BoneSelParts>(hit);
+                if (sel_part == BoneSel::Root) parts.Root = true;
+                else if (sel_part == BoneSel::Tip) parts.Tip = true;
+                else { parts.Root = parts.Tip = parts.Body = true; }
+            } else {
+                R.clear<BoneSelParts>(); // Clear stale per-part state from all bones
+                Select(hit);
+                // Body click selects all parts; joint click selects just that joint
+                if (sel_part == BoneSel::Body) R.emplace_or_replace<BoneSelParts>(hit, true, true, true);
+                else if (sel_part == BoneSel::Root) R.emplace_or_replace<BoneSelParts>(hit, true, false, false);
+                else R.emplace_or_replace<BoneSelParts>(hit, false, true, false);
+            }
+        } else if (!IsKeyDown(ImGuiMod_Shift)) {
+            R.clear<BoneSelParts>();
+            Select(entt::null);
         }
     }
 }

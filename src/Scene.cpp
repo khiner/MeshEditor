@@ -1140,25 +1140,42 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         }
                     });
                 }
-            } else { // Edit/Pose/Excite: each bone gets its own state.
-                for (const auto b : bone_entities) update_instance_state(b);
-                // Mirror per-bone state to joint spheres
+            } else { // Edit/Pose: each bone gets its own state, with per-part selection for joints.
+                const bool is_edit = interaction_mode == InteractionMode::Edit;
+                // Update octahedron instance state: in Edit mode, only highlight body if BoneSelParts.Body is set
+                R.patch<ModelsBuffer>(arm_obj_entity, [&](auto &mb) {
+                    for (const auto b : bone_entities) {
+                        if (const auto bi = GetModelBufferIndex(R, b)) {
+                            uint8_t state = 0;
+                            if (R.all_of<Active>(b)) state |= ElementStateActive;
+                            const auto *parts = R.try_get<const BoneSelParts>(b);
+                            if (is_edit ? (parts && parts->Body) : R.all_of<Selected>(b)) state |= ElementStateSelected;
+                            mb.InstanceStates.Update(as_bytes(state), *bi * sizeof(uint8_t));
+                        }
+                    }
+                });
+                // Update joint sphere instance state: per-part selection
                 if (arm_obj.JointMeshEntity != entt::null && R.valid(arm_obj.JointMeshEntity)) {
                     R.patch<ModelsBuffer>(arm_obj.JointMeshEntity, [&](auto &mb) {
                         for (const auto b : bone_entities) {
                             const auto *joints = R.try_get<const BoneJointEntities>(b);
                             if (!joints) continue;
-                            uint8_t bone_state = 0;
-                            if (R.all_of<Selected>(b)) bone_state |= ElementStateSelected;
-                            if (R.all_of<Active>(b)) bone_state |= ElementStateActive;
+                            const auto *parts = R.try_get<const BoneSelParts>(b);
+                            const bool is_active = R.all_of<Active>(b);
                             if (joints->Head != entt::null) {
                                 if (const auto *ri = R.try_get<const RenderInstance>(joints->Head)) {
-                                    mb.InstanceStates.Update(as_bytes(bone_state), ri->BufferIndex * sizeof(uint8_t));
+                                    uint8_t state = 0;
+                                    if (is_active) state |= ElementStateActive;
+                                    if (is_edit ? (parts && parts->Root) : R.all_of<Selected>(b)) state |= ElementStateSelected;
+                                    mb.InstanceStates.Update(as_bytes(state), ri->BufferIndex * sizeof(uint8_t));
                                 }
                             }
                             if (joints->Tail != entt::null) {
                                 if (const auto *ri = R.try_get<const RenderInstance>(joints->Tail)) {
-                                    mb.InstanceStates.Update(as_bytes(bone_state), ri->BufferIndex * sizeof(uint8_t));
+                                    uint8_t state = 0;
+                                    if (is_active) state |= ElementStateActive;
+                                    if (is_edit ? (parts && parts->Tip) : R.all_of<Selected>(b)) state |= ElementStateSelected;
+                                    mb.InstanceStates.Update(as_bytes(state), ri->BufferIndex * sizeof(uint8_t));
                                 }
                             }
                         }
@@ -1641,6 +1658,7 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
         );
 
         // Create joint sphere instance entities
+        auto &joint_models = R.get<ModelsBuffer>(joint_mesh_entity);
         uint32_t joint_idx = 0;
         for (uint32_t i = 0; i < n; ++i) {
             const auto bone_entity = arm_obj.BoneEntities[i];
@@ -1650,7 +1668,9 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
             R.emplace<MeshInstance>(head_entity, joint_mesh_entity);
             R.emplace<SubElementOf>(head_entity, arm_obj_entity);
             R.emplace<BoneSubPartOf>(head_entity, bone_entity, false);
-            R.emplace<RenderInstance>(head_entity, joint_idx, 0);
+            const uint32_t head_oid = NextObjectId++;
+            R.emplace<RenderInstance>(head_entity, joint_idx, head_oid);
+            joint_models.ObjectIds.Update(as_bytes(head_oid), joint_idx * sizeof(uint32_t));
             ++joint_idx;
 
             // Tail joint
@@ -1658,7 +1678,9 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
             R.emplace<MeshInstance>(tail_entity, joint_mesh_entity);
             R.emplace<SubElementOf>(tail_entity, arm_obj_entity);
             R.emplace<BoneSubPartOf>(tail_entity, bone_entity, true);
-            R.emplace<RenderInstance>(tail_entity, joint_idx, 0);
+            const uint32_t tail_oid = NextObjectId++;
+            R.emplace<RenderInstance>(tail_entity, joint_idx, tail_oid);
+            joint_models.ObjectIds.Update(as_bytes(tail_oid), joint_idx * sizeof(uint32_t));
             ++joint_idx;
 
             R.emplace<BoneJointEntities>(bone_entity, head_entity, tail_entity);
@@ -1794,13 +1816,17 @@ void Scene::AddBone() {
         R.emplace<MeshInstance>(head_entity, arm_obj.JointMeshEntity);
         R.emplace<SubElementOf>(head_entity, arm_obj_entity);
         R.emplace<BoneSubPartOf>(head_entity, bone_entity, false);
-        R.emplace<RenderInstance>(head_entity, head_idx, 0u);
+        const uint32_t head_oid = NextObjectId++;
+        R.emplace<RenderInstance>(head_entity, head_idx, head_oid);
+        joint_models.ObjectIds.Update(as_bytes(head_oid), head_idx * sizeof(uint32_t));
 
         const auto tail_entity = R.create();
         R.emplace<MeshInstance>(tail_entity, arm_obj.JointMeshEntity);
         R.emplace<SubElementOf>(tail_entity, arm_obj_entity);
         R.emplace<BoneSubPartOf>(tail_entity, bone_entity, true);
-        R.emplace<RenderInstance>(tail_entity, tail_idx, 0u);
+        const uint32_t tail_oid = NextObjectId++;
+        R.emplace<RenderInstance>(tail_entity, tail_idx, tail_oid);
+        joint_models.ObjectIds.Update(as_bytes(tail_oid), tail_idx * sizeof(uint32_t));
 
         R.emplace<BoneJointEntities>(bone_entity, head_entity, tail_entity);
     }

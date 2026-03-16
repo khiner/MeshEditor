@@ -19,7 +19,7 @@ void main() {
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
-    const vec3 wire_color = bone_wire_color(load_bone_instance_state(draw));
+    const vec3 wire_color = bone_joint_wire_color(load_bone_instance_state(draw));
     BoneColor = vec4(ViewportTheme.Colors.BoneSolid, 1.0);
     StateColor = vec4(wire_color * wire_color * 0.1, 1.0);
 
