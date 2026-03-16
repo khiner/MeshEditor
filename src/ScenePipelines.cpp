@@ -236,6 +236,42 @@ static PipelineRenderer CreateMainRenderer(
         )
     );
     pipelines.emplace(
+        SPT::BoneFill,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "BoneSolid.vert"}, {ShaderType::eFragment, "BoneSolid.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc, 2.0f
+        )
+    );
+    pipelines.emplace(
+        SPT::BoneWire,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "BoneWire.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
+            {},
+            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+        )
+    );
+    pipelines.emplace(
+        SPT::BoneSphereFill,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "BoneSphere.vert"}, {ShaderType::eFragment, "BoneSphere.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
+        )
+    );
+    pipelines.emplace(
+        SPT::BoneSphereWire,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "BoneSphereWire.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
+            {},
+            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+        )
+    );
+    pipelines.emplace(
         SPT::DebugNormals,
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}},

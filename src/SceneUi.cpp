@@ -984,11 +984,15 @@ void Scene::RenderOverlay() {
             if (!R.any_of<Active, Selected>(e)) continue;
             draw_dot(wt.Position, R.all_of<Active>(e));
         }
-        // Sub-element parents not already drawn above (Pose/Edit mode: sub-elements Selected but parent isn't).
-        for (const auto [parent, state] : R.view<const SubElementGroupState>().each()) {
-            if (R.any_of<Active, Selected>(parent)) continue; // Already drawn in first loop
-            if (!state.AnySelected) continue;
-            draw_dot(R.get<const WorldTransform>(parent).Position, state.AnyActive);
+        // Armature parents not already drawn above (Pose/Edit mode: bones Selected but armature parent isn't).
+        for (const auto [arm_obj_entity, arm_obj] : R.view<const ArmatureObject>().each()) {
+            if (R.any_of<Active, Selected>(arm_obj_entity)) continue; // Already drawn in first loop
+            bool any_sel = false, any_active = false;
+            for (const auto be : arm_obj.BoneEntities) {
+                if (R.any_of<Selected, Active>(be)) any_sel = true;
+                if (R.all_of<Active>(be)) any_active = true;
+            }
+            if (any_sel) draw_dot(R.get<const WorldTransform>(arm_obj_entity).Position, any_active);
         }
     }
 

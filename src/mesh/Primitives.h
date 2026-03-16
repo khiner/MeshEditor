@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PrimitiveType.h"
+#include "mesh/MeshAttributes.h"
 #include "mesh/MeshData.h"
 
 #include <ranges>
@@ -217,28 +218,177 @@ inline MeshData Cone(float radius = 0.5, float height = 1, uint slices = 32) {
     return {std::move(vertices), std::move(indices)};
 }
 
-// Octahedral bone primitive for Edit mode. Head at origin, tail at (0, length, 0).
-inline MeshData BoneOctahedron(float length = 1.0f) {
-    const float r = length * 0.1f;
-    const float mid = length * 0.1f;
-    std::vector<vec3> verts{
-        {0, 0, 0}, // 0: head
-        {r, mid, 0}, // 1: right
-        {0, mid, r}, // 2: front
-        {-r, mid, 0}, // 3: left
-        {0, mid, -r}, // 4: back
-        {0, length, 0}, // 5: tail
+// Expanded bone octahedron data: mesh with per-face normals + wire/adjacency indices.
+struct BoneOctahedronData {
+    MeshData Mesh;
+    MeshVertexAttributes Attrs;
+    std::vector<uint32_t> AdjacencyIndices; // 48 indices for 12 edges × 4 (line adjacency)
+};
+
+// Octahedral bone primitive matching Blender's diagonal-ring shape.
+// Head at origin, tail at (0, length, 0). 6 unique positions + 24 expanded face verts = 30 total.
+// Unique positions [0..5] are used by wire/adjacency draws. Face verts [6..29] have per-face normals.
+inline BoneOctahedronData BoneOctahedron(float length = 1.0f) {
+    // Blender's octahedral bone positions (diagonal mid-ring)
+    const float d = length * 0.1f;
+    const std::array<vec3, 6> unique{
+        vec3{0, 0, 0}, // 0: head
+        vec3{d, d, d}, // 1
+        vec3{d, d, -d}, // 2
+        vec3{-d, d, -d}, // 3
+        vec3{-d, d, d}, // 4
+        vec3{0, length, 0}, // 5: tail
     };
-    return {std::move(verts), {
-                                  {0, 1, 2},
-                                  {0, 2, 3},
-                                  {0, 3, 4},
-                                  {0, 4, 1},
-                                  {5, 2, 1},
-                                  {5, 3, 2},
-                                  {5, 4, 3},
-                                  {5, 1, 4},
-                              }};
+
+    // 8 triangles: bottom 4 + top 4 (matching Blender's bone_octahedral_solid_tris)
+    constexpr std::array<std::array<uint32_t, 3>, 8> tris{{
+        {2, 1, 0},
+        {3, 2, 0},
+        {4, 3, 0},
+        {1, 4, 0}, // bottom
+        {5, 1, 2},
+        {5, 2, 3},
+        {5, 3, 4},
+        {5, 4, 1}, // top
+    }};
+
+    // Per-face normals from Blender's bone_octahedral_solid_normals
+    constexpr float Rsqrt2 = 0.7071068f; // 1/sqrt(2)
+    constexpr std::array<vec3, 8> face_normals{{
+        {Rsqrt2, -Rsqrt2, 0}, // bottom-right
+        {0, -Rsqrt2, -Rsqrt2}, // bottom-back
+        {-Rsqrt2, -Rsqrt2, 0}, // bottom-left
+        {0, -Rsqrt2, Rsqrt2}, // bottom-front
+        {0.9940f, 0.1100f, 0}, // top-right
+        {0, 0.1100f, -0.9940f}, // top-back
+        {-0.9940f, 0.1100f, 0}, // top-left
+        {0, 0.1100f, 0.9940f}, // top-front
+    }};
+
+    // Build 30-vertex buffer: [0..5] = unique positions, [6..29] = expanded face verts
+    std::vector<vec3> positions;
+    positions.reserve(30);
+    for (const auto &p : unique) positions.push_back(p);
+    std::vector<vec3> normals(6, vec3{0}); // placeholder normals for unique verts
+    normals.reserve(30);
+
+    std::vector<std::vector<uint32_t>> faces;
+    faces.reserve(8);
+    for (uint32_t f = 0; f < 8; ++f) {
+        const uint32_t base = 6 + f * 3;
+        for (uint32_t v = 0; v < 3; ++v) {
+            positions.push_back(unique[tris[f][v]]);
+            normals.push_back(face_normals[f]);
+        }
+        faces.push_back({base, base + 1, base + 2});
+    }
+
+    // 12 edges for adjacency-based silhouette detection.
+    // Each edge has 4 indices: [adj_left, edge_v0, edge_v1, adj_right]
+    // adj_left: vertex where face cycle goes edge_v0 → adj_left → edge_v1
+    // adj_right: vertex where face cycle goes edge_v0 → edge_v1 → adj_right
+    // This ensures cross(adj_left - edge_v0, edge_v1 - edge_v0) gives outward-pointing normals.
+    // Derived from face table: {2,1,0},{3,2,0},{4,3,0},{1,4,0},{5,1,2},{5,2,3},{5,3,4},{5,4,1}
+    const std::vector<uint32_t> adjacency{
+        // Mid-ring edges
+        0,
+        1,
+        2,
+        5, // edge 1-2: f0 cycle 0→2→1→0 has 1→0→2, f4 cycle has 1→2→5
+        0,
+        2,
+        3,
+        5, // edge 2-3: f1 cycle has 2→0→3, f5 cycle has 2→3→5
+        0,
+        3,
+        4,
+        5, // edge 3-4: f2 cycle has 3→0→4, f6 cycle has 3→4→5
+        0,
+        4,
+        1,
+        5, // edge 4-1: f3 cycle has 4→0→1, f7 cycle has 4→1→5
+        // Head edges (from vertex 0)
+        2,
+        0,
+        1,
+        4, // edge 0-1: f0 cycle has 0→2→1, f3 cycle has 0→1→4
+        3,
+        0,
+        2,
+        1, // edge 0-2: f1 cycle has 0→3→2, f0 cycle has 0→2→1
+        4,
+        0,
+        3,
+        2, // edge 0-3: f2 cycle has 0→4→3, f1 cycle has 0→3→2
+        1,
+        0,
+        4,
+        3, // edge 0-4: f3 cycle has 0→1→4, f2 cycle has 0→4→3
+        // Tail edges (from vertex 5)
+        4,
+        5,
+        1,
+        2, // edge 5-1: f7 cycle has 5→4→1, f4 cycle has 5→1→2
+        1,
+        5,
+        2,
+        3, // edge 5-2: f4 cycle has 5→1→2, f5 cycle has 5→2→3
+        2,
+        5,
+        3,
+        4, // edge 5-3: f5 cycle has 5→2→3, f6 cycle has 5→3→4
+        3,
+        5,
+        4,
+        1, // edge 5-4: f6 cycle has 5→3→4, f7 cycle has 5→4→1
+    };
+
+    MeshVertexAttributes attrs;
+    attrs.Normals = std::move(normals);
+
+    return {
+        .Mesh{std::move(positions), std::move(faces)},
+        .Attrs = std::move(attrs),
+        .AdjacencyIndices = adjacency,
+    };
+}
+
+// Billboard disc for bone joint spheres.
+struct BoneSphereData {
+    MeshData Mesh;
+    std::vector<uint32_t> OutlineIndices; // Line list ring
+};
+
+// Disc primitive for ray-traced joint spheres. Circle of N segments in XY plane.
+inline BoneSphereData BoneSphereDisc(float radius = 0.05f, uint32_t segments = 32) {
+    // Generate ring vertices + center
+    std::vector<vec3> positions;
+    positions.reserve(segments + 1);
+    for (uint32_t i = 0; i < segments; ++i) {
+        float angle = 2.f * 3.14159265f * float(i) / float(segments);
+        positions.push_back({radius * std::cos(angle), radius * std::sin(angle), 0});
+    }
+    positions.push_back({0, 0, 0}); // center
+
+    // Triangle fan as triangle list
+    std::vector<std::vector<uint32_t>> faces;
+    faces.reserve(segments);
+    for (uint32_t i = 0; i < segments; ++i) {
+        faces.push_back({i, (i + 1) % segments, segments});
+    }
+
+    // Outline ring as line list
+    std::vector<uint32_t> outline;
+    outline.reserve(segments * 2);
+    for (uint32_t i = 0; i < segments; ++i) {
+        outline.push_back(i);
+        outline.push_back((i + 1) % segments);
+    }
+
+    return {
+        .Mesh{std::move(positions), std::move(faces)},
+        .OutlineIndices = std::move(outline),
+    };
 }
 
 inline MeshData CreateDefault(PrimitiveType type) {

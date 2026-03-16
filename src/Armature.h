@@ -61,6 +61,32 @@ struct Armature {
 struct ArmatureObject {
     entt::entity Entity;
     std::vector<entt::entity> BoneEntities; // Bone instance entities, indexed by bone index.
+    entt::entity JointMeshEntity{null_entity}; // Shared billboard disc mesh for joint spheres.
+};
+
+// Tag on the shared joint sphere mesh entity (excluded from silhouette and normal mesh iteration).
+struct BoneJointMeshTag {};
+
+// Component on joint sphere instance entities. Maps picks back to the bone.
+struct BoneSubPartOf {
+    entt::entity BoneEntity;
+    bool IsTip; // false = root/head, true = tip/tail
+};
+
+// Component on bone entities pointing to their head/tail joint sphere instance entities.
+struct BoneJointEntities {
+    entt::entity Head{null_entity};
+    entt::entity Tail{null_entity};
+};
+
+// Bone selection part identifier.
+enum class BoneSel : uint8_t { Root,
+                               Tip,
+                               Body };
+
+// Stores which parts of a bone are selected (bitmask-like, but simple OR of individual parts).
+struct BoneSelParts {
+    bool Root{false}, Tip{false}, Body{false};
 };
 
 // Armature modifier linkage for mesh instances deformed by an armature.

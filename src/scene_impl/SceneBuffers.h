@@ -51,6 +51,11 @@ struct MeshBuffers {
     std::unordered_map<Element, RenderBuffers> NormalIndicators;
 };
 
+// Adjacency indices for bone silhouette edge detection (stored on armature object entities).
+struct BoneAdjacencyIndices {
+    SlottedRange Indices;
+};
+
 constexpr uint32_t
     ObjectSelectRadiusPx = 15,
     ElementSelectRadiusPx = 50,

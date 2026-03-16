@@ -166,6 +166,8 @@ structs:
     fields:
       - name: ViewProj
         type: mat4
+      - name: ViewRotation
+        type: mat3
       - name: CameraPosition
         type: vec3
       - name: CameraNear
@@ -270,6 +272,20 @@ structs:
       - name: VertexNormal # Vertex Normal
         type: vec3
       - name: Transform # Transform
+        type: vec3
+      - name: BoneSolid # Bone solid fill base color
+        type: vec3
+      - name: BoneActive # Edit mode active+selected wire
+        type: vec3
+      - name: BoneActiveUnsel # Edit mode active-only wire (faded)
+        type: vec3
+      - name: BoneSelect # Edit mode selected wire
+        type: vec3
+      - name: BonePose # Pose mode selected wire
+        type: vec3
+      - name: BonePoseActive # Pose mode active+selected wire
+        type: vec3
+      - name: BonePoseActiveUnsel # Pose mode active-only wire (faded)
         type: vec3
   - name: ViewportTheme
     binding: ViewportThemeUBO
