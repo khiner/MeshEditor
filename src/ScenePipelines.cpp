@@ -546,6 +546,15 @@ static PipelineRenderer CreateSelectionFragmentRenderer(vk::Device d, vk::Descri
         )
     );
     pipelines.emplace(
+        SPT::SelectionFragmentBoneSphere,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "BoneSphere.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            {}, CreateDepthStencil(false, false), draw_pc
+        )
+    );
+    pipelines.emplace(
         SPT::SelectionFragmentLines,
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "SelectionFragment.frag"}}},

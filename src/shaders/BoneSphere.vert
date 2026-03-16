@@ -8,16 +8,19 @@
 #include "BoneUtils.glsl"
 
 layout(location = 0) flat out vec3 SphereCenter; // View-space sphere center
-layout(location = 1) flat out float SphereRadius; // View-space sphere radius
-layout(location = 2) out vec3 ViewPos;            // View-space position (for ray construction)
+layout(location = 1) flat out uint ObjectId; // Read by SelectionFragment.frag
+layout(location = 2) out vec3 ViewPos; // View-space position (for ray construction)
 layout(location = 3) flat out vec4 BoneColor;
 layout(location = 4) flat out vec4 StateColor;
+layout(location = 5) flat out float SphereRadius; // View-space sphere radius
 
 void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+
+    ObjectId = (draw.ObjectIdSlot != INVALID_SLOT) ? ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FirstInstance] : 0u;
 
     const vec3 wire_color = bone_joint_wire_color(load_bone_instance_state(draw));
     BoneColor = vec4(ViewportTheme.Colors.BoneSolid, 1.0);

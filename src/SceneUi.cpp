@@ -43,6 +43,15 @@ constexpr float WheelZoomBaseSpeed{0.01f}; // Base per-wheel-unit zoom speed for
 constexpr float WheelZoomMaxBurst{8.f}; // Cap on accumulated rapid-scroll acceleration.
 constexpr double WheelZoomAccelerationWindow{0.25}; // Seconds between ticks that still count as one accelerated burst.
 
+// Deselect all bones but keep the armature object active so we stay in bone pick mode.
+void DeselectAllBones(entt::registry &R, entt::entity arm_obj_entity) {
+    R.clear<BoneSelParts>();
+    R.clear<Selected>();
+    R.clear<Active>();
+    R.emplace<Active>(arm_obj_entity);
+    R.emplace<Selected>(arm_obj_entity);
+}
+
 vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent) {
     const auto scale = GetIO().DisplayFramebufferScale;
     const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
@@ -583,7 +592,8 @@ void Scene::Interact() {
     if (OrientationGizmo::IsActive() || OverlayControlsHovered) return;
 
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-    const bool active_is_armature = FindArmatureObject(R, active_entity) != entt::null;
+    const auto arm_obj_entity = FindArmatureObject(R, active_entity);
+    const bool active_is_armature = arm_obj_entity != entt::null;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -597,11 +607,15 @@ void Scene::Interact() {
                     RunBoxSelectElements(GetBitsetRangesForSelected(), edit_mode, *box_px, is_additive);
                 } else if (bone_mode) {
                     const auto selected_entities = RunBoxSelect(*box_px);
-                    if (!is_additive) {
-                        for (const auto e : R.view<Selected, BoneIndex>()) R.remove<Selected>(e);
-                    }
+                    if (!is_additive) DeselectAllBones(R, arm_obj_entity);
                     for (const auto e : selected_entities) {
-                        if (R.all_of<BoneIndex>(e)) R.emplace_or_replace<Selected>(e);
+                        entt::entity bone = entt::null;
+                        if (R.all_of<BoneIndex>(e)) bone = e;
+                        else if (const auto *sub = R.try_get<BoneSubPartOf>(e)) bone = sub->BoneEntity;
+                        if (bone != entt::null) {
+                            R.emplace_or_replace<Selected>(bone);
+                            R.emplace_or_replace<BoneSelParts>(bone, true, true, true);
+                        }
                     }
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto selected_entities = RunBoxSelect(*box_px);
@@ -750,8 +764,7 @@ void Scene::Interact() {
                 else R.emplace_or_replace<BoneSelParts>(hit, false, true, false);
             }
         } else if (!IsKeyDown(ImGuiMod_Shift)) {
-            R.clear<BoneSelParts>();
-            Select(entt::null);
+            DeselectAllBones(R, arm_obj_entity);
         }
     }
 }

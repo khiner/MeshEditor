@@ -1116,71 +1116,58 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             if (!R.all_of<MeshBuffers>(arm_obj_entity)) continue;
             const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
             const auto &bone_entities = arm_obj.BoneEntities;
-            if (is_object_mode) { // Object mode: all bone slots get the group-max state.
-                uint8_t max_state = 0;
+
+            // Object mode: all bone/joint slots get a single group-max state.
+            // Edit/Pose: each bone/joint gets its own state based on per-part selection.
+            uint8_t max_state = 0;
+            if (is_object_mode) {
                 if (R.all_of<Selected>(arm_obj_entity)) max_state |= ElementStateSelected;
                 if (R.all_of<Active>(arm_obj_entity)) max_state |= ElementStateActive;
                 for (const auto b : bone_entities) {
                     if (R.all_of<Selected>(b)) max_state |= ElementStateSelected;
                     if (R.all_of<Active>(b)) max_state |= ElementStateActive;
                 }
-                R.patch<ModelsBuffer>(arm_obj_entity, [&](auto &mb) {
-                    for (const auto b : bone_entities) {
-                        if (const auto bi = GetModelBufferIndex(R, b)) {
-                            mb.InstanceStates.Update(as_bytes(max_state), *bi * sizeof(uint8_t));
-                        }
-                    }
-                });
-                // Mirror state to joint spheres
-                if (arm_obj.JointMeshEntity != entt::null && R.valid(arm_obj.JointMeshEntity)) {
-                    R.patch<ModelsBuffer>(arm_obj.JointMeshEntity, [&](auto &mb) {
-                        const auto total = mb.InstanceStates.UsedSize;
-                        for (uint32_t i = 0; i < total; ++i) {
-                            mb.InstanceStates.Update(as_bytes(max_state), i * sizeof(uint8_t));
-                        }
-                    });
+            }
+            const bool is_edit = interaction_mode == InteractionMode::Edit;
+            auto compute_state = [&](entt::entity b, BoneSel part) -> uint8_t {
+                if (is_object_mode) return max_state;
+                uint8_t s = 0;
+                if (R.all_of<Active>(b)) s |= ElementStateActive;
+                const auto *parts = R.try_get<const BoneSelParts>(b);
+                bool selected;
+                if (is_edit) {
+                    selected = parts && (part == BoneSel::Body ? parts->Body : part == BoneSel::Root ? parts->Root :
+                                                                                                       parts->Tip);
+                } else {
+                    selected = R.all_of<Selected>(b);
                 }
-            } else { // Edit/Pose: each bone gets its own state, with per-part selection for joints.
-                const bool is_edit = interaction_mode == InteractionMode::Edit;
-                // Update octahedron instance state: in Edit mode, only highlight body if BoneSelParts.Body is set
-                R.patch<ModelsBuffer>(arm_obj_entity, [&](auto &mb) {
-                    for (const auto b : bone_entities) {
-                        if (const auto bi = GetModelBufferIndex(R, b)) {
-                            uint8_t state = 0;
-                            if (R.all_of<Active>(b)) state |= ElementStateActive;
-                            const auto *parts = R.try_get<const BoneSelParts>(b);
-                            if (is_edit ? (parts && parts->Body) : R.all_of<Selected>(b)) state |= ElementStateSelected;
-                            mb.InstanceStates.Update(as_bytes(state), *bi * sizeof(uint8_t));
-                        }
+                if (selected) s |= ElementStateSelected;
+                return s;
+            };
+
+            R.patch<ModelsBuffer>(arm_obj_entity, [&](auto &mb) {
+                for (const auto b : bone_entities) {
+                    if (const auto bi = GetModelBufferIndex(R, b)) {
+                        const auto state = compute_state(b, BoneSel::Body);
+                        mb.InstanceStates.Update(as_bytes(state), *bi * sizeof(uint8_t));
                     }
-                });
-                // Update joint sphere instance state: per-part selection
-                if (arm_obj.JointMeshEntity != entt::null && R.valid(arm_obj.JointMeshEntity)) {
-                    R.patch<ModelsBuffer>(arm_obj.JointMeshEntity, [&](auto &mb) {
-                        for (const auto b : bone_entities) {
-                            const auto *joints = R.try_get<const BoneJointEntities>(b);
-                            if (!joints) continue;
-                            const auto *parts = R.try_get<const BoneSelParts>(b);
-                            const bool is_active = R.all_of<Active>(b);
-                            if (joints->Head != entt::null) {
-                                if (const auto *ri = R.try_get<const RenderInstance>(joints->Head)) {
-                                    uint8_t state = 0;
-                                    if (is_active) state |= ElementStateActive;
-                                    if (is_edit ? (parts && parts->Root) : R.all_of<Selected>(b)) state |= ElementStateSelected;
-                                    mb.InstanceStates.Update(as_bytes(state), ri->BufferIndex * sizeof(uint8_t));
-                                }
-                            }
-                            if (joints->Tail != entt::null) {
-                                if (const auto *ri = R.try_get<const RenderInstance>(joints->Tail)) {
-                                    uint8_t state = 0;
-                                    if (is_active) state |= ElementStateActive;
-                                    if (is_edit ? (parts && parts->Tip) : R.all_of<Selected>(b)) state |= ElementStateSelected;
+                }
+            });
+            if (arm_obj.JointMeshEntity != entt::null && R.valid(arm_obj.JointMeshEntity)) {
+                R.patch<ModelsBuffer>(arm_obj.JointMeshEntity, [&](auto &mb) {
+                    for (const auto b : bone_entities) {
+                        const auto *joints = R.try_get<const BoneJointEntities>(b);
+                        if (!joints) continue;
+                        for (const auto &[je, part] : {std::pair{joints->Head, BoneSel::Root}, {joints->Tail, BoneSel::Tip}}) {
+                            if (je != entt::null) {
+                                if (const auto *ri = R.try_get<const RenderInstance>(je)) {
+                                    const auto state = compute_state(b, part);
                                     mb.InstanceStates.Update(as_bytes(state), ri->BufferIndex * sizeof(uint8_t));
                                 }
                             }
                         }
-                    });
-                }
+                    }
+                });
             }
         }
         // Bone pose transforms + deform matrices
@@ -2948,7 +2935,7 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
             auto append_topology_batch = [&](auto filter) {
                 auto batch = draw_list.BeginBatch();
                 for (auto [mesh_entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
-                    if (R.all_of<ObjectExtrasTag>(mesh_entity)) continue;
+                    if (R.all_of<ObjectExtrasTag>(mesh_entity) || R.all_of<BoneJointMeshTag>(mesh_entity)) continue;
                     const auto *indices = filter(mesh, mesh_buffers);
                     if (!indices || indices->Count == 0) continue;
                     const auto deform = get_deform_slots(mesh_entity);
@@ -2975,6 +2962,15 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
                 return m.FaceCount() == 0 && m.EdgeCount() == 0 ? &b.VertexIndices : nullptr;
             });
 
+            auto bone_sphere_batch = draw_list.BeginBatch();
+            for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
+                if (!R.all_of<BoneJointMeshTag>(entity)) continue;
+                if (mesh.FaceCount() == 0) continue;
+                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
+                draw.ObjectIdSlot = models.ObjectIds.Slot;
+                AppendDraw(draw_list, bone_sphere_batch, mesh_buffers.FaceIndices, models, draw);
+            }
+
             DrawBatchInfo extras_batch;
             AppendExtrasDraw(R, draw_list, extras_batch, [](auto &draw, const auto &models) {
                 draw.ObjectIdSlot = models.ObjectIds.Slot;
@@ -2984,6 +2980,7 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
                 {SPT::SelectionFragmentTriangles, tri_batch},
                 {SPT::SelectionFragmentLines, line_batch},
                 {SPT::SelectionFragmentPoints, point_batch},
+                {SPT::SelectionFragmentBoneSphere, bone_sphere_batch},
                 {SPT::SelectionObjectExtrasLines, extras_batch},
             };
         },

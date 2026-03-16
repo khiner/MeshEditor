@@ -4,10 +4,10 @@
 #include "ViewportTheme.glsl"
 
 layout(location = 0) flat in vec3 SphereCenter; // View-space
-layout(location = 1) flat in float SphereRadius;
-layout(location = 2) in vec3 ViewPos;            // View-space fragment position on billboard
+layout(location = 2) in vec3 ViewPos; // View-space fragment position on billboard
 layout(location = 3) flat in vec4 BoneColor;
 layout(location = 4) flat in vec4 StateColor;
+layout(location = 5) flat in float SphereRadius;
 
 layout(location = 0) out vec4 OutColor;
 layout(location = 1) out vec4 OutLineData;

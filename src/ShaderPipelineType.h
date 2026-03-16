@@ -32,6 +32,7 @@ enum class ShaderPipelineType {
     SelectionFragmentTriangles,
     SelectionFragmentLines,
     SelectionFragmentPoints,
+    SelectionFragmentBoneSphere,
     BoneFill,
     BoneWire,
     BoneSphereFill,
