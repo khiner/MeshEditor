@@ -21,6 +21,12 @@ struct StartTransform {
     Transform ParentDelta; // Frozen parent_world * parent_inverse at drag start (identity if unparented)
 };
 
+// Bone display length captured at drag start (for head/tail partial transforms).
+// Analogous to Blender's EditBone::oldlength.
+struct StartBoneLength {
+    float Value;
+};
+
 inline void SetRotation(entt::registry &r, entt::entity e, const quat &v) {
     r.emplace_or_replace<Rotation>(e, v);
     if (!r.all_of<RotationUiVariant>(e)) {

@@ -755,6 +755,8 @@ void Scene::Interact() {
                 if (sel_part == BoneSel::Root) parts.Root = true;
                 else if (sel_part == BoneSel::Tip) parts.Tip = true;
                 else { parts.Root = parts.Tip = parts.Body = true; }
+                // Auto-promote: if both endpoints selected, select whole bone.
+                if (parts.Root && parts.Tip) parts.Body = true;
             } else {
                 R.clear<BoneSelParts>(); // Clear stale per-part state from all bones
                 Select(hit);
@@ -891,9 +893,6 @@ void Scene::RenderOverlay() {
             return false;
         };
 
-        auto root_selected = selected_view | filter([&](auto e) { return !is_parent_selected(e); });
-        const auto root_count = distance(root_selected);
-
         const auto active_entity = FindActiveEntity(R);
         const auto active_transform = [&]() -> Transform {
             if (active_entity == entt::null) return {};
@@ -902,6 +901,9 @@ void Scene::RenderOverlay() {
         }();
         const bool bone_edit_mode = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
         const bool mesh_edit_mode = interaction_mode == InteractionMode::Edit && !bone_edit_mode;
+
+        auto root_selected = selected_view | filter([&](auto e) { return bone_edit_mode || !is_parent_selected(e); });
+        const auto root_count = distance(root_selected);
         const auto edit_transform_instances = mesh_edit_mode ?
             scene_selection::ComputePrimaryEditInstances(R, false) :
             std::unordered_map<entt::entity, entt::entity>{};
@@ -928,7 +930,29 @@ void Scene::RenderOverlay() {
                 pivot += pending->P;
             }
         } else {
-            pivot = fold_left(root_selected | transform([&](auto e) { return R.get<WorldTransform>(e).Position; }), vec3{}, std::plus{}) / float(root_count);
+            if (bone_edit_mode) {
+                // Bone pivot: contribute head position for selected Root, tail for selected Tip.
+                // A fully-selected bone (Root+Tip+Body) contributes both → midpoint.
+                vec3 pivot_sum{};
+                uint32_t pivot_count = 0;
+                for (const auto e : root_selected) {
+                    const auto &wt = R.get<WorldTransform>(e);
+                    const auto *parts = R.try_get<const BoneSelParts>(e);
+                    const vec3 head_pos = wt.Position;
+                    if (!parts || parts->Root) {
+                        pivot_sum += head_pos;
+                        ++pivot_count;
+                    }
+                    if (parts && parts->Tip) {
+                        const float bl = R.get<BoneDisplayScale>(e).Value;
+                        pivot_sum += head_pos + glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0, bl, 0});
+                        ++pivot_count;
+                    }
+                }
+                pivot = pivot_count > 0 ? pivot_sum / float(pivot_count) : vec3{};
+            } else {
+                pivot = fold_left(root_selected | transform([&](auto e) { return R.get<WorldTransform>(e).Position; }), vec3{}, std::plus{}) / float(root_count);
+            }
         }
 
         const auto start_transform_view = R.view<const StartTransform>();
@@ -960,6 +984,10 @@ void Scene::RenderOverlay() {
                             return {.P = vec3{m[3]}, .R = glm::normalize(glm::quat_cast(mat3{rs[0] / s.x, rs[1] / s.y, rs[2] / s.z})), .S = s};
                         }();
                         R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale}, parent_delta);
+                        if (bone_edit_mode) {
+                            if (const auto *ds = R.try_get<BoneDisplayScale>(e))
+                                R.emplace<StartBoneLength>(e, ds->Value);
+                        }
                     }
                 }
             }
@@ -970,33 +998,103 @@ void Scene::RenderOverlay() {
             } else {
                 // Object mode: apply transform to entity components immediately during drag.
                 // Compute new world result, then convert to local for parented entities.
+                // In bone edit mode, recompute parent_delta from current (post-drag) parent WT
+                // so child bones don't double-apply when their parent was also transformed in this loop.
+                const auto current_parent_delta = [&](entt::entity e) -> Transform {
+                    const auto *node = R.try_get<SceneNode>(e);
+                    if (!node || node->Parent == entt::null) return {};
+                    const auto *pi = R.try_get<ParentInverse>(e);
+                    if (!pi) return {};
+                    const mat4 m = ToMatrix(R.get<WorldTransform>(node->Parent)) * pi->M;
+                    const mat3 rs{m};
+                    const vec3 s{glm::length(rs[0]), glm::length(rs[1]), glm::length(rs[2])};
+                    return {.P = vec3{m[3]}, .R = glm::normalize(glm::quat_cast(mat3{rs[0] / s.x, rs[1] / s.y, rs[2] / s.z})), .S = s};
+                };
+
+                // Convert world-space transform to local via parent delta, then apply.
+                const auto set_local = [&](entt::entity ent, const Transform &world, const Transform &pd, bool propagate) {
+                    SetTransform(
+                        R, ent,
+                        {
+                            .P = glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S),
+                            .R = glm::conjugate(pd.R) * world.R,
+                            .S = world.S / pd.S,
+                        },
+                        propagate
+                    );
+                };
+
                 const auto r = ts.R, rT = glm::conjugate(r);
                 for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
                     const auto &ts_e = ts_e_comp.T; // world transform at start
+
+                    // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
+                    if (bone_edit_mode) {
+                        // Use current parent WT for world→local (parent may have been moved earlier in this loop).
+                        const auto pd = current_parent_delta(e);
+                        const auto *sbl = R.try_get<StartBoneLength>(e);
+                        const auto *parts = R.try_get<BoneSelParts>(e);
+                        if (sbl && parts) {
+                            const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
+                            const bool root_only = parts->Root && !parts->Tip && !parts->Body;
+                            if (tip_only || root_only) {
+                                const float bone_length = sbl->Value;
+                                const vec3 start_head = ts_e.P;
+                                const vec3 start_tail = start_head + glm::rotate(ts_e.R, vec3{0, bone_length, 0});
+
+                                // Apply gizmo transform to a single point.
+                                const auto transform_point = [&](vec3 p) -> vec3 {
+                                    const auto off = p - ts.P;
+                                    return td.P + ts.P + glm::rotate(td.R, r * (rT * off * td.S));
+                                };
+
+                                const vec3 new_head = tip_only ? start_head : transform_point(start_head);
+                                const vec3 new_tail = root_only ? start_tail : transform_point(start_tail);
+
+                                const vec3 dir = new_tail - new_head;
+                                const float new_length = glm::length(dir);
+                                constexpr float eps = 1e-6f;
+                                quat new_world_rot;
+                                if (new_length > eps) {
+                                    const vec3 old_dir = glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0}));
+                                    const vec3 new_dir = dir / new_length;
+                                    new_world_rot = glm::rotation(old_dir, new_dir) * ts_e.R;
+                                } else {
+                                    new_world_rot = ts_e.R;
+                                }
+
+                                R.get_or_emplace<BoneDisplayScale>(e).Value = std::max(new_length, eps);
+                                set_local(e, {new_head, new_world_rot, ts_e.S}, pd, false);
+                                continue;
+                            }
+                        }
+
+                        // Full bone transform in bone edit mode.
+                        const auto offset = ts_e.P - ts.P;
+                        set_local(e, {
+                                         .P = td.P + ts.P + glm::rotate(td.R, r * (rT * offset * td.S)),
+                                         .R = glm::normalize(td.R * ts_e.R),
+                                         .S = ts_e.S,
+                                     },
+                                  pd, false);
+                        continue;
+                    }
+
+                    // Object mode / non-bone transform.
+                    const auto &pd = ts_e_comp.ParentDelta;
                     const bool frozen = R.all_of<Frozen>(e);
                     const auto offset = ts_e.P - ts.P;
-                    const Transform new_world{
-                        .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
-                        .R = glm::normalize(td.R * ts_e.R),
-                        .S = frozen ? ts_e.S : td.S * ts_e.S,
-                    };
-
-                    // Convert world target to local using the drag-start parent transform
-                    // (identity for unparented entities, so this is a no-op in that case).
-                    const auto &parent_delta = ts_e_comp.ParentDelta;
-                    SetTransform(
-                        R, e,
-                        {
-                            .P = glm::conjugate(parent_delta.R) * ((new_world.P - parent_delta.P) / parent_delta.S),
-                            .R = glm::conjugate(parent_delta.R) * new_world.R,
-                            .S = new_world.S / parent_delta.S,
-                        },
-                        !bone_edit_mode // In bone Edit mode, don't cascade transforms to children.
-                    );
+                    set_local(e, {
+                                     .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
+                                     .R = glm::normalize(td.R * ts_e.R),
+                                     .S = frozen ? ts_e.S : td.S * ts_e.S,
+                                 },
+                              pd, true);
                 }
             }
         } else if (!start_transform_view.empty()) {
             R.clear<StartTransform>(); // Transform ended - triggers commit in ProcessComponentEvents.
+            R.clear<StartBoneLength>();
         }
 
         // Render gizmo at the post-delta position so it matches the applied transform.

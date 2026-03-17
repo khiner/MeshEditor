@@ -49,6 +49,7 @@ entt::entity FindArmatureObject(const entt::registry &r, entt::entity e) {
 }
 
 namespace {
+mat4 RestLocalToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -1183,6 +1184,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
                 bool need_sync = false;
                 bool rest_pose_edited = false;
+                // Track which bones were explicitly transformed and save old rest world for cascade fix.
+                std::vector<bool> was_transformed(armature.Bones.size(), false);
+                std::vector<mat4> old_rest_world(armature.Bones.size());
+                for (uint32_t i = 0; i < armature.Bones.size(); ++i) old_rest_world[i] = armature.Bones[i].RestWorld;
                 for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                     const auto b = arm_obj_comp.BoneEntities[i];
                     if (i >= pose_state->BonePoseDelta.size()) continue;
@@ -1197,6 +1202,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                             // Commit Edit mode drag: write new rest pose.
                             armature.Bones[i].RestLocal.P = R.get<Position>(b).Value;
                             armature.Bones[i].RestLocal.R = R.get<Rotation>(b).Value;
+                            was_transformed[i] = true;
                             rest_pose_edited = true;
                             need_sync = true;
                         }
@@ -1240,8 +1246,25 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     }
                 }
                 if (rest_pose_edited) {
-                    // Recompute derived rest pose data after Edit mode bone transforms.
-                    armature.RecomputeRestWorld();
+                    // Recompute RestWorld in topological order, preserving world positions of untransformed bones.
+                    for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
+                        const auto parent = armature.Bones[i].ParentIndex;
+                        const mat4 parent_world = (parent == InvalidBoneIndex) ? I4 : armature.Bones[parent].RestWorld;
+                        if (was_transformed[i]) {
+                            armature.Bones[i].RestWorld = parent_world * RestLocalToMatrix(armature.Bones[i].RestLocal);
+                        } else {
+                            // Preserve old world position, adjust RestLocal to compensate for parent change.
+                            const mat4 new_local_mat = glm::inverse(parent_world) * old_rest_world[i];
+                            armature.Bones[i].RestLocal.P = vec3(new_local_mat[3]);
+                            armature.Bones[i].RestLocal.R = glm::normalize(glm::quat_cast(mat3(new_local_mat)));
+                            armature.Bones[i].RestWorld = old_rest_world[i];
+                            // Update ECS to match adjusted RestLocal.
+                            const auto b = arm_obj_comp.BoneEntities[i];
+                            R.replace<Position>(b, armature.Bones[i].RestLocal.P);
+                            R.replace<Rotation>(b, armature.Bones[i].RestLocal.R);
+                        }
+                        armature.Bones[i].InvRestWorld = glm::inverse(armature.Bones[i].RestWorld);
+                    }
                     armature.RecomputeInverseBindMatrices();
                 }
                 if (need_sync) {
