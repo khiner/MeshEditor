@@ -8,8 +8,8 @@
 
 #include "Armature.h"
 #include "Excitable.h"
+#include "Instance.h"
 #include "MeshComponents.h"
-#include "MeshInstance.h"
 #include "OrientationGizmo.h"
 #include "SceneSelection.h"
 #include "SvgResource.h"
@@ -877,8 +877,8 @@ void Scene::RenderOverlay() {
         if (interaction_mode != InteractionMode::Edit) return true;
         if (FindArmatureObject(R, FindActiveEntity(R)) != entt::null) return true; // Bones in Edit mode are transformable.
         const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
-        for (const auto [e, mi] : R.view<const MeshInstance, const Selected>(entt::exclude<Frozen>).each()) {
-            if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mi.MeshEntity)) {
+        for (const auto [e, instance] : R.view<const Instance, const Selected>(entt::exclude<Frozen>).each()) {
+            if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
                 if (scene_selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
             }
         }
@@ -1168,8 +1168,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
     }
 
-    if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
-        Text("Mesh entity: %s", GetName(R, mesh_instance->MeshEntity).c_str());
+    if (const auto *instance = R.try_get<Instance>(active_entity)) {
+        Text("Instance of: %s", GetName(R, instance->Entity).c_str());
     }
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(active_entity)) {
         Text("Armature data: %s", GetName(R, armature_modifier->ArmatureEntity).c_str());
@@ -1182,9 +1182,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     const auto object_type = R.all_of<ObjectKind>(active_entity) ? R.get<const ObjectKind>(active_entity).Value : ObjectType::Empty;
     Text("Object type: %s", ObjectTypeName(object_type).data());
-    const auto *active_mesh_instance = R.try_get<MeshInstance>(active_entity);
-    if (active_mesh_instance) {
-        const auto active_mesh_entity = active_mesh_instance->MeshEntity;
+    const auto *active_instance = R.try_get<Instance>(active_entity);
+    const bool is_mesh_instance = active_instance && R.all_of<Mesh>(active_instance->Entity);
+    if (is_mesh_instance) {
+        const auto active_mesh_entity = active_instance->Entity;
         const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
         TextUnformatted(
             std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
@@ -1348,8 +1349,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             TreePop();
         }
     }
-    if (active_mesh_instance) {
-        const auto active_mesh_entity = active_mesh_instance->MeshEntity;
+    if (is_mesh_instance) {
+        const auto active_mesh_entity = active_instance->Entity;
         if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
             const bool frozen = scene_selection::HasFrozenInstance(R, active_mesh_entity);
             if (frozen) BeginDisabled();
@@ -1363,9 +1364,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
 
         if (CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
             auto &material_store = R.get<MaterialStore>(SceneEntity);
             auto &texture_store = *Textures;
-            const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
             std::span<const uint32_t> primitive_materials = Meshes->GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
             const auto material_count = GetMaterialCount(*Buffers);
             const auto material_name = [&](uint32_t index) {
@@ -1689,8 +1690,8 @@ void Scene::RenderControls() {
                     }
                     const auto active_entity = FindActiveEntity(R);
                     if (active_entity != entt::null) {
-                        if (const auto *mesh_instance = R.try_get<MeshInstance>(active_entity)) {
-                            const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_instance->MeshEntity);
+                        if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
+                            const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ? scene_selection::CountSelected(
                                                                      reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data()),
                                                                      br->Offset, br->Count
@@ -1710,7 +1711,9 @@ void Scene::RenderControls() {
             if (!R.storage<Selected>().empty()) {
                 SeparatorText("Selection actions");
                 std::vector<entt::entity> selected_mesh_instances;
-                for (const auto entity : R.view<const Selected, const MeshInstance>()) selected_mesh_instances.emplace_back(entity);
+                for (const auto entity : R.view<const Selected, const Instance>()) {
+                    if (!R.all_of<SubElementOf>(entity)) selected_mesh_instances.emplace_back(entity);
+                }
 
                 if (!selected_mesh_instances.empty()) {
                     const bool any_visible = any_of(selected_mesh_instances, [&](entt::entity e) { return R.all_of<RenderInstance>(e); });
@@ -1961,7 +1964,6 @@ void Scene::RenderObjectTree() {
 
     const auto GetObjectType = [&](entt::entity e) {
         if (R.all_of<ObjectKind>(e)) return R.get<const ObjectKind>(e).Value;
-        if (R.all_of<MeshInstance>(e)) return ObjectType::Mesh;
         return ObjectType::Empty;
     };
     const auto SetSelectedState = [&](entt::entity e, bool selected) {

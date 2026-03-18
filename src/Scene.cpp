@@ -9,8 +9,8 @@
 #include "Bindless.h"
 #include "Excitable.h"
 #include "File.h"
+#include "Instance.h"
 #include "MeshComponents.h"
-#include "MeshInstance.h"
 #include "NodeTransformAnimation.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
@@ -123,10 +123,10 @@ std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entit
 
 void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldTransform &wt) {
     if (const auto i = GetModelBufferIndex(r, e)) {
-        const auto mesh_entity = r.get<MeshInstance>(e).MeshEntity;
+        const auto buffer_entity = r.get<RenderInstance>(e).Entity;
         auto display_wt = wt;
         if (const auto *ds = r.try_get<BoneDisplayScale>(e)) display_wt.Scale = vec3{ds->Value};
-        r.patch<ModelsBuffer>(mesh_entity, [&display_wt, i](auto &mb) { mb.Buffer.Update(as_bytes(display_wt), *i * sizeof(WorldTransform)); });
+        r.patch<ModelsBuffer>(buffer_entity, [&display_wt, i](auto &mb) { mb.Buffer.Update(as_bytes(display_wt), *i * sizeof(WorldTransform)); });
 
         // Update joint sphere transforms for bone entities
         if (const auto *joints = r.try_get<const BoneJointEntities>(e); joints && r.all_of<BoneDisplayScale>(e)) {
@@ -136,26 +136,20 @@ void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldTransform &
             // Head joint: at bone's world position
             if (joints->Head != entt::null) {
                 if (const auto *ri = r.try_get<const RenderInstance>(joints->Head)) {
-                    const auto *mi = r.try_get<const MeshInstance>(joints->Head);
-                    if (mi && r.valid(mi->MeshEntity)) {
-                        const WorldTransform head_wt{wt.Position, {0, 0, 0, 1}, vec3{sphere_scale}};
-                        r.patch<ModelsBuffer>(mi->MeshEntity, [&head_wt, ri](auto &mb) {
-                            mb.Buffer.Update(as_bytes(head_wt), ri->BufferIndex * sizeof(WorldTransform));
-                        });
-                    }
+                    const WorldTransform head_wt{wt.Position, {0, 0, 0, 1}, vec3{sphere_scale}};
+                    r.patch<ModelsBuffer>(ri->Entity, [&head_wt, ri](auto &mb) {
+                        mb.Buffer.Update(as_bytes(head_wt), ri->BufferIndex * sizeof(WorldTransform));
+                    });
                 }
             }
             // Tail joint: at bone's tip position (head + rotated (0, bone_length, 0))
             if (joints->Tail != entt::null) {
                 if (const auto *ri = r.try_get<const RenderInstance>(joints->Tail)) {
-                    const auto *mi = r.try_get<const MeshInstance>(joints->Tail);
-                    if (mi && r.valid(mi->MeshEntity)) {
-                        const vec3 tail_pos = wt.Position + glm::quat(wt.Rotation.w, wt.Rotation.x, wt.Rotation.y, wt.Rotation.z) * vec3{0, bone_length, 0};
-                        const WorldTransform tail_wt{tail_pos, {0, 0, 0, 1}, vec3{sphere_scale}};
-                        r.patch<ModelsBuffer>(mi->MeshEntity, [&tail_wt, ri](auto &mb) {
-                            mb.Buffer.Update(as_bytes(tail_wt), ri->BufferIndex * sizeof(WorldTransform));
-                        });
-                    }
+                    const vec3 tail_pos = wt.Position + glm::quat(wt.Rotation.w, wt.Rotation.x, wt.Rotation.y, wt.Rotation.z) * vec3{0, bone_length, 0};
+                    const WorldTransform tail_wt{tail_pos, {0, 0, 0, 1}, vec3{sphere_scale}};
+                    r.patch<ModelsBuffer>(ri->Entity, [&tail_wt, ri](auto &mb) {
+                        mb.Buffer.Update(as_bytes(tail_wt), ri->BufferIndex * sizeof(WorldTransform));
+                    });
                 }
             }
         }
@@ -327,7 +321,7 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 }
 
 vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_entity, Element element, uint32_t handle) {
-    const auto &mesh = r.get<Mesh>(r.get<MeshInstance>(instance_entity).MeshEntity);
+    const auto &mesh = r.get<Mesh>(r.get<Instance>(instance_entity).Entity);
     const auto local_pos = ComputeElementLocalPosition(mesh, element, handle);
     const auto &wt = r.get<WorldTransform>(instance_entity);
     return {wt.Position + glm::rotate(Vec4ToQuat(wt.Rotation), wt.Scale * local_pos)};
@@ -388,13 +382,13 @@ struct DeformSlots {
 
 std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes) {
     std::unordered_map<entt::entity, DeformSlots> result;
-    for (const auto [_, mi, modifier] : r.view<const MeshInstance, const ArmatureModifier>().each()) {
-        if (result.contains(mi.MeshEntity)) continue;
-        const auto &mesh = r.get<const Mesh>(mi.MeshEntity);
+    for (const auto [_, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
+        if (result.contains(instance.Entity)) continue;
+        const auto &mesh = r.get<const Mesh>(instance.Entity);
         const auto bone_deform = meshes.GetBoneDeformRange(mesh.GetStoreId());
         if (bone_deform.Count == 0) continue;
         if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity)) {
-            result[mi.MeshEntity] = {
+            result[instance.Entity] = {
                 .BoneDeformOffset = bone_deform.Offset,
                 .ArmatureDeformOffset = pose_state->GpuDeformRange.Offset,
                 .MorphDeformOffset = InvalidOffset,
@@ -404,8 +398,8 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         }
     }
     // Add morph target slots for mesh instances with morph data (per-instance weights)
-    for (const auto [instance_entity, mi, morph_state, ri] : r.view<const MeshInstance, const MorphWeightState, const RenderInstance>().each()) {
-        const auto mesh_entity = mi.MeshEntity;
+    for (const auto [instance_entity, instance, morph_state, ri] : r.view<const Instance, const MorphWeightState, const RenderInstance>().each()) {
+        const auto mesh_entity = instance.Entity;
         const auto &mesh = r.get<const Mesh>(mesh_entity);
         const auto morph_range = meshes.GetMorphTargetRange(mesh.GetStoreId());
         if (morph_range.Count == 0) continue;
@@ -427,7 +421,21 @@ void PatchMorphWeights(DrawListBuilder &dl, size_t draws_before, const DeformSlo
 }
 
 bool HasSelectedInstance(const entt::registry &r, entt::entity mesh_entity) {
-    return any_of(r.view<const MeshInstance, const Selected>().each(), [mesh_entity](const auto &t) { return std::get<1>(t).MeshEntity == mesh_entity; });
+    return any_of(r.view<const Instance, const Selected>().each(), [mesh_entity](const auto &t) { return std::get<1>(t).Entity == mesh_entity; });
+}
+
+ModelsBuffer CreateModelsBuffer(mvk::BufferContext &ctx, uint32_t instance_count = 1) {
+    return {
+        mvk::Buffer{ctx, instance_count * sizeof(WorldTransform), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
+        mvk::Buffer{ctx, instance_count * sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
+        mvk::Buffer{ctx, instance_count * sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer},
+    };
+}
+
+void ReserveModelsBufferInstance(ModelsBuffer &mb) {
+    mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
+    mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
+    mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
 }
 
 void RunSelectionCompute(
@@ -727,7 +735,7 @@ void Scene::SetStudioEnvironment(uint32_t index) {
 }
 
 entt::entity Scene::GetMeshEntity(entt::entity e) const {
-    if (const auto *mesh_instance = R.try_get<MeshInstance>(e)) return mesh_instance->MeshEntity;
+    if (const auto *instance = R.try_get<Instance>(e); instance && R.all_of<Mesh>(instance->Entity)) return instance->Entity;
     return entt::null;
 }
 entt::entity Scene::GetActiveMeshEntity() const {
@@ -822,16 +830,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     std::unordered_set<entt::entity> dirty_bone_state_armatures; // Armature obj entities needing bone GPU instance state sync.
     // Helper: write instance_entity's own Selected/Active state to its GPU slot.
     const auto update_instance_state = [&](entt::entity instance_entity) {
-        if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
-            if (const auto buffer_index = GetModelBufferIndex(R, instance_entity)) {
-                uint8_t state = 0;
-                if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
-                if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
-                const auto mesh_entity = mi->MeshEntity;
-                R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
-                    mb.InstanceStates.Update(as_bytes(state), *buffer_index * sizeof(uint8_t));
-                });
-            }
+        if (const auto *ri = R.try_get<RenderInstance>(instance_entity)) {
+            uint8_t state = 0;
+            if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
+            if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
+            R.patch<ModelsBuffer>(ri->Entity, [&](auto &mb) {
+                mb.InstanceStates.Update(as_bytes(state), ri->BufferIndex * sizeof(uint8_t));
+            });
         }
     };
 
@@ -843,8 +848,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         for (auto instance_entity : selected_tracker) {
             update_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
-            if (auto *mi = R.try_get<MeshInstance>(instance_entity)) {
-                const auto mesh_entity = mi->MeshEntity;
+            if (const auto *instance = R.try_get<Instance>(instance_entity); instance && R.all_of<Mesh>(instance->Entity)) {
+                const auto mesh_entity = instance->Entity;
                 if (R.all_of<Selected>(instance_entity)) {
                     dirty_overlay_meshes.insert(mesh_entity);
                 } else if (!HasSelectedInstance(R, mesh_entity)) {
@@ -888,10 +893,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (const auto &tracker = reactive<changes::MeshActiveElement>(R); !tracker.empty()) {
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         const auto active_entity = FindActiveEntity(R);
-        const auto *active_mi = R.try_get<MeshInstance>(active_entity);
+        const auto *active_instance = R.try_get<Instance>(active_entity);
         for (auto mesh_entity : tracker) {
             if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity);
-                active_element && edit_mode != Element::None && active_mi && active_mi->MeshEntity == mesh_entity) {
+                active_element && edit_mode != Element::None && active_instance && active_instance->Entity == mesh_entity) {
                 orbit_to_active(active_entity, edit_mode, active_element->Handle);
             }
             dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
@@ -902,12 +907,14 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (is_edit_mode) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), R.get<const SceneEditMode>(SceneEntity).Value);
     }
     for (auto instance_entity : reactive<changes::ExcitedVertex>(R)) {
-        if (const auto *mi = R.try_get<MeshInstance>(instance_entity)) dirty_element_state_meshes.insert(mi->MeshEntity);
+        if (const auto *inst = R.try_get<Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
         if (const auto *ev = R.try_get<ExcitedVertex>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
     }
     for (auto camera_entity : reactive<changes::CameraLens>(R)) {
         if (const auto *cd = R.try_get<Camera>(camera_entity)) {
-            SetMeshPositions(R.get<MeshInstance>(camera_entity).MeshEntity, BuildCameraFrustumMesh(*cd).Positions);
+            const auto buffer_entity = R.get<Instance>(camera_entity).Entity;
+            Meshes->SetPositions(R.get<const VertexStoreId>(buffer_entity).StoreId, BuildCameraFrustumMesh(*cd).Positions);
+            R.emplace_or_replace<SubmitDirty>(buffer_entity);
             // If looking through this camera, trigger a ViewCamera update so the SceneView
             // handler re-derives the widened FOV from the updated camera.
             if (SavedViewCamera && R.all_of<Active>(camera_entity)) {
@@ -953,30 +960,36 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         light_count_changed = true;
     }
     if (!reactive<changes::Submit>(R).empty() || light_count_changed) request(RenderRequest::Submit);
-    for (auto light_entity : R.view<LightWireframeDirty, LightIndex, MeshInstance>()) {
+    for (auto light_entity : R.view<LightWireframeDirty, LightIndex, Instance>()) {
         const auto light = Buffers->GetLight(R.get<const LightIndex>(light_entity).Value);
         auto wireframe = BuildLightMesh(light);
-        const auto mesh_entity = R.get<MeshInstance>(light_entity).MeshEntity;
-        if (const auto *old_vcr = R.try_get<VertexClass>(mesh_entity)) {
-            const auto old_vertex_count = R.get<const Mesh>(mesh_entity).VertexCount();
-            Buffers->VertexClassBuffer.Release({old_vcr->Offset, old_vertex_count});
-            R.remove<VertexClass>(mesh_entity);
+        const auto buffer_entity = R.get<Instance>(light_entity).Entity;
+
+        // Release old vertex classes (need old vertex count from MeshBuffers before releasing)
+        if (const auto *old_vcr = R.try_get<VertexClass>(buffer_entity)) {
+            Buffers->VertexClassBuffer.Release({old_vcr->Offset, R.get<const MeshBuffers>(buffer_entity).Vertices.Count});
+            R.remove<VertexClass>(buffer_entity);
         }
 
-        R.replace<Mesh>(mesh_entity, Meshes->CreateMesh(std::move(wireframe.Data), {}, {}));
-        const auto &mesh = R.get<const Mesh>(mesh_entity);
+        // Release old store entry and mesh buffers
+        auto &vs = R.get<VertexStoreId>(buffer_entity);
+        Meshes->Release(vs.StoreId);
+        if (auto *mb = R.try_get<MeshBuffers>(buffer_entity)) Buffers->Release(*mb);
+        R.erase<MeshBuffers>(buffer_entity);
 
-        if (auto *mb = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mb);
-        R.erase<MeshBuffers>(mesh_entity);
+        // Allocate new
+        const auto [store_id, vertices] = Meshes->AllocateVertexBuffer(wireframe.Data.Positions, {});
+        vs.StoreId = store_id;
+
         R.emplace<MeshBuffers>(
-            mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()),
-            Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
-            Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
-            Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
+            buffer_entity, Meshes->GetVerticesRange(store_id),
+            SlottedRange{},
+            Buffers->CreateIndices(wireframe.Data.CreateEdgeIndices(), IndexKind::Edge),
+            SlottedRange{}
         );
         if (!wireframe.VertexClasses.empty()) {
             const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
-            R.emplace<VertexClass>(mesh_entity, range.Offset);
+            R.emplace<VertexClass>(buffer_entity, range.Offset);
         }
         request(RenderRequest::ReRecord);
     }
@@ -1036,8 +1049,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
             if (edit_mode != Element::None) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), edit_mode);
         }
-        for (const auto [_, mi, __] : R.view<const MeshInstance, const Excitable>().each()) {
-            dirty_element_state_meshes.insert(mi.MeshEntity);
+        for (const auto [_, instance, __] : R.view<const Instance, const Excitable>().each()) {
+            dirty_element_state_meshes.insert(instance.Entity);
         }
         // Mark all armatures dirty for bone state + pose sync on mode change.
         for (const auto arm : R.view<ArmatureObject>()) dirty_bone_state_armatures.insert(arm);
@@ -1113,13 +1126,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
         if (anim_advanced) {
             // Evaluate morph weight animations
-            for (auto [entity, morph_anim, morph_state, mi] :
-                 R.view<const MorphWeightAnimation, MorphWeightState, const MeshInstance>().each()) {
+            for (auto [entity, morph_anim, morph_state, instance] :
+                 R.view<const MorphWeightAnimation, MorphWeightState, const Instance>().each()) {
                 if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
                 const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
                 const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
                 // Reset to default weights from mesh-level data
-                const auto &mesh = R.get<const Mesh>(mi.MeshEntity);
+                const auto &mesh = R.get<const Mesh>(instance.Entity);
                 const auto default_weights = Meshes->GetDefaultMorphWeights(mesh.GetStoreId());
                 std::copy(default_weights.begin(), default_weights.end(), morph_state.Weights.begin());
                 EvaluateMorphWeights(clip, clip_time, morph_state.Weights);
@@ -1185,8 +1198,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     }
                 }
             });
-            if (arm_obj.JointMeshEntity != entt::null && R.valid(arm_obj.JointMeshEntity)) {
-                R.patch<ModelsBuffer>(arm_obj.JointMeshEntity, [&](auto &mb) {
+            if (arm_obj.JointEntity != entt::null && R.valid(arm_obj.JointEntity)) {
+                R.patch<ModelsBuffer>(arm_obj.JointEntity, [&](auto &mb) {
                     for (const auto b : bone_entities) {
                         const auto *joints = R.try_get<const BoneJointEntities>(b);
                         if (!joints) continue;
@@ -1459,13 +1472,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     // Update mesh element state buffers (Excite mode only; Edit mode handled by GPU compute)
     for (const auto mesh_entity : dirty_element_state_meshes) {
         if (interaction_mode != InteractionMode::Excite) continue;
-        const auto &mesh = R.get<Mesh>(mesh_entity);
+        const auto &mesh = R.get<const Mesh>(mesh_entity);
         std::unordered_set<VH> selected_vertices;
         std::unordered_set<EH> selected_edges, active_edges;
         std::unordered_set<FH> selected_faces;
         std::optional<uint32_t> active_handle;
-        for (auto [entity, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
-            if (mi.MeshEntity != mesh_entity) continue;
+        for (auto [entity, instance, excitable] : R.view<const Instance, const Excitable>().each()) {
+            if (instance.Entity != mesh_entity) continue;
             selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
             if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) active_handle = excited_vertex->Vertex;
             break;
@@ -1492,43 +1505,35 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 }
 
 void Scene::SetVisible(entt::entity entity, bool visible) {
-    const auto *mesh_instance = R.try_get<MeshInstance>(entity);
-    if (!mesh_instance) return;
-
     const bool already_visible = R.all_of<RenderInstance>(entity);
     if ((visible && already_visible) || (!visible && !already_visible)) return;
 
-    const auto mesh_entity = mesh_instance->MeshEntity;
     if (visible) {
-        const auto buffer_index = R.get<const ModelsBuffer>(mesh_entity).Buffer.UsedSize / sizeof(WorldTransform);
+        const auto buffer_entity = R.get<Instance>(entity).Entity;
+
+        const auto buffer_index = R.get<const ModelsBuffer>(buffer_entity).Buffer.UsedSize / sizeof(WorldTransform);
         const uint32_t object_id = NextObjectId++;
-        R.emplace<RenderInstance>(entity, buffer_index, object_id);
+        R.emplace<RenderInstance>(entity, buffer_entity, buffer_index, object_id);
         const uint8_t initial_state = R.all_of<Selected>(entity) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
-        R.patch<ModelsBuffer>(mesh_entity, [&](auto &mb) {
+        R.patch<ModelsBuffer>(buffer_entity, [&](auto &mb) {
             mb.Buffer.Insert(as_bytes(R.get<WorldTransform>(entity)), mb.Buffer.UsedSize);
             mb.ObjectIds.Insert(as_bytes(object_id), mb.ObjectIds.UsedSize);
             mb.InstanceStates.Insert(as_bytes(initial_state), mb.InstanceStates.UsedSize);
         });
     } else {
-        const uint old_model_index = R.get<const RenderInstance>(entity).BufferIndex;
+        const auto &ri = R.get<const RenderInstance>(entity);
+        const auto buffer_entity = ri.Entity;
+        const uint old_model_index = ri.BufferIndex;
         R.remove<RenderInstance>(entity);
-        R.patch<ModelsBuffer>(mesh_entity, [old_model_index](auto &mb) {
+        R.patch<ModelsBuffer>(buffer_entity, [old_model_index](auto &mb) {
             mb.Buffer.Erase(old_model_index * sizeof(WorldTransform), sizeof(WorldTransform));
             mb.ObjectIds.Erase(old_model_index * sizeof(uint32_t), sizeof(uint32_t));
             mb.InstanceStates.Erase(old_model_index * sizeof(uint8_t), sizeof(uint8_t));
         });
-        // Update buffer indices for all instances of this mesh that have higher indices
-        for (const auto [other_entity, mesh_instance, ri] : R.view<MeshInstance, const RenderInstance>().each()) {
-            if (mesh_instance.MeshEntity == mesh_entity && ri.BufferIndex > old_model_index) {
-                R.patch<RenderInstance>(other_entity, [](auto &ri) { --ri.BufferIndex; });
-            }
-        }
-        // Also check if the mesh entity itself is visible (it might not have MeshInstance)
-        if (mesh_entity != entity) {
-            if (const auto *mesh_ri = R.try_get<const RenderInstance>(mesh_entity)) {
-                if (mesh_ri->BufferIndex > old_model_index) {
-                    R.patch<RenderInstance>(mesh_entity, [](auto &ri) { --ri.BufferIndex; });
-                }
+        // Update buffer indices for all instances of this buffer entity that have higher indices
+        for (const auto [other_entity, other_ri] : R.view<const RenderInstance>().each()) {
+            if (other_ri.Entity == buffer_entity && other_ri.BufferIndex > old_model_index) {
+                R.patch<RenderInstance>(other_entity, [](auto &r) { --r.BufferIndex; });
             }
         }
     }
@@ -1536,12 +1541,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = R.create();
-    R.emplace<ModelsBuffer>(
-        mesh_entity,
-        mvk::Buffer{Buffers->Ctx, sizeof(WorldTransform), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
-        mvk::Buffer{Buffers->Ctx, sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-        mvk::Buffer{Buffers->Ctx, sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer}
-    );
+    R.emplace<ModelsBuffer>(mesh_entity, CreateModelsBuffer(Buffers->Ctx));
     R.emplace<MeshBuffers>(
         mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()),
         Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
@@ -1571,16 +1571,12 @@ void Scene::ApplySelectBehavior(entt::entity entity, MeshInstanceCreateInfo::Sel
 
 entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo info) {
     const auto instance_entity = R.create();
-    R.emplace<MeshInstance>(instance_entity, mesh_entity);
+    R.emplace<Instance>(instance_entity, mesh_entity);
     R.emplace<ObjectKind>(instance_entity, ObjectType::Mesh);
     SetTransform(R, instance_entity, info.Transform);
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
-    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
-        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
-        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
-        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
-    });
+    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) { ReserveModelsBufferInstance(mb); });
     SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
     ApplySelectBehavior(instance_entity, info.Select);
@@ -1603,23 +1599,28 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     const uint32_t n = armature.Bones.size();
     if (n == 0) return;
 
+    auto flatten_tri_indices = [](const std::vector<std::vector<uint32_t>> &faces) {
+        std::vector<uint> indices;
+        indices.reserve(faces.size() * 3);
+        for (const auto &face : faces)
+            for (const auto idx : face) indices.push_back(idx);
+        return indices;
+    };
+
     auto bone_data = primitive::BoneOctahedron(1.f);
-    auto bone_mesh = Meshes->CreateMesh(std::move(bone_data.Mesh), std::move(bone_data.Attrs), {});
-    R.emplace<ModelsBuffer>(
-        arm_obj_entity,
-        mvk::Buffer{Buffers->Ctx, n * sizeof(WorldTransform), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
-        mvk::Buffer{Buffers->Ctx, n * sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-        mvk::Buffer{Buffers->Ctx, n * sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer}
-    );
+    const auto bone_store_id = Meshes->AllocateVertexBuffer(bone_data.Mesh.Positions, bone_data.Attrs).first;
+    const auto bone_tri_indices = flatten_tri_indices(bone_data.Mesh.Faces);
+    const auto bone_vertex_count = static_cast<uint32_t>(bone_data.Mesh.Positions.size());
+    R.emplace<ModelsBuffer>(arm_obj_entity, CreateModelsBuffer(Buffers->Ctx, n));
     R.emplace<MeshBuffers>(
-        arm_obj_entity, Meshes->GetVerticesRange(bone_mesh.GetStoreId()),
-        Buffers->CreateIndices(bone_mesh.CreateTriangleIndices(), IndexKind::Face),
-        Buffers->CreateIndices(bone_mesh.CreateEdgeIndices(), IndexKind::Edge),
-        Buffers->CreateIndices(CreateVertexIndices(bone_mesh), IndexKind::Vertex)
+        arm_obj_entity, Meshes->GetVerticesRange(bone_store_id),
+        Buffers->CreateIndices(bone_tri_indices, IndexKind::Face),
+        SlottedRange{}, // No edge indices (wire uses adjacency)
+        Buffers->CreateIndices(iota(0u, bone_vertex_count) | to<std::vector>(), IndexKind::Vertex)
     );
     // Adjacency indices for silhouette edge detection (references the 6 unique positions at [0..5])
     R.emplace<BoneAdjacencyIndices>(arm_obj_entity, Buffers->CreateIndices(bone_data.AdjacencyIndices, IndexKind::Edge));
-    R.emplace<Mesh>(arm_obj_entity, std::move(bone_mesh));
+    R.emplace<VertexStoreId>(arm_obj_entity, bone_store_id);
 
     // ECS Scale stays vec3{1} for all bone entities so parent scale never displaces FK child positions.
     // Per-bone bone length is stored in BoneDisplayScale and baked into the mesh scale at GPU write time.
@@ -1654,7 +1655,7 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
         const auto bone_entity = R.create();
         R.emplace<BoneIndex>(bone_entity, i);
         R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
-        R.emplace<MeshInstance>(bone_entity, arm_obj_entity);
+        R.emplace<Instance>(bone_entity, arm_obj_entity);
         R.emplace<Name>(bone_entity, bone.Name);
         R.emplace<BoneDisplayScale>(bone_entity, bone_scales[i]);
         SetTransform(R, bone_entity, {bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
@@ -1677,65 +1678,62 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     // Create shared joint sphere disc mesh (once per armature)
     {
         auto sphere_data = primitive::BoneSphereDisc();
-        auto sphere_mesh = Meshes->CreateMesh(std::move(sphere_data.Mesh), {}, {});
-        const auto joint_mesh_entity = R.create();
-        R.emplace<BoneJointMeshTag>(joint_mesh_entity);
+        const auto sphere_store_id = Meshes->AllocateVertexBuffer(sphere_data.Mesh.Positions, {}).first;
+        const auto sphere_tri_indices = flatten_tri_indices(sphere_data.Mesh.Faces);
+        const auto sphere_vertex_count = static_cast<uint32_t>(sphere_data.Mesh.Positions.size());
+        const auto joint_entity = R.create();
+        R.emplace<BoneJoint>(joint_entity);
         R.emplace<MeshBuffers>(
-            joint_mesh_entity, Meshes->GetVerticesRange(sphere_mesh.GetStoreId()),
-            Buffers->CreateIndices(sphere_mesh.CreateTriangleIndices(), IndexKind::Face),
+            joint_entity, Meshes->GetVerticesRange(sphere_store_id),
+            Buffers->CreateIndices(sphere_tri_indices, IndexKind::Face),
             Buffers->CreateIndices(sphere_data.OutlineIndices, IndexKind::Edge),
-            Buffers->CreateIndices(CreateVertexIndices(sphere_mesh), IndexKind::Vertex)
+            Buffers->CreateIndices(iota(0u, sphere_vertex_count) | to<std::vector>(), IndexKind::Vertex)
         );
-        R.emplace<Mesh>(joint_mesh_entity, std::move(sphere_mesh));
+        R.emplace<VertexStoreId>(joint_entity, sphere_store_id);
 
         // Each bone gets a head + tail joint sphere instance
         const uint32_t joint_count = 2 * n;
 
-        R.emplace<ModelsBuffer>(
-            joint_mesh_entity,
-            mvk::Buffer{Buffers->Ctx, joint_count * sizeof(WorldTransform), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer},
-            mvk::Buffer{Buffers->Ctx, joint_count * sizeof(uint32_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-            mvk::Buffer{Buffers->Ctx, joint_count * sizeof(uint8_t), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer}
-        );
+        R.emplace<ModelsBuffer>(joint_entity, CreateModelsBuffer(Buffers->Ctx, joint_count));
 
         // Create joint sphere instance entities
-        auto &joint_models = R.get<ModelsBuffer>(joint_mesh_entity);
+        auto &joint_models = R.get<ModelsBuffer>(joint_entity);
         uint32_t joint_idx = 0;
         for (uint32_t i = 0; i < n; ++i) {
             const auto bone_entity = arm_obj.BoneEntities[i];
 
             // Head joint
             const auto head_entity = R.create();
-            R.emplace<MeshInstance>(head_entity, joint_mesh_entity);
             R.emplace<SubElementOf>(head_entity, arm_obj_entity);
+            R.emplace<Instance>(head_entity, joint_entity);
             R.emplace<BoneSubPartOf>(head_entity, bone_entity, false);
             const uint32_t head_oid = NextObjectId++;
-            R.emplace<RenderInstance>(head_entity, joint_idx, head_oid);
+            R.emplace<RenderInstance>(head_entity, joint_entity, joint_idx, head_oid);
             joint_models.ObjectIds.Update(as_bytes(head_oid), joint_idx * sizeof(uint32_t));
             ++joint_idx;
 
             // Tail joint
             const auto tail_entity = R.create();
-            R.emplace<MeshInstance>(tail_entity, joint_mesh_entity);
             R.emplace<SubElementOf>(tail_entity, arm_obj_entity);
+            R.emplace<Instance>(tail_entity, joint_entity);
             R.emplace<BoneSubPartOf>(tail_entity, bone_entity, true);
             const uint32_t tail_oid = NextObjectId++;
-            R.emplace<RenderInstance>(tail_entity, joint_idx, tail_oid);
+            R.emplace<RenderInstance>(tail_entity, joint_entity, joint_idx, tail_oid);
             joint_models.ObjectIds.Update(as_bytes(tail_oid), joint_idx * sizeof(uint32_t));
             ++joint_idx;
 
             R.emplace<BoneJointEntities>(bone_entity, head_entity, tail_entity);
         }
 
-        arm_obj.JointMeshEntity = joint_mesh_entity;
+        arm_obj.JointEntity = joint_entity;
     }
 }
 
 void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
     auto &arm = R.get<ArmatureObject>(arm_obj_entity);
 
-    // Destroy joint sphere entities and mesh
-    if (arm.JointMeshEntity != entt::null) {
+    // Destroy joint sphere entities
+    if (arm.JointEntity != entt::null) {
         // Destroy joint sphere instance entities
         for (const auto bone_entity : arm.BoneEntities) {
             if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
@@ -1744,11 +1742,12 @@ void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
             }
             R.remove<BoneJointEntities>(bone_entity);
         }
-        // Destroy joint mesh entity
-        if (auto *mb = R.try_get<MeshBuffers>(arm.JointMeshEntity)) Buffers->Release(*mb);
-        R.remove<MeshBuffers, Mesh, ModelsBuffer>(arm.JointMeshEntity);
-        R.destroy(arm.JointMeshEntity);
-        arm.JointMeshEntity = entt::null;
+        // Destroy joint entity
+        if (auto *mb = R.try_get<MeshBuffers>(arm.JointEntity)) Buffers->Release(*mb);
+        if (auto *ref = R.try_get<VertexStoreId>(arm.JointEntity)) Meshes->Release(ref->StoreId);
+        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer>(arm.JointEntity);
+        R.destroy(arm.JointEntity);
+        arm.JointEntity = entt::null;
     }
 
     // Destroy children before parents (reverse of topological order) so ClearParent
@@ -1763,7 +1762,8 @@ void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
     if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) {
         Buffers->EdgeIndexBuffer.Release(adj->Indices);
     }
-    R.remove<MeshBuffers, Mesh, ModelsBuffer, BoneAdjacencyIndices>(arm_obj_entity);
+    if (auto *ref = R.try_get<VertexStoreId>(arm_obj_entity)) Meshes->Release(ref->StoreId);
+    R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices>(arm_obj_entity);
 }
 
 void Scene::RebuildBoneStructure(entt::entity arm_data_entity) {
@@ -1817,7 +1817,7 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     const auto bone_entity = R.create();
     R.emplace<BoneIndex>(bone_entity, new_index);
     R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
-    R.emplace<MeshInstance>(bone_entity, arm_obj_entity);
+    R.emplace<Instance>(bone_entity, arm_obj_entity);
     R.emplace<Name>(bone_entity, bone.Name);
     R.emplace<BoneDisplayScale>(bone_entity, ComputeSingleBoneDisplayScale(armature, new_index));
     SetTransform(R, bone_entity, {bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
@@ -1826,14 +1826,10 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     SetParent(R, bone_entity, parent_entity);
     R.emplace_or_replace<ParentInverse>(bone_entity, I4);
 
-    R.patch<ModelsBuffer>(arm_obj_entity, [](auto &mb) {
-        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
-        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
-        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
-    });
+    R.patch<ModelsBuffer>(arm_obj_entity, [](auto &mb) { ReserveModelsBufferInstance(mb); });
 
-    if (arm_obj.JointMeshEntity != null_entity && R.valid(arm_obj.JointMeshEntity)) {
-        auto &joint_models = R.get<ModelsBuffer>(arm_obj.JointMeshEntity);
+    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity)) {
+        auto &joint_models = R.get<ModelsBuffer>(arm_obj.JointEntity);
         const uint32_t head_idx = uint32_t(joint_models.Buffer.UsedSize / sizeof(WorldTransform));
         const uint32_t tail_idx = head_idx + 1;
 
@@ -1842,19 +1838,19 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
         joint_models.InstanceStates.Reserve((tail_idx + 1) * sizeof(uint8_t));
 
         const auto head_entity = R.create();
-        R.emplace<MeshInstance>(head_entity, arm_obj.JointMeshEntity);
         R.emplace<SubElementOf>(head_entity, arm_obj_entity);
+        R.emplace<Instance>(head_entity, arm_obj.JointEntity);
         R.emplace<BoneSubPartOf>(head_entity, bone_entity, false);
         const uint32_t head_oid = NextObjectId++;
-        R.emplace<RenderInstance>(head_entity, head_idx, head_oid);
+        R.emplace<RenderInstance>(head_entity, arm_obj.JointEntity, head_idx, head_oid);
         joint_models.ObjectIds.Update(as_bytes(head_oid), head_idx * sizeof(uint32_t));
 
         const auto tail_entity = R.create();
-        R.emplace<MeshInstance>(tail_entity, arm_obj.JointMeshEntity);
         R.emplace<SubElementOf>(tail_entity, arm_obj_entity);
+        R.emplace<Instance>(tail_entity, arm_obj.JointEntity);
         R.emplace<BoneSubPartOf>(tail_entity, bone_entity, true);
         const uint32_t tail_oid = NextObjectId++;
-        R.emplace<RenderInstance>(tail_entity, tail_idx, tail_oid);
+        R.emplace<RenderInstance>(tail_entity, arm_obj.JointEntity, tail_idx, tail_oid);
         joint_models.ObjectIds.Update(as_bytes(tail_oid), tail_idx * sizeof(uint32_t));
 
         R.emplace<BoneJointEntities>(bone_entity, head_entity, tail_entity);
@@ -2019,13 +2015,14 @@ void Scene::DeleteSelectedBones() {
     }
 
     // Reindex surviving joint sphere BufferIndex values to stay contiguous.
-    if (arm_obj.JointMeshEntity != null_entity && R.valid(arm_obj.JointMeshEntity)) {
+    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity)) {
         if (arm_obj.BoneEntities.empty()) {
-            // No surviving bones — destroy joint mesh entity
-            if (auto *mb = R.try_get<MeshBuffers>(arm_obj.JointMeshEntity)) Buffers->Release(*mb);
-            R.remove<MeshBuffers, Mesh, ModelsBuffer>(arm_obj.JointMeshEntity);
-            R.destroy(arm_obj.JointMeshEntity);
-            arm_obj.JointMeshEntity = null_entity;
+            // No surviving bones — destroy joint entity
+            if (auto *mb = R.try_get<MeshBuffers>(arm_obj.JointEntity)) Buffers->Release(*mb);
+            if (auto *ref = R.try_get<VertexStoreId>(arm_obj.JointEntity)) Meshes->Release(ref->StoreId);
+            R.remove<MeshBuffers, VertexStoreId, ModelsBuffer>(arm_obj.JointEntity);
+            R.destroy(arm_obj.JointEntity);
+            arm_obj.JointEntity = null_entity;
         } else {
             for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) {
                 if (auto *joints = R.try_get<BoneJointEntities>(arm_obj.BoneEntities[i])) {
@@ -2033,7 +2030,7 @@ void Scene::DeleteSelectedBones() {
                     if (joints->Tail != null_entity) R.get<RenderInstance>(joints->Tail).BufferIndex = 2 * i + 1;
                 }
             }
-            auto &joint_mb = R.get<ModelsBuffer>(arm_obj.JointMeshEntity);
+            auto &joint_mb = R.get<ModelsBuffer>(arm_obj.JointEntity);
             const auto new_count = 2 * arm_obj.BoneEntities.size();
             joint_mb.Buffer.UsedSize = new_count * sizeof(WorldTransform);
             joint_mb.ObjectIds.UsedSize = new_count * sizeof(uint32_t);
@@ -2072,30 +2069,36 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     return entity;
 }
 
-entt::entity Scene::CreateExtrasMeshEntity(ExtrasWireframe &&wireframe) {
-    const auto [mesh_entity, _] = AddMesh(std::move(wireframe.Data), std::nullopt);
-    R.emplace<ObjectExtrasTag>(mesh_entity);
+entt::entity Scene::CreateExtrasBufferEntity(ExtrasWireframe &&wireframe) {
+    const auto buffer_entity = R.create();
+    const auto [store_id, vertices] = Meshes->AllocateVertexBuffer(wireframe.Data.Positions, {});
+
+    R.emplace<ModelsBuffer>(buffer_entity, CreateModelsBuffer(Buffers->Ctx));
+    R.emplace<MeshBuffers>(
+        buffer_entity, Meshes->GetVerticesRange(store_id),
+        SlottedRange{}, // No face indices
+        Buffers->CreateIndices(wireframe.Data.CreateEdgeIndices(), IndexKind::Edge),
+        SlottedRange{} // No vertex indices
+    );
+    R.emplace<ObjectExtrasTag>(buffer_entity);
+    R.emplace<VertexStoreId>(buffer_entity, store_id);
     if (!wireframe.VertexClasses.empty()) {
         const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
-        R.emplace<VertexClass>(mesh_entity, range.Offset);
+        R.emplace<VertexClass>(buffer_entity, range.Offset);
     }
-    return mesh_entity;
+    return buffer_entity;
 }
 
 entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType type, ObjectCreateInfo info, const std::string &default_name) {
-    const auto mesh_entity = CreateExtrasMeshEntity(std::move(wireframe));
+    const auto buffer_entity = CreateExtrasBufferEntity(std::move(wireframe));
 
     const auto entity = R.create();
     R.emplace<ObjectKind>(entity, type);
-    R.emplace<MeshInstance>(entity, mesh_entity);
+    R.emplace<Instance>(entity, buffer_entity);
     SetTransform(R, entity, info.Transform);
     R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? default_name : info.Name));
 
-    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
-        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
-        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
-        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
-    });
+    R.patch<ModelsBuffer>(buffer_entity, [](auto &mb) { ReserveModelsBufferInstance(mb); });
     SetVisible(entity, true);
     ApplySelectBehavior(entity, info.Select);
     return entity;
@@ -2116,9 +2119,9 @@ entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight>
     R.emplace<LightIndex>(entity, light_index);
     R.emplace<SubmitDirty>(entity);
     R.emplace<LightWireframeDirty>(entity);
-    const auto mesh_entity = R.get<MeshInstance>(entity).MeshEntity;
+    const auto buffer_entity = R.get<Instance>(entity).Entity;
     const auto &ri = R.get<const RenderInstance>(entity);
-    light.TransformSlotOffset = {R.get<const ModelsBuffer>(mesh_entity).Buffer.Slot, ri.BufferIndex};
+    light.TransformSlotOffset = {R.get<const ModelsBuffer>(buffer_entity).Buffer.Slot, ri.BufferIndex};
     Buffers->SetLight(light_index, light);
     return entity;
 }
@@ -2245,7 +2248,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         .Select = select_behavior,
     };
 
-    if (!R.all_of<MeshInstance>(e)) {
+    if (!R.all_of<Instance>(e)) {
         const auto object_type = R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value : ObjectType::Empty;
         if (object_type == ObjectType::Armature) {
             const auto copy_entity = AddArmature(create_info);
@@ -2258,8 +2261,11 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         return AddEmpty(create_info);
     }
 
-    // Object extras (Camera, Empty, Light) have MeshInstance but create their own wireframe mesh.
-    if (R.all_of<ObjectExtrasTag>(R.get<MeshInstance>(e).MeshEntity)) {
+    // Bone sub-entities (head/tail joints, bone instances) are not independently duplicable.
+    if (R.all_of<BoneSubPartOf>(e)) return entt::null;
+
+    // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
+    if (R.all_of<ObjectExtrasTag>(R.get<Instance>(e).Entity)) {
         if (const auto *src_cd = R.try_get<Camera>(e)) {
             const auto copy_entity = AddCamera(create_info);
             R.replace<Camera>(copy_entity, *src_cd);
@@ -2272,7 +2278,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         return AddEmpty(create_info);
     }
 
-    const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+    const auto mesh_entity = R.get<Instance>(e).Entity;
     const auto e_new = AddMesh(
         Meshes->CloneMesh(R.get<const Mesh>(mesh_entity)),
         info.value_or(MeshInstanceCreateInfo{
@@ -2289,7 +2295,8 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
 }
 
 entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCreateInfo> info) {
-    if (!R.all_of<MeshInstance>(e)) {
+    if (R.all_of<BoneSubPartOf>(e)) return entt::null;
+    if (!R.all_of<Instance>(e)) {
         const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
 
         if (const auto *armature = R.try_get<ArmatureObject>(e)) {
@@ -2311,22 +2318,18 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
         });
     }
 
-    const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+    const auto mesh_entity = R.get<Instance>(e).Entity;
     const auto e_new = R.create();
     {
         uint instance_count = 0; // Count instances for naming (first duplicated instance is _1, etc.)
-        for (const auto [_, mesh_instance] : R.view<MeshInstance>().each()) {
-            if (mesh_instance.MeshEntity == mesh_entity) ++instance_count;
+        for (const auto [_, instance] : R.view<Instance>().each()) {
+            if (instance.Entity == mesh_entity) ++instance_count;
         }
         R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
     }
-    R.emplace<MeshInstance>(e_new, mesh_entity);
+    R.emplace<Instance>(e_new, mesh_entity);
     R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
-    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) {
-        mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
-        mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
-        mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
-    });
+    R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) { ReserveModelsBufferInstance(mb); });
     SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
     SetVisible(e_new, !info || info->Visible);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new, *armature_modifier);
@@ -2379,7 +2382,9 @@ void Scene::DuplicateLinked() {
 
 void Scene::ClearMeshes() {
     std::vector<entt::entity> entities;
-    for (const auto e : R.view<MeshInstance>()) entities.emplace_back(e);
+    for (const auto e : R.view<Instance>()) {
+        if (!R.all_of<SubElementOf>(e)) entities.emplace_back(e);
+    }
     for (const auto e : entities) Destroy(e);
 
     auto &texture_store = *Textures;
@@ -2415,10 +2420,9 @@ void Scene::Destroy(entt::entity e) {
         for (const auto child : children) ClearParent(R, child);
     }
 
-    // Track mesh entity if this is an instance
-    entt::entity mesh_entity = entt::null;
-    if (R.all_of<MeshInstance>(e)) {
-        mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+    entt::entity buffer_entity = entt::null;
+    if (const auto *instance = R.try_get<Instance>(e)) {
+        if (R.all_of<Mesh>(instance->Entity) || R.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
         SetVisible(e, false);
     }
     std::vector<entt::entity> armature_data_entities;
@@ -2461,20 +2465,21 @@ void Scene::Destroy(entt::entity e) {
 
     if (R.valid(e)) R.destroy(e);
 
-    // If this was the last instance, destroy the mesh
-    if (R.valid(mesh_entity)) {
+    // If this was the last instance, destroy the buffer entity
+    if (R.valid(buffer_entity)) {
         const auto has_instances = any_of(
-            R.view<MeshInstance>().each(),
-            [mesh_entity](const auto &entry) { return std::get<1>(entry).MeshEntity == mesh_entity; }
+            R.view<Instance>().each(),
+            [buffer_entity](const auto &entry) { return std::get<1>(entry).Entity == buffer_entity; }
         );
         if (!has_instances) {
-            if (auto *mesh_buffers = R.try_get<MeshBuffers>(mesh_entity)) Buffers->Release(*mesh_buffers);
-            if (const auto *vcr = R.try_get<VertexClass>(mesh_entity)) {
-                if (const auto *mesh = R.try_get<Mesh>(mesh_entity)) {
-                    Buffers->VertexClassBuffer.Release({vcr->Offset, mesh->VertexCount()});
+            if (auto *mesh_buffers = R.try_get<MeshBuffers>(buffer_entity)) {
+                if (const auto *vcr = R.try_get<VertexClass>(buffer_entity)) {
+                    Buffers->VertexClassBuffer.Release({vcr->Offset, mesh_buffers->Vertices.Count});
                 }
+                Buffers->Release(*mesh_buffers);
             }
-            R.destroy(mesh_entity);
+            if (const auto *vs = R.try_get<VertexStoreId>(buffer_entity)) Meshes->Release(vs->StoreId);
+            R.destroy(buffer_entity);
         }
     }
     for (const auto armature_data_entity : armature_data_entities) {
@@ -2518,20 +2523,20 @@ void Scene::RecordRenderCommandBuffer() {
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
     const auto edit_transform_context = is_edit_mode ? EditTransformContext{scene_selection::ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
     const auto is_silhouette_eligible = [&](entt::entity e) {
-        if (!R.all_of<MeshInstance, RenderInstance>(e)) return false;
-        const auto mesh_entity = R.get<const MeshInstance>(e).MeshEntity;
-        if (!R.valid(mesh_entity) || R.all_of<ObjectExtrasTag>(mesh_entity)) return false;
+        if (!R.all_of<Instance, RenderInstance>(e)) return false;
+        const auto buffer_entity = R.get<const Instance>(e).Entity;
+        if (!R.valid(buffer_entity) || R.all_of<ObjectExtrasTag>(buffer_entity)) return false;
         // Bones get outlines from BoneWire/BoneSphereWire, not the screen-space silhouette system.
-        if (R.all_of<ArmatureObject>(mesh_entity) || R.all_of<BoneJointMeshTag>(mesh_entity)) return false;
-        const auto *mesh_buffers = R.try_get<const MeshBuffers>(mesh_entity);
+        if (R.all_of<ArmatureObject>(buffer_entity) || R.all_of<BoneJoint>(buffer_entity)) return false;
+        const auto *mesh_buffers = R.try_get<const MeshBuffers>(buffer_entity);
         return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
     };
 
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
-        for (const auto [e, mi, ri] : R.view<const MeshInstance, const Selected, const RenderInstance>().each()) {
+        for (const auto [e, instance, ri] : R.view<const Instance, const Selected, const RenderInstance>().each()) {
             if (!is_silhouette_eligible(e)) continue;
-            if (auto it = primary_edit_instances.find(mi.MeshEntity); it == primary_edit_instances.end() || it->second != e) {
+            if (auto it = primary_edit_instances.find(instance.Entity); it == primary_edit_instances.end() || it->second != e) {
                 silhouette_instances.insert(e);
             }
         }
@@ -2539,8 +2544,8 @@ void Scene::RecordRenderCommandBuffer() {
 
     std::unordered_set<entt::entity> excitable_mesh_entities;
     if (is_excite_mode) {
-        for (const auto [e, mi, excitable] : R.view<const MeshInstance, const Excitable>().each()) {
-            excitable_mesh_entities.emplace(mi.MeshEntity);
+        for (const auto [e, instance, excitable] : R.view<const Instance, const Excitable>().each()) {
+            excitable_mesh_entities.emplace(instance.Entity);
         }
     }
 
@@ -2554,7 +2559,7 @@ void Scene::RecordRenderCommandBuffer() {
         farthest_distance2_by_mesh.reserve(R.storage<RenderInstance>().size());
         for (const auto [entity, _, wt] : R.view<const RenderInstance, const WorldTransform>().each()) {
             entt::entity mesh_entity = entity;
-            if (const auto *mesh_instance = R.try_get<const MeshInstance>(entity)) mesh_entity = mesh_instance->MeshEntity;
+            if (const auto *instance = R.try_get<const Instance>(entity)) mesh_entity = instance->Entity;
             if (!R.valid(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
             const auto delta = wt.Position - camera_position;
             const auto distance2 = dot(delta, delta);
@@ -2582,7 +2587,7 @@ void Scene::RecordRenderCommandBuffer() {
     };
 
     const bool has_object_silhouette_selection =
-        any_of(R.view<const Selected, const MeshInstance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
+        any_of(R.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
     // Pose mode silhouettes work exactly like Object mode: selected/active instances get silhouettes.
     const bool render_silhouette = is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection;
 
@@ -2607,7 +2612,7 @@ void Scene::RecordRenderCommandBuffer() {
         silhouette_batch = draw_list.BeginBatch();
         auto append_silhouette = [&](entt::entity e) {
             if (!is_silhouette_eligible(e)) return;
-            const auto mesh_entity = R.get<MeshInstance>(e).MeshEntity;
+            const auto mesh_entity = R.get<Instance>(e).Entity;
             const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
             const auto &models = R.get<ModelsBuffer>(mesh_entity);
             const auto deform = get_deform_slots(mesh_entity);
@@ -2738,7 +2743,7 @@ void Scene::RecordRenderCommandBuffer() {
                 }
             } else {
                 for (const auto [entity, mesh_buffers, models, mesh] : R.view<const MeshBuffers, const ModelsBuffer, const Mesh>().each()) {
-                    if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJointMeshTag>(entity)) continue; // drawn in bone batches after depth clear
+                    if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity)) continue; // drawn in bone batches after depth clear
                     append_fill_mesh(entity, mesh_buffers, models, mesh);
                 }
             }
@@ -2755,14 +2760,14 @@ void Scene::RecordRenderCommandBuffer() {
     // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
     {
         bone_fill_batch = draw_list.BeginBatch();
-        for (const auto [entity, arm_obj, mesh_buffers, models, mesh] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer, const Mesh>().each()) {
-            if (mesh.FaceCount() == 0) continue;
+        for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
+            if (mesh_buffers.FaceIndices.Count == 0) continue;
             auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
             fill_draw.InstanceStateSlot = models.InstanceStates.Slot;
             AppendDraw(draw_list, bone_fill_batch, mesh_buffers.FaceIndices, models, fill_draw);
         }
         bone_wire_batch = draw_list.BeginBatch();
-        for (const auto [entity, arm_obj, mesh_buffers, models, mesh] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer, const Mesh>().each()) {
+        for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
             if (const auto *adj = R.try_get<const BoneAdjacencyIndices>(entity)) {
                 auto wire_draw = MakeDrawData(mesh_buffers.Vertices, adj->Indices, models);
                 wire_draw.InstanceStateSlot = models.InstanceStates.Slot;
@@ -2772,16 +2777,14 @@ void Scene::RecordRenderCommandBuffer() {
 
         // Joint sphere batches
         bone_sphere_fill_batch = draw_list.BeginBatch();
-        for (const auto [entity, mesh_buffers, models, mesh] : R.view<const MeshBuffers, const ModelsBuffer, const Mesh>().each()) {
-            if (!R.all_of<BoneJointMeshTag>(entity)) continue;
-            if (mesh.FaceCount() == 0) continue;
+        for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
+            if (mesh_buffers.FaceIndices.Count == 0) continue;
             auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
             fill_draw.InstanceStateSlot = models.InstanceStates.Slot;
             AppendDraw(draw_list, bone_sphere_fill_batch, mesh_buffers.FaceIndices, models, fill_draw);
         }
         bone_sphere_wire_batch = draw_list.BeginBatch();
-        for (const auto [entity, mesh_buffers, models, mesh] : R.view<const MeshBuffers, const ModelsBuffer, const Mesh>().each()) {
-            if (!R.all_of<BoneJointMeshTag>(entity)) continue;
+        for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
             auto wire_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
             wire_draw.InstanceStateSlot = models.InstanceStates.Slot;
@@ -2793,9 +2796,9 @@ void Scene::RecordRenderCommandBuffer() {
         line_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             if (R.all_of<ObjectExtrasTag>(entity)) continue;
-            if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJointMeshTag>(entity)) continue;
+            if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity)) continue;
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
-            const bool is_line_mesh = mesh.FaceCount() == 0 && mesh.EdgeCount() > 0;
+            const bool is_line_mesh = mesh_buffers.FaceIndices.Count == 0 && mesh_buffers.EdgeIndices.Count > 0;
             if (!is_line_mesh && !is_edit_mode && !is_excite_mode && !is_wireframe_mode) continue;
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
@@ -2819,9 +2822,8 @@ void Scene::RecordRenderCommandBuffer() {
     {
         point_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-            if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJointMeshTag>(entity)) continue;
-            const auto *mesh = R.try_get<Mesh>(entity);
-            const bool is_point_mesh = mesh && mesh->FaceCount() == 0 && mesh->EdgeCount() == 0;
+            if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity)) continue;
+            const bool is_point_mesh = mesh_buffers.FaceIndices.Count == 0 && mesh_buffers.EdgeIndices.Count == 0;
             if (!is_point_mesh && !((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode)) continue;
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
@@ -3070,15 +3072,15 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
         [&](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
             auto append_topology_batch = [&](auto filter) {
                 auto batch = draw_list.BeginBatch();
-                for (auto [mesh_entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
-                    if (R.all_of<ObjectExtrasTag>(mesh_entity) || R.all_of<BoneJointMeshTag>(mesh_entity)) continue;
-                    const auto *indices = filter(mesh, mesh_buffers);
+                for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+                    if (R.all_of<ObjectExtrasTag>(entity) || R.all_of<BoneJoint>(entity)) continue;
+                    const auto *indices = filter(mesh_buffers);
                     if (!indices || indices->Count == 0) continue;
-                    const auto deform = get_deform_slots(mesh_entity);
+                    const auto deform = get_deform_slots(entity);
                     auto draw = MakeDrawData(mesh_buffers.Vertices, *indices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
                     draw.ObjectIdSlot = models.ObjectIds.Slot;
                     const auto db = draw_list.Draws.size();
-                    if (auto it = primary_edit_instances.find(mesh_entity); it != primary_edit_instances.end()) {
+                    if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                         AppendDraw(draw_list, batch, *indices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
                     } else {
                         AppendDraw(draw_list, batch, *indices, models, draw);
@@ -3088,20 +3090,19 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
                 return batch;
             };
 
-            auto tri_batch = append_topology_batch([](const Mesh &m, const MeshBuffers &b) -> const SlottedRange * {
-                return m.FaceCount() > 0 ? &b.FaceIndices : nullptr;
+            auto tri_batch = append_topology_batch([](const MeshBuffers &b) -> const SlottedRange * {
+                return b.FaceIndices.Count > 0 ? &b.FaceIndices : nullptr;
             });
-            auto line_batch = append_topology_batch([](const Mesh &m, const MeshBuffers &b) -> const SlottedRange * {
-                return m.FaceCount() == 0 && m.EdgeCount() > 0 ? &b.EdgeIndices : nullptr;
+            auto line_batch = append_topology_batch([](const MeshBuffers &b) -> const SlottedRange * {
+                return b.FaceIndices.Count == 0 && b.EdgeIndices.Count > 0 ? &b.EdgeIndices : nullptr;
             });
-            auto point_batch = append_topology_batch([](const Mesh &m, const MeshBuffers &b) -> const SlottedRange * {
-                return m.FaceCount() == 0 && m.EdgeCount() == 0 ? &b.VertexIndices : nullptr;
+            auto point_batch = append_topology_batch([](const MeshBuffers &b) -> const SlottedRange * {
+                return b.FaceIndices.Count == 0 && b.EdgeIndices.Count == 0 ? &b.VertexIndices : nullptr;
             });
 
             auto bone_sphere_batch = draw_list.BeginBatch();
-            for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
-                if (!R.all_of<BoneJointMeshTag>(entity)) continue;
-                if (mesh.FaceCount() == 0) continue;
+            for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
+                if (mesh_buffers.FaceIndices.Count == 0) continue;
                 auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
                 draw.ObjectIdSlot = models.ObjectIds.Slot;
                 AppendDraw(draw_list, bone_sphere_batch, mesh_buffers.FaceIndices, models, draw);
@@ -3134,11 +3135,11 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
         silhouette_batch = draw_list.BeginBatch();
         if (render_silhouette) {
             for (const auto e : R.view<Selected>()) {
-                const auto *mesh_instance = R.try_get<MeshInstance>(e);
-                if (!mesh_instance) continue;
-                const auto mesh_entity = mesh_instance->MeshEntity;
-                const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
-                const auto &models = R.get<ModelsBuffer>(mesh_entity);
+                const auto *inst = R.try_get<Instance>(e);
+                if (!inst) continue;
+                const auto buffer_entity = inst->Entity;
+                const auto &mesh_buffers = R.get<MeshBuffers>(buffer_entity);
+                const auto &models = R.get<ModelsBuffer>(buffer_entity);
                 if (const auto model_index = GetModelBufferIndex(R, e)) {
                     auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
                     draw.ObjectIdSlot = models.ObjectIds.Slot;
@@ -3255,11 +3256,11 @@ void Scene::RenderElementSelectionPass(
         // elements at the surface pass (eLessOrEqual) while occluded elements behind it fail.
         if (element != Element::Face) {
             for (const auto e : R.view<Selected>()) {
-                const auto *mesh_instance = R.try_get<MeshInstance>(e);
-                if (!mesh_instance) continue;
-                const auto mesh_entity = mesh_instance->MeshEntity;
-                const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
-                const auto &models = R.get<ModelsBuffer>(mesh_entity);
+                const auto *inst = R.try_get<Instance>(e);
+                if (!inst) continue;
+                const auto buffer_entity = inst->Entity;
+                const auto &mesh_buffers = R.get<MeshBuffers>(buffer_entity);
+                const auto &models = R.get<ModelsBuffer>(buffer_entity);
                 if (const auto model_index = GetModelBufferIndex(R, e)) {
                     auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, models);
                     draw.ObjectIdSlot = models.ObjectIds.Slot;
@@ -3546,11 +3547,11 @@ std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges
 
 std::optional<uint32_t> Scene::RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px) {
     if (!R.all_of<Excitable>(instance_entity)) return {};
-    const auto *mesh_instance = R.try_get<MeshInstance>(instance_entity);
-    if (!mesh_instance) return {};
+    const auto *instance = R.try_get<Instance>(instance_entity);
+    if (!instance) return {};
 
     const Timer timer{"RunExcitableVertexPick"};
-    const auto mesh_entity = mesh_instance->MeshEntity;
+    const auto mesh_entity = instance->Entity;
     const auto &mesh = R.get<Mesh>(mesh_entity);
     const uint32_t vertex_count = mesh.VertexCount();
     if (vertex_count == 0) return {};

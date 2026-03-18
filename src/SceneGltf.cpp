@@ -1,5 +1,5 @@
 #include "Armature.h"
-#include "MeshInstance.h"
+#include "Instance.h"
 #include "NodeTransformAnimation.h"
 #include "PbrFeature.h"
 #include "Scene.h"
@@ -302,7 +302,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
         object_entities_by_node[object.NodeIndex] = object_entity;
         // glTF node.skin is deform linkage, not a transform-parent relationship.
-        if (object.SkinIndex && R.all_of<MeshInstance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
+        if (object.SkinIndex && R.all_of<Instance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
         if (first_object_entity == entt::null) first_object_entity = object_entity;
         if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Mesh) first_mesh_object_entity = object_entity;
         if (first_root_empty_entity == entt::null && object.ObjectType == gltf::Object::Type::Empty && !object.ParentNodeIndex) first_root_empty_entity = object_entity;
@@ -352,7 +352,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             joint_node_to_bone_id.emplace(joint.JointNodeIndex, bone_id);
             if (const auto object_it = object_entities_by_node.find(joint.JointNodeIndex);
                 object_it != object_entities_by_node.end() &&
-                R.all_of<MeshInstance>(object_it->second) &&
+                R.all_of<Instance>(object_it->second) &&
                 !R.all_of<BoneAttachment>(object_it->second)) {
                 R.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
             }
@@ -394,7 +394,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         if (const auto skinned_it = skinned_mesh_instances_by_skin.find(skin.SkinIndex);
             skinned_it != skinned_mesh_instances_by_skin.end()) {
             for (const auto mesh_instance_entity : skinned_it->second) {
-                if (!R.valid(mesh_instance_entity) || !R.all_of<MeshInstance>(mesh_instance_entity)) continue;
+                if (!R.valid(mesh_instance_entity) || !R.all_of<Instance>(mesh_instance_entity)) continue;
                 R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
                 SetParent(R, mesh_instance_entity, armature_entity);
             }
@@ -442,7 +442,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         const auto obj_it = object_entities_by_node.find(object.NodeIndex);
         if (obj_it == object_entities_by_node.end()) continue;
         const auto instance_entity = obj_it->second;
-        if (!R.all_of<MeshInstance>(instance_entity)) continue;
+        if (!R.all_of<Instance>(instance_entity)) continue;
 
         const auto &morph = *mesh_morphs[*object.MeshIndex];
         if (morph.TargetCount == 0) continue;

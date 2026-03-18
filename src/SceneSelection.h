@@ -20,10 +20,10 @@ std::vector<uint32_t> ScanBitsetRange(const uint32_t *bits, uint32_t offset, uin
 std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles, const Mesh &, Element from_element, Element to_element);
 
 // Returns representative edit instance per selected mesh: active instance if selected, else first selected instance.
-// Only includes Mesh-type objects (excludes Cameras, etc. that also have MeshInstance).
+// Only includes Mesh-type objects (excludes Cameras, etc.).
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &, bool include_frozen = true);
 
-bool HasFrozenInstance(const entt::registry &, entt::entity mesh_entity);
+bool HasFrozenInstance(const entt::registry &, entt::entity);
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &);
 uint32_t GetElementCount(const Mesh &, Element);
 

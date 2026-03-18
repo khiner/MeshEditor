@@ -1,7 +1,7 @@
 #include "SceneSelection.h"
 #include "Entity.h"
+#include "Instance.h"
 #include "MeshComponents.h"
-#include "MeshInstance.h"
 #include "mesh/Mesh.h"
 
 #include <entt/entity/registry.hpp>
@@ -102,25 +102,27 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_frozen) {
     std::unordered_map<entt::entity, entt::entity> primaries;
     const auto active = FindActiveEntity(r);
-    for (const auto [e, mi, ok, ri] : r.view<const MeshInstance, const Selected, const ObjectKind, const RenderInstance>().each()) {
+    for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
         if (ok.Value != ObjectType::Mesh) continue;
         if (!include_frozen && r.all_of<Frozen>(e)) continue;
-        auto &primary = primaries[mi.MeshEntity];
+        auto &primary = primaries[instance.Entity];
         if (primary == entt::entity{} || e == active) primary = e;
     }
     return primaries;
 }
 
-bool HasFrozenInstance(const entt::registry &r, entt::entity mesh_entity) {
-    for (const auto [e, mi] : r.view<const MeshInstance, const Frozen>().each()) {
-        if (mi.MeshEntity == mesh_entity) return true;
+bool HasFrozenInstance(const entt::registry &r, entt::entity e) {
+    for (const auto [_, instance] : r.view<const Instance, const Frozen>().each()) {
+        if (instance.Entity == e) return true;
     }
     return false;
 }
 
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &r) {
     std::unordered_set<entt::entity> entities;
-    for (const auto [e, mi] : r.view<const MeshInstance, const Selected>().each()) entities.emplace(mi.MeshEntity);
+    for (const auto [e, instance] : r.view<const Instance, const Selected>().each()) {
+        if (r.all_of<Mesh>(instance.Entity)) entities.emplace(instance.Entity);
+    }
     return entities;
 }
 

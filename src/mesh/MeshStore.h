@@ -41,7 +41,12 @@ struct MeshStore {
     Mesh CloneMesh(const Mesh &);
     std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &);
 
+    // Allocate vertex-only store entry (no topology, no face/edge/primitive/material buffers).
+    // Returns {storeId, vertexRange}. Release via Release(storeId).
+    std::pair<uint32_t, Range> AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs);
+
     void SetPositions(const Mesh &, std::span<const vec3>);
+    void SetPositions(uint32_t store_id, std::span<const vec3>); // Position-only, no normals. For topology-free entries.
     void SetPosition(const Mesh &, uint32_t index, vec3 position); // Single vertex, no normal update
 
     std::span<const Vertex> GetVertices(uint32_t id) const { return VerticesBuffer.Get(Entries.at(id).Vertices); }

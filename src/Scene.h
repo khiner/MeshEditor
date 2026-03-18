@@ -260,7 +260,7 @@ private:
     std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 
     void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);
-    entt::entity CreateExtrasMeshEntity(ExtrasWireframe &&);
+    entt::entity CreateExtrasBufferEntity(ExtrasWireframe &&);
     entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);

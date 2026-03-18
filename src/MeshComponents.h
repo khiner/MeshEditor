@@ -1,8 +1,11 @@
 #pragma once
 
+#include "entt_fwd.h"
 #include "vulkan/Buffer.h"
 
+// Links a renderable instance to the entity holding its shared GPU buffers (MeshBuffers + ModelsBuffer).
 struct RenderInstance {
+    entt::entity Entity; // The entity this is an instance of (has MeshBuffers + ModelsBuffer).
     uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
     uint32_t ObjectId{0};
 };
@@ -20,4 +23,9 @@ struct ObjectExtrasTag {};
 
 struct VertexClass {
     uint32_t Offset{InvalidOffset};
+};
+
+// MeshStore vertex buffer ID
+struct VertexStoreId {
+    uint32_t StoreId;
 };

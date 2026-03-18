@@ -62,11 +62,11 @@ struct Armature {
 struct ArmatureObject {
     entt::entity Entity;
     std::vector<entt::entity> BoneEntities; // Bone instance entities, indexed by bone index.
-    entt::entity JointMeshEntity{null_entity}; // Shared billboard disc mesh for joint spheres.
+    entt::entity JointEntity{null_entity}; // Shared joint sphere entity (billboard disc vertices).
 };
 
-// Tag on the shared joint sphere mesh entity (excluded from silhouette and normal mesh iteration).
-struct BoneJointMeshTag {};
+// Tag on the shared joint sphere entity (excluded from silhouette and normal mesh iteration).
+struct BoneJoint {};
 
 // Component on joint sphere instance entities. Maps picks back to the bone.
 struct BoneSubPartOf {

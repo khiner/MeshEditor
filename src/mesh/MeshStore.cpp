@@ -444,14 +444,13 @@ void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
     }
 }
 
-Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
-    // Current mesh loaders/builders provide channel vectors already aligned to Positions/Faces.
-    const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
+std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
+    const auto vertex_count = static_cast<uint32_t>(positions.size());
     const auto vertices = AllocateVertices(vertex_count);
     auto vertex_span = VerticesBuffer.GetMutable(vertices);
     for (uint32_t i = 0; i < vertex_count; ++i) {
         vertex_span[i] = {
-            .Position = data.Positions[i],
+            .Position = positions[i],
             .Tangent = attrs.Tangents ? (*attrs.Tangents)[i] : vec4{0.f, 0.f, 0.f, 1.f},
             .Color = attrs.Colors0 ? (*attrs.Colors0)[i] : vec4{1.f},
             .TexCoord0 = attrs.TexCoords0 ? (*attrs.TexCoords0)[i] : vec2{0},
@@ -460,22 +459,30 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
             .TexCoord3 = attrs.TexCoords3 ? (*attrs.TexCoords3)[i] : vec2{0},
         };
     }
-    Range bone_deform{};
+    if (attrs.Normals) {
+        for (uint32_t i = 0; i < vertex_count; ++i) vertex_span[i].Normal = (*attrs.Normals)[i];
+    }
+    const auto id = AcquireId({.Vertices = vertices, .Alive = true});
+    return {id, vertices};
+}
+
+Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
+    const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
+    auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
+    auto &entry = Entries[id];
+
     if (deform) {
-        bone_deform = BoneDeformBuffer.Allocate(vertex_count);
-        auto bd_span = BoneDeformBuffer.GetMutable(bone_deform);
+        entry.BoneDeform = BoneDeformBuffer.Allocate(vertex_count);
+        auto bd_span = BoneDeformBuffer.GetMutable(entry.BoneDeform);
         for (uint32_t i = 0; i < vertex_count; ++i) {
             bd_span[i] = {.Joints = deform->Joints[i], .Weights = deform->Weights[i]};
         }
     }
-    Range morph_targets{};
-    uint32_t morph_target_count{0};
-    std::vector<float> default_morph_weights;
     if (morph && morph->TargetCount > 0 && vertex_count > 0) {
-        morph_target_count = morph->TargetCount;
-        const auto total = morph_target_count * vertex_count;
-        morph_targets = MorphTargetBuffer.Allocate(total);
-        auto mt_span = MorphTargetBuffer.GetMutable(morph_targets);
+        entry.MorphTargetCount = morph->TargetCount;
+        const auto total = entry.MorphTargetCount * vertex_count;
+        entry.MorphTargets = MorphTargetBuffer.Allocate(total);
+        auto mt_span = MorphTargetBuffer.GetMutable(entry.MorphTargets);
         const bool has_normal_deltas = !morph->NormalDeltas.empty();
         for (uint32_t i = 0; i < total; ++i) {
             mt_span[i] = MorphTargetVertex{
@@ -483,42 +490,27 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
                 .NormalDelta = has_normal_deltas ? morph->NormalDeltas[i] : vec3{0},
             };
         }
-        default_morph_weights = std::move(morph->DefaultWeights);
-        default_morph_weights.resize(morph_target_count, 0.f);
+        entry.DefaultMorphWeights = std::move(morph->DefaultWeights);
+        entry.DefaultMorphWeights.resize(entry.MorphTargetCount, 0.f);
     }
 
-    Range faces{}, triangle_face_ids{}, face_primitives{}, primitive_materials{};
     if (!data.Faces.empty()) {
         const auto first_tris = CreateFaceFirstTriIndices(data.Faces);
-        faces = AllocateFaces(data.Faces.size());
-        std::ranges::copy(first_tris, FaceFirstTriangleBuffer.GetMutable(faces).begin());
-        triangle_face_ids = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
+        entry.FaceData = AllocateFaces(data.Faces.size());
+        std::ranges::copy(first_tris, FaceFirstTriangleBuffer.GetMutable(entry.FaceData).begin());
+        entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
 
         std::vector<uint32_t> face_primitive_indices(data.Faces.size(), 0u);
         if (!primitives.FacePrimitiveIndices.empty()) face_primitive_indices = std::move(primitives.FacePrimitiveIndices);
-        face_primitives = FacePrimitiveBuffer.Allocate(face_primitive_indices);
+        entry.FacePrimitives = FacePrimitiveBuffer.Allocate(face_primitive_indices);
 
         const auto primitive_count = !primitives.MaterialIndices.empty() ?
             (face_primitive_indices.empty() ? 0u : *std::ranges::max_element(face_primitive_indices) + 1u) :
             1u;
         std::vector<uint32_t> primitive_material_indices(primitive_count, 0u);
         if (!primitives.MaterialIndices.empty()) primitive_material_indices = std::move(primitives.MaterialIndices);
-        primitive_materials = PrimitiveMaterialBuffer.Allocate(primitive_material_indices);
+        entry.PrimitiveMaterials = PrimitiveMaterialBuffer.Allocate(primitive_material_indices);
     }
-
-    const auto id = AcquireId({
-        .Vertices = vertices,
-        .FaceData = faces,
-        .EdgeStates = {},
-        .TriangleFaceIds = triangle_face_ids,
-        .FacePrimitives = face_primitives,
-        .PrimitiveMaterials = primitive_materials,
-        .BoneDeform = bone_deform,
-        .MorphTargets = morph_targets,
-        .MorphTargetCount = morph_target_count,
-        .DefaultMorphWeights = std::move(default_morph_weights),
-        .Alive = true,
-    });
 
     auto mesh = [&]() -> Mesh {
         if (!data.Faces.empty()) return {*this, id, std::move(data.Faces)};
@@ -526,21 +518,17 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         return {*this, id, vertex_count};
     }();
 
-    auto &entry = Entries[id];
-
     if (!data.Faces.empty()) {
-        if (attrs.Normals) {
-            auto verts = GetVertices(id);
-            for (uint32_t i = 0; i < vertex_count; ++i) verts[i].Normal = (*attrs.Normals)[i];
-            UpdateNormals(mesh, /*skip_nonzero=*/true);
-        } else {
+        if (!attrs.Normals) {
             UpdateNormals(mesh);
+        } else {
+            UpdateNormals(mesh, /*skip_nonzero=*/true);
         }
     }
 
     entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     std::ranges::fill(GetVertexStates(vertices), 0);
-    if (faces.Count > 0) std::ranges::fill(GetFaceStates(faces), 0);
+    if (entry.FaceData.Count > 0) std::ranges::fill(GetFaceStates(entry.FaceData), 0);
     if (entry.EdgeStates.Count > 0) std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
     return mesh;
 }
@@ -598,6 +586,10 @@ void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) 
     auto vertex_span = VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices);
     for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
     UpdateNormals(mesh);
+}
+void MeshStore::SetPositions(uint32_t store_id, std::span<const vec3> positions) {
+    auto vertex_span = VerticesBuffer.GetMutable(Entries.at(store_id).Vertices);
+    for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
 }
 void MeshStore::SetPosition(const Mesh &mesh, uint32_t index, vec3 position) {
     VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices)[index].Position = position;
