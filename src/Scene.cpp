@@ -1775,21 +1775,12 @@ float ComputeSingleBoneDisplayScale(const Armature &armature, uint32_t bone_inde
 }
 } // namespace
 
-void Scene::AddBone() {
-    const auto active_entity = FindActiveEntity(R);
-    const auto arm_obj_entity = FindArmatureObject(R, active_entity);
-    if (arm_obj_entity == entt::null) return;
-
+// Create a single bone ECS entity with model buffer reservation, joint spheres, and scene hierarchy.
+// Returns the new bone entity. Caller is responsible for selection.
+entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId bone_id) {
     auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
-    auto &armature = R.get<Armature>(arm_obj.Entity);
-
-    // New bone: unparented, unit length, oriented along Y (up), at world origin.
-    // Transform world origin into armature-local space for the rest pose position.
-    const auto arm_world_inv = glm::inverse(ToMatrix(R.get<WorldTransform>(arm_obj_entity)));
-    const auto new_id = armature.AddBone("Bone", {}, {.P = vec3{arm_world_inv * vec4{0, 0, 0, 1}}});
-    RebuildBoneStructure(arm_obj.Entity);
-
-    const auto new_index = *armature.FindBoneIndex(new_id);
+    const auto &armature = R.get<const Armature>(arm_obj.Entity);
+    const auto new_index = *armature.FindBoneIndex(bone_id);
     const auto &bone = armature.Bones[new_index];
 
     const auto bone_entity = R.create();
@@ -1800,17 +1791,16 @@ void Scene::AddBone() {
     R.emplace<BoneDisplayScale>(bone_entity, ComputeSingleBoneDisplayScale(armature, new_index));
     SetTransform(R, bone_entity, {bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
 
-    SetParent(R, bone_entity, arm_obj_entity);
+    const auto parent_entity = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
+    SetParent(R, bone_entity, parent_entity);
     R.emplace_or_replace<ParentInverse>(bone_entity, I4);
 
-    // Ensure model buffers have room for the new instance
     R.patch<ModelsBuffer>(arm_obj_entity, [](auto &mb) {
         mb.Buffer.Reserve(mb.Buffer.UsedSize + sizeof(WorldTransform));
         mb.ObjectIds.Reserve(mb.ObjectIds.UsedSize + sizeof(uint32_t));
         mb.InstanceStates.Reserve(mb.InstanceStates.UsedSize + sizeof(uint8_t));
     });
 
-    // Create joint sphere entities for the new bone (before UpdateWorldTransform so it writes their transforms)
     if (arm_obj.JointMeshEntity != null_entity && R.valid(arm_obj.JointMeshEntity)) {
         auto &joint_models = R.get<ModelsBuffer>(arm_obj.JointMeshEntity);
         const uint32_t head_idx = uint32_t(joint_models.Buffer.UsedSize / sizeof(WorldTransform));
@@ -1843,7 +1833,101 @@ void Scene::AddBone() {
     UpdateWorldTransform(R, bone_entity);
 
     arm_obj.BoneEntities.emplace_back(bone_entity);
+    return bone_entity;
+}
+
+void Scene::AddBone() {
+    const auto active_entity = FindActiveEntity(R);
+    const auto arm_obj_entity = FindArmatureObject(R, active_entity);
+    if (arm_obj_entity == entt::null) return;
+
+    auto &armature = R.get<Armature>(R.get<ArmatureObject>(arm_obj_entity).Entity);
+
+    // New bone: unparented, unit length, oriented along Y (up), at world origin.
+    const auto arm_world_inv = glm::inverse(ToMatrix(R.get<WorldTransform>(arm_obj_entity)));
+    const auto new_id = armature.AddBone("Bone", {}, {.P = vec3{arm_world_inv * vec4{0, 0, 0, 1}}});
+    RebuildBoneStructure(R.get<ArmatureObject>(arm_obj_entity).Entity);
+
+    const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, new_id);
     Select(bone_entity);
+    R.emplace<BoneSelParts>(bone_entity, false, true, false);
+}
+
+void Scene::ExtrudeBone() {
+    const auto active_entity = FindActiveEntity(R);
+    const auto arm_obj_entity = FindArmatureObject(R, active_entity);
+    if (arm_obj_entity == entt::null) return;
+
+    auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
+    auto &armature = R.get<Armature>(arm_obj.Entity);
+
+    // Collect selected bones with their extrude type.
+    // Blender logic: tip or body selected → extrude from tip (child); root-only → extrude from root (sibling).
+    struct ExtrudeInfo {
+        entt::entity BoneEntity;
+        uint32_t BoneIndex;
+        bool FromTip;
+    };
+    std::vector<ExtrudeInfo> to_extrude;
+    for (const auto e : R.view<Selected, BoneIndex>()) {
+        if (R.get<SubElementOf>(e).Parent != arm_obj_entity) continue;
+        const auto idx = R.get<BoneIndex>(e).Index;
+        const auto *parts = R.try_get<const BoneSelParts>(e);
+        const bool root_only = parts && parts->Root && !parts->Tip && !parts->Body;
+        to_extrude.push_back({e, idx, !root_only});
+    }
+    if (to_extrude.empty()) return;
+
+    // For root extrude, skip if parent bone's tip is also selected (Blender conflict avoidance).
+    std::erase_if(to_extrude, [&](const ExtrudeInfo &info) {
+        if (info.FromTip) return false;
+        const auto &bone = armature.Bones[info.BoneIndex];
+        if (bone.ParentIndex == InvalidBoneIndex) return false;
+        const auto parent_entity = arm_obj.BoneEntities[bone.ParentIndex];
+        const auto *parent_parts = R.try_get<const BoneSelParts>(parent_entity);
+        return parent_parts && parent_parts->Tip;
+    });
+    if (to_extrude.empty()) return;
+
+    // Create new bones in the Armature data.
+    std::vector<BoneId> new_bone_ids;
+    for (const auto &info : to_extrude) {
+        const auto &bone = armature.Bones[info.BoneIndex];
+        if (info.FromTip) {
+            const float bone_length = R.get<BoneDisplayScale>(info.BoneEntity).Value;
+            new_bone_ids.push_back(armature.AddBone("", bone.Id, {.P = vec3{0, bone_length, 0}}));
+        } else {
+            auto parent_id = bone.ParentBoneId == InvalidBoneId ? std::optional<BoneId>{} : std::optional<BoneId>{bone.ParentBoneId};
+            new_bone_ids.push_back(armature.AddBone("", parent_id, bone.RestLocal));
+        }
+    }
+
+    RebuildBoneStructure(arm_obj.Entity);
+
+    // Deselect all bones. Don't select the armature object itself — only bones should be
+    // Selected so that the transform gizmo doesn't move the armature during the chained translate.
+    R.clear<BoneSelParts>();
+    R.clear<Selected>();
+    R.clear<Active>();
+
+    // Create ECS entities for each new bone, select with tip only.
+    // Zero display scale so the bone starts as a point (Blender behavior: head=tail until moved).
+    for (const auto id : new_bone_ids) {
+        const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, id);
+        R.get<BoneDisplayScale>(bone_entity).Value = 0.f;
+        UpdateModelBuffer(R, bone_entity, R.get<WorldTransform>(bone_entity));
+        R.emplace<Selected>(bone_entity);
+        R.emplace_or_replace<Active>(bone_entity); // Last one wins as the active bone.
+        R.emplace<BoneSelParts>(bone_entity, false, true, false);
+    }
+
+    // Update parent bone display scales (they may have gained a child).
+    for (const auto &info : to_extrude) {
+        if (info.FromTip) {
+            R.get<BoneDisplayScale>(info.BoneEntity).Value = ComputeSingleBoneDisplayScale(armature, info.BoneIndex);
+            UpdateModelBuffer(R, info.BoneEntity, R.get<WorldTransform>(info.BoneEntity));
+        }
+    }
 }
 
 void Scene::DeleteSelectedBones() {

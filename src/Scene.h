@@ -117,6 +117,7 @@ struct Scene {
     void Delete();
 
     void AddBone(); // Add a new root bone at the world origin.
+    void ExtrudeBone(); // Extrude new bones from selected bone tips/roots.
     void DeleteSelectedBones(); // Delete all selected bones from the active armature.
 
     // Handle mouse/keyboard interactions.
@@ -263,6 +264,7 @@ private:
     entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
+    entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.
     void DestroyBoneInstances(entt::entity arm_obj_entity);
     void RebuildBoneStructure(entt::entity arm_data_entity); // Call after Armature::AddBone/RemoveBone
 

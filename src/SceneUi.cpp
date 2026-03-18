@@ -507,6 +507,9 @@ void Scene::Interact() {
             if (bone_edit) {
                 if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyShift && !GetIO().KeyCtrl) {
                     AddBone();
+                } else if (IsKeyPressed(ImGuiKey_E, false) && !GetIO().KeyCtrl && !GetIO().KeyShift) {
+                    ExtrudeBone();
+                    StartScreenTransform = TransformGizmo::TransformType::Translate;
                 } else if (IsKeyPressed(ImGuiKey_X, false) || IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) {
                     DeleteSelectedBones();
                 }
