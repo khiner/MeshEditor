@@ -119,10 +119,10 @@ private:
     struct Entry {
         Range Vertices;
         Range FaceData; // Per-face range shared by FaceFirstTriangleBuffer and FaceStateBuffer
-        Range EdgeStates, TriangleFaceIds, FacePrimitives, PrimitiveMaterials;
-        Range BoneDeform, MorphTargets;
+        Range EdgeStates{}, TriangleFaceIds{}, FacePrimitives{}, PrimitiveMaterials{};
+        Range BoneDeform{}, MorphTargets{};
         uint32_t MorphTargetCount{0};
-        std::vector<float> DefaultMorphWeights;
+        std::vector<float> DefaultMorphWeights{};
         bool Alive{false};
     };
 

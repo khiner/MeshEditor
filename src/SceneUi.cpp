@@ -43,7 +43,7 @@ constexpr float WheelZoomBaseSpeed{0.01f}; // Base per-wheel-unit zoom speed for
 constexpr float WheelZoomMaxBurst{8.f}; // Cap on accumulated rapid-scroll acceleration.
 constexpr double WheelZoomAccelerationWindow{0.25}; // Seconds between ticks that still count as one accelerated burst.
 
-// Deselect all bones but keep the armature object active so we stay in bone pick mode.
+// Deselect all bones but keep the armature object active+selected so we stay in bone pick mode.
 void DeselectAllBones(entt::registry &R, entt::entity arm_obj_entity) {
     R.clear<BoneSelParts>();
     R.clear<Selected>();
@@ -901,10 +901,12 @@ void Scene::RenderOverlay() {
             const auto &wt = R.get<WorldTransform>(active_entity);
             return {wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale};
         }();
-        const bool bone_edit_mode = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
+        const auto arm_obj = FindArmatureObject(R, active_entity);
+        const bool bone_edit_mode = interaction_mode == InteractionMode::Edit && arm_obj != entt::null;
+        const bool bone_mode = bone_edit_mode || (interaction_mode == InteractionMode::Pose && arm_obj != entt::null);
         const bool mesh_edit_mode = interaction_mode == InteractionMode::Edit && !bone_edit_mode;
 
-        auto root_selected = selected_view | filter([&](auto e) { return bone_edit_mode || !is_parent_selected(e); });
+        auto root_selected = selected_view | filter([&](auto e) { return !is_parent_selected(e) && (!bone_mode || e != arm_obj); });
         const auto root_count = distance(root_selected);
         const auto edit_transform_instances = mesh_edit_mode ?
             scene_selection::ComputePrimaryEditInstances(R, false) :

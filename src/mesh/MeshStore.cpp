@@ -462,7 +462,7 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
     if (attrs.Normals) {
         for (uint32_t i = 0; i < vertex_count; ++i) vertex_span[i].Normal = (*attrs.Normals)[i];
     }
-    const auto id = AcquireId({.Vertices = vertices, .Alive = true});
+    const auto id = AcquireId({.Vertices = vertices, .FaceData = {}, .Alive = true});
     return {id, vertices};
 }
 
