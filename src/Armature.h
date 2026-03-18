@@ -3,6 +3,7 @@
 #include "AnimationData.h"
 #include "Transform.h"
 #include "entt_fwd.h"
+#include "numeric/mat3.h"
 #include "numeric/mat4.h"
 #include "vulkan/Range.h"
 
@@ -162,3 +163,8 @@ void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const 
 // Compute final deform matrices from rest poses + pose deltas + user offsets + inverse bind matrices.
 // Effective delta per bone = ComposeWithDelta(pose_delta, user_offset). Writes directly into `out` (mapped GPU memory).
 void ComputeDeformMatrices(const Armature &, std::span<const Transform> pose_deltas, std::span<const Transform> user_offsets, std::span<const mat4> inverse_bind, std::span<mat4> out);
+
+// Bone direction/roll ↔ rotation matrix conversion (ported from Blender).
+// Direction is the normalized bone Y axis (head→tail). Roll is twist around that axis.
+mat3 BoneVecRollToMat3(vec3 direction, float roll);
+void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll);

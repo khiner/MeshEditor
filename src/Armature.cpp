@@ -301,6 +301,41 @@ void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<co
     for (uint32_t i = 0; i < bones.size(); ++i) deltas[i] = AbsoluteToDelta(bones[i].RestLocal, deltas[i]);
 }
 
+namespace {
+// Zero-roll rotation: maps +Y to `nor` with a well-defined, smooth reference frame.
+// Uses Blender's formula (armature.cc vec_roll_to_mat3_normalized) which handles the
+// -Y singularity stably, unlike glm::rotation which is discontinuous there.
+quat ZeroRollQuat(vec3 nor) {
+    const float x = nor.x, y = nor.y, z = nor.z;
+    constexpr float SafeThreshold = 6.1e-3f, CriticalThresholdSq = 2.5e-4f * 2.5e-4f;
+    const float theta = 1.f + y;
+    const float theta_alt = x * x + z * z;
+
+    mat3 m;
+    if (theta > SafeThreshold || theta_alt > CriticalThresholdSq) {
+        const float t = (theta <= SafeThreshold) ? theta_alt * 0.5f + theta_alt * theta_alt * 0.125f : theta;
+        m[0] = {1 - x * x / t, -x, -x * z / t};
+        m[1] = {x, y, z};
+        m[2] = {-x * z / t, -z, 1 - z * z / t};
+    } else {
+        m = {-1, 0, 0, 0, -1, 0, 0, 0, 1};
+    }
+    return glm::quat_cast(m);
+}
+} // namespace
+
+mat3 BoneVecRollToMat3(vec3 direction, float roll) {
+    const vec3 nor = glm::normalize(direction);
+    return glm::mat3_cast(glm::angleAxis(roll, nor) * ZeroRollQuat(nor));
+}
+
+void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
+    direction = m[1]; // Y column is the bone axis.
+    const vec3 nor = glm::normalize(direction);
+    const quat twist = glm::quat_cast(m) * glm::conjugate(ZeroRollQuat(nor));
+    roll = 2.f * std::atan2(glm::dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
+}
+
 // Unlike Blender, we don't apply mesh-to-armature transforms (target_to_armature / armature_to_target) around the deformation.
 // Blender computes these per-mesh-instance on CPU, but we batch deform matrices per-armature on the GPU:
 // multiple mesh instances share one deform buffer, so per-instance transforms would require duplicating deform buffers

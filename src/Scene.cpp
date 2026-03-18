@@ -1229,8 +1229,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                             R.replace<Position>(b, rest.P);
                             R.replace<Rotation>(b, rest.R);
                             need_sync = true;
-                        } else if (transform_end.contains(b)) {
-                            // Commit Edit mode drag: write new rest pose.
+                        } else if (transform_end.contains(b) || (wt_changes.contains(b) && !R.all_of<StartTransform>(b))) {
+                            // Commit Edit mode transform (gizmo drag end or UI slider edit).
                             armature.Bones[i].RestLocal.P = R.get<Position>(b).Value;
                             armature.Bones[i].RestLocal.R = R.get<Rotation>(b).Value;
                             was_transformed[i] = true;
