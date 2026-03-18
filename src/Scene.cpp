@@ -351,7 +351,7 @@ namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct Rerecord {};
 struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
 struct Excitable {}; struct ExcitedVertex {}; struct ModelsBuffer {};
-struct SceneSettings {}; struct InteractionMode {}; struct Submit {};
+struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
 struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {};
@@ -616,6 +616,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<ViewportExtent>(On::Create | On::Update)
         .on<SceneEditMode>(On::Create | On::Update);
     track<changes::CameraLens>(R).on<Camera>(On::Create | On::Update);
+    track<changes::Rotation>(R).on<::Rotation>(On::Create | On::Update);
     track<changes::WorldTransform>(R).on<WorldTransform>(On::Create | On::Update);
     track<changes::TransformPending>(R).on<PendingTransform>(On::Create | On::Update);
     track<changes::TransformEnd>(R).on<StartTransform>(On::Destroy);
@@ -914,6 +915,36 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
     }
+    { // Sync RotationUiVariant from Rotation, but skip entities where the UI is driving the change.
+        for (auto e : reactive<changes::Rotation>(R)) {
+            if (!R.all_of<::Rotation>(e)) continue;
+            if (R.all_of<RotationUiDriving>(e)) {
+                R.remove<RotationUiDriving>(e);
+                continue;
+            }
+            const auto v = R.get<const ::Rotation>(e).Value;
+            if (auto *ui = R.try_get<RotationUiVariant>(e)) {
+                std::visit(
+                    overloaded{
+                        [&](RotationQuat &u) { u.Value = v; },
+                        [&](RotationEuler &u) {
+                            float x, y, z;
+                            glm::extractEulerAngleXYZ(glm::mat4_cast(v), x, y, z);
+                            u.Value = glm::degrees(vec3{x, y, z});
+                        },
+                        [&](RotationAxisAngle &u) {
+                            const auto q = glm::normalize(v);
+                            u.Value = {glm::axis(q), glm::degrees(glm::angle(q))};
+                        },
+                    },
+                    *ui
+                );
+            } else {
+                R.emplace<RotationUiVariant>(e, RotationQuat{v});
+            }
+        }
+    }
+
     bool light_count_changed = false;
     if (const auto required_size = vk::DeviceSize(R.storage<LightIndex>().size()) * sizeof(PunctualLight);
         Buffers->LightBuffer.UsedSize != required_size) {

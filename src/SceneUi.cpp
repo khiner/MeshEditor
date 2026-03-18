@@ -1218,49 +1218,50 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         auto &position = R.get<Position>(active_entity).Value;
         bool model_changed = DragFloat3("Position", &position[0], 0.01f);
         if (model_changed) R.patch<Position>(active_entity, [](auto &) {});
-        // Rotation editor
-        {
-            int mode_i = R.get<const RotationUiVariant>(active_entity).index();
+        // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
+        if (auto *rotation_ui_ptr = R.try_get<RotationUiVariant>(active_entity)) {
+            int mode_i = rotation_ui_ptr->index();
             const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
             if (Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes))) {
                 R.replace<RotationUiVariant>(active_entity, CreateVariantByIndex<RotationUiVariant>(mode_i));
-                SetRotation(R, active_entity, R.get<const Rotation>(active_entity).Value);
+                R.patch<Rotation>(active_entity, [](auto &) {}); // Trigger reactive sync to populate new variant type.
             }
+            const bool rotation_changed = std::visit(
+                overloaded{
+                    [&](RotationQuat &v) {
+                        if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f)) {
+                            R.emplace_or_replace<RotationUiDriving>(active_entity);
+                            R.replace<Rotation>(active_entity, glm::normalize(v.Value));
+                            return true;
+                        }
+                        return false;
+                    },
+                    [&](RotationEuler &v) {
+                        if (DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f)) {
+                            R.emplace_or_replace<RotationUiDriving>(active_entity);
+                            const auto rads = glm::radians(v.Value);
+                            R.replace<Rotation>(active_entity, glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))));
+                            return true;
+                        }
+                        return false;
+                    },
+                    [&](RotationAxisAngle &v) {
+                        bool changed = DragFloat3("Rotation axis (XYZ)", &v.Value[0], 0.01f);
+                        changed |= DragFloat("Angle (deg)", &v.Value.w, 1.f);
+                        if (changed) {
+                            R.emplace_or_replace<RotationUiDriving>(active_entity);
+                            const auto axis = glm::normalize(vec3{v.Value});
+                            const auto angle = glm::radians(v.Value.w);
+                            R.replace<Rotation>(active_entity, glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}));
+                            return true;
+                        }
+                        return false;
+                    },
+                },
+                *rotation_ui_ptr
+            );
+            model_changed |= rotation_changed;
         }
-        auto &rotation_ui = R.get<RotationUiVariant>(active_entity);
-        const bool rotation_changed = std::visit(
-            overloaded{
-                [&](RotationQuat &v) {
-                    if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f)) {
-                        R.replace<Rotation>(active_entity, glm::normalize(v.Value));
-                        return true;
-                    }
-                    return false;
-                },
-                [&](RotationEuler &v) {
-                    if (DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f)) {
-                        const auto rads = glm::radians(v.Value);
-                        R.replace<Rotation>(active_entity, glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))));
-                        return true;
-                    }
-                    return false;
-                },
-                [&](RotationAxisAngle &v) {
-                    bool changed = DragFloat3("Rotation axis (XYZ)", &v.Value[0], 0.01f);
-                    changed |= DragFloat("Angle (deg)", &v.Value.w, 1.f);
-                    if (changed) {
-                        const auto axis = glm::normalize(vec3{v.Value});
-                        const auto angle = glm::radians(v.Value.w);
-                        R.replace<Rotation>(active_entity, glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}));
-                        return true;
-                    }
-                    return false;
-                },
-            },
-            rotation_ui
-        );
-        if (rotation_changed) R.patch<RotationUiVariant>(active_entity, [](auto &) {});
-        model_changed |= rotation_changed;
 
         const bool frozen = R.all_of<Frozen>(active_entity);
         if (frozen) BeginDisabled();
