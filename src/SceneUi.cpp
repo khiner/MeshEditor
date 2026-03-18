@@ -659,7 +659,6 @@ void Scene::Interact() {
         return;
     }
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
-
     if (interaction_mode == InteractionMode::Edit && edit_mode == Element::None && !active_is_armature) return;
 
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
@@ -973,20 +972,10 @@ void Scene::RenderOverlay() {
                     // Capture parent transform at drag start so world->local conversion uses a stable reference frame throughout the interaction.
                     for (const auto e : root_selected) {
                         const auto &wt = R.get<WorldTransform>(e);
-                        auto parent_delta = [&]() -> Transform {
-                            const auto *node = R.try_get<SceneNode>(e);
-                            if (!node || node->Parent == entt::null) return {};
-                            const auto *pi = R.try_get<ParentInverse>(e);
-                            if (!pi) return {};
-                            const mat4 m = ToMatrix(R.get<WorldTransform>(node->Parent)) * pi->M;
-                            const mat3 rs{m};
-                            const vec3 s{glm::length(rs[0]), glm::length(rs[1]), glm::length(rs[2])};
-                            return {.P = vec3{m[3]}, .R = glm::normalize(glm::quat_cast(mat3{rs[0] / s.x, rs[1] / s.y, rs[2] / s.z})), .S = s};
-                        }();
+                        const auto parent_delta = MatrixToTransform(GetParentDelta(R, e));
                         R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale}, parent_delta);
                         if (bone_edit_mode) {
-                            if (const auto *ds = R.try_get<BoneDisplayScale>(e))
-                                R.emplace<StartBoneLength>(e, ds->Value);
+                            if (const auto *ds = R.try_get<BoneDisplayScale>(e)) R.emplace<StartBoneLength>(e, ds->Value);
                         }
                     }
                 }
@@ -998,30 +987,9 @@ void Scene::RenderOverlay() {
             } else {
                 // Object mode: apply transform to entity components immediately during drag.
                 // Compute new world result, then convert to local for parented entities.
-                // In bone edit mode, recompute parent_delta from current (post-drag) parent WT
-                // so child bones don't double-apply when their parent was also transformed in this loop.
-                const auto current_parent_delta = [&](entt::entity e) -> Transform {
-                    const auto *node = R.try_get<SceneNode>(e);
-                    if (!node || node->Parent == entt::null) return {};
-                    const auto *pi = R.try_get<ParentInverse>(e);
-                    if (!pi) return {};
-                    const mat4 m = ToMatrix(R.get<WorldTransform>(node->Parent)) * pi->M;
-                    const mat3 rs{m};
-                    const vec3 s{glm::length(rs[0]), glm::length(rs[1]), glm::length(rs[2])};
-                    return {.P = vec3{m[3]}, .R = glm::normalize(glm::quat_cast(mat3{rs[0] / s.x, rs[1] / s.y, rs[2] / s.z})), .S = s};
-                };
-
                 // Convert world-space transform to local via parent delta, then apply.
-                const auto set_local = [&](entt::entity ent, const Transform &world, const Transform &pd, bool propagate) {
-                    SetTransform(
-                        R, ent,
-                        {
-                            .P = glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S),
-                            .R = glm::conjugate(pd.R) * world.R,
-                            .S = world.S / pd.S,
-                        },
-                        propagate
-                    );
+                const auto set_local = [&](entt::entity e, const Transform &world, const Transform &pd, bool propagate) {
+                    SetTransform(R, e, {glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S), glm::conjugate(pd.R) * world.R, world.S / pd.S}, propagate);
                 };
 
                 const auto r = ts.R, rT = glm::conjugate(r);
@@ -1031,38 +999,24 @@ void Scene::RenderOverlay() {
                     // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
                     if (bone_edit_mode) {
                         // Use current parent WT for world→local (parent may have been moved earlier in this loop).
-                        const auto pd = current_parent_delta(e);
+                        const auto pd = MatrixToTransform(GetParentDelta(R, e));
                         const auto *sbl = R.try_get<StartBoneLength>(e);
                         const auto *parts = R.try_get<BoneSelParts>(e);
                         if (sbl && parts) {
                             const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
                             const bool root_only = parts->Root && !parts->Tip && !parts->Body;
                             if (tip_only || root_only) {
+                                const auto transform_point = [&](vec3 p) { return td.P + ts.P + glm::rotate(td.R, r * (rT * (p - ts.P) * td.S)); };
+
                                 const float bone_length = sbl->Value;
-                                const vec3 start_head = ts_e.P;
-                                const vec3 start_tail = start_head + glm::rotate(ts_e.R, vec3{0, bone_length, 0});
-
-                                // Apply gizmo transform to a single point.
-                                const auto transform_point = [&](vec3 p) -> vec3 {
-                                    const auto off = p - ts.P;
-                                    return td.P + ts.P + glm::rotate(td.R, r * (rT * off * td.S));
-                                };
-
-                                const vec3 new_head = tip_only ? start_head : transform_point(start_head);
-                                const vec3 new_tail = root_only ? start_tail : transform_point(start_tail);
-
-                                const vec3 dir = new_tail - new_head;
-                                const float new_length = glm::length(dir);
+                                const auto start_head = ts_e.P;
+                                const auto start_tail = start_head + glm::rotate(ts_e.R, vec3{0, bone_length, 0});
+                                const auto new_head = tip_only ? start_head : transform_point(start_head);
+                                const auto new_tail = root_only ? start_tail : transform_point(start_tail);
+                                const auto dir = new_tail - new_head;
+                                const auto new_length = glm::length(dir);
                                 constexpr float eps = 1e-6f;
-                                quat new_world_rot;
-                                if (new_length > eps) {
-                                    const vec3 old_dir = glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0}));
-                                    const vec3 new_dir = dir / new_length;
-                                    new_world_rot = glm::rotation(old_dir, new_dir) * ts_e.R;
-                                } else {
-                                    new_world_rot = ts_e.R;
-                                }
-
+                                const auto new_world_rot = new_length > eps ? glm::rotation(glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
                                 R.get_or_emplace<BoneDisplayScale>(e).Value = std::max(new_length, eps);
                                 set_local(e, {new_head, new_world_rot, ts_e.S}, pd, false);
                                 continue;
@@ -1071,12 +1025,7 @@ void Scene::RenderOverlay() {
 
                         // Full bone transform in bone edit mode.
                         const auto offset = ts_e.P - ts.P;
-                        set_local(e, {
-                                         .P = td.P + ts.P + glm::rotate(td.R, r * (rT * offset * td.S)),
-                                         .R = glm::normalize(td.R * ts_e.R),
-                                         .S = ts_e.S,
-                                     },
-                                  pd, false);
+                        set_local(e, {td.P + ts.P + glm::rotate(td.R, r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), ts_e.S}, pd, false);
                         continue;
                     }
 
@@ -1084,12 +1033,7 @@ void Scene::RenderOverlay() {
                     const auto &pd = ts_e_comp.ParentDelta;
                     const bool frozen = R.all_of<Frozen>(e);
                     const auto offset = ts_e.P - ts.P;
-                    set_local(e, {
-                                     .P = td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)),
-                                     .R = glm::normalize(td.R * ts_e.R),
-                                     .S = frozen ? ts_e.S : td.S * ts_e.S,
-                                 },
-                              pd, true);
+                    set_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, pd, true);
                 }
             }
         } else if (!start_transform_view.empty()) {
@@ -1312,9 +1256,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             },
             rotation_ui
         );
-        if (rotation_changed) {
-            R.patch<RotationUiVariant>(active_entity, [](auto &) {});
-        }
+        if (rotation_changed) R.patch<RotationUiVariant>(active_entity, [](auto &) {});
         model_changed |= rotation_changed;
 
         const bool frozen = R.all_of<Frozen>(active_entity);
@@ -1325,9 +1267,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (scale_changed) R.patch<Scale>(active_entity, [](auto &) {});
         model_changed |= scale_changed;
         if (frozen) EndDisabled();
-        if (model_changed) {
-            UpdateWorldTransform(R, active_entity);
-        }
+        if (model_changed) UpdateWorldTransform(R, active_entity);
         Spacing();
         {
             AlignTextToFramePadding();
@@ -1616,8 +1556,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             next.Color = light.Color;
             next.Intensity = light.Intensity;
             light = next;
-            changed = true;
-            wireframe_changed = true;
+            changed = wireframe_changed = true;
         }
 
         changed |= ColorEdit3("Color", &light.Color.x);
@@ -1626,13 +1565,11 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             bool infinite_range = light.Range <= 0.f;
             if (Checkbox("Infinite range", &infinite_range)) {
                 light.Range = infinite_range ? 0.f : std::max(light.Range, SceneDefaults::PointRange);
-                changed = true;
-                wireframe_changed = true;
+                changed = wireframe_changed = true;
             }
             if (!infinite_range) {
                 if (SliderFloat("Range", &light.Range, 0.01f, MaxLightRange, "%.2f")) {
-                    changed = true;
-                    wireframe_changed = true;
+                    changed = wireframe_changed = true;
                 }
             }
         }
@@ -1646,8 +1583,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 const float inner_rad = outer_rad * (1.f - blend);
                 light.OuterConeCos = std::cos(outer_rad);
                 light.InnerConeCos = std::cos(inner_rad);
-                changed = true;
-                wireframe_changed = true;
+                changed = wireframe_changed = true;
             }
             if (SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f")) {
                 blend = std::clamp(blend, 0.f, 1.f);
@@ -1655,8 +1591,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 const float inner_rad = outer_rad * (1.f - blend);
                 light.OuterConeCos = std::cos(outer_rad);
                 light.InnerConeCos = std::cos(inner_rad);
-                changed = true;
-                wireframe_changed = true;
+                changed = wireframe_changed = true;
             }
         }
         if (changed) {

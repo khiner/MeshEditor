@@ -1786,9 +1786,7 @@ void Scene::AddBone() {
     // New bone: unparented, unit length, oriented along Y (up), at world origin.
     // Transform world origin into armature-local space for the rest pose position.
     const auto arm_world_inv = glm::inverse(ToMatrix(R.get<WorldTransform>(arm_obj_entity)));
-    Transform rest_local{.P = vec3{arm_world_inv * vec4{0, 0, 0, 1}}};
-
-    const auto new_id = armature.AddBone("Bone", std::nullopt, rest_local, std::nullopt);
+    const auto new_id = armature.AddBone("Bone", {}, {.P = vec3{arm_world_inv * vec4{0, 0, 0, 1}}});
     RebuildBoneStructure(arm_obj.Entity);
 
     const auto new_index = *armature.FindBoneIndex(new_id);

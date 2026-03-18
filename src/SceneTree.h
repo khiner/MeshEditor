@@ -49,8 +49,10 @@ struct Children {
 };
 
 mat4 ToMatrix(const WorldTransform &);
+Transform MatrixToTransform(const mat4 &);
 
 Transform GetTransform(const entt::registry &, entt::entity);
+mat4 GetParentDelta(const entt::registry &, entt::entity);
 void UpdateWorldTransform(entt::registry &, entt::entity, bool propagate_to_children = true);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);
 void ClearParent(entt::registry &, entt::entity child);

@@ -48,7 +48,7 @@ struct Armature {
     std::optional<uint32_t> FindBoneIndex(BoneId) const;
     std::optional<uint32_t> FindJointNodeIndex(BoneId) const;
     std::optional<BoneId> FindBoneIdByJointNodeIndex(uint32_t) const;
-    BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index);
+    BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index = {});
     bool RemoveBone(BoneId bone_id); // Returns true if bone was found and removed.
     void FinalizeStructure(); // Rebuild derived caches and increment version. Call after AddBone/RemoveBone.
     void ResolveAnimationIndices(AnimationClip &) const; // Resolve TargetBoneId -> BoneIndex for all bone channels.
