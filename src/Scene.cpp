@@ -744,8 +744,7 @@ entt::entity Scene::GetActiveMeshEntity() const {
 }
 
 void Scene::Select(entt::entity e) {
-    R.clear<Selected>();
-    R.clear<Active>();
+    R.clear<Active, Selected>();
     if (e != entt::null) {
         R.emplace<Active>(e);
         R.emplace<Selected>(e);
@@ -1495,11 +1494,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     DestroyTracker->Storage.clear();
-    R.clear<MeshGeometryDirty>();
-    R.clear<MeshMaterialAssignment>();
-    R.clear<MaterialDirty>();
-    R.clear<SubmitDirty>();
-    R.clear<LightWireframeDirty>();
+    R.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, SubmitDirty, LightWireframeDirty>();
 
     return render_request;
 }
@@ -1934,8 +1929,7 @@ void Scene::ExtrudeBone() {
     // Deselect all bones. Don't select the armature object itself — only bones should be
     // Selected so that the transform gizmo doesn't move the armature during the chained translate.
     R.clear<BoneSelParts>();
-    R.clear<Selected>();
-    R.clear<Active>();
+    R.clear<Active, Selected>();
 
     // Create ECS entities for each new bone, select with tip only.
     // Zero display scale so the bone starts as a point (Blender behavior: head=tail until moved).
