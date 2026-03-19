@@ -1622,26 +1622,24 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     // BoneOctahedron(1.f) is a unit mesh scaled by bone_length so rendered length = bone_length.
     // Non-leaf bones: length from nearest child distance. Leaf bones: inherit parent's length.
     // Bones are topologically sorted, so parent length is always resolved before children.
+    static constexpr float MinBoneLength = 0.004f;
     std::vector<float> bone_scales(n, 0.f);
+    // Non-leaf bones: minimum distance to any child (ignoring near-zero distances).
     for (uint32_t i = 0; i < n; ++i) {
+        float min_child_dist = std::numeric_limits<float>::max();
         for (uint32_t j = 0; j < n; ++j) {
             if (armature.Bones[j].ParentIndex == i) {
-                bone_scales[i] = glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[i].RestWorld[3]});
-                break;
+                const float d = glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[i].RestWorld[3]});
+                if (d > MinBoneLength) min_child_dist = std::min(min_child_dist, d);
             }
         }
+        if (min_child_dist < std::numeric_limits<float>::max()) bone_scales[i] = min_child_dist;
     }
+    // Leaf/zero-length bones: inherit parent's scale, or fall back to 1.0.
     for (uint32_t i = 0; i < n; ++i) {
         if (bone_scales[i] == 0.f) {
-            bone_scales[i] = armature.Bones[i].ParentIndex != InvalidBoneIndex ? bone_scales[armature.Bones[i].ParentIndex] : glm::length(vec3{armature.Bones[i].RestWorld[3]});
+            bone_scales[i] = armature.Bones[i].ParentIndex != InvalidBoneIndex ? bone_scales[armature.Bones[i].ParentIndex] : 1.f;
         }
-    }
-    // Apply a skeleton-relative minimum so near-zero-length bones (e.g. root joints placed at the
-    // same position as their child) still render as a small but visible octahedron.
-    const float max_scale = *std::ranges::max_element(bone_scales);
-    if (max_scale > 0.f) {
-        const float min_scale = max_scale * 0.15f;
-        for (auto &s : bone_scales) s = std::max(s, min_scale);
     }
 
     std::vector<entt::entity> bone_entities(n);
@@ -1786,18 +1784,21 @@ void Scene::RebuildBoneStructure(entt::entity arm_data_entity) {
 }
 
 namespace {
-// Non-leaf: distance to nearest child. Leaf: inherit parent's scale, or use distance from origin if no parent.
+// Non-leaf: minimum distance to any child (ignoring near-zero). Leaf: inherit parent's scale, or 1.0.
 float ComputeSingleBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
+    static constexpr float MinBoneLength = 0.004f;
+    float min_child_dist = std::numeric_limits<float>::max();
     for (uint32_t j = 0; j < armature.Bones.size(); ++j) {
         if (armature.Bones[j].ParentIndex == bone_index) {
-            return glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
+            const float d = glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
+            if (d > MinBoneLength) min_child_dist = std::min(min_child_dist, d);
         }
     }
+    if (min_child_dist < std::numeric_limits<float>::max()) return min_child_dist;
     if (armature.Bones[bone_index].ParentIndex != InvalidBoneIndex) {
         return ComputeSingleBoneDisplayScale(armature, armature.Bones[bone_index].ParentIndex);
     }
-    const float d = glm::length(vec3{armature.Bones[bone_index].RestWorld[3]});
-    return d > 0.f ? d : 1.f;
+    return 1.f;
 }
 } // namespace
 
