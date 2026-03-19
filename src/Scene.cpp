@@ -2052,10 +2052,16 @@ void Scene::DeleteSelectedBones() {
         const auto &bone = armature.Bones[idx];
         const auto grandparent = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
 
-        // Destroy joint sphere entities for this bone
+        // Destroy joint sphere entities for this bone.
         if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
-            if (joints->Head != null_entity) R.destroy(joints->Head);
-            if (joints->Tail != null_entity) R.destroy(joints->Tail);
+            if (joints->Head != null_entity) {
+                SetVisible(joints->Head, false);
+                R.destroy(joints->Head);
+            }
+            if (joints->Tail != null_entity) {
+                SetVisible(joints->Tail, false);
+                R.destroy(joints->Tail);
+            }
             R.remove<BoneJointEntities>(bone_entity);
         }
 
@@ -2086,33 +2092,13 @@ void Scene::DeleteSelectedBones() {
         R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
     }
 
-    // Reindex surviving joint sphere BufferIndex values to stay contiguous.
-    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity)) {
-        if (arm_obj.BoneEntities.empty()) {
-            // No surviving bones — destroy joint entity
-            if (auto *mb = R.try_get<MeshBuffers>(arm_obj.JointEntity)) Buffers->Release(*mb);
-            if (auto *ref = R.try_get<VertexStoreId>(arm_obj.JointEntity)) Meshes->Release(ref->StoreId);
-            R.remove<MeshBuffers, VertexStoreId, ModelsBuffer>(arm_obj.JointEntity);
-            R.destroy(arm_obj.JointEntity);
-            arm_obj.JointEntity = null_entity;
-        } else {
-            for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) {
-                if (auto *joints = R.try_get<BoneJointEntities>(arm_obj.BoneEntities[i])) {
-                    if (joints->Head != null_entity) R.get<RenderInstance>(joints->Head).BufferIndex = 2 * i;
-                    if (joints->Tail != null_entity) R.get<RenderInstance>(joints->Tail).BufferIndex = 2 * i + 1;
-                }
-            }
-            auto &joint_mb = R.get<ModelsBuffer>(arm_obj.JointEntity);
-            const auto new_count = 2 * arm_obj.BoneEntities.size();
-            joint_mb.Buffer.UsedSize = new_count * sizeof(WorldTransform);
-            joint_mb.ObjectIds.UsedSize = new_count * sizeof(uint32_t);
-            joint_mb.InstanceStates.UsedSize = new_count * sizeof(uint8_t);
-
-            // Re-write surviving joint transforms to their new GPU buffer positions.
-            for (const auto bone_entity : arm_obj.BoneEntities) {
-                UpdateModelBuffer(R, bone_entity, R.get<WorldTransform>(bone_entity));
-            }
-        }
+    // Destroy joint entity if no bones survive.
+    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity) && arm_obj.BoneEntities.empty()) {
+        if (auto *mb = R.try_get<MeshBuffers>(arm_obj.JointEntity)) Buffers->Release(*mb);
+        if (auto *ref = R.try_get<VertexStoreId>(arm_obj.JointEntity)) Meshes->Release(ref->StoreId);
+        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer>(arm_obj.JointEntity);
+        R.destroy(arm_obj.JointEntity);
+        arm_obj.JointEntity = null_entity;
     }
 
     if (arm_obj.BoneEntities.empty()) {
