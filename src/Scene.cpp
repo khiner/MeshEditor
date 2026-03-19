@@ -605,7 +605,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     // Reactive storage subscriptions for deferred once-per-frame processing
     track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
     track<changes::ActiveInstance>(R).on<Active>(On::Create | On::Destroy);
-    track<changes::BoneSelection>(R).on<BoneSelected>(On::Create | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
+    track<changes::BoneSelection>(R).on<BoneSelection>(On::Create | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
     track<changes::Rerecord>(R)
         .on<RenderInstance>(On::Create | On::Destroy)
         .on<Active>(On::Create | On::Destroy)
@@ -768,10 +768,10 @@ void Scene::ToggleSelected(entt::entity e) {
 }
 
 void Scene::SelectBone(entt::entity e) {
-    R.clear<BoneActive, BoneSelected, BoneSelParts>();
+    R.clear<BoneActive, BoneSelection>();
     if (e != entt::null) {
         R.emplace<BoneActive>(e);
-        R.emplace<BoneSelected>(e);
+        R.emplace<BoneSelection>(e);
     }
 }
 
@@ -1189,7 +1189,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             const auto &bone_entities = arm_obj.BoneEntities;
 
             // Object mode: all bone/joint slots get the armature's object-level state (no per-bone color).
-            // Edit/Pose: each bone/joint gets its own state based on BoneActive/BoneSelected.
+            // Edit/Pose: each bone/joint gets its own state based on BoneActive/BoneSelection.
             uint8_t max_state = 0;
             if (is_object_mode) {
                 if (R.all_of<Selected>(arm_obj_entity)) max_state |= ElementStateSelected;
@@ -1200,13 +1200,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (is_object_mode) return max_state;
                 uint8_t s = 0;
                 if (R.all_of<BoneActive>(b)) s |= ElementStateActive;
-                const auto *parts = R.try_get<const BoneSelParts>(b);
+                const auto *parts = R.try_get<const BoneSelection>(b);
                 bool selected;
                 if (is_edit) {
                     selected = parts && (part == BoneSel::Body ? parts->Body : part == BoneSel::Root ? parts->Root :
                                                                                                        parts->Tip);
                 } else {
-                    selected = R.all_of<BoneSelected>(b);
+                    selected = R.all_of<BoneSelection>(b);
                 }
                 if (selected) s |= ElementStateSelected;
                 return s;
@@ -1620,8 +1620,9 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     auto flatten_tri_indices = [](const std::vector<std::vector<uint32_t>> &faces) {
         std::vector<uint> indices;
         indices.reserve(faces.size() * 3);
-        for (const auto &face : faces)
-            for (const auto idx : face) indices.push_back(idx);
+        for (const auto &face : faces) {
+            for (const auto idx : face) indices.emplace_back(idx);
+        }
         return indices;
     };
 
@@ -1896,7 +1897,7 @@ void Scene::AddBone() {
 
     const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, new_id);
     SelectBone(bone_entity);
-    R.emplace_or_replace<BoneSelParts>(bone_entity, false, true, false);
+    R.emplace_or_replace<BoneSelection>(bone_entity, false, true, false);
 }
 
 void Scene::ExtrudeBone() {
@@ -1915,12 +1916,12 @@ void Scene::ExtrudeBone() {
         bool FromTip;
     };
     std::vector<ExtrudeInfo> to_extrude;
-    for (const auto e : R.view<BoneSelected, BoneIndex>()) {
+    for (const auto e : R.view<BoneSelection, BoneIndex>()) {
         if (R.get<SubElementOf>(e).Parent != arm_obj_entity) continue;
         const auto idx = R.get<BoneIndex>(e).Index;
-        const auto *parts = R.try_get<const BoneSelParts>(e);
+        const auto *parts = R.try_get<const BoneSelection>(e);
         const bool root_only = parts && parts->Root && !parts->Tip && !parts->Body;
-        to_extrude.push_back({e, idx, !root_only});
+        to_extrude.emplace_back(ExtrudeInfo{e, idx, !root_only});
     }
     if (to_extrude.empty()) return;
 
@@ -1930,7 +1931,7 @@ void Scene::ExtrudeBone() {
         const auto &bone = armature.Bones[info.BoneIndex];
         if (bone.ParentIndex == InvalidBoneIndex) return false;
         const auto parent_entity = arm_obj.BoneEntities[bone.ParentIndex];
-        const auto *parent_parts = R.try_get<const BoneSelParts>(parent_entity);
+        const auto *parent_parts = R.try_get<const BoneSelection>(parent_entity);
         return parent_parts && parent_parts->Tip;
     });
     if (to_extrude.empty()) return;
@@ -1941,17 +1942,17 @@ void Scene::ExtrudeBone() {
         const auto &bone = armature.Bones[info.BoneIndex];
         if (info.FromTip) {
             const float bone_length = R.get<BoneDisplayScale>(info.BoneEntity).Value;
-            new_bone_ids.push_back(armature.AddBone("", bone.Id, {.P = vec3{0, bone_length, 0}}));
+            new_bone_ids.emplace_back(armature.AddBone("", bone.Id, {.P = vec3{0, bone_length, 0}}));
         } else {
             auto parent_id = bone.ParentBoneId == InvalidBoneId ? std::optional<BoneId>{} : std::optional<BoneId>{bone.ParentBoneId};
-            new_bone_ids.push_back(armature.AddBone("", parent_id, bone.RestLocal));
+            new_bone_ids.emplace_back(armature.AddBone("", parent_id, bone.RestLocal));
         }
     }
 
     RebuildBoneStructure(arm_obj.Entity);
 
     // Deselect all bones — armature keeps its object-level Active/Selected.
-    R.clear<BoneSelParts, BoneActive, BoneSelected>();
+    R.clear<BoneSelection, BoneActive>();
 
     // Create ECS entities for each new bone, select with tip only.
     // Zero display scale so the bone starts as a point (Blender behavior: head=tail until moved).
@@ -1959,9 +1960,8 @@ void Scene::ExtrudeBone() {
         const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, id);
         R.get<BoneDisplayScale>(bone_entity).Value = 0.f;
         UpdateModelBuffer(R, bone_entity, R.get<WorldTransform>(bone_entity));
-        R.emplace<BoneSelected>(bone_entity);
+        R.emplace<BoneSelection>(bone_entity, false, true, false);
         R.emplace_or_replace<BoneActive>(bone_entity); // Last one wins as the active bone.
-        R.emplace<BoneSelParts>(bone_entity, false, true, false);
     }
 
     // Update parent bone display scales (they may have gained a child).
@@ -1985,7 +1985,7 @@ void Scene::DuplicateSelectedBones() {
         BoneId Id, NewId{InvalidBoneId};
     };
     std::vector<DupInfo> to_duplicate;
-    for (const auto e : R.view<BoneSelected, BoneIndex>()) {
+    for (const auto e : R.view<BoneSelection, BoneIndex>()) {
         if (R.get<SubElementOf>(e).Parent != arm_obj_entity) continue;
         to_duplicate.emplace_back(DupInfo{e, armature.Bones[R.get<BoneIndex>(e).Index].Id});
     }
@@ -2016,14 +2016,13 @@ void Scene::DuplicateSelectedBones() {
 
     RebuildBoneStructure(arm_obj.Entity);
 
-    R.clear<BoneSelParts, BoneActive, BoneSelected>();
+    R.clear<BoneSelection, BoneActive>();
     entt::entity last_bone{};
     for (const auto &info : to_duplicate) {
         last_bone = CreateSingleBoneInstance(arm_obj_entity, info.NewId);
         R.get<BoneDisplayScale>(last_bone).Value = R.get<BoneDisplayScale>(info.Entity).Value;
         UpdateModelBuffer(R, last_bone, R.get<WorldTransform>(last_bone));
-        R.emplace<BoneSelected>(last_bone);
-        R.emplace<BoneSelParts>(last_bone, true, true, true);
+        R.emplace<BoneSelection>(last_bone);
     }
     R.emplace<BoneActive>(last_bone);
 
@@ -2042,7 +2041,7 @@ void Scene::DeleteSelectedBones() {
     // Reparent scene graph children to their grandparent, adjusting local transforms
     // to preserve world position (same composition as Armature::RemoveBone applies to RestLocal).
     std::vector<uint32_t> to_delete;
-    for (const auto e : R.view<BoneSelected, BoneIndex>()) {
+    for (const auto e : R.view<BoneSelection, BoneIndex>()) {
         if (R.get<SubElementOf>(e).Parent == arm_obj_entity) to_delete.emplace_back(R.get<BoneIndex>(e).Index);
     }
     if (to_delete.empty()) return;
@@ -2425,7 +2424,7 @@ bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
 bool Scene::CanDuplicate() const {
     const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     if (mode == InteractionMode::Pose) return false;
-    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelected>().empty();
+    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelection>().empty();
     return !R.storage<Selected>().empty();
 }
 
@@ -2439,7 +2438,7 @@ bool Scene::CanDuplicateLinked() const {
 bool Scene::CanDelete() const {
     const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     if (mode == InteractionMode::Pose) return false;
-    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelected>().empty();
+    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelection>().empty();
     return !R.storage<Selected>().empty();
 }
 

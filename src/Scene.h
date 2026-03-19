@@ -110,7 +110,7 @@ struct Scene {
     entt::entity GetActiveMeshEntity() const;
     void Select(entt::entity);
     void ToggleSelected(entt::entity);
-    void SelectBone(entt::entity); // Exclusive bone selection: clears all bone state, sets BoneActive+BoneSelected on target (null = deselect all bones).
+    void SelectBone(entt::entity);
 
     // Actions on selected entities
     bool CanDuplicate() const;

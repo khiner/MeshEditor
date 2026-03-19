@@ -625,6 +625,12 @@ void Scene::Interact() {
         if (bone_mode) SelectBone(entt::null);
         else R.clear<Active, Selected>();
     };
+    auto apply_bone_sel_part = [](BoneSelection &sel, BoneSel part) {
+        const bool body = part == BoneSel::Body;
+        if (part == BoneSel::Root || body) sel.Root = true;
+        if (part == BoneSel::Tip || body) sel.Tip = true;
+        if (body || (sel.Root && sel.Tip)) sel.Body = true;
+    };
     if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
@@ -640,8 +646,9 @@ void Scene::Interact() {
                     if (!is_additive) deselect_all();
                     for (const auto &[entity, part] : hits) {
                         if (bone_mode) {
-                            R.emplace_or_replace<BoneSelected>(entity);
-                            if (part) R.emplace_or_replace<BoneSelParts>(entity, true, true, true);
+                            auto &sel = R.get_or_emplace<BoneSelection>(entity, false, false, false);
+                            if (part) apply_bone_sel_part(sel, *part);
+                            else sel = {true, true, true};
                         } else {
                             R.emplace_or_replace<Selected>(entity);
                         }
@@ -724,7 +731,7 @@ void Scene::Interact() {
             } else if (bone_mode) {
                 R.clear<BoneActive>();
                 R.emplace<BoneActive>(pick->Entity);
-                R.emplace_or_replace<BoneSelected>(pick->Entity);
+                R.emplace_or_replace<BoneSelection>(pick->Entity);
             } else {
                 R.clear<Active>();
                 R.emplace<Active>(pick->Entity);
@@ -736,14 +743,11 @@ void Scene::Interact() {
         }
         // Bone sub-part tracking
         if (bone_mode && pick && pick->Part) {
-            if (R.all_of<BoneSelected>(pick->Entity)) {
-                auto &p = shift ? R.get_or_emplace<BoneSelParts>(pick->Entity) : R.emplace_or_replace<BoneSelParts>(pick->Entity);
-                const bool body = *pick->Part == BoneSel::Body;
-                if (*pick->Part == BoneSel::Root || body) p.Root = true;
-                if (*pick->Part == BoneSel::Tip || body) p.Tip = true;
-                if (body || (p.Root && p.Tip)) p.Body = true;
+            if (R.all_of<BoneSelection>(pick->Entity)) {
+                auto &p = shift ? R.get_or_emplace<BoneSelection>(pick->Entity) : R.emplace_or_replace<BoneSelection>(pick->Entity, false, false, false);
+                apply_bone_sel_part(p, *pick->Part);
             } else {
-                R.remove<BoneSelParts>(pick->Entity);
+                R.remove<BoneSelection>(pick->Entity);
             }
         }
     }
@@ -843,7 +847,7 @@ void Scene::RenderOverlay() {
     if (camera.Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
 
     const auto selected_view = R.view<const Selected>();
-    const auto bone_selected_view = R.view<const BoneSelected>();
+    const auto bone_selected_view = R.view<const BoneSelection>();
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto active_entity = FindActiveEntity(R);
     const auto arm_obj = FindArmatureObject(R, active_entity);
@@ -870,7 +874,7 @@ void Scene::RenderOverlay() {
         const auto is_parent_selected = [&](entt::entity e) {
             if (const auto *node = R.try_get<SceneNode>(e)) {
                 if (node->Parent == entt::null) return false;
-                return bone_mode ? R.all_of<BoneSelected>(node->Parent) : R.all_of<Selected>(node->Parent);
+                return bone_mode ? R.all_of<BoneSelection>(node->Parent) : R.all_of<Selected>(node->Parent);
             }
             return false;
         };
@@ -887,7 +891,7 @@ void Scene::RenderOverlay() {
             // Edit mode: all selected bones are roots (rest-pose edits don't propagate during drag).
             for (const auto e : bone_selected_view) root_selected.push_back(e);
         } else if (bone_mode) {
-            // Pose mode: filter out children whose parent is also BoneSelected (FK propagates).
+            // Pose mode: filter out children whose parent is also selected (FK propagates).
             for (const auto e : bone_selected_view) {
                 if (!is_parent_selected(e)) root_selected.push_back(e);
             }
@@ -930,7 +934,7 @@ void Scene::RenderOverlay() {
                 uint32_t pivot_count = 0;
                 for (const auto e : root_selected) {
                     const auto &wt = R.get<WorldTransform>(e);
-                    const auto *parts = R.try_get<const BoneSelParts>(e);
+                    const auto *parts = R.try_get<const BoneSelection>(e);
                     const vec3 head_pos = wt.Position;
                     if (!parts || parts->Root) {
                         pivot_sum += head_pos;
@@ -995,7 +999,7 @@ void Scene::RenderOverlay() {
                         // Use current parent WT for world→local (parent may have been moved earlier in this loop).
                         const auto pd = MatrixToTransform(GetParentDelta(R, e));
                         const auto *sbl = R.try_get<StartBoneLength>(e);
-                        const auto *parts = R.try_get<BoneSelParts>(e);
+                        const auto *parts = R.try_get<BoneSelection>(e);
                         if (sbl && parts) {
                             const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
                             const bool root_only = parts->Root && !parts->Tip && !parts->Body;
@@ -1181,7 +1185,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 const auto b = armature_object->BoneEntities[i];
                 const bool is_active_bone = (b == active_bone_entity);
                 if (is_active_bone) PushStyleColor(ImGuiCol_Text, ImVec4{1, 0.8f, 0.2f, 1});
-                if (Selectable(armature.Bones[i].Name.c_str(), R.all_of<BoneSelected>(b))) SelectBone(b);
+                if (Selectable(armature.Bones[i].Name.c_str(), R.all_of<BoneSelection>(b))) SelectBone(b);
                 if (is_active_bone) PopStyleColor();
             }
             if (Button("Reset Pose")) {
@@ -1952,16 +1956,14 @@ void Scene::RenderObjectTree() {
         const bool is_bone = R.all_of<BoneIndex>(e);
         if (selected) {
             if (is_bone) {
-                if (!R.all_of<BoneSelected>(e)) R.emplace<BoneSelected>(e);
-                R.emplace_or_replace<BoneSelParts>(e, BoneSelParts{true, true, true});
+                R.emplace_or_replace<BoneSelection>(e);
             } else {
                 if (!R.all_of<Selected>(e)) R.emplace<Selected>(e);
             }
         } else {
             if (is_bone) {
-                if (R.all_of<BoneSelected>(e)) R.remove<BoneSelected>(e);
+                if (R.all_of<BoneSelection>(e)) R.remove<BoneSelection>(e);
                 if (R.all_of<BoneActive>(e)) R.remove<BoneActive>(e);
-                if (R.all_of<BoneSelParts>(e)) R.remove<BoneSelParts>(e);
             } else {
                 if (R.all_of<Selected>(e)) R.remove<Selected>(e);
                 if (R.all_of<Active>(e)) R.remove<Active>(e);
@@ -1976,7 +1978,7 @@ void Scene::RenderObjectTree() {
                 if (request.Selected) {
                     for (const auto e : visible_entities) SetSelectedState(e, true);
                 } else {
-                    R.clear<Active, Selected, BoneActive, BoneSelected, BoneSelParts>();
+                    R.clear<Active, Selected, BoneActive, BoneSelection>();
                 }
                 continue;
             }
@@ -1999,21 +2001,21 @@ void Scene::RenderObjectTree() {
         const auto nav_entity = FromSelectionUserData(nav_item);
         const bool nav_is_bone = nav_entity != entt::null && R.all_of<BoneIndex>(nav_entity);
         const auto cur_active = nav_is_bone ? FindActiveBone(R) : FindActiveEntity(R);
-        const auto nav_is_selected = nav_entity != entt::null && (nav_is_bone ? R.all_of<BoneSelected>(nav_entity) : R.all_of<Selected>(nav_entity));
+        const auto nav_is_selected = nav_entity != entt::null && (nav_is_bone ? R.all_of<BoneSelection>(nav_entity) : R.all_of<Selected>(nav_entity));
         const auto remove_active = [&](entt::entity e) { nav_is_bone ? R.remove<BoneActive>(e) : R.remove<Active>(e); };
         if (nav_is_selected) {
             if (cur_active != nav_entity) {
                 if (cur_active != entt::null) remove_active(cur_active);
                 nav_is_bone ? R.emplace_or_replace<BoneActive>(nav_entity) : R.emplace_or_replace<Active>(nav_entity);
             }
-        } else if (nav_is_bone ? R.storage<BoneSelected>().empty() : R.storage<Selected>().empty()) {
+        } else if (nav_is_bone ? R.storage<BoneSelection>().empty() : R.storage<Selected>().empty()) {
             if (cur_active != entt::null) remove_active(cur_active);
-        } else if (cur_active != entt::null && !(nav_is_bone ? R.all_of<BoneSelected>(cur_active) : R.all_of<Selected>(cur_active))) {
+        } else if (cur_active != entt::null && !(nav_is_bone ? R.all_of<BoneSelection>(cur_active) : R.all_of<Selected>(cur_active))) {
             remove_active(cur_active);
         }
     };
 
-    const auto total_selected = int(R.storage<Selected>().size() + R.storage<BoneSelected>().size());
+    const auto total_selected = int(R.storage<Selected>().size() + R.storage<BoneSelection>().size());
     auto *ms_begin = BeginMultiSelect(ImGuiMultiSelectFlags_None, total_selected, -1);
     std::vector<ImGuiSelectionRequest> begin_requests;
     begin_requests.reserve(ms_begin->Requests.Size);
@@ -2032,12 +2034,12 @@ void Scene::RenderObjectTree() {
         }
     };
     for (const auto e : R.view<Selected>()) mark_ancestors(e);
-    for (const auto e : R.view<BoneSelected>()) mark_ancestors(e);
+    for (const auto e : R.view<BoneSelection>()) mark_ancestors(e);
 
     const auto render_entity = [&](const auto &self, entt::entity e) -> void {
         const auto *node = R.try_get<SceneNode>(e);
         const bool has_children = node && node->FirstChild != entt::null;
-        const bool is_selected = R.any_of<Selected, BoneSelected>(e);
+        const bool is_selected = R.any_of<Selected, BoneSelection>(e);
         const bool is_ancestor_selected = !is_selected && ancestor_of_selected.contains(e);
 
         auto flags =

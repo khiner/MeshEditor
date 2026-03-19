@@ -80,19 +80,20 @@ struct BoneJointEntities {
     entt::entity Tail{null_entity};
 };
 
-// Bone-level selection tags — independent of object-level Selected/Active.
+// Bone-level selection — independent of object-level Selected/Active.
 // The armature keeps its own Selected/Active throughout Edit/Pose mode.
-struct BoneSelected {};
 struct BoneActive {};
 
 // Bone selection part identifier.
-enum class BoneSel : uint8_t { Root,
-                               Tip,
-                               Body };
+enum class BoneSel : uint8_t {
+    Root,
+    Tip,
+    Body
+};
 
-// Stores which parts of a bone are selected (bitmask-like, but simple OR of individual parts).
-struct BoneSelParts {
-    bool Root{false}, Tip{false}, Body{false};
+// Presence means the bone is selected. Fields indicate which parts are selected.
+struct BoneSelection {
+    bool Root{true}, Tip{true}, Body{true};
 };
 
 // Armature modifier linkage for mesh instances deformed by an armature.
