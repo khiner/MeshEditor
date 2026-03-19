@@ -48,6 +48,15 @@ entt::entity FindArmatureObject(const entt::registry &r, entt::entity e) {
     return entt::null;
 }
 
+entt::entity FindActiveBone(const entt::registry &r) {
+    entt::entity result = entt::null;
+    for (const auto e : r.view<BoneActive>()) {
+        assert(result == entt::null && "Multiple BoneActive entities");
+        result = e;
+    }
+    return result;
+}
+
 namespace {
 mat4 RestLocalToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
@@ -342,7 +351,7 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
 
 // clang-format off
 namespace changes {
-struct Selected {}; struct ActiveInstance {}; struct Rerecord {};
+struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
 struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
 struct Excitable {}; struct ExcitedVertex {}; struct ModelsBuffer {};
 struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
@@ -596,6 +605,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     // Reactive storage subscriptions for deferred once-per-frame processing
     track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
     track<changes::ActiveInstance>(R).on<Active>(On::Create | On::Destroy);
+    track<changes::BoneSelection>(R).on<BoneSelected>(On::Create | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
     track<changes::Rerecord>(R)
         .on<RenderInstance>(On::Create | On::Destroy)
         .on<Active>(On::Create | On::Destroy)
@@ -757,6 +767,14 @@ void Scene::ToggleSelected(entt::entity e) {
     else R.emplace_or_replace<Selected>(e);
 }
 
+void Scene::SelectBone(entt::entity e) {
+    R.clear<BoneActive, BoneSelected, BoneSelParts>();
+    if (e != entt::null) {
+        R.emplace<BoneActive>(e);
+        R.emplace<BoneSelected>(e);
+    }
+}
+
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
     const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, data, width, height, Format::Color, ColorSubresourceRange);
@@ -868,6 +886,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             // If looking through a camera and a different camera becomes active, snap to it.
             if (SavedViewCamera && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
                 SnapToCamera(instance_entity);
+            }
+        }
+    }
+    { // Bone selection changes — route to dirty_bone_state_armatures for GPU state sync.
+        auto &bone_sel_tracker = reactive<changes::BoneSelection>(R);
+        if (!bone_sel_tracker.empty()) {
+            request(RenderRequest::ReRecord);
+            for (auto bone_entity : bone_sel_tracker) {
+                if (const auto arm = FindArmatureObject(R, bone_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
             }
         }
     }
@@ -1161,29 +1188,25 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
             const auto &bone_entities = arm_obj.BoneEntities;
 
-            // Object mode: all bone/joint slots get a single group-max state.
-            // Edit/Pose: each bone/joint gets its own state based on per-part selection.
+            // Object mode: all bone/joint slots get the armature's object-level state (no per-bone color).
+            // Edit/Pose: each bone/joint gets its own state based on BoneActive/BoneSelected.
             uint8_t max_state = 0;
             if (is_object_mode) {
                 if (R.all_of<Selected>(arm_obj_entity)) max_state |= ElementStateSelected;
                 if (R.all_of<Active>(arm_obj_entity)) max_state |= ElementStateActive;
-                for (const auto b : bone_entities) {
-                    if (R.all_of<Selected>(b)) max_state |= ElementStateSelected;
-                    if (R.all_of<Active>(b)) max_state |= ElementStateActive;
-                }
             }
             const bool is_edit = interaction_mode == InteractionMode::Edit;
             auto compute_state = [&](entt::entity b, BoneSel part) -> uint8_t {
                 if (is_object_mode) return max_state;
                 uint8_t s = 0;
-                if (R.all_of<Active>(b)) s |= ElementStateActive;
+                if (R.all_of<BoneActive>(b)) s |= ElementStateActive;
                 const auto *parts = R.try_get<const BoneSelParts>(b);
                 bool selected;
                 if (is_edit) {
                     selected = parts && (part == BoneSel::Body ? parts->Body : part == BoneSel::Root ? parts->Root :
                                                                                                        parts->Tip);
                 } else {
-                    selected = R.all_of<Selected>(b);
+                    selected = R.all_of<BoneSelected>(b);
                 }
                 if (selected) s |= ElementStateSelected;
                 return s;
@@ -1872,8 +1895,8 @@ void Scene::AddBone() {
     RebuildBoneStructure(R.get<ArmatureObject>(arm_obj_entity).Entity);
 
     const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, new_id);
-    Select(bone_entity);
-    R.emplace<BoneSelParts>(bone_entity, false, true, false);
+    SelectBone(bone_entity);
+    R.emplace_or_replace<BoneSelParts>(bone_entity, false, true, false);
 }
 
 void Scene::ExtrudeBone() {
@@ -1892,7 +1915,7 @@ void Scene::ExtrudeBone() {
         bool FromTip;
     };
     std::vector<ExtrudeInfo> to_extrude;
-    for (const auto e : R.view<Selected, BoneIndex>()) {
+    for (const auto e : R.view<BoneSelected, BoneIndex>()) {
         if (R.get<SubElementOf>(e).Parent != arm_obj_entity) continue;
         const auto idx = R.get<BoneIndex>(e).Index;
         const auto *parts = R.try_get<const BoneSelParts>(e);
@@ -1927,10 +1950,8 @@ void Scene::ExtrudeBone() {
 
     RebuildBoneStructure(arm_obj.Entity);
 
-    // Deselect all bones. Don't select the armature object itself — only bones should be
-    // Selected so that the transform gizmo doesn't move the armature during the chained translate.
-    R.clear<BoneSelParts>();
-    R.clear<Active, Selected>();
+    // Deselect all bones — armature keeps its object-level Active/Selected.
+    R.clear<BoneSelParts, BoneActive, BoneSelected>();
 
     // Create ECS entities for each new bone, select with tip only.
     // Zero display scale so the bone starts as a point (Blender behavior: head=tail until moved).
@@ -1938,8 +1959,8 @@ void Scene::ExtrudeBone() {
         const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, id);
         R.get<BoneDisplayScale>(bone_entity).Value = 0.f;
         UpdateModelBuffer(R, bone_entity, R.get<WorldTransform>(bone_entity));
-        R.emplace<Selected>(bone_entity);
-        R.emplace_or_replace<Active>(bone_entity); // Last one wins as the active bone.
+        R.emplace<BoneSelected>(bone_entity);
+        R.emplace_or_replace<BoneActive>(bone_entity); // Last one wins as the active bone.
         R.emplace<BoneSelParts>(bone_entity, false, true, false);
     }
 
@@ -1964,7 +1985,7 @@ void Scene::DeleteSelectedBones() {
     // Reparent scene graph children to their grandparent, adjusting local transforms
     // to preserve world position (same composition as Armature::RemoveBone applies to RestLocal).
     std::vector<uint32_t> to_delete;
-    for (const auto e : R.view<Selected, BoneIndex>()) {
+    for (const auto e : R.view<BoneSelected, BoneIndex>()) {
         if (R.get<SubElementOf>(e).Parent == arm_obj_entity) to_delete.emplace_back(R.get<BoneIndex>(e).Index);
     }
     if (to_delete.empty()) return;
@@ -2753,6 +2774,19 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
+    // Only draw bones for: active armature in Edit/Pose mode, selected armatures in Object mode.
+    const auto should_draw_armature_bones = [&](entt::entity arm_obj_entity) {
+        const bool is_bone_mode = is_edit_mode || interaction_mode == InteractionMode::Pose;
+        if (is_bone_mode) return R.all_of<Active>(arm_obj_entity);
+        return R.any_of<Active, Selected>(arm_obj_entity);
+    };
+    // Map a BoneJoint entity back to its owning armature object entity.
+    const auto find_joint_owner = [&](entt::entity joint_entity) -> entt::entity {
+        for (const auto [e, arm_obj] : R.view<const ArmatureObject>().each()) {
+            if (arm_obj.JointEntity == joint_entity) return e;
+        }
+        return entt::null;
+    };
     {
         bone_fill_batch = draw_list.BeginBatch();
         for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
@@ -2763,6 +2797,7 @@ void Scene::RecordRenderCommandBuffer() {
         }
         bone_wire_batch = draw_list.BeginBatch();
         for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
+            if (!should_draw_armature_bones(entity)) continue;
             if (const auto *adj = R.try_get<const BoneAdjacencyIndices>(entity)) {
                 auto wire_draw = MakeDrawData(mesh_buffers.Vertices, adj->Indices, models);
                 wire_draw.InstanceStateSlot = models.InstanceStates.Slot;
@@ -2781,6 +2816,8 @@ void Scene::RecordRenderCommandBuffer() {
         bone_sphere_wire_batch = draw_list.BeginBatch();
         for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
+            const auto owner = find_joint_owner(entity);
+            if (owner != entt::null && !should_draw_armature_bones(owner)) continue;
             auto wire_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models);
             wire_draw.InstanceStateSlot = models.InstanceStates.Slot;
             AppendDraw(draw_list, bone_sphere_wire_batch, mesh_buffers.EdgeIndices, models, wire_draw);
@@ -2974,15 +3011,18 @@ void Scene::RecordRenderCommandBuffer() {
     if (has_silhouette) {
         const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
         // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
-        // In armature Edit/Pose mode, bones behave like Object mode: active bone gets active-color silhouette.
+        // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
         const auto active_entity = FindActiveEntity(R);
+        const auto active_bone = FindActiveBone(R);
         const bool armature_mode = FindArmatureObject(R, active_entity) != entt::null;
         uint32_t active_object_id = 0;
-        if (!is_edit_mode || armature_mode) {
-            if (active_entity != entt::null) {
-                if (R.all_of<RenderInstance>(active_entity)) {
-                    active_object_id = R.get<RenderInstance>(active_entity).ObjectId;
-                }
+        if (armature_mode && active_bone != entt::null) {
+            if (R.all_of<RenderInstance>(active_bone)) {
+                active_object_id = R.get<RenderInstance>(active_bone).ObjectId;
+            }
+        } else if (!is_edit_mode) {
+            if (active_entity != entt::null && R.all_of<RenderInstance>(active_entity)) {
+                active_object_id = R.get<RenderInstance>(active_entity).ObjectId;
             }
         }
         const SilhouetteEdgeColorPushConstants pc{

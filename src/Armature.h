@@ -80,6 +80,11 @@ struct BoneJointEntities {
     entt::entity Tail{null_entity};
 };
 
+// Bone-level selection tags — independent of object-level Selected/Active.
+// The armature keeps its own Selected/Active throughout Edit/Pose mode.
+struct BoneSelected {};
+struct BoneActive {};
+
 // Bone selection part identifier.
 enum class BoneSel : uint8_t { Root,
                                Tip,
@@ -148,6 +153,9 @@ struct MorphWeightState {
 
 // Given an instance entity, return its armature object entity (if it is one, or if it's a sub-element of one).
 entt::entity FindArmatureObject(const entt::registry &, entt::entity);
+
+// Return the single BoneActive entity, or entt::null if none.
+entt::entity FindActiveBone(const entt::registry &);
 
 // Compose a rest-pose transform with a delta (Blender-style pose channel model).
 // delta identity {P=0, R=identity, S=1} produces rest unchanged.
