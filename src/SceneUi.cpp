@@ -33,7 +33,7 @@
 #include "scene_impl/SceneInternalTypes.h"
 #include "scene_impl/SceneTransformUtils.h"
 
-using std::ranges::all_of, std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges::fold_left, std::ranges::to;
+using std::ranges::all_of, std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::transform;
 using namespace ImGui;
 
@@ -44,33 +44,30 @@ constexpr float WheelZoomMaxBurst{8.f}; // Cap on accumulated rapid-scroll accel
 constexpr double WheelZoomAccelerationWindow{0.25}; // Seconds between ticks that still count as one accelerated burst.
 
 struct SelectionHit {
-    entt::entity Entity{entt::null};
-    BoneSel Part{BoneSel::Body};
+    entt::entity Entity;
+    std::optional<BoneSel> Part{};
 };
 
-// Map raw GPU pick/box-select instances to logical selection targets, deduplicated (first/nearest wins).
+// Map raw GPU pick/box-select instances to logical selection targets.
+// In bone mode, resolve as individual bones (deduplicated, since body + joint spheres share an entity).
+// In object mode, bones fall through to SubElementOf like any other sub-element, collapsing to the armature.
 std::vector<SelectionHit> ResolveHits(entt::registry &R, const std::vector<entt::entity> &raw, bool bone_mode) {
     std::vector<SelectionHit> hits;
     for (const auto e : raw) {
-        entt::entity target = entt::null;
-        BoneSel part = BoneSel::Body;
-        if (bone_mode) {
-            if (R.all_of<BoneIndex>(e)) target = e;
-            else if (const auto *sub = R.try_get<BoneSubPartOf>(e)) {
-                target = sub->BoneEntity;
-                part = sub->IsTip ? BoneSel::Tip : BoneSel::Root;
-            }
-        } else {
-            target = R.all_of<SubElementOf>(e) ? R.get<SubElementOf>(e).Parent : e;
-        }
-        if (target != entt::null && find(hits, target, &SelectionHit::Entity) == hits.end()) {
-            hits.emplace_back(SelectionHit{target, part});
+        if (bone_mode && R.all_of<BoneIndex>(e)) {
+            if (!contains(hits, e, &SelectionHit::Entity)) hits.emplace_back(e, BoneSel::Body);
+        } else if (bone_mode && R.all_of<BoneSubPartOf>(e)) {
+            const auto &sub = R.get<BoneSubPartOf>(e);
+            if (!contains(hits, sub.BoneEntity, &SelectionHit::Entity)) hits.emplace_back(sub.BoneEntity, sub.IsTip ? BoneSel::Tip : BoneSel::Root);
+        } else if (!bone_mode) {
+            if (const auto *sub = R.try_get<SubElementOf>(e)) hits.emplace_back(sub->Parent);
+            else hits.emplace_back(e);
         }
     }
     return hits;
 }
 
-SelectionHit CycleHit(const std::vector<SelectionHit> &hits, entt::entity active) {
+std::optional<SelectionHit> CycleHit(const std::vector<SelectionHit> &hits, entt::entity active) {
     if (hits.empty()) return {};
     auto it = find(hits, active, &SelectionHit::Entity);
     return it != hits.end() && ++it != hits.end() ? *it : hits.front();
@@ -646,7 +643,7 @@ void Scene::Interact() {
                     if (!is_additive) deselect_all();
                     for (const auto &[entity, part] : hits) {
                         R.emplace_or_replace<Selected>(entity);
-                        if (bone_mode) R.emplace_or_replace<BoneSelParts>(entity, true, true, true);
+                        if (part) R.emplace_or_replace<BoneSelParts>(entity, true, true, true);
                     }
                 }
             }
@@ -706,57 +703,42 @@ void Scene::Interact() {
             if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
                 const uint32_t global_bit = br->Offset + element_index;
                 const bool was_selected = (bits[global_bit >> 5] >> (global_bit & 31)) & 1;
-                if (toggle && was_selected) {
-                    bits[global_bit >> 5] &= ~(1u << (global_bit & 31));
-                } else {
-                    bits[global_bit >> 5] |= 1u << (global_bit & 31);
-                }
+                if (toggle && was_selected) bits[global_bit >> 5] &= ~(1u << (global_bit & 31));
+                else bits[global_bit >> 5] |= 1u << (global_bit & 31);
             }
-            if (toggle && is_active) {
-                R.remove<MeshActiveElement>(mesh_entity);
-            } else {
-                R.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
-            }
+            if (toggle && is_active) R.remove<MeshActiveElement>(mesh_entity);
+            else R.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
         } else if (!toggle) {
-            for (const auto &range : ranges) {
-                R.remove<MeshActiveElement>(range.MeshEntity);
-            }
+            for (const auto &range : ranges) R.remove<MeshActiveElement>(range.MeshEntity);
         }
         if (!ranges.empty() && (!toggle || hit)) SelectionBitsDirty = true;
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const uint32_t scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
-        const auto [hit, sel_part] = CycleHit(ResolveHits(R, RunObjectPick(mouse_px, scaled_pick_radius), bone_mode), active_entity);
+        const auto pick = CycleHit(ResolveHits(R, RunObjectPick(mouse_px, scaled_pick_radius), bone_mode), active_entity);
         const bool shift = IsKeyDown(ImGuiMod_Shift);
-        if (hit != entt::null && shift) {
-            if (active_entity == hit) {
-                ToggleSelected(hit);
+        if (pick && shift) {
+            if (active_entity == pick->Entity) {
+                ToggleSelected(pick->Entity);
             } else {
                 R.clear<Active>();
-                R.emplace<Active>(hit);
-                R.emplace_or_replace<Selected>(hit);
+                R.emplace<Active>(pick->Entity);
+                R.emplace_or_replace<Selected>(pick->Entity);
             }
-        } else if (hit != entt::null || !shift) {
-            if (bone_mode) R.clear<BoneSelParts>();
-            if (hit != entt::null) Select(hit);
+        } else if (pick || !shift) {
+            if (pick && pick->Part) R.clear<BoneSelParts>();
+            if (pick) Select(pick->Entity);
             else deselect_all();
         }
         // Bone sub-part tracking
-        if (bone_mode && hit != entt::null) {
-            if (R.all_of<Selected>(hit)) {
-                auto &parts = R.get_or_emplace<BoneSelParts>(hit);
-                if (shift) {
-                    if (sel_part == BoneSel::Root) parts.Root = true;
-                    else if (sel_part == BoneSel::Tip) parts.Tip = true;
-                    else { parts.Root = parts.Tip = parts.Body = true; }
-                } else {
-                    parts = sel_part == BoneSel::Body ?
-                        BoneSelParts{true, true, true} :
-                        sel_part == BoneSel::Root ? BoneSelParts{true, false, false} :
-                                                    BoneSelParts{false, true, false};
-                }
-                if (parts.Root && parts.Tip) parts.Body = true;
+        if (pick && pick->Part) {
+            if (R.all_of<Selected>(pick->Entity)) {
+                auto &p = shift ? R.get_or_emplace<BoneSelParts>(pick->Entity) : R.emplace_or_replace<BoneSelParts>(pick->Entity);
+                const bool body = *pick->Part == BoneSel::Body;
+                if (*pick->Part == BoneSel::Root || body) p.Root = true;
+                if (*pick->Part == BoneSel::Tip || body) p.Tip = true;
+                if (body || (p.Root && p.Tip)) p.Body = true;
             } else {
-                R.remove<BoneSelParts>(hit);
+                R.remove<BoneSelParts>(pick->Entity);
             }
         }
     }
