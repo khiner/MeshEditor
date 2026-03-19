@@ -270,7 +270,7 @@ private:
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.
-    void DestroyBoneInstances(entt::entity arm_obj_entity);
+    void DestroyArmatureData(entt::entity arm_obj_entity);
     void RebuildBoneStructure(entt::entity arm_data_entity); // Call after Armature::AddBone/RemoveBone
 
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.

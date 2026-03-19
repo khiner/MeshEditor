@@ -1746,39 +1746,17 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     }
 }
 
-void Scene::DestroyBoneInstances(entt::entity arm_obj_entity) {
+void Scene::DestroyArmatureData(entt::entity arm_obj_entity) {
     auto &arm = R.get<ArmatureObject>(arm_obj_entity);
-
-    // Destroy joint sphere entities
     if (arm.JointEntity != entt::null) {
-        // Destroy joint sphere instance entities
-        for (const auto bone_entity : arm.BoneEntities) {
-            if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
-                if (joints->Head != entt::null) R.destroy(joints->Head);
-                if (joints->Tail != entt::null) R.destroy(joints->Tail);
-            }
-            R.remove<BoneJointEntities>(bone_entity);
-        }
-        // Destroy joint entity
         if (auto *mb = R.try_get<MeshBuffers>(arm.JointEntity)) Buffers->Release(*mb);
         if (auto *ref = R.try_get<VertexStoreId>(arm.JointEntity)) Meshes->Release(ref->StoreId);
         R.remove<MeshBuffers, VertexStoreId, ModelsBuffer>(arm.JointEntity);
         R.destroy(arm.JointEntity);
         arm.JointEntity = entt::null;
     }
-
-    // Destroy children before parents (reverse of topological order) so ClearParent
-    // can access the parent's SceneNode to unlink the child.
-    for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
-        ClearParent(R, *it);
-        SetVisible(*it, false);
-        R.destroy(*it);
-    }
-    arm.BoneEntities.clear();
     if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) Buffers->Release(*mb);
-    if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) {
-        Buffers->EdgeIndexBuffer.Release(adj->Indices);
-    }
+    if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) Buffers->EdgeIndexBuffer.Release(adj->Indices);
     if (auto *ref = R.try_get<VertexStoreId>(arm_obj_entity)) Meshes->Release(ref->StoreId);
     R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices>(arm_obj_entity);
 }
@@ -2088,26 +2066,9 @@ void Scene::DeleteSelectedBones() {
     RebuildBoneStructure(arm_obj.Entity);
 
     // Update surviving bones with new dense indices.
-    for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) {
-        R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
-    }
+    for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
 
-    // Destroy joint entity if no bones survive.
-    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity) && arm_obj.BoneEntities.empty()) {
-        if (auto *mb = R.try_get<MeshBuffers>(arm_obj.JointEntity)) Buffers->Release(*mb);
-        if (auto *ref = R.try_get<VertexStoreId>(arm_obj.JointEntity)) Meshes->Release(ref->StoreId);
-        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer>(arm_obj.JointEntity);
-        R.destroy(arm_obj.JointEntity);
-        arm_obj.JointEntity = null_entity;
-    }
-
-    if (arm_obj.BoneEntities.empty()) {
-        if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) Buffers->Release(*mb);
-        if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) {
-            Buffers->EdgeIndexBuffer.Release(adj->Indices);
-        }
-        R.remove<MeshBuffers, Mesh, ModelsBuffer, BoneAdjacencyIndices>(arm_obj_entity);
-    }
+    if (arm_obj.BoneEntities.empty()) DestroyArmatureData(arm_obj_entity);
 
     Select(arm_obj_entity);
 }
@@ -2557,9 +2518,31 @@ void Scene::Destroy(entt::entity e) {
         }
     }
 
-    // If this armature object has bone mesh data, destroy bone instances + mesh data first
-    if (R.all_of<ArmatureObject>(e) && R.all_of<MeshBuffers>(e)) {
-        DestroyBoneInstances(e);
+    if (R.all_of<ArmatureObject>(e)) {
+        auto &arm = R.get<ArmatureObject>(e);
+        for (const auto bone_entity : arm.BoneEntities) {
+            if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
+                if (joints->Head != entt::null) {
+                    SetVisible(joints->Head, false);
+                    R.destroy(joints->Head);
+                }
+                if (joints->Tail != entt::null) {
+                    SetVisible(joints->Tail, false);
+                    R.destroy(joints->Tail);
+                }
+            }
+            R.remove<BoneJointEntities>(bone_entity);
+        }
+
+        // Destroy children before parents (reverse of topological order) so ClearParent
+        // can access the parent's SceneNode to unlink the child.
+        for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
+            ClearParent(R, *it);
+            SetVisible(*it, false);
+            R.destroy(*it);
+        }
+        arm.BoneEntities.clear();
+        DestroyArmatureData(e);
     }
 
     if (R.valid(e)) R.destroy(e);
