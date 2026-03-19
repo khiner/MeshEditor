@@ -1973,6 +1973,63 @@ void Scene::ExtrudeBone() {
     }
 }
 
+void Scene::DuplicateSelectedBones() {
+    const auto active_entity = FindActiveEntity(R), arm_obj_entity = FindArmatureObject(R, active_entity);
+    if (arm_obj_entity == entt::null) return;
+
+    const auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
+    auto &armature = R.get<Armature>(arm_obj.Entity);
+
+    struct DupInfo {
+        entt::entity Entity;
+        BoneId Id, NewId{InvalidBoneId};
+    };
+    std::vector<DupInfo> to_duplicate;
+    for (const auto e : R.view<BoneSelected, BoneIndex>()) {
+        if (R.get<SubElementOf>(e).Parent != arm_obj_entity) continue;
+        to_duplicate.emplace_back(DupInfo{e, armature.Bones[R.get<BoneIndex>(e).Index].Id});
+    }
+    if (to_duplicate.empty()) return;
+
+    auto unique_bone_name = [&](std::string_view base) {
+        for (uint32_t i = 1;; ++i) {
+            auto candidate = std::format("{}.{:03d}", base, i);
+            if (!any_of(armature.Bones, [&](const auto &b) { return b.Name == candidate; })) return candidate;
+        }
+    };
+
+    std::unordered_map<BoneId, BoneId> orig_to_new;
+    for (auto &info : to_duplicate) {
+        const auto &bone = armature.Bones[*armature.FindBoneIndex(info.Id)];
+        auto parent_id = bone.ParentBoneId == InvalidBoneId ? std::optional<BoneId>{} : std::optional<BoneId>{bone.ParentBoneId};
+        info.NewId = armature.AddBone(unique_bone_name(bone.Name), parent_id, bone.RestLocal);
+        orig_to_new[info.Id] = info.NewId;
+    }
+
+    // If both a bone and its parent were duplicated, point the duplicate child to the duplicate parent.
+    for (const auto &info : to_duplicate) {
+        auto &new_bone = armature.Bones[*armature.FindBoneIndex(info.NewId)];
+        if (auto it = orig_to_new.find(new_bone.ParentBoneId); it != orig_to_new.end()) {
+            new_bone.ParentBoneId = it->second;
+        }
+    }
+
+    RebuildBoneStructure(arm_obj.Entity);
+
+    R.clear<BoneSelParts, BoneActive, BoneSelected>();
+    entt::entity last_bone{};
+    for (const auto &info : to_duplicate) {
+        last_bone = CreateSingleBoneInstance(arm_obj_entity, info.NewId);
+        R.get<BoneDisplayScale>(last_bone).Value = R.get<BoneDisplayScale>(info.Entity).Value;
+        UpdateModelBuffer(R, last_bone, R.get<WorldTransform>(last_bone));
+        R.emplace<BoneSelected>(last_bone);
+        R.emplace<BoneSelParts>(last_bone, true, true, true);
+    }
+    R.emplace<BoneActive>(last_bone);
+
+    StartScreenTransform = TransformGizmo::TransformType::Translate;
+}
+
 void Scene::DeleteSelectedBones() {
     const auto active_entity = FindActiveEntity(R);
     const auto arm_obj_entity = FindArmatureObject(R, active_entity);
@@ -2357,19 +2414,38 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     return e_new;
 }
 
+namespace {
+bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
+    const auto mode = R.get<const SceneInteraction>(scene_entity).Mode;
+    if (mode != InteractionMode::Edit) return false;
+    return FindArmatureObject(R, FindActiveEntity(R)) != entt::null;
+}
+} // namespace
+
+bool Scene::CanDuplicate() const {
+    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+    if (mode == InteractionMode::Pose) return false;
+    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelected>().empty();
+    return !R.storage<Selected>().empty();
+}
+
+bool Scene::CanDuplicateLinked() const {
+    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+    if (mode == InteractionMode::Pose) return false;
+    if (IsBoneEditMode(R, SceneEntity)) return false;
+    return !R.storage<Selected>().empty();
+}
+
 bool Scene::CanDelete() const {
     const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     if (mode == InteractionMode::Pose) return false;
-    const auto active = FindActiveEntity(R);
-    if (mode == InteractionMode::Edit && FindArmatureObject(R, active) != entt::null) return !R.view<BoneSelected>().empty();
+    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelected>().empty();
     return !R.storage<Selected>().empty();
 }
 
 void Scene::Delete() {
     if (!CanDelete()) return;
-    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-    const auto active = FindActiveEntity(R);
-    if (mode == InteractionMode::Edit && FindArmatureObject(R, active) != entt::null) {
+    if (IsBoneEditMode(R, SceneEntity)) {
         DeleteSelectedBones();
         return;
     }
@@ -2381,6 +2457,11 @@ void Scene::Delete() {
 }
 
 void Scene::Duplicate() {
+    if (!CanDuplicate()) return;
+    if (IsBoneEditMode(R, SceneEntity)) {
+        DuplicateSelectedBones();
+        return;
+    }
     const Timer timer{"Duplicate"};
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Selected>()) entities.emplace_back(e);
@@ -2395,7 +2476,9 @@ void Scene::Duplicate() {
     }
     StartScreenTransform = TransformGizmo::TransformType::Translate;
 }
+
 void Scene::DuplicateLinked() {
+    if (!CanDuplicateLinked()) return;
     const Timer timer{"DuplicateLinked"};
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Selected>()) entities.emplace_back(e);

@@ -113,14 +113,17 @@ struct Scene {
     void SelectBone(entt::entity); // Exclusive bone selection: clears all bone state, sets BoneActive+BoneSelected on target (null = deselect all bones).
 
     // Actions on selected entities
+    bool CanDuplicate() const;
+    bool CanDuplicateLinked() const;
     void Duplicate();
     void DuplicateLinked();
     bool CanDelete() const;
     void Delete();
 
-    void AddBone(); // Add a new root bone at the world origin.
-    void ExtrudeBone(); // Extrude new bones from selected bone tips/roots.
-    void DeleteSelectedBones(); // Delete all selected bones from the active armature.
+    void AddBone();
+    void ExtrudeBone();
+    void DuplicateSelectedBones();
+    void DeleteSelectedBones();
 
     // Handle mouse/keyboard interactions.
     void Interact();

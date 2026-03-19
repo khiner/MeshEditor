@@ -533,6 +533,8 @@ void Scene::Interact() {
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 } else if (IsKeyPressed(ImGuiKey_X, false) || IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) {
                     Delete();
+                } else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) {
+                    Duplicate();
                 }
             }
             if (IsKeyPressed(ImGuiKey_E, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
@@ -549,8 +551,8 @@ void Scene::Interact() {
                 StartScreenTransform = TransformGizmo::TransformType::Translate;
             }
             if (!R.storage<Selected>().empty()) {
-                if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
-                else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
+                if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
+                else if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
                 else if (!bone_edit && CanDelete() && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) Delete();
                 else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
                     // Start transform gizmo in both Object and Edit modes.
@@ -1701,9 +1703,11 @@ void Scene::RenderControls() {
                     }
                     if (mixed_visible) PopItemFlag();
                 }
-                if (Button("Duplicate")) Duplicate();
-                SameLine();
-                if (Button("Duplicate linked")) DuplicateLinked();
+                if (CanDuplicate() && Button("Duplicate")) Duplicate();
+                if (CanDuplicateLinked()) {
+                    SameLine();
+                    if (Button("Duplicate linked")) DuplicateLinked();
+                }
                 if (CanDelete() && Button("Delete")) Delete();
             }
             RenderEntityControls(FindActiveEntity(R));
