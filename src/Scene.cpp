@@ -2486,23 +2486,14 @@ void Scene::Destroy(entt::entity e) {
         SetVisible(e, false);
     }
     std::vector<entt::entity> armature_data_entities;
-    if (const auto *armature = R.try_get<ArmatureObject>(e); armature && R.valid(armature->Entity)) {
-        armature_data_entities.emplace_back(armature->Entity);
-    }
-    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e); armature_modifier && R.valid(armature_modifier->ArmatureEntity)) {
-        armature_data_entities.emplace_back(armature_modifier->ArmatureEntity);
-    }
-    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e); bone_attachment && R.valid(bone_attachment->ArmatureEntity)) {
-        armature_data_entities.emplace_back(bone_attachment->ArmatureEntity);
-    }
-    std::vector<entt::entity> unique_armature_data_entities;
-    unique_armature_data_entities.reserve(armature_data_entities.size());
-    for (const auto data_entity : armature_data_entities) {
-        if (find(unique_armature_data_entities, data_entity) == unique_armature_data_entities.end()) {
-            unique_armature_data_entities.emplace_back(data_entity);
+    auto try_add_armature_data = [&](entt::entity data_entity) {
+        if (R.valid(data_entity) && find(armature_data_entities, data_entity) == armature_data_entities.end()) {
+            armature_data_entities.emplace_back(data_entity);
         }
-    }
-    armature_data_entities = std::move(unique_armature_data_entities);
+    };
+    if (const auto *armature = R.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
+    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
+    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
     if (const auto *light_index = R.try_get<LightIndex>(e)) {
         const uint32_t remove_index = light_index->Value;
@@ -2520,16 +2511,14 @@ void Scene::Destroy(entt::entity e) {
 
     if (R.all_of<ArmatureObject>(e)) {
         auto &arm = R.get<ArmatureObject>(e);
+        auto destroy_visible = [&](entt::entity entity) {
+            SetVisible(entity, false);
+            R.destroy(entity);
+        };
         for (const auto bone_entity : arm.BoneEntities) {
             if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
-                if (joints->Head != entt::null) {
-                    SetVisible(joints->Head, false);
-                    R.destroy(joints->Head);
-                }
-                if (joints->Tail != entt::null) {
-                    SetVisible(joints->Tail, false);
-                    R.destroy(joints->Tail);
-                }
+                if (joints->Head != entt::null) destroy_visible(joints->Head);
+                if (joints->Tail != entt::null) destroy_visible(joints->Tail);
             }
             R.remove<BoneJointEntities>(bone_entity);
         }
@@ -2538,14 +2527,12 @@ void Scene::Destroy(entt::entity e) {
         // can access the parent's SceneNode to unlink the child.
         for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
             ClearParent(R, *it);
-            SetVisible(*it, false);
-            R.destroy(*it);
+            destroy_visible(*it);
         }
-        arm.BoneEntities.clear();
         DestroyArmatureData(e);
     }
 
-    if (R.valid(e)) R.destroy(e);
+    R.destroy(e);
 
     // If this was the last instance, destroy the buffer entity
     if (R.valid(buffer_entity)) {
