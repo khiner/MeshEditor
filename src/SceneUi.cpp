@@ -1649,7 +1649,7 @@ void Scene::RenderControls() {
                 if (interaction_mode == InteractionMode::Edit) {
                     Checkbox("X-ray selection", &SelectionXRay);
                 }
-                if (interaction_mode == InteractionMode::Edit) {
+                if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
                     auto type_interaction_mode = int(edit_mode);
@@ -1660,18 +1660,13 @@ void Scene::RenderControls() {
                             SetEditMode(element);
                         }
                     }
-                    const auto active_entity = FindActiveEntity(R);
-                    if (active_entity != entt::null) {
+                    if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) {
                         if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
                             const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance->Entity);
-                            const uint32_t selected_count = br ? scene_selection::CountSelected(
-                                                                     reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data()),
-                                                                     br->Offset, br->Count
-                                                                 ) :
-                                                                 0;
+                            const uint32_t selected_count = br ?
+                                scene_selection::CountSelected(reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data()), br->Offset, br->Count) :
+                                0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
-                        } else {
-                            TextUnformatted("Edit mode requires an active mesh object.");
                         }
                     }
                 }
