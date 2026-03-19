@@ -115,6 +115,7 @@ struct Scene {
     // Actions on selected entities
     void Duplicate();
     void DuplicateLinked();
+    bool CanDelete() const;
     void Delete();
 
     void AddBone(); // Add a new root bone at the world origin.

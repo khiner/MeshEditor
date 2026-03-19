@@ -532,7 +532,7 @@ void Scene::Interact() {
                     ExtrudeBone();
                     StartScreenTransform = TransformGizmo::TransformType::Translate;
                 } else if (IsKeyPressed(ImGuiKey_X, false) || IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) {
-                    DeleteSelectedBones();
+                    Delete();
                 }
             }
             if (IsKeyPressed(ImGuiKey_E, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
@@ -551,7 +551,7 @@ void Scene::Interact() {
             if (!R.storage<Selected>().empty()) {
                 if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
                 else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
-                else if (!bone_edit && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) Delete();
+                else if (!bone_edit && CanDelete() && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) Delete();
                 else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
                     // Start transform gizmo in both Object and Edit modes.
                     // In Edit mode, shader applies transform to selected vertices.
@@ -1704,7 +1704,7 @@ void Scene::RenderControls() {
                 if (Button("Duplicate")) Duplicate();
                 SameLine();
                 if (Button("Duplicate linked")) DuplicateLinked();
-                if (Button("Delete")) Delete();
+                if (CanDelete() && Button("Delete")) Delete();
             }
             RenderEntityControls(FindActiveEntity(R));
 

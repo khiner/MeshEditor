@@ -2357,7 +2357,22 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     return e_new;
 }
 
+bool Scene::CanDelete() const {
+    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+    if (mode == InteractionMode::Pose) return false;
+    const auto active = FindActiveEntity(R);
+    if (mode == InteractionMode::Edit && FindArmatureObject(R, active) != entt::null) return !R.view<BoneSelected>().empty();
+    return !R.storage<Selected>().empty();
+}
+
 void Scene::Delete() {
+    if (!CanDelete()) return;
+    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+    const auto active = FindActiveEntity(R);
+    if (mode == InteractionMode::Edit && FindArmatureObject(R, active) != entt::null) {
+        DeleteSelectedBones();
+        return;
+    }
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Selected>()) {
         if (!R.all_of<SubElementOf>(e)) entities.emplace_back(e);
