@@ -1938,9 +1938,11 @@ void Scene::RenderObjectTree() {
         if (e == entt::null) return;
         if (selected) {
             if (!R.all_of<Selected>(e)) R.emplace<Selected>(e);
+            if (R.all_of<BoneIndex>(e)) R.emplace_or_replace<BoneSelParts>(e, BoneSelParts{true, true, true});
         } else {
             if (R.all_of<Selected>(e)) R.remove<Selected>(e);
             if (R.all_of<Active>(e)) R.remove<Active>(e);
+            if (R.all_of<BoneSelParts>(e)) R.remove<BoneSelParts>(e);
         }
     };
 
@@ -1951,7 +1953,7 @@ void Scene::RenderObjectTree() {
                 if (request.Selected) {
                     for (const auto e : visible_entities) SetSelectedState(e, true);
                 } else {
-                    R.clear<Active, Selected>();
+                    R.clear<Active, Selected, BoneSelParts>();
                 }
                 continue;
             }
