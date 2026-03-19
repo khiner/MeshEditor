@@ -1929,9 +1929,10 @@ void Scene::RenderObjectTree() {
         return R.valid(e) ? e : entt::null;
     };
 
-    const auto GetObjectType = [&](entt::entity e) {
-        if (R.all_of<ObjectKind>(e)) return R.get<const ObjectKind>(e).Value;
-        return ObjectType::Empty;
+    const auto GetEntityTypeName = [&](entt::entity e) -> std::string_view {
+        if (R.all_of<BoneIndex>(e)) return "Bone";
+        if (R.all_of<ObjectKind>(e)) return ObjectTypeName(R.get<const ObjectKind>(e).Value);
+        return ObjectTypeName(ObjectType::Empty);
     };
     const auto SetSelectedState = [&](entt::entity e, bool selected) {
         if (e == entt::null) return;
@@ -2021,7 +2022,7 @@ void Scene::RenderObjectTree() {
         }
 
         SetNextItemSelectionUserData(ToSelectionUserData(e));
-        const auto label = std::format("{} [{}]", GetName(R, e), ObjectTypeName(GetObjectType(e)));
+        const auto label = std::format("{} [{}]", GetName(R, e), GetEntityTypeName(e));
         const bool open = TreeNodeEx(reinterpret_cast<void *>(uintptr_t(uint32_t(e))), flags, "%s", label.c_str());
         if (is_ancestor_selected) PopStyleColor(2);
         visible_entities.emplace_back(e);
