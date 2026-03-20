@@ -65,7 +65,7 @@ vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationI
     static constexpr vk::PipelineMultisampleStateCreateInfo multisample_state{{}, vk::SampleCountFlagBits::e1};
     static constexpr vk::PipelineVertexInputStateCreateInfo vertex_input{};
     static constexpr vk::PipelineInputAssemblyStateCreateInfo input_assembly{{}, vk::PrimitiveTopology::eTriangleList};
-    static const vk::PipelineRasterizationStateCreateInfo raster{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eClockwise, false, 0.f, {}, {}, 1.f};
+    static const vk::PipelineRasterizationStateCreateInfo raster{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eClockwise, false, 0.f, {}, 0.f, 1.f};
 
     const std::array stages{
         vk::PipelineShaderStageCreateInfo{{}, ShaderType::eVertex, *VertModule, "main"},
@@ -168,7 +168,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "ObjectExtras.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
     const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
@@ -177,7 +177,7 @@ static PipelineRenderer CreateMainRenderer(
               {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
         );
     };
     pipelines.emplace(SPT::LineOverlayFaceNormals, make_overlay_pipeline(OverlayKind::FaceNormal));
@@ -189,7 +189,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexPoint.vert"}, {ShaderType::eFragment, "VertexPoint.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
     pipelines.emplace(

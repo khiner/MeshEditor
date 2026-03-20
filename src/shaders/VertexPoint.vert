@@ -36,7 +36,7 @@ void main() {
         is_selected  ? vec4(ViewportTheme.Colors.VertexSelected, 1.0) :
                        vec4(ViewportTheme.Colors.Vertex, 1.0);
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
-    gl_Position.z -= 4e-4 * gl_Position.w; // Push points in front of lines/faces in NDC
+    gl_Position.z -= NdcOffsetFactor() * 1.5; // Push points in front of lines/faces (Blender: vertex_ndc_offset_)
     // Only show selected/active vertices in excite mode
     gl_PointSize = SceneViewUBO.InteractionMode == InteractionMode_Excite && !is_selected && !is_active ? 0.0 : 8.0;
 }

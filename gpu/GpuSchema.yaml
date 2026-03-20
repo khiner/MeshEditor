@@ -230,6 +230,8 @@ structs:
         type: u32
       - name: BoneXRay
         type: u32
+      - name: NdcOffsetFactor
+        type: float
   - name: WorkspaceLights
     binding: WorkspaceLightsUBO
     fields:

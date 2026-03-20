@@ -1397,8 +1397,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
         const float screen_pixel_scale = ScreenPixelScale(camera.Data, viewport_height);
+        const float aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
+        const auto proj = camera.Projection(aspect);
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
-            .ViewProj = camera.Projection(render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height)) * camera.View(),
+            .ViewProj = proj * camera.View(),
             .ViewRotation = mat3(camera.View()),
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip(),
@@ -1431,14 +1433,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .FacePrimitiveSlot = Meshes->FacePrimitiveBuffer.Buffer.Slot,
             .DrawDataSlot = Buffers->RenderDrawData.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
+            // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
+            .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
         }));
         request(RenderRequest::Submit);
     }
 
     { // Keep targeted PBR specialization mask in sync when one of its inputs changes.
         const auto shading = R.get<const SceneSettings>(SceneEntity).ViewportShading;
-        if (!reactive<changes::SceneSettings>(R).empty() ||
-            !reactive<changes::PbrSpecialization>(R).empty()) {
+        if (!reactive<changes::SceneSettings>(R).empty() || !reactive<changes::PbrSpecialization>(R).empty()) {
             if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
                 PbrFeatureMask pbr_mask{0};
                 const bool use_scene_lights = shading == ViewportShadingMode::Rendered ?

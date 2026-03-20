@@ -135,12 +135,13 @@ void main() {
     WorldScale = (world.Scale.x + world.Scale.y + world.Scale.z) / 3.0;
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
     if (IsLineDraw != 0u) {
-        gl_Position.z -= 2e-4 * gl_Position.w; // Push lines in front of faces in NDC
+        gl_Position.z -= NdcOffsetFactor() * 1.0; // Push lines in front of faces (Blender: edge_ndc_offset_)
         // Convert clip-space to pixel coordinates matching gl_FragCoord.xy ([0, ViewportSize])
         const vec2 screen_pos = (gl_Position.xy / gl_Position.w * 0.5 + 0.5) * SceneViewUBO.ViewportSize;
         EdgeStart = screen_pos; // flat: takes first-vertex value for the whole line primitive
         EdgePos = screen_pos;   // smooth: interpolated along the line
     } else {
+        gl_Position.z -= NdcOffsetFactor() * 0.5; // Push faces in front of solid depth (Blender: cage_ndc_offset_)
         EdgeStart = vec2(0);
         EdgePos = vec2(0);
     }
