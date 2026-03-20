@@ -576,6 +576,9 @@ void Scene::Interact() {
                 if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
                 else if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
                 else if (!bone_edit && CanDelete() && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) Delete();
+                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_G, false)) ClearSelectedBoneTransforms(true, false, false);
+                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_R, false)) ClearSelectedBoneTransforms(false, true, false);
+                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_S, false)) ClearSelectedBoneTransforms(false, false, true);
                 else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
                     // Start transform gizmo in both Object and Edit modes.
                     // In Edit mode, shader applies transform to selected vertices.
@@ -906,15 +909,15 @@ void Scene::RenderOverlay() {
         std::vector<entt::entity> root_selected;
         if (bone_edit_mode) {
             // Edit mode: all selected bones are roots (rest-pose edits don't propagate during drag).
-            for (const auto e : bone_selected_view) root_selected.push_back(e);
+            for (const auto e : bone_selected_view) root_selected.emplace_back(e);
         } else if (bone_mode) {
             // Pose mode: filter out children whose parent is also selected (FK propagates).
             for (const auto e : bone_selected_view) {
-                if (!is_parent_selected(e)) root_selected.push_back(e);
+                if (!is_parent_selected(e)) root_selected.emplace_back(e);
             }
         } else {
             for (const auto e : selected_view) {
-                if (!is_parent_selected(e)) root_selected.push_back(e);
+                if (!is_parent_selected(e)) root_selected.emplace_back(e);
             }
         }
         const auto root_count = root_selected.size();
@@ -1152,6 +1155,22 @@ void Scene::RenderOverlay() {
     StartScreenTransform = {};
 }
 
+void Scene::ClearSelectedBoneTransforms(bool position, bool rotation, bool scale) {
+    const auto arm_obj_entity = FindArmatureObject(R, FindActiveEntity(R));
+    if (arm_obj_entity == entt::null) return;
+
+    const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
+    const auto &armature = R.get<const Armature>(arm_obj.Entity);
+    for (const auto b : R.view<const BoneSelection, const BoneIndex>()) {
+        const auto idx = R.get<const BoneIndex>(b).Index;
+        const auto &rest = armature.Bones[idx].RestLocal;
+        if (position) R.replace<Position>(b, rest.P);
+        if (rotation) R.replace<Rotation>(b, rest.R);
+        if (scale) R.replace<Scale>(b, rest.S);
+        UpdateWorldTransform(R, b);
+    }
+}
+
 void Scene::RenderEntityControls(entt::entity active_entity) {
     if (active_entity == entt::null) {
         TextUnformatted("Active object: None");
@@ -1195,25 +1214,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     } else if (const auto *armature_object = R.try_get<ArmatureObject>(active_entity)) {
         const auto &armature = R.get<const Armature>(armature_object->Entity);
         Text("Bones: %zu", armature.Bones.size());
-        const auto cur_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-        const bool show_bones = cur_mode == InteractionMode::Pose || cur_mode == InteractionMode::Edit;
-        if (show_bones && CollapsingHeader("Bones", ImGuiTreeNodeFlags_DefaultOpen)) {
-            for (uint32_t i = 0; i < armature_object->BoneEntities.size(); ++i) {
-                const auto b = armature_object->BoneEntities[i];
-                const bool is_active_bone = (b == active_bone_entity);
-                if (is_active_bone) PushStyleColor(ImGuiCol_Text, ImVec4{1, 0.8f, 0.2f, 1});
-                if (Selectable(armature.Bones[i].Name.c_str(), R.all_of<BoneSelection>(b))) SelectBone(b);
-                if (is_active_bone) PopStyleColor();
-            }
-            if (Button("Reset Pose")) {
-                for (uint32_t i = 0; i < armature_object->BoneEntities.size(); ++i) {
-                    const auto &rest = armature.Bones[i].RestLocal;
-                    R.replace<Position>(armature_object->BoneEntities[i], rest.P);
-                    R.replace<Rotation>(armature_object->BoneEntities[i], rest.R);
-                }
-                UpdateWorldTransform(R, active_entity);
-            }
-        }
     }
     Unindent();
     const bool is_bone_edit = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit && active_bone_entity != entt::null && R.all_of<BoneDisplayScale>(active_bone_entity);
@@ -1730,6 +1730,18 @@ void Scene::RenderControls() {
                     if (Button("Duplicate linked")) DuplicateLinked();
                 }
                 if (CanDelete() && Button("Delete")) Delete();
+                if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && !R.view<const BoneSelection>().empty()) {
+                    AlignTextToFramePadding();
+                    TextUnformatted("Clear transform:");
+                    SameLine();
+                    if (Button("All")) ClearSelectedBoneTransforms(true, true, true);
+                    SameLine();
+                    if (Button("Position")) ClearSelectedBoneTransforms(true, false, false);
+                    SameLine();
+                    if (Button("Rotation")) ClearSelectedBoneTransforms(false, true, false);
+                    SameLine();
+                    if (Button("Scale")) ClearSelectedBoneTransforms(false, false, true);
+                }
             }
             RenderEntityControls(FindActiveEntity(R));
 

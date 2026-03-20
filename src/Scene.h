@@ -276,6 +276,7 @@ private:
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
     void SetStudioEnvironment(uint32_t index);
 
+    void ClearSelectedBoneTransforms(bool position, bool rotation, bool scale);
     void RenderEntityControls(entt::entity);
     void RenderObjectTree();
 };
