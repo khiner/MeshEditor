@@ -13,6 +13,8 @@ struct Mesh;
 
 namespace scene_selection {
 
+// Set all bits in [offset, offset+count), clearing any gap bits in the last word.
+void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count);
 // Count selected bits in [offset, offset+count).
 uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count);
 // Return local (0-based) handles of all set bits in [offset, offset+count).

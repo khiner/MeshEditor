@@ -365,16 +365,13 @@ void Scene::SetInteractionMode(InteractionMode mode) {
             for (const auto [_, br] : R.view<const MeshSelectionBitsetRange>().each()) {
                 next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
             }
-            auto *mapped = Buffers->SelectionBitsetBuffer.GetMappedData().data();
+            auto *bits = reinterpret_cast<uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
             for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
                 if (R.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
                 const uint32_t count = scene_selection::GetElementCount(mesh, edit_element);
                 if (count == 0) continue;
-                const uint32_t word_count = (count + 31) / 32;
-                auto *u32 = reinterpret_cast<uint32_t *>(mapped) + next_offset / 32;
-                memset(u32, 0xFF, word_count * sizeof(uint32_t)); // Select all elements by default.
-                if (const uint32_t rem = count & 31) u32[word_count - 1] = (1u << rem) - 1u; // Clear gap bits.
+                scene_selection::SelectAll(bits, next_offset, count);
                 R.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);
                 next_offset = (next_offset + count + 31) / 32 * 32;
             }
@@ -508,10 +505,8 @@ void Scene::Interact() {
             if (IsKeyPressed(ImGuiKey_Tab)) {
                 const bool is_armature = FindArmatureObject(R, active_entity) != entt::null;
                 if (is_armature && GetIO().KeyCtrl) {
-                    // Ctrl+Tab: toggle Object ↔ Pose
                     SetInteractionMode(interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose);
                 } else if (is_armature) {
-                    // Tab: toggle Object ↔ Edit
                     SetInteractionMode(interaction_mode == InteractionMode::Edit ? InteractionMode::Object : InteractionMode::Edit);
                 } else {
                     // Cycle to the next interaction mode, wrapping around to the first.
@@ -523,6 +518,33 @@ void Scene::Interact() {
                 if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
                 else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
                 else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
+            }
+            if (IsKeyPressed(ImGuiKey_A, false) && !GetIO().KeyShift && !GetIO().KeyCtrl && !GetIO().KeyAlt && !GetIO().KeySuper) {
+                if (const auto arm_obj_entity = FindArmatureObject(R, active_entity);
+                    interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && arm_obj_entity != entt::null)) {
+                    // Select all bones in the active armature.
+                    if (arm_obj_entity != entt::null) {
+                        const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
+                        R.clear<BoneActive, BoneSelection>();
+                        for (const auto bone_entity : arm_obj.BoneEntities) R.emplace<BoneSelection>(bone_entity);
+                        if (!arm_obj.BoneEntities.empty()) R.emplace<BoneActive>(arm_obj.BoneEntities.back());
+                    }
+                } else if (interaction_mode == InteractionMode::Edit) {
+                    // Select all elements in the current edit mode.
+                    const auto ranges = GetBitsetRangesForSelected();
+                    auto *bits = reinterpret_cast<uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+                    for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
+                    if (!ranges.empty()) SelectionBitsDirty = true;
+                } else if (interaction_mode == InteractionMode::Object) {
+                    // Select all top-level objects.
+                    R.clear<Active, Selected>();
+                    entt::entity last{entt::null};
+                    for (const auto [e, _] : R.view<const ObjectKind>().each()) {
+                        R.emplace<Selected>(e);
+                        last = e;
+                    }
+                    if (last != entt::null) R.emplace<Active>(last);
+                }
             }
             const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
             if (bone_edit) {
@@ -1973,7 +1995,11 @@ void Scene::RenderObjectTree() {
                 if (request.Selected) {
                     for (const auto e : visible_entities) SetSelectedState(e, true);
                 } else {
-                    R.clear<Active, Selected, BoneActive, BoneSelection>();
+                    if (const auto nav = FromSelectionUserData(nav_item); nav != entt::null && R.all_of<BoneIndex>(nav)) {
+                        R.clear<BoneActive, BoneSelection>(); // Don't lost the armature selection
+                    } else {
+                        R.clear<Active, Selected, BoneActive, BoneSelection>();
+                    }
                 }
                 continue;
             }

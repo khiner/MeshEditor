@@ -8,6 +8,14 @@
 
 namespace scene_selection {
 
+void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count) {
+    if (count == 0) return;
+    const uint32_t word_count = (count + 31) / 32;
+    auto *u32 = bits + offset / 32;
+    memset(u32, 0xFF, word_count * sizeof(uint32_t));
+    if (const uint32_t rem = count & 31) u32[word_count - 1] = (1u << rem) - 1u;
+}
+
 uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count) {
     if (count == 0) return 0;
     uint32_t total = 0;
