@@ -38,3 +38,11 @@ struct ViewportExtent {
 struct PbrMeshFeatures {
     uint32_t Mask{0};
 };
+
+// Snapshot of selection state at the start of a shift+box-drag.
+// Presence on SceneEntity means an additive box-drag is active.
+struct AdditiveBoxSelectBaseline {
+    std::vector<entt::entity> SelectedEntities;
+    std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
+    std::vector<uint32_t> ElementBitset;
+};

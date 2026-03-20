@@ -658,16 +658,55 @@ void Scene::Interact() {
     if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
+            // Snapshot baseline selection if shift is held at drag start.
+            if (IsKeyDown(ImGuiMod_Shift)) {
+                AdditiveBoxSelectBaseline baseline;
+                if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
+                    const auto ranges = GetBitsetRangesForSelected();
+                    if (!ranges.empty()) {
+                        const auto element_count = fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
+                        const uint32_t bitset_words = (element_count + 31) / 32;
+                        auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
+                        baseline.ElementBitset.resize(bitset_words);
+                        memcpy(baseline.ElementBitset.data(), mapped.data(), bitset_words * sizeof(uint32_t));
+                    }
+                } else if (bone_mode) {
+                    for (const auto e : R.view<BoneSelection>()) {
+                        baseline.BoneSelections.emplace_back(e, R.get<BoneSelection>(e));
+                    }
+                } else if (interaction_mode == InteractionMode::Object) {
+                    for (const auto e : R.view<Selected>()) {
+                        baseline.SelectedEntities.push_back(e);
+                    }
+                }
+                R.emplace_or_replace<AdditiveBoxSelectBaseline>(SceneEntity, std::move(baseline));
+            }
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectEnd = ToGlm(GetMousePos());
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
-                const bool is_additive = IsKeyDown(ImGuiMod_Shift);
+                const auto *baseline = R.try_get<const AdditiveBoxSelectBaseline>(SceneEntity);
+                const bool is_additive = baseline != nullptr;
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     Timer timer{"BoxSelectElements (all)"};
                     RunBoxSelectElements(GetBitsetRangesForSelected(), edit_mode, *box_px, is_additive);
                 } else if (bone_mode || interaction_mode == InteractionMode::Object) {
                     const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode, true);
-                    if (!is_additive) deselect_all();
+                    if (is_additive) {
+                        // Restore baseline before adding current hits.
+                        if (bone_mode) {
+                            R.clear<BoneSelection>();
+                            for (const auto &[e, sel] : baseline->BoneSelections) {
+                                if (R.valid(e)) R.emplace_or_replace<BoneSelection>(e, sel);
+                            }
+                        } else {
+                            R.clear<Selected>();
+                            for (const auto e : baseline->SelectedEntities) {
+                                if (R.valid(e)) R.emplace_or_replace<Selected>(e);
+                            }
+                        }
+                    } else {
+                        deselect_all();
+                    }
                     for (const auto &[entity, part] : hits) {
                         if (bone_mode) {
                             set_bone_sel(entity, part, is_additive);
@@ -680,6 +719,7 @@ void Scene::Interact() {
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectStart.reset();
             BoxSelectEnd.reset();
+            R.remove<AdditiveBoxSelectBaseline>(SceneEntity);
         }
         if (BoxSelectStart) return;
     }

@@ -3600,9 +3600,18 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
     const uint32_t bitset_words = (element_count + 31) / 32;
     if (bitset_words > SceneBuffers::SelectionBitsetWords) return;
 
-    // For non-additive: clear the entire bitset range so only newly box-selected bits remain.
-    if (!is_additive) {
-        auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
+    // Restore baseline bitset for additive mode, or clear for non-additive.
+    auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
+    if (is_additive) {
+        const auto *baseline = R.try_get<const AdditiveBoxSelectBaseline>(SceneEntity);
+        if (baseline && !baseline->ElementBitset.empty()) {
+            const auto copy_words = std::min(bitset_words, uint32_t(baseline->ElementBitset.size()));
+            memcpy(mapped.data(), baseline->ElementBitset.data(), copy_words * sizeof(uint32_t));
+            if (copy_words < bitset_words) { // Zero any remaining words beyond the baseline
+                memset(mapped.data() + copy_words * sizeof(uint32_t), 0, (bitset_words - copy_words) * sizeof(uint32_t));
+            }
+        }
+    } else {
         memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
     }
 
