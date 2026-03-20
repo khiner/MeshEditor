@@ -260,6 +260,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     std::unordered_map<uint32_t, entt::entity> armature_data_entities_by_skin;
     armature_data_entities_by_skin.reserve(scene->Skins.size());
 
+    std::vector<entt::entity> all_imported_objects;
     entt::entity first_object_entity = entt::null,
                  first_mesh_object_entity = entt::null,
                  first_root_empty_entity = entt::null,
@@ -301,6 +302,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         }
 
         object_entities_by_node[object.NodeIndex] = object_entity;
+        all_imported_objects.emplace_back(object_entity);
         // glTF node.skin is deform linkage, not a transform-parent relationship.
         if (object.SkinIndex && R.all_of<Instance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
         if (first_object_entity == entt::null) first_object_entity = object_entity;
@@ -388,6 +390,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
         }
 
+        all_imported_objects.emplace_back(armature_entity);
         if (first_armature_entity == entt::null) first_armature_entity = armature_entity;
         if (first_object_entity == entt::null) first_object_entity = armature_entity;
 
@@ -597,13 +600,15 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         }
     }
 
-    const auto selected_entity =
+    const auto active_entity =
         first_mesh_object_entity != entt::null ? first_mesh_object_entity :
         first_armature_entity != entt::null    ? first_armature_entity :
         first_root_empty_entity != entt::null  ? first_root_empty_entity :
                                                  first_object_entity;
-    if (selected_entity != entt::null) Select(selected_entity);
+    R.clear<Active, Selected>();
+    if (active_entity != entt::null) R.emplace<Active>(active_entity);
+    for (const auto e : all_imported_objects) R.emplace<Selected>(e);
     import_rollback_guard.Enabled = false;
 
-    return std::pair{first_mesh_entity, selected_entity};
+    return std::pair{first_mesh_entity, active_entity};
 }
