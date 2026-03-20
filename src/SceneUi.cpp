@@ -33,7 +33,7 @@
 #include "scene_impl/SceneInternalTypes.h"
 #include "scene_impl/SceneTransformUtils.h"
 
-using std::ranges::all_of, std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::fold_left, std::ranges::to;
+using std::ranges::all_of, std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::transform;
 using namespace ImGui;
 
@@ -46,31 +46,31 @@ constexpr double WheelZoomAccelerationWindow{0.25}; // Seconds between ticks tha
 struct SelectionHit {
     entt::entity Entity;
     std::optional<BoneSel> Part{};
+    bool operator==(const SelectionHit &) const = default;
 };
 
 // Map raw GPU pick/box-select instances to logical selection targets.
-// In bone mode, resolve as individual bones (deduplicated, since body + joint spheres share an entity).
+// In bone mode, body + joint spheres collapse to one entry per bone.
+// merge_parts: true merges multiple parts to nullopt (= all parts); false keeps the first (closest) part.
 // In object mode, bones fall through to SubElementOf like any other sub-element, collapsing to the armature.
-std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt::entity> &raw, bool bone_mode) {
+std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts = false) {
     std::vector<SelectionHit> hits;
     for (const auto e : raw) {
         if (bone_mode && r.all_of<BoneIndex>(e)) {
-            if (!contains(hits, e, &SelectionHit::Entity)) hits.emplace_back(e, BoneSel::Body);
+            auto it = find(hits, e, &SelectionHit::Entity);
+            if (it == hits.end()) hits.emplace_back(e, BoneSel::Body);
+            else if (merge_parts) it->Part = {};
         } else if (bone_mode && r.all_of<BoneSubPartOf>(e)) {
             const auto &sub = r.get<BoneSubPartOf>(e);
-            if (!contains(hits, sub.BoneEntity, &SelectionHit::Entity)) hits.emplace_back(sub.BoneEntity, sub.IsTip ? BoneSel::Tip : BoneSel::Root);
+            auto it = find(hits, sub.BoneEntity, &SelectionHit::Entity);
+            if (it == hits.end()) hits.emplace_back(sub.BoneEntity, sub.IsTip ? BoneSel::Tip : BoneSel::Root);
+            else if (merge_parts) it->Part = {};
         } else if (!bone_mode) {
             const auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e;
             if (!contains(hits, target, &SelectionHit::Entity)) hits.emplace_back(target);
         }
     }
     return hits;
-}
-
-std::optional<SelectionHit> CycleHit(const std::vector<SelectionHit> &hits, entt::entity active) {
-    if (hits.empty()) return {};
-    auto it = find(hits, active, &SelectionHit::Entity);
-    return it != hits.end() && ++it != hits.end() ? *it : hits.front();
 }
 
 vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent) {
@@ -625,11 +625,10 @@ void Scene::Interact() {
         if (bone_mode) SelectBone(entt::null);
         else R.clear<Active, Selected>();
     };
-    auto apply_bone_sel_part = [](BoneSelection &sel, BoneSel part) {
-        const bool body = part == BoneSel::Body;
-        if (part == BoneSel::Root || body) sel.Root = true;
-        if (part == BoneSel::Tip || body) sel.Tip = true;
-        if (body || (sel.Root && sel.Tip)) sel.Body = true;
+    auto set_bone_sel = [&](entt::entity entity, std::optional<BoneSel> part, bool additive) {
+        const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
+        const auto *cur = R.try_get<BoneSelection>(entity);
+        R.emplace_or_replace<BoneSelection>(entity, additive && cur ? *cur | sel : sel);
     };
     if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -642,13 +641,11 @@ void Scene::Interact() {
                     Timer timer{"BoxSelectElements (all)"};
                     RunBoxSelectElements(GetBitsetRangesForSelected(), edit_mode, *box_px, is_additive);
                 } else if (bone_mode || interaction_mode == InteractionMode::Object) {
-                    const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode);
+                    const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode, true);
                     if (!is_additive) deselect_all();
                     for (const auto &[entity, part] : hits) {
                         if (bone_mode) {
-                            auto &sel = R.get_or_emplace<BoneSelection>(entity, false, false, false);
-                            if (part) apply_bone_sel_part(sel, *part);
-                            else sel = {true, true, true};
+                            set_bone_sel(entity, part, is_additive);
                         } else {
                             R.emplace_or_replace<Selected>(entity);
                         }
@@ -721,17 +718,22 @@ void Scene::Interact() {
         }
         if (!ranges.empty() && (!toggle || hit)) SelectionBitsDirty = true;
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
-        const uint32_t scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
-        const auto cur_active = bone_mode ? FindActiveBone(R) : active_entity;
-        const auto pick = CycleHit(ResolveHits(R, RunObjectPick(mouse_px, scaled_pick_radius), bone_mode), cur_active);
+        const auto scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
+        const auto active = bone_mode ? FindActiveBone(R) : active_entity;
+        const auto hits = ResolveHits(R, RunObjectPick(mouse_px, scaled_pick_radius), bone_mode);
+        const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&] {
+            const auto *bs = R.try_get<BoneSelection>(active);
+            auto it = find_if(hits, [&](const SelectionHit &h) { return h.Entity == active && (!h.Part || (bs && bs->Has(*h.Part))); });
+            return it != hits.end() && ++it != hits.end() ? *it : hits.front();
+        }();
         const bool shift = IsKeyDown(ImGuiMod_Shift);
         if (pick && shift) {
-            if (cur_active == pick->Entity && !bone_mode) {
+            if (active == pick->Entity && !bone_mode) {
                 ToggleSelected(pick->Entity);
             } else if (bone_mode) {
                 R.clear<BoneActive>();
                 R.emplace<BoneActive>(pick->Entity);
-                R.emplace_or_replace<BoneSelection>(pick->Entity);
+                if (!R.all_of<BoneSelection>(pick->Entity)) R.emplace<BoneSelection>(pick->Entity, false, false, false);
             } else {
                 R.clear<Active>();
                 R.emplace<Active>(pick->Entity);
@@ -741,15 +743,8 @@ void Scene::Interact() {
             if (pick) bone_mode ? SelectBone(pick->Entity) : Select(pick->Entity);
             else deselect_all();
         }
-        // Bone sub-part tracking
-        if (bone_mode && pick && pick->Part) {
-            if (R.all_of<BoneSelection>(pick->Entity)) {
-                auto &p = shift ? R.get_or_emplace<BoneSelection>(pick->Entity) : R.emplace_or_replace<BoneSelection>(pick->Entity, false, false, false);
-                apply_bone_sel_part(p, *pick->Part);
-            } else {
-                R.remove<BoneSelection>(pick->Entity);
-            }
-        }
+        // Bone sub-part tracking: merge on shift (intentional part accumulation), replace otherwise.
+        if (bone_mode && pick && pick->Part) set_bone_sel(pick->Entity, pick->Part, shift);
     }
 }
 
@@ -2000,18 +1995,18 @@ void Scene::RenderObjectTree() {
         // Maintain active-implies-selected invariant for whichever tag domain the nav entity belongs to.
         const auto nav_entity = FromSelectionUserData(nav_item);
         const bool nav_is_bone = nav_entity != entt::null && R.all_of<BoneIndex>(nav_entity);
-        const auto cur_active = nav_is_bone ? FindActiveBone(R) : FindActiveEntity(R);
+        const auto active = nav_is_bone ? FindActiveBone(R) : FindActiveEntity(R);
         const auto nav_is_selected = nav_entity != entt::null && (nav_is_bone ? R.all_of<BoneSelection>(nav_entity) : R.all_of<Selected>(nav_entity));
         const auto remove_active = [&](entt::entity e) { nav_is_bone ? R.remove<BoneActive>(e) : R.remove<Active>(e); };
         if (nav_is_selected) {
-            if (cur_active != nav_entity) {
-                if (cur_active != entt::null) remove_active(cur_active);
+            if (active != nav_entity) {
+                if (active != entt::null) remove_active(active);
                 nav_is_bone ? R.emplace_or_replace<BoneActive>(nav_entity) : R.emplace_or_replace<Active>(nav_entity);
             }
         } else if (nav_is_bone ? R.storage<BoneSelection>().empty() : R.storage<Selected>().empty()) {
-            if (cur_active != entt::null) remove_active(cur_active);
-        } else if (cur_active != entt::null && !(nav_is_bone ? R.all_of<BoneSelection>(cur_active) : R.all_of<Selected>(cur_active))) {
-            remove_active(cur_active);
+            if (active != entt::null) remove_active(active);
+        } else if (active != entt::null && !(nav_is_bone ? R.all_of<BoneSelection>(active) : R.all_of<Selected>(active))) {
+            remove_active(active);
         }
     };
 

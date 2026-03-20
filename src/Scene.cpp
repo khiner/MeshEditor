@@ -605,7 +605,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     // Reactive storage subscriptions for deferred once-per-frame processing
     track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
     track<changes::ActiveInstance>(R).on<Active>(On::Create | On::Destroy);
-    track<changes::BoneSelection>(R).on<BoneSelection>(On::Create | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
+    track<changes::BoneSelection>(R).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
     track<changes::Rerecord>(R)
         .on<RenderInstance>(On::Create | On::Destroy)
         .on<Active>(On::Create | On::Destroy)
