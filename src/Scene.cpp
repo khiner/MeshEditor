@@ -754,8 +754,9 @@ entt::entity Scene::GetActiveMeshEntity() const {
 }
 
 void Scene::Select(entt::entity e) {
-    R.clear<Active, Selected>();
+    R.clear<Selected>();
     if (e != entt::null) {
+        R.clear<Active>();
         R.emplace<Active>(e);
         R.emplace<Selected>(e);
     }
@@ -768,8 +769,9 @@ void Scene::ToggleSelected(entt::entity e) {
 }
 
 void Scene::SelectBone(entt::entity e) {
-    R.clear<BoneActive, BoneSelection>();
+    R.clear<BoneSelection>();
     if (e != entt::null) {
+        R.clear<BoneActive>();
         R.emplace<BoneActive>(e);
         R.emplace<BoneSelection>(e);
     }
@@ -1581,7 +1583,6 @@ void Scene::ApplySelectBehavior(entt::entity entity, MeshInstanceCreateInfo::Sel
         case MeshInstanceCreateInfo::SelectBehavior::None:
             if (R.storage<Active>().empty()) {
                 R.emplace<Active>(entity);
-                R.emplace_or_replace<Selected>(entity);
             }
             break;
     }
@@ -2416,7 +2417,6 @@ void Scene::Duplicate() {
         if (R.all_of<Active>(e)) {
             R.remove<Active>(e);
             R.emplace<Active>(new_e);
-            R.emplace_or_replace<Selected>(new_e);
         }
         R.remove<Selected>(e);
     }
@@ -2433,7 +2433,6 @@ void Scene::DuplicateLinked() {
         if (R.all_of<Active>(e)) {
             R.remove<Active>(e);
             R.emplace<Active>(new_e);
-            R.emplace_or_replace<Selected>(new_e);
         }
         R.remove<Selected>(e);
     }
@@ -2831,7 +2830,7 @@ void Scene::RecordRenderCommandBuffer() {
     const auto should_draw_armature_bones = [&](entt::entity arm_obj_entity) {
         const bool is_bone_mode = is_edit_mode || interaction_mode == InteractionMode::Pose;
         if (is_bone_mode) return R.all_of<Active>(arm_obj_entity);
-        return R.any_of<Active, Selected>(arm_obj_entity);
+        return R.all_of<Selected>(arm_obj_entity);
     };
     // Map a BoneJoint entity back to its owning armature object entity.
     const auto find_joint_owner = [&](entt::entity joint_entity) -> entt::entity {

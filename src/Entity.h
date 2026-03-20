@@ -13,8 +13,8 @@ struct Name {
 
 // Invariants:
 // * Zero or more entities can be Selected.
-// * An entity can be both Selected and Active. If an entity is Active, it must also be Selected.
-// * There may be Selected entities but no Active entity.
+// * At most one entity can be Active. Active and Selected are independent.
+// * Active persists until explicitly replaced by a new pick/select action.
 struct Selected {};
 struct Active {};
 

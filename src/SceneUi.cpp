@@ -644,8 +644,8 @@ void Scene::Interact() {
     const bool active_is_armature = arm_obj_entity != entt::null;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     const auto deselect_all = [&] {
-        if (bone_mode) SelectBone(entt::null);
-        else R.clear<Active, Selected>();
+        if (bone_mode) R.clear<BoneSelection>();
+        else R.clear<Selected>();
     };
     auto set_bone_sel = [&](entt::entity entity, std::optional<BoneSel> part, bool additive) {
         const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
@@ -1061,7 +1061,7 @@ void Scene::RenderOverlay() {
         TransformGizmo::Render(render_transform, MGizmo.Config.Type, camera, viewport);
     }
 
-    if (!R.storage<Selected>().empty()) { // Draw center-dot for active/selected entities
+    if (!R.storage<Selected>().empty() || !R.storage<Active>().empty()) { // Draw center-dot for active/selected entities
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
         const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
         auto draw_dot = [&](vec3 pos, bool is_active) {
@@ -1980,10 +1980,8 @@ void Scene::RenderObjectTree() {
         } else {
             if (is_bone) {
                 if (R.all_of<BoneSelection>(e)) R.remove<BoneSelection>(e);
-                if (R.all_of<BoneActive>(e)) R.remove<BoneActive>(e);
             } else {
                 if (R.all_of<Selected>(e)) R.remove<Selected>(e);
-                if (R.all_of<Active>(e)) R.remove<Active>(e);
             }
         }
     };
@@ -1996,9 +1994,9 @@ void Scene::RenderObjectTree() {
                     for (const auto e : visible_entities) SetSelectedState(e, true);
                 } else {
                     if (const auto nav = FromSelectionUserData(nav_item); nav != entt::null && R.all_of<BoneIndex>(nav)) {
-                        R.clear<BoneActive, BoneSelection>(); // Don't lost the armature selection
+                        R.clear<BoneSelection>();
                     } else {
-                        R.clear<Active, Selected, BoneActive, BoneSelection>();
+                        R.clear<Selected, BoneSelection>();
                     }
                 }
                 continue;
@@ -2006,33 +2004,31 @@ void Scene::RenderObjectTree() {
             if (request.Type != ImGuiSelectionRequestType_SetRange) continue;
 
             const auto first = FromSelectionUserData(request.RangeFirstItem), last = FromSelectionUserData(request.RangeLastItem);
-            const auto first_it = std::ranges::find(visible_entities, first), last_it = std::ranges::find(visible_entities, last);
+            const auto first_it = find(visible_entities, first), last_it = find(visible_entities, last);
             if (first_it == visible_entities.end() || last_it == visible_entities.end()) {
                 SetSelectedState(first, request.Selected);
                 SetSelectedState(last, request.Selected);
                 continue;
             }
-            const auto first_i = std::ranges::distance(visible_entities.begin(), first_it);
-            const auto last_i = std::ranges::distance(visible_entities.begin(), last_it);
+            const auto first_i = distance(visible_entities.begin(), first_it);
+            const auto last_i = distance(visible_entities.begin(), last_it);
             const auto [i0, i1] = std::minmax(first_i, last_i);
             for (auto i = i0; i <= i1; ++i) SetSelectedState(visible_entities[i], request.Selected);
         }
 
-        // Maintain active-implies-selected invariant for whichever tag domain the nav entity belongs to.
+        // Transfer Active to the navigated entity when it becomes selected.
         const auto nav_entity = FromSelectionUserData(nav_item);
-        const bool nav_is_bone = nav_entity != entt::null && R.all_of<BoneIndex>(nav_entity);
-        const auto active = nav_is_bone ? FindActiveBone(R) : FindActiveEntity(R);
-        const auto nav_is_selected = nav_entity != entt::null && (nav_is_bone ? R.all_of<BoneSelection>(nav_entity) : R.all_of<Selected>(nav_entity));
-        const auto remove_active = [&](entt::entity e) { nav_is_bone ? R.remove<BoneActive>(e) : R.remove<Active>(e); };
-        if (nav_is_selected) {
-            if (active != nav_entity) {
-                if (active != entt::null) remove_active(active);
-                nav_is_bone ? R.emplace_or_replace<BoneActive>(nav_entity) : R.emplace_or_replace<Active>(nav_entity);
+        if (nav_entity != entt::null) {
+            if (const bool nav_is_bone = R.all_of<BoneIndex>(nav_entity);
+                nav_is_bone ? R.all_of<BoneSelection>(nav_entity) : R.all_of<Selected>(nav_entity)) {
+                if (nav_is_bone) {
+                    R.clear<BoneActive>();
+                    R.emplace<BoneActive>(nav_entity);
+                } else {
+                    R.clear<Active>();
+                    R.emplace<Active>(nav_entity);
+                }
             }
-        } else if (nav_is_bone ? R.storage<BoneSelection>().empty() : R.storage<Selected>().empty()) {
-            if (active != entt::null) remove_active(active);
-        } else if (active != entt::null && !(nav_is_bone ? R.all_of<BoneSelection>(active) : R.all_of<Selected>(active))) {
-            remove_active(active);
         }
     };
 
@@ -2077,8 +2073,15 @@ void Scene::RenderObjectTree() {
         }
 
         SetNextItemSelectionUserData(ToSelectionUserData(e));
-        const auto label = std::format("{} [{}]", GetName(R, e), GetEntityTypeName(e));
-        const bool open = TreeNodeEx(reinterpret_cast<void *>(uintptr_t(uint32_t(e))), flags, "%s", label.c_str());
+        const bool open = TreeNodeEx(reinterpret_cast<void *>(uintptr_t(uint32_t(e))), flags, "%s", GetName(R, e).c_str());
+        SameLine();
+        if (const auto type_suffix = GetEntityTypeName(e); R.any_of<Active, BoneActive>(e)) {
+            const auto &theme = R.get<const ViewportTheme>(SceneEntity);
+            const auto color = R.all_of<BoneActive>(e) ? theme.Colors.BoneActive : theme.Colors.ObjectActive;
+            TextColored(ImVec4{color.x, color.y, color.z, 1.f}, "[%s]", type_suffix.data());
+        } else {
+            TextDisabled("[%s]", type_suffix.data());
+        }
         if (is_ancestor_selected) PopStyleColor(2);
         visible_entities.emplace_back(e);
         if (open && has_children) {
@@ -2093,7 +2096,6 @@ void Scene::RenderObjectTree() {
         has_root = true;
         render_entity(render_entity, entity);
     }
-
     if (!has_root) TextDisabled("No objects");
 
     ApplySelectionRequests(begin_requests, begin_nav_item);

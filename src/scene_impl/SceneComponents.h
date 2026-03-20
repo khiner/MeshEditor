@@ -12,12 +12,9 @@ struct SceneSettings {
 
 // Shared PBR viewport lighting controls (Blender-style scene lights/world toggles + studio env controls).
 struct PBRViewportLighting {
-    bool UseSceneLights;
-    bool UseSceneWorld;
-    float EnvIntensity;
-    float EnvRotationDegrees;
-    float BackgroundBlur{0.5f};
-    float WorldOpacity{0.f};
+    bool UseSceneLights, UseSceneWorld;
+    float EnvIntensity, EnvRotationDegrees;
+    float BackgroundBlur{0.5f}, WorldOpacity{0.f};
 };
 
 // Two distinct ECS component types sharing the same layout, with different defaults.
