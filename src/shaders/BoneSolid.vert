@@ -23,8 +23,9 @@ void main() {
 
     // Blender-style angled lighting
     const vec3 light = normalize(vec3(0.1, 0.1, 0.8));
-    float fac = clamp(dot(view_normal, light) * 0.8 + 0.2, 0.0, 1.0);
-    Color = vec4(mix(state_color, bone_color, fac * fac), 1.0);
+    const float fac = clamp(dot(view_normal, light) * 0.8 + 0.2, 0.0, 1.0);
+    const float alpha = (SceneViewUBO.BoneXRay != 0u) ? 0.6 : 1.0;
+    Color = vec4(mix(state_color, bone_color, fac * fac), alpha);
 
     // Detect mirrored (negative-scale) instances for backface cull inversion
     Inverted = int(dot(cross(M[0].xyz, M[1].xyz), M[2].xyz) < 0.0);

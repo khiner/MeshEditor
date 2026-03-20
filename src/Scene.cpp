@@ -1428,6 +1428,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .PrimitiveMaterialSlot = Meshes->PrimitiveMaterialBuffer.Buffer.Slot,
             .FacePrimitiveSlot = Meshes->FacePrimitiveBuffer.Buffer.Slot,
             .DrawDataSlot = Buffers->RenderDrawData.Slot,
+            .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
         }));
         request(RenderRequest::Submit);
     }
@@ -3104,9 +3105,14 @@ void Scene::RecordRenderCommandBuffer() {
             const vk::ClearRect clear_rect{{{0, 0}, ToExtent2D(extent)}, 0, 1};
             cb.clearAttachments(depth_clear, clear_rect);
 
-            // Fill first (establishes depth), then outlines on top
-            record_draw_batch(main.Renderer, SPT::BoneFill, bone_fill_batch);
-            record_draw_batch(main.Renderer, SPT::BoneSphereFill, bone_sphere_fill_batch);
+            // In Object+wireframe mode, Blender shows only outlines (no fills).
+            // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader)
+            // so wires are never occluded. In solid mode, fills establish depth normally.
+            const bool skip_bone_fills = is_wireframe_mode && interaction_mode == InteractionMode::Object;
+            if (!skip_bone_fills) {
+                record_draw_batch(main.Renderer, SPT::BoneFill, bone_fill_batch);
+                record_draw_batch(main.Renderer, SPT::BoneSphereFill, bone_sphere_fill_batch);
+            }
             record_draw_batch(main.Renderer, SPT::BoneWire, bone_wire_batch);
             record_draw_batch(main.Renderer, SPT::BoneSphereWire, bone_sphere_wire_batch);
         }

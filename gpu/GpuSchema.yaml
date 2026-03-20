@@ -228,6 +228,8 @@ structs:
         type: u32
       - name: DrawDataSlot
         type: u32
+      - name: BoneXRay
+        type: u32
   - name: WorkspaceLights
     binding: WorkspaceLightsUBO
     fields:

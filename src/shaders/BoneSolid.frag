@@ -1,5 +1,7 @@
 #version 450
 
+#include "SceneUBO.glsl"
+
 layout(location = 0) in vec4 InColor;
 layout(location = 1) flat in int Inverted;
 
@@ -12,4 +14,6 @@ void main() {
 
     OutColor = InColor;
     OutLineData = vec4(0); // Not a line
+    // X-ray: write near-far-plane depth so fills don't occlude wires (but still pass the eLess depth test against cleared 1.0).
+    gl_FragDepth = (SceneViewUBO.BoneXRay != 0u) ? 0.999999 : gl_FragCoord.z;
 }
