@@ -7,6 +7,8 @@ struct SceneSettings {
     vk::ClearColorValue ClearColor{0.25f, 0.25f, 0.25f, 1.f};
     FaceColorMode FaceColorMode{FaceColorMode::Mesh};
     bool SmoothShading{false}, ShowGrid{true}, ShowBoundingBoxes{false};
+    bool ShowExtras{true}, ShowBones{true}, ShowOrigins{true}, ShowOutlineSelected{true};
+    bool ShowOverlays{true}; // Master toggle for all overlays
     uint8_t NormalOverlays{0}; // Bitmask of Element
 };
 

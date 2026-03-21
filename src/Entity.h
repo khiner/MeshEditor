@@ -19,7 +19,7 @@ struct Selected {};
 struct Active {};
 
 // Sub-elements are not independently selectable in Object mode.
-// Picking/selection routes to Parent. Center dot drawn only on Parent.
+// Picking/selection routes to Parent. Origin dot drawn only on Parent.
 // Examples: armature bones, future duplivert instances.
 struct SubElementOf {
     entt::entity Parent;

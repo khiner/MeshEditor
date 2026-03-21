@@ -798,6 +798,8 @@ void Scene::LoadIcons() {
     CreateSvgResource(ShadingIcons.MaterialPreview, svg_path / "shading_texture.svg");
     CreateSvgResource(ShadingIcons.Rendered, svg_path / "shading_rendered.svg");
 
+    CreateSvgResource(OverlayIcon, svg_path / "overlay.svg");
+
     CreateSvgResource(AnimIcons.Play, svg_path / "play.svg");
     CreateSvgResource(AnimIcons.Pause, svg_path / "pause.svg");
     CreateSvgResource(AnimIcons.JumpStart, svg_path / "jump_start.svg");
@@ -2587,6 +2589,7 @@ void Scene::RecordRenderCommandBuffer() {
     const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
     const bool show_fill = !is_wireframe_mode;
+    const bool show_overlays = settings.ShowOverlays;
     const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
     const auto primary_edit_instances = is_edit_mode ? scene_selection::ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
@@ -2658,7 +2661,8 @@ void Scene::RecordRenderCommandBuffer() {
     const bool has_object_silhouette_selection =
         any_of(R.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
     // Pose mode silhouettes work exactly like Object mode: selected/active instances get silhouettes.
-    const bool render_silhouette = is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection;
+    const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) &&
+        (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
 
     DrawListBuilder draw_list;
     DrawBatchInfo fill_batch_opaque{}, fill_batch_blend{}, line_batch{}, point_batch{};
@@ -2840,7 +2844,7 @@ void Scene::RecordRenderCommandBuffer() {
         }
         return entt::null;
     };
-    {
+    if (show_overlays && settings.ShowBones) {
         bone_fill_batch = draw_list.BeginBatch();
         for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
             if (mesh_buffers.FaceIndices.Count == 0) continue;
@@ -2902,7 +2906,9 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
-    AppendExtrasDraw(R, draw_list, extras_line_batch, [](auto &, const auto &) {});
+    if (show_overlays && settings.ShowExtras) {
+        AppendExtrasDraw(R, draw_list, extras_line_batch, [](auto &, const auto &) {});
+    }
 
     {
         point_batch = draw_list.BeginBatch();
@@ -3093,7 +3099,7 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
-    if (settings.ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
+    if (show_overlays && settings.ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
 
     // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
     {
@@ -3108,20 +3114,25 @@ void Scene::RecordRenderCommandBuffer() {
             // In Object+wireframe mode, Blender shows only outlines (no fills).
             // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader)
             // so wires are never occluded. In solid mode, fills establish depth normally.
-            const bool skip_bone_fills = is_wireframe_mode && interaction_mode == InteractionMode::Object;
-            if (!skip_bone_fills) {
+            const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
+            if (!object_wireframe) {
                 record_draw_batch(main.Renderer, SPT::BoneFill, bone_fill_batch);
                 record_draw_batch(main.Renderer, SPT::BoneSphereFill, bone_sphere_fill_batch);
             }
-            record_draw_batch(main.Renderer, SPT::BoneWire, bone_wire_batch);
-            record_draw_batch(main.Renderer, SPT::BoneSphereWire, bone_sphere_wire_batch);
+            // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
+            // In wireframe+Object mode, wires are the only bone visualization so always show them.
+            const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
+                (!show_overlays || !settings.ShowOutlineSelected);
+            if (!hide_bone_outlines) {
+                record_draw_batch(main.Renderer, SPT::BoneWire, bone_wire_batch);
+                record_draw_batch(main.Renderer, SPT::BoneSphereWire, bone_sphere_wire_batch);
+            }
         }
     }
 
     cb.endRenderPass();
 
-    // Line AA composite pass: blends anti-aliased lines from LineDataImage onto ColorImage → FinalColorImage
-    {
+    { // Line AA composite pass: blends anti-aliased lines from LineDataImage onto ColorImage → FinalColorImage
         const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
         cb.beginRenderPass({*main.LineAARenderPass, *main.Resources->LineAAFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);

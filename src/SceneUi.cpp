@@ -870,10 +870,11 @@ void Scene::RenderOverlay() {
         }
     }
 
+    auto &settings = R.get<SceneSettings>(SceneEntity);
+
     { // Viewport shading group (top-right overlay)
         const float group_width = shading_button_style.ButtonSize.x * 4.f;
         const ImVec2 start_pos = std::bit_cast<ImVec2>(viewport.pos + vec2{GetWindowContentRegionMax().x - group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
-        auto &settings = R.get<SceneSettings>(SceneEntity);
         const float button_w = shading_button_style.ButtonSize.x;
         const auto make_shading_button = [&](const SvgResource *icon, float x, ImDrawFlags corners, ViewportShadingMode mode, const char *tooltip) {
             return OverlayIconButtonInfo{icon, {x, 0.f}, corners, true, settings.ViewportShading == mode, tooltip};
@@ -893,6 +894,74 @@ void Scene::RenderOverlay() {
             settings.ViewportShading = mode;
             if (mode != ViewportShadingMode::Wireframe) settings.FillMode = mode;
             R.patch<SceneSettings>(SceneEntity, [](auto &) {});
+        }
+    }
+
+    { // Viewport overlays toggle + dropdown
+        const auto shading_group_width = shading_button_style.ButtonSize.x * 4.f;
+        const auto buttons_gap = 6.f;
+        const auto arrow_w = shading_button_style.ButtonSize.y * 0.55f;
+        const auto icon_w = shading_button_style.ButtonSize.x;
+        const auto button_h = shading_button_style.ButtonSize.y;
+        const auto overlay_group_width = icon_w + arrow_w;
+        const auto group_start = std::bit_cast<ImVec2>(viewport.pos + vec2{GetWindowContentRegionMax().x - shading_group_width - buttons_gap - overlay_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
+
+        {
+            const OverlayIconButtonInfo icon_button[]{
+                {OverlayIcon.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
+            };
+            if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &OverlayControlsHovered, shading_button_style)) {
+                settings.ShowOverlays = !settings.ShowOverlays;
+                R.patch<SceneSettings>(SceneEntity, [](auto &) {});
+            }
+        }
+        { // Dropdown arrow button
+            auto &dl = *GetWindowDrawList();
+
+            const auto saved_cursor = GetCursorScreenPos();
+            SetCursorScreenPos(group_start + ImVec2{icon_w, 0.f});
+            PushID("##OverlayArrow");
+            const bool arrow_clicked = InvisibleButton("##btn", {arrow_w, button_h});
+            const bool arrow_hovered = IsItemHovered();
+            PopID();
+            SetCursorScreenPos(saved_cursor);
+
+            if (arrow_hovered) OverlayControlsHovered = true;
+            const auto arrow_min = group_start + ImVec2{icon_w + shading_button_style.Padding.x, shading_button_style.Padding.y};
+            const auto arrow_max = group_start + ImVec2{icon_w + arrow_w - shading_button_style.Padding.x, button_h - shading_button_style.Padding.y};
+            const bool popup_open = IsPopupOpen("##OverlayDropdown");
+            const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
+                                                                                                   ImGuiCol_Button);
+            dl.AddRectFilled(arrow_min, arrow_max, bg_color, shading_button_style.CornerRounding, ImDrawFlags_RoundCornersRight);
+
+            // Triangle arrow
+            const auto center = (arrow_min + arrow_max) * 0.5f;
+            const auto arrow_half = 3.5f;
+            dl.AddTriangleFilled(
+                center - ImVec2{arrow_half, arrow_half * 0.5f},
+                center + ImVec2{arrow_half, -arrow_half * 0.5f},
+                center + ImVec2{0.f, arrow_half * 0.5f},
+                GetColorU32(ImGuiCol_Text)
+            );
+            if (arrow_clicked) OpenPopup("##OverlayDropdown");
+        }
+        { // Dropdown popup
+            SetNextWindowPos(group_start + ImVec2{0.f, button_h + 2.f});
+            PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
+            if (BeginPopup("##OverlayDropdown")) {
+                OverlayControlsHovered = true;
+                bool changed = false;
+                TextUnformatted("Viewport overlays");
+                Separator();
+                changed |= Checkbox("Grid", &settings.ShowGrid);
+                changed |= Checkbox("Extras", &settings.ShowExtras);
+                changed |= Checkbox("Bones", &settings.ShowBones);
+                changed |= Checkbox("Origins", &settings.ShowOrigins);
+                changed |= Checkbox("Outline selected", &settings.ShowOutlineSelected);
+                if (changed) R.patch<SceneSettings>(SceneEntity, [](auto &) {});
+                EndPopup();
+            }
+            PopStyleVar();
         }
     }
 
@@ -1104,7 +1173,7 @@ void Scene::RenderOverlay() {
         TransformGizmo::Render(render_transform, MGizmo.Config.Type, camera, viewport);
     }
 
-    if (!R.storage<Selected>().empty() || !R.storage<Active>().empty()) { // Draw center-dot for active/selected entities
+    if (settings.ShowOverlays && settings.ShowOrigins && (!R.storage<Selected>().empty() || !R.storage<Active>().empty())) { // Draw origin dots for active/selected entities
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
         const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
         auto draw_dot = [&](vec3 pos, bool is_active) {
@@ -1833,11 +1902,6 @@ void Scene::RenderControls() {
             bool mat_preview_changed = false, rendered_changed = false;
             if (ColorEdit3("Background color", settings.ClearColor.float32)) {
                 settings.ClearColor.float32[3] = 1.f;
-                settings_changed = true;
-            }
-            bool show_grid = settings.ShowGrid;
-            if (Checkbox("Show grid", &show_grid)) {
-                settings.ShowGrid = show_grid;
                 settings_changed = true;
             }
             if (Button("Recompile shaders")) ShaderRecompileRequested = true;

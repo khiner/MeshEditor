@@ -22,11 +22,12 @@ void main() {
 
     ObjectId = (draw.ObjectIdSlot != INVALID_SLOT) ? ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FirstInstance] : 0u;
 
-    const vec3 wire_color = bone_joint_wire_color(load_bone_instance_state(draw));
-    BoneColor = vec4(ViewportTheme.Colors.BoneSolid, 1.0);
-    StateColor = vec4(wire_color * wire_color * 0.1, 1.0);
-
-    const BoneBillboard bb = bone_sphere_billboard(world, vert.Position);
+    // Object mode: neutral shadow, no selection tint
+    const bool is_object_mode = SceneViewUBO.InteractionMode == InteractionMode_Object;
+    const vec3 bone_solid = ViewportTheme.Colors.BoneSolid;
+    const vec3 hint_color = is_object_mode ? bone_solid : bone_joint_wire_color(load_bone_instance_state(draw));
+    BoneColor = vec4(bone_solid, 1.0);
+    StateColor = vec4(hint_color * hint_color * 0.1, 1.0);
 
     // Pass view-space data for fragment ray-tracing
     vec3 cam_pos = SceneViewUBO.CameraPosition;
@@ -37,6 +38,7 @@ void main() {
         vec4(-SceneViewUBO.ViewRotation * cam_pos, 1)
     );
 
+    const BoneBillboard bb = bone_sphere_billboard(world, vert.Position);
     SphereCenter = (view * vec4(bb.center, 1.0)).xyz;
     SphereRadius = bb.radius;
     ViewPos = (view * vec4(bb.world_pos, 1.0)).xyz;

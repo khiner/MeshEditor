@@ -204,6 +204,7 @@ private:
     };
     TransformIcons Icons;
     ViewportShadingIcons ShadingIcons;
+    std::unique_ptr<SvgResource> OverlayIcon;
     AnimationIcons AnimIcons;
     AnimationTimelineView TimelineView;
     float PlaybackFrame{1.0f}; // Smooth float frame position for playback
@@ -235,7 +236,7 @@ private:
 #endif
     bool SubmitViewport(vk::Fence viewportConsumerFence);
     // The overlay is everything drawn ontop of the viewport with ImGui, independent of the main scene vulkan pipeline:
-    // Orientation/Transform gizmos, active object center-dot
+    // Orientation/Transform gizmos, active object origin dots
     void RenderOverlay();
     void ExitLookThroughCamera();
     void SnapToCamera(entt::entity camera_entity);
