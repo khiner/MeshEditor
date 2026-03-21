@@ -1193,13 +1193,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             if (!R.all_of<MeshBuffers>(arm_obj_entity)) continue;
             const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
             const auto &bone_entities = arm_obj.BoneEntities;
-
             // Object mode: all bone/joint slots get the armature's object-level state (no per-bone color).
             // Edit/Pose: each bone/joint gets its own state based on BoneActive/BoneSelection.
             uint8_t max_state = 0;
             if (is_object_mode) {
-                if (R.all_of<Selected>(arm_obj_entity)) max_state |= ElementStateSelected;
-                if (R.all_of<Active>(arm_obj_entity)) max_state |= ElementStateActive;
+                // Only show active/selected bone colors when the armature is selected.
+                // In solid mode, unselected armatures don't draw wires at all.
+                // In wireframe mode, they draw with neutral Wire color.
+                if (R.all_of<Selected>(arm_obj_entity)) {
+                    max_state |= ElementStateSelected;
+                    if (R.all_of<Active>(arm_obj_entity)) max_state |= ElementStateActive;
+                }
             }
             const bool is_edit = interaction_mode == InteractionMode::Edit;
             auto compute_state = [&](entt::entity b, BoneSel part) -> uint8_t {
