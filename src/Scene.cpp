@@ -3126,7 +3126,17 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
-    if (show_overlays && settings.ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
+    if (show_overlays && settings.ShowGrid) {
+        // MoltenVK/Metal workaround: the grid shader writes gl_FragDepth (disabling early-z),
+        // and late fragment tests don't correctly read unresolved fast-cleared depth on tile-based GPUs.
+        // Re-clear depth when no triangle draws with depth write have resolved the fast-clear state.
+        if (!has_silhouette && fill_batch_opaque.DrawCount == 0) {
+            const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
+            const vk::ClearRect grid_clear_rect{{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)}, 0, 1};
+            cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
+        }
+        main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
+    }
 
     { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
         if (bone_fill_batch.DrawCount > 0 || bone_sphere_fill_batch.DrawCount > 0) {
