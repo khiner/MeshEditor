@@ -2,6 +2,7 @@
 
 enum class ShaderPipelineType {
     Fill,
+    EdgeQuad,
     Line,
     LineOverlayFaceNormals,
     LineOverlayVertexNormals,

@@ -21,11 +21,10 @@ void main() {
     const BoneBillboard bb = bone_sphere_billboard(world, vert.Position);
     vec4 clip_pos = SceneViewUBO.ViewProj * vec4(bb.world_pos, 1.0);
 
-    // Blender's approach: push outline 1px outward in screen space (away from sphere center)
-    // so it never overlaps with the sphere fill at all — avoids all depth fighting.
+    // Offset away from the center to avoid overlap with solid shape (matches Blender).
     vec4 center_clip = SceneViewUBO.ViewProj * vec4(bb.center, 1.0);
     vec2 ofs_dir = normalize(clip_pos.xy / clip_pos.w - center_clip.xy / center_clip.w);
-    clip_pos.xy += ofs_dir * (2.0 / SceneViewUBO.ViewportSize) * clip_pos.w;
+    clip_pos.xy += ofs_dir * (1.0 / SceneViewUBO.ViewportSize) * clip_pos.w;
 
     gl_Position = clip_pos;
     vec2 screen_pos = (clip_pos.xy / clip_pos.w * 0.5 + 0.5) * SceneViewUBO.ViewportSize;

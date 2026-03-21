@@ -1057,7 +1057,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     if (!reactive<changes::ModelsBuffer>(R).empty()) request(RenderRequest::Submit);
     if (!reactive<changes::ViewportTheme>(R).empty()) {
-        Buffers->ViewportThemeUBO.Update(as_bytes(R.get<const ViewportTheme>(SceneEntity)));
+        auto theme = R.get<const ViewportTheme>(SceneEntity);
+        theme.EdgeWidth *= ImGui::GetIO().DisplayFramebufferScale.x;
+        Buffers->ViewportThemeUBO.Update(as_bytes(theme));
         request(RenderRequest::Submit);
     }
     if (!reactive<changes::Materials>(R).empty()) {
@@ -1134,7 +1136,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         anim_advanced = tl.CurrentFrame != LastEvaluatedFrame;
         if (anim_advanced) LastEvaluatedFrame = tl.CurrentFrame;
-        // Timeline frames are displayed 1-based (like Blender), but animation time starts at t=0 on frame 1.
+        // Timeline frames are displayed 1-based, but animation time starts at t=0 on frame 1.
         const float eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
 
         // Evaluate animation deltas (data only — no bone entity iteration).
@@ -1940,7 +1942,7 @@ void Scene::ExtrudeBone() {
     R.clear<BoneSelection, BoneActive>();
 
     // Create ECS entities for each new bone, select with tip only.
-    // Zero display scale so the bone starts as a point (Blender behavior: head=tail until moved).
+    // Zero display scale so the bone starts as a point (head=tail until moved).
     for (const auto id : new_bone_ids) {
         const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, id);
         R.get<BoneDisplayScale>(bone_entity).Value = 0.f;
@@ -1948,7 +1950,6 @@ void Scene::ExtrudeBone() {
         R.emplace<BoneSelection>(bone_entity, false, true, false);
         R.emplace_or_replace<BoneActive>(bone_entity); // Last one wins as the active bone.
     }
-
     // Update parent bone display scales (they may have gained a child).
     for (const auto &info : to_extrude) {
         if (info.FromTip) {
@@ -2668,7 +2669,7 @@ void Scene::RecordRenderCommandBuffer() {
         (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
 
     DrawListBuilder draw_list;
-    DrawBatchInfo fill_batch_opaque{}, fill_batch_blend{}, line_batch{}, point_batch{};
+    DrawBatchInfo fill_batch_opaque{}, fill_batch_blend{}, edge_quad_batch{}, wire_line_batch{}, point_batch{};
     DrawBatchInfo extras_line_batch{}, silhouette_batch{};
     DrawBatchInfo bone_fill_batch{}, bone_wire_batch{}, bone_sphere_fill_batch{}, bone_sphere_wire_batch{};
     DrawBatchInfo overlay_face_normals_batch{}, overlay_vertex_normals_batch{}, overlay_bbox_batch{};
@@ -2836,6 +2837,7 @@ void Scene::RecordRenderCommandBuffer() {
     // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
     // Only draw bones for: active armature in Edit/Pose mode, selected armatures in Object mode.
     const auto should_draw_armature_bones = [&](entt::entity arm_obj_entity) {
+        if (is_wireframe_mode) return true; // Wireframe mode: always show bone outlines
         const bool is_bone_mode = is_edit_mode || interaction_mode == InteractionMode::Pose;
         if (is_bone_mode) return R.all_of<Active>(arm_obj_entity);
         return R.all_of<Selected>(arm_obj_entity);
@@ -2884,26 +2886,46 @@ void Scene::RecordRenderCommandBuffer() {
         }
     }
 
+    // Edit mode edges: triangle quads with self-AA (matches Blender's overlay_edit_mesh_edge).
+    // Wireframe/line mesh edges: GPU lines + LineAA composite (matches Blender's wireframe overlay).
+    // Two separate loops so each batch's indirect commands are contiguous for drawIndexedIndirect.
     {
-        line_batch = draw_list.BeginBatch();
+        edge_quad_batch = draw_list.BeginBatch();
         for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
             if (R.all_of<ObjectExtrasTag>(entity)) continue;
             if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity)) continue;
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
-            const bool is_line_mesh = mesh_buffers.FaceIndices.Count == 0 && mesh_buffers.EdgeIndices.Count > 0;
-            if (!is_line_mesh && !is_edit_mode && !is_excite_mode && !is_wireframe_mode) continue;
+            if (!is_edit_mode && !is_excite_mode) continue;
+            const bool is_line_mesh = mesh_buffers.FaceIndices.Count == 0;
+            if (is_line_mesh) continue; // Line meshes use wire_line_batch
             const auto deform = get_deform_slots(entity);
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-            const auto edge_state_buffer = Meshes->GetEdgeStateRange(mesh.GetStoreId());
-            draw.ElementStateSlotOffset = edge_state_buffer;
+            draw.ElementStateSlotOffset = Meshes->GetEdgeStateRange(mesh.GetStoreId());
             const auto db = draw_list.Draws.size();
-            if (is_line_mesh || is_wireframe_mode) {
-                AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
-            } else if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-                AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
+            if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
+                const uint32_t eq_count = mesh_buffers.EdgeIndices.Count * 3; // 6 verts per edge (2 triangles)
+                AppendDraw(draw_list, edge_quad_batch, eq_count, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
             } else if (excitable_mesh_entities.contains(entity)) {
-                AppendDraw(draw_list, line_batch, mesh_buffers.EdgeIndices, models, draw);
+                const uint32_t eq_count = mesh_buffers.EdgeIndices.Count * 3;
+                AppendDraw(draw_list, edge_quad_batch, eq_count, models, draw);
             }
+            PatchMorphWeights(draw_list, db, deform);
+            patch_edit_pending_local_transform(db, entity);
+        }
+    }
+    {
+        wire_line_batch = draw_list.BeginBatch();
+        for (auto [entity, mesh_buffers, models, mesh] : R.view<MeshBuffers, ModelsBuffer, Mesh>().each()) {
+            if (R.all_of<ObjectExtrasTag>(entity)) continue;
+            if (R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity)) continue;
+            if (mesh_buffers.EdgeIndices.Count == 0) continue;
+            const bool is_line_mesh = mesh_buffers.FaceIndices.Count == 0;
+            if (!is_line_mesh && !is_wireframe_mode) continue;
+            const auto deform = get_deform_slots(entity);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, models, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
+            draw.ElementStateSlotOffset = Meshes->GetEdgeStateRange(mesh.GetStoreId());
+            const auto db = draw_list.Draws.size();
+            AppendDraw(draw_list, wire_line_batch, mesh_buffers.EdgeIndices, models, draw);
             PatchMorphWeights(draw_list, db, deform);
             patch_edit_pending_local_transform(db, entity);
         }
@@ -3061,8 +3083,10 @@ void Scene::RecordRenderCommandBuffer() {
                 record_draw_batch(main.Renderer, fill_pipeline, fill_batch_opaque);
             }
         }
-        // Wireframe edges (always recorded — batch is empty when nothing qualifies)
-        record_draw_batch(main.Renderer, SPT::Line, line_batch);
+        // Edit mode edges as triangle quads with self-AA
+        record_draw_batch(main.Renderer, SPT::EdgeQuad, edge_quad_batch);
+        // Wireframe/line mesh edges as GPU lines (LineAA composite handles AA)
+        record_draw_batch(main.Renderer, SPT::Line, wire_line_batch);
         // Vertex points (always recorded — batch is empty when nothing qualifies)
         record_draw_batch(main.Renderer, SPT::Point, point_batch);
         // Object extras (cameras, lights, empties)
@@ -3104,19 +3128,16 @@ void Scene::RecordRenderCommandBuffer() {
     // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
     if (show_overlays && settings.ShowGrid) main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
 
-    // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
-    {
-        const bool has_bones = bone_fill_batch.DrawCount > 0 || bone_sphere_fill_batch.DrawCount > 0;
-        if (has_bones) {
+    { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
+        if (bone_fill_batch.DrawCount > 0 || bone_sphere_fill_batch.DrawCount > 0) {
             cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
             const auto extent = main.Resources->ColorImage.Extent;
             const vk::ClearRect clear_rect{{{0, 0}, ToExtent2D(extent)}, 0, 1};
             cb.clearAttachments(depth_clear, clear_rect);
 
-            // In Object+wireframe mode, Blender shows only outlines (no fills).
-            // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader)
-            // so wires are never occluded. In solid mode, fills establish depth normally.
+            // In Object+wireframe mode, show only outlines (no fills).
+            // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
             const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
             if (!object_wireframe) {
                 record_draw_batch(main.Renderer, SPT::BoneFill, bone_fill_batch);

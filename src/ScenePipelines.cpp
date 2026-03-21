@@ -154,6 +154,15 @@ static PipelineRenderer CreateMainRenderer(
         )
     );
     pipelines.emplace(
+        SPT::EdgeQuad,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "EdgeQuad.vert"}, {ShaderType::eFragment, "EdgeQuad.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+        )
+    );
+    pipelines.emplace(
         SPT::Line,
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "VertexTransform.vert", {{1, 1u}}}, {ShaderType::eFragment, "VertexColor.frag"}}},

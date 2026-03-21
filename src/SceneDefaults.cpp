@@ -39,7 +39,7 @@ ViewportTheme SceneDefaults::ViewportTheme{
         .BonePoseActive{0.549f, 1.0f, 1.0f},
         .BonePoseActiveUnsel{0.047f, 0.118f, 0.149f},
     },
-    .EdgeWidth = 1.0f,
+    .EdgeWidth = 0.5f, // Half-width in pixels
     .SilhouetteEdgeWidth = 2,
 };
 

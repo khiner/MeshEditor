@@ -97,6 +97,9 @@ void main() {
 
     Color = vec4(bone_wire_color(load_bone_instance_state(draw)), 1.0);
 
+    // Depth bias: push wire in front of fill to avoid z-fighting (matches Blender).
+    clip_pos.z -= 1e-4;
+
     gl_Position = clip_pos;
     const vec2 screen_pos = (clip_pos.xy / clip_pos.w * 0.5 + 0.5) * SceneViewUBO.ViewportSize;
     EdgeStart = screen_pos;

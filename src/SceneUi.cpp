@@ -1328,7 +1328,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     const bool is_bone_edit = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit && active_bone_entity != entt::null && R.all_of<BoneDisplayScale>(active_bone_entity);
     if (CollapsingHeader("Transform")) {
         if (is_bone_edit) {
-            // Bone Edit mode: Head/Tail/Roll/Length editor (like Blender's EditBone panel).
             const auto &wt = R.get<WorldTransform>(active_bone_entity);
             const auto world_rot = Vec4ToQuat(wt.Rotation);
             const float bone_length = R.get<BoneDisplayScale>(active_bone_entity).Value;
@@ -2016,7 +2015,13 @@ void Scene::RenderControls() {
                 changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
                 changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
                 changed |= ColorEdit3("Transform", &theme.Colors.Transform.x);
-                changed |= SliderFloat("Edge width", &theme.EdgeWidth, 0.5f, 2.0f);
+                {
+                    auto full_width = theme.EdgeWidth * 2.f;
+                    if (SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
+                        theme.EdgeWidth = full_width / 2.f;
+                        changed = true;
+                    }
+                }
                 changed |= MeshEditor::SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
                 if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
             }

@@ -19,11 +19,10 @@ vec2 decode_line_dir(vec2 encoded) { return encoded * 2.0 - 1.0; }
 // Decode the signed perpendicular distance from encoded z channel
 float decode_line_dist(float encoded) { return (encoded - 0.6) * 4.0; }
 
-// Smooth coverage: 1.0 at the line center (|dist| <= half_width), fading to 0 over a 1px AA fringe.
-float line_coverage(float dist) {
-    const float half_width = ViewportTheme.EdgeWidth * 0.5;
-    return 1.0 - smoothstep(half_width, half_width + 1.0, abs(dist));
-}
+// Blender AA constants (overlay_shader_shared.hh).
+const float DISC_RADIUS = 0.5641895835477563 * 1.05; // M_1_SQRTPI * 1.05
+const float LINE_SMOOTH_START = 0.5 - DISC_RADIUS;
+const float LINE_SMOOTH_END = 0.5 + DISC_RADIUS;
 
 void main() {
     const vec2 texel_size = 1.0 / SceneViewUBO.ViewportSize;
@@ -48,7 +47,7 @@ void main() {
         const vec2 perp = decode_line_dir(n_line.xy);
         // Compute the distance from the CURRENT pixel to the line that passed through sample i.
         const float curr_dist = decode_line_dist(n_line.z) - dot(perp, offsets[i]);
-        const float cov = line_coverage(curr_dist);
+        const float cov = smoothstep(LINE_SMOOTH_END, LINE_SMOOTH_START, abs(curr_dist) - (ViewportTheme.EdgeWidth - 0.5));
         if (cov > max_coverage) {
             max_coverage = cov;
             best_uv = n_uv;

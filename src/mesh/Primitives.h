@@ -225,11 +225,10 @@ struct BoneOctahedronData {
     std::vector<uint32_t> AdjacencyIndices; // 48 indices for 12 edges × 4 (line adjacency)
 };
 
-// Octahedral bone primitive matching Blender's diagonal-ring shape.
+// Octahedral bone primitive with diagonal-ring shape.
 // Head at origin, tail at (0, length, 0). 6 unique positions + 24 expanded face verts = 30 total.
 // Unique positions [0..5] are used by wire/adjacency draws. Face verts [6..29] have per-face normals.
 inline BoneOctahedronData BoneOctahedron(float length = 1.0f) {
-    // Blender's octahedral bone positions (diagonal mid-ring)
     const float d = length * 0.1f;
     const std::array<vec3, 6> unique{
         vec3{0, 0, 0}, // 0: head
@@ -240,7 +239,7 @@ inline BoneOctahedronData BoneOctahedron(float length = 1.0f) {
         vec3{0, length, 0}, // 5: tail
     };
 
-    // 8 triangles: bottom 4 + top 4 (matching Blender's bone_octahedral_solid_tris)
+    // 8 triangles: bottom 4 + top 4 (Blender's bone_octahedral_solid_tris)
     constexpr std::array<std::array<uint32_t, 3>, 8> tris{{
         {2, 1, 0},
         {3, 2, 0},
@@ -252,7 +251,7 @@ inline BoneOctahedronData BoneOctahedron(float length = 1.0f) {
         {5, 4, 1}, // top
     }};
 
-    // Per-face normals from Blender's bone_octahedral_solid_normals
+    // Per-face normals (Blender's bone_octahedral_solid_normals)
     constexpr float Rsqrt2 = 0.7071068f; // 1/sqrt(2)
     constexpr std::array<vec3, 8> face_normals{{
         {Rsqrt2, -Rsqrt2, 0}, // bottom-right

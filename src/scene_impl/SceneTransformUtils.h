@@ -27,7 +27,6 @@ struct StartTransform {
 };
 
 // Bone display length captured at drag start (for head/tail partial transforms).
-// Analogous to Blender's EditBone::oldlength.
 struct StartBoneLength {
     float Value;
 };
