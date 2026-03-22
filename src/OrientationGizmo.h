@@ -36,7 +36,7 @@ static internal::Context Context;
 
 bool IsActive() { return Context.Hovered || Context.MouseDownPos || Context.DragEndPos; }
 
-void Draw(vec2 pos, float size, ViewCamera &camera, bool interactive = true) {
+void Draw(vec2 pos, float size, ViewCamera &camera, const colors::AxesArray &Axes, bool interactive = true) {
     auto &dl = *ImGui::GetWindowDrawList();
 
     const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetMousePos());
@@ -82,16 +82,15 @@ void Draw(vec2 pos, float size, ViewCamera &camera, bool interactive = true) {
         const auto t = 1.f - 0.5f * (AxisCam(i).z + 1); // [0, 1], 0 faces camera
         const bool positive = i < 3;
         const bool aligned = IsAligned(i);
-        const auto fill_color = positive ?
-            colors::Blend(colors::Axes[i + 3], colors::Axes[i], t) :
-            aligned ? colors::Axes[i - 3] :
-                      colors::WithAlpha(colors::Axes[i], t);
+        const auto fill_color = positive ? colors::Blend(Axes[i + 3], Axes[i], t) :
+            aligned                      ? Axes[i - 3] :
+                                           colors::WithAlpha(Axes[i], t);
         const float r = size * Style.CircleRad;
         const auto line_end = std::bit_cast<ImVec2>(center + AxisScreen(i));
         if (positive) dl.AddLine(std::bit_cast<ImVec2>(center), line_end, fill_color, 2.f);
         dl.AddCircleFilled(line_end, positive ? r : r - .5f, fill_color);
         if (!positive) { // Outline
-            const auto color = aligned ? colors::Lighten(colors::Axes[i - 3], .8f) : colors::Blend(colors::Axes[i], colors::Axes[i - 3], t);
+            const auto color = aligned ? colors::Lighten(Axes[i - 3], .8f) : colors::Blend(Axes[i], Axes[i - 3], t);
             dl.AddCircle(line_end, r, color, 32, 1.f);
         }
         if (const bool hovered = hovered_i && *hovered_i == i;

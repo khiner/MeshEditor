@@ -32,6 +32,8 @@
 #include "scene_impl/SceneInternalTypes.h"
 
 #include "imgui.h"
+
+#include "AxisColors.h" // Must be after imgui.h
 #include <entt/entity/registry.hpp>
 
 #include "Variant.h"
@@ -646,6 +648,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<SceneInteraction>(SceneEntity);
     R.emplace<SceneEditMode>(SceneEntity);
     R.emplace<ViewportTheme>(SceneEntity, SceneDefaults::ViewportTheme);
+    R.emplace<colors::AxesArray>(SceneEntity, colors::MakeAxes(SceneDefaults::ViewportTheme.AxisColors));
     R.emplace<ViewCamera>(SceneEntity, SceneDefaults::ViewCamera);
     R.emplace<MaterialPreviewLighting>(SceneEntity, false, false, 1.f, 0.f);
     R.emplace<RenderedLighting>(SceneEntity, true, true, 1.f, 0.f);
@@ -1057,7 +1060,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     if (!reactive<changes::ModelsBuffer>(R).empty()) request(RenderRequest::Submit);
     if (!reactive<changes::ViewportTheme>(R).empty()) {
-        UpdateDerivedColors(R.get<ViewportTheme>(SceneEntity).Colors);
+        UpdateDerivedColors(R.get<ViewportTheme>(SceneEntity));
+        R.get<colors::AxesArray>(SceneEntity) = colors::MakeAxes(R.get<const ViewportTheme>(SceneEntity).AxisColors);
         auto theme = R.get<const ViewportTheme>(SceneEntity);
         theme.EdgeWidth *= ImGui::GetIO().DisplayFramebufferScale.x;
         Buffers->ViewportThemeUBO.Update(as_bytes(theme));

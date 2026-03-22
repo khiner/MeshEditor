@@ -493,7 +493,7 @@ void RenderMouseGuid(TransformGizmo::TransformType type, ImVec2 o_px) {
     DrawCursorDoubleArrow(dl, std::bit_cast<ImVec2>(g.MousePx), std::bit_cast<ImVec2>(g.MousePx) - o_px, type == TransformType::Rotate);
 }
 
-void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, TransformGizmo::Type type, const mat4 &vp, const ray &cam_ray) {
+void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, TransformGizmo::Type type, const mat4 &vp, const ray &cam_ray, const colors::AxesArray &Axes) {
     using TransformGizmo::Type;
     using enum TransformType;
 
@@ -518,7 +518,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
             const auto p0 = WsToPx(o_ws, vp);
             const auto p1 = WsToPx(o_ws + g.Start->Transform.AxisDirWs(axis_i) * g.WorldPerNdc, vp);
             if (const auto clipped = ClipRayToRect(g.ScreenRect, p0, p1 - p0)) {
-                dl.AddLine(clipped->first, clipped->second, colors::Lighten(colors::Axes[axis_i], 0.25f), Style.LineWidth);
+                dl.AddLine(clipped->first, clipped->second, colors::Lighten(Axes[axis_i], 0.25f), Style.LineWidth);
             }
         };
 
@@ -533,7 +533,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
     // Center filled circle
     if (g.Start && g.Interaction->Type != Rotate && g.Interaction->Op != Screen) {
         const auto axis_i = AxisIndex(g.Interaction->Op);
-        const auto color = SelectionColor(colors::Axes[axis_i], true);
+        const auto color = SelectionColor(Axes[axis_i], true);
         dl.AddCircleFilled(o_px, SizeToPx(Style.CenterCircleRadSize), color);
         dl.AddCircleFilled(WsToPx(g.Start->Transform.P, vp), SizeToPx(Style.CenterCircleRadSize), Color.StartGhost);
     }
@@ -556,7 +556,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
             const auto w2s = ghost ? g.Start->WorldPerNdc : g.WorldPerNdc;
             const auto end_ws = o_ws + axis_dir_ws * w2s * size;
             const auto end_px = WsToPx(end_ws, vp);
-            const auto alpha_color = colors::WithAlpha(colors::Axes[axis_i], g.Start && is_active ? 1.f : AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px)));
+            const auto alpha_color = colors::WithAlpha(Axes[axis_i], g.Start && is_active ? 1.f : AxisAlphaForDistSqPx(ImLengthSqr(end_px - o_px)));
             const auto color = ghost ? Color.StartGhost : SelectionColor(alpha_color, is_active);
             if (line_begin_size) {
                 dl.AddLine(WsToPx(o_ws + axis_dir_ws * w2s * (*line_begin_size), vp), end_px, color, Style.LineWidth);
@@ -698,8 +698,8 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
                 const bool is_selected = g.Interaction && g.Interaction->Op == TranslatePlanes[i];
                 const auto plane_alpha = PlaneAlpha(i, transform, cam_ray);
-                dl.AddQuad(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(colors::Axes[i], is_selected), plane_alpha), 1.f);
-                dl.AddQuadFilled(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(colors::WithAlpha(colors::Axes[i], 0.5f), is_selected), plane_alpha));
+                dl.AddQuad(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(Axes[i], is_selected), plane_alpha), 1.f);
+                dl.AddQuadFilled(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(colors::WithAlpha(Axes[i], 0.5f), is_selected), plane_alpha));
                 if (g.Start) {
                     const auto p1g{screen_pos({-1, -1}, true)}, p2g{screen_pos({-1, 1}, true)}, p3g{screen_pos({1, 1}, true)}, p4g{screen_pos({1, -1}, true)};
                     dl.AddQuad(p1g, p2g, p3g, p4g, colors::Lighten(Color.StartGhost, 0.5f), 1.f);
@@ -736,7 +736,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
             dl.AddConvexPolyFilled(CirclePositions, angle_i + 2, Color.RotationActiveFill);
 
             CirclePositions[angle_i + 1] = angle_circle_pos; // restore
-            const auto color = g.Interaction->Op == Screen ? IM_COL32_WHITE : colors::Axes[AxisIndex(g.Interaction->Op)];
+            const auto color = g.Interaction->Op == Screen ? IM_COL32_WHITE : Axes[AxisIndex(g.Interaction->Op)];
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, color, false, Style.RotationLineWidth);
             dl.AddLine(o_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
             dl.AddLine(o_px, CirclePositions[angle_i], color, Style.RotationLineWidth);
@@ -755,7 +755,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
                 const auto u_px = WsToPx(o_ws + transform.LocalDirToWorld(u_local * r), vp) - o_px;
                 const auto v_px = WsToPx(o_ws + transform.LocalDirToWorld(v_local * r), vp) - o_px;
                 FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), o_px, u_px, v_px, true, 0.5f);
-                const auto color = SelectionColor(colors::Axes[2 - axis], g.Interaction == Interaction{Rotate, AxisOp(2 - axis)});
+                const auto color = SelectionColor(Axes[2 - axis], g.Interaction == Interaction{Rotate, AxisOp(2 - axis)});
                 dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
             }
             if (g.Interaction && g.Interaction->Op == Trackball) {
@@ -913,8 +913,8 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
     return {};
 }
 
-void Render(const GizmoTransform &transform, Type type, const ViewCamera &camera, rect viewport) {
+void Render(const GizmoTransform &transform, Type type, const ViewCamera &camera, rect viewport, const colors::AxesArray &axes) {
     const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
-    RenderImpl(transform, g.Dt, type, vp, camera.Ray());
+    RenderImpl(transform, g.Dt, type, vp, camera.Ray(), axes);
 }
 } // namespace TransformGizmo

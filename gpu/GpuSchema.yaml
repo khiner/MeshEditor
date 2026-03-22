@@ -251,6 +251,14 @@ structs:
         type: vec3
       - name: UseSpecular
         type: u32
+  - name: AxisThemeColors # Blender:Themes:Axis & Gizmo Colors
+    fields:
+      - name: X
+        type: vec3
+      - name: Y
+        type: vec3
+      - name: Z
+        type: vec3
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
       - name: Grid # Grid
@@ -312,6 +320,8 @@ structs:
     fields:
       - name: Colors
         type: ViewportThemeColors
+      - name: AxisColors
+        type: AxisThemeColors
       - name: EdgeWidth
         type: float
       - name: SilhouetteEdgeWidth

@@ -2,6 +2,8 @@
 
 // imgui.h must be included before this header.
 
+#include "gpu/AxisThemeColors.h"
+
 namespace colors {
 
 constexpr ImU32 Lighten(ImU32 color, float amount) {
@@ -47,10 +49,14 @@ constexpr ImU32 Blend(ImU32 color1, ImU32 color2, float factor) {
 
 constexpr ImU32 RgbToU32(const vec3 in) { return ImGui::ColorConvertFloat4ToU32({in.x, in.y, in.z, 1.f}); }
 
-// Blender:Themes:Axis & Gizmo Colors
-constexpr ImU32 AxisX IM_COL32(255, 51, 82, 255);
-constexpr ImU32 AxisY IM_COL32(139, 220, 0, 255);
-constexpr ImU32 AxisZ IM_COL32(40, 144, 255, 255);
-// [X, Y, Z, -X, -Y, -Z]
-static const ImU32 Axes[]{AxisX, AxisY, AxisZ, Darken(AxisX, .3f), Darken(AxisY, .3f), Darken(AxisZ, .3f)};
+// Build [X, Y, Z, -X, -Y, -Z] ImU32 array from Axis theme colors.
+struct AxesArray {
+    ImU32 Values[6];
+    const ImU32 &operator[](size_t i) const { return Values[i]; }
+};
+
+inline AxesArray MakeAxes(const AxisThemeColors &a) {
+    const auto x = RgbToU32(a.X), y = RgbToU32(a.Y), z = RgbToU32(a.Z);
+    return {x, y, z, Darken(x, .3f), Darken(y, .3f), Darken(z, .3f)};
+}
 } // namespace colors

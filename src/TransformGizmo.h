@@ -29,6 +29,10 @@ struct GizmoTransform : Transform {
     vec3 WorldDirToLocal(vec3 d_ws) const { return Mode == World ? d_ws : glm::conjugate(R) * d_ws; }
 };
 
+namespace colors {
+struct AxesArray;
+}
+
 namespace TransformGizmo {
 enum class Type : uint8_t {
     None,
@@ -65,5 +69,5 @@ std::optional<Result> Interact(const GizmoTransform &, Config, const ViewCamera 
 
 // Renders the gizmo using the interaction delta from the last Interact() call.
 // Call with the post-delta transform so the gizmo visual matches the applied transform.
-void Render(const GizmoTransform &, Type, const ViewCamera &, rect viewport);
+void Render(const GizmoTransform &, Type, const ViewCamera &, rect viewport, const colors::AxesArray &);
 } // namespace TransformGizmo

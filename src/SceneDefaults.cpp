@@ -3,17 +3,16 @@
 namespace {
 vec3 Shade(vec3 c, int offset) { return glm::clamp(c + float(offset) / 255.f, 0.f, 1.f); }
 vec3 BlendShade(vec3 c1, vec3 c2, float fac, int offset = 0) { return glm::clamp(glm::mix(c1, c2, fac) + float(offset) / 255.f, 0.f, 1.f); }
-
-constexpr vec3 RawAxisX{1.f, 51.f / 255.f, 82.f / 255.f};
-constexpr vec3 RawAxisZ{40.f / 255.f, 144.f / 255.f, 1.f};
 } // namespace
 
-void UpdateDerivedColors(ViewportThemeColors &c) {
+void UpdateDerivedColors(ViewportTheme &theme) {
+    auto &c = theme.Colors;
+    const auto &axis = theme.AxisColors;
     // Grid-derived colors, matching Blender's overlay_instance.cc
     c.GridLine = {Shade(vec3(c.Grid), 10), c.Grid.w};
     c.GridEmphasis = {Shade(vec3(c.Grid), 20), 1.f};
-    c.GridAxisX = BlendShade(vec3(c.Grid), RawAxisX, 0.85f, -20);
-    c.GridAxisZ = BlendShade(vec3(c.Grid), RawAxisZ, 0.85f, -20);
+    c.GridAxisX = BlendShade(vec3(c.Grid), axis.X, 0.85f, -20);
+    c.GridAxisZ = BlendShade(vec3(c.Grid), axis.Z, 0.85f, -20);
 
     c.BoneActive = Shade(c.EdgeSelectedIncidental, 60);
     c.BoneActiveUnsel = BlendShade(c.WireEdit, c.EdgeSelectedIncidental, 0.15f);
@@ -61,10 +60,15 @@ static ViewportTheme MakeDefaultViewportTheme() {
             .BonePoseActive{0.549f, 1.0f, 1.0f},
             .Transform{1, 1, 1},
         },
+        .AxisColors{
+            .X{1.f, 51.f / 255.f, 82.f / 255.f},
+            .Y{139.f / 255.f, 220.f / 255.f, 0.f},
+            .Z{40.f / 255.f, 144.f / 255.f, 1.f},
+        },
         .EdgeWidth = 0.5f, // Half-width in pixels
         .SilhouetteEdgeWidth = 2,
     };
-    UpdateDerivedColors(theme.Colors);
+    UpdateDerivedColors(theme);
     return theme;
 }
 

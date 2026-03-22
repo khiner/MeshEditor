@@ -968,10 +968,11 @@ void Scene::RenderOverlay() {
     // Exit "look through" camera view if the user interacts with the orientation gizmo.
     if (!active_transform && OrientationGizmo::IsActive()) ExitLookThroughCamera();
     auto &camera = R.get<ViewCamera>(SceneEntity);
+    const auto &axes = R.get<const colors::AxesArray>(SceneEntity);
     { // Orientation gizmo (drawn before tick so camera animations it initiates begin this frame)
         const float shading_group_height = shading_button_style.ButtonSize.y;
         const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2.f + shading_group_height * 1.25f};
-        OrientationGizmo::Draw(pos, OrientationGizmoSize, camera, !active_transform);
+        OrientationGizmo::Draw(pos, OrientationGizmoSize, camera, axes, !active_transform);
     }
     if (camera.Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
 
@@ -1170,7 +1171,7 @@ void Scene::RenderOverlay() {
         // Render gizmo at the post-delta position so it matches the applied transform.
         auto render_transform = gizmo_transform;
         if (interact_result) render_transform.P = interact_result->Start.P + interact_result->Delta.P;
-        TransformGizmo::Render(render_transform, MGizmo.Config.Type, camera, viewport);
+        TransformGizmo::Render(render_transform, MGizmo.Config.Type, camera, viewport, axes);
     }
 
     if (settings.ShowOverlays && settings.ShowOrigins && (!R.storage<Selected>().empty() || !R.storage<Active>().empty())) { // Draw origin dots for active/selected entities
@@ -2020,6 +2021,10 @@ void Scene::RenderControls() {
                 changed |= ColorEdit3("Bone pose", &theme.Colors.BonePose.x);
                 changed |= ColorEdit3("Bone pose active", &theme.Colors.BonePoseActive.x);
                 changed |= ColorEdit3("Transform", &theme.Colors.Transform.x);
+                SeparatorText("Axis colors");
+                changed |= ColorEdit3("Axis X", &theme.AxisColors.X.x);
+                changed |= ColorEdit3("Axis Y", &theme.AxisColors.Y.x);
+                changed |= ColorEdit3("Axis Z", &theme.AxisColors.Z.x);
                 {
                     auto full_width = theme.EdgeWidth * 2.f;
                     if (SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
