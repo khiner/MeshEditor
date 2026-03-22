@@ -253,6 +253,16 @@ structs:
         type: u32
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
+      - name: Grid # Grid
+        type: vec4
+      - name: GridLine # Derived from Grid
+        type: vec4
+      - name: GridEmphasis # Derived from Grid
+        type: vec4
+      - name: GridAxisX # Derived from Grid
+        type: vec3
+      - name: GridAxisZ # Derived from Grid
+        type: vec3
       - name: Wire # Wire
         type: vec3
       - name: WireEdit # Wire Edit

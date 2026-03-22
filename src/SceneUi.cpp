@@ -2001,6 +2001,7 @@ void Scene::RenderControls() {
                     theme = SceneDefaults::ViewportTheme;
                     changed = true;
                 }
+                changed |= ColorEdit4("Grid", &theme.Colors.Grid.x);
                 changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
                 changed |= ColorEdit3("Wire edit", &theme.Colors.WireEdit.x);
                 changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);

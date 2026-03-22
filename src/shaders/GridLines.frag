@@ -1,62 +1,84 @@
 #version 450
 
-// Based on https://asliceofrendering.com/scene%20helper/2020/01/05/InfiniteGrid/
+// Infinite grid matching Blender's grid appearance
 
 #include "SceneUBO.glsl"
+#include "ViewportTheme.glsl"
 
-layout(location = 0) in vec3 NearPos;
-layout(location = 1) in vec3 FarPos;
+layout(location = 0) in vec3 RayOrigin;
+layout(location = 1) in vec3 RayDir;
 
 layout(location = 0) out vec4 Color;
 
-vec4 Grid(vec3 pos_3d, float scale) {
-    const float AxisWidth = 1;
-    const float LineColor = 0.4;
-    const float ScaleFactor = 0.2;
-    const vec3 XAxisColor = vec3(1.0, 0.2, 0.332);
-    const vec3 ZAxisColor = vec3(0.157, 0.565, 1.0);
-
-    const vec2 coord = pos_3d.xz * scale * ScaleFactor;
-    const vec2 d = fwidth(coord);
+// Anti-aliased grid line intensity [0,1] at the given scale.
+// Scale determines line spacing: scale=N produces lines every 1/N world units.
+// camera_xz offsets the computation for float32 precision at far distances (same idea as Blender's grid_buf.offset).
+float GridLineIntensity(vec3 pos, float scale, vec2 camera_xz, vec2 world_d) {
+    // Snap camera to nearest grid line so fract() stays precise at far distances.
+    const vec2 coord = pos.xz * scale - round(camera_xz * scale);
+    const vec2 d = world_d * scale;
     const vec2 grid = abs(fract(coord - 0.5) - 0.5) / d;
-    const vec2 clipped_deriv = min(d, 1.0);
-
-    const vec2 fades = exp(-pow(abs(pos_3d.xz) / (AxisWidth * clipped_deriv), vec2(5.0)));
-    const float xfade = fades.y;
-    const float zfade = fades.x;
-    const vec3 axis_color = mix(XAxisColor, ZAxisColor, step(xfade, zfade));
-    const float axis_alpha = max(xfade, zfade);
-
-    // Fade when lines become subpixel to prevent Moiré.
-    const float derivative_fade = 1 - smoothstep(0.2, 1, max(d.x, d.y));
-
-    const float grid_alpha = (1 - min(min(grid.x, grid.y), 1)) * 0.85 * derivative_fade;
-    return vec4(mix(vec3(LineColor), axis_color, axis_alpha), max(grid_alpha, axis_alpha));
+    // Fade when lines become subpixel to prevent Moire.
+    const float moire_fade = 1.0 - smoothstep(0.2, 1.0, max(d.x, d.y));
+    return (1.0 - min(min(grid.x, grid.y), 1.0)) * moire_fade;
 }
 
-// Assumes `gl_FragDepth` is set to the depth of the fragment in clip space.
-float LinearDepth() {
-    const float near = SceneViewUBO.CameraNear;
-    const float far = SceneViewUBO.CameraFar;
-    const float clip_space_depth = gl_FragDepth * 2.0 - 1.0; // Normalize to [-1, 1].
-    const float linear_depth = (2.0 * near * far) / (near + far - clip_space_depth * (far - near));
-    return linear_depth / far; // Normalize.
-}
-
-// Blend the two grids using their alpha values.
+// Over-compositing: a over b
 vec4 BlendGrids(vec4 a, vec4 b) {
     const float alpha = 1.0 - (1.0 - a.a) * (1.0 - b.a);
-    const vec3 c = (a.rgb * a.a + b.rgb * b.a * (1.0 - a.a)) / alpha;
-    return vec4(c, alpha);
+    if (alpha < 0.001) return vec4(0);
+    return vec4((a.rgb * a.a + b.rgb * b.a * (1.0 - a.a)) / alpha, alpha);
 }
 
 void main() {
-    const float t = -NearPos.y / (FarPos.y - NearPos.y);
-    const vec3 pos_3d = NearPos + t * (FarPos - NearPos);
-    const vec4 clip_space_pos = SceneViewUBO.ViewProj * vec4(pos_3d.xyz, 1);
+    const float t = -RayOrigin.y / RayDir.y;
+    if (t <= 0) discard;
+
+    const vec3 pos_3d = RayOrigin + t * RayDir;
+    const vec4 clip_space_pos = SceneViewUBO.ViewProj * vec4(pos_3d, 1);
     gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
 
-    // Draw grid at three scales.
-    Color = BlendGrids(BlendGrids(Grid(pos_3d, 10), Grid(pos_3d, 1)), Grid(pos_3d, 0.1)) * float(t > 0);
-    Color.a *= (0.6 * (1 - LinearDepth())); // Fade out at the edge of the grid.
+    const vec3 to_camera = SceneViewUBO.CameraPosition - pos_3d;
+    const float dist = length(to_camera);
+    const vec3 V = to_camera / dist;
+
+    // Three dynamic grid scales with levels based on camera height above the grid plane
+    const float camera_height = abs(SceneViewUBO.CameraPosition.y);
+    const float log_dist = log(max(camera_height, 0.001)) / log(10.0);
+    const float base_level = floor(log_dist);
+
+    const float base_scale = pow(10.0, -base_level);
+    const float fine_scale = base_scale * 10.0;
+    const float emph_scale = base_scale * 0.1;
+
+    const vec2 camera_xz = SceneViewUBO.CameraPosition.xz;
+    const vec2 world_d = fwidth(pos_3d.xz);
+    const float i_fine = GridLineIntensity(pos_3d, fine_scale, camera_xz, world_d);
+    const float i_base = GridLineIntensity(pos_3d, base_scale, camera_xz, world_d);
+    const float i_emph = GridLineIntensity(pos_3d, emph_scale, camera_xz, world_d);
+
+    // Per-level emphasis and alpha
+    const float frac = fract(log_dist);
+    const vec4 grid_color = ViewportTheme.Colors.GridLine;
+    const vec4 emph_color = ViewportTheme.Colors.GridEmphasis;
+    // Fine: pure grid color, fading out
+    const vec4 fine_grid = vec4(grid_color.rgb, i_fine * grid_color.a * (1.0 - frac));
+    // Base: color and alpha lerp from grid toward emphasis
+    const vec4 base_grid = vec4(mix(grid_color.rgb, emph_color.rgb, 1.0 - frac), i_base * mix(grid_color.a, emph_color.a, 1.0 - frac));
+    // Emphasis: pure emphasis color, full alpha
+    const vec4 emph_grid = vec4(emph_color.rgb, i_emph * emph_color.a);
+    // Composite: emphasis on top (highest priority), then base, then fine
+    const vec4 grid = BlendGrids(emph_grid, BlendGrids(base_grid, fine_grid));
+
+    // Axis lines
+    const float x_axis = 1.0 - smoothstep(0.0, 1.5, abs(pos_3d.z) / max(world_d.y, 0.001));
+    const float z_axis = 1.0 - smoothstep(0.0, 1.5, abs(pos_3d.x) / max(world_d.x, 0.001));
+    const vec3 axis_color = mix(ViewportTheme.Colors.GridAxisX, ViewportTheme.Colors.GridAxisZ, step(x_axis, z_axis));
+
+    // Axes on top of grid
+    Color = BlendGrids(vec4(axis_color, max(x_axis, z_axis)), grid);
+    // Steep angle fade: grid disappears when viewed nearly horizontally
+    Color.a *= 1.0 - pow(1.0 - abs(V.y), 3);
+    // Camera clip fade: grid fades toward far clip plane
+    Color.a *= 1.0 - smoothstep(0.0, 0.5 * SceneViewUBO.CameraFar, dist - 0.5 * SceneViewUBO.CameraFar);
 }

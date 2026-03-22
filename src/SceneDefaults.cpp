@@ -3,9 +3,18 @@
 namespace {
 vec3 Shade(vec3 c, int offset) { return glm::clamp(c + float(offset) / 255.f, 0.f, 1.f); }
 vec3 BlendShade(vec3 c1, vec3 c2, float fac, int offset = 0) { return glm::clamp(glm::mix(c1, c2, fac) + float(offset) / 255.f, 0.f, 1.f); }
+
+constexpr vec3 RawAxisX{1.f, 51.f / 255.f, 82.f / 255.f};
+constexpr vec3 RawAxisZ{40.f / 255.f, 144.f / 255.f, 1.f};
 } // namespace
 
 void UpdateDerivedColors(ViewportThemeColors &c) {
+    // Grid-derived colors, matching Blender's overlay_instance.cc
+    c.GridLine = {Shade(vec3(c.Grid), 10), c.Grid.w};
+    c.GridEmphasis = {Shade(vec3(c.Grid), 20), 1.f};
+    c.GridAxisX = BlendShade(vec3(c.Grid), RawAxisX, 0.85f, -20);
+    c.GridAxisZ = BlendShade(vec3(c.Grid), RawAxisZ, 0.85f, -20);
+
     c.BoneActive = Shade(c.EdgeSelectedIncidental, 60);
     c.BoneActiveUnsel = BlendShade(c.WireEdit, c.EdgeSelectedIncidental, 0.15f);
     c.BoneSelect = Shade(c.EdgeSelectedIncidental, -20);
@@ -18,7 +27,7 @@ ViewCamera SceneDefaults::ViewCamera{
     {0, 0, 0},
     {Perspective{.FieldOfViewRad = 2.f * std::atan(0.72f * 9.f / 16.f), .FarClip = 1000.f, .NearClip = 0.01f}},
 };
-// Blender's default BKE_studiolight_default values (studiolight.cc).
+// Blender's default BKE_studiolight_default values (studiolight.cc)
 WorkspaceLights SceneDefaults::WorkspaceLights{
     .Lights = {{
         {.Direction = {-0.352546f, 0.170931f, -0.920051f}, .SpecularColor = {0.266761f, 0.266761f, 0.266761f}, .DiffuseColor = {0.033103f, 0.033103f, 0.033103f}, .Wrap = 0.526620f},
@@ -32,6 +41,7 @@ WorkspaceLights SceneDefaults::WorkspaceLights{
 static ViewportTheme MakeDefaultViewportTheme() {
     ViewportTheme theme{
         .Colors{
+            .Grid{0.329f, 0.329f, 0.329f, 0.502f},
             .Wire{0, 0, 0},
             .WireEdit{0, 0, 0},
             .ObjectActive{1, 0.627f, 0.157f},
