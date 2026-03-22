@@ -830,6 +830,10 @@ void Scene::ApplyTimelineAction(const AnimationTimelineAction &action) {
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
+    const bool profile = std::exchange(ProfileNextProcessComponentEvents, false);
+    std::optional<Timer> timer;
+    if (profile) timer.emplace("ProcessComponentEvents (post-glTF)");
+
     auto render_request = RenderRequest::None;
     auto request = [&render_request](RenderRequest req) { render_request = std::max(render_request, req); };
 

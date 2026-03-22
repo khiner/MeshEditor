@@ -6,6 +6,7 @@
 #include "SceneMaterials.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
+#include "Timer.h"
 #include "gltf/GltfLoader.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MorphTargetData.h"
@@ -16,7 +17,12 @@
 #include <unordered_set>
 
 std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltfScene(const std::filesystem::path &path) {
-    auto scene = gltf::LoadScene(path);
+    const Timer timer{"AddGltfScene"};
+    std::expected<gltf::Scene, std::string> scene;
+    {
+        const Timer timer{"gltf::LoadScene"};
+        scene = gltf::LoadScene(path);
+    }
     if (!scene) return std::unexpected{std::move(scene.error())};
 
     auto &texture_store = *Textures;
@@ -613,6 +619,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     if (active_entity != entt::null) R.emplace<Active>(active_entity);
     for (const auto e : all_imported_objects) R.emplace<Selected>(e);
     import_rollback_guard.Enabled = false;
+    ProfileNextProcessComponentEvents = true;
 
     return std::pair{first_mesh_entity, active_entity};
 }

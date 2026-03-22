@@ -224,6 +224,7 @@ private:
     bool ElementStatesDirty{false}; // Element state buffers updated by GPU compute; triggers a submit.
     bool SelectionBitsDirty{false}; // Bitset written by Interact; ProcessComponentEvents dispatches the compute update.
     bool ShaderRecompileRequested{false};
+    bool ProfileNextProcessComponentEvents{false};
 
     struct ElementRange {
         entt::entity MeshEntity;
