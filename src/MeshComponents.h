@@ -25,6 +25,12 @@ struct VertexClass {
     uint32_t Offset{InvalidOffset};
 };
 
+// Placed on buffer entities. Accumulates instance slots that need GPU erasure.
+// Processed and cleared each frame by SyncModelsBuffers.
+struct PendingHide {
+    std::vector<uint32_t> BufferIndices;
+};
+
 // MeshStore vertex buffer ID
 struct VertexStoreId {
     uint32_t StoreId;

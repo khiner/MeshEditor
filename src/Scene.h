@@ -248,6 +248,10 @@ private:
     // Process deferred component events. Called once per frame.
     RenderRequest ProcessComponentEvents();
 
+    // Batch-process all deferred ModelsBuffer GPU operations (construction, insert, erase).
+    // Called from ProcessComponentEvents before transform/state sync.
+    void SyncModelsBuffers();
+
     void SetInteractionMode(InteractionMode);
     void SetEditMode(Element mode);
 
