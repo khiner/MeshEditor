@@ -2066,11 +2066,41 @@ void Scene::RenderControls() {
                 lights = SceneDefaults::WorkspaceLights;
                 changed = true;
             }
-            changed |= ColorEdit3("Color##View", &lights.ViewColor[0]);
-            changed |= SliderFloat("Intensity##Ambient", &lights.AmbientIntensity, 0, 1);
-            changed |= SliderFloat3("Direction##Directional", &lights.Direction[0], -1, 1);
-            changed |= ColorEdit3("Color##Directional", &lights.DirectionalColor[0]);
-            changed |= SliderFloat("Intensity##Directional", &lights.DirectionalIntensity, 0, 1);
+            bool use_specular = lights.UseSpecular != 0;
+            if (Checkbox("Specular highlights", &use_specular)) {
+                lights.UseSpecular = use_specular ? 1 : 0;
+                changed = true;
+            }
+            // Light colors are stored in linear space. Display/edit as sRGB.
+            static const auto LinearColorEdit = [](const char *label, vec3 &linear) -> bool {
+                auto srgb = glm::pow(linear, vec3{1.f / 2.2f});
+                if (ColorEdit3(label, &srgb[0])) {
+                    linear = glm::pow(srgb, vec3{2.2f});
+                    return true;
+                }
+                return false;
+            };
+            changed |= LinearColorEdit("Ambient color", lights.AmbientColor);
+            static const char *light_names[]{"Light 1", "Light 2", "Light 3", "Light 4"};
+            for (int i = 0; i < 4; i++) {
+                auto &light = lights.Lights[i];
+                if (CollapsingHeader(light_names[i])) {
+                    PushID(i);
+                    if (SliderFloat3("Direction", &light.Direction[0], -1, 1)) {
+                        const float len = sqrtf(light.Direction[0] * light.Direction[0] + light.Direction[1] * light.Direction[1] + light.Direction[2] * light.Direction[2]);
+                        if (len > 0.0001f) {
+                            light.Direction[0] /= len;
+                            light.Direction[1] /= len;
+                            light.Direction[2] /= len;
+                        }
+                        changed = true;
+                    }
+                    changed |= LinearColorEdit("Diffuse color", light.DiffuseColor);
+                    changed |= LinearColorEdit("Specular color", light.SpecularColor);
+                    changed |= SliderFloat("Wrap", &light.Wrap, 0, 1);
+                    PopID();
+                }
+            }
             if (changed) R.emplace_or_replace<SubmitDirty>(SceneEntity);
             EndTabItem();
         }

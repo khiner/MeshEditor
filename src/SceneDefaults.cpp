@@ -1,7 +1,5 @@
 #include "SceneDefaults.h"
 
-#include <glm/common.hpp>
-
 namespace {
 vec3 Shade(vec3 c, int offset) { return glm::clamp(c + float(offset) / 255.f, 0.f, 1.f); }
 vec3 BlendShade(vec3 c1, vec3 c2, float fac, int offset = 0) { return glm::clamp(glm::mix(c1, c2, fac) + float(offset) / 255.f, 0.f, 1.f); }
@@ -16,12 +14,16 @@ void UpdateDerivedColors(ViewportThemeColors &c) {
 
 World SceneDefaults::World{.Origin{0, 0, 0}, .Up{0, 1, 0}};
 ViewCamera SceneDefaults::ViewCamera{{0, 0, 2}, {0, 0, 0}, {DefaultPerspectiveCamera()}};
+// Blender's default BKE_studiolight_default values (studiolight.cc).
 WorkspaceLights SceneDefaults::WorkspaceLights{
-    .ViewColor = {1, 1, 1},
-    .AmbientIntensity = 0.1f,
-    .DirectionalColor = {1, 1, 1},
-    .DirectionalIntensity = 0.15f,
-    .Direction = {-1, -1, -1},
+    .Lights = {{
+        {.Direction = {-0.352546f, 0.170931f, -0.920051f}, .SpecularColor = {0.266761f, 0.266761f, 0.266761f}, .DiffuseColor = {0.033103f, 0.033103f, 0.033103f}, .Wrap = 0.526620f},
+        {.Direction = {-0.408163f, 0.346939f, 0.844415f}, .SpecularColor = {0.599030f, 0.599030f, 0.599030f}, .DiffuseColor = {0.521083f, 0.538226f, 0.538226f}, .Wrap = 0.0f},
+        {.Direction = {0.521739f, 0.826087f, 0.212999f}, .SpecularColor = {0.106102f, 0.125981f, 0.158523f}, .DiffuseColor = {0.038403f, 0.034357f, 0.049530f}, .Wrap = 0.478261f},
+        {.Direction = {0.624519f, -0.562067f, -0.542269f}, .SpecularColor = {0.106535f, 0.084771f, 0.066080f}, .DiffuseColor = {0.090838f, 0.082080f, 0.072255f}, .Wrap = 0.200000f},
+    }},
+    .AmbientColor = {0, 0, 0},
+    .UseSpecular = 1,
 };
 static ViewportTheme MakeDefaultViewportTheme() {
     ViewportTheme theme{

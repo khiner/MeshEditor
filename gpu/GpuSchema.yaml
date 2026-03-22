@@ -232,19 +232,25 @@ structs:
         type: u32
       - name: NdcOffsetFactor
         type: float
+  - name: SolidLight
+    fields:
+      - name: Direction
+        type: vec3
+      - name: SpecularColor
+        type: vec3
+      - name: DiffuseColor
+        type: vec3
+      - name: Wrap
+        type: float
   - name: WorkspaceLights
     binding: WorkspaceLightsUBO
     fields:
-      - name: ViewColor
+      - name: Lights
+        type: SolidLight[4]
+      - name: AmbientColor
         type: vec3
-      - name: AmbientIntensity
-        type: float
-      - name: DirectionalColor
-        type: vec3
-      - name: DirectionalIntensity
-        type: float
-      - name: Direction
-        type: vec3
+      - name: UseSpecular
+        type: u32
   - name: ViewportThemeColors # Mirrors Blender: Preferences -> Themes -> 3D Viewport -> ...
     fields:
       - name: Wire # Wire

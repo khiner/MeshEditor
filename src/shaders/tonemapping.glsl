@@ -10,6 +10,10 @@ vec3 linearTosRGB(vec3 color) {
     return pow(color, vec3(INV_GAMMA));
 }
 
+vec3 sRGBToLinear(vec3 color) {
+    return pow(color, vec3(GAMMA));
+}
+
 vec3 toneMapPBRNeutral(vec3 color) {
     const float startCompression = 0.8 - 0.04;
     const float desaturation = 0.15;
