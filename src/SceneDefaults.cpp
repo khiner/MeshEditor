@@ -13,7 +13,11 @@ void UpdateDerivedColors(ViewportThemeColors &c) {
 }
 
 World SceneDefaults::World{.Origin{0, 0, 0}, .Up{0, 1, 0}};
-ViewCamera SceneDefaults::ViewCamera{{0, 0, 2}, {0, 0, 0}, {DefaultPerspectiveCamera()}};
+ViewCamera SceneDefaults::ViewCamera{
+    {8.189f, 4.458f, 3.616f},
+    {0, 0, 0},
+    {Perspective{.FieldOfViewRad = 2.f * std::atan(0.72f * 9.f / 16.f), .FarClip = 1000.f, .NearClip = 0.01f}},
+};
 // Blender's default BKE_studiolight_default values (studiolight.cc).
 WorkspaceLights SceneDefaults::WorkspaceLights{
     .Lights = {{
