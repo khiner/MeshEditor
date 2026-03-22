@@ -26,7 +26,7 @@
 
 namespace gltf {
 namespace {
-Transform MatrixToTransform(const mat4 &m) {
+Transform ToTransform(const mat4 &m) {
     vec3 scale, translation, skew;
     vec4 perspective;
     quat rotation;
@@ -957,7 +957,7 @@ std::expected<Transform, std::string> ComputeJointRestLocal(
         }
         current = *parents[current];
     }
-    return MatrixToTransform(rebased_local);
+    return ToTransform(rebased_local);
 }
 
 std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrder(const std::vector<uint32_t> &source_joint_nodes, const std::unordered_map<uint32_t, std::optional<uint32_t>> &joint_parent_map, uint32_t skin_index) {
@@ -1287,7 +1287,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             .ParentNodeIndex = parents[node_index],
             .ChildrenNodeIndices = std::move(children_node_indices),
             .LocalTransform = local_transforms[node_index],
-            .WorldTransform = traversal.InScene[node_index] ? MatrixToTransform(traversal.WorldTransforms[node_index]) : Transform{},
+            .WorldTransform = traversal.InScene[node_index] ? ToTransform(traversal.WorldTransforms[node_index]) : Transform{},
             .InScene = traversal.InScene[node_index],
             .IsJoint = is_joint[node_index],
             .MeshIndex = mesh_index,
@@ -1331,7 +1331,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                         .ObjectType = Object::Type::Mesh,
                         .NodeIndex = node.NodeIndex,
                         .ParentNodeIndex = std::nullopt,
-                        .WorldTransform = MatrixToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])),
+                        .WorldTransform = ToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])),
                         .MeshIndex = node.MeshIndex,
                         .SkinIndex = node.SkinIndex,
                         .CameraIndex = {},

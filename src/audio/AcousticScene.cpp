@@ -752,7 +752,7 @@ ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, entt::ent
 
     while (!DspGenerator) {}
     constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
-    const auto tets = GenerateTets(mesh, ScaleFactor * R.get<Scale>(e).Value, {.PreserveSurface = true, .Quality = info.QualityTets});
+    const auto tets = GenerateTets(mesh, ScaleFactor * R.get<const Transform>(e).S, {.PreserveSurface = true, .Quality = info.QualityTets});
 
     const auto *sample_object = R.try_get<const SampleSoundObject>(e);
     std::optional<float> fundamental;

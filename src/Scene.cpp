@@ -130,8 +130,6 @@ std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entit
     if (const auto *ri = r.try_get<RenderInstance>(e)) return ri->BufferIndex;
     return {};
 }
-} // namespace
-
 void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldTransform &wt) {
     if (const auto i = GetModelBufferIndex(r, e)) {
         const auto buffer_entity = r.get<RenderInstance>(e).Entity;
@@ -143,7 +141,6 @@ void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldTransform &
         if (const auto *joints = r.try_get<const BoneJointEntities>(e); joints && r.all_of<BoneDisplayScale>(e)) {
             const float bone_length = r.get<BoneDisplayScale>(e).Value;
             const float sphere_scale = bone_length * 0.06f;
-
             // Head joint: at bone's world position
             if (joints->Head != entt::null) {
                 if (const auto *ri = r.try_get<const RenderInstance>(joints->Head)) {
@@ -166,6 +163,7 @@ void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldTransform &
         }
     }
 }
+} // namespace
 
 struct ExtrasWireframe {
     MeshData Data;
@@ -359,7 +357,7 @@ struct Excitable {}; struct ExcitedVertex {}; struct ModelsBuffer {};
 struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
 struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
-struct TransformEnd {}; struct WorldTransform {};
+struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
 } // namespace changes
 // clang-format on
 
@@ -636,10 +634,14 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<ViewportExtent>(On::Create | On::Update)
         .on<SceneEditMode>(On::Create | On::Update);
     track<changes::CameraLens>(R).on<Camera>(On::Create | On::Update);
-    track<changes::Rotation>(R).on<::Rotation>(On::Create | On::Update);
+    track<changes::Rotation>(R).on<Transform>(On::Create | On::Update);
     track<changes::WorldTransform>(R).on<WorldTransform>(On::Create | On::Update);
     track<changes::TransformPending>(R).on<PendingTransform>(On::Create | On::Update);
     track<changes::TransformEnd>(R).on<StartTransform>(On::Destroy);
+    track<changes::TransformDirty>(R)
+        .on<Transform>(On::Create | On::Update)
+        .on<SceneNode>(On::Create | On::Update)
+        .on<BoneDisplayScale>(On::Update);
 
     DestroyTracker->Bind(R);
 
@@ -961,12 +963,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     { // Sync RotationUiVariant from Rotation, but skip entities where the UI is driving the change.
         for (auto e : reactive<changes::Rotation>(R)) {
-            if (!R.all_of<::Rotation>(e)) continue;
+            if (!R.all_of<Transform>(e)) continue;
             if (R.all_of<RotationUiDriving>(e)) {
                 R.remove<RotationUiDriving>(e);
                 continue;
             }
-            const auto v = R.get<const ::Rotation>(e).Value;
+            const auto v = R.get<const Transform>(e).R;
             if (auto *ui = R.try_get<RotationUiVariant>(e)) {
                 std::visit(
                     overloaded{
@@ -1189,7 +1191,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
                 std::array<Transform, 1> local_pose{node_anim.RestLocal};
                 EvaluateAnimation(clip, clip_time, local_pose);
-                SetTransform(R, entity, ComposeWorldTransform(node_anim.ParentBindWorld, local_pose.front()));
+                const auto t = ComposeWorldTransform(node_anim.ParentBindWorld, local_pose.front());
+                R.replace<Transform>(entity, t);
                 request_rerecord = true;
             }
         }
@@ -1256,10 +1259,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 });
             }
         }
-        // Bone pose transforms + deform matrices
+        // Bone pose sync: classify bone changes, update pose deltas, compute deform matrices.
+        // Runs before the reactive WorldTransform pass so bone sync's Transform patches are included.
         const bool bones_need_refresh = anim_advanced || mode_changed;
-        if (bones_need_refresh || !reactive<changes::WorldTransform>(R).empty() || !reactive<changes::TransformEnd>(R).empty()) {
-            const auto &wt_changes = reactive<changes::WorldTransform>(R);
+        if (bones_need_refresh || !reactive<changes::TransformDirty>(R).empty() || !reactive<changes::TransformEnd>(R).empty()) {
+            const auto &local_changes = reactive<changes::TransformDirty>(R);
             const auto &transform_end = reactive<changes::TransformEnd>(R);
             for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
                 auto *pose_state = R.try_get<ArmaturePoseState>(arm_obj_comp.Entity);
@@ -1280,13 +1284,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     if (is_edit_mode) {
                         if (mode_changed) {
                             // Entering Edit mode: snap to rest pose.
-                            R.replace<Position>(b, rest.P);
-                            R.replace<Rotation>(b, rest.R);
+                            R.patch<Transform>(b, [&](auto &t) { t.P = rest.P; t.R = rest.R; });
                             need_sync = true;
-                        } else if (transform_end.contains(b) || (wt_changes.contains(b) && !R.all_of<StartTransform>(b))) {
+                        } else if (transform_end.contains(b) || (local_changes.contains(b) && !R.all_of<StartTransform>(b))) {
                             // Commit Edit mode transform (gizmo drag end or UI slider edit).
-                            armature.Bones[i].RestLocal.P = R.get<Position>(b).Value;
-                            armature.Bones[i].RestLocal.R = R.get<Rotation>(b).Value;
+                            const auto &bt = R.get<const Transform>(b);
+                            armature.Bones[i].RestLocal.P = bt.P;
+                            armature.Bones[i].RestLocal.R = bt.R;
                             was_transformed[i] = true;
                             rest_pose_edited = true;
                             need_sync = true;
@@ -1302,30 +1306,29 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                                 .S = st->T.S / pd.S,
                             }
                         );
-                        const Transform gizmo_local{R.get<Position>(b).Value, R.get<Rotation>(b).Value, rest.S};
+                        const auto &bt = R.get<const Transform>(b);
+                        const Transform gizmo_local{bt.P, bt.R, rest.S};
                         pose_state->BoneUserOffset[i] = AbsoluteToDelta(grab_delta, AbsoluteToDelta(rest, gizmo_local));
                         const auto local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        R.replace<Position>(b, local.P);
-                        R.replace<Rotation>(b, local.R);
+                        R.patch<Transform>(b, [&](auto &t) { t.P = local.P; t.R = local.R; });
                         need_sync = true;
                     } else if (transform_end.contains(b)) {
                         // Commit drag: bake current P/R into delta, clear offset.
-                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {R.get<Position>(b).Value, R.get<Rotation>(b).Value, rest.S});
+                        const auto &cbt = R.get<const Transform>(b);
+                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {cbt.P, cbt.R, rest.S});
                         pose_state->BoneUserOffset[i] = {};
                         need_sync = true;
                     } else if (bones_need_refresh) {
                         // Animation advanced or leaving Edit mode: recompute entity P/R from deltas.
                         const auto local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        R.replace<Position>(b, local.P);
-                        R.replace<Rotation>(b, local.R);
+                        R.patch<Transform>(b, [&](auto &t) { t.P = local.P; t.R = local.R; });
                         need_sync = true;
-                    } else if (wt_changes.contains(b)) {
+                    } else if (local_changes.contains(b)) {
                         // Manual transform: bake if position actually changed.
                         const auto expected = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        const auto pos = R.get<Position>(b).Value;
-                        const auto rot = R.get<Rotation>(b).Value;
-                        if (pos == expected.P && rot == expected.R) continue;
-                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {pos, rot, rest.S});
+                        const auto &bt = R.get<const Transform>(b);
+                        if (bt.P == expected.P && bt.R == expected.R) continue;
+                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                         pose_state->BoneUserOffset[i] = {};
                         need_sync = true;
                     }
@@ -1345,15 +1348,14 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                             armature.Bones[i].RestWorld = old_rest_world[i];
                             // Update ECS to match adjusted RestLocal.
                             const auto b = arm_obj_comp.BoneEntities[i];
-                            R.replace<Position>(b, armature.Bones[i].RestLocal.P);
-                            R.replace<Rotation>(b, armature.Bones[i].RestLocal.R);
+                            const auto &rl = armature.Bones[i].RestLocal;
+                            R.patch<Transform>(b, [&](auto &t) { t.P = rl.P; t.R = rl.R; });
                         }
                         armature.Bones[i].InvRestWorld = glm::inverse(armature.Bones[i].RestWorld);
                     }
                     armature.RecomputeInverseBindMatrices();
                 }
                 if (need_sync) {
-                    UpdateWorldTransform(R, arm_obj_entity);
                     if (!is_edit_mode) {
                         ComputeDeformMatrices(
                             armature, pose_state->BonePoseDelta, pose_state->BoneUserOffset,
@@ -1364,6 +1366,29 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     request(RenderRequest::ReRecord);
                 }
             }
+        }
+        // Recompute WorldTransform for all entities with changed local transforms or parenting.
+        // Runs after bone sync so bone Transform patches are included in a single pass.
+        if (const auto &dirty = reactive<changes::TransformDirty>(R); !dirty.empty()) {
+            static const auto TransformToMatrix = [](const Transform &t) {
+                return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
+            };
+            const auto update_wt = [&](this const auto &self, entt::entity e, bool propagate) -> void {
+                const auto *node = R.try_get<SceneNode>(e);
+                const auto &t = R.get<const Transform>(e);
+                node && node->Parent != entt::null ? R.emplace_or_replace<WorldTransform>(e, ToWorldTransform(GetParentDelta(R, e) * TransformToMatrix(t))) : R.emplace_or_replace<WorldTransform>(e, ToWorldTransform(t));
+                if (propagate) {
+                    for (const auto child : Children{&R, e}) self(child, true);
+                }
+            };
+            const bool bone_edit = is_edit_mode && FindArmatureObject(R, FindActiveEntity(R)) != entt::null;
+            for (auto e : dirty) {
+                if (R.valid(e)) update_wt(e, !(bone_edit && R.all_of<StartTransform>(e)));
+            }
+            for (auto e : reactive<changes::WorldTransform>(R)) {
+                UpdateModelBuffer(R, e, R.get<const WorldTransform>(e));
+            }
+            request(RenderRequest::Submit);
         }
     }
     if (SavedViewCamera) {
@@ -1613,7 +1638,8 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
     const auto instance_entity = R.create();
     R.emplace<Instance>(instance_entity, mesh_entity);
     R.emplace<ObjectKind>(instance_entity, ObjectType::Mesh);
-    SetTransform(R, instance_entity, info.Transform);
+    R.emplace<Transform>(instance_entity, info.Transform);
+    R.emplace<WorldTransform>(instance_entity, ToWorldTransform(info.Transform));
     R.emplace<Name>(instance_entity, CreateName(R, info.Name));
 
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) { ReserveModelsBufferInstance(mb); });
@@ -1697,19 +1723,20 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
         R.emplace<Instance>(bone_entity, arm_obj_entity);
         R.emplace<Name>(bone_entity, bone.Name);
         R.emplace<BoneDisplayScale>(bone_entity, bone_scales[i]);
-        SetTransform(R, bone_entity, {bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
+        const auto bone_transform = Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
+        R.emplace<Transform>(bone_entity, bone_transform);
+        R.emplace<WorldTransform>(bone_entity, ToWorldTransform(bone_transform));
         bone_entities[i] = bone_entity;
     }
 
     // Set up SceneNode hierarchy (bones are topologically sorted: parents before children).
-    // Use "parent without inverse" so bone Position.Value represents local-frame offsets
+    // Use "parent without inverse" so bone Transform.P represents local-frame offsets
     // (FK cascade: WorldMatrix = parent.WorldMatrix * LocalMatrix, no ParentInverse baked in).
     for (uint32_t i = 0; i < n; ++i) {
         const auto parent = armature.Bones[i].ParentIndex == InvalidBoneIndex ? arm_obj_entity : bone_entities[armature.Bones[i].ParentIndex];
         SetParent(R, bone_entities[i], parent);
         R.emplace_or_replace<ParentInverse>(bone_entities[i], I4); // Parent without inverse
-        SetVisible(bone_entities[i], true); // Must precede UpdateWorldTransform
-        UpdateWorldTransform(R, bone_entities[i]);
+        SetVisible(bone_entities[i], true);
     }
     auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
     arm_obj.BoneEntities = std::move(bone_entities);
@@ -1840,7 +1867,9 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     R.emplace<Instance>(bone_entity, arm_obj_entity);
     R.emplace<Name>(bone_entity, bone.Name);
     R.emplace<BoneDisplayScale>(bone_entity, ComputeSingleBoneDisplayScale(armature, new_index));
-    SetTransform(R, bone_entity, {bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
+    const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
+    R.emplace<Transform>(bone_entity, bone_transform);
+    R.emplace<WorldTransform>(bone_entity, ToWorldTransform(bone_transform));
 
     const auto parent_entity = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
     SetParent(R, bone_entity, parent_entity);
@@ -1877,7 +1906,6 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     }
 
     SetVisible(bone_entity, true);
-    UpdateWorldTransform(R, bone_entity);
 
     arm_obj.BoneEntities.emplace_back(bone_entity);
     return bone_entity;
@@ -1958,16 +1986,14 @@ void Scene::ExtrudeBone() {
     // Zero display scale so the bone starts as a point (head=tail until moved).
     for (const auto id : new_bone_ids) {
         const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, id);
-        R.get<BoneDisplayScale>(bone_entity).Value = 0.f;
-        UpdateModelBuffer(R, bone_entity, R.get<WorldTransform>(bone_entity));
+        R.replace<BoneDisplayScale>(bone_entity, 0.f);
         R.emplace<BoneSelection>(bone_entity, false, true, false);
         R.emplace_or_replace<BoneActive>(bone_entity); // Last one wins as the active bone.
     }
     // Update parent bone display scales (they may have gained a child).
     for (const auto &info : to_extrude) {
         if (info.FromTip) {
-            R.get<BoneDisplayScale>(info.BoneEntity).Value = ComputeSingleBoneDisplayScale(armature, info.BoneIndex);
-            UpdateModelBuffer(R, info.BoneEntity, R.get<WorldTransform>(info.BoneEntity));
+            R.replace<BoneDisplayScale>(info.BoneEntity, ComputeSingleBoneDisplayScale(armature, info.BoneIndex));
         }
     }
 }
@@ -2019,8 +2045,7 @@ void Scene::DuplicateSelectedBones() {
     entt::entity last_bone{};
     for (const auto &info : to_duplicate) {
         last_bone = CreateSingleBoneInstance(arm_obj_entity, info.NewId);
-        R.get<BoneDisplayScale>(last_bone).Value = R.get<BoneDisplayScale>(info.Entity).Value;
-        UpdateModelBuffer(R, last_bone, R.get<WorldTransform>(last_bone));
+        R.replace<BoneDisplayScale>(last_bone, R.get<const BoneDisplayScale>(info.Entity).Value);
         R.emplace<BoneSelection>(last_bone);
     }
     R.emplace<BoneActive>(last_bone);
@@ -2067,11 +2092,12 @@ void Scene::DeleteSelectedBones() {
         std::vector<entt::entity> children;
         for (const auto child : Children{&R, bone_entity}) children.emplace_back(child);
         for (const auto child : children) {
-            SetTransform(R, child, ComposeLocalTransforms(bone.RestLocal, GetTransform(R, child)));
+            const auto &ct = R.get<const Transform>(child);
+            const auto t = ComposeLocalTransforms(bone.RestLocal, ct);
+            R.emplace_or_replace<Transform>(child, Transform{t.P, t.R, R.all_of<Frozen>(child) ? ct.S : t.S});
             ClearParent(R, child);
             SetParent(R, child, grandparent);
             R.emplace_or_replace<ParentInverse>(child, I4);
-            UpdateWorldTransform(R, child);
         }
 
         ClearParent(R, bone_entity);
@@ -2101,7 +2127,8 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     const auto entity = R.create();
     R.emplace<ObjectKind>(entity, ObjectType::Armature);
     R.emplace<ArmatureObject>(entity, data_entity);
-    SetTransform(R, entity, info.Transform);
+    R.emplace<Transform>(entity, info.Transform);
+    R.emplace<WorldTransform>(entity, ToWorldTransform(info.Transform));
     R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Armature" : info.Name));
 
     ApplySelectBehavior(entity, info.Select);
@@ -2135,7 +2162,8 @@ entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType t
     const auto entity = R.create();
     R.emplace<ObjectKind>(entity, type);
     R.emplace<Instance>(entity, buffer_entity);
-    SetTransform(R, entity, info.Transform);
+    R.emplace<Transform>(entity, info.Transform);
+    R.emplace<WorldTransform>(entity, ToWorldTransform(info.Transform));
     R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? default_name : info.Name));
 
     R.patch<ModelsBuffer>(buffer_entity, [](auto &mb) { ReserveModelsBufferInstance(mb); });
@@ -2284,7 +2312,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
     const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
     const ObjectCreateInfo create_info{
         .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
-        .Transform = info ? info->Transform : GetTransform(R, e),
+        .Transform = info ? info->Transform : R.get<const Transform>(e),
         .Select = select_behavior,
     };
 
@@ -2323,7 +2351,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         Meshes->CloneMesh(R.get<const Mesh>(mesh_entity)),
         info.value_or(MeshInstanceCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
-            .Transform = GetTransform(R, e),
+            .Transform = R.get<const Transform>(e),
             .Select = R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None,
             .Visible = R.all_of<RenderInstance>(e),
         })
@@ -2344,7 +2372,9 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
             R.emplace<Name>(e_new, !info || info->Name.empty() ? CreateName(R, std::format("{}_copy", GetName(R, e))) : CreateName(R, info->Name));
             R.emplace<ObjectKind>(e_new, ObjectType::Armature);
             R.emplace<ArmatureObject>(e_new, armature->Entity);
-            SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
+            const auto t = info ? info->Transform : R.get<const Transform>(e);
+            R.emplace_or_replace<Transform>(e_new, t);
+            R.emplace<WorldTransform>(e_new, ToWorldTransform(t));
 
             ApplySelectBehavior(e_new, select_behavior);
             CreateBoneInstances(e_new, armature->Entity);
@@ -2353,7 +2383,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
 
         return AddEmpty({
             .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
-            .Transform = info ? info->Transform : GetTransform(R, e),
+            .Transform = info ? info->Transform : R.get<const Transform>(e),
             .Select = select_behavior,
         });
     }
@@ -2370,7 +2400,9 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     R.emplace<Instance>(e_new, mesh_entity);
     R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
     R.patch<ModelsBuffer>(mesh_entity, [](auto &mb) { ReserveModelsBufferInstance(mb); });
-    SetTransform(R, e_new, info ? info->Transform : GetTransform(R, e));
+    const auto t_new = info ? info->Transform : R.get<const Transform>(e);
+    R.emplace_or_replace<Transform>(e_new, t_new);
+    R.emplace<WorldTransform>(e_new, ToWorldTransform(t_new));
     SetVisible(e_new, !info || info->Visible);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new, *armature_modifier);
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new, *bone_attachment);

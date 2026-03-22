@@ -1094,14 +1094,13 @@ void Scene::RenderOverlay() {
             if (start_transform_view.empty()) {
                 if (mesh_edit_mode) {
                     for (const auto &[_, instance_entity] : edit_transform_instances) {
-                        R.emplace<StartTransform>(instance_entity, GetTransform(R, instance_entity));
+                        R.emplace<StartTransform>(instance_entity, R.get<const Transform>(instance_entity));
                     }
                 } else {
                     // Capture parent transform at drag start so world->local conversion uses a stable reference frame throughout the interaction.
                     for (const auto e : root_selected) {
                         const auto &wt = R.get<WorldTransform>(e);
-                        const auto parent_delta = MatrixToTransform(GetParentDelta(R, e));
-                        R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale}, parent_delta);
+                        R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale}, ToTransform(GetParentDelta(R, e)));
                         if (bone_edit_mode) {
                             if (const auto *ds = R.try_get<BoneDisplayScale>(e)) R.emplace<StartBoneLength>(e, ds->Value);
                         }
@@ -1116,8 +1115,12 @@ void Scene::RenderOverlay() {
                 // Object mode: apply transform to entity components immediately during drag.
                 // Compute new world result, then convert to local for parented entities.
                 // Convert world-space transform to local via parent delta, then apply.
-                const auto set_local = [&](entt::entity e, const Transform &world, const Transform &pd, bool propagate) {
-                    SetTransform(R, e, {glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S), glm::conjugate(pd.R) * world.R, world.S / pd.S}, propagate);
+                const auto set_local = [&](entt::entity e, const Transform &world, const Transform &pd) {
+                    R.patch<Transform>(e, [&](auto &t) {
+                        t.P = glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S);
+                        t.R = glm::conjugate(pd.R) * world.R;
+                        if (!R.all_of<Frozen>(e)) t.S = world.S / pd.S;
+                    });
                 };
 
                 const auto r = ts.R, rT = glm::conjugate(r);
@@ -1127,7 +1130,7 @@ void Scene::RenderOverlay() {
                     // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
                     if (bone_edit_mode) {
                         // Use current parent WT for world→local (parent may have been moved earlier in this loop).
-                        const auto pd = MatrixToTransform(GetParentDelta(R, e));
+                        const auto pd = ToTransform(GetParentDelta(R, e));
                         const auto *sbl = R.try_get<StartBoneLength>(e);
                         const auto *parts = R.try_get<BoneSelection>(e);
                         if (sbl && parts) {
@@ -1146,14 +1149,14 @@ void Scene::RenderOverlay() {
                                 constexpr float eps = 1e-6f;
                                 const auto new_world_rot = new_length > eps ? glm::rotation(glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
                                 R.get_or_emplace<BoneDisplayScale>(e).Value = std::max(new_length, eps);
-                                set_local(e, {new_head, new_world_rot, ts_e.S}, pd, false);
+                                set_local(e, {new_head, new_world_rot, ts_e.S}, pd);
                                 continue;
                             }
                         }
 
                         // Full bone transform in bone edit mode.
                         const auto offset = ts_e.P - ts.P;
-                        set_local(e, {td.P + ts.P + glm::rotate(td.R, r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), ts_e.S}, pd, false);
+                        set_local(e, {td.P + ts.P + glm::rotate(td.R, r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), ts_e.S}, pd);
                         continue;
                     }
 
@@ -1161,7 +1164,7 @@ void Scene::RenderOverlay() {
                     const auto &pd = ts_e_comp.ParentDelta;
                     const bool frozen = R.all_of<Frozen>(e);
                     const auto offset = ts_e.P - ts.P;
-                    set_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, pd, true);
+                    set_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, pd);
                 }
             }
         } else if (!start_transform_view.empty()) {
@@ -1274,10 +1277,11 @@ void Scene::ClearSelectedBoneTransforms(bool position, bool rotation, bool scale
     for (const auto b : R.view<const BoneSelection, const BoneIndex>()) {
         const auto idx = R.get<const BoneIndex>(b).Index;
         const auto &rest = armature.Bones[idx].RestLocal;
-        if (position) R.replace<Position>(b, rest.P);
-        if (rotation) R.replace<Rotation>(b, rest.R);
-        if (scale) R.replace<Scale>(b, rest.S);
-        UpdateWorldTransform(R, b);
+        R.patch<Transform>(b, [&](auto &t) {
+            if (position) t.P = rest.P;
+            if (rotation) t.R = rest.R;
+            if (scale) t.S = rest.S;
+        });
     }
 }
 
@@ -1357,11 +1361,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 const auto new_length = glm::length(new_dir);
                 if (new_length > 1e-6f) {
                     const auto new_rot = glm::quat_cast(BoneVecRollToMat3(new_dir, roll));
-                    const auto pd = MatrixToTransform(GetParentDelta(R, active_bone_entity));
-                    R.replace<Position>(active_bone_entity, glm::conjugate(pd.R) * ((head - pd.P) / pd.S));
-                    R.replace<Rotation>(active_bone_entity, glm::conjugate(pd.R) * new_rot);
+                    const auto pd = ToTransform(GetParentDelta(R, active_bone_entity));
+                    R.patch<Transform>(active_bone_entity, [&](auto &t) {
+                        t.P = glm::conjugate(pd.R) * ((head - pd.P) / pd.S);
+                        t.R = glm::conjugate(pd.R) * new_rot;
+                    });
                     R.get<BoneDisplayScale>(active_bone_entity).Value = new_length;
-                    UpdateWorldTransform(R, active_bone_entity, false);
                 }
             }
         } else {
@@ -1369,23 +1374,22 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            auto &position = R.get<Position>(transform_entity).Value;
-            bool model_changed = DragFloat3("Position", &position[0], 0.01f);
-            if (model_changed) R.patch<Position>(transform_entity, [](auto &) {});
+            auto &transform = R.get<Transform>(transform_entity);
+            if (DragFloat3("Position", &transform.P[0], 0.01f)) R.patch<Transform>(transform_entity, [](auto &) {});
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
             if (auto *rotation_ui_ptr = R.try_get<RotationUiVariant>(transform_entity)) {
                 int mode_i = rotation_ui_ptr->index();
                 const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
                 if (Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes))) {
                     R.replace<RotationUiVariant>(transform_entity, CreateVariantByIndex<RotationUiVariant>(mode_i));
-                    R.patch<Rotation>(transform_entity, [](auto &) {}); // Trigger reactive sync to populate new variant type.
+                    R.patch<Transform>(transform_entity, [](auto &) {}); // Trigger reactive sync to populate new variant type.
                 }
-                const bool rotation_changed = std::visit(
+                std::visit(
                     overloaded{
                         [&](RotationQuat &v) {
                             if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f)) {
                                 R.emplace_or_replace<RotationUiDriving>(transform_entity);
-                                R.replace<Rotation>(transform_entity, glm::normalize(v.Value));
+                                R.patch<Transform>(transform_entity, [&](auto &t) { t.R = glm::normalize(v.Value); });
                                 return true;
                             }
                             return false;
@@ -1394,7 +1398,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                             if (DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f)) {
                                 R.emplace_or_replace<RotationUiDriving>(transform_entity);
                                 const auto rads = glm::radians(v.Value);
-                                R.replace<Rotation>(transform_entity, glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))));
+                                R.patch<Transform>(transform_entity, [&](auto &t) { t.R = glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))); });
                                 return true;
                             }
                             return false;
@@ -1406,7 +1410,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                                 R.emplace_or_replace<RotationUiDriving>(transform_entity);
                                 const auto axis = glm::normalize(vec3{v.Value});
                                 const auto angle = glm::radians(v.Value.w);
-                                R.replace<Rotation>(transform_entity, glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}));
+                                R.patch<Transform>(transform_entity, [&](auto &t) { t.R = glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}); });
                                 return true;
                             }
                             return false;
@@ -1414,18 +1418,13 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     },
                     *rotation_ui_ptr
                 );
-                model_changed |= rotation_changed;
             }
 
             const bool frozen = R.all_of<Frozen>(transform_entity);
             if (frozen) BeginDisabled();
             const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-            auto &scale = R.get<Scale>(transform_entity).Value;
-            const bool scale_changed = DragFloat3(label.c_str(), &scale[0], 0.01f, 0.01f, 10);
-            if (scale_changed) R.patch<Scale>(transform_entity, [](auto &) {});
-            model_changed |= scale_changed;
+            if (DragFloat3(label.c_str(), &transform.S[0], 0.01f, 0.01f, 10)) R.patch<Transform>(transform_entity, [](auto &) {});
             if (frozen) EndDisabled();
-            if (model_changed) UpdateWorldTransform(R, transform_entity);
         }
         Spacing();
         {

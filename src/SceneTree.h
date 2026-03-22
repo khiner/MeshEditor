@@ -2,12 +2,8 @@
 
 #include "Transform.h"
 #include "entt_fwd.h"
+#include "gpu/WorldTransform.h"
 #include "numeric/mat4.h"
-
-struct WorldTransform;
-
-// Defined in Scene.cpp
-void UpdateModelBuffer(entt::registry &, entt::entity, const WorldTransform &);
 
 struct SceneNode {
     entt::entity Parent{null_entity};
@@ -49,11 +45,11 @@ struct Children {
 };
 
 mat4 ToMatrix(const WorldTransform &);
-Transform MatrixToTransform(const mat4 &);
+WorldTransform ToWorldTransform(const mat4 &);
+inline WorldTransform ToWorldTransform(const Transform &t) { return {t.P, QuatToVec4(glm::normalize(t.R)), t.S}; }
+Transform ToTransform(const mat4 &);
 
-Transform GetTransform(const entt::registry &, entt::entity);
 mat4 GetParentDelta(const entt::registry &, entt::entity);
-void UpdateWorldTransform(entt::registry &, entt::entity, bool propagate_to_children = true);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);
 void ClearParent(entt::registry &, entt::entity child);
 void SetParent(entt::registry &, entt::entity child, entt::entity parent);

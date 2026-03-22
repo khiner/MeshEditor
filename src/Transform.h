@@ -4,17 +4,6 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-// Separate components
-struct Position {
-    vec3 Value;
-};
-struct Rotation {
-    quat Value;
-};
-struct Scale {
-    vec3 Value;
-};
-
 struct Transform {
     vec3 P{0}; // Position
     quat R{1, 0, 0, 0}; // Rotation
