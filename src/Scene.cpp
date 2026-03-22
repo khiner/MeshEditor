@@ -1057,6 +1057,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     if (!reactive<changes::ModelsBuffer>(R).empty()) request(RenderRequest::Submit);
     if (!reactive<changes::ViewportTheme>(R).empty()) {
+        UpdateDerivedColors(R.get<ViewportTheme>(SceneEntity).Colors);
         auto theme = R.get<const ViewportTheme>(SceneEntity);
         theme.EdgeWidth *= ImGui::GetIO().DisplayFramebufferScale.x;
         Buffers->ViewportThemeUBO.Update(as_bytes(theme));

@@ -2003,8 +2003,9 @@ void Scene::RenderControls() {
                 }
                 changed |= ColorEdit3("Wire", &theme.Colors.Wire.x);
                 changed |= ColorEdit3("Wire edit", &theme.Colors.WireEdit.x);
-                changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
-                changed |= ColorEdit3("Vertex normal", &theme.Colors.VertexNormal.x);
+                changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
+                changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
+                changed |= ColorEdit4("Light", &theme.Colors.Light.x);
                 changed |= ColorEdit3("Vertex", &theme.Colors.Vertex.x);
                 changed |= ColorEdit3("Vertex selected", &theme.Colors.VertexSelected.x);
                 changed |= ColorEdit3("Edge selected (incidental)", &theme.Colors.EdgeSelectedIncidental.x);
@@ -2012,8 +2013,11 @@ void Scene::RenderControls() {
                 changed |= ColorEdit4("Face selected (incidental)", &theme.Colors.FaceSelectedIncidental.x);
                 changed |= ColorEdit4("Face selected", &theme.Colors.FaceSelected.x);
                 changed |= ColorEdit4("Element active", &theme.Colors.ElementActive.x);
-                changed |= ColorEdit3("Object active", &theme.Colors.ObjectActive.x);
-                changed |= ColorEdit3("Object selected", &theme.Colors.ObjectSelected.x);
+                changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
+                changed |= ColorEdit3("Vertex normal", &theme.Colors.VertexNormal.x);
+                changed |= ColorEdit3("Bone solid", &theme.Colors.BoneSolid.x);
+                changed |= ColorEdit3("Bone pose", &theme.Colors.BonePose.x);
+                changed |= ColorEdit3("Bone pose active", &theme.Colors.BonePoseActive.x);
                 changed |= ColorEdit3("Transform", &theme.Colors.Transform.x);
                 {
                     auto full_width = theme.EdgeWidth * 2.f;

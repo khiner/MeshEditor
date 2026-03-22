@@ -275,21 +275,21 @@ structs:
         type: vec3
       - name: VertexNormal # Vertex Normal
         type: vec3
-      - name: Transform # Transform
-        type: vec3
       - name: BoneSolid # Bone solid fill base color
         type: vec3
-      - name: BoneActive # Edit mode active+selected wire
+      - name: BoneActive # Derived: Edit mode active+selected wire
         type: vec3
-      - name: BoneActiveUnsel # Edit mode active-only wire (faded)
+      - name: BoneActiveUnsel # Derived: Edit mode active-only wire (faded)
         type: vec3
-      - name: BoneSelect # Edit mode selected wire
+      - name: BoneSelect # Derived: Edit mode selected wire
         type: vec3
       - name: BonePose # Pose mode selected wire
         type: vec3
       - name: BonePoseActive # Pose mode active+selected wire
         type: vec3
-      - name: BonePoseActiveUnsel # Pose mode active-only wire (faded)
+      - name: BonePoseActiveUnsel # Derived: Pose mode active-only wire (faded)
+        type: vec3
+      - name: Transform # Transform
         type: vec3
   - name: ViewportTheme
     binding: ViewportThemeUBO
