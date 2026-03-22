@@ -1475,7 +1475,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (frozen) EndDisabled();
         }
 
-        if (CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (CollapsingHeader("Material")) {
             const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
             auto &material_store = R.get<MaterialStore>(SceneEntity);
             auto &texture_store = *Textures;
