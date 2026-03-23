@@ -20,9 +20,9 @@ mat3 EnvRotation() {
 void main() {
     if (SceneViewUBO.WorldOpacity <= 0.0 || SceneViewUBO.Ibl.SpecularEnvSamplerSlot == 0xFFFFFFFFu) discard;
 
-    const mat4 inv_vp = inverse(SceneViewUBO.ViewProj);
-    const vec4 far_world = inv_vp * vec4(InNDC, 1.0, 1.0);
-    const vec3 world_dir = normalize(far_world.xyz / far_world.w - SceneViewUBO.CameraPosition);
+    const mat3 proj3 = mat3(SceneViewUBO.ViewProj) * transpose(SceneViewUBO.ViewRotation);
+    const mat3 inv_rot = transpose(SceneViewUBO.ViewRotation);
+    const vec3 world_dir = normalize(inv_rot * vec3(InNDC.x / proj3[0][0], InNDC.y / proj3[1][1], -1.0));
     const vec3 env_dir = EnvRotation() * world_dir;
     const uint mip_count = max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u);
     const float lod = clamp(SceneViewUBO.BackgroundBlur, 0.0, 1.0) * float(mip_count - 1u);

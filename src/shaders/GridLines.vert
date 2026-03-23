@@ -10,9 +10,6 @@ const vec2 QuadPositions[4] = vec2[](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec
 
 void main() {
     const vec2 p = QuadPositions[gl_VertexIndex];
-    // Extract projection diagonal from ViewProj = Proj * View.
-    // For both perspective and ortho, mat3(ViewProj) = diag(...) * ViewRotation,
-    // so right-multiplying by transpose(ViewRotation) recovers the diagonal.
     const mat3 proj3 = mat3(SceneViewUBO.ViewProj) * transpose(SceneViewUBO.ViewRotation);
     const mat3 inv_rot = transpose(SceneViewUBO.ViewRotation);
     if (SceneViewUBO.ScreenPixelScale < 0.0) {
