@@ -53,17 +53,21 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     };
 
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
-    const auto texture_cache_key = [](uint32_t texture_index, TextureColorSpace color_space) {
-        return (uint64_t(texture_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
+    // Cache on the resolved (image_index, sampler_index, color_space) rather than glTF texture index,
+    // so that multiple glTF textures referencing the same image+sampler share a single TextureEntry and sampler slot.
+    const auto texture_cache_key = [](uint32_t image_index, uint32_t sampler_index, TextureColorSpace color_space) {
+        return (uint64_t(image_index) << 33u) | (uint64_t(sampler_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
     };
     const auto resolve_texture_slot = [&](uint32_t texture_index, TextureColorSpace color_space) -> std::expected<uint32_t, std::string> {
         if (texture_index >= scene->Textures.size()) return InvalidSlot;
-        const auto cache_key = texture_cache_key(texture_index, color_space);
-        if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
 
         const auto &src_texture = scene->Textures[texture_index];
         const auto image_index = resolve_image_index(src_texture);
         if (!image_index || *image_index >= scene->Images.size()) return InvalidSlot;
+
+        const auto sampler_index = src_texture.SamplerIndex.value_or(InvalidSlot);
+        const auto cache_key = texture_cache_key(*image_index, sampler_index, color_space);
+        if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
 
         const auto &src_image = scene->Images[*image_index];
         const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < scene->Samplers.size() ?
