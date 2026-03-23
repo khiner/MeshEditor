@@ -250,7 +250,9 @@ private:
 
     // Batch-process all deferred ModelsBuffer GPU operations (construction, insert, erase).
     // Called from ProcessComponentEvents before transform/state sync.
-    void SyncModelsBuffers();
+    // Returns entities that were newly inserted into GPU buffers this frame.
+    // WorldTransform is NOT written for these — callers must ensure it gets written before submit.
+    std::vector<entt::entity> SyncModelsBuffers();
 
     void SetInteractionMode(InteractionMode);
     void SetEditMode(Element mode);

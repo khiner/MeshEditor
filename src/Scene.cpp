@@ -130,39 +130,6 @@ std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entit
     if (const auto *ri = r.try_get<RenderInstance>(e)) return ri->BufferIndex;
     return {};
 }
-void UpdateModelBuffer(entt::registry &r, entt::entity e, const WorldTransform &wt) {
-    if (const auto i = GetModelBufferIndex(r, e)) {
-        const auto buffer_entity = r.get<RenderInstance>(e).Entity;
-        auto display_wt = wt;
-        if (const auto *ds = r.try_get<BoneDisplayScale>(e)) display_wt.Scale = vec3{ds->Value};
-        r.patch<ModelsBuffer>(buffer_entity, [&display_wt, i](auto &mb) { mb.Buffer.Update(as_bytes(display_wt), *i * sizeof(WorldTransform)); });
-
-        // Update joint sphere transforms for bone entities
-        if (const auto *joints = r.try_get<const BoneJointEntities>(e); joints && r.all_of<BoneDisplayScale>(e)) {
-            const float bone_length = r.get<BoneDisplayScale>(e).Value;
-            const float sphere_scale = bone_length * 0.06f;
-            // Head joint: at bone's world position
-            if (joints->Head != entt::null) {
-                if (const auto *ri = r.try_get<const RenderInstance>(joints->Head)) {
-                    const WorldTransform head_wt{wt.Position, {0, 0, 0, 1}, vec3{sphere_scale}};
-                    r.patch<ModelsBuffer>(ri->Entity, [&head_wt, ri](auto &mb) {
-                        mb.Buffer.Update(as_bytes(head_wt), ri->BufferIndex * sizeof(WorldTransform));
-                    });
-                }
-            }
-            // Tail joint: at bone's tip position (head + rotated (0, bone_length, 0))
-            if (joints->Tail != entt::null) {
-                if (const auto *ri = r.try_get<const RenderInstance>(joints->Tail)) {
-                    const vec3 tail_pos = wt.Position + glm::quat(wt.Rotation.w, wt.Rotation.x, wt.Rotation.y, wt.Rotation.z) * vec3{0, bone_length, 0};
-                    const WorldTransform tail_wt{tail_pos, {0, 0, 0, 1}, vec3{sphere_scale}};
-                    r.patch<ModelsBuffer>(ri->Entity, [&tail_wt, ri](auto &mb) {
-                        mb.Buffer.Update(as_bytes(tail_wt), ri->BufferIndex * sizeof(WorldTransform));
-                    });
-                }
-            }
-        }
-    }
-}
 } // namespace
 
 struct ExtrasWireframe {
@@ -820,7 +787,7 @@ void Scene::ApplyTimelineAction(const AnimationTimelineAction &action) {
     );
 }
 
-void Scene::SyncModelsBuffers() {
+std::vector<entt::entity> Scene::SyncModelsBuffers() {
     // Drain the new-buffer-entity tracker (consumed so it doesn't grow unbounded).
     // Construction is deferred to the show phase below — we create ModelsBuffer when we know the initial capacity.
     reactive<changes::NewBufferEntity>(R);
@@ -851,6 +818,9 @@ void Scene::SyncModelsBuffers() {
     }
 
     // Shows — batch-insert new instances into GPU buffers. Creates ModelsBuffer on first use.
+    // WorldTransform is NOT written here — only ObjectIds and InstanceStates.
+    // Callers must ensure WorldTransform is written before submit (see newly_inserted return value).
+    std::vector<entt::entity> newly_inserted;
     std::unordered_map<entt::entity, std::vector<entt::entity>> shows_by_buffer;
     for (auto entity : reactive<changes::RenderInstanceCreated>(R)) {
         if (!R.valid(entity) || !R.all_of<RenderInstance>(entity)) continue;
@@ -871,27 +841,35 @@ void Scene::SyncModelsBuffers() {
                 }
             );
         }
-        R.patch<ModelsBuffer>(buffer_entity, [&](auto &mb) {
-            // Single reserve for all pending shows.
-            const auto current_count = mb.Buffer.UsedSize / sizeof(WorldTransform);
-            const auto new_total = current_count + entities.size();
-            mb.Buffer.Reserve(new_total * sizeof(WorldTransform));
-            mb.ObjectIds.Reserve(new_total * sizeof(uint32_t));
-            mb.InstanceStates.Reserve(new_total * sizeof(uint8_t));
-            for (auto instance_entity : entities) {
-                const auto buffer_index = static_cast<uint32_t>(mb.Buffer.UsedSize / sizeof(WorldTransform));
-                R.get<RenderInstance>(instance_entity).BufferIndex = buffer_index;
-
-                const auto *wt_ptr = R.try_get<const WorldTransform>(instance_entity);
-                const WorldTransform wt = wt_ptr ? *wt_ptr : WorldTransform{}; // Joints get a placeholder; UpdateModelBuffer overwrites.
-                const auto &ri = R.get<const RenderInstance>(instance_entity);
-                const uint8_t initial_state = R.all_of<Selected>(instance_entity) ? static_cast<uint8_t>(ElementStateSelected) : uint8_t{0};
-                mb.Buffer.Insert(as_bytes(wt), mb.Buffer.UsedSize);
-                mb.ObjectIds.Insert(as_bytes(ri.ObjectId), mb.ObjectIds.UsedSize);
-                mb.InstanceStates.Insert(as_bytes(initial_state), mb.InstanceStates.UsedSize);
-            }
-        });
+        // Build contiguous arrays for ObjectIds and InstanceStates.
+        const auto n = entities.size();
+        std::vector<uint32_t> object_ids(n);
+        std::vector<uint8_t> states(n);
+        auto &mb = R.get<ModelsBuffer>(buffer_entity);
+        const auto base_index = static_cast<uint32_t>(mb.Buffer.UsedSize / sizeof(WorldTransform));
+        for (size_t j = 0; j < n; ++j) {
+            const auto instance_entity = entities[j];
+            R.get<RenderInstance>(instance_entity).BufferIndex = base_index + static_cast<uint32_t>(j);
+            object_ids[j] = R.get<const RenderInstance>(instance_entity).ObjectId;
+            uint8_t state = 0;
+            if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
+            if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
+            states[j] = state;
+        }
+        // Reserve all three sub-buffers, but only write ObjectIds and InstanceStates.
+        // WorldTransform slots are allocated (UsedSize advanced) but left unwritten —
+        // the WorldTransform reactive pass writes them before submit.
+        const auto new_total = base_index + n;
+        mb.Buffer.Reserve(new_total * sizeof(WorldTransform));
+        mb.Buffer.UsedSize = new_total * sizeof(WorldTransform);
+        mb.ObjectIds.Reserve(new_total * sizeof(uint32_t));
+        mb.InstanceStates.Reserve(new_total * sizeof(uint8_t));
+        mb.ObjectIds.Update(as_bytes(object_ids), mb.ObjectIds.UsedSize);
+        mb.InstanceStates.Update(as_bytes(states), mb.InstanceStates.UsedSize);
+        // No R.patch needed — ProcessComponentEvents handles Submit explicitly.
+        newly_inserted.insert(newly_inserted.end(), entities.begin(), entities.end());
     }
+    return newly_inserted;
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
@@ -908,7 +886,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
     }
 
-    SyncModelsBuffers(); // Runs first so BufferIndex is valid for all downstream code.
+    auto newly_inserted = SyncModelsBuffers(); // Runs first so BufferIndex is valid for all downstream code.
+    if (!newly_inserted.empty()) request(RenderRequest::Submit);
+    std::sort(newly_inserted.begin(), newly_inserted.end());
+    const auto is_newly_inserted = [&](entt::entity e) { return std::binary_search(newly_inserted.begin(), newly_inserted.end(), e); };
 
     { // Sync deferred light slot offsets (needs valid ModelsBuffer.Slot and RenderInstance.BufferIndex from SyncModelsBuffers).
         std::vector<entt::entity> synced_lights;
@@ -936,23 +917,26 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
     std::unordered_set<entt::entity> dirty_bone_state_armatures; // Armature obj entities needing bone GPU instance state sync.
-    // Helper: write instance_entity's own Selected/Active state to its GPU slot.
-    const auto update_instance_state = [&](entt::entity instance_entity) {
-        if (const auto *ri = R.try_get<RenderInstance>(instance_entity)) {
-            uint8_t state = 0;
-            if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
-            if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
-            R.patch<ModelsBuffer>(ri->Entity, [&](auto &mb) {
-                mb.InstanceStates.Update(as_bytes(state), ri->BufferIndex * sizeof(uint8_t));
-            });
-        }
-    };
 
-    { // Selected/Active instance changes - update instance state buffer
+    { // Selected/Active instance changes - batch instance state buffer writes per buffer entity.
         auto &selected_tracker = reactive<changes::Selected>(R);
         auto &active_tracker = reactive<changes::ActiveInstance>(R);
         if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
 
+        // Update GPU instance state for entities NOT already handled by SyncModelsBuffers.
+        // SyncModelsBuffers writes the full initial state (Selected+Active) for newly inserted instances,
+        // so we skip those here to avoid redundant R.patch + Update calls.
+        const auto update_instance_state = [&](entt::entity instance_entity) {
+            if (is_newly_inserted(instance_entity)) return;
+            if (const auto *ri = R.try_get<RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
+                uint8_t state = 0;
+                if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
+                if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
+                R.patch<ModelsBuffer>(ri->Entity, [&](auto &mb) {
+                    mb.InstanceStates.Update(as_bytes(state), ri->BufferIndex * sizeof(uint8_t));
+                });
+            }
+        };
         for (auto instance_entity : selected_tracker) {
             update_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
@@ -1452,10 +1436,52 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             };
             const bool bone_edit = is_edit_mode && FindArmatureObject(R, FindActiveEntity(R)) != entt::null;
             for (auto e : dirty) {
-                if (R.valid(e)) update_wt(e, !(bone_edit && R.all_of<StartTransform>(e)));
+                // Skip newly inserted entities — their WorldTransform is already correct from creation.
+                if (R.valid(e) && !is_newly_inserted(e)) update_wt(e, !(bone_edit && R.all_of<StartTransform>(e)));
             }
-            for (auto e : reactive<changes::WorldTransform>(R)) UpdateModelBuffer(R, e, R.get<const WorldTransform>(e));
-            request(RenderRequest::Submit);
+        }
+        // Write WorldTransform directly to GPU buffers — no intermediate map.
+        // The only consumer of changes::ModelsBuffer is request(Submit), handled explicitly.
+        {
+            const auto &wt_reactive = reactive<changes::WorldTransform>(R);
+            bool any_wt_written = false;
+            const auto write_wt = [&](entt::entity e) {
+                if (!R.valid(e)) return;
+                const auto *ri = R.try_get<const RenderInstance>(e);
+                if (!ri || ri->BufferIndex == UINT32_MAX) return;
+                const auto *wt = R.try_get<const WorldTransform>(e);
+                if (!wt) return;
+                auto display_wt = *wt;
+                if (const auto *ds = R.try_get<BoneDisplayScale>(e)) display_wt.Scale = vec3{ds->Value};
+                R.get<ModelsBuffer>(ri->Entity).Buffer.Update(as_bytes(display_wt), ri->BufferIndex * sizeof(WorldTransform));
+                any_wt_written = true;
+                // Bone joint sphere transforms (head and tail).
+                if (const auto *joints = R.try_get<const BoneJointEntities>(e); joints && R.all_of<BoneDisplayScale>(e)) {
+                    const auto &wt = R.get<const WorldTransform>(e);
+                    const float bone_length = R.get<BoneDisplayScale>(e).Value;
+                    const float sphere_scale = bone_length * 0.06f;
+                    if (joints->Head != entt::null) {
+                        if (const auto *jri = R.try_get<const RenderInstance>(joints->Head)) {
+                            const WorldTransform head_wt{wt.Position, {0, 0, 0, 1}, vec3{sphere_scale}};
+                            R.get<ModelsBuffer>(jri->Entity).Buffer.Update(as_bytes(head_wt), jri->BufferIndex * sizeof(WorldTransform));
+                        }
+                    }
+                    if (joints->Tail != entt::null) {
+                        if (const auto *jri = R.try_get<const RenderInstance>(joints->Tail)) {
+                            const vec3 tail_pos = wt.Position + glm::quat(wt.Rotation.w, wt.Rotation.x, wt.Rotation.y, wt.Rotation.z) * vec3{0, bone_length, 0};
+                            const WorldTransform tail_wt{tail_pos, {0, 0, 0, 1}, vec3{sphere_scale}};
+                            R.get<ModelsBuffer>(jri->Entity).Buffer.Update(as_bytes(tail_wt), jri->BufferIndex * sizeof(WorldTransform));
+                        }
+                    }
+                }
+            };
+            for (auto e : wt_reactive) write_wt(e);
+            // Newly inserted entities whose WorldTransform wasn't already in the reactive set
+            // (e.g., visibility toggled on without a Transform change).
+            for (auto e : newly_inserted) {
+                if (!wt_reactive.contains(e)) write_wt(e);
+            }
+            if (any_wt_written) request(RenderRequest::Submit);
         }
     }
     if (SavedViewCamera) {
