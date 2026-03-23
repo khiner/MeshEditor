@@ -185,15 +185,11 @@ struct VulkanContext {
         if (qfp_find_graphics_it == qfp.end()) throw std::runtime_error("No graphics queue family found.");
 
         QueueFamily = distance(qfp.begin(), qfp_find_graphics_it);
-        if (!PhysicalDevice.getFeatures().fillModeNonSolid) {
-            throw std::runtime_error("`fillModeNonSolid` is not supported, but is needed for line rendering.");
-        }
         if (!PhysicalDevice.getFeatures().multiDrawIndirect) {
             throw std::runtime_error("`multiDrawIndirect` is not supported, but is needed for MDI submission.");
         }
 
         vk::PhysicalDeviceFeatures device_features{};
-        device_features.fillModeNonSolid = VK_TRUE;
         device_features.multiDrawIndirect = VK_TRUE;
         device_features.fragmentStoresAndAtomics = VK_TRUE; // For writing to storage buffers from fragment shaders
         device_features.independentBlend = VK_TRUE; // For different blend states per color attachment (line AA)

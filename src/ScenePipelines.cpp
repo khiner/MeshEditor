@@ -167,7 +167,7 @@ static PipelineRenderer CreateMainRenderer(
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "VertexTransform.vert", {{1, 1u}}}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
-            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
             {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
@@ -176,7 +176,7 @@ static PipelineRenderer CreateMainRenderer(
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "ObjectExtras.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
-            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
             {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
@@ -185,7 +185,7 @@ static PipelineRenderer CreateMainRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert", {{0, uint32_t(overlay_kind)}, {1, 1u}}},
               {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
-            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
             {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
         );
     };
@@ -258,7 +258,7 @@ static PipelineRenderer CreateMainRenderer(
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "BoneWire.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
-            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
             {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
@@ -276,7 +276,7 @@ static PipelineRenderer CreateMainRenderer(
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "BoneSphereWire.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
-            vk::PolygonMode::eLine, vk::PrimitiveTopology::eLineList,
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
             {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
