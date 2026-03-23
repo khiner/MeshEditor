@@ -210,40 +210,40 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
 std::optional<MeshData> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
     const char *create_label = is_create ? "Add" : "Update";
     if (type == PrimitiveType::Rect) {
-        static vec2 size{1, 1};
+        static vec2 size{2, 2};
         InputFloat2("Size", &size.x);
         if (Button(create_label)) return primitive::Rect(size / 2.f);
     } else if (type == PrimitiveType::Circle) {
-        static float r = 0.5;
+        static float r{1};
         InputFloat("Radius", &r);
         if (Button(create_label)) return primitive::Circle(r);
     } else if (type == PrimitiveType::Cube) {
-        static vec3 size{1.0, 1.0, 1.0};
+        static vec3 size{2, 2, 2};
         InputFloat3("Size", &size.x);
         if (Button(create_label)) return primitive::Cuboid(size / 2.f);
     } else if (type == PrimitiveType::IcoSphere) {
-        static float r = 0.5;
+        static float r{1};
         static int subdivisions = 3;
         InputFloat("Radius", &r);
         InputInt("Subdivisions", &subdivisions);
         if (Button(create_label)) return primitive::IcoSphere(r, uint(subdivisions));
     } else if (type == PrimitiveType::UVSphere) {
-        static float r = 0.5;
+        static float r{1};
         InputFloat("Radius", &r);
         if (Button(create_label)) return primitive::UVSphere(r);
     } else if (type == PrimitiveType::Torus) {
-        static vec2 radii{0.5, 0.2};
-        static glm::ivec2 n_segments = {32, 16};
+        static vec2 radii{1, 0.5};
+        static glm::ivec2 n_segments{32, 16};
         InputFloat2("Major/minor radius", &radii.x);
         InputInt2("Major/minor segments", &n_segments.x);
         if (Button(create_label)) return primitive::Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
     } else if (type == PrimitiveType::Cylinder) {
-        static float r = 1, h = 1;
+        static float r{1}, h{2};
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
         if (Button(create_label)) return primitive::Cylinder(r, h);
     } else if (type == PrimitiveType::Cone) {
-        static float r = 1, h = 1;
+        static float r{1}, h{2};
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
         if (Button(create_label)) return primitive::Cone(r, h);

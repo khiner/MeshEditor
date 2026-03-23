@@ -10,7 +10,7 @@
 namespace primitive {
 using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
-inline MeshData Rect(vec2 half_extents = {0.5, 0.5}) {
+inline MeshData Rect(vec2 half_extents = {1, 1}) {
     const auto x = half_extents.x, y = half_extents.y;
     return {
         {{-x, -y, 0}, {x, -y, 0}, {x, y, 0}, {-x, y, 0}},
@@ -18,7 +18,7 @@ inline MeshData Rect(vec2 half_extents = {0.5, 0.5}) {
     };
 }
 
-inline MeshData Circle(float radius = 0.5, uint n = 32) {
+inline MeshData Circle(float radius = 1, uint n = 32) {
     std::vector vertices =
         iota_view{0u, n} |
         transform([radius, n](uint i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
@@ -31,7 +31,7 @@ inline MeshData Circle(float radius = 0.5, uint n = 32) {
     };
 }
 
-inline MeshData Cuboid(vec3 half_extents = {0.5, 0.5, 0.5}) {
+inline MeshData Cuboid(vec3 half_extents = {1, 1, 1}) {
     const auto x = half_extents.x, y = half_extents.y, z = half_extents.z;
     return {
         {
@@ -55,7 +55,7 @@ inline MeshData Cuboid(vec3 half_extents = {0.5, 0.5, 0.5}) {
     };
 }
 
-inline MeshData IcoSphere(float radius = 0.5, uint recursion_level = 3) {
+inline MeshData IcoSphere(float radius = 1, uint recursion_level = 3) {
     static const float t = (1.f + sqrt(5.f)) / 2.f;
     // clang-format off
     std::vector<vec3> vertices{
@@ -101,7 +101,7 @@ inline MeshData IcoSphere(float radius = 0.5, uint recursion_level = 3) {
     return {std::move(vertices), std::move(indices)};
 }
 
-inline MeshData UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks = 16) {
+inline MeshData UVSphere(float radius = 1, uint n_slices = 32, uint n_stacks = 16) {
     std::vector<vec3> vertices;
     vertices.reserve(2 + n_slices * (n_stacks - 2)); // +/- 2 for the poles
     vertices.emplace_back(0, radius, 0); // Top pole
@@ -144,7 +144,7 @@ inline MeshData UVSphere(float radius = 0.5, uint n_slices = 32, uint n_stacks =
     return {std::move(vertices), std::move(indices)};
 }
 
-inline MeshData Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n_major = 32, uint n_minor = 16) {
+inline MeshData Torus(float major_radius = 1, float minor_radius = 0.5, uint n_major = 32, uint n_minor = 16) {
     std::vector<vec3> vertices;
     vertices.reserve(n_major * n_minor);
     for (uint i = 0; i < n_major; ++i) {
@@ -173,7 +173,7 @@ inline MeshData Torus(float major_radius = 0.5, float minor_radius = 0.2, uint n
     return {std::move(vertices), std::move(indices)};
 }
 
-inline MeshData Cylinder(float radius = 0.5, float height = 1, uint slices = 32) {
+inline MeshData Cylinder(float radius = 1, float height = 2, uint slices = 32) {
     std::vector<vec3> vertices(2 * slices);
     for (uint i = 0; i < slices; i++) {
         const float a = 2.f * i / slices;
@@ -202,7 +202,7 @@ inline MeshData Cylinder(float radius = 0.5, float height = 1, uint slices = 32)
     return {std::move(vertices), std::move(faces)};
 }
 
-inline MeshData Cone(float radius = 0.5, float height = 1, uint slices = 32) {
+inline MeshData Cone(float radius = 1, float height = 2, uint slices = 32) {
     std::vector vertices =
         iota_view{0u, slices} | transform([&](uint i) {
             return vec3{radius * __cospi(2.f * i / slices), -height / 2, radius * __sinpi(2.f * i / slices)};
@@ -240,16 +240,12 @@ inline BoneOctahedronData BoneOctahedron(float length = 1.0f) {
     };
 
     // 8 triangles: bottom 4 + top 4 (Blender's bone_octahedral_solid_tris)
+    // clang-format off
     constexpr std::array<std::array<uint32_t, 3>, 8> tris{{
-        {2, 1, 0},
-        {3, 2, 0},
-        {4, 3, 0},
-        {1, 4, 0}, // bottom
-        {5, 1, 2},
-        {5, 2, 3},
-        {5, 3, 4},
-        {5, 4, 1}, // top
+        {2, 1, 0}, {3, 2, 0}, {4, 3, 0}, {1, 4, 0}, // bottom
+        {5, 1, 2}, {5, 2, 3}, {5, 3, 4}, {5, 4, 1}, // top
     }};
+    // clang-format on
 
     // Per-face normals (Blender's bone_octahedral_solid_normals)
     constexpr float Rsqrt2 = 0.7071068f; // 1/sqrt(2)
@@ -288,59 +284,25 @@ inline BoneOctahedronData BoneOctahedron(float length = 1.0f) {
     // adj_right: vertex where face cycle goes edge_v0 → edge_v1 → adj_right
     // This ensures cross(adj_left - edge_v0, edge_v1 - edge_v0) gives outward-pointing normals.
     // Derived from face table: {2,1,0},{3,2,0},{4,3,0},{1,4,0},{5,1,2},{5,2,3},{5,3,4},{5,4,1}
+    // clang-format off
     const std::vector<uint32_t> adjacency{
         // Mid-ring edges
-        0,
-        1,
-        2,
-        5, // edge 1-2: f0 cycle 0→2→1→0 has 1→0→2, f4 cycle has 1→2→5
-        0,
-        2,
-        3,
-        5, // edge 2-3: f1 cycle has 2→0→3, f5 cycle has 2→3→5
-        0,
-        3,
-        4,
-        5, // edge 3-4: f2 cycle has 3→0→4, f6 cycle has 3→4→5
-        0,
-        4,
-        1,
-        5, // edge 4-1: f3 cycle has 4→0→1, f7 cycle has 4→1→5
+        0, 1, 2, 5, // edge 1-2: f0 cycle 0→2→1→0 has 1→0→2, f4 cycle has 1→2→5
+        0, 2, 3, 5, // edge 2-3: f1 cycle has 2→0→3, f5 cycle has 2→3→5
+        0, 3, 4, 5, // edge 3-4: f2 cycle has 3→0→4, f6 cycle has 3→4→5
+        0, 4, 1, 5, // edge 4-1: f3 cycle has 4→0→1, f7 cycle has 4→1→5
         // Head edges (from vertex 0)
-        2,
-        0,
-        1,
-        4, // edge 0-1: f0 cycle has 0→2→1, f3 cycle has 0→1→4
-        3,
-        0,
-        2,
-        1, // edge 0-2: f1 cycle has 0→3→2, f0 cycle has 0→2→1
-        4,
-        0,
-        3,
-        2, // edge 0-3: f2 cycle has 0→4→3, f1 cycle has 0→3→2
-        1,
-        0,
-        4,
-        3, // edge 0-4: f3 cycle has 0→1→4, f2 cycle has 0→4→3
+        2, 0, 1, 4, // edge 0-1: f0 cycle has 0→2→1, f3 cycle has 0→1→4
+        3, 0, 2, 1, // edge 0-2: f1 cycle has 0→3→2, f0 cycle has 0→2→1
+        4, 0, 3, 2, // edge 0-3: f2 cycle has 0→4→3, f1 cycle has 0→3→2
+        1, 0, 4, 3, // edge 0-4: f3 cycle has 0→1→4, f2 cycle has 0→4→3
         // Tail edges (from vertex 5)
-        4,
-        5,
-        1,
-        2, // edge 5-1: f7 cycle has 5→4→1, f4 cycle has 5→1→2
-        1,
-        5,
-        2,
-        3, // edge 5-2: f4 cycle has 5→1→2, f5 cycle has 5→2→3
-        2,
-        5,
-        3,
-        4, // edge 5-3: f5 cycle has 5→2→3, f6 cycle has 5→3→4
-        3,
-        5,
-        4,
-        1, // edge 5-4: f6 cycle has 5→3→4, f7 cycle has 5→4→1
+        4, 5, 1, 2, // edge 5-1: f7 cycle has 5→4→1, f4 cycle has 5→1→2
+        1, 5, 2, 3, // edge 5-2: f4 cycle has 5→1→2, f5 cycle has 5→2→3
+        2, 5, 3, 4, // edge 5-3: f5 cycle has 5→2→3, f6 cycle has 5→3→4
+        3, 5, 4, 1, // edge 5-4: f6 cycle has 5→3→4, f7 cycle has 5→4→1
     };
+    // clang-format on
 
     MeshVertexAttributes attrs;
     attrs.Normals = std::move(normals);
