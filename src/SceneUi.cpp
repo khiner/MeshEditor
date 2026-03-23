@@ -1753,7 +1753,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
         if (changed) {
-            Buffers->SetLight(R.get<const LightIndex>(active_entity).Value, light);
+            R.emplace_or_replace<PunctualLight>(active_entity, light);
             R.emplace_or_replace<SubmitDirty>(active_entity);
         }
         if (wireframe_changed) R.emplace_or_replace<LightWireframeDirty>(active_entity);

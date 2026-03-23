@@ -34,7 +34,7 @@ void main() {
 
     vec4 final_color = wire_color;
     if (is_selected) final_color = vec4(ViewportTheme.Colors.ObjectSelected, 1.0);
-    if (is_active) final_color = vec4(ViewportTheme.Colors.ObjectActive, 1.0);
+    if (is_selected && is_active) final_color = vec4(ViewportTheme.Colors.ObjectActive, 1.0);
 
     // Ground line/diamond: fixed theme color, unaffected by selection state.
     if (GetVertexClass(draw, idx) == VCLASS_GROUNDPOINT) {

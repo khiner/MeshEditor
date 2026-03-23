@@ -137,8 +137,7 @@ struct BoneAttachment {
 struct ArmaturePoseState {
     std::vector<Transform> BonePoseDelta; // Animation delta from rest (identity = at rest). Persistent across frames.
     std::vector<Transform> BoneUserOffset; // Additive user offset per bone (identity = no offset). Applied on top of animation.
-    Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena
-    bool Dirty{true};
+    Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena. Count == 0 means not yet allocated.
 };
 
 // Component on armature data entities with animation data.

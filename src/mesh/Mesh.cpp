@@ -210,48 +210,42 @@ bool Mesh::EdgeBelongsToFace(EH eh, FH fh) const {
     return eh && fh && any_of(fh_range(fh), [&](const auto &heh) { return GetEdge(heh) == eh; });
 }
 
-std::vector<uint> Mesh::CreateTriangleIndices() const {
-    std::vector<uint> indices;
+void Mesh::WriteTriangleIndices(std::span<uint> dest) const {
+    uint i = 0;
     for (const auto fh : faces()) {
         auto fv_it = cfv_iter(fh);
         const auto v0 = *fv_it++;
         VH v1 = *fv_it++, v2;
         for (; fv_it; ++fv_it) {
             v2 = *fv_it;
-            indices.insert(indices.end(), {*v0, *v1, *v2});
+            dest[i++] = *v0;
+            dest[i++] = *v1;
+            dest[i++] = *v2;
             v1 = v2;
         }
     }
+}
+
+std::vector<uint> Mesh::CreateTriangleIndices() const {
+    uint count = 0;
+    for (const auto fh : faces()) count += (GetValence(fh) - 2) * 3;
+    std::vector<uint> indices(count);
+    WriteTriangleIndices(indices);
     return indices;
 }
 
-std::vector<uint> Mesh::CreateTriangulatedFaceIndices() const {
-    std::vector<uint> indices;
-    uint index = 0;
-    for (const auto fh : faces()) {
-        const auto valence = GetValence(fh);
-        for (uint i = 0; i < valence - 2; ++i) {
-            indices.insert(indices.end(), {index, index + i + 1, index + i + 2});
-        }
-        index += valence;
-    }
-    return indices;
-}
-
-std::vector<uint> Mesh::CreateEdgeIndices() const {
-    std::vector<uint> indices;
-    indices.reserve(EdgeCount() * 2);
+void Mesh::WriteEdgeIndices(std::span<uint> dest) const {
+    uint i = 0;
     for (uint ei = 0; ei < EdgeCount(); ++ei) {
         const auto heh = GetHalfedge(EH{ei}, 0);
         const auto v_from = GetFromVertex(heh);
         const auto v_to = GetToVertex(heh);
         if (!v_from || !v_to) {
-            indices.emplace_back(0);
-            indices.emplace_back(0);
+            dest[i++] = 0;
+            dest[i++] = 0;
             continue;
         }
-        indices.emplace_back(*v_from);
-        indices.emplace_back(*v_to);
+        dest[i++] = *v_from;
+        dest[i++] = *v_to;
     }
-    return indices;
 }

@@ -27,7 +27,7 @@ vec3 bone_wire_color(uint instance_state) {
         if (is_selected) return ViewportTheme.Colors.BonePose;
         return ViewportTheme.Colors.Wire;
     }
-    if (is_active) return ViewportTheme.Colors.ObjectActive;
+    if (is_selected && is_active) return ViewportTheme.Colors.ObjectActive;
     if (is_selected) return ViewportTheme.Colors.ObjectSelected;
     return ViewportTheme.Colors.Wire;
 }

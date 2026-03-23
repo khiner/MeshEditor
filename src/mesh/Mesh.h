@@ -73,9 +73,9 @@ struct Mesh {
     bool VertexBelongsToFaceEdge(VH, FH, EH) const;
     bool EdgeBelongsToFace(EH, FH) const;
 
-    std::vector<uint> CreateTriangleIndices() const; // Triangulated face indices
-    std::vector<uint> CreateTriangulatedFaceIndices() const; // Triangle fan for each face
-    std::vector<uint> CreateEdgeIndices() const; // Edge line segment indices
+    std::vector<uint> CreateTriangleIndices() const; // Allocates + returns triangulated face indices
+    void WriteTriangleIndices(std::span<uint> dest) const; // Write triangulated face indices into dest
+    void WriteEdgeIndices(std::span<uint> dest) const; // Write edge line segment indices into dest
 
     // Iterators
     struct VertexIterator {

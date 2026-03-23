@@ -37,6 +37,10 @@ struct MeshPrimitives;
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
 
+    // Pre-reserve internal GPU arenas to avoid repeated reallocations during bulk CreateMesh calls.
+    // Counts are *additional* elements beyond current usage.
+    void ReserveForBulkCreate(uint32_t additional_vertices, uint32_t additional_faces, uint32_t additional_triangles, uint32_t additional_bone_deform_vertices, uint32_t additional_morph_target_entries);
+
     Mesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     Mesh CloneMesh(const Mesh &);
     std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &);

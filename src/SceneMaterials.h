@@ -20,6 +20,7 @@ PBRMaterial &GetMaterial(SceneBuffers &, uint32_t index);
 void SetMaterial(SceneBuffers &, uint32_t index, const PBRMaterial &);
 uint32_t AppendMaterial(SceneBuffers &, const PBRMaterial &);
 void SetMaterialCount(SceneBuffers &, uint32_t count);
+void ReserveMaterials(SceneBuffers &, uint32_t count);
 
 // Buffer context and arena accessors (SceneBuffers* only needs to be declared, not complete).
 namespace mvk {
@@ -27,6 +28,8 @@ struct BufferContext;
 }
 mvk::BufferContext &GetBufferCtx(SceneBuffers *);
 Range AllocateArmatureDeform(SceneBuffers *, uint32_t count);
+void ReserveArmatureDeform(SceneBuffers *, uint32_t additional);
 std::span<mat4> GetArmatureDeformMutable(SceneBuffers *, Range);
 Range AllocateMorphWeights(SceneBuffers *, uint32_t count);
+void ReserveMorphWeights(SceneBuffers *, uint32_t additional);
 std::span<float> GetMorphWeightsMutable(SceneBuffers *, Range);

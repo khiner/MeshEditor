@@ -380,26 +380,6 @@ std::pair<MeshData, MeshVertexAttributes> DeduplicateVertices(MeshData &&mesh, M
     return {std::move(deduped), std::move(deduped_attrs)};
 }
 
-std::vector<uint32_t> CreateFaceElementIds(const std::vector<std::vector<uint32_t>> &faces) {
-    uint32_t triangle_count{0};
-    for (const auto &face : faces) triangle_count += face.size() - 2;
-
-    std::vector<uint32_t> ids;
-    ids.reserve(triangle_count);
-    // Assign the same 1-indexed face ID to each of the face's triangles.
-    for (uint32_t fi = 0; fi < faces.size(); ++fi) ids.insert(ids.end(), faces[fi].size() - 2, fi + 1);
-    return ids;
-}
-
-std::vector<uint32_t> CreateFaceFirstTriIndices(const std::vector<std::vector<uint32_t>> &faces) {
-    std::vector<uint32_t> first_tris(faces.size());
-    uint32_t tri_offset = 0;
-    for (uint32_t fi = 0; fi < faces.size(); ++fi) {
-        first_tris[fi] = tri_offset;
-        tri_offset += faces[fi].size() - 2;
-    }
-    return first_tris;
-}
 } // namespace
 
 MeshStore::MeshStore(mvk::BufferContext &ctx)
@@ -466,6 +446,27 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
     return {id, vertices};
 }
 
+void MeshStore::ReserveForBulkCreate(uint32_t additional_vertices, uint32_t additional_faces, uint32_t additional_triangles, uint32_t additional_bone_deform_vertices, uint32_t additional_morph_target_entries) {
+    if (additional_vertices > 0) {
+        VerticesBuffer.Buffer.Reserve(VerticesBuffer.Buffer.UsedSize + vk::DeviceSize(additional_vertices) * sizeof(Vertex));
+        VertexStateBuffer.Reserve(VertexStateBuffer.UsedSize + vk::DeviceSize(additional_vertices) * sizeof(uint8_t));
+    }
+    if (additional_faces > 0) {
+        FaceFirstTriangleBuffer.Buffer.Reserve(FaceFirstTriangleBuffer.Buffer.UsedSize + vk::DeviceSize(additional_faces) * sizeof(uint32_t));
+        FacePrimitiveBuffer.Buffer.Reserve(FacePrimitiveBuffer.Buffer.UsedSize + vk::DeviceSize(additional_faces) * sizeof(uint32_t));
+        FaceStateBuffer.Reserve(FaceStateBuffer.UsedSize + vk::DeviceSize(additional_faces) * sizeof(uint8_t));
+    }
+    if (additional_triangles > 0) {
+        TriangleFaceIdBuffer.Buffer.Reserve(TriangleFaceIdBuffer.Buffer.UsedSize + vk::DeviceSize(additional_triangles) * sizeof(uint32_t));
+    }
+    if (additional_bone_deform_vertices > 0) {
+        BoneDeformBuffer.Buffer.Reserve(BoneDeformBuffer.Buffer.UsedSize + vk::DeviceSize(additional_bone_deform_vertices) * sizeof(BoneDeformVertex));
+    }
+    if (additional_morph_target_entries > 0) {
+        MorphTargetBuffer.Buffer.Reserve(MorphTargetBuffer.Buffer.UsedSize + vk::DeviceSize(additional_morph_target_entries) * sizeof(MorphTargetVertex));
+    }
+}
+
 Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
     const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
     auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
@@ -495,21 +496,45 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
     }
 
     if (!data.Faces.empty()) {
-        const auto first_tris = CreateFaceFirstTriIndices(data.Faces);
-        entry.FaceData = AllocateFaces(data.Faces.size());
-        std::ranges::copy(first_tris, FaceFirstTriangleBuffer.GetMutable(entry.FaceData).begin());
-        entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(CreateFaceElementIds(data.Faces));
+        const auto face_count = static_cast<uint32_t>(data.Faces.size());
 
-        std::vector<uint32_t> face_primitive_indices(data.Faces.size(), 0u);
-        if (!primitives.FacePrimitiveIndices.empty()) face_primitive_indices = std::move(primitives.FacePrimitiveIndices);
-        entry.FacePrimitives = FacePrimitiveBuffer.Allocate(face_primitive_indices);
+        // Write face-first-triangle offsets directly into GPU buffer.
+        entry.FaceData = AllocateFaces(face_count);
+        auto first_tri_span = FaceFirstTriangleBuffer.GetMutable(entry.FaceData);
+        uint32_t tri_offset = 0;
+        for (uint32_t fi = 0; fi < face_count; ++fi) {
+            first_tri_span[fi] = tri_offset;
+            tri_offset += data.Faces[fi].size() - 2;
+        }
+
+        // Write triangle-to-face IDs directly into GPU buffer.
+        entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(tri_offset);
+        auto tri_face_span = TriangleFaceIdBuffer.GetMutable(entry.TriangleFaceIds);
+        uint32_t ti = 0;
+        for (uint32_t fi = 0; fi < face_count; ++fi) {
+            const auto n_tris = data.Faces[fi].size() - 2;
+            for (size_t t = 0; t < n_tris; ++t) tri_face_span[ti++] = fi + 1;
+        }
+
+        // Write face-to-primitive mapping directly into GPU buffer.
+        entry.FacePrimitives = FacePrimitiveBuffer.Allocate(face_count);
+        auto fp_span = FacePrimitiveBuffer.GetMutable(entry.FacePrimitives);
+        if (!primitives.FacePrimitiveIndices.empty()) {
+            std::ranges::copy(primitives.FacePrimitiveIndices, fp_span.begin());
+        } else {
+            std::ranges::fill(fp_span, 0u);
+        }
 
         const auto primitive_count = !primitives.MaterialIndices.empty() ?
-            (face_primitive_indices.empty() ? 0u : *std::ranges::max_element(face_primitive_indices) + 1u) :
+            (primitives.FacePrimitiveIndices.empty() ? 1u : *std::ranges::max_element(primitives.FacePrimitiveIndices) + 1u) :
             1u;
-        std::vector<uint32_t> primitive_material_indices(primitive_count, 0u);
-        if (!primitives.MaterialIndices.empty()) primitive_material_indices = std::move(primitives.MaterialIndices);
-        entry.PrimitiveMaterials = PrimitiveMaterialBuffer.Allocate(primitive_material_indices);
+        entry.PrimitiveMaterials = PrimitiveMaterialBuffer.Allocate(primitive_count);
+        auto pm_span = PrimitiveMaterialBuffer.GetMutable(entry.PrimitiveMaterials);
+        if (!primitives.MaterialIndices.empty()) {
+            std::ranges::copy(primitives.MaterialIndices, pm_span.begin());
+        } else {
+            std::ranges::fill(pm_span, 0u);
+        }
     }
 
     auto mesh = [&]() -> Mesh {

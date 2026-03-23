@@ -55,7 +55,6 @@ struct ObjectCreateInfo {
     MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
 };
 
-struct ExtrasWireframe;
 struct Mesh;
 struct MeshData;
 struct MeshStore;
@@ -250,9 +249,12 @@ private:
 
     // Batch-process all deferred ModelsBuffer GPU operations (construction, insert, erase).
     // Called from ProcessComponentEvents before transform/state sync.
-    // Returns entities that were newly inserted into GPU buffers this frame.
-    // WorldTransform is NOT written for these — callers must ensure it gets written before submit.
-    std::vector<entt::entity> SyncModelsBuffers();
+    struct SyncResult {
+        std::vector<entt::entity> NewlyInserted; // Entities inserted into GPU buffers — callers must write their WorldTransform before submit.
+        std::vector<entt::entity> NewMeshEntities; // Mesh entities needing deferred index buffer creation.
+        std::vector<entt::entity> NewExtrasEntities; // Non-mesh buffer entities (extras/bone/joint) needing deferred index creation.
+    };
+    SyncResult SyncModelsBuffers();
 
     void SetInteractionMode(InteractionMode);
     void SetEditMode(Element mode);
@@ -273,8 +275,8 @@ private:
     std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 
     void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);
-    entt::entity CreateExtrasBufferEntity(ExtrasWireframe &&);
-    entt::entity CreateExtrasObject(ExtrasWireframe &&, ObjectType, ObjectCreateInfo, const std::string &default_name);
+    entt::entity CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});
+    entt::entity CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType, ObjectCreateInfo, const std::string &default_name);
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.

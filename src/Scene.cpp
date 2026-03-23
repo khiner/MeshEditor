@@ -91,7 +91,6 @@ vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent) {
 #include "scene_impl/SceneTransformUtils.h"
 
 namespace {
-std::vector<uint> CreateVertexIndices(const Mesh &mesh) { return iota(0u, mesh.VertexCount()) | to<std::vector>(); }
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     if (element == Element::None || element == Element::Edge) return {};
     const auto n = element == Element::Face ? mesh.FaceCount() : mesh.VertexCount();
@@ -481,11 +480,14 @@ void SetMaterialCount(SceneBuffers &buffers, uint32_t count) {
     buffers.MaterialBuffer.Reserve(vk::DeviceSize(count) * sizeof(PBRMaterial));
     buffers.MaterialBuffer.UsedSize = vk::DeviceSize(count) * sizeof(PBRMaterial);
 }
+void ReserveMaterials(SceneBuffers &buffers, uint32_t count) { buffers.MaterialBuffer.Reserve(vk::DeviceSize(count) * sizeof(PBRMaterial)); }
 
 mvk::BufferContext &GetBufferCtx(SceneBuffers *b) { return b->Ctx; }
 Range AllocateArmatureDeform(SceneBuffers *b, uint32_t count) { return b->ArmatureDeformBuffer.Allocate(count); }
+void ReserveArmatureDeform(SceneBuffers *b, uint32_t additional) { b->ArmatureDeformBuffer.Buffer.Reserve(b->ArmatureDeformBuffer.Buffer.UsedSize + vk::DeviceSize(additional) * sizeof(mat4)); }
 std::span<mat4> GetArmatureDeformMutable(SceneBuffers *b, Range r) { return b->ArmatureDeformBuffer.GetMutable(r); }
 Range AllocateMorphWeights(SceneBuffers *b, uint32_t count) { return b->MorphWeightBuffer.Allocate(count); }
+void ReserveMorphWeights(SceneBuffers *b, uint32_t additional) { b->MorphWeightBuffer.Buffer.Reserve(b->MorphWeightBuffer.Buffer.UsedSize + vk::DeviceSize(additional) * sizeof(float)); }
 std::span<float> GetMorphWeightsMutable(SceneBuffers *b, Range r) { return b->MorphWeightBuffer.GetMutable(r); }
 
 struct Scene::SelectionSlotHandles {
@@ -787,10 +789,15 @@ void Scene::ApplyTimelineAction(const AnimationTimelineAction &action) {
     );
 }
 
-std::vector<entt::entity> Scene::SyncModelsBuffers() {
-    // Drain the new-buffer-entity tracker (consumed so it doesn't grow unbounded).
-    // Construction is deferred to the show phase below — we create ModelsBuffer when we know the initial capacity.
-    reactive<changes::NewBufferEntity>(R);
+Scene::SyncResult Scene::SyncModelsBuffers() {
+    // Consume the new-buffer-entity tracker. Categorize by type for deferred index buffer creation.
+    std::vector<entt::entity> new_mesh_entities, new_extras_entities;
+    for (auto e : reactive<changes::NewBufferEntity>(R)) {
+        if (!R.valid(e) || !R.all_of<MeshBuffers>(e)) continue;
+        if (R.all_of<Mesh>(e)) new_mesh_entities.push_back(e);
+        else if (R.all_of<ObjectExtrasTag>(e) || R.all_of<ArmatureObject>(e) || R.all_of<BoneJoint>(e))
+            new_extras_entities.push_back(e);
+    }
 
     // Hides — batch-erase removed instances from GPU buffers.
     for (auto [buffer_entity, pending] : R.view<PendingHide>().each()) {
@@ -869,7 +876,7 @@ std::vector<entt::entity> Scene::SyncModelsBuffers() {
         // No R.patch needed — ProcessComponentEvents handles Submit explicitly.
         newly_inserted.insert(newly_inserted.end(), entities.begin(), entities.end());
     }
-    return newly_inserted;
+    return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities)};
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
@@ -886,10 +893,157 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
     }
 
-    auto newly_inserted = SyncModelsBuffers(); // Runs first so BufferIndex is valid for all downstream code.
-    if (!newly_inserted.empty()) request(RenderRequest::Submit);
-    std::sort(newly_inserted.begin(), newly_inserted.end());
-    const auto is_newly_inserted = [&](entt::entity e) { return std::binary_search(newly_inserted.begin(), newly_inserted.end(), e); };
+    auto sync = SyncModelsBuffers(); // Runs first so BufferIndex is valid for all downstream code.
+    if (!sync.NewlyInserted.empty()) request(RenderRequest::Submit);
+    std::sort(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
+    const auto is_newly_inserted = [&](entt::entity e) { return std::binary_search(sync.NewlyInserted.begin(), sync.NewlyInserted.end(), e); };
+
+    // Deferred ArmatureDeform allocation for newly created ArmaturePoseState (GpuDeformRange.Count == 0).
+    // Two-pass: count total joints, single Reserve, then per-armature Allocate + ComputeDeformMatrices.
+    {
+        uint32_t total_joints = 0;
+        std::vector<entt::entity> pending_armatures; // armature data entities
+        for (const auto [arm_obj_entity, arm_obj_comp] : R.view<const ArmatureObject>().each()) {
+            auto *pose_state = R.try_get<ArmaturePoseState>(arm_obj_comp.Entity);
+            if (!pose_state || pose_state->GpuDeformRange.Count > 0) continue;
+            const auto *armature = R.try_get<const Armature>(arm_obj_comp.Entity);
+            if (!armature || !armature->ImportedSkin) continue;
+            total_joints += armature->ImportedSkin->OrderedJointNodeIndices.size();
+            pending_armatures.push_back(arm_obj_comp.Entity);
+        }
+        if (total_joints > 0) ReserveArmatureDeform(Buffers.get(), total_joints);
+        for (const auto arm_data_entity : pending_armatures) {
+            auto &pose_state = R.get<ArmaturePoseState>(arm_data_entity);
+            const auto &armature = R.get<const Armature>(arm_data_entity);
+            pose_state.GpuDeformRange = AllocateArmatureDeform(Buffers.get(), armature.ImportedSkin->OrderedJointNodeIndices.size());
+            ComputeDeformMatrices(
+                armature, pose_state.BonePoseDelta, pose_state.BoneUserOffset,
+                armature.ImportedSkin->InverseBindMatrices,
+                GetArmatureDeformMutable(Buffers.get(), pose_state.GpuDeformRange)
+            );
+        }
+        if (!pending_armatures.empty()) request(RenderRequest::ReRecord);
+    }
+
+    // Deferred MorphWeights allocation for newly created MorphWeightState (GpuWeightRange.Count == 0).
+    // Two-pass: count total weights, single Reserve, then per-instance Allocate + copy.
+    {
+        uint32_t total_weights = 0;
+        std::vector<entt::entity> pending_morphs;
+        for (auto [entity, morph_state] : R.view<MorphWeightState>().each()) {
+            if (morph_state.GpuWeightRange.Count > 0 || morph_state.Weights.empty()) continue;
+            total_weights += morph_state.Weights.size();
+            pending_morphs.push_back(entity);
+        }
+        if (total_weights > 0) ReserveMorphWeights(Buffers.get(), total_weights);
+        for (const auto entity : pending_morphs) {
+            auto &morph_state = R.get<MorphWeightState>(entity);
+            morph_state.GpuWeightRange = AllocateMorphWeights(Buffers.get(), morph_state.Weights.size());
+            auto gpu_weights = GetMorphWeightsMutable(Buffers.get(), morph_state.GpuWeightRange);
+            std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
+        }
+        if (!pending_morphs.empty()) request(RenderRequest::ReRecord);
+    }
+
+    // Deferred index buffer creation for new mesh entities.
+    // Pass 1: count total indices from mesh topology (cheap, no allocations).
+    // Pass 2: write directly into GPU-mapped memory (zero temporary allocations).
+    if (!sync.NewMeshEntities.empty()) {
+        uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
+        for (auto entity : sync.NewMeshEntities) {
+            const auto &mesh = R.get<const Mesh>(entity);
+            for (const auto fh : mesh.faces()) total_face += (mesh.GetValence(fh) - 2) * 3;
+            total_edge += mesh.EdgeCount() * 2;
+            total_vertex += mesh.VertexCount();
+        }
+        if (total_face > 0) Buffers->FaceIndexBuffer.Buffer.Reserve(Buffers->FaceIndexBuffer.Buffer.UsedSize + total_face * sizeof(uint32_t));
+        if (total_edge > 0) Buffers->EdgeIndexBuffer.Buffer.Reserve(Buffers->EdgeIndexBuffer.Buffer.UsedSize + total_edge * sizeof(uint32_t));
+        if (total_vertex > 0) Buffers->VertexIndexBuffer.Buffer.Reserve(Buffers->VertexIndexBuffer.Buffer.UsedSize + total_vertex * sizeof(uint32_t));
+        for (auto entity : sync.NewMeshEntities) {
+            const auto &mesh = R.get<const Mesh>(entity);
+            R.patch<MeshBuffers>(entity, [&](auto &mb) {
+                if (mesh.FaceCount() > 0) {
+                    uint32_t tri_count = 0;
+                    for (const auto fh : mesh.faces()) tri_count += (mesh.GetValence(fh) - 2) * 3;
+                    auto [sr, dest] = Buffers->AllocateIndices(tri_count, IndexKind::Face);
+                    mesh.WriteTriangleIndices(dest);
+                    mb.FaceIndices = sr;
+                }
+                if (mesh.EdgeCount() > 0) {
+                    auto [sr, dest] = Buffers->AllocateIndices(mesh.EdgeCount() * 2, IndexKind::Edge);
+                    mesh.WriteEdgeIndices(dest);
+                    mb.EdgeIndices = sr;
+                }
+                if (mesh.VertexCount() > 0) {
+                    auto [sr, dest] = Buffers->AllocateIndices(mesh.VertexCount(), IndexKind::Vertex);
+                    std::iota(dest.begin(), dest.end(), 0u);
+                    mb.VertexIndices = sr;
+                }
+            });
+        }
+        request(RenderRequest::ReRecord);
+    }
+
+    // Deferred index buffer creation for new extras/bone/joint buffer entities.
+    // Light buffer entities are skipped — LightWireframeDirty handles their full rebuild.
+    if (!sync.NewExtrasEntities.empty()) {
+        auto flatten_tri_indices = [](const std::vector<std::vector<uint32_t>> &faces) {
+            std::vector<uint32_t> indices;
+            indices.reserve(faces.size() * 3);
+            for (const auto &face : faces)
+                for (const auto idx : face) indices.emplace_back(idx);
+            return indices;
+        };
+
+        // Shared primitive data — all bones/joints use identical geometry. Generated once.
+        static const auto bone = primitive::BoneOctahedron(1.f);
+        static const auto bone_faces = flatten_tri_indices(bone.Mesh.Faces);
+        static const auto bone_verts = iota(0u, uint32_t(bone.Mesh.Positions.size())) | to<std::vector>();
+        static const auto sphere = primitive::BoneSphereDisc();
+        static const auto sphere_faces = flatten_tri_indices(sphere.Mesh.Faces);
+        static const auto sphere_verts = iota(0u, uint32_t(sphere.Mesh.Positions.size())) | to<std::vector>();
+
+        // Count total indices from generated/pending data for batch reserve.
+        uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
+        for (auto entity : sync.NewExtrasEntities) {
+            if (R.all_of<ArmatureObject>(entity)) {
+                total_face += bone_faces.size();
+                total_edge += bone.AdjacencyIndices.size();
+                total_vertex += bone_verts.size();
+            } else if (R.all_of<BoneJoint>(entity)) {
+                total_face += sphere_faces.size();
+                total_edge += sphere.OutlineIndices.size();
+                total_vertex += sphere_verts.size();
+            } else if (const auto *pending = R.try_get<const PendingEdgeIndices>(entity)) {
+                total_edge += pending->Indices.size();
+            }
+        }
+        if (total_face > 0) Buffers->FaceIndexBuffer.Buffer.Reserve(Buffers->FaceIndexBuffer.Buffer.UsedSize + total_face * sizeof(uint32_t));
+        if (total_edge > 0) Buffers->EdgeIndexBuffer.Buffer.Reserve(Buffers->EdgeIndexBuffer.Buffer.UsedSize + total_edge * sizeof(uint32_t));
+        if (total_vertex > 0) Buffers->VertexIndexBuffer.Buffer.Reserve(Buffers->VertexIndexBuffer.Buffer.UsedSize + total_vertex * sizeof(uint32_t));
+
+        for (auto entity : sync.NewExtrasEntities) {
+            if (R.all_of<ArmatureObject>(entity)) {
+                R.patch<MeshBuffers>(entity, [&](auto &mb) {
+                    mb.FaceIndices = Buffers->CreateIndices(bone_faces, IndexKind::Face);
+                    mb.VertexIndices = Buffers->CreateIndices(bone_verts, IndexKind::Vertex);
+                });
+                R.emplace_or_replace<BoneAdjacencyIndices>(entity, Buffers->CreateIndices(bone.AdjacencyIndices, IndexKind::Edge));
+            } else if (R.all_of<BoneJoint>(entity)) {
+                R.patch<MeshBuffers>(entity, [&](auto &mb) {
+                    mb.FaceIndices = Buffers->CreateIndices(sphere_faces, IndexKind::Face);
+                    mb.EdgeIndices = Buffers->CreateIndices(sphere.OutlineIndices, IndexKind::Edge);
+                    mb.VertexIndices = Buffers->CreateIndices(sphere_verts, IndexKind::Vertex);
+                });
+            } else if (auto *pending = R.try_get<PendingEdgeIndices>(entity)) {
+                R.patch<MeshBuffers>(entity, [&](auto &mb) {
+                    mb.EdgeIndices = Buffers->CreateIndices(pending->Indices, IndexKind::Edge);
+                });
+                R.remove<PendingEdgeIndices>(entity);
+            }
+        }
+        request(RenderRequest::ReRecord);
+    }
 
     { // Sync deferred light slot offsets (needs valid ModelsBuffer.Slot and RenderInstance.BufferIndex from SyncModelsBuffers).
         std::vector<entt::entity> synced_lights;
@@ -902,6 +1056,29 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         for (auto e : synced_lights) R.remove<PunctualLight>(e);
+    }
+
+    // Batch-compact light buffer for destroyed lights (indices collected in Destroy()).
+    if (auto *pending = R.try_get<PendingLightRemovals>(SceneEntity); pending && !pending->Indices.empty()) {
+        auto &indices = pending->Indices;
+        std::sort(indices.begin(), indices.end(), std::greater<>());
+        auto buffer_count = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight));
+        for (const auto remove_index : indices) {
+            if (remove_index >= buffer_count) continue; // Light was never synced to GPU (created and destroyed same frame).
+            --buffer_count;
+            if (remove_index != buffer_count) {
+                Buffers->SetLight(remove_index, Buffers->GetLight(buffer_count));
+                for (auto [other_entity, other_light_index] : R.view<LightIndex>().each()) {
+                    if (other_light_index.Value == buffer_count) {
+                        R.replace<LightIndex>(other_entity, remove_index);
+                        break;
+                    }
+                }
+            }
+        }
+        Buffers->LightBuffer.UsedSize = vk::DeviceSize(buffer_count) * sizeof(PunctualLight);
+        R.remove<PendingLightRemovals>(SceneEntity);
+        request(RenderRequest::ReRecord);
     }
 
     { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
@@ -1478,7 +1655,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             for (auto e : wt_reactive) write_wt(e);
             // Newly inserted entities whose WorldTransform wasn't already in the reactive set
             // (e.g., visibility toggled on without a Transform change).
-            for (auto e : newly_inserted) {
+            for (auto e : sync.NewlyInserted) {
                 if (!wt_reactive.contains(e)) write_wt(e);
             }
             if (any_wt_written) request(RenderRequest::Submit);
@@ -1685,12 +1862,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = R.create();
-    R.emplace<MeshBuffers>(
-        mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()),
-        Buffers->CreateIndices(mesh.CreateTriangleIndices(), IndexKind::Face),
-        Buffers->CreateIndices(mesh.CreateEdgeIndices(), IndexKind::Edge),
-        Buffers->CreateIndices(CreateVertexIndices(mesh), IndexKind::Vertex)
-    );
+    R.emplace<MeshBuffers>(mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
     R.emplace<Mesh>(mesh_entity, std::move(mesh));
     return {mesh_entity, info ? AddMeshInstance(mesh_entity, *info) : entt::null};
 }
@@ -1726,14 +1898,9 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
 }
 
 entt::entity Scene::AddEmpty(ObjectCreateInfo info) {
-    // Plain axes: 3 unit-length axes lines
-    return CreateExtrasObject(
-        {{
-            .Positions = {{0, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, -1}},
-            .Edges = {{0, 1}, {2, 3}, {4, 5}},
-        }},
-        ObjectType::Empty, info, "Empty"
-    );
+    static constexpr vec3 positions[] = {{0, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, -1}};
+    static constexpr uint32_t edges[] = {0, 1, 2, 3, 4, 5};
+    return CreateExtrasObject(positions, {}, edges, ObjectType::Empty, info, "Empty");
 }
 
 void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity) {
@@ -1741,27 +1908,12 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     const uint32_t n = armature.Bones.size();
     if (n == 0) return;
 
-    auto flatten_tri_indices = [](const std::vector<std::vector<uint32_t>> &faces) {
-        std::vector<uint> indices;
-        indices.reserve(faces.size() * 3);
-        for (const auto &face : faces) {
-            for (const auto idx : face) indices.emplace_back(idx);
-        }
-        return indices;
-    };
-
-    auto bone_data = primitive::BoneOctahedron(1.f);
+    const auto bone_data = primitive::BoneOctahedron(1.f);
     const auto bone_store_id = Meshes->AllocateVertexBuffer(bone_data.Mesh.Positions, bone_data.Attrs).first;
-    const auto bone_tri_indices = flatten_tri_indices(bone_data.Mesh.Faces);
-    const auto bone_vertex_count = static_cast<uint32_t>(bone_data.Mesh.Positions.size());
     R.emplace<MeshBuffers>(
         arm_obj_entity, Meshes->GetVerticesRange(bone_store_id),
-        Buffers->CreateIndices(bone_tri_indices, IndexKind::Face),
-        SlottedRange{}, // No edge indices (wire uses adjacency)
-        Buffers->CreateIndices(iota(0u, bone_vertex_count) | to<std::vector>(), IndexKind::Vertex)
+        SlottedRange{}, SlottedRange{}, SlottedRange{} // All indices deferred to ProcessComponentEvents
     );
-    // Adjacency indices for silhouette edge detection (references the 6 unique positions at [0..5])
-    R.emplace<BoneAdjacencyIndices>(arm_obj_entity, Buffers->CreateIndices(bone_data.AdjacencyIndices, IndexKind::Edge));
     R.emplace<VertexStoreId>(arm_obj_entity, bone_store_id);
 
     // ECS Scale stays vec3{1} for all bone entities so parent scale never displaces FK child positions.
@@ -1820,15 +1972,11 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     {
         auto sphere_data = primitive::BoneSphereDisc();
         const auto sphere_store_id = Meshes->AllocateVertexBuffer(sphere_data.Mesh.Positions, {}).first;
-        const auto sphere_tri_indices = flatten_tri_indices(sphere_data.Mesh.Faces);
-        const auto sphere_vertex_count = static_cast<uint32_t>(sphere_data.Mesh.Positions.size());
         const auto joint_entity = R.create();
         R.emplace<BoneJoint>(joint_entity);
         R.emplace<MeshBuffers>(
             joint_entity, Meshes->GetVerticesRange(sphere_store_id),
-            Buffers->CreateIndices(sphere_tri_indices, IndexKind::Face),
-            Buffers->CreateIndices(sphere_data.OutlineIndices, IndexKind::Edge),
-            Buffers->CreateIndices(iota(0u, sphere_vertex_count) | to<std::vector>(), IndexKind::Vertex)
+            SlottedRange{}, SlottedRange{}, SlottedRange{} // All indices deferred to ProcessComponentEvents
         );
         R.emplace<VertexStoreId>(joint_entity, sphere_store_id);
 
@@ -1885,7 +2033,6 @@ void Scene::RebuildBoneStructure(entt::entity arm_data_entity) {
     if (auto *pose_state = R.try_get<ArmaturePoseState>(arm_data_entity)) {
         pose_state->BonePoseDelta.assign(n, identity_delta);
         pose_state->BoneUserOffset.assign(n, identity_delta);
-        pose_state->Dirty = true;
     }
 
     if (auto *anim = R.try_get<ArmatureAnimation>(arm_data_entity)) {
@@ -2184,27 +2331,30 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     return entity;
 }
 
-entt::entity Scene::CreateExtrasBufferEntity(ExtrasWireframe &&wireframe) {
+entt::entity Scene::CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) {
     const auto buffer_entity = R.create();
-    const auto [store_id, vertices] = Meshes->AllocateVertexBuffer(wireframe.Data.Positions, {});
+    const auto [store_id, vertices] = Meshes->AllocateVertexBuffer(positions, {});
 
     R.emplace<MeshBuffers>(
         buffer_entity, Meshes->GetVerticesRange(store_id),
         SlottedRange{}, // No face indices
-        Buffers->CreateIndices(wireframe.Data.CreateEdgeIndices(), IndexKind::Edge),
+        SlottedRange{}, // Edge indices deferred to ProcessComponentEvents via PendingEdgeIndices
         SlottedRange{} // No vertex indices
     );
     R.emplace<ObjectExtrasTag>(buffer_entity);
     R.emplace<VertexStoreId>(buffer_entity, store_id);
-    if (!wireframe.VertexClasses.empty()) {
-        const auto range = Buffers->VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
+    if (!vertex_classes.empty()) {
+        const auto range = Buffers->VertexClassBuffer.Allocate(vertex_classes);
         R.emplace<VertexClass>(buffer_entity, range.Offset);
+    }
+    if (!edge_indices.empty()) {
+        R.emplace<PendingEdgeIndices>(buffer_entity, std::vector<uint32_t>(edge_indices.begin(), edge_indices.end()));
     }
     return buffer_entity;
 }
 
-entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType type, ObjectCreateInfo info, const std::string &default_name) {
-    const auto buffer_entity = CreateExtrasBufferEntity(std::move(wireframe));
+entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, const std::string &default_name) {
+    const auto buffer_entity = CreateExtrasBufferEntity(positions, vertex_classes, edge_indices);
 
     const auto entity = R.create();
     R.emplace<ObjectKind>(entity, type);
@@ -2220,7 +2370,9 @@ entt::entity Scene::CreateExtrasObject(ExtrasWireframe &&wireframe, ObjectType t
 
 entt::entity Scene::AddCamera(ObjectCreateInfo info) {
     Camera camera{DefaultPerspectiveCamera()};
-    const auto entity = CreateExtrasObject({.Data = BuildCameraFrustumMesh(camera)}, ObjectType::Camera, info, "Camera");
+    auto mesh = BuildCameraFrustumMesh(camera);
+    auto edge_indices = mesh.CreateEdgeIndices();
+    const auto entity = CreateExtrasObject(mesh.Positions, {}, edge_indices, ObjectType::Camera, info, "Camera");
     R.emplace<Camera>(entity, camera);
     return entity;
 }
@@ -2228,7 +2380,7 @@ entt::entity Scene::AddCamera(ObjectCreateInfo info) {
 entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight> props) {
     auto light = props.value_or(SceneDefaults::MakePunctualLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);
-    const auto entity = CreateExtrasObject(std::move(wireframe), ObjectType::Light, info, "Light");
+    const auto entity = CreateExtrasObject(wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, info, "Light");
     const uint32_t light_index = R.storage<LightIndex>().size();
     R.emplace<LightIndex>(entity, light_index);
     R.emplace<SubmitDirty>(entity);
@@ -2311,6 +2463,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
         std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
         std::vector<std::string> names;
         names.reserve(result->Materials.size());
+        ReserveMaterials(*Buffers, GetMaterialCount(*Buffers) + result->Materials.size());
         for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
             const auto &source = result->Materials[material_index];
             const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
@@ -2592,17 +2745,7 @@ void Scene::Destroy(entt::entity e) {
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
     if (const auto *light_index = R.try_get<LightIndex>(e)) {
-        const uint32_t remove_index = light_index->Value;
-        const uint32_t last_index = R.storage<LightIndex>().size() - 1u;
-        if (remove_index != last_index) {
-            Buffers->SetLight(remove_index, Buffers->GetLight(last_index));
-            for (const auto [other_entity, other_light_index] : R.view<LightIndex>().each()) {
-                if (other_entity != e && other_light_index.Value == last_index) {
-                    R.replace<LightIndex>(other_entity, remove_index);
-                    break;
-                }
-            }
-        }
+        R.get_or_emplace<PendingLightRemovals>(SceneEntity).Indices.push_back(light_index->Value);
     }
 
     if (R.all_of<ArmatureObject>(e)) {
@@ -2953,7 +3096,7 @@ void Scene::RecordRenderCommandBuffer() {
             if (const auto *adj = R.try_get<const BoneAdjacencyIndices>(entity)) {
                 auto wire_draw = MakeDrawData(mesh_buffers.Vertices, adj->Indices, models);
                 wire_draw.InstanceStateSlot = models.InstanceStates.Slot;
-                AppendDraw(draw_list, bone_wire_batch, adj->Indices, models, wire_draw);
+                AppendDraw(draw_list, bone_wire_batch, adj->Indices.Count / 2, models, wire_draw);
             }
         }
 

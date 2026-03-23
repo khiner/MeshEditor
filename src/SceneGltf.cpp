@@ -129,6 +129,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     const auto default_material_index = material_count > 0 ? material_count - 1u : 0u;
     std::vector<std::string> material_names;
     material_names.reserve(scene->Materials.size());
+    ReserveMaterials(*Buffers, material_count + scene->Materials.size());
     for (uint32_t material_index = 0; material_index < scene->Materials.size(); ++material_index) {
         const auto &src_named_material = scene->Materials[material_index];
         const auto &src_material = src_named_material.Value;
@@ -198,6 +199,29 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 store.Names.insert(store.Names.end(), std::make_move_iterator(material_names.begin()), std::make_move_iterator(material_names.end()));
             }
         );
+    }
+
+    // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
+    {
+        uint32_t total_vertices = 0, total_faces = 0, total_triangles = 0;
+        uint32_t total_bone_deform_vertices = 0, total_morph_target_entries = 0;
+        auto count_mesh_data = [&](const std::optional<MeshData> &data) {
+            if (!data) return;
+            total_vertices += data->Positions.size();
+            total_faces += data->Faces.size();
+            for (const auto &face : data->Faces) total_triangles += face.size() - 2;
+        };
+        for (const auto &scene_mesh : scene->Meshes) {
+            count_mesh_data(scene_mesh.Triangles);
+            count_mesh_data(scene_mesh.Lines);
+            count_mesh_data(scene_mesh.Points);
+            if (scene_mesh.Triangles) {
+                const auto vc = static_cast<uint32_t>(scene_mesh.Triangles->Positions.size());
+                if (scene_mesh.DeformData) total_bone_deform_vertices += vc;
+                if (scene_mesh.MorphData && scene_mesh.MorphData->TargetCount > 0) total_morph_target_entries += scene_mesh.MorphData->TargetCount * vc;
+            }
+        }
+        if (total_vertices > 0) Meshes->ReserveForBulkCreate(total_vertices, total_faces, total_triangles, total_bone_deform_vertices, total_morph_target_entries);
     }
 
     std::vector<entt::entity> mesh_entities;
@@ -413,15 +437,11 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", path.string(), skin.SkinIndex)};
         }
 
-        { // Allocate pose state and GPU deform buffer for this armature
+        { // Create pose state — GPU deform buffer allocation deferred to ProcessComponentEvents.
             ArmaturePoseState pose_state;
             const Transform identity_delta{vec3{0}, quat{1, 0, 0, 0}, vec3{1}};
             pose_state.BonePoseDelta.resize(armature.Bones.size(), identity_delta);
             pose_state.BoneUserOffset.resize(armature.Bones.size(), identity_delta);
-            pose_state.GpuDeformRange = AllocateArmatureDeform(Buffers.get(), armature.ImportedSkin->OrderedJointNodeIndices.size());
-            // Compute initial rest-pose deform matrices (identity deltas → rest pose)
-            auto gpu_span = GetArmatureDeformMutable(Buffers.get(), pose_state.GpuDeformRange);
-            ComputeDeformMatrices(armature, pose_state.BonePoseDelta, pose_state.BoneUserOffset, armature.ImportedSkin->InverseBindMatrices, gpu_span);
             R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
         }
         CreateBoneInstances(armature_entity, armature_data_entity);
@@ -441,8 +461,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         }
     }
 
-    // Set up morph weight state for mesh instances with morph targets
-    // Build a map: node_index -> mesh instance entity, for resolving weight animation channels
+    // Set up morph weight state for mesh instances with morph targets.
+    // GPU allocation deferred to ProcessComponentEvents (GpuWeightRange left as default {0,0}).
+    // Build a map: node_index -> mesh instance entity, for resolving weight animation channels.
     std::unordered_map<uint32_t, entt::entity> morph_instance_by_node;
     for (const auto &object : scene->Objects) {
         if (object.ObjectType != gltf::Object::Type::Mesh || !object.MeshIndex) continue;
@@ -457,15 +478,11 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
         MorphWeightState state;
         if (object.NodeWeights) {
-            // Per-node morph weight overrides (glTF node.weights) take priority over mesh.weights
             state.Weights.resize(morph.TargetCount, 0.f);
             std::copy_n(object.NodeWeights->begin(), std::min(uint32_t(object.NodeWeights->size()), morph.TargetCount), state.Weights.begin());
         } else {
             state.Weights = morph.DefaultWeights;
         }
-        state.GpuWeightRange = AllocateMorphWeights(Buffers.get(), morph.TargetCount);
-        auto gpu_weights = GetMorphWeightsMutable(Buffers.get(), state.GpuWeightRange);
-        std::copy(state.Weights.begin(), state.Weights.end(), gpu_weights.begin());
         R.emplace<MorphWeightState>(instance_entity, std::move(state));
         morph_instance_by_node[object.NodeIndex] = instance_entity;
     }
