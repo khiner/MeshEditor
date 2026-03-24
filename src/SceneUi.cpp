@@ -1247,24 +1247,6 @@ void Scene::RenderOverlay() {
         }
     }
 
-    { // Viewport info overlay
-        const auto &settings = R.get<const SceneSettings>(SceneEntity);
-        const auto *mode_name = settings.ViewportShading == ViewportShadingMode::Wireframe ? "Wireframe" : settings.ViewportShading == ViewportShadingMode::Solid ? "Solid" :
-            settings.ViewportShading == ViewportShadingMode::MaterialPreview                                                                                      ? "Material Preview" :
-                                                                                                                                                                    "Rendered";
-        const auto text = std::format("Shading: {}", mode_name);
-        const auto text_size = CalcTextSize(text.c_str());
-        const auto text_pos = std::bit_cast<ImVec2>(viewport.pos + viewport.size - vec2{10.f, 10.f}) - text_size;
-        auto &dl = *GetWindowDrawList();
-        dl.AddRectFilled(
-            {text_pos.x - 6.f, text_pos.y - 4.f},
-            {text_pos.x + text_size.x + 6.f, text_pos.y + text_size.y + 4.f},
-            IM_COL32(0, 0, 0, 110),
-            4.f
-        );
-        dl.AddText(text_pos, IM_COL32(230, 230, 230, 255), text.c_str());
-    }
-
     StartScreenTransform = {};
 }
 
