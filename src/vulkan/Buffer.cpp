@@ -63,7 +63,7 @@ std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevi
 } // namespace
 
 struct VmaBuffer {
-    VmaBuffer(VmaAllocator vma, vk::DeviceSize size, MemoryUsage memory_usage, vk::BufferUsageFlags usage) : Vma(vma) {
+    VmaBuffer(VmaAllocator vma, vk::DeviceSize size, MemoryUsage memory_usage, vk::BufferUsageFlags usage) : Vma(vma), BufferSize(size) {
         VmaAllocationCreateInfo aci{};
         aci.usage = ToVmaMemoryUsage(memory_usage);
         if (memory_usage == MemoryUsage::GpuOnly) {
@@ -97,9 +97,9 @@ struct VmaBuffer {
     ~VmaBuffer() { vmaDestroyBuffer(Vma, Handle, Allocation); }
 
     vk::Buffer Get() const { return Handle; }
-    vk::DeviceSize GetAllocatedSize() const { return Info.size; }
-    std::span<const std::byte> GetData() const { return {static_cast<const std::byte *>(Info.pMappedData), Info.size}; }
-    std::span<std::byte> GetMappedData() const { return {static_cast<std::byte *>(Info.pMappedData), Info.size}; }
+    vk::DeviceSize GetAllocatedSize() const { return BufferSize; }
+    std::span<const std::byte> GetData() const { return {static_cast<const std::byte *>(Info.pMappedData), BufferSize}; }
+    std::span<std::byte> GetMappedData() const { return {static_cast<std::byte *>(Info.pMappedData), BufferSize}; }
     bool IsDirectMapped() const {
         return Info.pMappedData != nullptr &&
             (MemoryProps & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
@@ -118,6 +118,7 @@ struct VmaBuffer {
     }
 
     VmaAllocator Vma;
+    vk::DeviceSize BufferSize; // The VkBuffer creation size (VMA may over-allocate)
     vk::Buffer Handle;
     VmaAllocation Allocation;
     VmaAllocationInfo Info;
