@@ -3399,6 +3399,16 @@ void Scene::RecordRenderCommandBuffer() {
 
     cb.endRenderPass();
 
+    // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
+    // to flush the Metal render encoder's color writes before the next encoder samples them.
+    {
+        const std::array main_to_lineaa_barriers{
+            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->ColorImage.Image, ColorSubresourceRange),
+            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->LineDataImage.Image, ColorSubresourceRange),
+        };
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, main_to_lineaa_barriers);
+    }
+
     { // Line AA composite pass: blends anti-aliased lines from LineDataImage onto ColorImage → FinalColorImage
         const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
