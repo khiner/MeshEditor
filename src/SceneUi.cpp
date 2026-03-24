@@ -1182,7 +1182,9 @@ void Scene::RenderOverlay() {
         const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
         auto draw_dot = [&](vec3 pos, bool is_active) {
             const auto p_cs = vp * vec4{pos, 1.f};
-            const auto p_ndc = fabsf(p_cs.w) > FLT_EPSILON ? vec3{p_cs} / p_cs.w : vec3{p_cs};
+            if (p_cs.w <= 0) return; // Behind camera
+
+            const auto p_ndc = vec3{p_cs} / p_cs.w;
             const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f;
             const auto p_px = std::bit_cast<ImVec2>(viewport.pos + p_uv * viewport.size);
             auto &dl = *GetWindowDrawList();
@@ -1207,19 +1209,19 @@ void Scene::RenderOverlay() {
         static constexpr float dash_size{4}, gap_size{4};
         // Top
         for (float x = box_min.x; x < box_max.x; x += dash_size + gap_size) {
-            dl.AddLine({x, box_min.y}, {glm::min(x + dash_size, box_max.x), box_min.y}, outline_color, 1.0f);
+            dl.AddLine({x, box_min.y}, {glm::min(x + dash_size, box_max.x), box_min.y}, outline_color, 1.f);
         }
         // Bottom
         for (float x = box_min.x; x < box_max.x; x += dash_size + gap_size) {
-            dl.AddLine({x, box_max.y}, {glm::min(x + dash_size, box_max.x), box_max.y}, outline_color, 1.0f);
+            dl.AddLine({x, box_max.y}, {glm::min(x + dash_size, box_max.x), box_max.y}, outline_color, 1.f);
         }
         // Left
         for (float y = box_min.y; y < box_max.y; y += dash_size + gap_size) {
-            dl.AddLine({box_min.x, y}, {box_min.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.0f);
+            dl.AddLine({box_min.x, y}, {box_min.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.f);
         }
         // Right
         for (float y = box_min.y; y < box_max.y; y += dash_size + gap_size) {
-            dl.AddLine({box_max.x, y}, {box_max.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.0f);
+            dl.AddLine({box_max.x, y}, {box_max.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.f);
         }
     }
 
