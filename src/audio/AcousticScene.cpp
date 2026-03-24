@@ -18,6 +18,7 @@
 #include <entt/entity/registry.hpp>
 
 #include <format>
+#include <iostream>
 #include <optional>
 #include <print>
 #include <ranges>
@@ -529,9 +530,13 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
     if (auto &dsp_generator = DspGenerator) {
         if (auto modal_sound_object = dsp_generator->Render()) {
             dsp_generator.reset();
-            Dsp->Set(ExciteIndexParamName, modal_sound_object->Excitable.SelectedVertexIndex);
-            R.emplace_or_replace<ModalSoundObject>(e, std::move(*modal_sound_object));
-            SetModel(e, SoundObjectModel::Modal);
+            if (modal_sound_object->Modes.Freqs.empty()) {
+                std::cerr << "Modal model computation failed.\n";
+            } else {
+                Dsp->Set(ExciteIndexParamName, modal_sound_object->Excitable.SelectedVertexIndex);
+                R.emplace_or_replace<ModalSoundObject>(e, std::move(*modal_sound_object));
+                SetModel(e, SoundObjectModel::Modal);
+            }
         }
     }
 
@@ -652,13 +657,38 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
         if (Button(modal_object ? "Update" : "Create")) {
             Stop(e);
             R.emplace_or_replace<AcousticMaterial>(mesh_entity, info.Material);
+            // todo Add an initially invisible edge-only tet mesh to the scene and add toggle between surface/volumetric tet meshes.
+
+            // Extract all registry/mesh data on the main thread.
+            // Mesh vertex data lives in GPU-mapped memory and must not be read from a background thread.
+            // Making tet generation blocking for now, but we could also copy the vertex positions/triangle
+            // indices into vectors on the main thread if we want to do that on a background thread as well.
+            const auto &mesh = R.get<const Mesh>(mesh_entity);
+            // Use impact model vertices or linearly distribute the vertices across the tet mesh.
+            const auto num_vertices = mesh.VertexCount();
+            auto excitable = info.CopyExcitable && R.all_of<Excitable>(e) ?
+                R.get<const Excitable>(e) :
+                Excitable{
+                    iota_view{0u, uint(info.NumExcitableVertices)} | transform([&](uint i) { return i * num_vertices / info.NumExcitableVertices; }) | to<std::vector<uint>>(),
+                    0
+                };
+            constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
+            // We rely on `PreserveSurface` behavior for excitable vertices;
+            // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
+            auto tets = GenerateTets(mesh, ScaleFactor * R.get<const Transform>(e).S, {.PreserveSurface = true, .Quality = info.QualityTets});
+            const auto *sample_obj = R.try_get<const SampleSoundObject>(e);
+            std::optional<float> fundamental;
+            if (sample_obj) fundamental = EstimateFundamentalFrequency(ComputeFft(sample_obj->GetFrames()));
+            auto material_props = info.Material.Properties;
+
             DspGenerator = std::make_unique<Worker<ModalSoundObject>>(
                 parent_window, "Generating modal audio model...",
-                [this, e, mesh_entity, info]() {
-                    R.remove<ModalModelCreateInfo>(e);
-                    return CreateModalSoundObject(e, mesh_entity, info);
+                [tets = std::move(tets), material_props, excitable = std::move(excitable), fundamental]() mutable {
+                    auto modes = m2f::mesh2modes(*tets, material_props, excitable.ExcitableVertices, fundamental);
+                    return ModalSoundObject{.Modes = std::move(modes), .Excitable = std::move(excitable)};
                 }
             );
+            R.remove<ModalModelCreateInfo>(e);
         }
         SameLine();
         if (Button("Cancel")) R.remove<ModalModelCreateInfo>(e);
@@ -730,36 +760,4 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
             WriteWav(sample_object->GetFrames(), WavOutDir / std::format("{}-impact", name));
         }
     }
-}
-
-ModalSoundObject AcousticScene::CreateModalSoundObject(entt::entity e, entt::entity mesh_entity, const ModalModelCreateInfo &info) const {
-    // todo Add an invisible tet mesh to the scene and support toggling between surface/volumetric tet mesh views.
-    // scene.AddMesh(tets->CreateMesh(), MeshInstanceCreateInfo{.Name = "Tet Mesh", ToMatrix(R.get<WorldTransform>(active_entity)), .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = false});
-
-    // We rely on `PreserveSurface` behavior for excitable vertices;
-    // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
-    // todo display tet mesh in UI and select vertices for debugging (just like other meshes but restrict to edge view)
-
-    const auto &mesh = R.get<const Mesh>(mesh_entity);
-    // Use impact model vertices or linearly distribute the vertices across the tet mesh.
-    const auto num_vertices = mesh.VertexCount();
-    const auto excitable = info.CopyExcitable && R.all_of<Excitable>(e) ?
-        R.get<const Excitable>(e) :
-        Excitable{
-            iota_view{0u, uint(info.NumExcitableVertices)} | transform([&](uint i) { return i * num_vertices / info.NumExcitableVertices; }) | to<std::vector<uint>>(),
-            0
-        };
-
-    while (!DspGenerator) {}
-    constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
-    const auto tets = GenerateTets(mesh, ScaleFactor * R.get<const Transform>(e).S, {.PreserveSurface = true, .Quality = info.QualityTets});
-
-    const auto *sample_object = R.try_get<const SampleSoundObject>(e);
-    std::optional<float> fundamental;
-    if (sample_object) fundamental = EstimateFundamentalFrequency(ComputeFft(sample_object->GetFrames()));
-
-    return {
-        .Modes = m2f::mesh2modes(*tets, info.Material.Properties, excitable.ExcitableVertices, fundamental),
-        .Excitable = excitable,
-    };
 }

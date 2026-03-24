@@ -56,8 +56,6 @@ private:
     void OnCreateExcitedVertex(const entt::registry &, entt::entity);
     void OnDestroyExcitedVertex(const entt::registry &, entt::entity);
 
-    ModalSoundObject CreateModalSoundObject(entt::entity, entt::entity mesh_entity, const ModalModelCreateInfo &) const;
-
     entt::registry &R;
     CreateSvgResource CreateSvg;
     std::unique_ptr<FaustDSP> Dsp;
