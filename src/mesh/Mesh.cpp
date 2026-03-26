@@ -191,6 +191,7 @@ vec3 Mesh::GetNormal(FH fh) const {
     return glm::normalize(glm::cross(p1 - p0, p2 - p0));
 }
 std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->GetVertices(StoreId); }
+uint32_t Mesh::TriangleIndexCount() const { return Store->GetTriangleCount(StoreId) * 3; }
 
 bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
     return vh && fh && any_of(fv_range(fh), [vh](const auto &fv) { return fv == vh; });

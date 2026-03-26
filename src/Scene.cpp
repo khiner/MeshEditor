@@ -946,13 +946,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
 
     // Deferred index buffer creation for new mesh entities.
-    // Pass 1: count total indices from mesh topology (cheap, no allocations).
+    // Pass 1: count total indices using cached triangle counts (no topology iteration).
     // Pass 2: write directly into GPU-mapped memory (zero temporary allocations).
     if (!sync.NewMeshEntities.empty()) {
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = R.get<const Mesh>(entity);
-            for (const auto fh : mesh.faces()) total_face += (mesh.GetValence(fh) - 2) * 3;
+            total_face += mesh.TriangleIndexCount();
             total_edge += mesh.EdgeCount() * 2;
             total_vertex += mesh.VertexCount();
         }
@@ -962,10 +962,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = R.get<const Mesh>(entity);
             R.patch<MeshBuffers>(entity, [&](auto &mb) {
-                if (mesh.FaceCount() > 0) {
-                    uint32_t tri_count = 0;
-                    for (const auto fh : mesh.faces()) tri_count += (mesh.GetValence(fh) - 2) * 3;
-                    auto [sr, dest] = Buffers->AllocateIndices(tri_count, IndexKind::Face);
+                if (const auto tri_idx_count = mesh.TriangleIndexCount(); tri_idx_count > 0) {
+                    auto [sr, dest] = Buffers->AllocateIndices(tri_idx_count, IndexKind::Face);
                     mesh.WriteTriangleIndices(dest);
                     mb.FaceIndices = sr;
                 }

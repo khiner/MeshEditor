@@ -44,6 +44,7 @@ struct Mesh {
     std::span<const Vertex> GetVerticesSpan() const;
 
     uint32_t GetStoreId() const { return StoreId; }
+    uint32_t TriangleIndexCount() const; // Cached triangle count * 3
 
     // Halfedge navigation
     HH GetHalfedge(EH eh, uint i) const {

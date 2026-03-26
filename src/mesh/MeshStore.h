@@ -69,6 +69,7 @@ struct MeshStore {
         return {entry.MorphTargets, MorphTargetBuffer.Buffer.Slot};
     }
     uint32_t GetMorphTargetCount(uint32_t id) const { return Entries.at(id).MorphTargetCount; }
+    uint32_t GetTriangleCount(uint32_t id) const { return Entries.at(id).TriangleCount; }
     std::span<const float> GetDefaultMorphWeights(uint32_t id) const { return Entries.at(id).DefaultMorphWeights; }
 
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
@@ -126,6 +127,7 @@ private:
         Range EdgeStates{}, TriangleFaceIds{}, FacePrimitives{}, PrimitiveMaterials{};
         Range BoneDeform{}, MorphTargets{};
         uint32_t MorphTargetCount{0};
+        uint32_t TriangleCount{0};
         std::vector<float> DefaultMorphWeights{};
         bool Alive{false};
     };

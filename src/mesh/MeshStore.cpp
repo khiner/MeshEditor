@@ -507,6 +507,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
             tri_offset += data.Faces[fi].size() - 2;
         }
 
+        entry.TriangleCount = tri_offset;
+
         // Write triangle-to-face IDs directly into GPU buffer.
         entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(tri_offset);
         auto tri_face_span = TriangleFaceIdBuffer.GetMutable(entry.TriangleFaceIds);
@@ -579,6 +581,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         .BoneDeform = src_entry.BoneDeform.Count > 0 ? BoneDeformBuffer.Allocate(BoneDeformBuffer.Get(src_entry.BoneDeform)) : Range{},
         .MorphTargets = src_entry.MorphTargets.Count > 0 ? MorphTargetBuffer.Allocate(MorphTargetBuffer.Get(src_entry.MorphTargets)) : Range{},
         .MorphTargetCount = src_entry.MorphTargetCount,
+        .TriangleCount = src_entry.TriangleCount,
         .DefaultMorphWeights = src_entry.DefaultMorphWeights,
         .Alive = true,
     });
