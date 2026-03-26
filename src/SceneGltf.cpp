@@ -414,7 +414,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         const auto &t = anchor_it->second->WorldTransform;
         R.emplace<Transform>(armature_entity, t);
         R.emplace<WorldTransform>(armature_entity, ToWorldTransform(t));
-        R.emplace<Name>(armature_entity, CreateName(R, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
+        R.emplace<Name>(armature_entity, CreateName(skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
 
         if (skin.ParentObjectNodeIndex) {
             if (const auto parent_it = object_entities_by_node.find(*skin.ParentObjectNodeIndex);

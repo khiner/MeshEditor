@@ -3,7 +3,6 @@
 #include <entt/entity/registry.hpp>
 
 #include <format>
-#include <ranges>
 
 static_assert(null_entity == entt::null, "null_entity does not match entt::null");
 
@@ -15,18 +14,6 @@ std::string GetName(const entt::registry &r, entt::entity e) {
         if (!name->Value.empty()) return name->Value;
     }
     return IdString(e);
-}
-std::string CreateName(const entt::registry &r, std::string_view prefix) {
-    const std::string prefix_str{prefix};
-    for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
-        const auto view = r.view<const Name>();
-        const auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i);
-        if (!std::ranges::any_of(view, [&](auto e) { return view.get<Name>(e).Value == name; })) {
-            return name;
-        }
-    }
-    assert(false);
-    return prefix_str;
 }
 
 entt::entity FindActiveEntity(const entt::registry &registry) {

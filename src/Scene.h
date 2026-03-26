@@ -14,6 +14,7 @@
 #include <expected>
 #include <filesystem>
 #include <set>
+#include <unordered_set>
 
 using uint = uint32_t;
 
@@ -166,6 +167,7 @@ private:
 
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
+    std::unordered_set<std::string> NameSet; // O(1) uniqueness check for CreateName
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     double LastWheelZoomTime{-1.0};
@@ -277,6 +279,9 @@ private:
     void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);
     entt::entity CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});
     entt::entity CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType, ObjectCreateInfo, const std::string &default_name);
+
+    std::string CreateName(std::string_view prefix);
+    void OnDestroyName(entt::registry &, entt::entity);
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.

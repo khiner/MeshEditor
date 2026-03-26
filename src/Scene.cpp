@@ -602,6 +602,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 
     DestroyTracker->Bind(R);
 
+    R.on_destroy<Name>().connect<&Scene::OnDestroyName>(*this);
+
     SceneEntity = R.create();
     R.emplace<SceneSettings>(SceneEntity);
     R.emplace<SceneInteraction>(SceneEntity);
@@ -1857,6 +1859,23 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
     }
 }
 
+std::string Scene::CreateName(std::string_view prefix) {
+    const std::string prefix_str{prefix};
+    for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
+        const auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i);
+        if (!NameSet.contains(name)) {
+            NameSet.insert(name);
+            return name;
+        }
+    }
+    assert(false);
+    return prefix_str;
+}
+
+void Scene::OnDestroyName(entt::registry &r, entt::entity e) {
+    NameSet.erase(r.get<const Name>(e).Value);
+}
+
 std::pair<entt::entity, entt::entity> Scene::AddMesh(Mesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = R.create();
     R.emplace<MeshBuffers>(mesh_entity, Meshes->GetVerticesRange(mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
@@ -1886,7 +1905,7 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
     R.emplace<ObjectKind>(instance_entity, ObjectType::Mesh);
     R.emplace<Transform>(instance_entity, info.Transform);
     R.emplace<WorldTransform>(instance_entity, ToWorldTransform(info.Transform));
-    R.emplace<Name>(instance_entity, CreateName(R, info.Name));
+    R.emplace<Name>(instance_entity, CreateName(info.Name));
 
     SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
     if (!info.Visible) SetVisible(instance_entity, false);
@@ -1945,7 +1964,7 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
         R.emplace<BoneIndex>(bone_entity, i);
         R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
         R.emplace<Instance>(bone_entity, arm_obj_entity);
-        R.emplace<Name>(bone_entity, bone.Name);
+        R.emplace<Name>(bone_entity, CreateName(bone.Name));
         R.emplace<BoneDisplayScale>(bone_entity, bone_scales[i]);
         const auto bone_transform = Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
         R.emplace<Transform>(bone_entity, bone_transform);
@@ -2073,7 +2092,7 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     R.emplace<BoneIndex>(bone_entity, new_index);
     R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
     R.emplace<Instance>(bone_entity, arm_obj_entity);
-    R.emplace<Name>(bone_entity, bone.Name);
+    R.emplace<Name>(bone_entity, CreateName(bone.Name));
     R.emplace<BoneDisplayScale>(bone_entity, ComputeSingleBoneDisplayScale(armature, new_index));
     const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
     R.emplace<Transform>(bone_entity, bone_transform);
@@ -2323,7 +2342,7 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     R.emplace<ArmatureObject>(entity, data_entity);
     R.emplace<Transform>(entity, info.Transform);
     R.emplace<WorldTransform>(entity, ToWorldTransform(info.Transform));
-    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? "Armature" : info.Name));
+    R.emplace<Name>(entity, CreateName(info.Name.empty() ? "Armature" : info.Name));
 
     ApplySelectBehavior(entity, info.Select);
     CreateBoneInstances(entity, data_entity);
@@ -2360,7 +2379,7 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
     R.emplace<Instance>(entity, buffer_entity);
     R.emplace<Transform>(entity, info.Transform);
     R.emplace<WorldTransform>(entity, ToWorldTransform(info.Transform));
-    R.emplace<Name>(entity, CreateName(R, info.Name.empty() ? default_name : info.Name));
+    R.emplace<Name>(entity, CreateName(info.Name.empty() ? default_name : info.Name));
 
     SetVisible(entity, true);
     ApplySelectBehavior(entity, info.Select);
@@ -2568,7 +2587,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
 
         if (const auto *armature = R.try_get<ArmatureObject>(e)) {
             const auto e_new = R.create();
-            R.emplace<Name>(e_new, !info || info->Name.empty() ? CreateName(R, std::format("{}_copy", GetName(R, e))) : CreateName(R, info->Name));
+            R.emplace<Name>(e_new, !info || info->Name.empty() ? CreateName(std::format("{}_copy", GetName(R, e))) : CreateName(info->Name));
             R.emplace<ObjectKind>(e_new, ObjectType::Armature);
             R.emplace<ArmatureObject>(e_new, armature->Entity);
             const auto t = info ? info->Transform : R.get<const Transform>(e);
@@ -2594,7 +2613,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
         for (const auto [_, instance] : R.view<Instance>().each()) {
             if (instance.Entity == mesh_entity) ++instance_count;
         }
-        R.emplace<Name>(e_new, !info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : CreateName(R, info->Name));
+        R.emplace<Name>(e_new, CreateName(!info || info->Name.empty() ? std::format("{}_{}", GetName(R, e), instance_count) : info->Name));
     }
     R.emplace<Instance>(e_new, mesh_entity);
     R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
