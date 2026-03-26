@@ -30,7 +30,8 @@ ImageResource CreateImage(vk::Device d, vk::PhysicalDevice pd, vk::ImageCreateIn
 }
 
 void RecordBufferToSampledImageUpload(
-    vk::CommandBuffer cb, vk::Buffer src, vk::Image dst, uint32_t width, uint32_t height, vk::ImageSubresourceRange subresource_range
+    vk::CommandBuffer cb, vk::Buffer src, vk::Image dst, uint32_t width, uint32_t height, vk::ImageSubresourceRange subresource_range,
+    vk::DeviceSize buffer_offset
 ) {
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
@@ -51,7 +52,7 @@ void RecordBufferToSampledImageUpload(
     cb.copyBufferToImage(
         src, dst, vk::ImageLayout::eTransferDstOptimal,
         vk::BufferImageCopy{
-            0,
+            buffer_offset,
             0,
             0,
             {vk::ImageAspectFlagBits::eColor, 0, 0, 1},

@@ -619,11 +619,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     ResetObjectPickKeys(*Buffers);
 
     auto &texture_store = *Textures;
-    auto init_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
+    auto init_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers->Ctx);
     constexpr std::array<std::byte, 4> white_pixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
     auto white_texture = CreateTextureEntry(
         Vk,
-        Buffers->Ctx,
         init_batch,
         *Slots,
         white_pixels,
@@ -639,9 +638,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     texture_store.Textures.emplace_back(std::move(white_texture));
 
     auto &environments = *Environments;
-    environments.BrdfLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, init_batch, *Slots, "res/images/lut_ggx.png", "DefaultGGXBRDFLUT");
-    environments.SheenELut = CreateDefaultLutTexture(Vk, Buffers->Ctx, init_batch, *Slots, "res/images/lut_sheen_E.png", "DefaultSheenELUT");
-    environments.CharlieLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, init_batch, *Slots, "res/images/lut_charlie.png", "DefaultCharlieLUT");
+    environments.BrdfLut = CreateDefaultLutTexture(Vk, init_batch, *Slots, "res/images/lut_ggx.png", "DefaultGGXBRDFLUT");
+    environments.SheenELut = CreateDefaultLutTexture(Vk, init_batch, *Slots, "res/images/lut_sheen_E.png", "DefaultSheenELUT");
+    environments.CharlieLut = CreateDefaultLutTexture(Vk, init_batch, *Slots, "res/images/lut_charlie.png", "DefaultCharlieLUT");
     SubmitTextureUploadBatch(init_batch, Vk.Queue, *OneShotFence, Vk.Device);
 
     // Discover HDR environment files, sorted by name for stable ordering.
@@ -698,9 +697,9 @@ void Scene::SetStudioEnvironment(uint32_t index) {
     auto &hdri = environments.Hdris[index];
     if (!hdri.Prefiltered) {
         hdri.Prefiltered = CreateIblFromHdri(
-            Vk, Buffers->Ctx, *Slots,
+            Vk, *Slots,
             Pipelines->IblPrefilter, hdri.Path, hdri.Name,
-            *CommandPool, *OneShotFence
+            *CommandPool, *OneShotFence, Buffers->Ctx
         );
     }
     const auto &pre = *hdri.Prefiltered;
@@ -742,9 +741,9 @@ void Scene::SelectBone(entt::entity e) {
 }
 
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
-    auto svg_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
+    auto svg_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers->Ctx);
     const auto RenderBitmap = [this, &svg_batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(Vk, Buffers->Ctx, svg_batch, data, width, height, Format::Color, ColorSubresourceRange);
+        return RenderBitmapToImage(Vk, svg_batch, data, width, height, Format::Color, ColorSubresourceRange);
     };
     svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, std::move(path));
     SubmitTextureUploadBatch(svg_batch, Vk.Queue, *OneShotFence, Vk.Device);
@@ -2402,7 +2401,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
 
     if (!result->Materials.empty()) {
         auto &texture_store = *Textures;
-        auto obj_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
+        auto obj_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers->Ctx);
         std::unordered_map<std::string, uint32_t> texture_slot_cache;
         const auto resolve_texture_slot =
             [&](
@@ -2431,7 +2430,6 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
 
             auto texture = CreateTextureEntryFromEncoded(
                 Vk,
-                Buffers->Ctx,
                 obj_batch,
                 *Slots,
                 std::as_bytes(std::span{encoded}),

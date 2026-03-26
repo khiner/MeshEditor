@@ -94,10 +94,7 @@ uint32_t RegisterCubeSamplerSlot(DescriptorSlots &slots, vk::Device device, vk::
 }
 
 std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
-    const SceneVulkanResources &vk,
-    mvk::BufferContext &ctx,
-    TextureUploadBatch &batch,
-    DescriptorSlots &slots,
+    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     const std::vector<CubemapMipFacesF32> &mip_faces,
     std::string name
 ) {
@@ -157,19 +154,19 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
         {{}, {}, vk::ImageViewType::eCube, format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, uint32_t(mip_faces.size()), 0, 6}}
     );
 
-    mvk::Buffer staging{ctx, as_bytes(std::span<const float>{pixels}), mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    auto [staging_buf, staging_base] = AllocStaging(batch, as_bytes(std::span<const float>{pixels}));
+    for (auto &copy : copies) copy.bufferOffset += staging_base;
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, uint32_t(mip_faces.size()), 0, 6};
     auto &cb = *batch.Cb;
     TransitionImage(
         cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
         vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range
     );
-    cb.copyBufferToImage(*staging, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
+    cb.copyBufferToImage(staging_buf, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
     TransitionImage(
         cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
         vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, full_range
     );
-    batch.StagingBuffers.emplace_back(std::move(staging));
 
     auto sampler = vk.Device.createSamplerUnique(LinearSamplerCreateInfo(vk::SamplerAddressMode::eClampToEdge, mip_faces.size()));
     const auto sampler_slot = RegisterCubeSamplerSlot(slots, vk.Device, *sampler, *image.View);
@@ -197,8 +194,7 @@ KtxFormatPair SelectKtx2Format(vk::PhysicalDevice pd, TextureColorSpace cs) {
 }
 
 TextureEntry CreateCompressedTextureEntry(
-    const SceneVulkanResources &vk, mvk::BufferContext &ctx,
-    TextureUploadBatch &batch, DescriptorSlots &slots,
+    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     std::span<const std::byte> all_mip_data,
     std::vector<vk::BufferImageCopy> copies,
     vk::Format format, uint32_t width, uint32_t height, uint32_t mip_levels,
@@ -212,12 +208,12 @@ TextureEntry CreateCompressedTextureEntry(
     );
 
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
-    mvk::Buffer staging{ctx, all_mip_data, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    auto [staging_buf, staging_base] = AllocStaging(batch, all_mip_data);
+    for (auto &copy : copies) copy.bufferOffset += staging_base;
     auto &cb = *batch.Cb;
     TransitionImage(cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range);
-    cb.copyBufferToImage(*staging, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
+    cb.copyBufferToImage(staging_buf, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
     TransitionImage(cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, full_range);
-    batch.StagingBuffers.emplace_back(std::move(staging));
 
     auto sampler = vk.Device.createSamplerUnique(vk::SamplerCreateInfo{{}, sampler_cfg.MagFilter, sampler_cfg.MinFilter, sampler_cfg.MipmapMode, wrap_s, wrap_t, vk::SamplerAddressMode::eRepeat, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, float(mip_levels), vk::BorderColor::eIntOpaqueBlack, VK_FALSE});
     const auto sampler_slot = slots.Allocate(SlotType::Sampler);
@@ -226,10 +222,12 @@ TextureEntry CreateCompressedTextureEntry(
 }
 } // namespace
 
-TextureUploadBatch BeginTextureUploadBatch(vk::Device device, vk::CommandPool command_pool) {
+TextureUploadBatch BeginTextureUploadBatch(vk::Device device, vk::CommandPool command_pool, mvk::BufferContext &ctx) {
     TextureUploadBatch batch{
         .Cb = std::move(device.allocateCommandBuffersUnique({command_pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
-        .StagingBuffers = {},
+        .Ctx = &ctx,
+        .StagingChunks = {},
+        .ChunkUsed = 0,
     };
     batch.Cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     return batch;
@@ -237,10 +235,29 @@ TextureUploadBatch BeginTextureUploadBatch(vk::Device device, vk::CommandPool co
 
 void SubmitTextureUploadBatch(TextureUploadBatch &batch, vk::Queue queue, vk::Fence fence, vk::Device device) {
     batch.Cb->end();
-    if (!batch.StagingBuffers.empty()) {
+    if (!batch.StagingChunks.empty()) {
         SubmitWait(queue, *batch.Cb, fence, device);
     }
-    batch.StagingBuffers.clear();
+    batch.StagingChunks.clear();
+    batch.ChunkUsed = 0;
+}
+
+StagingAlloc AllocStaging(TextureUploadBatch &batch, std::span<const std::byte> data) {
+    const auto size = static_cast<vk::DeviceSize>(data.size());
+    constexpr vk::DeviceSize alignment = 16;
+    const auto aligned_size = (size + alignment - 1) & ~(alignment - 1);
+
+    if (batch.StagingChunks.empty() || batch.ChunkUsed + aligned_size > batch.StagingChunks.back().GetAllocatedSize()) {
+        const auto chunk_size = std::max(TextureUploadBatch::MinChunkSize, aligned_size);
+        batch.StagingChunks.emplace_back(*batch.Ctx, chunk_size, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc);
+        batch.ChunkUsed = 0;
+    }
+
+    auto &chunk = batch.StagingChunks.back();
+    chunk.Write(data, batch.ChunkUsed);
+    StagingAlloc alloc{*chunk, batch.ChunkUsed};
+    batch.ChunkUsed += aligned_size;
+    return alloc;
 }
 
 uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
@@ -283,9 +300,7 @@ void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentSto
 }
 
 mvk::ImageResource RenderBitmapToImage(
-    const SceneVulkanResources &vk,
-    mvk::BufferContext &ctx,
-    TextureUploadBatch &batch,
+    const SceneVulkanResources &vk, TextureUploadBatch &batch,
     std::span<const std::byte> data,
     uint32_t width, uint32_t height,
     vk::Format format,
@@ -296,15 +311,13 @@ mvk::ImageResource RenderBitmapToImage(
         {{}, vk::ImageType::e2D, format, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, format, {}, subresource_range}
     );
-    mvk::Buffer staging{ctx, as_bytes(data), mvk::MemoryUsage::CpuOnly};
-    mvk::RecordBufferToSampledImageUpload(*batch.Cb, *staging, *image.Image, width, height, subresource_range);
-    batch.StagingBuffers.emplace_back(std::move(staging));
+    auto [staging_buf, staging_offset] = AllocStaging(batch, as_bytes(data));
+    mvk::RecordBufferToSampledImageUpload(*batch.Cb, staging_buf, *image.Image, width, height, subresource_range, staging_offset);
     return image;
 }
 
 TextureEntry CreateTextureEntry(
     const SceneVulkanResources &vk,
-    mvk::BufferContext &ctx,
     TextureUploadBatch &batch,
     DescriptorSlots &slots,
     std::span<const std::byte> pixels_rgba8,
@@ -337,7 +350,7 @@ TextureEntry CreateTextureEntry(
         {{}, {}, vk::ImageViewType::e2D, texture_format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1}}
     );
 
-    mvk::Buffer staging{ctx, pixels_rgba8, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc};
+    auto [staging_buf, staging_offset] = AllocStaging(batch, pixels_rgba8);
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
     auto &cb = *batch.Cb;
     TransitionImage(
@@ -345,10 +358,10 @@ TextureEntry CreateTextureEntry(
         vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range
     );
     cb.copyBufferToImage(
-        *staging,
+        staging_buf,
         *image.Image,
         vk::ImageLayout::eTransferDstOptimal,
-        vk::BufferImageCopy{0, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}
+        vk::BufferImageCopy{staging_offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}
     );
 
     int32_t mip_width = width, mip_height = height;
@@ -383,7 +396,6 @@ TextureEntry CreateTextureEntry(
         cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
         vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip_levels - 1, 1, 0, 1}
     );
-    batch.StagingBuffers.emplace_back(std::move(staging));
 
     auto sampler = vk.Device.createSamplerUnique(
         vk::SamplerCreateInfo{
@@ -414,7 +426,7 @@ TextureEntry CreateTextureEntry(
 }
 
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
-    const SceneVulkanResources &vk, mvk::BufferContext &ctx, TextureUploadBatch &batch, DescriptorSlots &slots,
+    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     std::span<const std::byte> encoded_bytes, std::string_view encoded_name, std::string texture_name,
     TextureColorSpace color_space,
     vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
@@ -422,11 +434,11 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
 ) {
     auto decoded = DecodeImageRgba8(encoded_bytes, encoded_name);
     if (!decoded) return std::unexpected{std::move(decoded.error())};
-    return CreateTextureEntry(vk, ctx, batch, slots, decoded->Pixels, decoded->Width, decoded->Height, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
+    return CreateTextureEntry(vk, batch, slots, decoded->Pixels, decoded->Width, decoded->Height, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
 }
 
 std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
-    const SceneVulkanResources &vk, mvk::BufferContext &ctx, TextureUploadBatch &batch, DescriptorSlots &slots,
+    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     const std::vector<gltf::Image> &images, const gltf::ImageBasedLight &ibl
 ) {
     std::vector<CubemapMipFacesF32> specular_mips;
@@ -469,7 +481,7 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
         specular_mips.emplace_back(std::move(faces));
     }
 
-    auto specular_env = CreateCubemapEntryFromMipFacesF32(vk, ctx, batch, slots, specular_mips, ibl.Name + "_specular");
+    auto specular_env = CreateCubemapEntryFromMipFacesF32(vk, batch, slots, specular_mips, ibl.Name + "_specular");
     if (!specular_env) return std::unexpected{std::move(specular_env.error())};
 
     std::vector<CubemapMipFacesF32> diffuse_mips;
@@ -477,7 +489,7 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
     if (ibl.IrradianceCoefficients) diffuse_mips.emplace_back(BuildDiffuseCubemapFromIrradiance(*ibl.IrradianceCoefficients, ibl.Intensity));
     else diffuse_mips.emplace_back(specular_mips.back());
 
-    auto diffuse_env = CreateCubemapEntryFromMipFacesF32(vk, ctx, batch, slots, diffuse_mips, ibl.Name + "_diffuse");
+    auto diffuse_env = CreateCubemapEntryFromMipFacesF32(vk, batch, slots, diffuse_mips, ibl.Name + "_diffuse");
     if (!diffuse_env) {
         ReleaseCubeSamplerSlot(slots, specular_env->SamplerSlot);
         return std::unexpected{std::move(diffuse_env.error())};
@@ -491,13 +503,12 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
 // CubemapEntries. All temporary GPU resources (equirect image, raw cubemap, descriptor sets)
 // are destroyed before returning.
 EnvironmentPrefiltered CreateIblFromHdri(
-    const SceneVulkanResources &vk, mvk::BufferContext &ctx,
-    DescriptorSlots &slots,
+    const SceneVulkanResources &vk, DescriptorSlots &slots,
     const IblPrefilterPipelines &prefilter,
     const std::filesystem::path &path, const std::string &name,
-    vk::CommandPool command_pool, vk::Fence fence
+    vk::CommandPool command_pool, vk::Fence fence, mvk::BufferContext &ctx
 ) {
-    auto batch = BeginTextureUploadBatch(vk.Device, command_pool);
+    auto batch = BeginTextureUploadBatch(vk.Device, command_pool, ctx);
     // 1. Load HDR equirectangular image into a CPU staging buffer.
     const auto path_str = path.string();
     auto decoded = DecodeImageFileRgba32f(path, path_str);
@@ -505,12 +516,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
 
     const uint32_t eq_w = decoded->Width, eq_h = decoded->Height;
     const size_t eq_bytes = decoded->Pixels.size() * sizeof(float);
-    mvk::Buffer eq_staging{
-        ctx,
-        std::span<const std::byte>{reinterpret_cast<const std::byte *>(decoded->Pixels.data()), eq_bytes},
-        mvk::MemoryUsage::CpuOnly,
-        vk::BufferUsageFlagBits::eTransferSrc
-    };
+    auto [eq_staging_buf, eq_staging_offset] = AllocStaging(batch, std::span<const std::byte>{reinterpret_cast<const std::byte *>(decoded->Pixels.data()), eq_bytes});
 
     // 2. Upload equirect pixels to a temporary GPU image.
     constexpr auto rgba32f = vk::Format::eR32G32B32A32Sfloat;
@@ -528,16 +534,15 @@ EnvironmentPrefiltered CreateIblFromHdri(
             vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *equirect.Image, one_2d
         );
         cb.copyBufferToImage(
-            *eq_staging, *equirect.Image,
+            eq_staging_buf, *equirect.Image,
             vk::ImageLayout::eTransferDstOptimal,
-            vk::BufferImageCopy{0, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}}
+            vk::BufferImageCopy{eq_staging_offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}}
         );
         TransitionImage(
             cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
             vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *equirect.Image, one_2d
         );
     }
-    batch.StagingBuffers.emplace_back(std::move(eq_staging));
 
     // 3. Create raw cubemap (512×512, full mip chain, storage+sampled+transfer).
     const uint32_t raw_size = 512, raw_mips = ComputeMipLevelCount(raw_size, raw_size);
@@ -770,7 +775,7 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const Environment
 }
 
 std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
-    const SceneVulkanResources &vk, mvk::BufferContext &ctx,
+    const SceneVulkanResources &vk,
     TextureUploadBatch &batch, DescriptorSlots &slots,
     const gltf::Image &image, std::string texture_name,
     TextureColorSpace color_space,
@@ -778,7 +783,7 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
     const SamplerConfig &sampler_cfg
 ) {
     if (image.MimeType != gltf::MimeType::KTX2) {
-        return CreateTextureEntryFromEncoded(vk, ctx, batch, slots, image.Bytes, image.Name, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
+        return CreateTextureEntryFromEncoded(vk, batch, slots, image.Bytes, image.Name, std::move(texture_name), color_space, wrap_s, wrap_t, sampler_cfg);
     }
 
     basist::basisu_transcoder_init();
@@ -810,13 +815,13 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
         offset += mip_bytes;
     }
 
-    return CreateCompressedTextureEntry(vk, ctx, batch, slots, all_mip_data, std::move(copies), vk_fmt, width, height, mip_levels, std::move(texture_name), wrap_s, wrap_t, sampler_cfg);
+    return CreateCompressedTextureEntry(vk, batch, slots, all_mip_data, std::move(copies), vk_fmt, width, height, mip_levels, std::move(texture_name), wrap_s, wrap_t, sampler_cfg);
 }
 
-TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, mvk::BufferContext &ctx, TextureUploadBatch &batch, DescriptorSlots &slots, std::string_view lut_path, std::string_view name) {
+TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots, std::string_view lut_path, std::string_view name) {
     const auto encoded = File::Read(std::filesystem::path{lut_path});
     auto texture = CreateTextureEntryFromEncoded(
-        vk, ctx, batch, slots,
+        vk, batch, slots,
         std::as_bytes(std::span{encoded}), lut_path, std::string{name},
         TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
         {.MinFilter = vk::Filter::eLinear, .MagFilter = vk::Filter::eLinear, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = false}

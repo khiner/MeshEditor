@@ -70,49 +70,58 @@ enum class TextureColorSpace : uint8_t {
     Linear,
 };
 
-struct TextureUploadBatch {
-    vk::UniqueCommandBuffer Cb;
-    std::vector<mvk::Buffer> StagingBuffers;
+struct StagingAlloc {
+    vk::Buffer Buffer;
+    vk::DeviceSize Offset;
 };
 
-TextureUploadBatch BeginTextureUploadBatch(vk::Device, vk::CommandPool);
+struct TextureUploadBatch {
+    vk::UniqueCommandBuffer Cb;
+    mvk::BufferContext *Ctx;
+    std::vector<mvk::Buffer> StagingChunks;
+    vk::DeviceSize ChunkUsed{0};
+    static constexpr vk::DeviceSize MinChunkSize = 64 * 1024 * 1024;
+};
+
+TextureUploadBatch BeginTextureUploadBatch(vk::Device, vk::CommandPool, mvk::BufferContext &);
 void SubmitTextureUploadBatch(TextureUploadBatch &, vk::Queue, vk::Fence, vk::Device);
+StagingAlloc AllocStaging(TextureUploadBatch &, std::span<const std::byte>);
 
 std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry>);
 void ReleaseSamplerSlots(DescriptorSlots &, std::span<const uint32_t>);
 void ReleaseCubeSamplerSlot(DescriptorSlots &, uint32_t);
 void ReleaseEnvironmentSamplerSlots(DescriptorSlots &, const EnvironmentStore &);
 mvk::ImageResource RenderBitmapToImage(
-    const SceneVulkanResources &, mvk::BufferContext &, TextureUploadBatch &,
+    const SceneVulkanResources &, TextureUploadBatch &,
     std::span<const std::byte> data, uint32_t width, uint32_t height, vk::Format, vk::ImageSubresourceRange
 );
 TextureEntry CreateTextureEntry(
-    const SceneVulkanResources &, mvk::BufferContext &, TextureUploadBatch &, DescriptorSlots &,
+    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     std::span<const std::byte> pixels, uint32_t width, uint32_t height, std::string name,
     TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
 );
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
-    const SceneVulkanResources &, mvk::BufferContext &, TextureUploadBatch &, DescriptorSlots &,
+    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     std::span<const std::byte>, std::string_view encoded_name, std::string texture_name,
     TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
 );
 std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
-    const SceneVulkanResources &, mvk::BufferContext &, TextureUploadBatch &, DescriptorSlots &,
+    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     const gltf::Image &, std::string texture_name,
     TextureColorSpace, vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
     const SamplerConfig &
 );
 std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
-    const SceneVulkanResources &, mvk::BufferContext &, TextureUploadBatch &, DescriptorSlots &,
+    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     const std::vector<gltf::Image> &, const gltf::ImageBasedLight &
 );
 EnvironmentPrefiltered CreateIblFromHdri(
-    const SceneVulkanResources &, mvk::BufferContext &, DescriptorSlots &,
+    const SceneVulkanResources &, DescriptorSlots &,
     const IblPrefilterPipelines &, const std::filesystem::path &, const std::string &,
-    vk::CommandPool, vk::Fence
+    vk::CommandPool, vk::Fence, mvk::BufferContext &
 );
 IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &, const EnvironmentStore &);
 TextureEntry CreateDefaultLutTexture(
-    const SceneVulkanResources &, mvk::BufferContext &, TextureUploadBatch &, DescriptorSlots &,
+    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     std::string_view lut_path, std::string_view name
 );
