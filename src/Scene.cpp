@@ -619,12 +619,12 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     ResetObjectPickKeys(*Buffers);
 
     auto &texture_store = *Textures;
+    auto init_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
     constexpr std::array<std::byte, 4> white_pixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
     auto white_texture = CreateTextureEntry(
         Vk,
         Buffers->Ctx,
-        *CommandPool,
-        *OneShotFence,
+        init_batch,
         *Slots,
         white_pixels,
         1,
@@ -639,9 +639,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     texture_store.Textures.emplace_back(std::move(white_texture));
 
     auto &environments = *Environments;
-    environments.BrdfLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, "res/images/lut_ggx.png", "DefaultGGXBRDFLUT");
-    environments.SheenELut = CreateDefaultLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, "res/images/lut_sheen_E.png", "DefaultSheenELUT");
-    environments.CharlieLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots, "res/images/lut_charlie.png", "DefaultCharlieLUT");
+    environments.BrdfLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, init_batch, *Slots, "res/images/lut_ggx.png", "DefaultGGXBRDFLUT");
+    environments.SheenELut = CreateDefaultLutTexture(Vk, Buffers->Ctx, init_batch, *Slots, "res/images/lut_sheen_E.png", "DefaultSheenELUT");
+    environments.CharlieLut = CreateDefaultLutTexture(Vk, Buffers->Ctx, init_batch, *Slots, "res/images/lut_charlie.png", "DefaultCharlieLUT");
+    SubmitTextureUploadBatch(init_batch, Vk.Queue, *OneShotFence, Vk.Device);
 
     // Discover HDR environment files, sorted by name for stable ordering.
     static constexpr std::string_view HdriDir{"res/images/studiolights/world"};
@@ -697,8 +698,9 @@ void Scene::SetStudioEnvironment(uint32_t index) {
     auto &hdri = environments.Hdris[index];
     if (!hdri.Prefiltered) {
         hdri.Prefiltered = CreateIblFromHdri(
-            Vk, Buffers->Ctx, *CommandPool, *OneShotFence, *Slots,
-            Pipelines->IblPrefilter, hdri.Path, hdri.Name
+            Vk, Buffers->Ctx, *Slots,
+            Pipelines->IblPrefilter, hdri.Path, hdri.Name,
+            *CommandPool, *OneShotFence
         );
     }
     const auto &pre = *hdri.Prefiltered;
@@ -740,10 +742,12 @@ void Scene::SelectBone(entt::entity e) {
 }
 
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
-    const auto RenderBitmap = [this](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(Vk, Buffers->Ctx, *CommandPool, *OneShotFence, data, width, height, Format::Color, ColorSubresourceRange);
+    auto svg_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
+    const auto RenderBitmap = [this, &svg_batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
+        return RenderBitmapToImage(Vk, Buffers->Ctx, svg_batch, data, width, height, Format::Color, ColorSubresourceRange);
     };
     svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, std::move(path));
+    SubmitTextureUploadBatch(svg_batch, Vk.Queue, *OneShotFence, Vk.Device);
 }
 
 void Scene::LoadIcons() {
@@ -2398,6 +2402,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
 
     if (!result->Materials.empty()) {
         auto &texture_store = *Textures;
+        auto obj_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
         std::unordered_map<std::string, uint32_t> texture_slot_cache;
         const auto resolve_texture_slot =
             [&](
@@ -2427,8 +2432,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
             auto texture = CreateTextureEntryFromEncoded(
                 Vk,
                 Buffers->Ctx,
-                *CommandPool,
-                *OneShotFence,
+                obj_batch,
                 *Slots,
                 std::as_bytes(std::span{encoded}),
                 texture_path.filename().string(),
@@ -2480,6 +2484,8 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
             );
             names.emplace_back(material_name);
         }
+        SubmitTextureUploadBatch(obj_batch, Vk.Queue, *OneShotFence, Vk.Device);
+
         R.patch<MaterialStore>(
             SceneEntity,
             [&](auto &material_store) {

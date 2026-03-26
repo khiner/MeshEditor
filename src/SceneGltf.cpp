@@ -58,6 +58,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         return texture.DdsImageIndex;
     };
 
+    auto upload_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
+
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
     // Cache on the resolved (image_index, sampler_index, color_space) rather than glTF texture index,
     // so that multiple glTF textures referencing the same image+sampler share a single TextureEntry and sampler slot.
@@ -114,7 +116,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         const auto texture_name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
 
         auto texture = CreateTextureEntryFromImage(
-            Vk, GetBufferCtx(Buffers.get()), *CommandPool, *OneShotFence, *Slots,
+            Vk, GetBufferCtx(Buffers.get()), upload_batch, *Slots,
             src_image, texture_name, color_space, wrap_s, wrap_t, sampler_config
         );
         if (!texture) return std::unexpected{std::move(texture.error())};
@@ -200,6 +202,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
         );
     }
+
+    SubmitTextureUploadBatch(upload_batch, Vk.Queue, *OneShotFence, Vk.Device);
 
     // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
     {
@@ -607,7 +611,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     if (scene->ImageBasedLight) {
-        auto scene_world = CreateIblFromExtIbl(Vk, GetBufferCtx(Buffers.get()), *CommandPool, *OneShotFence, *Slots, scene->Images, *scene->ImageBasedLight);
+        auto ibl_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool);
+        auto scene_world = CreateIblFromExtIbl(Vk, GetBufferCtx(Buffers.get()), ibl_batch, *Slots, scene->Images, *scene->ImageBasedLight);
+        SubmitTextureUploadBatch(ibl_batch, Vk.Queue, *OneShotFence, Vk.Device);
         if (!scene_world) {
             std::cerr << std::format("Warning: Failed to import EXT_lights_image_based scene world from '{}': {}\n", path.string(), scene_world.error());
         } else {
