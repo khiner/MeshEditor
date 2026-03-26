@@ -20,7 +20,10 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
     : Store(&store), StoreId(store_id), VertexCountValue(static_cast<uint32_t>(store.GetVertices(store_id).size())) {
     OutgoingHalfedges.resize(VertexCountValue);
 
+    size_t total_halfedges = 0;
+    for (const auto &face : faces) total_halfedges += face.size();
     std::unordered_map<uint64_t, HH> halfedge_map;
+    halfedge_map.reserve(total_halfedges);
     for (const auto &face : faces) {
         assert(face.size() >= 3);
 
