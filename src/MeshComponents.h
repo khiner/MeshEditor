@@ -1,21 +1,20 @@
 #pragma once
 
 #include "entt_fwd.h"
-#include "vulkan/Buffer.h"
+#include "vulkan/Range.h"
+#include "vulkan/Slots.h"
 
 // Links a renderable instance to the entity holding its shared GPU buffers (MeshBuffers + ModelsBuffer).
 struct RenderInstance {
     entt::entity Entity; // The entity this is an instance of (has MeshBuffers + ModelsBuffer).
-    uint32_t BufferIndex{0}; // Slot in GPU model instance buffer
+    uint32_t BufferIndex{0}; // Global index in shared InstanceArena buffers.
     uint32_t ObjectId{0};
 };
 
-// Stored on mesh entities.
-// Holds the `WorldTransform` of all instances of the mesh.
+// Stored on buffer entities. Lightweight handle into the shared InstanceArena.
 struct ModelsBuffer {
-    mvk::Buffer Buffer;
-    mvk::Buffer ObjectIds; // Per-instance ObjectIds for selection/silhouette rendering.
-    mvk::Buffer InstanceStates; // Per-instance selection/active state flags.
+    Range InstanceRange{}; // Allocated range in shared InstanceArena.
+    uint32_t InstanceCount{0}; // Active instances (≤ InstanceRange.Count).
 };
 
 // Cameras, lights, empties.

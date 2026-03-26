@@ -37,22 +37,24 @@ struct SelectionDrawInfo {
     DrawBatchInfo Batch;
 };
 
+struct InstanceArena;
+
 namespace {
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.
 void AppendDraw(
-    DrawListBuilder &builder, DrawBatchInfo &batch, uint32_t index_count, const ModelsBuffer &models,
+    DrawListBuilder &builder, DrawBatchInfo &batch, uint32_t index_count, const ModelsBuffer &mb,
     DrawData draw, std::optional<uint> model_index = {}
 ) {
-    draw.FirstInstance = model_index.value_or(0);
-    const auto instance_count = model_index.has_value() ? 1 : models.Buffer.UsedSize / sizeof(WorldTransform);
+    draw.FirstInstance = model_index.value_or(mb.InstanceRange.Offset);
+    const auto instance_count = model_index.has_value() ? 1 : mb.InstanceCount;
     builder.Append(batch, draw, index_count, uint32_t(instance_count));
 }
 
 void AppendDraw(
-    DrawListBuilder &builder, DrawBatchInfo &batch, const SlottedRange &indices, const ModelsBuffer &models,
+    DrawListBuilder &builder, DrawBatchInfo &batch, const SlottedRange &indices, const ModelsBuffer &mb,
     DrawData draw, std::optional<uint> model_index = {}
 ) {
-    AppendDraw(builder, batch, indices.Count, models, draw, model_index);
+    AppendDraw(builder, batch, indices.Count, mb, draw, model_index);
 }
 
 DrawData MakeDrawData(
@@ -78,10 +80,10 @@ DrawData MakeDrawData(
         .MorphTargetCount = morph_target_count,
     };
 }
-DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const ModelsBuffer &mb, uint32_t bone_deform = InvalidOffset, uint32_t armature_deform = InvalidOffset, uint32_t morph_deform = InvalidOffset, uint32_t morph_target_count = 0) {
-    return MakeDrawData(vertices.Slot, vertices, indices, mb.Buffer.Slot, mb.InstanceStates.Slot, bone_deform, armature_deform, morph_deform, morph_target_count);
+DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const InstanceArena &instances, uint32_t bone_deform = InvalidOffset, uint32_t armature_deform = InvalidOffset, uint32_t morph_deform = InvalidOffset, uint32_t morph_target_count = 0) {
+    return MakeDrawData(vertices.Slot, vertices, indices, instances.TransformSlot(), instances.StateSlot(), bone_deform, armature_deform, morph_deform, morph_target_count);
 }
-DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const ModelsBuffer &mb) {
-    return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, mb.Buffer.Slot);
+DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
+    return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, instances.TransformSlot());
 }
 } // namespace

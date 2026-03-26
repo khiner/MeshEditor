@@ -8,6 +8,7 @@
 #include "gpu/SelectionNode.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
+#include "gpu/WorldTransform.h"
 #include "vulkan/BufferArena.h"
 
 #include <numeric>
@@ -56,6 +57,62 @@ struct BoneAdjacencyIndices {
     SlottedRange Indices;
 };
 
+// Shared arena for per-instance GPU data (transforms, object IDs, instance states).
+// Uses a single RangeAllocator so all 3 buffers share the same instance offsets.
+struct InstanceArena {
+    InstanceArena(mvk::BufferContext &ctx)
+        : TransformBuffer(ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
+          ObjectIdBuffer(ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer),
+          StateBuffer(ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer) {}
+
+    Range Allocate(uint32_t count) {
+        const auto range = Allocator.Allocate(count);
+        if (range.Count == 0) return range;
+        const vk::DeviceSize end = range.Offset + range.Count;
+        EnsureCapacity(end);
+        return range;
+    }
+
+    void Free(Range range) { Allocator.Free(range); }
+
+    // Compact-erase: shift [global_index+1, range_end) down by 1 in all 3 buffers.
+    void CompactErase(uint32_t global_index, uint32_t range_end) {
+        const auto count = range_end - global_index - 1;
+        if (count == 0) return;
+        TransformBuffer.Move(vk::DeviceSize(global_index + 1) * sizeof(WorldTransform), vk::DeviceSize(global_index) * sizeof(WorldTransform), count * sizeof(WorldTransform));
+        ObjectIdBuffer.Move(vk::DeviceSize(global_index + 1) * sizeof(uint32_t), vk::DeviceSize(global_index) * sizeof(uint32_t), count * sizeof(uint32_t));
+        StateBuffer.Move(vk::DeviceSize(global_index + 1) * sizeof(uint8_t), vk::DeviceSize(global_index) * sizeof(uint8_t), count * sizeof(uint8_t));
+    }
+
+    // Copy `count` elements from src_offset to dst_offset across all 3 buffers.
+    void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count) {
+        if (count == 0 || src_offset == dst_offset) return;
+        TransformBuffer.Move(vk::DeviceSize(src_offset) * sizeof(WorldTransform), vk::DeviceSize(dst_offset) * sizeof(WorldTransform), count * sizeof(WorldTransform));
+        ObjectIdBuffer.Move(vk::DeviceSize(src_offset) * sizeof(uint32_t), vk::DeviceSize(dst_offset) * sizeof(uint32_t), count * sizeof(uint32_t));
+        StateBuffer.Move(vk::DeviceSize(src_offset) * sizeof(uint8_t), vk::DeviceSize(dst_offset) * sizeof(uint8_t), count * sizeof(uint8_t));
+    }
+
+    uint32_t TransformSlot() const { return TransformBuffer.Slot; }
+    uint32_t ObjectIdSlot() const { return ObjectIdBuffer.Slot; }
+    uint32_t StateSlot() const { return StateBuffer.Slot; }
+
+    mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer;
+
+private:
+    void EnsureCapacity(vk::DeviceSize end) {
+        auto ensure = [end](mvk::Buffer &buf, size_t elem_size) {
+            const vk::DeviceSize required = end * elem_size;
+            buf.Reserve(required);
+            buf.UsedSize = std::max(buf.UsedSize, required);
+        };
+        ensure(TransformBuffer, sizeof(WorldTransform));
+        ensure(ObjectIdBuffer, sizeof(uint32_t));
+        ensure(StateBuffer, sizeof(uint8_t));
+    }
+
+    RangeAllocator Allocator;
+};
+
 constexpr uint32_t
     ObjectSelectRadiusPx = 15,
     ElementSelectRadiusPx = 50,
@@ -78,6 +135,7 @@ struct SceneBuffers {
           FaceIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
+          Instances{Ctx},
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::WorkspaceLightsUBO},
@@ -162,6 +220,7 @@ struct SceneBuffers {
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
+    InstanceArena Instances;
     mvk::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
     mvk::Buffer RenderDrawData, RenderIndirect;
     mvk::Buffer SelectionDrawData, SelectionIndirect;
