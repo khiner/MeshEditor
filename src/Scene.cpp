@@ -534,6 +534,18 @@ struct Scene::EntityDestroyTracker {
     }
 };
 
+struct Scene::DrawState {
+    DrawListBuilder List;
+    uint32_t MainDrawCount{0}; // Draws.size() after main batches, before silhouette
+    uint32_t MainIndirectCount{0}; // IndirectCommands.size() after main batches
+    DrawBatchInfo Silhouette;
+    DrawBatchInfo FillOpaque, FillBlend;
+    DrawBatchInfo EdgeQuad, WireLine, Point;
+    DrawBatchInfo ExtrasLine;
+    DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
+    DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals, OverlayBBox;
+};
+
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : Vk{vc},
       R{r},
@@ -552,6 +564,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       )},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Slots)},
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
+      Draw{std::make_unique<DrawState>()},
       Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots->GetSetLayout(), Slots->GetSet())},
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
       Meshes{std::make_unique<MeshStore>(Buffers->Ctx)},
@@ -1100,7 +1113,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     { // Selected/Active instance changes - batch instance state buffer writes per buffer entity.
         auto &selected_tracker = reactive<changes::Selected>(R);
         auto &active_tracker = reactive<changes::ActiveInstance>(R);
-        if (!selected_tracker.empty()) request(RenderRequest::ReRecord);
+        if (!selected_tracker.empty()) {
+            // In Edit mode, selection changes primary_edit_instances which affects fill/edge/point batches.
+            // In Object/Pose mode, only the silhouette batch is affected.
+            const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+            request(mode == InteractionMode::Edit ? RenderRequest::ReRecord : RenderRequest::ReRecordSilhouette);
+        }
 
         // Update GPU instance state for entities NOT already handled by SyncModelsBuffers.
         // SyncModelsBuffers writes the full initial state (Selected+Active) for newly inserted instances,
@@ -1145,7 +1163,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     { // Bone selection changes — route to dirty_bone_state_armatures for GPU state sync.
         auto &bone_sel_tracker = reactive<changes::BoneSelection>(R);
         if (!bone_sel_tracker.empty()) {
-            request(RenderRequest::ReRecord);
+            request(RenderRequest::ReRecordSilhouette);
             for (auto bone_entity : bone_sel_tracker) {
                 if (const auto arm = FindArmatureObject(R, bone_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
             }
@@ -2834,11 +2852,10 @@ void Scene::Destroy(entt::entity e) {
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
 
-void Scene::RecordRenderCommandBuffer() {
-    const Timer timer{"RecordRenderCommandBuffer"};
+void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
+    const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
     SelectionStale = true;
-    // In Edit mode, only primary edit instance per selected mesh gets Edit visuals.
-    // Other selected instances render normally with silhouettes.
+
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
@@ -2846,25 +2863,20 @@ void Scene::RecordRenderCommandBuffer() {
     const bool is_excite_mode = interaction_mode == InteractionMode::Excite;
     const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
-    const bool show_fill = !is_wireframe_mode;
-    const bool show_overlays = settings.ShowOverlays;
+    const bool show_fill = !is_wireframe_mode, show_overlays = settings.ShowOverlays;
     const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-    // Compute both frozen-inclusive (for draw routing) and frozen-exclusive (for transforms) primary edit instances in one pass.
-    std::unordered_map<entt::entity, entt::entity> primary_edit_instances;
-    EditTransformContext edit_transform_context;
-    if (is_edit_mode) {
-        const auto active = FindActiveEntity(R);
-        for (const auto [e, instance, ok, ri] : R.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
-            if (ok.Value != ObjectType::Mesh) continue;
-            auto &primary = primary_edit_instances[instance.Entity];
-            if (primary == entt::entity{} || e == active) primary = e;
-            if (!R.all_of<Frozen>(e)) {
-                auto &primary_uf = edit_transform_context.TransformInstances[instance.Entity];
-                if (primary_uf == entt::entity{} || e == active) primary_uf = e;
-            }
-        }
-    }
-    const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
+
+    auto &draw = *Draw;
+    auto &draw_list = draw.List;
+
+    // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)
+    const auto mesh_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes);
+    static const DeformSlots no_deform{};
+    const auto get_deform_slots = [&](entt::entity mesh_entity) -> const DeformSlots & {
+        if (auto it = mesh_deform_slots.find(mesh_entity); it != mesh_deform_slots.end()) return it->second;
+        return no_deform;
+    };
+
     const auto is_silhouette_eligible = [&](entt::entity e) {
         if (!R.all_of<Instance, RenderInstance>(e)) return false;
         const auto buffer_entity = R.get<const Instance>(e).Entity;
@@ -2875,72 +2887,23 @@ void Scene::RecordRenderCommandBuffer() {
         return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
     };
 
-    std::unordered_set<entt::entity> silhouette_instances;
+    // In Edit mode, compute primary edit instances (for draw routing and silhouette filtering)
+    // and edit transform context (for pending vertex transforms) in one pass.
+    std::unordered_map<entt::entity, entt::entity> primary_edit_instances;
+    EditTransformContext edit_transform_context;
+    const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
     if (is_edit_mode) {
-        for (const auto [e, instance, ri] : R.view<const Instance, const Selected, const RenderInstance>().each()) {
-            if (!is_silhouette_eligible(e)) continue;
-            if (auto it = primary_edit_instances.find(instance.Entity); it == primary_edit_instances.end() || it->second != e) {
-                silhouette_instances.insert(e);
+        const auto active = FindActiveEntity(R);
+        for (const auto [e, instance, ok, ri] : R.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
+            if (ok.Value != ObjectType::Mesh) continue;
+            auto &primary = primary_edit_instances[instance.Entity];
+            if (primary == entt::entity{} || e == active) primary = e;
+            if (has_pending_transform && !R.all_of<Frozen>(e)) {
+                auto &primary_uf = edit_transform_context.TransformInstances[instance.Entity];
+                if (primary_uf == entt::entity{} || e == active) primary_uf = e;
             }
         }
     }
-
-    std::unordered_set<entt::entity> excitable_mesh_entities;
-    if (is_excite_mode) {
-        for (const auto [e, instance, excitable] : R.view<const Instance, const Excitable>().each()) {
-            excitable_mesh_entities.emplace(instance.Entity);
-        }
-    }
-
-    std::vector<entt::entity> blend_mesh_order;
-    if (show_rendered) {
-        // Transparent pass ordering: sort mesh draws back-to-front by camera distance.
-        // This is a mesh-level approximation; interpenetrating transparent geometry may still require
-        // per-primitive sorting or OIT for fully correct compositing.
-        const auto camera_position = R.get<const ViewCamera>(SceneEntity).Position();
-        std::unordered_map<entt::entity, float> farthest_distance2_by_mesh;
-        farthest_distance2_by_mesh.reserve(R.storage<RenderInstance>().size());
-        for (const auto [entity, _, wt] : R.view<const RenderInstance, const WorldTransform>().each()) {
-            entt::entity mesh_entity = entity;
-            if (const auto *instance = R.try_get<const Instance>(entity)) mesh_entity = instance->Entity;
-            if (!R.valid(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
-            const auto delta = wt.Position - camera_position;
-            const auto distance2 = dot(delta, delta);
-            if (const auto it = farthest_distance2_by_mesh.find(mesh_entity); it != farthest_distance2_by_mesh.end()) {
-                it->second = std::max(it->second, distance2);
-            } else {
-                farthest_distance2_by_mesh.emplace(mesh_entity, distance2);
-            }
-        }
-        blend_mesh_order.reserve(farthest_distance2_by_mesh.size());
-        for (const auto &[mesh_entity, _] : farthest_distance2_by_mesh) blend_mesh_order.emplace_back(mesh_entity);
-        std::ranges::sort(
-            blend_mesh_order,
-            [&](const auto a, const auto b) {
-                return farthest_distance2_by_mesh.at(a) > farthest_distance2_by_mesh.at(b);
-            }
-        );
-    }
-
-    // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)
-    const auto mesh_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes);
-    static const DeformSlots no_deform{};
-    const auto get_deform_slots = [&](entt::entity mesh_entity) -> const DeformSlots & {
-        if (auto it = mesh_deform_slots.find(mesh_entity); it != mesh_deform_slots.end()) return it->second;
-        return no_deform;
-    };
-
-    const bool has_object_silhouette_selection =
-        any_of(R.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
-    // Pose mode silhouettes work exactly like Object mode: selected/active instances get silhouettes.
-    const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) &&
-        (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
-
-    DrawListBuilder draw_list;
-    DrawBatchInfo fill_batch_opaque{}, fill_batch_blend{}, edge_quad_batch{}, wire_line_batch{}, point_batch{};
-    DrawBatchInfo extras_line_batch{}, silhouette_batch{};
-    DrawBatchInfo bone_fill_batch{}, bone_wire_batch{}, bone_sphere_fill_batch{}, bone_sphere_wire_batch{};
-    DrawBatchInfo overlay_face_normals_batch{}, overlay_vertex_normals_batch{}, overlay_bbox_batch{};
     const auto patch_edit_pending_local_transform = [&](size_t draws_before, entt::entity mesh_entity) {
         if (!has_pending_transform) return;
         const auto context_it = edit_transform_context.TransformInstances.find(mesh_entity);
@@ -2953,18 +2916,326 @@ void Scene::RecordRenderCommandBuffer() {
         }
     };
 
+    if (!silhouette_only) {
+        draw_list.Draws.clear();
+        draw_list.IndirectCommands.clear();
+        draw_list.MaxIndexCount = 0;
+
+        std::unordered_set<entt::entity> excitable_mesh_entities;
+        if (is_excite_mode) {
+            for (const auto [e, instance, excitable] : R.view<const Instance, const Excitable>().each()) {
+                excitable_mesh_entities.emplace(instance.Entity);
+            }
+        }
+
+        std::vector<entt::entity> blend_mesh_order;
+        if (show_rendered) {
+            // Transparent pass ordering: sort mesh draws back-to-front by camera distance.
+            // This is a mesh-level approximation; interpenetrating transparent geometry may still require
+            // per-primitive sorting or OIT for fully correct compositing.
+            const auto camera_position = R.get<const ViewCamera>(SceneEntity).Position();
+            std::unordered_map<entt::entity, float> farthest_distance2_by_mesh;
+            farthest_distance2_by_mesh.reserve(R.storage<RenderInstance>().size());
+            for (const auto [entity, _, wt] : R.view<const RenderInstance, const WorldTransform>().each()) {
+                entt::entity mesh_entity = entity;
+                if (const auto *instance = R.try_get<const Instance>(entity)) mesh_entity = instance->Entity;
+                if (!R.valid(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
+                const auto delta = wt.Position - camera_position;
+                const auto distance2 = dot(delta, delta);
+                if (const auto it = farthest_distance2_by_mesh.find(mesh_entity); it != farthest_distance2_by_mesh.end()) {
+                    it->second = std::max(it->second, distance2);
+                } else {
+                    farthest_distance2_by_mesh.emplace(mesh_entity, distance2);
+                }
+            }
+            blend_mesh_order.reserve(farthest_distance2_by_mesh.size());
+            for (const auto &[mesh_entity, _] : farthest_distance2_by_mesh) blend_mesh_order.emplace_back(mesh_entity);
+            std::ranges::sort(
+                blend_mesh_order,
+                [&](const auto a, const auto b) {
+                    return farthest_distance2_by_mesh.at(a) > farthest_distance2_by_mesh.at(b);
+                }
+            );
+        }
+
+        // Single-pass entity data collection: avoids redundant ECS view iterations across fill, edge, wire, point, and normal batches.
+        struct MeshEntityData {
+            entt::entity Entity;
+            const MeshBuffers &Buf;
+            const ModelsBuffer &Mod;
+            const Mesh *MeshComp; // nullptr if entity has no Mesh component
+            const DeformSlots &Deform;
+            std::optional<uint32_t> PrimaryEditBufferIndex;
+            bool IsExcitable, IsBone, IsExtras;
+        };
+
+        std::vector<MeshEntityData> mesh_entities;
+        mesh_entities.reserve(R.storage<MeshBuffers>().size());
+        for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
+            std::optional<uint32_t> primary_bi;
+            if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
+                primary_bi = R.get<RenderInstance>(it->second).BufferIndex;
+            }
+            mesh_entities.emplace_back(entity, mesh_buffers, models, R.try_get<const Mesh>(entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity), R.all_of<ObjectExtrasTag>(entity));
+        }
+
+        // Entity -> mesh_entities index map for blend_mesh_order lookup
+        std::unordered_map<entt::entity, size_t> blend_entity_idx;
+        if (show_rendered) {
+            blend_entity_idx.reserve(mesh_entities.size());
+            for (size_t i = 0; i < mesh_entities.size(); ++i) blend_entity_idx[mesh_entities[i].Entity] = i;
+        }
+
+        if (show_fill) {
+            const auto append_fill_mesh = [&](DrawBatchInfo &batch, const MeshEntityData &e, std::optional<bool> blend_target) {
+                if (!e.MeshComp || e.MeshComp->FaceCount() == 0) return;
+                const auto &mesh_buffers = e.Buf;
+                const auto &models = e.Mod;
+                const auto &mesh = *e.MeshComp;
+                const auto &deform = e.Deform;
+                auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
+                const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
+                const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
+                const auto face_primitive_buffer = Meshes->GetFacePrimitiveRange(mesh.GetStoreId());
+                const auto primitive_material_buffer = Meshes->GetPrimitiveMaterialRange(mesh.GetStoreId());
+                dd.ObjectIdSlot = face_id_buffer.Slot;
+                dd.FaceIdOffset = face_id_buffer.Offset;
+                dd.FaceFirstTriOffset = settings.SmoothShading ? InvalidOffset : Meshes->GetFaceFirstTriRange(mesh.GetStoreId()).Offset;
+                dd.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
+                dd.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
+                const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
+                    const auto db = draw_list.Draws.size();
+                    AppendDraw(draw_list, batch, index_count, models, dd, model_index);
+                    PatchMorphWeights(draw_list, db, deform);
+                    patch_edit_pending_local_transform(db, e.Entity);
+                };
+                const auto append_fill_for_instances = [&](const DrawData &dd, uint32_t index_count) {
+                    if (e.PrimaryEditBufferIndex) {
+                        // Draw primary with element state first, then all without (depth LESS won't overwrite)
+                        auto primary_draw = dd;
+                        primary_draw.ElementStateSlotOffset = face_state_buffer;
+                        append_fill_draw(primary_draw, index_count, *e.PrimaryEditBufferIndex);
+                        auto other_draw = dd;
+                        other_draw.ElementStateSlotOffset = {};
+                        append_fill_draw(other_draw, index_count, std::nullopt);
+                    } else {
+                        auto all_draw = dd;
+                        all_draw.ElementStateSlotOffset = face_state_buffer;
+                        append_fill_draw(all_draw, index_count, std::nullopt);
+                    }
+                };
+
+                if (show_rendered) {
+                    const auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh.GetStoreId());
+                    const auto primitive_ranges = Meshes->GetPrimitiveTriangleRanges(mesh.GetStoreId());
+                    if (!primitive_materials.empty() && !primitive_ranges.empty()) {
+                        const auto material_count = GetMaterialCount(*Buffers);
+                        // Merge adjacent primitives with the same blend mode into single draw calls.
+                        struct BlendDrawRange {
+                            bool Blend;
+                            uint32_t FirstTriangle, TriangleCount;
+                        };
+                        std::vector<BlendDrawRange> blend_ranges;
+                        blend_ranges.reserve(primitive_ranges.size());
+                        for (const auto &pr : primitive_ranges) {
+                            if (pr.TriangleCount == 0u) continue;
+                            auto pi = pr.PrimitiveIndex;
+                            if (pi >= primitive_materials.size()) pi = primitive_materials.size() - 1u;
+                            const bool is_blend = primitive_materials[pi] < material_count && GetMaterial(*Buffers, primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
+                            if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend) blend_ranges.back().TriangleCount += pr.TriangleCount;
+                            else blend_ranges.emplace_back(is_blend, pr.FirstTriangle, pr.TriangleCount);
+                        }
+                        for (const auto &range : blend_ranges) {
+                            if (blend_target && range.Blend != *blend_target) continue;
+                            auto range_draw = dd;
+                            range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
+                            range_draw.FaceIdOffset += range.FirstTriangle;
+                            append_fill_for_instances(range_draw, range.TriangleCount * 3u);
+                        }
+                        return;
+                    }
+                }
+
+                if (!blend_target || !*blend_target) append_fill_for_instances(dd, mesh_buffers.FaceIndices.Count);
+            };
+
+            if (show_rendered) {
+                draw.FillOpaque = draw_list.BeginBatch();
+                for (const auto &e : mesh_entities) {
+                    if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, false);
+                }
+                draw.FillBlend = draw_list.BeginBatch();
+                for (const auto mesh_entity : blend_mesh_order) {
+                    if (auto it = blend_entity_idx.find(mesh_entity); it != blend_entity_idx.end()) {
+                        append_fill_mesh(draw.FillBlend, mesh_entities[it->second], true);
+                    }
+                }
+            } else {
+                draw.FillOpaque = draw_list.BeginBatch();
+                for (const auto &e : mesh_entities) {
+                    if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, std::nullopt);
+                }
+            }
+        }
+
+        // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
+        // Only draw bones for: active armature in Edit/Pose mode, selected armatures in Object mode.
+        const auto should_draw_armature_bones = [&](entt::entity arm_obj_entity) {
+            if (is_wireframe_mode) return true; // Wireframe mode: always show bone outlines
+            const bool is_bone_mode = is_edit_mode || interaction_mode == InteractionMode::Pose;
+            if (is_bone_mode) return R.all_of<Active>(arm_obj_entity);
+            return R.all_of<Selected>(arm_obj_entity);
+        };
+        // Map BoneJoint entities back to their owning armature object entities.
+        std::unordered_map<entt::entity, entt::entity> joint_to_owner;
+        for (const auto [e, arm_obj] : R.view<const ArmatureObject>().each()) {
+            if (arm_obj.JointEntity != entt::null) joint_to_owner[arm_obj.JointEntity] = e;
+        }
+        if (show_overlays && settings.ShowBones) {
+            draw.BoneFill = draw_list.BeginBatch();
+            for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
+                if (mesh_buffers.FaceIndices.Count == 0) continue;
+                auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
+                fill_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                AppendDraw(draw_list, draw.BoneFill, mesh_buffers.FaceIndices, models, fill_draw);
+            }
+            draw.BoneWire = draw_list.BeginBatch();
+            for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
+                if (!should_draw_armature_bones(entity)) continue;
+                if (const auto *adj = R.try_get<const BoneAdjacencyIndices>(entity)) {
+                    auto wire_draw = MakeDrawData(mesh_buffers.Vertices, adj->Indices, Buffers->Instances);
+                    wire_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                    AppendDraw(draw_list, draw.BoneWire, adj->Indices.Count / 2, models, wire_draw);
+                }
+            }
+
+            // Joint sphere batches
+            draw.BoneSphereFill = draw_list.BeginBatch();
+            for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
+                if (mesh_buffers.FaceIndices.Count == 0) continue;
+                auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
+                fill_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                AppendDraw(draw_list, draw.BoneSphereFill, mesh_buffers.FaceIndices, models, fill_draw);
+            }
+            draw.BoneSphereWire = draw_list.BeginBatch();
+            for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
+                if (mesh_buffers.EdgeIndices.Count == 0) continue;
+                if (const auto it = joint_to_owner.find(entity); it != joint_to_owner.end() && !should_draw_armature_bones(it->second)) continue;
+                auto wire_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, Buffers->Instances);
+                wire_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                AppendDraw(draw_list, draw.BoneSphereWire, mesh_buffers.EdgeIndices, models, wire_draw);
+            }
+        }
+
+        // Edge quad batch (edit/excite mode triangle quads with self-AA, matches Blender's overlay_edit_mesh_edge)
+        draw.EdgeQuad = draw_list.BeginBatch();
+        if (is_edit_mode || is_excite_mode) {
+            for (const auto &e : mesh_entities) {
+                // Line meshes use draw.WireLine
+                if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0 || e.Buf.FaceIndices.Count == 0) continue;
+                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+                dd.ElementStateSlotOffset = Meshes->GetEdgeStateRange(e.MeshComp->GetStoreId());
+                const auto db = draw_list.Draws.size();
+                if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd, *e.PrimaryEditBufferIndex);
+                else if (e.IsExcitable) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd);
+                PatchMorphWeights(draw_list, db, e.Deform);
+                patch_edit_pending_local_transform(db, e.Entity);
+            }
+        }
+        // Wire line batch (wireframe mode + line meshes, matches Blender's wireframe overlay)
+        draw.WireLine = draw_list.BeginBatch();
+        for (const auto &e : mesh_entities) {
+            if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0) continue;
+            if (e.Buf.FaceIndices.Count > 0 && !is_wireframe_mode) continue;
+            auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+            dd.ElementStateSlotOffset = Meshes->GetEdgeStateRange(e.MeshComp->GetStoreId());
+            const auto db = draw_list.Draws.size();
+            AppendDraw(draw_list, draw.WireLine, e.Buf.EdgeIndices, e.Mod, dd);
+            PatchMorphWeights(draw_list, db, e.Deform);
+            patch_edit_pending_local_transform(db, e.Entity);
+        }
+
+        if (show_overlays && settings.ShowExtras) {
+            AppendExtrasDraw(R, Buffers->Instances, draw_list, draw.ExtrasLine, [](auto &, const auto &) {});
+        }
+
+        // Point batch
+        draw.Point = draw_list.BeginBatch();
+        for (const auto &e : mesh_entities) {
+            if (e.IsBone) continue;
+            const bool is_point_mesh = e.Buf.FaceIndices.Count == 0 && e.Buf.EdgeIndices.Count == 0;
+            if (!is_point_mesh && !((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode)) continue;
+            auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+            dd.ElementStateSlotOffset = {Meshes->GetVertexStateSlot(), e.Buf.Vertices.Offset};
+            const auto db = draw_list.Draws.size();
+            if (is_point_mesh) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
+            else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
+            else if (e.IsExcitable) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
+            PatchMorphWeights(draw_list, db, e.Deform);
+            patch_edit_pending_local_transform(db, e.Entity);
+        }
+
+        { // Normal overlay + bbox batches
+            const auto vertex_slot = Buffers->VertexBuffer.Buffer.Slot;
+            draw.OverlayFaceNormals = draw_list.BeginBatch();
+            for (const auto &e : mesh_entities) {
+                if (auto it = e.Buf.NormalIndicators.find(Element::Face); it != e.Buf.NormalIndicators.end()) {
+                    auto dd = MakeDrawData(it->second, vertex_slot, Buffers->Instances);
+                    AppendDraw(draw_list, draw.OverlayFaceNormals, it->second.Indices, e.Mod, dd);
+                }
+            }
+            draw.OverlayVertexNormals = draw_list.BeginBatch();
+            for (const auto &e : mesh_entities) {
+                if (auto it = e.Buf.NormalIndicators.find(Element::Vertex); it != e.Buf.NormalIndicators.end()) {
+                    auto dd = MakeDrawData(it->second, vertex_slot, Buffers->Instances);
+                    AppendDraw(draw_list, draw.OverlayVertexNormals, it->second.Indices, e.Mod, dd);
+                }
+            }
+            draw.OverlayBBox = draw_list.BeginBatch();
+            for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
+                auto dd = MakeDrawData(bounding_boxes.Buffers, vertex_slot, Buffers->Instances);
+                AppendDraw(draw_list, draw.OverlayBBox, bounding_boxes.Buffers.Indices, models, dd);
+            }
+        }
+
+        // Cache the main draw list state (everything before silhouette).
+        draw.MainDrawCount = uint32_t(draw_list.Draws.size());
+        draw.MainIndirectCount = uint32_t(draw_list.IndirectCommands.size());
+    } else {
+        // Silhouette-only: truncate to cached main portion, batch infos retained from last full build.
+        draw_list.Draws.resize(draw.MainDrawCount);
+        draw_list.IndirectCommands.resize(draw.MainIndirectCount);
+    }
+
+    // Silhouette batch (appended after main batches in both paths).
+    std::unordered_set<entt::entity> silhouette_instances;
+    if (is_edit_mode) {
+        for (const auto [e, instance, ri] : R.view<const Instance, const Selected, const RenderInstance>().each()) {
+            if (!is_silhouette_eligible(e)) continue;
+            if (auto it = primary_edit_instances.find(instance.Entity); it == primary_edit_instances.end() || it->second != e) {
+                silhouette_instances.insert(e);
+            }
+        }
+    }
+
+    const bool has_object_silhouette_selection =
+        any_of(R.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
+    const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) &&
+        (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
+
+    draw.Silhouette = {};
     if (render_silhouette) {
-        silhouette_batch = draw_list.BeginBatch();
+        draw.Silhouette = draw_list.BeginBatch();
         auto append_silhouette = [&](entt::entity e) {
             if (!is_silhouette_eligible(e)) return;
             const auto mesh_entity = R.get<Instance>(e).Entity;
             const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
             const auto &models = R.get<ModelsBuffer>(mesh_entity);
             const auto deform = get_deform_slots(mesh_entity);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-            draw.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+            auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
+            dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
             const auto draws_before = draw_list.Draws.size();
-            AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, R.get<RenderInstance>(e).BufferIndex);
+            AppendDraw(draw_list, draw.Silhouette, mesh_buffers.FaceIndices, models, dd, R.get<RenderInstance>(e).BufferIndex);
             PatchMorphWeights(draw_list, draws_before, deform);
             patch_edit_pending_local_transform(draws_before, mesh_entity);
         };
@@ -2972,246 +3243,6 @@ void Scene::RecordRenderCommandBuffer() {
             for (const auto e : silhouette_instances) append_silhouette(e);
         } else {
             for (const auto e : R.view<Selected, RenderInstance>()) append_silhouette(e);
-        }
-    }
-
-    // Single-pass entity data collection: avoids redundant ECS view iterations across fill, edge, wire, point, and normal batches.
-    struct MeshEntityData {
-        entt::entity Entity;
-        const MeshBuffers &Buf;
-        const ModelsBuffer &Mod;
-        const Mesh *MeshComp; // nullptr if entity has no Mesh component
-        const DeformSlots &Deform;
-        std::optional<uint32_t> PrimaryEditBufferIndex;
-        bool IsExcitable, IsBone, IsExtras;
-    };
-
-    std::vector<MeshEntityData> mesh_entities;
-    mesh_entities.reserve(R.storage<MeshBuffers>().size());
-    for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-        std::optional<uint32_t> primary_bi;
-        if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-            primary_bi = R.get<RenderInstance>(it->second).BufferIndex;
-        }
-        mesh_entities.emplace_back(entity, mesh_buffers, models, R.try_get<const Mesh>(entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity), R.all_of<ObjectExtrasTag>(entity));
-    }
-
-    // Entity -> mesh_entities index map for blend_mesh_order lookup
-    std::unordered_map<entt::entity, size_t> blend_entity_idx;
-    if (show_rendered) {
-        blend_entity_idx.reserve(mesh_entities.size());
-        for (size_t i = 0; i < mesh_entities.size(); ++i) blend_entity_idx[mesh_entities[i].Entity] = i;
-    }
-
-    if (show_fill) {
-        const auto append_fill_mesh = [&](DrawBatchInfo &batch, const MeshEntityData &e, std::optional<bool> blend_target) {
-            if (!e.MeshComp || e.MeshComp->FaceCount() == 0) return;
-            const auto &mesh_buffers = e.Buf;
-            const auto &models = e.Mod;
-            const auto &mesh = *e.MeshComp;
-            const auto &deform = e.Deform;
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-            const auto face_id_buffer = Meshes->GetFaceIdRange(mesh.GetStoreId());
-            const auto face_state_buffer = Meshes->GetFaceStateRange(mesh.GetStoreId());
-            const auto face_primitive_buffer = Meshes->GetFacePrimitiveRange(mesh.GetStoreId());
-            const auto primitive_material_buffer = Meshes->GetPrimitiveMaterialRange(mesh.GetStoreId());
-            draw.ObjectIdSlot = face_id_buffer.Slot;
-            draw.FaceIdOffset = face_id_buffer.Offset;
-            draw.FaceFirstTriOffset = settings.SmoothShading ? InvalidOffset : Meshes->GetFaceFirstTriRange(mesh.GetStoreId()).Offset;
-            draw.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
-            draw.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
-            const auto append_fill_draw = [&](const DrawData &draw, uint32_t index_count, std::optional<uint32_t> model_index) {
-                const auto db = draw_list.Draws.size();
-                AppendDraw(draw_list, batch, index_count, models, draw, model_index);
-                PatchMorphWeights(draw_list, db, deform);
-                patch_edit_pending_local_transform(db, e.Entity);
-            };
-            const auto append_fill_for_instances = [&](const DrawData &draw, uint32_t index_count) {
-                if (e.PrimaryEditBufferIndex) {
-                    // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                    auto primary_draw = draw;
-                    primary_draw.ElementStateSlotOffset = face_state_buffer;
-                    append_fill_draw(primary_draw, index_count, *e.PrimaryEditBufferIndex);
-                    auto other_draw = draw;
-                    other_draw.ElementStateSlotOffset = {};
-                    append_fill_draw(other_draw, index_count, std::nullopt);
-                } else {
-                    auto all_draw = draw;
-                    all_draw.ElementStateSlotOffset = face_state_buffer;
-                    append_fill_draw(all_draw, index_count, std::nullopt);
-                }
-            };
-
-            if (show_rendered) {
-                const auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh.GetStoreId());
-                const auto primitive_ranges = Meshes->GetPrimitiveTriangleRanges(mesh.GetStoreId());
-                if (!primitive_materials.empty() && !primitive_ranges.empty()) {
-                    const auto material_count = GetMaterialCount(*Buffers);
-                    // Merge adjacent primitives with the same blend mode into single draw calls.
-                    struct BlendDrawRange {
-                        bool Blend;
-                        uint32_t FirstTriangle, TriangleCount;
-                    };
-                    std::vector<BlendDrawRange> blend_ranges;
-                    blend_ranges.reserve(primitive_ranges.size());
-                    for (const auto &pr : primitive_ranges) {
-                        if (pr.TriangleCount == 0u) continue;
-                        auto pi = pr.PrimitiveIndex;
-                        if (pi >= primitive_materials.size()) pi = primitive_materials.size() - 1u;
-                        const bool is_blend = primitive_materials[pi] < material_count && GetMaterial(*Buffers, primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
-                        if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend) blend_ranges.back().TriangleCount += pr.TriangleCount;
-                        else blend_ranges.emplace_back(is_blend, pr.FirstTriangle, pr.TriangleCount);
-                    }
-                    for (const auto &range : blend_ranges) {
-                        if (blend_target && range.Blend != *blend_target) continue;
-                        auto range_draw = draw;
-                        range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
-                        range_draw.FaceIdOffset += range.FirstTriangle;
-                        append_fill_for_instances(range_draw, range.TriangleCount * 3u);
-                    }
-                    return;
-                }
-            }
-
-            if (!blend_target || !*blend_target) append_fill_for_instances(draw, mesh_buffers.FaceIndices.Count);
-        };
-
-        if (show_rendered) {
-            fill_batch_opaque = draw_list.BeginBatch();
-            for (const auto &e : mesh_entities) {
-                if (!e.IsBone) append_fill_mesh(fill_batch_opaque, e, false);
-            }
-            fill_batch_blend = draw_list.BeginBatch();
-            for (const auto mesh_entity : blend_mesh_order) {
-                if (auto it = blend_entity_idx.find(mesh_entity); it != blend_entity_idx.end()) {
-                    append_fill_mesh(fill_batch_blend, mesh_entities[it->second], true);
-                }
-            }
-        } else {
-            fill_batch_opaque = draw_list.BeginBatch();
-            for (const auto &e : mesh_entities) {
-                if (!e.IsBone) append_fill_mesh(fill_batch_opaque, e, std::nullopt);
-            }
-        }
-    }
-
-    // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
-    // Only draw bones for: active armature in Edit/Pose mode, selected armatures in Object mode.
-    const auto should_draw_armature_bones = [&](entt::entity arm_obj_entity) {
-        if (is_wireframe_mode) return true; // Wireframe mode: always show bone outlines
-        const bool is_bone_mode = is_edit_mode || interaction_mode == InteractionMode::Pose;
-        if (is_bone_mode) return R.all_of<Active>(arm_obj_entity);
-        return R.all_of<Selected>(arm_obj_entity);
-    };
-    // Map BoneJoint entities back to their owning armature object entities.
-    std::unordered_map<entt::entity, entt::entity> joint_to_owner;
-    for (const auto [e, arm_obj] : R.view<const ArmatureObject>().each()) {
-        if (arm_obj.JointEntity != entt::null) joint_to_owner[arm_obj.JointEntity] = e;
-    }
-    if (show_overlays && settings.ShowBones) {
-        bone_fill_batch = draw_list.BeginBatch();
-        for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
-            if (mesh_buffers.FaceIndices.Count == 0) continue;
-            auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-            fill_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
-            AppendDraw(draw_list, bone_fill_batch, mesh_buffers.FaceIndices, models, fill_draw);
-        }
-        bone_wire_batch = draw_list.BeginBatch();
-        for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
-            if (!should_draw_armature_bones(entity)) continue;
-            if (const auto *adj = R.try_get<const BoneAdjacencyIndices>(entity)) {
-                auto wire_draw = MakeDrawData(mesh_buffers.Vertices, adj->Indices, Buffers->Instances);
-                wire_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
-                AppendDraw(draw_list, bone_wire_batch, adj->Indices.Count / 2, models, wire_draw);
-            }
-        }
-
-        // Joint sphere batches
-        bone_sphere_fill_batch = draw_list.BeginBatch();
-        for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
-            if (mesh_buffers.FaceIndices.Count == 0) continue;
-            auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-            fill_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
-            AppendDraw(draw_list, bone_sphere_fill_batch, mesh_buffers.FaceIndices, models, fill_draw);
-        }
-        bone_sphere_wire_batch = draw_list.BeginBatch();
-        for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
-            if (mesh_buffers.EdgeIndices.Count == 0) continue;
-            if (const auto it = joint_to_owner.find(entity); it != joint_to_owner.end() && !should_draw_armature_bones(it->second)) continue;
-            auto wire_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, Buffers->Instances);
-            wire_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
-            AppendDraw(draw_list, bone_sphere_wire_batch, mesh_buffers.EdgeIndices, models, wire_draw);
-        }
-    }
-
-    // Edge quad batch (edit/excite mode triangle quads with self-AA, matches Blender's overlay_edit_mesh_edge)
-    edge_quad_batch = draw_list.BeginBatch();
-    if (is_edit_mode || is_excite_mode) {
-        for (const auto &e : mesh_entities) {
-            // Line meshes use wire_line_batch
-            if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0 || e.Buf.FaceIndices.Count == 0) continue;
-            auto draw = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-            draw.ElementStateSlotOffset = Meshes->GetEdgeStateRange(e.MeshComp->GetStoreId());
-            const auto db = draw_list.Draws.size();
-            if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, edge_quad_batch, e.Buf.EdgeIndices.Count * 3, e.Mod, draw, *e.PrimaryEditBufferIndex);
-            else if (e.IsExcitable) AppendDraw(draw_list, edge_quad_batch, e.Buf.EdgeIndices.Count * 3, e.Mod, draw);
-            PatchMorphWeights(draw_list, db, e.Deform);
-            patch_edit_pending_local_transform(db, e.Entity);
-        }
-    }
-    // Wire line batch (wireframe mode + line meshes, matches Blender's wireframe overlay)
-    wire_line_batch = draw_list.BeginBatch();
-    for (const auto &e : mesh_entities) {
-        if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0) continue;
-        if (e.Buf.FaceIndices.Count > 0 && !is_wireframe_mode) continue;
-        auto draw = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-        draw.ElementStateSlotOffset = Meshes->GetEdgeStateRange(e.MeshComp->GetStoreId());
-        const auto db = draw_list.Draws.size();
-        AppendDraw(draw_list, wire_line_batch, e.Buf.EdgeIndices, e.Mod, draw);
-        PatchMorphWeights(draw_list, db, e.Deform);
-        patch_edit_pending_local_transform(db, e.Entity);
-    }
-
-    if (show_overlays && settings.ShowExtras) {
-        AppendExtrasDraw(R, Buffers->Instances, draw_list, extras_line_batch, [](auto &, const auto &) {});
-    }
-
-    // Point batch
-    point_batch = draw_list.BeginBatch();
-    for (const auto &e : mesh_entities) {
-        if (e.IsBone) continue;
-        const bool is_point_mesh = e.Buf.FaceIndices.Count == 0 && e.Buf.EdgeIndices.Count == 0;
-        if (!is_point_mesh && !((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode)) continue;
-        auto draw = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-        draw.ElementStateSlotOffset = {Meshes->GetVertexStateSlot(), e.Buf.Vertices.Offset};
-        const auto db = draw_list.Draws.size();
-        if (is_point_mesh) AppendDraw(draw_list, point_batch, e.Buf.VertexIndices, e.Mod, draw);
-        else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, point_batch, e.Buf.VertexIndices, e.Mod, draw, *e.PrimaryEditBufferIndex);
-        else if (e.IsExcitable) AppendDraw(draw_list, point_batch, e.Buf.VertexIndices, e.Mod, draw);
-        PatchMorphWeights(draw_list, db, e.Deform);
-        patch_edit_pending_local_transform(db, e.Entity);
-    }
-
-    { // Normal overlay + bbox batches
-        const auto vertex_slot = Buffers->VertexBuffer.Buffer.Slot;
-        overlay_face_normals_batch = draw_list.BeginBatch();
-        for (const auto &e : mesh_entities) {
-            if (auto it = e.Buf.NormalIndicators.find(Element::Face); it != e.Buf.NormalIndicators.end()) {
-                auto draw = MakeDrawData(it->second, vertex_slot, Buffers->Instances);
-                AppendDraw(draw_list, overlay_face_normals_batch, it->second.Indices, e.Mod, draw);
-            }
-        }
-        overlay_vertex_normals_batch = draw_list.BeginBatch();
-        for (const auto &e : mesh_entities) {
-            if (auto it = e.Buf.NormalIndicators.find(Element::Vertex); it != e.Buf.NormalIndicators.end()) {
-                auto draw = MakeDrawData(it->second, vertex_slot, Buffers->Instances);
-                AppendDraw(draw_list, overlay_vertex_normals_batch, it->second.Indices, e.Mod, draw);
-            }
-        }
-        overlay_bbox_batch = draw_list.BeginBatch();
-        for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-            auto draw = MakeDrawData(bounding_boxes.Buffers, vertex_slot, Buffers->Instances);
-            AppendDraw(draw_list, overlay_bbox_batch, bounding_boxes.Buffers.Indices, models, draw);
         }
     }
 
@@ -3249,14 +3280,14 @@ void Scene::RecordRenderCommandBuffer() {
         cb.pipelineBarrier(src_stages, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barriers);
     };
 
-    const bool has_silhouette = render_silhouette && silhouette_batch.DrawCount > 0;
+    const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0;
     if (has_silhouette) { // Silhouette depth/object pass
         const auto &silhouette = Pipelines->Silhouette;
         static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, silhouette_batch);
+        record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, draw.Silhouette);
         cb.endRenderPass();
 
         // Silhouette pass offscreen color writes -> edge pass fragment sampling.
@@ -3312,20 +3343,20 @@ void Scene::RecordRenderCommandBuffer() {
         // Solid faces
         if (show_fill) {
             if (show_rendered) {
-                record_pbr_batch(fill_batch_opaque, true);
-                record_pbr_batch(fill_batch_blend, false);
+                record_pbr_batch(draw.FillOpaque, true);
+                record_pbr_batch(draw.FillBlend, false);
             } else {
-                record_draw_batch(main.Renderer, fill_pipeline, fill_batch_opaque);
+                record_draw_batch(main.Renderer, fill_pipeline, draw.FillOpaque);
             }
         }
         // Edit mode edges as triangle quads with self-AA
-        record_draw_batch(main.Renderer, SPT::EdgeQuad, edge_quad_batch);
+        record_draw_batch(main.Renderer, SPT::EdgeQuad, draw.EdgeQuad);
         // Wireframe/line mesh edges as GPU lines (LineAA composite handles AA)
-        record_draw_batch(main.Renderer, SPT::Line, wire_line_batch);
+        record_draw_batch(main.Renderer, SPT::Line, draw.WireLine);
         // Vertex points (always recorded — batch is empty when nothing qualifies)
-        record_draw_batch(main.Renderer, SPT::Point, point_batch);
+        record_draw_batch(main.Renderer, SPT::Point, draw.Point);
         // Object extras (cameras, lights, empties)
-        record_draw_batch(main.Renderer, SPT::ObjectExtrasLine, extras_line_batch);
+        record_draw_batch(main.Renderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
     }
 
     // Silhouette edge color (rendered ontop of meshes)
@@ -3355,9 +3386,9 @@ void Scene::RecordRenderCommandBuffer() {
 
     { // Selection overlays
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        record_draw_batch(main.Renderer, SPT::LineOverlayFaceNormals, overlay_face_normals_batch);
-        record_draw_batch(main.Renderer, SPT::LineOverlayVertexNormals, overlay_vertex_normals_batch);
-        record_draw_batch(main.Renderer, SPT::LineOverlayBBox, overlay_bbox_batch);
+        record_draw_batch(main.Renderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
+        record_draw_batch(main.Renderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
+        record_draw_batch(main.Renderer, SPT::LineOverlayBBox, draw.OverlayBBox);
     }
 
     // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
@@ -3365,7 +3396,7 @@ void Scene::RecordRenderCommandBuffer() {
         // MoltenVK/Metal workaround: the grid shader writes gl_FragDepth (disabling early-z),
         // and late fragment tests don't correctly read unresolved fast-cleared depth on tile-based GPUs.
         // Re-clear depth when no triangle draws with depth write have resolved the fast-clear state.
-        if (!has_silhouette && fill_batch_opaque.DrawCount == 0) {
+        if (!has_silhouette && draw.FillOpaque.DrawCount == 0) {
             const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
             const vk::ClearRect grid_clear_rect{{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)}, 0, 1};
             cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
@@ -3374,7 +3405,7 @@ void Scene::RecordRenderCommandBuffer() {
     }
 
     { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
-        if (bone_fill_batch.DrawCount > 0 || bone_sphere_fill_batch.DrawCount > 0) {
+        if (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0) {
             cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
             const auto extent = main.Resources->ColorImage.Extent;
@@ -3385,16 +3416,16 @@ void Scene::RecordRenderCommandBuffer() {
             // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
             const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
             if (!object_wireframe) {
-                record_draw_batch(main.Renderer, SPT::BoneFill, bone_fill_batch);
-                record_draw_batch(main.Renderer, SPT::BoneSphereFill, bone_sphere_fill_batch);
+                record_draw_batch(main.Renderer, SPT::BoneFill, draw.BoneFill);
+                record_draw_batch(main.Renderer, SPT::BoneSphereFill, draw.BoneSphereFill);
             }
             // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
             // In wireframe+Object mode, wires are the only bone visualization so always show them.
             const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
                 (!show_overlays || !settings.ShowOutlineSelected);
             if (!hide_bone_outlines) {
-                record_draw_batch(main.Renderer, SPT::BoneWire, bone_wire_batch);
-                record_draw_batch(main.Renderer, SPT::BoneSphereWire, bone_sphere_wire_batch);
+                record_draw_batch(main.Renderer, SPT::BoneWire, draw.BoneWire);
+                record_draw_batch(main.Renderer, SPT::BoneSphereWire, draw.BoneSphereWire);
             }
         }
     }
@@ -4194,7 +4225,11 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     RecordTransferCommandBuffer();
 #endif
 
-    if (render_request == RenderRequest::ReRecord || extent_changed || render_extent_changed) RecordRenderCommandBuffer();
+    if (render_request == RenderRequest::ReRecord || extent_changed || render_extent_changed) {
+        RecordRenderCommandBuffer();
+    } else if (render_request == RenderRequest::ReRecordSilhouette && Draw->MainDrawCount > 0) {
+        RecordRenderCommandBuffer(/*silhouette_only=*/true);
+    }
 
     // Always ensure DrawDataSlot points to render draw data before submitting (may have been overwritten by a selection pass).
     Buffers->SceneViewUBO.Update(as_bytes(Buffers->RenderDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));

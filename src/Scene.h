@@ -165,6 +165,9 @@ private:
     struct EntityDestroyTracker;
     std::unique_ptr<EntityDestroyTracker> DestroyTracker;
 
+    struct DrawState;
+    std::unique_ptr<DrawState> Draw;
+
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
     std::unordered_set<std::string> NameSet; // O(1) uniqueness check for CreateName
@@ -216,7 +219,8 @@ private:
     enum class RenderRequest : uint8_t {
         None,
         Submit,
-        ReRecord,
+        ReRecordSilhouette, // Only silhouette batch + command buffer
+        ReRecord, // Full draw list rebuild
     };
 
     std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
@@ -244,7 +248,7 @@ private:
     void SnapToCamera(entt::entity camera_entity);
     void AnimateToCamera(entt::entity camera_entity);
 
-    void RecordRenderCommandBuffer();
+    void RecordRenderCommandBuffer(bool silhouette_only = false);
 
     // Process deferred component events. Called once per frame.
     RenderRequest ProcessComponentEvents();
