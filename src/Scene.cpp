@@ -1763,6 +1763,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
         }));
+        SelectionStale = true;
         request(RenderRequest::Submit);
     }
 
@@ -2854,7 +2855,7 @@ std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapU
 
 void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
-    SelectionStale = true;
+    if (!silhouette_only) SelectionStale = true;
 
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
