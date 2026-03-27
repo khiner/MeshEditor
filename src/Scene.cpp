@@ -2835,6 +2835,7 @@ void Scene::Destroy(entt::entity e) {
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
 
 void Scene::RecordRenderCommandBuffer() {
+    const Timer timer{"RecordRenderCommandBuffer"};
     SelectionStale = true;
     // In Edit mode, only primary edit instance per selected mesh gets Edit visuals.
     // Other selected instances render normally with silhouettes.
@@ -2848,9 +2849,22 @@ void Scene::RecordRenderCommandBuffer() {
     const bool show_fill = !is_wireframe_mode;
     const bool show_overlays = settings.ShowOverlays;
     const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
-    const auto primary_edit_instances = is_edit_mode ? scene_selection::ComputePrimaryEditInstances(R) : std::unordered_map<entt::entity, entt::entity>{};
+    // Compute both frozen-inclusive (for draw routing) and frozen-exclusive (for transforms) primary edit instances in one pass.
+    std::unordered_map<entt::entity, entt::entity> primary_edit_instances;
+    EditTransformContext edit_transform_context;
+    if (is_edit_mode) {
+        const auto active = FindActiveEntity(R);
+        for (const auto [e, instance, ok, ri] : R.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
+            if (ok.Value != ObjectType::Mesh) continue;
+            auto &primary = primary_edit_instances[instance.Entity];
+            if (primary == entt::entity{} || e == active) primary = e;
+            if (!R.all_of<Frozen>(e)) {
+                auto &primary_uf = edit_transform_context.TransformInstances[instance.Entity];
+                if (primary_uf == entt::entity{} || e == active) primary_uf = e;
+            }
+        }
+    }
     const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(SceneEntity);
-    const auto edit_transform_context = is_edit_mode ? EditTransformContext{scene_selection::ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
     const auto is_silhouette_eligible = [&](entt::entity e) {
         if (!R.all_of<Instance, RenderInstance>(e)) return false;
         const auto buffer_entity = R.get<const Instance>(e).Entity;
@@ -3095,13 +3109,11 @@ void Scene::RecordRenderCommandBuffer() {
         if (is_bone_mode) return R.all_of<Active>(arm_obj_entity);
         return R.all_of<Selected>(arm_obj_entity);
     };
-    // Map a BoneJoint entity back to its owning armature object entity.
-    const auto find_joint_owner = [&](entt::entity joint_entity) -> entt::entity {
-        for (const auto [e, arm_obj] : R.view<const ArmatureObject>().each()) {
-            if (arm_obj.JointEntity == joint_entity) return e;
-        }
-        return entt::null;
-    };
+    // Map BoneJoint entities back to their owning armature object entities.
+    std::unordered_map<entt::entity, entt::entity> joint_to_owner;
+    for (const auto [e, arm_obj] : R.view<const ArmatureObject>().each()) {
+        if (arm_obj.JointEntity != entt::null) joint_to_owner[arm_obj.JointEntity] = e;
+    }
     if (show_overlays && settings.ShowBones) {
         bone_fill_batch = draw_list.BeginBatch();
         for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
@@ -3131,8 +3143,7 @@ void Scene::RecordRenderCommandBuffer() {
         bone_sphere_wire_batch = draw_list.BeginBatch();
         for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
             if (mesh_buffers.EdgeIndices.Count == 0) continue;
-            const auto owner = find_joint_owner(entity);
-            if (owner != entt::null && !should_draw_armature_bones(owner)) continue;
+            if (const auto it = joint_to_owner.find(entity); it != joint_to_owner.end() && !should_draw_armature_bones(it->second)) continue;
             auto wire_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, Buffers->Instances);
             wire_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
             AppendDraw(draw_list, bone_sphere_wire_batch, mesh_buffers.EdgeIndices, models, wire_draw);
