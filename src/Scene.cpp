@@ -2859,11 +2859,7 @@ std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapU
 
 void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
-    if (!silhouette_only) {
-        SelectionStale = true;
-        Draw->SelectionList = {};
-        Draw->SelectionDraws.clear();
-    }
+    if (!silhouette_only) SelectionStale = true;
 
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -2975,7 +2971,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             const Mesh *MeshComp; // nullptr if entity has no Mesh component
             const DeformSlots &Deform;
             std::optional<uint32_t> PrimaryEditBufferIndex;
-            bool IsExcitable, IsBone, IsExtras;
+            bool IsExcitable, IsBone, IsBoneJoint, IsExtras;
         };
 
         std::vector<MeshEntityData> mesh_entities;
@@ -2985,7 +2981,8 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 primary_bi = R.get<RenderInstance>(it->second).BufferIndex;
             }
-            mesh_entities.emplace_back(entity, mesh_buffers, models, R.try_get<const Mesh>(entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), R.all_of<ArmatureObject>(entity) || R.all_of<BoneJoint>(entity), R.all_of<ObjectExtrasTag>(entity));
+            const bool is_bone_joint = R.all_of<BoneJoint>(entity);
+            mesh_entities.emplace_back(entity, mesh_buffers, models, R.try_get<const Mesh>(entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), R.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, R.all_of<ObjectExtrasTag>(entity));
         }
 
         // Entity -> mesh_entities index map for blend_mesh_order lookup
@@ -3205,6 +3202,63 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 auto dd = MakeDrawData(bounding_boxes.Buffers, vertex_slot, Buffers->Instances);
                 AppendDraw(draw_list, draw.OverlayBBox, bounding_boxes.Buffers.Indices, models, dd);
             }
+        }
+
+        { // Build selection draw list
+            auto &sel_list = draw.SelectionList;
+            sel_list = {};
+
+            auto sel_tri = sel_list.BeginBatch();
+            for (const auto &e : mesh_entities) {
+                if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count == 0) continue;
+                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.FaceIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                const auto db = sel_list.Draws.size();
+                if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_tri, e.Buf.FaceIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
+                else AppendDraw(sel_list, sel_tri, e.Buf.FaceIndices, e.Mod, dd);
+                PatchMorphWeights(sel_list, db, e.Deform);
+            }
+            auto sel_line = sel_list.BeginBatch();
+            for (const auto &e : mesh_entities) {
+                if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0) continue;
+                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                const auto db = sel_list.Draws.size();
+                if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_line, e.Buf.EdgeIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
+                else AppendDraw(sel_list, sel_line, e.Buf.EdgeIndices, e.Mod, dd);
+                PatchMorphWeights(sel_list, db, e.Deform);
+            }
+            auto sel_point = sel_list.BeginBatch();
+            for (const auto &e : mesh_entities) {
+                if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count > 0) continue;
+                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                const auto db = sel_list.Draws.size();
+                if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_point, e.Buf.VertexIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
+                else AppendDraw(sel_list, sel_point, e.Buf.VertexIndices, e.Mod, dd);
+                PatchMorphWeights(sel_list, db, e.Deform);
+            }
+
+            auto sel_bone_sphere = sel_list.BeginBatch();
+            for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
+                if (mesh_buffers.FaceIndices.Count == 0) continue;
+                auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                AppendDraw(sel_list, sel_bone_sphere, mesh_buffers.FaceIndices, models, dd);
+            }
+
+            DrawBatchInfo sel_extras;
+            AppendExtrasDraw(R, Buffers->Instances, sel_list, sel_extras, [](auto &dd, const auto &instances) {
+                dd.ObjectIdSlot = instances.ObjectIdSlot();
+            });
+
+            draw.SelectionDraws = {
+                {SPT::SelectionFragmentTriangles, sel_tri},
+                {SPT::SelectionFragmentLines, sel_line},
+                {SPT::SelectionFragmentPoints, sel_point},
+                {SPT::SelectionFragmentBoneSphere, sel_bone_sphere},
+                {SPT::SelectionObjectExtrasLines, sel_extras},
+            };
         }
 
         // Cache the main draw list state (everything before silhouette).
@@ -3479,73 +3533,7 @@ void Scene::RecordTransferCommandBuffer() {
 void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
 
-    if (Draw->SelectionDraws.empty()) {
-        const auto primary_edit_instances = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit ?
-            scene_selection::ComputePrimaryEditInstances(R) :
-            std::unordered_map<entt::entity, entt::entity>{};
-        const bool is_edit_mode = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit;
-        const auto selection_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(R, *Meshes);
-        const auto get_deform_slots = [&](entt::entity mesh_entity) -> DeformSlots {
-            if (auto it = selection_deform_slots.find(mesh_entity); it != selection_deform_slots.end()) return it->second;
-            return {};
-        };
-
-        auto &sel = *Draw;
-        sel.SelectionList = {};
-
-        auto append_topology_batch = [&](auto filter) {
-            auto batch = sel.SelectionList.BeginBatch();
-            for (auto [entity, mesh_buffers, models] : R.view<MeshBuffers, ModelsBuffer>().each()) {
-                if (R.all_of<ObjectExtrasTag>(entity) || R.all_of<BoneJoint>(entity)) continue;
-                const auto *indices = filter(mesh_buffers);
-                if (!indices || indices->Count == 0) continue;
-                const auto deform = get_deform_slots(entity);
-                auto draw = MakeDrawData(mesh_buffers.Vertices, *indices, Buffers->Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-                draw.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
-                const auto db = sel.SelectionList.Draws.size();
-                if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
-                    AppendDraw(sel.SelectionList, batch, *indices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
-                } else {
-                    AppendDraw(sel.SelectionList, batch, *indices, models, draw);
-                }
-                PatchMorphWeights(sel.SelectionList, db, deform);
-            }
-            return batch;
-        };
-
-        auto tri_batch = append_topology_batch([](const MeshBuffers &b) -> const SlottedRange * {
-            return b.FaceIndices.Count > 0 ? &b.FaceIndices : nullptr;
-        });
-        auto line_batch = append_topology_batch([](const MeshBuffers &b) -> const SlottedRange * {
-            return b.FaceIndices.Count == 0 && b.EdgeIndices.Count > 0 ? &b.EdgeIndices : nullptr;
-        });
-        auto point_batch = append_topology_batch([](const MeshBuffers &b) -> const SlottedRange * {
-            return b.FaceIndices.Count == 0 && b.EdgeIndices.Count == 0 ? &b.VertexIndices : nullptr;
-        });
-
-        auto bone_sphere_batch = sel.SelectionList.BeginBatch();
-        for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
-            if (mesh_buffers.FaceIndices.Count == 0) continue;
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-            draw.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
-            AppendDraw(sel.SelectionList, bone_sphere_batch, mesh_buffers.FaceIndices, models, draw);
-        }
-
-        DrawBatchInfo extras_batch;
-        AppendExtrasDraw(R, Buffers->Instances, sel.SelectionList, extras_batch, [](auto &draw, const auto &instances) {
-            draw.ObjectIdSlot = instances.ObjectIdSlot();
-        });
-
-        sel.SelectionDraws = {
-            {SPT::SelectionFragmentTriangles, tri_batch},
-            {SPT::SelectionFragmentLines, line_batch},
-            {SPT::SelectionFragmentPoints, point_batch},
-            {SPT::SelectionFragmentBoneSphere, bone_sphere_batch},
-            {SPT::SelectionObjectExtrasLines, extras_batch},
-        };
-    }
-
-    // Object selection never uses depth testing - we want all visible pixels regardless of occlusion.
+    // Selection draw list is pre-built by RecordRenderCommandBuffer.
     RenderSelectionPassWith(
         false,
         [this](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
