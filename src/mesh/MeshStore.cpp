@@ -3,6 +3,7 @@
 #include "MeshData.h"
 
 #include <limits>
+#include <numeric>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
@@ -498,6 +499,32 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
     if (!data.Faces.empty()) {
         const auto face_count = static_cast<uint32_t>(data.Faces.size());
 
+        // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
+        if (!primitives.FacePrimitiveIndices.empty() && primitives.FacePrimitiveIndices.size() == face_count) {
+            std::vector<uint32_t> perm(face_count);
+            std::iota(perm.begin(), perm.end(), 0u);
+            std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) {
+                return primitives.FacePrimitiveIndices[a] < primitives.FacePrimitiveIndices[b];
+            });
+            bool already_sorted = true;
+            for (uint32_t i = 0; i < face_count; ++i) {
+                if (perm[i] != i) {
+                    already_sorted = false;
+                    break;
+                }
+            }
+            if (!already_sorted) {
+                std::vector<std::vector<uint32_t>> sorted_faces(face_count);
+                std::vector<uint32_t> sorted_fpi(face_count);
+                for (uint32_t i = 0; i < face_count; ++i) {
+                    sorted_faces[i] = std::move(data.Faces[perm[i]]);
+                    sorted_fpi[i] = primitives.FacePrimitiveIndices[perm[i]];
+                }
+                data.Faces = std::move(sorted_faces);
+                primitives.FacePrimitiveIndices = std::move(sorted_fpi);
+            }
+        }
+
         // Write face-first-triangle offsets directly into GPU buffer.
         entry.FaceData = AllocateFaces(face_count);
         auto first_tri_span = FaceFirstTriangleBuffer.GetMutable(entry.FaceData);
@@ -536,6 +563,25 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
             std::ranges::copy(primitives.MaterialIndices, pm_span.begin());
         } else {
             std::ranges::fill(pm_span, 0u);
+        }
+
+        // Compute per-primitive triangle ranges from the (now sorted) face data.
+        {
+            const auto fp = FacePrimitiveBuffer.Get(entry.FacePrimitives);
+            const auto fft = FaceFirstTriangleBuffer.Get(entry.FaceData);
+            auto &ranges = entry.PrimitiveTriangleRanges;
+            if (face_count > 0) {
+                uint32_t current_prim = fp[0];
+                uint32_t range_first_tri = fft[0];
+                for (uint32_t fi = 1; fi < face_count; ++fi) {
+                    if (fp[fi] != current_prim) {
+                        ranges.push_back({current_prim, range_first_tri, fft[fi] - range_first_tri});
+                        current_prim = fp[fi];
+                        range_first_tri = fft[fi];
+                    }
+                }
+                ranges.push_back({current_prim, range_first_tri, entry.TriangleCount - range_first_tri});
+            }
         }
     }
 
@@ -583,6 +629,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         .MorphTargetCount = src_entry.MorphTargetCount,
         .TriangleCount = src_entry.TriangleCount,
         .DefaultMorphWeights = src_entry.DefaultMorphWeights,
+        .PrimitiveTriangleRanges = src_entry.PrimitiveTriangleRanges,
         .Alive = true,
     });
 

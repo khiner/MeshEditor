@@ -3015,60 +3015,30 @@ void Scene::RecordRenderCommandBuffer() {
 
                 if (show_rendered) {
                     const auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh.GetStoreId());
-                    const auto face_primitives = Meshes->GetFacePrimitiveIndices(mesh.GetStoreId());
-                    const auto triangle_face_ids = Meshes->GetTriangleFaceIds(mesh.GetStoreId());
-                    const auto material_count = GetMaterialCount(*Buffers);
-                    const auto material_is_blend = [&](uint32_t material_index) {
-                        return material_index < material_count &&
-                            GetMaterial(*Buffers, material_index).AlphaMode == MaterialAlphaMode::Blend;
-                    };
-                    const uint32_t triangle_count = mesh_buffers.FaceIndices.Count / 3u;
-                    if (!primitive_materials.empty() &&
-                        face_primitives.size() == mesh.FaceCount() &&
-                        triangle_face_ids.size() == triangle_count &&
-                        triangle_count > 0u) {
-                        const auto triangle_is_blend = [&](uint32_t triangle_index) {
-                            const auto face_id = triangle_face_ids[triangle_index];
-                            if (face_id == 0u || face_id > face_primitives.size()) return false;
-                            auto primitive_index = face_primitives[face_id - 1u];
-                            if (primitive_index >= primitive_materials.size()) primitive_index = primitive_materials.size() - 1u;
-                            return material_is_blend(primitive_materials[primitive_index]);
-                        };
-
+                    const auto primitive_ranges = Meshes->GetPrimitiveTriangleRanges(mesh.GetStoreId());
+                    if (!primitive_materials.empty() && !primitive_ranges.empty()) {
+                        const auto material_count = GetMaterialCount(*Buffers);
+                        // Merge adjacent primitives with the same blend mode into single draw calls.
                         struct BlendDrawRange {
-                            bool Blend{false};
-                            uint32_t FirstTriangle{0};
-                            uint32_t TriangleCount{0};
+                            bool Blend;
+                            uint32_t FirstTriangle, TriangleCount;
                         };
                         std::vector<BlendDrawRange> blend_ranges;
-                        blend_ranges.reserve(16);
-
-                        auto active_blend = triangle_is_blend(0u);
-                        auto first_triangle = 0u;
-                        for (uint32_t tri = 1u; tri < triangle_count; ++tri) {
-                            const auto tri_blend = triangle_is_blend(tri);
-                            if (tri_blend == active_blend) continue;
-                            blend_ranges.emplace_back(
-                                BlendDrawRange{
-                                    .Blend = active_blend,
-                                    .FirstTriangle = first_triangle,
-                                    .TriangleCount = tri - first_triangle,
-                                }
-                            );
-                            active_blend = tri_blend;
-                            first_triangle = tri;
-                        }
-                        blend_ranges.emplace_back(
-                            BlendDrawRange{
-                                .Blend = active_blend,
-                                .FirstTriangle = first_triangle,
-                                .TriangleCount = triangle_count - first_triangle,
+                        blend_ranges.reserve(primitive_ranges.size());
+                        for (const auto &pr : primitive_ranges) {
+                            if (pr.TriangleCount == 0u) continue;
+                            auto pi = pr.PrimitiveIndex;
+                            if (pi >= primitive_materials.size()) pi = primitive_materials.size() - 1u;
+                            const bool is_blend = primitive_materials[pi] < material_count &&
+                                GetMaterial(*Buffers, primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
+                            if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend) {
+                                blend_ranges.back().TriangleCount += pr.TriangleCount;
+                            } else {
+                                blend_ranges.emplace_back(is_blend, pr.FirstTriangle, pr.TriangleCount);
                             }
-                        );
-
+                        }
                         for (const auto &range : blend_ranges) {
                             if (blend_target && range.Blend != *blend_target) continue;
-                            if (range.TriangleCount == 0u) continue;
                             auto range_draw = draw;
                             range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
                             range_draw.FaceIdOffset += range.FirstTriangle;

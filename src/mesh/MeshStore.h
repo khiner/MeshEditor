@@ -33,6 +33,10 @@ struct MeshData;
 struct MeshVertexAttributes;
 struct MeshPrimitives;
 
+struct PrimitiveTriangleRange {
+    uint32_t PrimitiveIndex, FirstTriangle, TriangleCount;
+};
+
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
@@ -88,6 +92,8 @@ struct MeshStore {
     std::span<const uint32_t> GetPrimitiveMaterialIndices(uint32_t id) const { return PrimitiveMaterialBuffer.Get(Entries.at(id).PrimitiveMaterials); }
     std::span<uint32_t> GetPrimitiveMaterialIndices(uint32_t id) { return PrimitiveMaterialBuffer.GetMutable(Entries.at(id).PrimitiveMaterials); }
 
+    std::span<const PrimitiveTriangleRange> GetPrimitiveTriangleRanges(uint32_t id) const { return Entries.at(id).PrimitiveTriangleRanges; }
+
     void UpdateElementStates(
         const Mesh &, Element,
         const std::unordered_set<he::VH> &selected_vertices,
@@ -129,6 +135,7 @@ private:
         uint32_t MorphTargetCount{0};
         uint32_t TriangleCount{0};
         std::vector<float> DefaultMorphWeights{};
+        std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges{};
         bool Alive{false};
     };
 
