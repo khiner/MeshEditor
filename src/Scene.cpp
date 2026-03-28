@@ -4135,16 +4135,16 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
 
 void Scene::Render(vk::Fence viewportConsumerFence) {
     auto &dl = *ImGui::GetWindowDrawList();
-    // Split draw list into two channels: one for the viewport texture (background) and one for overlay visuals (foreground).
-    // This allows doing overlay interact+draw in one pass, applying any changes to the current frame's viewport render.
-    // Channel 1: overlay, Channel 0: viewport
+    // Split draw list into two channels: viewport texture (background, channel 0) and overlay visuals (foreground, channel 1).
+    // Overlay is split into interact and draw phases so that interaction patches (e.g. Transform) are processed
+    // by SubmitViewport's ProcessComponentEvents before DrawOverlay reads the resulting state (e.g. WorldTransform).
     dl.ChannelsSplit(2);
+
     dl.ChannelsSetCurrent(1);
-    RenderOverlay();
+    InteractOverlay();
 
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {
-        // Recreate the ImGui texture wrapper for the line-AA composited image.
         ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->FinalColorImage.View, vec2{0, 1}, vec2{1, 0});
     }
     if (ViewportTexture) {
@@ -4153,6 +4153,10 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
         const auto &t = *ViewportTexture;
         dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, {p.x + float(extent.width), p.y + float(extent.height)}, {t.Uv0.x, t.Uv0.y}, {t.Uv1.x, t.Uv1.y});
     }
+
+    dl.ChannelsSetCurrent(1);
+    DrawOverlay();
+
     dl.ChannelsMerge();
 }
 

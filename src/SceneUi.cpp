@@ -813,7 +813,7 @@ void Scene::Interact() {
     }
 }
 
-void Scene::RenderOverlay() {
+void Scene::InteractOverlay() {
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
     static constexpr float OrientationGizmoSize{90};
@@ -968,11 +968,10 @@ void Scene::RenderOverlay() {
     // Exit "look through" camera view if the user interacts with the orientation gizmo.
     if (!active_transform && OrientationGizmo::IsActive()) ExitLookThroughCamera();
     auto &camera = R.get<ViewCamera>(SceneEntity);
-    const auto &axes = R.get<const colors::AxesArray>(SceneEntity);
-    { // Orientation gizmo (drawn before tick so camera animations it initiates begin this frame)
+    { // Orientation gizmo (interacted before tick so camera animations it initiates begin this frame)
         const float shading_group_height = shading_button_style.ButtonSize.y;
         const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2.f + shading_group_height * 1.25f};
-        OrientationGizmo::Draw(pos, OrientationGizmoSize, camera, axes, !active_transform);
+        OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform);
     }
     if (camera.Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
 
@@ -1171,13 +1170,28 @@ void Scene::RenderOverlay() {
             R.clear<StartTransform, StartBoneLength>();
         }
 
-        // Render gizmo at the post-delta position so it matches the applied transform.
-        auto render_transform = gizmo_transform;
-        if (interact_result) render_transform.P = interact_result->Start.P + interact_result->Delta.P;
-        TransformGizmo::Render(render_transform, MGizmo.Config.Type, camera, viewport, axes);
+        // Store gizmo render transform for DrawOverlay.
+        GizmoRenderTransform = gizmo_transform;
+        if (interact_result) GizmoRenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
-    if (settings.ShowOverlays && settings.ShowOrigins && (!R.storage<Selected>().empty() || !R.storage<Active>().empty())) { // Draw origin dots for active/selected entities
+    StartScreenTransform = {};
+}
+
+void Scene::DrawOverlay() {
+    const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
+    const auto &axes = R.get<const colors::AxesArray>(SceneEntity);
+    const auto &camera = R.get<const ViewCamera>(SceneEntity);
+
+    OrientationGizmo::Render(axes);
+    if (GizmoRenderTransform) {
+        TransformGizmo::Render(*GizmoRenderTransform, MGizmo.Config.Type, camera, viewport, axes);
+        GizmoRenderTransform.reset();
+    }
+
+    const auto &settings = R.get<const SceneSettings>(SceneEntity);
+    // Draw origin dots for active/selected entities
+    if (settings.ShowOverlays && settings.ShowOrigins && (!R.storage<Selected>().empty() || !R.storage<Active>().empty())) {
         const auto &theme = R.get<const ViewportTheme>(SceneEntity);
         const auto vp = camera.Projection(viewport.size.x / viewport.size.y) * camera.View();
         auto draw_dot = [&](vec3 pos, bool is_active) {
@@ -1248,8 +1262,6 @@ void Scene::RenderOverlay() {
             dl.AddRect(iv(fmin), iv(fmax), IM_COL32(255, 255, 255, 140), 0.f, 0, 1.5f);
         }
     }
-
-    StartScreenTransform = {};
 }
 
 void Scene::ClearSelectedBoneTransforms(bool position, bool rotation, bool scale) {

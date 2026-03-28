@@ -197,6 +197,7 @@ private:
         TransformGizmo::Mode Mode;
     };
     TransformGizmoState MGizmo;
+    std::optional<GizmoTransform> GizmoRenderTransform; // Set by InteractOverlay, consumed by DrawOverlay.
     std::optional<TransformGizmo::TransformType> StartScreenTransform;
     bool OverlayControlsHovered{false};
 
@@ -241,9 +242,11 @@ private:
     void RecordTransferCommandBuffer();
 #endif
     bool SubmitViewport(vk::Fence viewportConsumerFence);
-    // The overlay is everything drawn ontop of the viewport with ImGui, independent of the main scene vulkan pipeline:
-    // Orientation/Transform gizmos, active object origin dots
-    void RenderOverlay();
+    // The overlay is everything drawn on top of the viewport with ImGui, independent of the main scene vulkan pipeline.
+    // Split into interact (state changes) and draw (visuals) so that DrawOverlay runs after ProcessComponentEvents
+    // and reads up-to-date WorldTransforms.
+    void InteractOverlay();
+    void DrawOverlay();
     void ExitLookThroughCamera();
     void SnapToCamera(entt::entity camera_entity);
     void AnimateToCamera(entt::entity camera_entity);
