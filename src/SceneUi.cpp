@@ -816,7 +816,7 @@ void Scene::Interact() {
 void Scene::InteractOverlay() {
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
-    static constexpr float OrientationGizmoSize{90};
+    static constexpr float OrientationGizmoSize{84};
     const OverlayIconButtonStyle overlay_button_style{};
     const float overlay_corner_gap = GetTextLineHeightWithSpacing() / 2.f;
     const OverlayIconButtonStyle shading_button_style{
@@ -970,7 +970,7 @@ void Scene::InteractOverlay() {
     auto &camera = R.get<ViewCamera>(SceneEntity);
     { // Orientation gizmo (interacted before tick so camera animations it initiates begin this frame)
         const float shading_group_height = shading_button_style.ButtonSize.y;
-        const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2.f + shading_group_height * 1.25f};
+        const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + shading_group_height};
         OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform);
     }
     if (camera.Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
