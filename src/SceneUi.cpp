@@ -464,6 +464,13 @@ void Scene::AnimateToCamera(entt::entity camera_entity) {
 }
 
 void Scene::Interact() {
+    // Track the previous click position for pick-cycle gating.
+    static ImVec2 PrevClickPos{-FLT_MAX, -FLT_MAX}, CurrentClickPos{-FLT_MAX, -FLT_MAX};
+    if (GetIO().MouseClicked[0]) {
+        PrevClickPos = CurrentClickPos;
+        CurrentClickPos = GetIO().MouseClickedPos[0];
+    }
+
     const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
     const auto render_extent = ComputeRenderExtentPx(logical_extent);
     if (logical_extent.width == 0 || logical_extent.height == 0 || render_extent.width == 0 || render_extent.height == 0) return;
@@ -787,6 +794,7 @@ void Scene::Interact() {
         const auto active = bone_mode ? FindActiveBone(R) : active_entity;
         const auto hits = ResolveHits(R, RunObjectPick(mouse_px, scaled_pick_radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&] {
+            if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) return hits.front();
             const auto *bs = R.try_get<BoneSelection>(active);
             auto it = find_if(hits, [&](const SelectionHit &h) { return h.Entity == active && (!h.Part || (bs && bs->Has(*h.Part))); });
             return it != hits.end() && ++it != hits.end() ? *it : hits.front();
