@@ -2747,23 +2747,6 @@ void Scene::ClearMeshes() {
         if (!R.all_of<SubElementOf>(e)) entities.emplace_back(e);
     }
     for (const auto e : entities) Destroy(e);
-
-    auto &texture_store = *Textures;
-    if (texture_store.Textures.size() > 1) {
-        const auto imported_textures = std::span<const TextureEntry>{texture_store.Textures}.subspan(1);
-        const auto imported_sampler_slots = CollectSamplerSlots(imported_textures);
-        ReleaseSamplerSlots(*Slots, imported_sampler_slots);
-        texture_store.Textures.erase(texture_store.Textures.begin() + 1, texture_store.Textures.end());
-    }
-    texture_store.WhiteTextureSlot = texture_store.Textures.empty() ? InvalidSlot : texture_store.Textures.front().SamplerSlot;
-
-    if (GetMaterialCount(*Buffers) > 1) SetMaterialCount(*Buffers, 1u);
-    R.patch<MaterialStore>(
-        SceneEntity,
-        [](auto &material_store) {
-            if (material_store.Names.size() > 1) material_store.Names.erase(material_store.Names.begin() + 1, material_store.Names.end());
-        }
-    );
 }
 
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
@@ -2862,6 +2845,22 @@ void Scene::Destroy(entt::entity e) {
         if (!(used_by_armature_object || used_by_armature_modifier || used_by_bone_attachment)) {
             R.destroy(armature_data_entity);
         }
+    }
+
+    // If no instances remain, release all imported textures and reset to the default material.
+    if (R.view<Instance>().empty()) {
+        auto &texture_store = *Textures;
+        // Index 0 is the default white texture (permanent); imported textures start at index 1.
+        if (texture_store.Textures.size() > 1) {
+            ReleaseSamplerSlots(*Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(1)));
+            texture_store.Textures.erase(texture_store.Textures.begin() + 1, texture_store.Textures.end());
+        }
+        texture_store.WhiteTextureSlot = texture_store.Textures.empty() ? InvalidSlot : texture_store.Textures.front().SamplerSlot;
+
+        if (GetMaterialCount(*Buffers) > 1) SetMaterialCount(*Buffers, 1u);
+        R.patch<MaterialStore>(SceneEntity, [](auto &ms) {
+            if (ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
+        });
     }
 }
 
