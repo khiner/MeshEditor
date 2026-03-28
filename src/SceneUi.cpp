@@ -833,6 +833,10 @@ void Scene::InteractOverlay() {
         .IconScale = overlay_button_style.IconScale,
         .CornerRounding = overlay_button_style.CornerRounding * 0.75f,
     };
+    // Hold through the press-release cycle so IsSingleClicked (which fires on release) is still guarded.
+    if (!IsMouseDown(ImGuiMouseButton_Left)) OverlayControlsHovered = false;
+    const bool any_popup_open = IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+
     { // Transform mode pill buttons (top-left overlay)
         using enum TransformGizmo::Type;
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -847,7 +851,6 @@ void Scene::InteractOverlay() {
         else if (!scale_enabled && transform_type == Scale) transform_type = Translate;
 
         const auto start_pos = std::bit_cast<ImVec2>(viewport.pos) + GetWindowContentRegionMin() + ImVec2{overlay_corner_gap, overlay_corner_gap};
-        OverlayControlsHovered = false;
         static constexpr float gap{4}; // Gap between select buttons and transform buttons
         const float button_h = overlay_button_style.ButtonSize.y;
         const auto make_button = [](const SvgResource *icon, ImVec2 offset, ImDrawFlags corners, bool enabled, bool active, const char *tooltip = nullptr) {
@@ -929,7 +932,7 @@ void Scene::InteractOverlay() {
             const auto saved_cursor = GetCursorScreenPos();
             SetCursorScreenPos(group_start + ImVec2{icon_w, 0.f});
             PushID("##OverlayArrow");
-            const bool arrow_clicked = InvisibleButton("##btn", {arrow_w, button_h});
+            InvisibleButton("##btn", {arrow_w, button_h});
             const bool arrow_hovered = IsItemHovered();
             PopID();
             SetCursorScreenPos(saved_cursor);
@@ -951,7 +954,9 @@ void Scene::InteractOverlay() {
                 center + ImVec2{0.f, arrow_half * 0.5f},
                 GetColorU32(ImGuiCol_Text)
             );
-            if (arrow_clicked) OpenPopup("##OverlayDropdown");
+            // Open on press (not release) so the popup is still in the stack and !popup_open gates correctly,
+            // matching how ImGui's own BeginCombo works (PressedOnClick).
+            if (IsMouseClicked(0) && arrow_hovered && !popup_open) OpenPopup("##OverlayDropdown");
         }
         { // Dropdown popup
             SetNextWindowPos(group_start + ImVec2{0.f, button_h + 2.f});
@@ -979,7 +984,7 @@ void Scene::InteractOverlay() {
     { // Orientation gizmo (interacted before tick so camera animations it initiates begin this frame)
         const float shading_group_height = shading_button_style.ButtonSize.y;
         const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + shading_group_height};
-        OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform);
+        OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform && !any_popup_open);
     }
     if (camera.Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
 
