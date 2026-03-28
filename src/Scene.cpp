@@ -3411,7 +3411,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         silhouette_depth.RenderQuad(cb);
     }
 
-    { // Meshes
+    if (Buffers->IdentityIndexCount > 0) { // Meshes
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         // Solid faces
         if (show_fill) {
@@ -3457,7 +3457,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         silhouette_edc.RenderQuad(cb);
     }
 
-    { // Selection overlays
+    if (Buffers->IdentityIndexCount > 0) { // Selection overlays
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         record_draw_batch(main.Renderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
         record_draw_batch(main.Renderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);

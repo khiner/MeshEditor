@@ -45,12 +45,11 @@ std::string FormatBytes(uint32_t bytes) {
 }
 
 #ifndef RELEASE_BUILD
-thread_local const char *VmaAllocContext = "unknown";
 void LoggingVmaAllocate(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("  vkAllocateMemory: {} type={} (during: {})", FormatBytes(size), memory_type, VmaAllocContext);
+    std::println("  vkAllocateMemory: {} type={}", FormatBytes(size), memory_type);
 }
 void LoggingVmaFree(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("  vkFreeMemory: {} type={} (during: {})", FormatBytes(size), memory_type, VmaAllocContext);
+    std::println("  vkFreeMemory: {} type={}", FormatBytes(size), memory_type);
 }
 #endif
 
@@ -65,9 +64,7 @@ std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevi
 
 struct VmaBuffer {
     VmaBuffer(VmaAllocator vma, vk::DeviceSize size, MemoryUsage memory_usage, vk::BufferUsageFlags usage) : Vma(vma), BufferSize(size) {
-#ifndef RELEASE_BUILD
-        std::println("VmaBuffer create: size={} mem={} usage={:#x}", FormatBytes(size), int(memory_usage), uint32_t(usage));
-#endif
+        if (size == 0) return; // Deferred: no GPU allocation until first Reserve/Update
         VmaAllocationCreateInfo aci{};
         aci.usage = ToVmaMemoryUsage(memory_usage);
         if (memory_usage == MemoryUsage::GpuOnly) {
@@ -99,9 +96,7 @@ struct VmaBuffer {
     VmaBuffer(VmaAllocator vma, std::span<const std::byte> data, MemoryUsage mem, vk::BufferUsageFlags usage)
         : VmaBuffer(vma, data.size(), mem, usage) { Write(data); }
     ~VmaBuffer() {
-#ifndef RELEASE_BUILD
-        std::println("VmaBuffer destroy: size={}", FormatBytes(BufferSize));
-#endif
+        if (BufferSize == 0) return;
         vmaDestroyBuffer(Vma, Handle, Allocation);
     }
 
@@ -127,10 +122,10 @@ struct VmaBuffer {
     }
 
     VmaAllocator Vma;
-    vk::DeviceSize BufferSize; // The VkBuffer creation size (VMA may over-allocate)
-    vk::Buffer Handle;
-    VmaAllocation Allocation;
-    VmaAllocationInfo Info;
+    vk::DeviceSize BufferSize;
+    vk::Buffer Handle{};
+    VmaAllocation Allocation{};
+    VmaAllocationInfo Info{};
     VkMemoryPropertyFlags MemoryProps{};
 };
 
@@ -155,12 +150,6 @@ BufferContext::~BufferContext() {
 }
 
 void BufferContext::ReclaimRetiredBuffers() {
-#ifndef RELEASE_BUILD
-    if (!Retired.empty()) {
-        std::println("ReclaimRetiredBuffers: freeing {} retired buffers", Retired.size());
-        VmaAllocContext = "ReclaimRetiredBuffers";
-    }
-#endif
     Retired.clear();
 }
 
@@ -238,9 +227,9 @@ Buffer::Buffer(BufferContext &ctx, vk::DeviceSize size, vk::BufferUsageFlags usa
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     HostBuffer = std::make_unique<VmaBuffer>(Ctx.Vma, size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
 #else
-    assert(DeviceBuffer->IsDirectMapped() && "Device doesn't support direct-mapped memory. Build with MVK_FORCE_STAGED_TRANSFERS.");
+    if (size > 0) assert(DeviceBuffer->IsDirectMapped() && "Device doesn't support direct-mapped memory. Build with MVK_FORCE_STAGED_TRANSFERS.");
 #endif
-    UpdateDescriptor();
+    if (size > 0) UpdateDescriptor();
 }
 
 Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, vk::BufferUsageFlags usage, SlotType slot_type)
@@ -296,10 +285,10 @@ void Buffer::Retire() {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     if (HostBuffer) {
         Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
-        Ctx.Retired.emplace_back(std::move(HostBuffer));
+        if (HostBuffer->GetAllocatedSize() > 0) Ctx.Retired.emplace_back(std::move(HostBuffer));
     }
 #endif
-    Ctx.Retired.emplace_back(std::move(DeviceBuffer));
+    if (DeviceBuffer->GetAllocatedSize() > 0) Ctx.Retired.emplace_back(std::move(DeviceBuffer));
     if (Slot != InvalidSlot) Ctx.CancelDeferredDescriptorUpdate({Type, Slot});
 }
 
@@ -344,10 +333,6 @@ std::span<std::byte> Buffer::GetMutableRange(vk::DeviceSize offset, vk::DeviceSi
 void Buffer::Reserve(vk::DeviceSize required_size) {
     if (required_size <= DeviceBuffer->GetAllocatedSize()) return;
     const auto new_size = NextPowerOfTwo(required_size);
-#ifndef RELEASE_BUILD
-    std::println("Buffer::Reserve: {} -> {} (required {})", FormatBytes(DeviceBuffer->GetAllocatedSize()), FormatBytes(new_size), FormatBytes(required_size));
-    VmaAllocContext = "Buffer::Reserve";
-#endif
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     if (HostBuffer) {
         auto new_host = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
@@ -357,20 +342,20 @@ void Buffer::Reserve(vk::DeviceSize required_size) {
             Ctx.DeferCopy(new_host->Get(), new_device->Get(), 0, UsedSize);
         }
         Ctx.CancelDeferredCopies(HostBuffer->Get(), DeviceBuffer->Get());
-        Ctx.Retired.emplace_back(std::move(HostBuffer));
-        Ctx.Retired.emplace_back(std::move(DeviceBuffer));
+        if (HostBuffer->GetAllocatedSize() > 0) Ctx.Retired.emplace_back(std::move(HostBuffer));
+        if (DeviceBuffer->GetAllocatedSize() > 0) Ctx.Retired.emplace_back(std::move(DeviceBuffer));
         HostBuffer = std::move(new_host);
         DeviceBuffer = std::move(new_device);
     } else {
         auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, Memory, Usage);
         if (UsedSize > 0) new_device->Write(DeviceBuffer->GetData());
-        Ctx.Retired.emplace_back(std::move(DeviceBuffer));
+        if (DeviceBuffer->GetAllocatedSize() > 0) Ctx.Retired.emplace_back(std::move(DeviceBuffer));
         DeviceBuffer = std::move(new_device);
     }
 #else
     auto new_device = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::GpuOnly, Usage | vk::BufferUsageFlagBits::eTransferDst);
     if (UsedSize > 0) new_device->Write(DeviceBuffer->GetData());
-    Ctx.Retired.emplace_back(std::move(DeviceBuffer));
+    if (DeviceBuffer->GetAllocatedSize() > 0) Ctx.Retired.emplace_back(std::move(DeviceBuffer));
     DeviceBuffer = std::move(new_device);
 #endif
     UpdateDescriptor();

@@ -61,9 +61,9 @@ private:
 template<typename T>
 struct BufferArena {
     BufferArena(mvk::BufferContext &ctx, vk::BufferUsageFlags usage, SlotType slot_type)
-        : Buffer(ctx, 1, usage, slot_type) {}
+        : Buffer(ctx, 0, usage, slot_type) {}
     BufferArena(mvk::BufferContext &ctx, mvk::MemoryUsage mem, vk::BufferUsageFlags usage = {})
-        : Buffer(ctx, 1, mem, usage) {}
+        : Buffer(ctx, 0, mem, usage) {}
 
     Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);

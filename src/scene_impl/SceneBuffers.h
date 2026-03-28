@@ -61,9 +61,9 @@ struct BoneAdjacencyIndices {
 // Uses a single RangeAllocator so all 3 buffers share the same instance offsets.
 struct InstanceArena {
     InstanceArena(mvk::BufferContext &ctx)
-        : TransformBuffer(ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
-          ObjectIdBuffer(ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer),
-          StateBuffer(ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer) {}
+        : TransformBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
+          ObjectIdBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer),
+          StateBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer) {}
 
     Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
@@ -139,13 +139,13 @@ struct SceneBuffers {
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::WorkspaceLightsUBO},
-          RenderDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
-          RenderIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
-          SelectionDrawData{Ctx, 1, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
-          SelectionIndirect{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
+          RenderDrawData{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
+          RenderIndirect{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
+          SelectionDrawData{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
+          SelectionIndirect{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
           LightBuffer{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
           MaterialBuffer{Ctx, sizeof(PBRMaterial), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MaterialBuffer},
-          IdentityIndexBuffer{Ctx, 1, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
+          IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
           SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ObjectPickKeyBuffer{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
