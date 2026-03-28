@@ -114,10 +114,18 @@ constexpr std::string Capitalize(std::string_view str) {
 
 void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
     const auto &g = *GImGui;
+    // After wrapping, require 2 non-boundary frames before re-wrapping (guards against failed OS cursor warps).
+    static uint32_t wrap_guard[2]{};
     ImVec2 mouse_delta{0, 0};
-    for (int axis = 0; axis < 2; ++axis) {
-        if (g.IO.MousePos[axis] >= wrap_rect.Max[axis]) mouse_delta[axis] = -wrap_rect.GetSize()[axis] + 1;
-        else if (g.IO.MousePos[axis] <= wrap_rect.Min[axis]) mouse_delta[axis] = wrap_rect.GetSize()[axis] - 1;
+    for (uint32_t axis = 0; axis < 2; ++axis) {
+        if (g.IO.MousePos[axis] >= wrap_rect.Max[axis] || g.IO.MousePos[axis] <= wrap_rect.Min[axis]) {
+            if (wrap_guard[axis]) continue;
+            if (g.IO.MousePos[axis] >= wrap_rect.Max[axis]) mouse_delta[axis] = -wrap_rect.GetSize()[axis] + 1;
+            else mouse_delta[axis] = wrap_rect.GetSize()[axis] - 1;
+            wrap_guard[axis] = 2;
+        } else if (wrap_guard[axis]) {
+            wrap_guard[axis]--;
+        }
     }
     if (mouse_delta != ImVec2{0, 0}) {
         accumulated_wrap_mouse_delta -= ToGlm(mouse_delta);
