@@ -248,7 +248,7 @@ StagingAlloc AllocStaging(TextureUploadBatch &batch, std::span<const std::byte> 
     const auto aligned_size = (size + alignment - 1) & ~(alignment - 1);
 
     if (batch.StagingChunks.empty() || batch.ChunkUsed + aligned_size > batch.StagingChunks.back().GetAllocatedSize()) {
-        const auto chunk_size = std::max(TextureUploadBatch::MinChunkSize, aligned_size);
+        const auto chunk_size = aligned_size;
         batch.StagingChunks.emplace_back(*batch.Ctx, chunk_size, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc);
         batch.ChunkUsed = 0;
     }

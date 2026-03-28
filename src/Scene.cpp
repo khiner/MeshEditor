@@ -770,24 +770,34 @@ void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem
 
 void Scene::LoadIcons() {
     static const std::filesystem::path svg_path{"res/svg/"};
-    CreateSvgResource(Icons.Select, svg_path / "select.svg");
-    CreateSvgResource(Icons.SelectBox, svg_path / "select_box.svg");
-    CreateSvgResource(Icons.Move, svg_path / "move.svg");
-    CreateSvgResource(Icons.Rotate, svg_path / "rotate.svg");
-    CreateSvgResource(Icons.Scale, svg_path / "scale.svg");
-    CreateSvgResource(Icons.Universal, svg_path / "transform.svg");
+    auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers->Ctx);
+    const auto RenderBitmap = [this, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
+        return RenderBitmapToImage(Vk, batch, data, width, height, Format::Color, ColorSubresourceRange);
+    };
+    const auto LoadSvg = [&](std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
+        svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, std::move(path));
+    };
 
-    CreateSvgResource(ShadingIcons.Wireframe, svg_path / "shading_wire.svg");
-    CreateSvgResource(ShadingIcons.Solid, svg_path / "shading_solid.svg");
-    CreateSvgResource(ShadingIcons.MaterialPreview, svg_path / "shading_texture.svg");
-    CreateSvgResource(ShadingIcons.Rendered, svg_path / "shading_rendered.svg");
+    LoadSvg(Icons.Select, svg_path / "select.svg");
+    LoadSvg(Icons.SelectBox, svg_path / "select_box.svg");
+    LoadSvg(Icons.Move, svg_path / "move.svg");
+    LoadSvg(Icons.Rotate, svg_path / "rotate.svg");
+    LoadSvg(Icons.Scale, svg_path / "scale.svg");
+    LoadSvg(Icons.Universal, svg_path / "transform.svg");
 
-    CreateSvgResource(OverlayIcon, svg_path / "overlay.svg");
+    LoadSvg(ShadingIcons.Wireframe, svg_path / "shading_wire.svg");
+    LoadSvg(ShadingIcons.Solid, svg_path / "shading_solid.svg");
+    LoadSvg(ShadingIcons.MaterialPreview, svg_path / "shading_texture.svg");
+    LoadSvg(ShadingIcons.Rendered, svg_path / "shading_rendered.svg");
 
-    CreateSvgResource(AnimIcons.Play, svg_path / "play.svg");
-    CreateSvgResource(AnimIcons.Pause, svg_path / "pause.svg");
-    CreateSvgResource(AnimIcons.JumpStart, svg_path / "jump_start.svg");
-    CreateSvgResource(AnimIcons.JumpEnd, svg_path / "jump_end.svg");
+    LoadSvg(OverlayIcon, svg_path / "overlay.svg");
+
+    LoadSvg(AnimIcons.Play, svg_path / "play.svg");
+    LoadSvg(AnimIcons.Pause, svg_path / "pause.svg");
+    LoadSvg(AnimIcons.JumpStart, svg_path / "jump_start.svg");
+    LoadSvg(AnimIcons.JumpEnd, svg_path / "jump_end.svg");
+
+    SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
 }
 
 const AnimationTimeline &Scene::GetTimeline() const { return R.get<const AnimationTimeline>(SceneEntity); }

@@ -80,7 +80,6 @@ struct TextureUploadBatch {
     mvk::BufferContext *Ctx;
     std::vector<mvk::Buffer> StagingChunks;
     vk::DeviceSize ChunkUsed{0};
-    static constexpr vk::DeviceSize MinChunkSize = 64 * 1024 * 1024;
 };
 
 TextureUploadBatch BeginTextureUploadBatch(vk::Device, vk::CommandPool, mvk::BufferContext &);

@@ -45,11 +45,12 @@ std::string FormatBytes(uint32_t bytes) {
 }
 
 #ifndef RELEASE_BUILD
+thread_local const char *VmaAllocContext = "unknown";
 void LoggingVmaAllocate(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("Allocating {} bytes of memory of type {}", FormatBytes(size), memory_type);
+    std::println("  vkAllocateMemory: {} type={} (during: {})", FormatBytes(size), memory_type, VmaAllocContext);
 }
 void LoggingVmaFree(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("Freeing {} bytes of memory of type {}", FormatBytes(size), memory_type);
+    std::println("  vkFreeMemory: {} type={} (during: {})", FormatBytes(size), memory_type, VmaAllocContext);
 }
 #endif
 
@@ -64,6 +65,9 @@ std::vector<VmaBudget> QueryHeapBudgets(VmaAllocator allocator, vk::PhysicalDevi
 
 struct VmaBuffer {
     VmaBuffer(VmaAllocator vma, vk::DeviceSize size, MemoryUsage memory_usage, vk::BufferUsageFlags usage) : Vma(vma), BufferSize(size) {
+#ifndef RELEASE_BUILD
+        std::println("VmaBuffer create: size={} mem={} usage={:#x}", FormatBytes(size), int(memory_usage), uint32_t(usage));
+#endif
         VmaAllocationCreateInfo aci{};
         aci.usage = ToVmaMemoryUsage(memory_usage);
         if (memory_usage == MemoryUsage::GpuOnly) {
@@ -94,7 +98,12 @@ struct VmaBuffer {
     }
     VmaBuffer(VmaAllocator vma, std::span<const std::byte> data, MemoryUsage mem, vk::BufferUsageFlags usage)
         : VmaBuffer(vma, data.size(), mem, usage) { Write(data); }
-    ~VmaBuffer() { vmaDestroyBuffer(Vma, Handle, Allocation); }
+    ~VmaBuffer() {
+#ifndef RELEASE_BUILD
+        std::println("VmaBuffer destroy: size={}", FormatBytes(BufferSize));
+#endif
+        vmaDestroyBuffer(Vma, Handle, Allocation);
+    }
 
     vk::Buffer Get() const { return Handle; }
     vk::DeviceSize GetAllocatedSize() const { return BufferSize; }
@@ -145,7 +154,15 @@ BufferContext::~BufferContext() {
     vmaDestroyAllocator(Vma);
 }
 
-void BufferContext::ReclaimRetiredBuffers() { Retired.clear(); }
+void BufferContext::ReclaimRetiredBuffers() {
+#ifndef RELEASE_BUILD
+    if (!Retired.empty()) {
+        std::println("ReclaimRetiredBuffers: freeing {} retired buffers", Retired.size());
+        VmaAllocContext = "ReclaimRetiredBuffers";
+    }
+#endif
+    Retired.clear();
+}
 
 std::string BufferContext::DebugHeapUsage() const {
     const auto budgets = QueryHeapBudgets(Vma, PhysicalDevice);
@@ -327,6 +344,10 @@ std::span<std::byte> Buffer::GetMutableRange(vk::DeviceSize offset, vk::DeviceSi
 void Buffer::Reserve(vk::DeviceSize required_size) {
     if (required_size <= DeviceBuffer->GetAllocatedSize()) return;
     const auto new_size = NextPowerOfTwo(required_size);
+#ifndef RELEASE_BUILD
+    std::println("Buffer::Reserve: {} -> {} (required {})", FormatBytes(DeviceBuffer->GetAllocatedSize()), FormatBytes(new_size), FormatBytes(required_size));
+    VmaAllocContext = "Buffer::Reserve";
+#endif
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     if (HostBuffer) {
         auto new_host = std::make_unique<VmaBuffer>(Ctx.Vma, new_size, MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eTransferSrc);
